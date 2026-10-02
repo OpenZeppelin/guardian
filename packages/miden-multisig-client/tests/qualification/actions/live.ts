@@ -3,13 +3,14 @@ import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { GuardianHttpClient } from '@openzeppelin/guardian-client';
+import type { ProposalExecutionMode } from '../../../src/transaction/expiration.js';
 
 import { AccountInspector } from '../../../src/inspector.js';
 import { AccountId, FeltArray, Poseidon2, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
 
 import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
 import { ProposalMetadataCodec } from '../../../src/proposal/metadata.js';
-import { buildP2idTransactionRequest } from '../../../src/transaction.js';
+import { buildP2idTransactionRequest, chainAnchorBlockNum } from '../../../src/transaction.js';
 import {
   base64ToUint8Array,
   bytesToHex,
@@ -59,6 +60,7 @@ export async function createAccount(
   scenarioId: string,
   shape: string,
   scheme: Scheme,
+  executionMode: ProposalExecutionMode,
 ): Promise<ActionOutcome> {
   const missing = requireLive(context);
   if (missing) return missing;
@@ -69,7 +71,13 @@ export async function createAccount(
   }
 
   try {
-    const cosigners = await buildCosigners(context.live!, parsed.total, scheme, `${scenarioId}-${Date.now()}`);
+    const cosigners = await buildCosigners(
+      context.live!,
+      parsed.total,
+      scheme,
+      `${scenarioId}-${Date.now()}`,
+      executionMode,
+    );
     const commitment = await guardianCommitment(cosigners[0], scheme);
 
     const multisig = await cosigners[0].multisigClient.create(
@@ -510,6 +518,196 @@ export async function executeProposal(_context: ActionContext, scenarioId: strin
   }
 
   return { kind: 'environment_blocked', reason: `the executed proposal was ${completion.reason}` };
+}
+
+/**
+ * How far past the block a proposal's summary binds the chain must move before a late execution:
+ * beyond the fifty or so blocks devnet serves historical account state for. Mirrors
+ * `LATE_EXECUTION_BLOCKS` in the Rust driver.
+ */
+const LATE_EXECUTION_BLOCKS = 60;
+const LATE_EXECUTION_DEADLINE_MS = 600_000;
+
+/**
+ * Waits until the chain tip is `LATE_EXECUTION_BLOCKS` past the block the scenario's proposal
+ * binds. The summary carries that block only as a commitment, so it is read from the proposal's
+ * chain anchor, which the SDK has already checked against the summary when it listed the
+ * proposal. Mirrors `advance_past_bound` in the Rust driver.
+ */
+export async function advancePastBound(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  const proposal = session.multisig.listProposals().find((entry) => entry.id === session.proposalId);
+  if (!proposal?.metadata.chainAnchor) {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: `proposal ${session.proposalId} is not listed with a chain anchor`,
+    };
+  }
+  const target = chainAnchorBlockNum(proposal.metadata.chainAnchor) + LATE_EXECUTION_BLOCKS;
+  const started = Date.now();
+  for (;;) {
+    try {
+      const summary = await session.cosigners[0].midenClient.sync();
+      if (summary.blockNum() >= target) return { kind: 'passed' };
+    } catch {
+      // A failed sync is retried until the deadline, like a block that has not arrived.
+    }
+    if (Date.now() - started > LATE_EXECUTION_DEADLINE_MS) {
+      return {
+        kind: 'environment_blocked',
+        reason: `the chain did not reach block ${target} within ${LATE_EXECUTION_DEADLINE_MS} ms`,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+}
+
+const GUARDIAN_EXECUTION_DEADLINE_MS = 600_000;
+
+/**
+ * Hands the threshold-met proposal to GUARDIAN and waits for GUARDIAN to report it committed,
+ * then for the chain and GUARDIAN's history to agree, exactly as a self-execution is judged.
+ * No cosigner proves or submits anything. Mirrors `guardian_execute` in the Rust driver.
+ */
+export async function guardianExecute(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  if (session.multisig.executionMode !== 'guardian_executable') {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'the proposal was created by a self-executed client, so GUARDIAN holds no request',
+    };
+  }
+  const proposalLandsAt = await bindExecution(session, session.proposalId);
+  if ('failure' in proposalLandsAt) return proposalLandsAt.failure;
+
+  try {
+    const accepted = await session.multisig.requestGuardianExecution(session.proposalId);
+    if (!accepted.newlyAccepted) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN reported an execution it did not start: ${JSON.stringify(accepted)}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `GUARDIAN refused to execute the proposal: ${String(error)}` };
+  }
+
+  const started = Date.now();
+  const observed: string[] = [];
+  for (;;) {
+    let execution;
+    try {
+      execution = await session.multisig.executionStatus(session.proposalId);
+    } catch (error) {
+      return { kind: 'failed', classification: 'product', reason: `reading the execution failed after ${observed.join(' > ')}: ${String(error)}` };
+    }
+    if (observed[observed.length - 1] !== execution.state) observed.push(execution.state);
+    if (execution.state === 'committed') break;
+    if (execution.state === 'failed') {
+      const cause = execution.error ? `${execution.error.code}: ${execution.error.message}` : 'no cause';
+      return { kind: 'failed', classification: 'product', reason: `GUARDIAN execution failed after ${observed.join(' > ')}: ${cause}` };
+    }
+    if (Date.now() - started > GUARDIAN_EXECUTION_DEADLINE_MS) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN execution did not commit in time; states seen ${observed.join(' > ')}`,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  return confirmGuardianCommit(session, session.proposalId, proposalLandsAt);
+}
+
+/**
+ * Once GUARDIAN reports `committed`, the chain and GUARDIAN's history must agree, exactly as a
+ * self-execution is judged.
+ */
+async function confirmGuardianCommit(
+  session: LiveSession,
+  proposalId: string,
+  proposalLandsAt: Parameters<typeof waitForExecution>[2],
+): Promise<ActionOutcome> {
+  try {
+    await session.cosigners[0].midenClient.sync();
+    await session.multisig!.syncState();
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `syncing after execution failed: ${String(error)}` };
+  }
+  const completion = await waitForExecution(session, proposalId, proposalLandsAt);
+  if (completion.kind === 'confirmed') return { kind: 'passed' };
+  return {
+    kind: 'failed',
+    classification: 'product',
+    reason: `GUARDIAN reported committed but the account did not agree: ${completion.reason}`,
+  };
+}
+
+/**
+ * Takes the threshold-met proposal to its outcome with the base client alone: authenticated
+ * GUARDIAN requests signed as one cosigner, with no multisig SDK and no node involved in the
+ * request or the polling. The multisig client only reads the chain afterwards, to judge the
+ * outcome. Mirrors `guardian_execute_base_client` in the Rust driver.
+ */
+export async function guardianExecuteBaseClient(context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  if (session.multisig.executionMode !== 'guardian_executable') {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'the proposal was created by a self-executed client, so GUARDIAN holds no request',
+    };
+  }
+  const proposalLandsAt = await bindExecution(session, session.proposalId);
+  if ('failure' in proposalLandsAt) return proposalLandsAt.failure;
+
+  const base = new GuardianHttpClient(context.httpEndpoint);
+  base.setSigner(session.cosigners[0].signer);
+  const accountId = session.multisig.accountId;
+  try {
+    const accepted = await base.executeDeltaProposal(accountId, session.proposalId);
+    if (!accepted.newlyAccepted) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN reported an execution it did not start: ${JSON.stringify(accepted)}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `GUARDIAN refused the base client's execution request: ${String(error)}` };
+  }
+  const started = Date.now();
+  for (;;) {
+    let execution;
+    try {
+      execution = await base.getDeltaProposalExecution(accountId, session.proposalId);
+    } catch (error) {
+      return { kind: 'failed', classification: 'product', reason: `the base client could not read the execution: ${String(error)}` };
+    }
+    if (execution.state === 'committed') break;
+    if (execution.state === 'failed') {
+      const cause = execution.error ? `${execution.error.code}: ${execution.error.message}` : 'no cause';
+      return { kind: 'failed', classification: 'product', reason: `the base client saw the execution fail: ${cause}` };
+    }
+    if (Date.now() - started > GUARDIAN_EXECUTION_DEADLINE_MS) {
+      return { kind: 'failed', classification: 'product', reason: 'GUARDIAN execution did not commit in time' };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return confirmGuardianCommit(session, session.proposalId, proposalLandsAt);
 }
 
 /**
@@ -1386,6 +1584,7 @@ export async function addSigner(context: ActionContext, scenarioId: string): Pro
       1,
       session.scheme,
       `${scenarioId}-incoming-${Date.now()}`,
+      session.cosigners[0].executionMode,
     );
     const before = await currentSignerSet(session);
     const commitment = incoming.signer.commitment.toLowerCase();

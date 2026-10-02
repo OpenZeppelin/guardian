@@ -1,7 +1,8 @@
 import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 
+import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
 import { FalconSigner } from '../../../src/signers/falcon.js';
-import { loadServerFixtures, type ServerFixtures } from '../fixtures.js';
+import { loadServerFixtures, readFixtureDelta, type ServerFixtures } from '../fixtures.js';
 import type { ActionContext, ActionOutcome } from '../runner.js';
 
 interface Session {
@@ -115,5 +116,47 @@ export async function verifyCommitment(context: ActionContext): Promise<ActionOu
       classification: 'product',
       reason: `reading the registered account back failed: ${String(error)}`,
     };
+  }
+}
+
+/**
+ * A server with no prover refuses Guardian execution before touching the proposal, reports
+ * nothing in flight, and distinguishes a never-executed proposal from a missing one. Mirrors
+ * `assert_execution_unavailable` in the Rust driver.
+ */
+export async function assertExecutionUnavailable(context: ActionContext): Promise<ActionOutcome> {
+  let session: Session;
+  let proposalId: string;
+  try {
+    session = openSession(context);
+    proposalId = computeCommitmentFromTxSummary(readFixtureDelta().delta_payload.data);
+  } catch (error) {
+    return setupFailure(error);
+  }
+  const { accountId } = session.fixtures;
+  const codeOf = (error: unknown) => (error as { rawCode?: string | null }).rawCode ?? null;
+
+  try {
+    const execution = await session.guardian.executeDeltaProposal(accountId, proposalId);
+    return { kind: 'failed', classification: 'product', reason: `a server with no prover accepted an execution: ${JSON.stringify(execution)}` };
+  } catch (error) {
+    if (codeOf(error) !== 'GUARDIAN_PROVING_UNAVAILABLE') {
+      return { kind: 'failed', classification: 'product', reason: `execution on a server with no prover was refused with the wrong cause: ${String(error)}` };
+    }
+  }
+  try {
+    const current = await session.guardian.getCurrentExecution(accountId);
+    if (current !== null) {
+      return { kind: 'failed', classification: 'product', reason: `a refused execution is reported in flight: ${JSON.stringify(current)}` };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `reading the in-flight execution failed: ${String(error)}` };
+  }
+  try {
+    const execution = await session.guardian.getDeltaProposalExecution(accountId, proposalId);
+    return { kind: 'failed', classification: 'product', reason: `a refused request left an execution record: ${JSON.stringify(execution)}` };
+  } catch (error) {
+    if (codeOf(error) === 'GUARDIAN_EXECUTION_NOT_FOUND') return { kind: 'passed' };
+    return { kind: 'failed', classification: 'product', reason: `a never-executed proposal was not reported as execution-not-found: ${String(error)}` };
   }
 }

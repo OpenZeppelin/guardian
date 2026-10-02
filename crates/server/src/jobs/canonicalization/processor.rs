@@ -212,6 +212,15 @@ impl DeltasProcessorBase {
 
     /// Log a stale-candidate outcome: another owner already promoted or
     /// discarded this delta, so the write was a no-op by design.
+    fn log_protected_by_execution(delta: &DeltaObject, operation: &str) {
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            operation,
+            "Candidate belongs to an unresolved Guardian execution; leaving it to that execution"
+        );
+    }
+
     fn log_not_candidate(delta: &DeltaObject, operation: &str) {
         tracing::warn!(
             account_id = %delta.account_id,
@@ -894,6 +903,9 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => {}
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "abandon_confirm")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "abandon_confirm"),
         }
 
@@ -906,6 +918,35 @@ impl DeltasProcessorBase {
     /// cleanup failure leaves the candidate in place for the next worker
     /// run to retry.
     async fn finalize_abandoned_candidate(&self, delta: DeltaObject) -> Result<()> {
+        // A Guardian execution's candidate is not the client's to abandon, and its proposal must
+        // survive until the execution settles; storage refuses the discard below too, but only
+        // after the proposal would already be gone.
+        match self
+            .state
+            .storage
+            .load_active_execution(&delta.account_id)
+            .await
+        {
+            Ok(Some(record))
+                if record
+                    .evidence
+                    .as_ref()
+                    .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce) =>
+            {
+                Self::log_protected_by_execution(&delta, "abandon_finalize");
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    %error,
+                    "could not read the account's execution; deferring the abandon"
+                );
+                return Ok(());
+            }
+        }
+
         // Shared cleanup helper: a failed delete (or an unverifiable
         // proposal read) defers the finalize to the next worker run. An
         // UNDERIVABLE proposal id proceeds instead — the condition is
@@ -932,6 +973,10 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => {}
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "abandon_finalize");
+                return Ok(());
+            }
             CanonicalWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "abandon_finalize");
                 return Ok(());
@@ -996,6 +1041,9 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => delta.status = new_status,
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "divergence_reset")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "divergence_reset"),
         }
 
@@ -1043,6 +1091,9 @@ impl DeltasProcessorBase {
                     crate::metrics::labels::CandidateOutcome::DivergenceDeferred,
                 ),
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "divergence_increment")
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "divergence_increment")
                 }
@@ -1093,6 +1144,9 @@ impl DeltasProcessorBase {
                     record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "diverged_retain")
+                }
                 CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_retain"),
             }
 
@@ -1117,6 +1171,9 @@ impl DeltasProcessorBase {
                 record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Diverged);
             }
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "diverged_discard")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "diverged_discard"),
         }
 
@@ -1187,6 +1244,9 @@ impl DeltasProcessorBase {
                         );
                     }
                     CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                    CanonicalWrite::ProtectedByExecution => {
+                        Self::log_protected_by_execution(&delta, "retain");
+                    }
                     CanonicalWrite::NotCandidate => {
                         Self::log_not_candidate(&delta, "retain");
                     }
@@ -1211,6 +1271,9 @@ impl DeltasProcessorBase {
                     record_candidate_outcome(crate::metrics::labels::CandidateOutcome::Discarded);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "retry_discard");
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "retry_discard");
                 }
@@ -1247,6 +1310,9 @@ impl DeltasProcessorBase {
                         .increment(1);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "retry_increment");
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "retry_increment");
                 }
@@ -1510,6 +1576,13 @@ impl DeltasProcessorBase {
         // State, auth, delta status, and the pending-candidate flag commit
         // as one fenced storage write: a crash, outage, or lease loss can
         // never advance the state while the delta stays a candidate.
+        let executed_by_guardian = matches!(
+            storage_backend.load_active_execution(&delta.account_id).await,
+            Ok(Some(record)) if record
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce)
+        );
         let outcome = storage_backend
             .promote_candidate(
                 self.state.metadata.as_ref(),
@@ -1530,7 +1603,11 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to canonicalize delta: {e}"))
             })?;
         match outcome {
-            PromoteWrite::Applied => {}
+            PromoteWrite::Applied => {
+                if executed_by_guardian {
+                    crate::metrics::execution::record_outcome(None);
+                }
+            }
             PromoteWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
             PromoteWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "promote");
@@ -2133,6 +2210,21 @@ mod tests {
             self.cancel.cancel();
             Ok(StateVerification::Mismatch {
                 on_chain: "0xother".to_string(),
+            })
+        }
+
+        async fn observe_commitment(
+            &self,
+            account_id: &str,
+            expected_commitment: &str,
+            read_mode: crate::network::RpcReadMode,
+        ) -> std::result::Result<crate::network::ObservedState, String> {
+            let verification = self
+                .verify_commitment(account_id, expected_commitment, read_mode)
+                .await?;
+            Ok(crate::network::ObservedState {
+                verification,
+                block: 0,
             })
         }
 
@@ -2873,6 +2965,90 @@ mod tests {
             set_calls.iter().any(|m| !m.has_pending_candidate),
             "flag must be cleared after the abandon finalizes"
         );
+    }
+
+    #[tokio::test]
+    async fn test_abandon_never_touches_a_guardian_execution_candidate() {
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string())
+            .with_incremented_abandon_confirm();
+        let now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 1, 0).unwrap();
+        let execution = crate::storage::ExecutionRecord {
+            reservation: crate::storage::ExecutionReservation {
+                account_id: account_id.to_string(),
+                proposal_id: "0xproposal".to_string(),
+                attempt: 1,
+                fence: crate::storage::LeaseFence {
+                    lease_name: format!("execution:{account_id}"),
+                    holder_id: "replica:worker".to_string(),
+                    fence_token: 1,
+                },
+                lease_expires_at: now,
+                phase: crate::storage::ExecutionPhase::Sent,
+                candidate_nonce: Some(1),
+                ignored_signatures: 0,
+                released_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+            evidence: Some(crate::storage::SubmissionEvidence {
+                account_id: account_id.to_string(),
+                proposal_id: "0xproposal".to_string(),
+                attempt: 1,
+                candidate_nonce: 1,
+                transaction_id: "0xtx".to_string(),
+                expected_commitment: "new_commitment".to_string(),
+                reference_block: 100,
+                expiration_block: 356,
+                base_commitment: "prev_commitment".to_string(),
+                committed_at: now,
+            }),
+            outcome: None,
+        };
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_load_active_execution(Ok(Some(execution))),
+        );
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id)))),
+        );
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata,
+            Arc::new(MockClock::new(now)),
+        );
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+
+        DeltasProcessor::new(state, config)
+            .process_all_accounts()
+            .await
+            .unwrap();
+
+        assert!(
+            storage.get_delete_delta_proposal_calls().is_empty(),
+            "the executing proposal must survive"
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
     }
 
     #[tokio::test]

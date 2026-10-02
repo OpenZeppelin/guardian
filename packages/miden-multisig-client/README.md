@@ -476,6 +476,31 @@ if (proposal.status === 'ready') {
 }
 ```
 
+### Execute Through Guardian
+
+A client created with `executionMode: 'guardian_executable'` stores each proposal's
+transaction request with it, so once the proposal has enough signatures any cosigner can ask
+Guardian to prove, submit and commit it:
+
+```typescript
+await multisig.requestGuardianExecution(proposal.id);
+const execution = await multisig.waitForGuardianExecution(proposal.id);
+if (execution.state === 'failed') {
+  console.error(execution.error?.code, execution.error?.message);
+}
+```
+
+`executionStatus(proposalId)` reads the latest execution once and `currentExecution()` the
+account's in-flight one. `waitForGuardianExecution(proposalId, options)` only reads: it polls
+until the execution is `committed` or `failed`, backing off from 1 s to 10 s
+(`initialBackoffMs`, `maxBackoffMs`), retries reads that fail with a retryable or transport
+error (honouring the server's retry-after hint), throws any other error, and gives up after 15
+minutes (`deadlineMs`) with a `GuardianExecutionWaitTimeoutError` whose `lastObserved` is the
+last execution it read. A refusal throws a `GuardianExecutionRefusedError` with `code` (the wire
+string, for example `GUARDIAN_EXECUTION_CONFLICT`), `userMessage`, `retryable`,
+`retryAfterSecs` and `blockingProposalId`. See
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
+
 ### Export Proposal for Offline Signing
 
 ```typescript

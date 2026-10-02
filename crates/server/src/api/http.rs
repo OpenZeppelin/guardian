@@ -207,7 +207,7 @@ pub async fn configure(
         (status = 200, description = "Delta accepted", body = DeltaObject),
         (status = 400, description = "Invalid delta payload", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Conflicting pending delta/proposal", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting pending delta/proposal, or a Guardian execution holds the account (GUARDIAN_EXECUTION_CONFLICT)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn push_delta(
@@ -462,7 +462,8 @@ pub struct PubkeyQuery {
 }
 
 /// Public, unauthenticated liveness + identity probe. Returns the
-/// server's version, git commit, environment, start time, and uptime.
+/// server's version, git commit, environment, start time, uptime, and
+/// whether it accepts Guardian execution requests.
 /// Consumed by wallet clients (pre-auth health check) and the status
 /// homepage. Exposes no account, operator, or auth data.
 #[utoipa::path(
@@ -470,7 +471,7 @@ pub struct PubkeyQuery {
     path = "/status",
     tag = "client",
     responses(
-        (status = 200, description = "Server liveness, version, and environment", body = crate::services::StatusResponse),
+        (status = 200, description = "Server liveness, version, environment, and execution capability", body = crate::services::StatusResponse),
     )
 )]
 pub async fn status(State(state): State<AppState>) -> Json<crate::services::StatusResponse> {
@@ -478,6 +479,12 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
         state.dashboard.environment(),
         state.dashboard.started_at(),
         state.clock.now(),
+        crate::services::ExecutionStatus::of(
+            state
+                .execution
+                .availability(state.canonicalization.is_some())
+                .map(|_| ()),
+        ),
     ))
 }
 
@@ -489,7 +496,7 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
     path = "/",
     tag = "client",
     responses(
-        (status = 200, description = "Alias of `GET /status`: server liveness, version, and environment", body = crate::services::StatusResponse),
+        (status = 200, description = "Alias of `GET /status`: server liveness, version, environment, and execution capability", body = crate::services::StatusResponse),
     )
 )]
 pub async fn status_root(state: State<AppState>) -> Json<crate::services::StatusResponse> {
@@ -536,7 +543,8 @@ pub async fn get_pubkey(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
         (status = 400, description = "Invalid proposal payload", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Conflicting / too many pending proposals", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting / too many pending proposals, or the account's stored requests would exceed their capacity (GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED)", body = crate::openapi::ApiErrorResponse),
+        (status = 413, description = "The stored transaction request exceeds the per-request limit (GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn push_delta_proposal(
@@ -616,6 +624,131 @@ pub async fn abandon_candidate(
             abandon_requested_at: response.abandon_requested_at,
         }),
     ))
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ExecutionQuery {
+    pub account_id: String,
+    pub proposal_id: String,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CurrentExecutionQuery {
+    pub account_id: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CurrentExecutionResponse {
+    pub execution: Option<crate::services::execution_status::ExecutionEnvelope>,
+}
+
+/// Ask Guardian to prove and submit a threshold-met proposal.
+///
+/// Returns `202 Accepted` when this call created the execution and `200 OK` when an execution
+/// of the same proposal is already active; `newly_accepted` carries the same distinction.
+#[utoipa::path(
+    post,
+    path = "/delta/proposal/execution",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    request_body = ExecutionQuery,
+    responses(
+        (status = 202, description = "Execution accepted", body = crate::services::execution_status::ExecutionEnvelope),
+        (status = 200, description = "Execution already active", body = crate::services::execution_status::ExecutionEnvelope),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Not ready, not Guardian-executable, or the account is busy", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "This server does not offer Guardian execution", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn execute_delta_proposal(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<ExecutionQuery>,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::services::execution_status::ExecutionEnvelope>,
+    ),
+    GuardianError,
+> {
+    let request_payload =
+        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
+    let params = crate::services::execute_proposal::RequestExecutionParams {
+        account_id: payload.account_id,
+        proposal_id: payload.proposal_id,
+        credentials: request_payload.apply_to(credentials),
+    };
+    let envelope = crate::services::execute_proposal::request_execution(&state, params).await?;
+    let status = if envelope.newly_accepted {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(envelope)))
+}
+
+/// Report the latest execution of a proposal.
+#[utoipa::path(
+    get,
+    path = "/delta/proposal/execution",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(ExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    responses(
+        (status = 200, description = "Execution state", body = crate::services::execution_status::ExecutionEnvelope),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal absent, or never executed", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_delta_proposal_execution(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<ExecutionQuery>,
+) -> Result<Json<crate::services::execution_status::ExecutionEnvelope>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+    let credentials = request_payload.apply_to(credentials);
+    crate::services::execution_status::get_execution(
+        &state,
+        &query.account_id,
+        &query.proposal_id,
+        &credentials,
+    )
+    .await
+    .map(Json)
+}
+
+/// Report the account's in-flight execution, if any.
+#[utoipa::path(
+    get,
+    path = "/delta/execution/current",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(CurrentExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    responses(
+        (status = 200, description = "The in-flight execution, or null", body = CurrentExecutionResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_current_execution(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<CurrentExecutionQuery>,
+) -> Result<Json<CurrentExecutionResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+    let credentials = request_payload.apply_to(credentials);
+    let execution = crate::services::execution_status::current_execution(
+        &state,
+        &query.account_id,
+        &credentials,
+    )
+    .await?;
+    Ok(Json(CurrentExecutionResponse { execution }))
 }
 
 /// List all in-flight multisig proposals for an account.
@@ -833,6 +966,8 @@ mod tests {
         assert!(json["environment"].is_string());
         assert!(json["started_at"].is_string());
         assert!(json["uptime_seconds"].is_number());
+        assert_eq!(json["execution"]["enabled"], false);
+        assert!(json["execution"]["reason"].is_string());
         // Must not leak any dashboard/inventory fields.
         assert!(json.get("total_account_count").is_none());
         assert!(json.get("accounts_by_auth_method").is_none());

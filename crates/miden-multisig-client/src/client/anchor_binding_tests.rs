@@ -82,6 +82,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
         None,
         Some(&[]),
         proposer.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -174,6 +175,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
         None,
         Some(&[]),
         cosigner.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -260,6 +262,7 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
         None,
         Some(&[]),
         proposer.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -460,6 +463,7 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
         &auth_args,
         std::iter::empty(),
         client.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let (tx_summary, chain_anchor) =
@@ -570,6 +574,7 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
         &auth_args,
         std::iter::empty(),
         client.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let (tx_summary, chain_anchor) =
@@ -682,6 +687,7 @@ async fn custom_proposal_keeps_the_anchor_the_producer_bound_when_the_chain_move
         None,
         None,
         proposer.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -818,6 +824,7 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
         &auth_args,
         std::iter::empty(),
         client.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let (tx_summary, chain_anchor) =
@@ -949,6 +956,7 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
         &auth_args,
         std::iter::empty(),
         proposer.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let (tx_summary, chain_anchor) =
@@ -1039,6 +1047,7 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
         &auth_args,
         std::iter::empty(),
         proposer.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let (tx_summary, chain_anchor) =

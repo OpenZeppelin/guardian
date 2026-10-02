@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{AbandonStatus, MultisigClient, ProposalStatus};
+use miden_multisig_client::{ExecutionState, ProposalExecutionMode};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
@@ -75,6 +76,7 @@ async fn build_cosigners(
     context: &LiveContext,
     signers: &RunSigners,
     run_tag: &str,
+    mode: ProposalExecutionMode,
 ) -> anyhow::Result<Vec<MultisigClient>> {
     let mut clients = Vec::with_capacity(signers.signers.len());
     for (index, signer) in signers.signers.iter().enumerate() {
@@ -87,7 +89,8 @@ async fn build_cosigners(
         let builder = MultisigClient::builder()
             .miden_endpoint(endpoint(context.network))
             .guardian_endpoint(context.guardian_endpoint.clone())
-            .account_dir(&dir);
+            .account_dir(&dir)
+            .execution_mode(mode);
 
         let builder = match signer {
             RunSigner::Falcon(key) => builder.with_secret_key(key.clone()),
@@ -116,7 +119,13 @@ fn commitments(clients: &[MultisigClient]) -> Vec<Word> {
 
 /// Builds the multisig account locally. Nothing reaches the chain here: the
 /// account exists on chain only once it transacts.
-pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str) -> ActionOutcome {
+pub async fn create(
+    runner: &Runner,
+    shape: Shape,
+    scheme: Scheme,
+    run_tag: &str,
+    mode: ProposalExecutionMode,
+) -> ActionOutcome {
     let Some(context) = runner.live.as_ref() else {
         return ActionOutcome::failed_setup("the live context is not configured");
     };
@@ -129,7 +138,7 @@ pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str
         ));
     };
 
-    let mut clients = match build_cosigners(context, &signers, run_tag).await {
+    let mut clients = match build_cosigners(context, &signers, run_tag, mode).await {
         Ok(clients) => clients,
         Err(error) => return ActionOutcome::failed_setup(error.to_string()),
     };
@@ -677,7 +686,265 @@ pub async fn recover_by_cosigner(runner: &Runner) -> ActionOutcome {
 /// How long an executed proposal may take to leave the pending set.
 const CANONICALIZATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// What the chain and GUARDIAN say about an executed proposal.
+/// How far past the block a proposal's summary binds the chain must move before a late execution:
+/// beyond the fifty or so blocks devnet serves historical account state for, so the execution
+/// cannot lean on state at the bound block.
+const LATE_EXECUTION_BLOCKS: u32 = 60;
+const LATE_EXECUTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Waits until the chain tip is [`LATE_EXECUTION_BLOCKS`] past the block the scenario's proposal
+/// binds, read from the node directly rather than through a client's synced store.
+pub async fn advance_past_bound(runner: &Runner) -> ActionOutcome {
+    use miden_client::rpc::{GrpcClient, NodeRpcClient};
+    use miden_protocol::block::BlockNumber;
+
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let bound = match session.clients[0].list_proposals().await {
+        Ok(proposals) => match proposals.into_iter().find(|entry| entry.id == proposal_id) {
+            Some(proposal) => proposal.tx_summary.block_number().as_u32(),
+            None => {
+                return ActionOutcome::failed_setup(format!(
+                    "proposal {proposal_id} is not listed"
+                ));
+            }
+        },
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!("listing proposals failed: {error}"));
+        }
+    };
+    let target = bound + LATE_EXECUTION_BLOCKS;
+
+    let rpc = GrpcClient::new(&endpoint(context.network), 10_000);
+    match rpc
+        .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
+        .await
+    {
+        Ok((genesis, _)) => {
+            if let Err(error) = rpc.set_genesis_commitment(genesis.commitment()).await {
+                return ActionOutcome::EnvironmentBlocked {
+                    reason: format!("cannot pin the node's genesis: {error}"),
+                };
+            }
+        }
+        Err(error) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("cannot read the node's genesis header: {error}"),
+            };
+        }
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match rpc.get_block_header_by_number(None, false).await {
+            Ok((tip, _)) if tip.block_num().as_u32() >= target => return ActionOutcome::Passed,
+            Ok(_) | Err(_) if started.elapsed() > LATE_EXECUTION_DEADLINE => {
+                return ActionOutcome::EnvironmentBlocked {
+                    reason: format!(
+                        "the chain did not reach block {target} within {LATE_EXECUTION_DEADLINE:?}"
+                    ),
+                };
+            }
+            Ok(_) | Err(_) => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+        }
+    }
+}
+
+/// How long GUARDIAN may take to report an execution committed.
+const GUARDIAN_EXECUTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Hands the threshold-met proposal to GUARDIAN and waits for GUARDIAN to report it committed,
+/// then for the chain and GUARDIAN's history to agree, exactly as a self-execution is judged.
+/// No cosigner proves or submits anything.
+pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let client = &mut session.clients[0];
+    if client.execution_mode() != ProposalExecutionMode::GuardianExecutable {
+        return ActionOutcome::failed_setup(
+            "the proposal was created by a self-executed client, so GUARDIAN holds no request",
+        );
+    }
+    let binding = match proposal_nonce(client, &proposal_id).await {
+        Ok(nonce) => Binding::Nonce(nonce),
+        Err(reason) => return unbindable(reason),
+    };
+
+    match client.request_guardian_execution(&proposal_id).await {
+        Ok(execution) if execution.newly_accepted => {}
+        Ok(execution) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN reported an execution it did not start: {execution:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN refused to execute the proposal: {error}"
+            ));
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let mut observed = Vec::new();
+    loop {
+        match client.execution_status(&proposal_id).await {
+            Ok(execution) => {
+                if observed.last() != Some(&execution.state) {
+                    observed.push(execution.state);
+                }
+                match execution.state {
+                    ExecutionState::Committed => break,
+                    ExecutionState::Failed => {
+                        let failure = execution.error.map_or_else(
+                            || "no cause".to_string(),
+                            |failure| format!("{:?}: {}", failure.code, failure.message),
+                        );
+                        return ActionOutcome::failed_product(format!(
+                            "GUARDIAN execution failed after {observed:?}: {failure}"
+                        ));
+                    }
+                    ExecutionState::Pending
+                    | ExecutionState::Proving
+                    | ExecutionState::Submitted => {}
+                }
+            }
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "reading the execution failed after {observed:?}: {error}"
+                ));
+            }
+        }
+        if started.elapsed() > GUARDIAN_EXECUTION_DEADLINE {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN execution did not commit within {GUARDIAN_EXECUTION_DEADLINE:?}; states seen {observed:?}"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    confirm_guardian_commit(client, &proposal_id, binding).await
+}
+
+/// Once GUARDIAN reports `committed`, the chain and GUARDIAN's history must agree, exactly as a
+/// self-execution is judged.
+async fn confirm_guardian_commit(
+    client: &mut MultisigClient,
+    proposal_id: &str,
+    binding: Binding,
+) -> ActionOutcome {
+    if let Err(error) = client.sync().await {
+        return ActionOutcome::failed_product(format!("syncing after execution failed: {error}"));
+    }
+    match wait_for_execution(client, proposal_id, binding).await {
+        Completion::Confirmed => ActionOutcome::Passed,
+        Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
+            "GUARDIAN reported committed but the delta was discarded: {reason}"
+        )),
+        Completion::Pending(reason) => ActionOutcome::failed_product(format!(
+            "GUARDIAN reported committed but the account never agreed: {reason}"
+        )),
+    }
+}
+
+/// Takes the threshold-met proposal to its outcome with the base client alone: authenticated
+/// GUARDIAN requests signed as one cosigner, with no multisig SDK and no node involved in the
+/// request or the polling. The multisig client only reads the chain afterwards, to judge the
+/// outcome.
+pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
+    use guardian_client::{EcdsaKeyStore, FalconKeyStore, GuardianClient, Signer};
+    use std::sync::Arc;
+
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    if session.clients[0].execution_mode() != ProposalExecutionMode::GuardianExecutable {
+        return ActionOutcome::failed_setup(
+            "the proposal was created by a self-executed client, so GUARDIAN holds no request",
+        );
+    }
+    let binding = match proposal_nonce(&mut session.clients[0], &proposal_id).await {
+        Ok(nonce) => Binding::Nonce(nonce),
+        Err(reason) => return unbindable(reason),
+    };
+
+    let signer: Arc<dyn Signer> = match &session.signers.signers[0] {
+        RunSigner::Falcon(key) => Arc::new(FalconKeyStore::new(key.clone())),
+        RunSigner::Ecdsa(key) => Arc::new(EcdsaKeyStore::new(key.clone())),
+    };
+    let mut base = match GuardianClient::connect(context.guardian_endpoint.clone()).await {
+        Ok(client) => client.with_signer(signer),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "cannot reach {}: {error}",
+                context.guardian_endpoint
+            ));
+        }
+    };
+    let account_id = session.account_id;
+    match base.execute_delta_proposal(&account_id, &proposal_id).await {
+        Ok(execution) if execution.newly_accepted => {}
+        Ok(execution) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN reported an execution it did not start: {execution:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN refused the base client's execution request: {error}"
+            ));
+        }
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match base
+            .get_delta_proposal_execution(&account_id, &proposal_id)
+            .await
+        {
+            Ok(execution) => match execution.state {
+                ExecutionState::Committed => break,
+                ExecutionState::Failed => {
+                    return ActionOutcome::failed_product(format!(
+                        "the base client saw the execution fail: {:?}",
+                        execution.error
+                    ));
+                }
+                ExecutionState::Pending | ExecutionState::Proving | ExecutionState::Submitted => {}
+            },
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "the base client could not read the execution: {error}"
+                ));
+            }
+        }
+        if started.elapsed() > GUARDIAN_EXECUTION_DEADLINE {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN execution did not commit within {GUARDIAN_EXECUTION_DEADLINE:?}"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    confirm_guardian_commit(&mut session.clients[0], &proposal_id, binding).await
+}
+
 enum Completion {
     /// Confirmed on chain, agreed with GUARDIAN, and canonical in history.
     Confirmed,
@@ -2004,11 +2271,17 @@ pub async fn add_signer(runner: &Runner, run_tag: &str) -> ActionOutcome {
     let Some(incoming_signers) = RunSigners::for_shape(1, 1, session.scheme) else {
         return ActionOutcome::failed_setup("cannot generate an incoming signer");
     };
-    let incoming =
-        match build_cosigners(context, &incoming_signers, &format!("{run_tag}-incoming")).await {
-            Ok(clients) => clients,
-            Err(error) => return ActionOutcome::failed_setup(error.to_string()),
-        };
+    let incoming = match build_cosigners(
+        context,
+        &incoming_signers,
+        &format!("{run_tag}-incoming"),
+        session.clients[0].execution_mode(),
+    )
+    .await
+    {
+        Ok(clients) => clients,
+        Err(error) => return ActionOutcome::failed_setup(error.to_string()),
+    };
     let commitment = incoming[0].user_commitment();
     let commitment_hex = normalize_commitments(vec![incoming[0].user_commitment_hex()])
         .pop()

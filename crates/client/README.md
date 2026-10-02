@@ -88,6 +88,28 @@ loop {
 }
 ```
 
+### Guardian Execution
+
+A Guardian-executable proposal (one whose payload stores a `transaction_request`) can be
+proved, submitted and committed by Guardian once it has enough signatures:
+
+```rust
+let mut execution = client.execute_delta_proposal(&account_id, &proposal_id).await?;
+while !execution.state.is_terminal() {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    execution = client.get_delta_proposal_execution(&account_id, &proposal_id).await?;
+}
+
+// The account's in-flight execution, if any
+let current = client.get_current_execution(&account_id).await?;
+```
+
+A refusal is a `ClientError` whose `guardian_code()` is the wire code (for example
+`GUARDIAN_EXECUTION_CONFLICT`), with `is_retryable()`, `retry_after()` and, on a conflict,
+`guardian_meta()["blocking_proposal_id"]`. The multisig SDK adds
+`wait_for_guardian_execution` with backoff, retries and a deadline; see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
+
 ### Rate Limits and Retries
 
 The server rate-limits both its gRPC and HTTP surfaces. The sustained

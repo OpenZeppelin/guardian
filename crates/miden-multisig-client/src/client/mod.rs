@@ -21,6 +21,9 @@ mod canonical_nonce_sync_tests;
 mod delta_history;
 #[cfg(test)]
 mod endpoint_scheme_tests;
+#[cfg(test)]
+mod execution_mode_tests;
+mod guardian_execution;
 mod helpers;
 mod io;
 mod note_recovery;
@@ -38,6 +41,7 @@ pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
+pub use guardian_execution::ExecutionWaitOptions;
 pub use note_recovery::{
     NoteRecoveryOptions, NoteRecoveryReport, RecoveryStep, RecoveryStepProblem,
 };
@@ -46,6 +50,7 @@ pub use proposals::{AbandonRequestState, AbandonStatus};
 pub use public_note_backfill::{BlockRange, PublicBackfillOptions, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
+use crate::transaction::ProposalExecutionMode;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -136,6 +141,8 @@ pub struct MultisigClient {
     pub(crate) prover_config: ProverConfig,
     /// Node RPC timeout and read-retry configuration (for recovery).
     pub(crate) rpc_config: RpcConfig,
+    /// Whether proposals this client creates can be executed by Guardian.
+    pub(crate) execution_mode: ProposalExecutionMode,
 }
 
 impl MultisigClient {
@@ -169,11 +176,20 @@ impl MultisigClient {
             node_rpc_client,
             prover_config,
             rpc_config,
+            execution_mode: ProposalExecutionMode::SelfExecuted,
         }
     }
 
+    /// Whether proposals this client creates can be executed by Guardian.
+    pub fn execution_mode(&self) -> ProposalExecutionMode {
+        self.execution_mode
+    }
+
     /// The multisig auth args a request this client's account executes has to
-    /// carry. Producers of custom proposals (issue #266) build them here, then
+    /// carry. A custom proposal meant for Guardian execution needs a non-zero
+    /// `approval_expiration_delta`, and its script SHOULD apply
+    /// [`GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA`](crate::GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA)
+    /// so the transaction's outcome stays within Guardian's resolution horizon. Producers of custom proposals (issue #266) build them here, then
     /// attach them with [`crate::TransactionRequestBuilderExt`]. `bound_block_num`
     /// left out binds the store's sync height, which a fresh proposal wants:
     /// [`sync`](Self::sync) first, then build, then

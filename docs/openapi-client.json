@@ -19,7 +19,7 @@
         "operationId": "status_root",
         "responses": {
           "200": {
-            "description": "Alias of `GET /status`: server liveness, version, and environment",
+            "description": "Alias of `GET /status`: server liveness, version, environment, and execution capability",
             "content": {
               "application/json": {
                 "schema": {
@@ -314,7 +314,7 @@
             }
           },
           "409": {
-            "description": "Conflicting pending delta/proposal",
+            "description": "Conflicting pending delta/proposal, or a Guardian execution holds the account (GUARDIAN_EXECUTION_CONFLICT)",
             "content": {
               "application/json": {
                 "schema": {
@@ -418,6 +418,86 @@
           },
           "409": {
             "description": "Candidate already landed on-chain, or account paused/released",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/execution/current": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Report the account's in-flight execution, if any.",
+        "operationId": "get_current_execution",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The in-flight execution, or null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentExecutionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -825,7 +905,105 @@
             }
           },
           "409": {
-            "description": "Conflicting / too many pending proposals",
+            "description": "Conflicting / too many pending proposals, or the account's stored requests would exceed their capacity (GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The stored transaction request exceeds the per-request limit (GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/proposal/execution": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Report the latest execution of a proposal.",
+        "operationId": "get_delta_proposal_execution",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "proposal_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Execution state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal absent, or never executed",
             "content": {
               "application/json": {
                 "schema": {
@@ -846,6 +1024,127 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Ask Guardian to prove and submit a threshold-met proposal.",
+        "description": "Returns `202 Accepted` when this call created the execution and `200 OK` when an execution\nof the same proposal is already active; `newly_accepted` carries the same distinction.",
+        "operationId": "execute_delta_proposal",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecutionQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Execution already active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionEnvelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Execution accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not ready, not Guardian-executable, or the account is busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "This server does not offer Guardian execution",
             "content": {
               "application/json": {
                 "schema": {
@@ -1406,11 +1705,11 @@
         "tags": [
           "client"
         ],
-        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, and uptime.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
+        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, uptime, and\nwhether it accepts Guardian execution requests.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
         "operationId": "status",
         "responses": {
           "200": {
-            "description": "Server liveness, version, and environment",
+            "description": "Server liveness, version, environment, and execution capability",
             "content": {
               "application/json": {
                 "schema": {
@@ -1508,6 +1807,13 @@
               "type": "string"
             },
             "description": "Signature schemes this Guardian accepts for new accounts. Present\nonly for `signature_scheme_not_allowed`."
+          },
+          "blocking_proposal_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The proposal whose execution holds the account. Present only for\n`GUARDIAN_EXECUTION_CONFLICT`."
           },
           "missing_permissions": {
             "type": [
@@ -1817,6 +2123,21 @@
           },
           "direction": {
             "$ref": "#/components/schemas/CounterpartyDirection"
+          }
+        }
+      },
+      "CurrentExecutionResponse": {
+        "type": "object",
+        "properties": {
+          "execution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionEnvelope"
+              }
+            ]
           }
         }
       },
@@ -2224,6 +2545,142 @@
         "enum": [
           "raw",
           "eip712"
+        ]
+      },
+      "ExecutionEnvelope": {
+        "type": "object",
+        "description": "The execution envelope every execution operation returns.",
+        "required": [
+          "account_id",
+          "proposal_id",
+          "state",
+          "newly_accepted",
+          "proposal_exists",
+          "ignored_signatures",
+          "updated_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "delta_nonce": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionError"
+              }
+            ]
+          },
+          "ignored_signatures": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "newly_accepted": {
+            "type": "boolean"
+          },
+          "proposal_exists": {
+            "type": "boolean"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExecutionState"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutionError": {
+        "type": "object",
+        "description": "Why an execution failed, on the wire.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "meta": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecutionQuery": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "proposal_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutionState": {
+        "type": "string",
+        "description": "The reported state of an execution: exactly five values, a state existing only where it\nchanges what the caller does.",
+        "enum": [
+          "pending",
+          "proving",
+          "submitted",
+          "committed",
+          "failed"
+        ]
+      },
+      "ExecutionStatus": {
+        "type": "object",
+        "description": "Whether `POST /delta/proposal/execution` is offered. It reflects configuration, the same\ncheck the endpoint makes, not whether the prover is reachable right now.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionUnavailable",
+                "description": "Why execution is off; absent when it is enabled."
+              }
+            ]
+          }
+        }
+      },
+      "ExecutionUnavailable": {
+        "type": "string",
+        "description": "Why this server does not offer Guardian execution.",
+        "enum": [
+          "prover_not_configured",
+          "disabled",
+          "canonicalization_disabled"
         ]
       },
       "HistoryEntry": {
@@ -2755,12 +3212,17 @@
           "git_commit",
           "environment",
           "started_at",
-          "uptime_seconds"
+          "uptime_seconds",
+          "execution"
         ],
         "properties": {
           "environment": {
             "type": "string",
             "description": "Deployment environment / network label, e.g. `\"testnet\"`. Same\nvalue surfaced on `GET /dashboard/info`."
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionStatus",
+            "description": "Whether this server accepts Guardian execution requests."
           },
           "git_commit": {
             "type": "string",

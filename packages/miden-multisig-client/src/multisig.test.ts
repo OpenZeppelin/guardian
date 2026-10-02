@@ -119,6 +119,7 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
         toHex: () => '0x' + 'b'.repeat(64),
       }),
       userParams: () => [0, 0, 0, 1, 2, 3, 4],
+      expirationDelta: () => 0,
       serialize: () => new Uint8Array([1, 2, 3]),
     })),
   },
@@ -2977,6 +2978,29 @@ describe('Multisig', () => {
   });
 
   describe('createProposal', () => {
+    it('refuses on a guardian_executable client, which must store the request with the summary', async () => {
+      const multisig = new Multisig(
+        mockAccount,
+        {
+          threshold: 1,
+          signerCommitments: ['0x' + 'a'.repeat(64)],
+          guardianCommitment: '0x' + 'c'.repeat(64),
+        },
+        guardian,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        MIDEN_RPC_ENDPOINT,
+        undefined,
+        undefined,
+        'guardian_executable',
+      );
+      await expect(multisig.createProposal(1, 'AQID', { proposalType: 'custom' } as never)).rejects.toThrow(
+        /Guardian cannot execute/,
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
     it('should create a new proposal', async () => {
       const config = {
         threshold: 1,
@@ -3123,6 +3147,79 @@ describe('Multisig', () => {
   });
 
   describe('createP2idProposal', () => {
+    it('stores the request and both bounds only on a guardian_executable client', async () => {
+      const { executeForSummary, buildP2idTransactionRequest } = await import('./transaction.js');
+      vi.mocked(executeForSummary).mockResolvedValue({
+        summary: {
+          toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+          serialize: () => new Uint8Array([1, 2, 3]),
+        },
+        anchor: createMockChainAnchor(),
+      } as any);
+      vi.mocked(buildP2idTransactionRequest).mockResolvedValue({
+        request: { serialize: () => new TextEncoder().encode('abc') },
+        salt: { toHex: () => '0x' + 'd'.repeat(64) },
+      } as any);
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const pushed: any[] = [];
+      mockFetch.mockImplementation(async (_url: string, init: RequestInit) => {
+        pushed.push(JSON.parse(String(init.body)));
+        return {
+          ok: true,
+          json: async () => ({
+            delta: {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: { tx_summary: { data: 'AQID' }, signatures: [], metadata: { proposal_type: 'p2id' } },
+              status: { status: 'pending', timestamp: '2024-01-01T00:00:00Z', proposer_id: '0x', cosigner_sigs: [] },
+            },
+            commitment: '0x' + 'c'.repeat(64),
+          }),
+        };
+      });
+
+      for (const mode of ['self_executed', 'guardian_executable'] as const) {
+        const multisig = new Multisig(
+          mockAccount,
+          config,
+          guardian,
+          mockSigner,
+          mockWebClient,
+          undefined,
+          MIDEN_RPC_ENDPOINT,
+          undefined,
+          undefined,
+          mode,
+        );
+        await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 }).catch(() => undefined);
+      }
+      mockFetch.mockReset();
+
+      const [selfExecuted, guardianExecutable] = pushed.map((body) => body.delta_payload);
+      expect(selfExecuted).not.toHaveProperty('transaction_request');
+      expect(guardianExecutable.transaction_request).toMatchObject({
+        format_version: 1,
+        protocol_line: '0.17',
+        checksum: '0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+        bytes: 'YWJj',
+      });
+      // Creation calls only: each creation is followed by a verification rebuild pinned to its
+      // bound block.
+      const creations = vi
+        .mocked(buildP2idTransactionRequest)
+        .mock.calls.map((call) => call[5] as Record<string, unknown>)
+        .filter((options) => options.boundBlockNum === undefined)
+        .slice(-2);
+      expect(creations[0].approvalExpirationDelta).toBeUndefined();
+      expect(creations[0].transactionExpirationDelta).toBeUndefined();
+      expect(creations[1]).toMatchObject({ approvalExpirationDelta: 28_800, transactionExpirationDelta: 256 });
+    });
+
     it('should include the faucet asset in the proposal description', async () => {
       const { executeForSummary } = await import('./transaction.js');
       vi.mocked(executeForSummary).mockResolvedValue({
@@ -4564,6 +4661,94 @@ describe('Multisig', () => {
       await expect(multisig.signProposalOffline(proposal.id)).rejects.toThrow(
         'Invalid proposal: metadata does not match tx_summary'
       );
+    });
+  });
+
+  describe('a proposal carrying a stored request', () => {
+    const ENVELOPE = {
+      format_version: 1,
+      protocol_line: '0.17',
+      checksum: '0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+      bytes: 'YWJj',
+    };
+
+    function served(transactionRequest: typeof ENVELOPE | undefined, cosignerSigs: unknown[]) {
+      return {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            chain_anchor: MOCK_CHAIN_ANCHOR_B64,
+            salt: MOCK_SALT_HEX,
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+          ...(transactionRequest ? { transaction_request: transactionRequest } : {}),
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: cosignerSigs,
+        },
+      };
+    }
+
+    const FIRST_SIGNATURE = {
+      signer_id: '0x' + 'a'.repeat(64),
+      signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+      timestamp: '2024-01-01T00:00:00Z',
+    };
+    const ourSignature = () => ({
+      signer_id: mockSigner.commitment,
+      signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+      timestamp: '2024-01-01T01:00:00Z',
+    });
+
+    async function listSignAndExport(transactionRequest: typeof ENVELOPE | undefined) {
+      const multisig = createTestMultisig({
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), mockSigner.commitment],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockFetch.mockReset();
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ proposals: [served(transactionRequest, [FIRST_SIGNATURE])] }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => served(transactionRequest, [FIRST_SIGNATURE, ourSignature()]),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => served(transactionRequest, [FIRST_SIGNATURE, ourSignature()]),
+        });
+
+      const [listed] = await multisig.syncProposals();
+      const signed = await multisig.signProposal(listed.id);
+      const exported = await multisig.exportProposal(listed.id);
+      const signRequestBody = JSON.parse(String(mockFetch.mock.calls[1][1].body));
+      mockFetch.mockReset();
+      return { listed, signed, exported, signRequestBody };
+    }
+
+    it('is listed, verified, signed and exported exactly like one without it', async () => {
+      const without = await listSignAndExport(undefined);
+      const withRequest = await listSignAndExport(ENVELOPE);
+
+      expect(withRequest.listed.verification).toEqual(without.listed.verification);
+      expect(withRequest.listed).toEqual(without.listed);
+      expect(withRequest.signRequestBody).toEqual(without.signRequestBody);
+      expect(withRequest.signed).toEqual(without.signed);
+      expect(withRequest.signed.signatures).toHaveLength(2);
+      expect(withRequest.exported).toEqual(without.exported);
     });
   });
 

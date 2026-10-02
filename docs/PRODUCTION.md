@@ -9,7 +9,11 @@ configuration, and runbook docs.
 Every production Guardian, wherever it runs, has the same shape:
 
 - The **Postgres** storage backend: `GUARDIAN_SERVER_FEATURES=postgres`, plus
-  `evm` when EVM proposal support is required. Filesystem mode is a local
+  `evm` when EVM proposal support is required. Guardian execution is always built in and
+  stays off until a prover is configured. The prover sees every executed transaction's full
+  inputs (private account state, cosigner signatures, Guardian's acknowledgement), so it must
+  be one you trust or host yourself
+  ([prover trust](./CONFIGURATION.md#runtime--guardian-execution)). Filesystem mode is a local
   development backend only: it has no durable admin audit table, no schema
   migrations, and cannot safely back more than one replica. The prod stage
   refuses it at startup.
@@ -279,6 +283,13 @@ none and behavior is unchanged.
   read access still sees which accounts exist, their nonce/commitment lineage,
   and proposal status. Use disk/database-level encryption if the index metadata
   itself is sensitive in your threat model.
+- Guardian execution records are plaintext too. In Postgres that is every column of
+  `execution_reservations`, `execution_submissions` and `execution_outcomes` (proposal ids,
+  transaction ids, expected and base commitments, reference and expiration blocks, ignored
+  signature counts, `error_code`, `error_message`, `error_meta`) and
+  `delta_proposals.request_bytes`; on the filesystem backend, each account's `executions.json`
+  and `proposal_request_bytes.json`. The stored transaction request itself sits inside the
+  proposal `delta_payload` and is encrypted with it.
 
 - Production key source: the key document
   `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`, held either in

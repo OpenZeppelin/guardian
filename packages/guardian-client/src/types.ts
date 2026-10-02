@@ -1,4 +1,7 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+
 import type { RequestAuthPayload } from './auth-request.js';
+import type { ServerExecutionCapability } from './execution.js';
 
 export interface Signer {
   readonly commitment: string;
@@ -133,6 +136,8 @@ export interface DeltaObject {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Absent on a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
   ackSig?: string;
   ackPubkey?: string;
@@ -198,6 +203,7 @@ export interface StatusResponse {
   environment: string;
   startedAt: string;
   uptimeSeconds: number;
+  execution: ServerExecutionCapability;
 }
 
 export interface DeltaProposalRequest {
@@ -207,6 +213,8 @@ export interface DeltaProposalRequest {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Omit for a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
 }
 

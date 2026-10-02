@@ -88,3 +88,4 @@ miden-node-proto-build = { version = "=0.17.0-rc.4", default-features = false }
 miden-testing = "=0.17.0-rc.9"
 miden-client = "=0.17.0-rc.5"
 miden-client-sqlite-store = "=0.17.0-rc.5"
+miden-processor = "=0.35.0"

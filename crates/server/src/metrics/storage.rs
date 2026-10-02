@@ -217,6 +217,17 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn admit_delta_proposal(
+        &self,
+        admission: crate::storage::ProposalAdmission,
+    ) -> Result<crate::storage::ProposalWrite, String> {
+        timed(
+            "admit_delta_proposal",
+            self.inner.admit_delta_proposal(admission),
+        )
+        .await
+    }
+
     async fn pull_delta_proposal(
         &self,
         account_id: &str,
@@ -358,6 +369,126 @@ impl StorageBackend for InstrumentedStorage {
         timed(
             "update_delta_status",
             self.inner.update_delta_status(account_id, nonce, status),
+        )
+        .await
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        timed(
+            "create_execution_reservation",
+            self.inner.create_execution_reservation(reservation),
+        )
+        .await
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        timed(
+            "renew_execution_reservation",
+            self.inner
+                .renew_execution_reservation(account_id, fence, lease_expires_at, phase),
+        )
+        .await
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        timed(
+            "claim_execution_reservation",
+            self.inner.claim_execution_reservation(
+                account_id,
+                expected,
+                claimant,
+                lease_expires_at,
+            ),
+        )
+        .await
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        timed(
+            "load_active_execution",
+            self.inner.load_active_execution(account_id),
+        )
+        .await
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        timed(
+            "load_latest_execution",
+            self.inner.load_latest_execution(account_id, proposal_id),
+        )
+        .await
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        timed(
+            "admit_execution_candidate",
+            self.inner.admit_execution_candidate(metadata, admission),
+        )
+        .await
+    }
+
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        timed(
+            "resolve_execution",
+            self.inner.resolve_execution(metadata, resolution),
+        )
+        .await
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        timed("fail_execution", self.inner.fail_execution(resolution)).await
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        timed(
+            "settle_promoted_execution",
+            self.inner.settle_promoted_execution(account_id, fence, now),
+        )
+        .await
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        timed(
+            "list_active_executions",
+            self.inner.list_active_executions(),
         )
         .await
     }

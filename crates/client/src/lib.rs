@@ -44,6 +44,7 @@ mod proto {
 pub mod auth;
 mod client;
 mod error;
+pub mod execution;
 pub mod keystore;
 mod transaction;
 
@@ -53,6 +54,7 @@ pub mod testing;
 pub use auth::{Auth, EcdsaSigner, FalconRpoSigner};
 pub use client::GuardianClient;
 pub use error::{ClientError, ClientResult};
+pub use execution::{ExecutionFailure, ExecutionState, ProposalExecution};
 pub use keystore::{EcdsaKeyStore, FalconKeyStore, Signer, verify_commitment_signature};
 pub use proto::*;
 pub use transaction::{TryIntoTxSummary, tx_summary_commitment_hex};

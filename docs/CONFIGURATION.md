@@ -40,7 +40,7 @@ the runtime env vars in this document.
 | `GUARDIAN_RELEASE_SWEEP_PAGE_SIZE` | `100` | any | Accounts fetched from the metadata store per listing page during the walk. A batching detail only: the walk's cursor advances per visited account, never per page. 1 to 10000. |
 | `GUARDIAN_RELEASE_SWEEP_RECHECK_SECONDS` | `60` | any | Delay between confirmation re-checks of an account whose published storage showed a foreign guardian key. Re-checks share the rotation's pacing, so they never raise the visit rate. 1 to 86400. |
 | `GUARDIAN_RELEASE_SWEEP_CONFIRMATIONS` | `2` | any | Observations of the same foreign guardian key in published storage, each at a strictly later block, required before releasing on that evidence (the rotation visit is the first, re-checks follow). A read of a state older than the stored one never counts. A pending proposal or unpromoted delta whose post-state is found on chain is proof and releases at once. 1 to 100. |
-| `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in. Not read at runtime — controls how the image is built. |
+| `GUARDIAN_SERVER_FEATURES` | _build-time_ | deploy script | Comma list (`postgres`, `evm`) the deploy script compiles in; it defaults to `postgres`. Guardian execution is not a feature: it is always built in, and off until `GUARDIAN_TX_PROVER_URL` is set. Not read at runtime — controls how the image is built. |
 
 Canonicalization settings apply as follows:
 
@@ -242,6 +242,42 @@ multi-stack deployments get scoped IDs.
 | `GUARDIAN_MAX_REQUEST_BYTES` | `1048576` (1 MB) | Reject request bodies larger than this. |
 | `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` | `20` | Account-level cap; hitting it returns `pending_proposals_limit`. |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | _unset_ | Comma-separated explicit origins. **Unset → permissive `Any` origin / `Any` methods / `Any` headers, credentials disabled** (suitable for local dev). **Set → strict allowlist with `allow_credentials(true)`** (required for production browser clients). |
+
+## Runtime — Guardian execution
+
+Guardian can prove and submit a threshold-met proposal itself when its cosigners ask it to. The
+capability is built into every binary and exists only when all of these hold:
+`GUARDIAN_TX_PROVER_URL` is set, `GUARDIAN_PROVING_ENABLED` is not `false`, and canonicalization
+is on. A server that is missing any of them refuses every execution request with
+`GUARDIAN_PROVING_UNAVAILABLE`, and says why at startup. It warns when a prover is configured
+but `GUARDIAN_PROVING_ENABLED=false` keeps execution off. Execution enabled with
+canonicalization off refuses to start.
+
+The public `GET /status` (and `GET /`) reports the same decision as
+`"execution": {"enabled": true}` or `"execution": {"enabled": false, "reason": "..."}`, with the
+reason one of `prover_not_configured`, `disabled` or `canonicalization_disabled`. It reflects
+configuration only: it does not show whether the prover is reachable, and it never includes the
+prover URL.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `GUARDIAN_TX_PROVER_URL` | _unset_ | Remote transaction prover. Unset, the server offers no execution. The public ones are `https://tx-prover.testnet.miden.io` and `https://tx-prover.devnet.miden.io`. Must be an `http` or `https` URL with a host and no userinfo (`user:pass@`) or query string, or the server refuses to start, as with `GUARDIAN_MIDEN_RPC_ENDPOINT`; the error never repeats the URL. The prover must be trusted: see below. |
+| `GUARDIAN_TX_PROVER_TIMEOUT_SECS` | `300` | Per-attempt proving deadline. Set it explicitly: the underlying client's own default is 10 s, too short for a real proof. |
+| `GUARDIAN_PROVING_ENABLED` | `true` | Kill switch. `false` refuses every execution request without contacting the prover. |
+| `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES` | `262144` (256 KiB) | Largest decoded transaction request one proposal may store. Over it, creation is refused with `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`. |
+| `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | `4194304` (4 MiB) | Total decoded request bytes the account's viable proposals may hold, checked atomically with insertion. Over it, creation is refused with `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`. Proposals on a superseded base do not count. |
+| `GUARDIAN_EXECUTION_LEASE_SECS` | `120` | Execution lease length. A worker renews it every third of this; a lease that lapses before the no-retry boundary fails the attempt (`GUARDIAN_EXECUTION_LEASE_EXPIRED`), and after it hands the attempt to reconciliation. At most `3600`. A renewal that fails for a transient reason is retried every second until the lease would lapse. |
+| `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` | `30` | How often reconciliation looks at executions whose worker is gone. Must be below `GUARDIAN_EXECUTION_LEASE_SECS`, or the server refuses to start. Reconciliation runs whenever canonicalization does, including with execution switched off, so turning `GUARDIAN_PROVING_ENABLED` off still settles executions already in flight. |
+| `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | `512` | The furthest past its reference block a proven transaction may expire and still be submitted. At least `256`, the transaction expiration every built-in Guardian-executable proposal scripts. A custom request that scripts no expiration expires at its approval window (28,800 blocks by default) and is refused with `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` under this default: custom producers must script the 256-block delta. |
+
+**Prover trust.** The remote prover receives the complete transaction inputs: the account's
+state including its private storage and vault, every cosigner signature, and Guardian's own
+acknowledgement signature. Anyone operating it sees all of that and holds everything needed to
+submit the proven transaction to the node itself. Use a prover whose operator you already trust
+with that data (the public provers above are run by the Miden team), or host one yourself. Guardian verifies that the returned
+proof matches the transaction it executed before submitting it, so a faulty prover cannot make
+Guardian submit a different transaction, but this does not protect the confidentiality of the
+inputs.
 
 ## Runtime — metrics (Prometheus)
 

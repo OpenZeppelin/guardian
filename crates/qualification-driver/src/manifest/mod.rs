@@ -176,6 +176,11 @@ pub enum Action {
     CustomProposalCreate,
     CustomProposalAssert,
     CustomProposalPrepare,
+    GuardianExecute,
+    GuardianExecutionUnavailable,
+    GuardianExecutionRefusals,
+    ChainAdvancePastBound,
+    GuardianExecuteBaseClient,
     Unknown(String),
 }
 
@@ -231,6 +236,11 @@ impl From<String> for Action {
             "custom-proposal-create" => Self::CustomProposalCreate,
             "custom-proposal-assert" => Self::CustomProposalAssert,
             "custom-proposal-prepare" => Self::CustomProposalPrepare,
+            "guardian-execute" => Self::GuardianExecute,
+            "guardian-execution-unavailable" => Self::GuardianExecutionUnavailable,
+            "guardian-execution-refusals" => Self::GuardianExecutionRefusals,
+            "chain-advance-past-bound" => Self::ChainAdvancePastBound,
+            "guardian-execute-base-client" => Self::GuardianExecuteBaseClient,
             other => Self::Unknown(other.to_string()),
         }
     }
