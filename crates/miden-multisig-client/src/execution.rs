@@ -307,6 +307,7 @@ pub async fn build_final_transaction_request(
 mod tests {
     use super::*;
     use miden_client::Serializable;
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::{
         AccountDelta, AccountIdVersion, AccountStoragePatch, AccountType, AccountVaultDelta,
         AssetCallbackFlag,
@@ -327,7 +328,7 @@ mod tests {
             account_id,
             AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .unwrap();

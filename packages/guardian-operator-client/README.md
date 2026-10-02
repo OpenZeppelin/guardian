@@ -103,6 +103,10 @@ if (info.serviceStatus === 'degraded') {
 }
 ```
 
+`info.backend.releaseSweep` reports the chain-driven release sweep settings
+(`rotationSeconds`, `maxRatePerSecond`, `recheckSeconds`, `confirmations`).
+It is `null` when the sweep is disabled and absent on servers that predate it.
+
 ### Aggregate Stats (Assets Under Guard)
 
 One request replaces the full account-list walk plus per-account

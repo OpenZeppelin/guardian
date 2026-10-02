@@ -98,12 +98,12 @@ impl MidenNetworkClient {
 
     /// The storage-detail request that asks the node for the guardian
     /// public key map only: one small map, all entries, no code, no vault.
-    fn guardian_map_detail_request() -> rpc::account_request::AccountDetailRequest {
-        use rpc::account_request::account_detail_request::storage_map_detail_request::SlotData;
-        use rpc::account_request::account_detail_request::{
+    fn guardian_map_detail_request() -> rpc::get_account_request::AccountDetailRequest {
+        use rpc::get_account_request::account_detail_request::storage_map_detail_request::SlotData;
+        use rpc::get_account_request::account_detail_request::{
             StorageMapDetailRequest, StorageMapDetailRequests, StorageRequest,
         };
-        rpc::account_request::AccountDetailRequest {
+        rpc::get_account_request::AccountDetailRequest {
             code_commitment: None,
             asset_vault_commitment: None,
             storage_request: Some(StorageRequest::StorageMaps(StorageMapDetailRequests {
@@ -128,7 +128,7 @@ impl MidenNetworkClient {
     /// no storage answer, and malformed words, are errors, not "no
     /// binding": nothing can be concluded from them.
     fn guardian_binding_from_response(
-        response: &rpc::AccountResponse,
+        response: &rpc::GetAccountResponse,
     ) -> Result<OnChainGuardianBinding, String> {
         use rpc::account_storage_details::account_storage_map_details::Result as MapResult;
 
@@ -414,7 +414,9 @@ impl NetworkClient for MidenNetworkClient {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account_delta = tx_summary.account_delta();
 
-        let is_full_state = account_delta.is_full_state();
+        let prev_account = Account::from_json(prev_state_json);
+        let is_full_state =
+            !account_delta.code().is_empty() && prev_account.as_ref().map_or(true, Account::is_new);
         let base_account = if is_full_state {
             tracing::debug!(
                 account_id = %account_delta.id().to_hex(),
@@ -425,7 +427,7 @@ impl NetworkClient for MidenNetworkClient {
                 AccountStoragePatch::new(),
             )?
         } else {
-            Account::from_json(prev_state_json)?
+            prev_account?
         };
 
         // Authentication records replay protection from the pre-delta account shape.
@@ -827,7 +829,7 @@ fn record_rpc(operation: &'static str, started: std::time::Instant, ok: bool) {
 /// Merges relative account deltas into one, replacing the upstream
 /// `AccountDelta::merge` removed in Miden 0.16: storage patches merge
 /// natively, vault deltas net once across all of them, and nonce deltas add.
-/// Only the first delta may carry account code.
+/// The code of a later delta replaces an earlier one, as a code upgrade does.
 fn merge_account_deltas<'a>(
     deltas: impl IntoIterator<Item = &'a AccountDelta>,
 ) -> Result<AccountDelta, String> {
@@ -836,12 +838,11 @@ fn merge_account_deltas<'a>(
         .next()
         .ok_or_else(|| "no account deltas to merge".to_string())?;
     let mut storage = first.storage().clone();
+    let mut code = first.code().clone();
     let mut nonce_delta = first.nonce_delta();
     let mut vaults = vec![first.vault()];
     for delta in deltas {
-        if delta.code().is_some() {
-            return Err("unexpected full-state delta after the first delta in a merge".to_string());
-        }
+        code.merge(delta.code().clone());
         storage
             .merge(delta.storage().clone())
             .map_err(|e| format!("failed to merge storage patches: {e}"))?;
@@ -853,7 +854,7 @@ fn merge_account_deltas<'a>(
         first.id(),
         storage,
         merge_vault_deltas(vaults)?,
-        first.code().cloned(),
+        code,
         nonce_delta,
     )
     .map_err(|e| format!("failed to build merged delta: {e}"))
@@ -957,9 +958,9 @@ mod tests {
 
     fn account_response(
         commitment: &Word,
-        details: Option<rpc::account_response::AccountDetails>,
-    ) -> rpc::AccountResponse {
-        rpc::AccountResponse {
+        details: Option<rpc::get_account_response::AccountDetails>,
+    ) -> rpc::GetAccountResponse {
+        rpc::GetAccountResponse {
             block_num: Some(miden_rpc_client::blockchain::BlockNumber { block_num: BLOCK }),
             witness: Some(miden_rpc_client::account::AccountWitness {
                 witness_id: None,
@@ -973,8 +974,8 @@ mod tests {
     fn guardian_map_details(
         slot_name: &str,
         result: rpc::account_storage_details::account_storage_map_details::Result,
-    ) -> rpc::account_response::AccountDetails {
-        rpc::account_response::AccountDetails {
+    ) -> rpc::get_account_response::AccountDetails {
+        rpc::get_account_response::AccountDetails {
             header: Some(miden_rpc_client::account::AccountHeader {
                 nonce: NONCE,
                 ..Default::default()
@@ -1197,7 +1198,7 @@ mod tests {
         );
         assert!(MidenNetworkClient::guardian_binding_from_response(&partial).is_err());
 
-        let no_witness = rpc::AccountResponse {
+        let no_witness = rpc::GetAccountResponse {
             block_num: None,
             witness: None,
             details: None,
@@ -1617,8 +1618,8 @@ mod tests {
 
     #[test]
     fn guardian_map_request_asks_for_the_guardian_slot_only() {
-        use rpc::account_request::account_detail_request::StorageRequest;
-        use rpc::account_request::account_detail_request::storage_map_detail_request::SlotData;
+        use rpc::get_account_request::account_detail_request::StorageRequest;
+        use rpc::get_account_request::account_detail_request::storage_map_detail_request::SlotData;
         let request = MidenNetworkClient::guardian_map_detail_request();
         assert!(request.code_commitment.is_none());
         assert!(request.asset_vault_commitment.is_none());
@@ -1898,9 +1899,9 @@ mod tests {
     #[tokio::test]
     async fn test_apply_delta_full_state() {
         use miden_protocol::Felt;
-        use miden_protocol::account::AccountDelta;
         use miden_protocol::account::delta::AccountVaultDelta;
         use miden_protocol::account::{AccountBuilder, AccountType};
+        use miden_protocol::account::{AccountCodePatch, AccountDelta};
         use miden_standards::account::auth::NoAuth;
         use miden_standards::account::wallets::BasicWallet;
 
@@ -1923,15 +1924,14 @@ mod tests {
             account.id(),
             miden_protocol::account::AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            Some(account.code().clone()),
+            AccountCodePatch::new(Some(account.code().clone())),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta");
 
-        // Verify this is indeed a full state delta
         assert!(
-            full_state_delta.is_full_state(),
-            "Delta should be a full state delta"
+            !full_state_delta.code().is_empty(),
+            "Delta should carry the account code"
         );
 
         // Create a TransactionSummary with the full state delta

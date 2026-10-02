@@ -8,7 +8,7 @@ use guardian_shared::retry::{
     connect_failure_is_permanent, is_transient_error_with, run_retries,
 };
 use miden_client::note_transport::{
-    NoteInfo, NoteTransportClient, NoteTransportCursor, NoteTransportError,
+    NoteInfo, NoteTransportClient, NoteTransportCursor, NoteTransportError, TransportNote,
 };
 use miden_client::rpc::domain::account::{AccountProof, GetAccountRequest};
 use miden_client::rpc::domain::account_vault::AccountVaultInfo;
@@ -26,7 +26,7 @@ use miden_protocol::address::NetworkId;
 use miden_protocol::batch::{ProposedBatch, ProvenBatch};
 use miden_protocol::block::{BlockHeader, BlockNumber, SignedBlock};
 use miden_protocol::crypto::merkle::mmr::MmrProof;
-use miden_protocol::note::NoteHeader;
+use miden_protocol::note::NoteInclusionProof;
 use miden_protocol::note::{NoteId, NoteScript, NoteTag};
 use miden_protocol::transaction::ProvenTransaction;
 use miden_protocol::vm::ExecutionProof;
@@ -183,6 +183,9 @@ fn note_transport_link_evidence(cause: &(dyn Error + 'static)) -> StructuredEvid
         Some(
             NoteTransportError::Disabled
             | NoteTransportError::Deserialization(_)
+            | NoteTransportError::NoteDetailsMismatch { .. }
+            | NoteTransportError::InvalidFetchedNote(_)
+            | NoteTransportError::UnrequestedTag(_)
             | NoteTransportError::PaginationDidNotTerminate(_),
         ) => StructuredEvidence::Permanent,
         Some(NoteTransportError::Network(_)) | None => StructuredEvidence::Indeterminate,
@@ -510,12 +513,12 @@ impl NoteTransportClient for RetryingNoteTransportClient {
     /// Never retried in-call: the client's relay outbox already re-sends
     /// undelivered notes on later syncs, and an in-call resend could deliver
     /// the same note twice.
-    async fn send_note(
+    async fn send_note_with_proof(
         &self,
-        header: NoteHeader,
-        details: Vec<u8>,
+        note: TransportNote,
+        inclusion_proof: NoteInclusionProof,
     ) -> std::result::Result<(), NoteTransportError> {
-        self.inner.send_note(header, details).await
+        self.inner.send_note_with_proof(note, inclusion_proof).await
     }
 
     async fn fetch_notes(
@@ -1008,10 +1011,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl NoteTransportClient for ScriptedNoteTransportInner {
-        async fn send_note(
+        async fn send_note_with_proof(
             &self,
-            _: NoteHeader,
-            _: Vec<u8>,
+            _: TransportNote,
+            _: NoteInclusionProof,
         ) -> std::result::Result<(), NoteTransportError> {
             self.send_calls.fetch_add(1, Ordering::SeqCst);
             Err((self.error)())
@@ -1033,22 +1036,22 @@ mod tests {
         }
     }
 
-    fn test_note_header() -> NoteHeader {
-        let sender = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
-        let metadata = miden_protocol::note::NoteMetadata::new(
-            miden_protocol::note::PartialNoteMetadata::new(
-                sender,
-                miden_protocol::note::NoteType::Private,
-            ),
-            &miden_protocol::note::NoteAttachments::default(),
+    fn test_transport_note() -> TransportNote {
+        let note = crate::client::test_support::p2id_note_for(
+            &crate::client::test_support::test_wallet(1),
+            1,
+            miden_protocol::note::NoteType::Private,
         );
-        NoteHeader::new(
-            miden_protocol::note::NoteDetailsCommitment::from_raw_commitments(
-                Word::default(),
-                Word::default(),
-            ),
-            metadata,
+        TransportNote::from(note)
+    }
+
+    fn test_inclusion_proof() -> NoteInclusionProof {
+        NoteInclusionProof::new(
+            BlockNumber::from(1u32),
+            0,
+            miden_protocol::crypto::merkle::SparseMerklePath::default(),
         )
+        .unwrap()
     }
 
     fn note_fetch_timeout() -> NoteTransportError {
@@ -1118,7 +1121,7 @@ mod tests {
         );
 
         let error = client
-            .send_note(test_note_header(), Vec::new())
+            .send_note_with_proof(test_transport_note(), test_inclusion_proof())
             .await
             .unwrap_err();
 
@@ -1196,7 +1199,7 @@ mod tests {
             &RpcConfig::new().with_retry_policy(RpcRetryPolicy::new(5)),
         );
         wrapped_send
-            .send_note(test_note_header(), Vec::new())
+            .send_note_with_proof(test_transport_note(), test_inclusion_proof())
             .await
             .unwrap_err();
         assert_eq!(send_inner.send_calls.load(Ordering::SeqCst), 1);

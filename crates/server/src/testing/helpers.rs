@@ -19,6 +19,7 @@ use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
 use guardian_shared::{FromJson, ToJson};
+use miden_protocol::account::AccountCodePatch;
 use miden_protocol::account::{AccountDelta, AccountId, AccountVaultDelta};
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
@@ -508,7 +509,7 @@ pub fn create_test_delta_payload(account_id_hex: &str) -> serde_json::Value {
         account_id,
         miden_protocol::account::AccountStoragePatch::default(),
         AccountVaultDelta::default(),
-        None,
+        AccountCodePatch::default(),
         Felt::ZERO,
     )
     .expect("Valid empty delta");
