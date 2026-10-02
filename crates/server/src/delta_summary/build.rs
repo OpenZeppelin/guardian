@@ -239,6 +239,7 @@ mod tests {
     #[test]
     fn build_with_consume_notes_and_input_note_surfaces_asset_on_listing() {
         use guardian_shared::ToJson;
+        use miden_protocol::account::AccountCodePatch;
         use miden_protocol::account::AccountId;
         use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
         use miden_protocol::asset::FungibleAsset;
@@ -276,7 +277,7 @@ mod tests {
             consumer,
             miden_protocol::account::AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::ZERO,
         )
         .expect("account delta");

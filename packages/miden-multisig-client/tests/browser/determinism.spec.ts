@@ -1,9 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 // Pinned by the corresponding Rust cross-SDK parity test.
-const EXPECTED_ID = '0x5ca4f74a7aa342c124cb4493ac905e';
+const EXPECTED_ID = '0xa25ba0624468ecc166fbb26abf3349';
 const EXPECTED_COMMITMENT =
-  '0xf3fe926f69a8a80bb32e9daedb1095b34988d43559f0d8521727378fc170f7b5';
+  '0xe153f89f9750e9842a2afe2bd063d32875e40ea8ee0c25eb0a87df48cff19e78';
 // Rust account storage commitment: seven slots without a schema-commitment slot.
 const EXPECTED_STORAGE_COMMITMENT =
   '0xa5b24ee9ed2f2d73b8590851401bc20ed8bd0d588965a881e16ffecff8012c4f';

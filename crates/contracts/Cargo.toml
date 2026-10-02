@@ -24,7 +24,7 @@ miden-confidential-contracts = { path = ".", features = ["testing"] }
 miden-client = { workspace = true, features = ["testing", "tonic"] }
 miden-tx = { workspace = true }
 miden-testing = { workspace = true }
-miden-core-lib = "=0.33.0"
+miden-core-lib = "=0.35.0"
 tokio = { workspace = true, features = ["rt-multi-thread", "net", "macros", "fs"] }
 
 rand = { workspace = true }

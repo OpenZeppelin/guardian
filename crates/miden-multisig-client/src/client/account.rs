@@ -463,8 +463,11 @@ impl MultisigClient {
 
         let account_delta = tx_summary.account_delta();
 
-        let updated_account: Account = if account_delta.is_full_state() {
-            Account::try_from(account_delta).map_err(|e| {
+        let updated_account: Account = if guardian_shared::account_delta::is_account_creation(
+            account.inner(),
+            account_delta,
+        ) {
+            account_delta.try_to_new_account().map_err(|e| {
                 MultisigError::MidenClient(format!(
                     "failed to convert full state delta to account: {}",
                     e
