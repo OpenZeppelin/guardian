@@ -41,7 +41,7 @@ FROM base-builder as benchmark-builder
 RUN cargo build --release --package guardian-prod-benchmarks --bin guardian-prod-benchmarks
 
 # Runtime stage
-FROM debian:bookworm-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 as benchmark-runner
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 as benchmark-runner
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
@@ -55,7 +55,7 @@ COPY --from=benchmark-builder /app/crates/contracts/masm /app/crates/contracts/m
 ENTRYPOINT ["/app/guardian-prod-benchmarks"]
 
 # Runtime stage
-FROM debian:bookworm-slim@sha256:7e490910eea2861b9664577a96b54ce68ea3e02ce7f51d89cb0103a6f9c386e0 as server-runner
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 as server-runner
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
