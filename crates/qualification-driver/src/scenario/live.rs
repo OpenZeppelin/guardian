@@ -218,7 +218,7 @@ pub async fn verify_registration(runner: &Runner) -> ActionOutcome {
 /// Enough to consume the note and execute a handful of proposals, and no more:
 /// residue is accepted rather than swept, so an over-funded account is spend
 /// the run never gets back.
-const ACCOUNT_FUNDING: u64 = 20_000;
+const ACCOUNT_FUNDING: u64 = 200_000;
 
 /// How long a funding note may take to appear before the run gives up on it.
 const NOTE_ARRIVAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);

@@ -134,19 +134,26 @@ and transaction execution goes through that client:
   "Web SDK worker mode" under [Open upstream items](#open-upstream-items).
 
 **Moving past 0.18.0-rc.2: protocol 0.17.0-rc.9 and client 0.17.0-rc.5** is not a
-protocol-line change, but nothing created or stored under the rc.7 / rc.4 pins carries over:
+protocol-line change, but accounts created under the rc.7 / rc.4 pins do not carry over:
 
 - **Procedure roots moved.** Standard account components now link their libraries
   dynamically (protocol 0.17.0-rc.8), so `auth_tx`, `update_signers`,
   `update_procedure_threshold` and `send_asset` hash differently, and so do the code
   commitment and the account ID of a newly built account. An account created under the
   previous pins is rejected with `UnsupportedContractVersion` and must be recreated.
-- **Stored accounts do not decode.** Account code, note scripts and transaction scripts
-  serialize their MAST forest in the hashless format, so GUARDIAN's stored Miden states,
-  the Rust SDK's SQLite store and the browser IndexedDB store written under the previous
-  pins cannot be read. Start GUARDIAN from empty Miden storage and recreate both client
-  stores. The web SDK keeps the same IndexedDB database name, so it does not delete the
-  old store on open.
+- **Stored state is forward-compatible only.** Account code, note scripts and
+  transaction scripts now serialize their MAST forest in the hashless format. This build
+  still reads Miden state GUARDIAN stored under the previous pins: it decodes code through
+  `UntrustedMastForest`, which accepts both formats, and states stored by 0.18.0-rc.2
+  replay to the commitments recorded there. The reverse does not hold: 0.18.0-rc.2 and
+  earlier cannot read state this build writes (`HASHLESS flag is set; use
+  UntrustedMastForest for untrusted input`), so once this build has written Miden state,
+  rolling GUARDIAN back means wiping Miden storage. Devnet starts from empty Miden storage
+  regardless, because its chain was reset with node 0.17.0-rc.4 and the moved roots
+  strand every earlier account. The browser IndexedDB store written under the previous
+  pins cannot be read and must be recreated; the web SDK keeps the same database name, so
+  it does not delete the old store on open. The Rust SDK opens a new SQLite store each
+  session, so nothing carries over there either way.
 - **`TransactionRequest` bytes changed again** (a trailing code-upgrade field), so a
   custom-proposal producer must serialize requests with a client on the new pins.
 - **The node speaks the v1 gRPC API** (`miden.node.v1.NodeService`, node 0.17.0-rc.4).
