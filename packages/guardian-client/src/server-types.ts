@@ -22,7 +22,7 @@ export type ServerDeltaStatus =
   | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
+  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' | 'orphaned' }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ServerProposalType =

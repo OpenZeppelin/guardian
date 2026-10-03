@@ -71,11 +71,17 @@ export type DeltaStatus =
   | { status: 'pending'; timestamp: string; proposerId: string; cosignerSigs: CosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  /** Candidate the Guardian gave up verifying (retry exhaustion or a
-   * confirmed-diverged observation) but kept for background
-   * reconciliation (issue #345); promoted to `canonical` if the chain
-   * ever shows it landed, dropped after a server-side TTL otherwise. */
-  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
+  /** Candidate the Guardian gave up verifying (retry exhaustion, a
+   * confirmed-diverged observation, or an orphaned position in the
+   * account's candidate queue after its predecessor was parked) but
+   * kept for background reconciliation (issue #345 / #17); promoted to
+   * `canonical` if the chain ever shows it landed, dropped after a
+   * server-side TTL otherwise. */
+  | {
+      status: 'retained';
+      timestamp: string;
+      reason?: 'retry_exhausted' | 'diverged' | 'orphaned';
+    }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ProposalType =

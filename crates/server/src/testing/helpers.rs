@@ -95,6 +95,16 @@ impl IntegrationMockNetworkClient {
             .insert(account_id, commitment);
     }
 
+    /// Move the registered on-chain commitment after the client has been
+    /// shared with an `AppState` — the e2e twin of a transaction landing
+    /// (or the chain advancing) between two worker passes.
+    pub fn set_on_chain_commitment(&self, account_id: &str, commitment: &str) {
+        self.initial_commitments
+            .lock()
+            .expect("commitments lock")
+            .insert(account_id.to_string(), commitment.to_string());
+    }
+
     /// Register the account state the chain publishes for `account_id`.
     /// `fetch_on_chain_guardian_binding` then reports the registered
     /// commitment together with the guardian key this state carries,
@@ -275,6 +285,13 @@ impl NetworkClient for IntegrationMockNetworkClient {
 
     fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
         self.miden_client.account_nonce(state_json)
+    }
+
+    fn account_auth_binding(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<crate::network::AuthBinding>, String> {
+        self.miden_client.account_auth_binding(state_json)
     }
 
     async fn should_update_auth(
@@ -488,6 +505,20 @@ pub fn load_fixture_delta(delta_num: u8) -> serde_json::Value {
     };
 
     serde_json::from_str(fixture_contents).expect("Failed to parse delta fixture")
+}
+
+/// One of the roster-preserving `queue_N` fixtures (see
+/// [`crate::testing::fixtures::QUEUE_1_JSON`]), the chain the candidate-queue
+/// tests queue; `load_fixture_delta`'s chain changes the signer set.
+pub fn load_queue_fixture_delta(delta_num: u8) -> serde_json::Value {
+    let fixture_contents = match delta_num {
+        1 => crate::testing::fixtures::QUEUE_1_JSON,
+        2 => crate::testing::fixtures::QUEUE_2_JSON,
+        3 => crate::testing::fixtures::QUEUE_3_JSON,
+        _ => panic!("Invalid queue delta number: {}", delta_num),
+    };
+
+    serde_json::from_str(fixture_contents).expect("Failed to parse queue delta fixture")
 }
 
 // load_fixture_delta_old removed - use load_fixture_delta(1) instead

@@ -19,6 +19,11 @@ export interface LiveContext {
   readonly midenRpcEndpoint: string;
   /** A second GUARDIAN deployment, required only by the migration scenario. */
   readonly migrationEndpoint?: string;
+  /**
+   * A GUARDIAN with candidate queueing switched on (issue #17), required only
+   * by the candidate-queue scenarios.
+   */
+  readonly queueEndpoint?: string;
 }
 
 export interface ActionContext {
@@ -61,6 +66,19 @@ async function runLiveAction(
         scenario.shape,
         scenario.scheme as 'falcon' | 'ecdsa',
       );
+    case 'queue-account-create':
+      return live.createQueuedAccount(
+        context,
+        scenario.id,
+        scenario.shape,
+        scenario.scheme as 'falcon' | 'ecdsa',
+      );
+    case 'queue-transfers-chained':
+      return live.sendChainedTransfers(context, scenario.id);
+    case 'queue-head-blocks-proposal':
+      return live.assertStrandedHeadBlocksProposal(context, scenario.id);
+    case 'queue-head-abandon-recover':
+      return live.abandonStrandedHeadAndRecover(context, scenario.id);
     case 'account-register':
       return live.registerAccount(context, scenario.id);
     case 'commitment-verify':

@@ -18,9 +18,16 @@
 //!   invent the commitment, and transaction headers are public for every
 //!   account. So it covers **private** accounts, even ones that transacted
 //!   again under the new guardian, and resolves the stale proposal at the
-//!   same time. Every pending proposal counts, whatever its label, and so
-//!   does a switch delta canonicalization retained (its proposal is gone
-//!   by then, its payload is not).
+//!   same time. Every pending proposal counts, whatever its label and
+//!   whatever base it was recorded against (the candidate queue records a
+//!   proposal against its tail, issue #17; one built on the stored state
+//!   behind a queued candidate is refused when its nonce does not extend
+//!   the queue, but a summary does not name its base, so one labelled
+//!   past the tail is recorded there all the same), and so does a switch
+//!   delta canonicalization
+//!   retained on the stored base (its proposal is gone by then, its
+//!   payload is not). A switch delta queued behind another candidate is
+//!   not matched yet (issue #504).
 //! * **Stored state.** The stored state's own guardian key is checked once
 //!   per stored state: a promoted switch whose push-path release was never
 //!   written is released here, proved by the ack this server signed for

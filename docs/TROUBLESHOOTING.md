@@ -31,11 +31,20 @@ not help, because its code cannot change: recreate it with the current build
 (see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
 
 The execute path requests the GUARDIAN acknowledgement before it submits, so a
-rejected submission leaves the delta pending on GUARDIAN, and the next proposal
-for the account is refused with `conflict_pending_delta`. Release it with
-`abandon_candidate(nonce)` / `abandonCandidate(nonce)` (see
-[`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait for the submission grace period
-to expire.
+rejected submission leaves the delta pending on GUARDIAN as a candidate. The
+next transaction for the account builds on the state that candidate already
+claimed, so its acknowledgement is refused with `conflict_pending_delta`. A new
+proposal is refused the same way up front: at the default queue depth of one
+because the queue is full, and on a deeper queue
+(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1) because its nonce is not
+the stuck candidate's plus one, which a proposal built on the canonical state
+(the one `/state` serves, labelled with the account's next nonce as both SDKs
+do) never carries; a TypeScript SDK proposal from 0.18.0-rc.3 or earlier carries
+a timestamp label and is refused there too (see
+[`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
+before proposing again, with `abandon_candidate(nonce)` /
+`abandonCandidate(nonce)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
+for the submission grace period to expire.
 
 ### "the amount of the asset in the vault is less than the amount to remove" when proposing or executing
 
@@ -375,13 +384,29 @@ probing the chain (backing off as the row ages) and promotes it
 automatically if the transaction ever shows up, for up to
 `retained_ttl_seconds` (default 24 h). The `status_reason` on the
 dashboard feed says which verdict parked it (`retry_exhausted` /
-`diverged`); a `diverged` row that later reconciles means the
-divergence verdict was spurious (e.g. a lagging RPC node).
+`diverged` / `orphaned`); a `diverged` row that later reconciles means
+the divergence verdict was spurious (e.g. a lagging RPC node). An
+`orphaned` row (issue #17) was queued behind a candidate that was
+parked, discarded, or abandoned: it could never verify from the stored
+state on its own, and is recovered by the reconcile pass together with
+its predecessor if the chain turns out to have landed.
 
 Recovery for the client: check the delta's status first — if it flipped
 to `canonical`, the transaction landed and there is nothing to redo.
 Otherwise `GET /delta/since` → replay canonical chain → rebuild the
 transaction → resubmit (this supersedes the retained row).
+
+An error log `Failed to replay the candidate queue onto the canonical
+state` (or `Candidate queue replay does not reproduce the stored tail
+commitment`) names an account whose queued payloads no longer apply the
+way they did when they were admitted. Only an upgrade that changed delta
+application while candidates were queued does that, and only with
+queueing enabled: at the default depth of `1` no admission replays a
+queue. Until the worker drains the queue, every delta and proposal for
+that account gets `409 conflict_pending_delta`. If the worker also logs
+`Failed to canonicalize delta` for the account's oldest candidate on
+every pass, that candidate no longer applies to the stored state either,
+and the worker cannot resolve it on its own, at any depth.
 
 Operator checks:
 - Canonicalization worker is running (look for `jobs::canonicalization`
@@ -391,8 +416,13 @@ Operator checks:
 - No `network_error` storms.
 - `guardian_canonicalization_candidates_total{outcome=...}` breaks down
   what the worker decided per candidate (`retained` is the default
-  give-up path; `diverged` and `discarded` are the delete paths when
-  retention is disabled; `stale_base` means a promotion was rolled back
+  give-up after the retry budget, `discarded` the same give-up when
+  retention is disabled; `diverged` (the chain moved past the
+  candidate's base) and `orphaned` (a queued successor whose predecessor
+  left the queue without promoting) count the candidate whether it was
+  kept as `retained` or, with retention disabled, deleted — the
+  `event=candidate_retained` log tells the two apart; `stale_base` means a
+  promotion was rolled back
   because the stored state moved mid-pass and will retry next tick;
   `reconciled` / `reconcile_deferred` / `reconcile_expired` are the
   reconcile pass resolving retained rows).
@@ -412,7 +442,14 @@ Operator checks:
 - Retention and reconciliation emit stable `event` / `reason` fields for
   log-based triage (with `account_id`, `nonce`, and `age_seconds` /
   `retention_reason` / `expires_at` where applicable):
-  - `event=candidate_retained reason=retry_exhausted|diverged`
+  - `event=candidate_retained reason=retry_exhausted|diverged|orphaned`,
+    with `account_released`: `true` when this was the account's last
+    queued candidate, so the account takes new submissions again; `false`
+    while candidates remain queued behind it (the same full pass parks
+    them as orphans, and the last one reports the release) or when
+    reading the queue or clearing the account's pending flag failed,
+    which a later pass heals.
+    `Client-abandoned candidate discarded` carries the same field.
   - `event=reconcile_deferred reason=chain_at_stored_base|chain_probe_unavailable|end_state_not_on_chain|base_no_longer_applies|recomputed_commitment_mismatch|no_matching_recoverable_delta`
   - `event=reconcile_skipped reason=obsolete_base`
   - `event=reconcile_promoted`
@@ -443,7 +480,8 @@ Operator checks:
   pending proposal or unpromoted delta on this server reached the chain
   (neither at the head nor in the account's transaction history), and
   the guardian key cannot be read from chain. If that account is known to have switched
-  guardians (an offline switch with no proposal here), it will not
+  guardians (an offline switch with no proposal here, or a switch delta
+  that was queued behind another candidate, issue #504), it will not
   release by itself. `own_key_mismatch` (warn) means the account is
   bound to a guardian key this server does not hold and nothing on chain
   moved it there: this server's ack key changed since the account was
@@ -639,7 +677,7 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | A non-canonical delta is in-flight; wait for it to finalise. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
@@ -733,7 +771,7 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 retained_ttl_seconds=86400 reconcile_interval_seconds=60
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 max_pending_candidates_per_account=1 retained_ttl_seconds=86400 reconcile_interval_seconds=60
 release sweep rotation_seconds=21600 max_rate_per_second=5 page_size=100 recheck_seconds=60 confirmations=2
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]

@@ -237,6 +237,18 @@ pub struct AppliedState {
     pub nonce: Option<u64>,
 }
 
+/// Who may act on an account according to one of its states: the signer
+/// commitments of its multisig signer map, sorted so two bindings compare
+/// as sets, and its guardian public-key commitment, both read from one
+/// decode. An account whose layout carries neither has an empty roster
+/// and no guardian; two states of one account compare equal when the
+/// queued candidates between them changed neither (issue #17).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AuthBinding {
+    pub signers: Vec<String>,
+    pub guardian: Option<String>,
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Commitment (hex) and nonce of the account encoded in `state_json`,
@@ -378,6 +390,19 @@ pub trait NetworkClient: Send + Sync {
     /// pre-check (issue #191) decodes it for a stored state that does not
     /// carry its nonce yet. The default is `Ok(None)`.
     fn account_nonce(&self, state_json: &serde_json::Value) -> Result<Option<u64>, String> {
+        let _ = state_json;
+        Ok(None)
+    }
+
+    /// The signer set and guardian key the account state in `state_json`
+    /// binds (see [`AuthBinding`]), or `Ok(None)` when the network has no
+    /// such notion. The candidate queue refuses to chain behind a
+    /// candidate whose post-state binds a different set than the canonical
+    /// state. The default is `Ok(None)`.
+    fn account_auth_binding(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<AuthBinding>, String> {
         let _ = state_json;
         Ok(None)
     }

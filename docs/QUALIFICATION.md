@@ -82,6 +82,7 @@ gitignored directories, and tears it down afterwards:
 | Acknowledgement keys, per server | `ack-keygen` from the built image, into the run's own directory under `qualification/stack/runs/`, mode 0600 |
 | The migration target's own identity | a second, separate key directory, because migrating an account to the Guardian it already uses is not a state change |
 | A third Guardian restricted to ECDSA | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, so the registration gate is exercised as an operator would configure it rather than only as parsed |
+| A fourth Guardian that queues chained candidates | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` set to `2` in the deterministic profile and `4` in the live one (`QUAL_QUEUE_DEPTH` overrides it), the main server's acknowledgement identity, and a database of its own, so the candidate queue (issue #17) is qualified as an operator opts into it while the main server keeps the default of one in-flight candidate |
 | Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
 | Postgres password | random per run |
 | Ports | picked per run, so concurrent runs do not collide |
@@ -497,12 +498,19 @@ Two things found while writing that assertion, both easy to trip over again:
   has no history for an account it was just handed. Completion there is chain
   agreement plus the new GUARDIAN serving the account.
 
-Separately, GUARDIAN's own view lags briefly after a change lands. Proposing
-again immediately is refused with `There's already a pending change for this
-account`, and a signer admitted by an executed add-signer is refused until
-`authorized_count` catches up. Both are races only a fast client hits: the Rust
-driver hit them where the TypeScript driver, about four times slower, did not.
-Both drivers poll against bounded deadlines rather than racing.
+Separately, GUARDIAN's own view lags briefly after a change lands. A signer
+admitted by an executed add-signer is refused until `authorized_count` catches
+up. Proposing again immediately is refused too, with `There's already a pending
+change for this account`, while the change is a candidate on the main server,
+which runs the default of one in-flight candidate per account. On a server that
+queues chained candidates (issue #17) the refusal is the same, because the
+pending change alters the signer set and nothing queues behind such a
+candidate; a proposal built on an ordinary candidate's post-state is queued
+behind it instead, and refused only when the queue is full or its nonce is not
+the newest queued candidate's plus one.
+These are races only a fast client hits: the Rust driver hit them where the
+TypeScript driver, about four times slower, did not. Both drivers poll against
+bounded deadlines rather than racing.
 
 ## What a run does not prove
 
@@ -679,6 +687,31 @@ remove-signer, threshold change, the procedure override, off-channel signing, an
 GUARDIAN rotation (offline ECDSA, online Falcon) all run on both. Execute runs on
 both schemes at 2-of-3; only the 3-of-3 shape is Falcon-only, which adds a
 combination rather than a code path.
+
+**The candidate queue's failure path stops short of an orphan.** The stranded-head
+scenario abandons a queue head that was acknowledged and never submitted, and the
+account recovers. What it cannot reach is a successor queued behind a head that
+later fails: neither SDK applies a transaction locally without submitting it, so
+neither ever builds on a state the chain did not accept, and a submitted head
+cannot be made to fail on demand. The orphan sweep is covered by the server's
+end-to-end tests over the real delta path instead
+(`abandoned_head_orphans_its_successor_and_the_chain_reconciles`). The
+deterministic chain cannot help either: the stub answers no chain call, so a
+queued head leaves the queue only by timing out, once the submission grace
+period and the retry budget run out (about eighteen minutes as the server
+ships), far beyond any step budget.
+
+**Proposal nonces.** Both SDKs label a proposal with the account's next nonce
+(the TypeScript SDK used `Date.now()` through 0.18.0-rc.3), and GUARDIAN records
+a proposal behind a queued candidate only at that candidate's nonce plus one,
+which is what stops a cosigner on the canonical state from proposing something
+doomed behind another device's candidate. The candidate-queue scenarios use the
+SDK defaults on both legs. The stranded-head scenario's TypeScript leg also
+labels a proposal past the head explicitly, as an integration computing its own
+nonces might, to show that a proposal GUARDIAN did record behind the head is
+still refused at execution by a client that does not hold the head's
+post-state, before anything reaches GUARDIAN, and that GUARDIAN holds nothing
+at its nonce.
 
 **Deterministic multisig coverage stops at submission.** GUARDIAN's request path
 never calls the chain, so the proposal API is testable without one and

@@ -213,6 +213,14 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    // Forwarded explicitly: the trait default loads and decrypts the full
+    // delta history to answer a yes/no question the status column (kept
+    // in the clear) answers on its own. The worker asks it on every
+    // retain and abandon.
+    async fn has_pending_candidate(&self, account_id: &str) -> Result<bool, String> {
+        self.inner.has_pending_candidate(account_id).await
+    }
+
     // Forwarded explicitly: the trait default would route through
     // `pull_deltas_after` and decrypt the full history just to keep the
     // candidates — the store-side filter must survive this layer.
@@ -346,9 +354,15 @@ impl StorageBackend for EncryptedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<CandidateSubmission, String> {
         self.inner
-            .submit_candidate(metadata, &self.encrypt_delta(delta)?, now)
+            .submit_candidate(
+                metadata,
+                &self.encrypt_delta(delta)?,
+                now,
+                max_pending_candidates,
+            )
             .await
     }
 
@@ -644,6 +658,43 @@ mod tests {
             .unwrap();
         assert_eq!(recent.len(), 1);
         assert_eq!(recent[0].delta_payload, json!({ "move": 2 }));
+    }
+
+    #[tokio::test]
+    async fn has_pending_candidate_never_decrypts() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        enc.submit_delta(&DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 1,
+            delta_payload: json!({ "move": 1 }),
+            status: DeltaStatus::canonical("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        enc.submit_delta(&DeltaObject {
+            account_id: "acct1".to_string(),
+            nonce: 2,
+            delta_payload: json!({ "move": 2 }),
+            status: DeltaStatus::candidate("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        // A decorator holding another key cannot open a single payload, yet
+        // answers from the status the store keeps in the clear: the check
+        // reaches the backend instead of decrypting the history.
+        let other_key = EncryptedStorage::new(
+            inner.clone(),
+            Arc::new(Aes256GcmCipher::new(provider_with(9, "k1"))),
+        );
+        assert!(other_key.pull_deltas_after("acct1", 0).await.is_err());
+        assert!(other_key.has_pending_candidate("acct1").await.unwrap());
+        assert!(!other_key.has_pending_candidate("acct2").await.unwrap());
     }
 
     #[tokio::test]

@@ -49,6 +49,8 @@ excluded_scenarios = [
   "live-p2ide-timelock-1of1-ecdsa",
   "live-change-threshold-2of3-falcon",
   "live-procedure-threshold-2of3-ecdsa",
+  "live-candidate-queue-chained-1of1-ecdsa",
+  "live-candidate-queue-stranded-head-1of1-ecdsa",
 ]
 
 [[pair]]
@@ -75,4 +77,6 @@ excluded_scenarios = [
   "live-p2ide-timelock-1of1-ecdsa",
   "live-change-threshold-2of3-falcon",
   "live-procedure-threshold-2of3-ecdsa",
+  "live-candidate-queue-chained-1of1-ecdsa",
+  "live-candidate-queue-stranded-head-1of1-ecdsa",
 ]

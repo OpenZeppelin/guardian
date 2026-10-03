@@ -2096,13 +2096,21 @@
           "submission_grace_period_seconds",
           "retained_ttl_seconds",
           "reconcile_interval_seconds",
-          "reconcile_page_size"
+          "reconcile_page_size",
+          "max_pending_candidates_per_account"
         ],
         "properties": {
           "check_interval_seconds": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "max_pending_candidates_per_account": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Candidate deltas one account may hold in flight at once, as a\nstrictly ordered chain (issue #17). `1`, the default, is the\nhistorical one-in-flight-candidate behavior; deeper queues are an\noperator opt-in.",
+            "maximum": 16,
+            "minimum": 1
           },
           "max_retries": {
             "type": "integer",
@@ -2254,7 +2262,7 @@
               "string",
               "null"
             ],
-            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
+            "description": "Why the row left the active candidate path: `retry_exhausted`,\n`diverged`, or `orphaned` on `retained` rows, `client_abandoned`\non `discarded` rows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -2510,7 +2518,7 @@
               "string",
               "null"
             ],
-            "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
+            "description": "Why the row left the active candidate path: `retry_exhausted`,\n`diverged`, or `orphaned` on `retained` rows, `client_abandoned`\non `discarded` rows; absent elsewhere."
           },
           "status_timestamp": {
             "type": "string"
@@ -3402,7 +3410,7 @@
                     "string",
                     "null"
                   ],
-                  "description": "Why the row left the active candidate path: `retry_exhausted` or\n`diverged` on `retained` rows, `client_abandoned` on `discarded`\nrows; absent elsewhere."
+                  "description": "Why the row left the active candidate path: `retry_exhausted`,\n`diverged`, or `orphaned` on `retained` rows, `client_abandoned`\non `discarded` rows; absent elsewhere."
                 },
                 "status_timestamp": {
                   "type": "string"
