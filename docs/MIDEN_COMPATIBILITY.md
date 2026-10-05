@@ -185,10 +185,13 @@ stored data, but every client store must be recreated:
   serial numbers than on the release candidates. In Rust, `ClientBuilder::rng` is
   available only under the `testing` feature and the client always uses an OS-seeded
   `ChaCha20Rng`; the Rust SDK no longer supplies its own generator.
+<<<<<<< HEAD
 - **It needs a node on 0.17.0.** A node rejects a client whose version carries a
   different pre-release label, so a stable client and an `rc` node (or the reverse)
   cannot talk (`accept header validation failed`). See "Public networks" under
   [Open upstream items](#open-upstream-items).
+=======
+>>>>>>> main
 - **`TransactionRequest` gains `ForeignAccount::Prefetched`**, so a request that declares
   prefetched foreign-account inputs does not deserialize under 0.18.0-rc.3. Requests
   without one keep their encoding.
@@ -262,12 +265,17 @@ The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
 Last checked 2026-10-05.
 
+<<<<<<< HEAD
 - **Public networks.** No public network accepts this build yet. Devnet reports
   node 0.17.0-rc.4, and a node accepts a client only when the pre-release label of
   their versions matches (`rc` against `rc`, stable against stable), so it rejects
   `miden-client` 0.17.0 with `accept header validation failed`. The 0.18.0-rc.3
   pins reach it; this build needs devnet on node 0.17.0 or a local node 0.17.0,
   and the 0.18.0-rc.3 pins stop reaching devnet once it upgrades. The run
+=======
+- **Public networks.** Devnet serves only the v1 gRPC API and reports node
+  0.17.0-rc.4, which this build's pins speak and the 0.18.0-rc.2 pins do not. The run
+>>>>>>> main
   below was made on node 0.17.0-rc.2 with the previous pins and has not been
   repeated on these. Then, this build's protocol
   configuration for devnet's fee asset hashes to the commitment in devnet's
