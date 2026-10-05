@@ -297,7 +297,7 @@ impl MidenNetworkClient {
             tracing::error!(
                 delta_prev_commitment = %prev_commitment,
                 state_commitment = %current_commitment_hex,
-                "Previous commitment mismatch in verify_delta"
+                "Delta base commitment does not match the stored state"
             );
             return Err(format!(
                 "Previous commitment mismatch: delta specifies {prev_commitment}, but current state has {current_commitment_hex}"
