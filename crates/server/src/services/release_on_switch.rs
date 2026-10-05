@@ -196,13 +196,16 @@ pub enum ReleaseWrite {
     Failed,
 }
 
-/// Release the account when `new_state_json` (the just-committed state)
-/// carries a guardian public key commitment different from this
-/// server's ack key. Infallible for callers: all failures are logged.
+/// Release the account when the just-committed state carries a guardian
+/// public key commitment (`new_guardian_commitment`, read off the state
+/// when it was applied) different from this server's ack key. `None`
+/// means the state carries no guardian binding at all (e.g. guardian
+/// component absent); absence is not evidence of a switch. Infallible
+/// for callers: all failures are logged.
 pub async fn release_if_guardian_switched(
     state: &AppState,
     metadata: &AccountMetadata,
-    new_state_json: &serde_json::Value,
+    new_guardian_commitment: Option<&str>,
     delta_nonce: u64,
     new_commitment: &str,
 ) {
@@ -213,33 +216,16 @@ pub async fn release_if_guardian_switched(
 
     let own_commitment = own_guardian_commitment(state, metadata);
 
-    let extracted = {
-        let client = &state.network_client;
-        client.extract_guardian_commitment(new_state_json)
-    };
-
-    let new_guardian_commitment = match extracted {
-        // `None` means the state carries no guardian binding at all
-        // (e.g. guardian component absent). Absence is not evidence of
-        // a switch — do nothing.
-        Ok(Some(commitment)) if commitment != own_commitment => commitment,
-        Ok(_) => return,
-        Err(e) => {
-            tracing::error!(
-                account_id = %metadata.account_id,
-                nonce = delta_nonce,
-                error = %e,
-                "Failed to inspect guardian commitment after delta commit; \
-                 release-on-switch check skipped"
-            );
-            return;
-        }
+    let Some(new_guardian_commitment) =
+        new_guardian_commitment.filter(|commitment| *commitment != own_commitment)
+    else {
+        return;
     };
 
     release_switched_account(
         state,
         metadata,
-        &new_guardian_commitment,
+        new_guardian_commitment,
         ReleaseEvidence::Delta {
             delta_nonce,
             new_commitment,
@@ -383,8 +369,7 @@ mod tests {
 
     #[tokio::test]
     async fn releases_and_audits_when_guardian_differs() {
-        let network = MockNetworkClient::new()
-            .with_extract_guardian_commitment(Ok(Some("0xother_guardian".into())));
+        let network = MockNetworkClient::new();
         let metadata_store = MockMetadataStore::new();
         let auditor = CapturingAuditor::new();
         let state = state_with(network, metadata_store.clone(), auditor.clone()).await;
@@ -392,7 +377,7 @@ mod tests {
         release_if_guardian_switched(
             &state,
             &miden_meta("acc-1"),
-            &serde_json::json!({}),
+            Some("0xother_guardian"),
             7,
             "0xnew_commitment",
         )
@@ -585,29 +570,15 @@ mod tests {
     #[tokio::test]
     async fn no_release_when_guardian_is_this_server() {
         let network = MockNetworkClient::new();
-        let network_handle = network.clone();
         let metadata_store = MockMetadataStore::new();
         let auditor = CapturingAuditor::new();
         let state = state_with(network, metadata_store.clone(), auditor.clone()).await;
 
-        // The state's guardian key IS this server's ack key.
         let own = state
             .ack
             .commitment(&guardian_shared::SignatureScheme::Falcon);
-        network_handle
-            .extract_guardian_commitment_responses
-            .lock()
-            .unwrap()
-            .push(Ok(Some(own)));
 
-        release_if_guardian_switched(
-            &state,
-            &miden_meta("acc-1"),
-            &serde_json::json!({}),
-            7,
-            "0xc",
-        )
-        .await;
+        release_if_guardian_switched(&state, &miden_meta("acc-1"), Some(&own), 7, "0xc").await;
 
         assert!(metadata_store.set_released_calls.lock().unwrap().is_empty());
         assert!(auditor.snapshot().is_empty());
@@ -615,41 +586,12 @@ mod tests {
 
     #[tokio::test]
     async fn no_release_when_state_has_no_guardian_binding() {
-        // Default mock response is Ok(None): no guardian slot visible.
         let network = MockNetworkClient::new();
         let metadata_store = MockMetadataStore::new();
         let auditor = CapturingAuditor::new();
         let state = state_with(network, metadata_store.clone(), auditor.clone()).await;
 
-        release_if_guardian_switched(
-            &state,
-            &miden_meta("acc-1"),
-            &serde_json::json!({}),
-            7,
-            "0xc",
-        )
-        .await;
-
-        assert!(metadata_store.set_released_calls.lock().unwrap().is_empty());
-        assert!(auditor.snapshot().is_empty());
-    }
-
-    #[tokio::test]
-    async fn extraction_error_is_swallowed_without_release() {
-        let network =
-            MockNetworkClient::new().with_extract_guardian_commitment(Err("corrupt state".into()));
-        let metadata_store = MockMetadataStore::new();
-        let auditor = CapturingAuditor::new();
-        let state = state_with(network, metadata_store.clone(), auditor.clone()).await;
-
-        release_if_guardian_switched(
-            &state,
-            &miden_meta("acc-1"),
-            &serde_json::json!({}),
-            7,
-            "0xc",
-        )
-        .await;
+        release_if_guardian_switched(&state, &miden_meta("acc-1"), None, 7, "0xc").await;
 
         assert!(metadata_store.set_released_calls.lock().unwrap().is_empty());
         assert!(auditor.snapshot().is_empty());
@@ -657,10 +599,9 @@ mod tests {
 
     #[tokio::test]
     async fn evm_accounts_are_skipped() {
-        // Even with a differing commitment queued, EVM accounts must
-        // never release — there is no on-chain guardian binding.
-        let network = MockNetworkClient::new()
-            .with_extract_guardian_commitment(Ok(Some("0xother_guardian".into())));
+        // Even with a differing commitment, EVM accounts must never
+        // release — there is no on-chain guardian binding.
+        let network = MockNetworkClient::new();
         let metadata_store = MockMetadataStore::new();
         let auditor = CapturingAuditor::new();
         let state = state_with(network, metadata_store.clone(), auditor.clone()).await;
@@ -672,7 +613,7 @@ mod tests {
             multisig_validator_address: "0xdef".into(),
         };
 
-        release_if_guardian_switched(&state, &meta, &serde_json::json!({}), 7, "0xc").await;
+        release_if_guardian_switched(&state, &meta, Some("0xother_guardian"), 7, "0xc").await;
 
         assert!(metadata_store.set_released_calls.lock().unwrap().is_empty());
         assert!(auditor.snapshot().is_empty());

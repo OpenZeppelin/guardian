@@ -225,9 +225,9 @@ pub struct TransactionSearch {
 }
 
 /// The state [`NetworkClient::apply_delta`] produced: the new state blob,
-/// plus the commitment and nonce of the account it encodes, read off the
-/// account the method already holds so a caller persisting the state never
-/// decodes the blob again.
+/// plus the commitment, nonce, and auth bindings of the account it encodes,
+/// read off the account the method already holds so a caller persisting or
+/// inspecting the state never decodes the blob again (issue #328).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedState {
     pub state_json: serde_json::Value,
@@ -235,6 +235,25 @@ pub struct AppliedState {
     /// `None` on a network without account nonces (see
     /// [`crate::state_object::StateObject::nonce`]).
     pub nonce: Option<u64>,
+    /// Cosigner public key commitments the account's storage carries, the
+    /// values [`NetworkClient::should_update_auth`] reads. Empty when the
+    /// account carries none.
+    pub cosigner_commitments: Vec<String>,
+    /// The guardian public key commitment the account's storage carries,
+    /// the value [`NetworkClient::extract_guardian_commitment`] reads.
+    pub guardian_commitment: Option<String>,
+}
+
+impl AppliedState {
+    /// The account auth to persist after this state commits, or `None`
+    /// when the state carries no cosigner commitments to sync.
+    pub fn updated_auth(&self, current_auth: &Auth) -> Option<Auth> {
+        if self.cosigner_commitments.is_empty() {
+            None
+        } else {
+            Some(current_auth.with_updated_commitments(self.cosigner_commitments.clone()))
+        }
+    }
 }
 
 #[async_trait]
@@ -273,6 +292,15 @@ pub trait NetworkClient: Send + Sync {
     /// Apply delta to state
     fn apply_delta(
         &self,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String>;
+
+    /// [`Self::verify_delta`] then [`Self::apply_delta`], decoding the
+    /// previous state once for both.
+    fn verify_and_apply_delta(
+        &self,
+        prev_proof: &str,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;

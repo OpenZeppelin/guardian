@@ -167,6 +167,16 @@ impl NetworkClient for IntegrationMockNetworkClient {
             .apply_delta(prev_state_json, delta_payload)
     }
 
+    fn verify_and_apply_delta(
+        &self,
+        prev_proof: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<crate::network::AppliedState, String> {
+        self.miden_client
+            .verify_and_apply_delta(prev_proof, prev_state_json, delta_payload)
+    }
+
     fn merge_deltas(
         &self,
         delta_payloads: Vec<serde_json::Value>,

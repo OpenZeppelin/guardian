@@ -66,8 +66,7 @@ sequenceDiagram
     alt pending candidate exists
       S-->>C: 409 ConflictPendingDelta
     else no pending candidate
-      S->>N: verify_delta(prev_commitment, prev_state, payload)
-      S->>N: apply_delta(prev_state, payload)\n(new_state_json, new_commitment, new_nonce)
+      S->>N: verify_and_apply_delta(prev_commitment, prev_state, payload)\n(one decode: new_state_json, new_commitment, new_nonce)
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
       alt canonicalization enabled
         S->>ST: submit_delta(candidate)
@@ -298,7 +297,8 @@ sequenceDiagram
   - Fetch the on-chain commitment and classify:
     - Matches the expected new commitment: canonicalize —
       persist new state (atomic with delta status update when possible),
-      optionally update auth from chain via `should_update_auth`, set delta
+      optionally update auth from the cosigner commitments `apply_delta`
+      read off the new state, set delta
       status to `canonical`, and delete the matching Miden delta proposal
       identified via `delta_proposal_id(account_id, nonce, delta_payload)`.
       The persisted commitment is the recomputed one the verification
@@ -422,9 +422,8 @@ sequenceDiagram
       W->>N: verify_commitment(account_id, stored new_commitment)
       alt claim matches on-chain
         W->>ST: pull_state(account_id)
-        W->>N: apply_delta(prev_state, delta)\n(new_state, recomputed_commitment, nonce)
+        W->>N: apply_delta(prev_state, delta)\n(new_state, recomputed_commitment, nonce, auth bindings)
         alt recomputed commitment equals stored claim
-          W->>N: should_update_auth(new_state)
           W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(lease-fenced write)
         else reconstruction differs
           W->>W: leave candidate for full pass
@@ -434,10 +433,9 @@ sequenceDiagram
       end
     else full pass
       W->>ST: pull_state(account_id)
-      W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment, nonce)
+      W->>N: apply_delta(prev_state, delta)\n(new_state, expected_commitment, nonce, auth bindings)
       W->>N: verify_commitment(account_id, expected_commitment)
       alt on-chain matches expected commitment
-        W->>N: should_update_auth(new_state)\n(maybe new cosigner keys)
         W->>ST: promote_candidate(new_state, canonical delta, new_auth?)\n(one lease-fenced write: state + delta status + auth + flag)
         ST-->>W: applied | stale_base | not_candidate | stale_lease\n(rejections leave no partial write)
       else on-chain still at prev_commitment (not landed)
