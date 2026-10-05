@@ -87,19 +87,6 @@ do not propose it again. Recover by creating the device's client with
 The upstream bug and its status are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
 
-### Client store from a 0.17 release candidate fails to open on 0.17.0
-
-`store is at schema version 3, which is newer than the highest version this
-client supports (1)` (Rust) or a browser store that fails to read accounts or
-notes after upgrading from Guardian 0.18.0-rc.3 to 0.18.0 means the local
-client store was written by a Miden 0.17 release candidate. Miden 0.17.0
-squashed the SQLite migrations and changed the IndexedDB value encoding, so
-there is no migration. Delete the store (`examples/rust`'s
-`miden-client.sqlite`, the qualification driver's `treasury-<network>.sqlite`,
-or the browser's IndexedDB database) and let the client resync. Accounts and
-GUARDIAN state are unaffected; see
-[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix).
-
 ### State created on Miden 0.16 fails to load after the 0.17 upgrade
 
 The same shape as the 0.15 to 0.16 case below. A Rust SQLite store or a

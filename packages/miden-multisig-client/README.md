@@ -17,13 +17,13 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.0-rc.3 @miden-sdk/miden-sdk@0.17.0-rc.5
+npm install @openzeppelin/miden-multisig-client@0.18.0 @miden-sdk/miden-sdk@0.17.0
 ```
 
-Miden 0.17 requires a new client database: a store created under 0.16 does
-not open. Pass a fresh `storeName` when creating the `MidenClient`, or delete
-the existing IndexedDB database first. Accounts and pending proposals from the
-0.16 line do not carry over; see the compatibility document below.
+Miden 0.17 requires a new client database: a store created under 0.16 does not
+open. Pass a fresh `storeName` when creating the `MidenClient`, or delete the
+existing IndexedDB database first. Accounts and pending proposals from the 0.16
+line do not carry over. See the compatibility document below.
 
 > **Why the peer version is exact**: the transaction-summary layout and the
 > guarded-multisig procedure roots are only byte-compatible between one
