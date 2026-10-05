@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
 | 0.18.0-rc.3 | 0.17 (rc) | `=0.17.0-rc.9` | `=0.17.0-rc.5` | `0.17.0-rc.5` (exact) |
 | 0.18.0-rc.2 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
 | 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
@@ -30,13 +31,10 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.5
-embeds `miden-client` 0.17.0-rc.5 and `miden-protocol` / `miden-standards` 0.17.0-rc.9,
-which is why the Rust pins are rc.9 for the protocol crates and rc.5 for the client
-crates. It is not a production target until Miden 0.17.0 is stable and devnet and
-testnet run it. The 0.18 release candidates are published to npm under the `rc`
-dist-tag, so `npm install` without an explicit version still resolves the 0.17.x
-line (Miden 0.16).
+0.18.0 builds on the stable Miden 0.17 release. `@miden-sdk/miden-sdk` 0.17.0 embeds
+`miden-client` 0.17.0 and `miden-protocol` / `miden-standards` 0.17.0, so every Rust pin
+is 0.17.0. The 0.18.0 release candidates tracked the Miden 0.17 release candidates and
+were published to npm under the `rc` dist-tag.
 
 0.17.0 builds on the stable Miden 0.16 release. `@miden-sdk/miden-sdk` 0.16.0 embeds
 `miden-client` 0.16.0 and `miden-protocol` / `miden-standards` 0.16.1, which is why the
@@ -167,6 +165,33 @@ protocol-line change, but accounts created under the rc.7 / rc.4 pins do not car
   code-carrying delta as an account creation only when the account has not executed a
   transaction yet (nonce zero), and apply it as a code upgrade otherwise.
 
+**Moving from 0.18.0-rc.3 to 0.18.0: stable Miden 0.17.0** keeps accounts and GUARDIAN's
+stored data, but every client store must be recreated:
+
+- **Accounts carry over.** `miden-protocol`, `miden-standards` and `miden-tx` 0.17.0 ship
+  the same MASM and serialization code as 0.17.0-rc.9, so procedure roots, code
+  commitments and account IDs are unchanged, and an account created under 0.18.0-rc.3
+  keeps working. GUARDIAN's stored states, deltas and proposals are read as before, and
+  rolling the server back to 0.18.0-rc.3 needs no wipe.
+- **Client stores written by a release candidate do not open.** `miden-client-sqlite-store`
+  0.17.0 squashes the release candidates' three schema migrations into one, so an rc
+  store fails on open (`store is at schema version 3, which is newer than the highest
+  version this client supports (1)`). The Rust SDK opens a new store each session; the
+  stores to delete are the ones kept in a data directory: `examples/rust`'s
+  `miden-client.sqlite` and the qualification driver's `treasury-<network>.sqlite`. The
+  treasury is a public account, so its store rebuilds from the key. The browser
+  IndexedDB store now encodes stored values as protobuf, and one written by web SDK
+  0.17.0-rc.5 or earlier must be recreated.
+- **A fixed client seed yields different keys.** The web SDK now seeds the client's
+  random generator directly with a 32-byte client seed instead of deriving a
+  `RandomCoin` from it, so the same seed generates different account keys and note
+  serial numbers than on the release candidates. In Rust, `ClientBuilder::rng` is
+  available only under the `testing` feature and the client always uses an OS-seeded
+  `ChaCha20Rng`; the Rust SDK no longer supplies its own generator.
+- **`TransactionRequest` gains `ForeignAccount::Prefetched`**, so a request that declares
+  prefetched foreign-account inputs does not deserialize under 0.18.0-rc.3. Requests
+  without one keep their encoding.
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 
@@ -234,10 +259,10 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-01.
+Last checked 2026-10-05.
 
-- **Public networks.** Devnet serves only the v1 gRPC API (node 0.17.0-rc.4 or
-  later), which this build's pins speak and the 0.18.0-rc.2 pins do not. The run
+- **Public networks.** Devnet serves only the v1 gRPC API and reports node
+  0.17.0-rc.4, which this build's pins speak and the 0.18.0-rc.2 pins do not. The run
   below was made on node 0.17.0-rc.2 with the previous pins and has not been
   repeated on these. Then, this build's protocol
   configuration for devnet's fee asset hashes to the commitment in devnet's
@@ -255,7 +280,7 @@ Last checked 2026-10-01.
   reports every account as already allowed. Testnet runs Miden 0.16, so
   on testnet the examples need a local `miden-node` from the pinned line until
   it upgrades.
-- **miden-client fee path.** miden-client (still in 0.17.0-rc.5) commits the
+- **miden-client fee path.** miden-client (still in 0.17.0) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
@@ -270,17 +295,18 @@ Last checked 2026-10-01.
   applies the first one after a `syncState()` import on stale trees, saving a
   storage root that leaves the import out. The transactions still reach the
   chain; only the device's store breaks. Tracked as
-  [0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441), open in
-  web SDK 0.17.0-rc.5. Until it is fixed, browser clients pass
+  [0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441), which
+  was closed on 2026-09-30 without a web SDK fix. Web SDK 0.17.0 changes how
+  clients sharing a database refresh account witnesses (web-sdk#453), but worker
+  mode has not been re-verified on it. Until it is, browser clients pass
   `useWorker: false`, as `examples/web` and `examples/smoke-web` do; symptoms
   and recovery are in
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
-- **Pins.** The workspace pins protocol 0.17.0-rc.9 and client 0.17.0-rc.5 (see
-  the matrix). The protocol pin follows the client and web SDK releases, not the
-  protocol tags, because both SDKs must embed the same kernel. Moving to stable
-  re-pins, regenerates roots, fixtures and the cross-SDK determinism vectors,
-  and is the point at which 0.18.0 is released.
+- **Pins.** The workspace pins the stable 0.17.0 protocol and client crates and
+  web SDK 0.17.0 (see the matrix). The protocol pin follows the client and web
+  SDK releases, not the protocol tags, because both SDKs must embed the same
+  kernel.
 
 Data effect: full reset, see above. Client stores are recreated, not migrated.
 Operator steps: [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017).
