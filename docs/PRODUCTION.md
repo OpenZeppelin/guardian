@@ -158,7 +158,7 @@ Before treating a deployment as production-ready:
   `sslmode=verify-full&sslrootcert=…` (see "Database TLS" in
   [`CONFIGURATION.md`](./CONFIGURATION.md#database-tls)).
 - Optionally enable storage encryption at rest against an empty store (the
-  Miden 0.16 reset is the natural window). AWS: run
+  Miden 0.17 reset is the natural window). AWS: run
   `./scripts/aws-deploy.sh bootstrap-storage-encryption-key`, then deploy with
   `GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME` set. Self-managed: the same
   `{active, keys}` document in an owner-only file named by
@@ -201,6 +201,21 @@ Before treating a deployment as production-ready:
   metric-filter alarm that does not depend on the metrics pipeline. See
   [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#metrics-dashboard-and-alarms)
   and [its log-level alarms section](./SERVER_AWS_DEPLOY.md#log-level-alarms).
+- Route the alarms to a person. On AWS they notify nobody by default: set
+  `alarm_notifications_enabled` with `alarm_slack_workspace_id` and
+  `alarm_slack_channel_id` to deliver them to Slack through the managed
+  `<stack>-alarms` SNS topic (the Slack workspace is authorized once per AWS
+  account in the console), and/or list your own SNS topics in
+  `alarm_actions`. Force a test alarm after the deploy and confirm both the
+  ALARM and the OK message arrive
+  ([Alarm notifications](./SERVER_AWS_DEPLOY.md#alarm-notifications)).
+  Self-managed deployments build alerting on their own metrics scraper.
+- Size the release sweep for your Miden node. It is on by default and spends
+  up to `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND` (default 5) account visits
+  per second walking unreleased accounts, each at least one node read; lower it, or set
+  `GUARDIAN_RELEASE_SWEEP_ENABLED=false`, if the node has no headroom
+  (AWS: `guardian_release_sweep_*`). See
+  [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--server-identity-and-storage).
 - If you scrape Prometheus yourself in a **self-managed deployment**, set
   `GUARDIAN_METRICS_ENABLED=true`, bind an explicitly routable
   `GUARDIAN_METRICS_ADDR` only if the scraper lives outside the host or task,
@@ -293,7 +308,7 @@ none and behavior is unchanged.
 - Enable against an **empty** store. The server writes a one-time marker on the
   first encrypted write and then refuses to mix plaintext and ciphertext, so it
   fails fast if a key is configured against a store that already holds plaintext
-  records. For Miden-only deployments the Miden 0.16 reset (which purges Miden
+  records. For Miden-only deployments the Miden 0.17 reset (which purges Miden
   account data) is the natural enablement window; deployments that also retain EVM
   account rows — which the reset preserves — must clear or migrate those
   plaintext records before enabling encryption, or the first encrypted write will
@@ -315,8 +330,8 @@ Full configuration and a dev walkthrough are in
 > be migrated. For what changed on the Miden side and why none of it survives, see
 > [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
 > Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
-> Miden 0.16. Whether 0.18.x is a production target yet depends on the upstream
-> items tracked in
+> Miden 0.16. Upgrade only once the network you serve runs node 0.17.0: which
+> public networks do, and the upstream items still open, are tracked in
 > [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
 
 What happens on the first 0.17 startup (Postgres backend):
@@ -327,11 +342,35 @@ What happens on the first 0.17 startup (Postgres backend):
   of the 0.16 reset below; the dashboard stats snapshot is preserved as well.
 - A deployment upgrading across more than one line also runs the older resets in
   the same startup; this one subsumes them.
+- The additive migrations `2026-09-15-000001_dashboard_stats_snapshot` and
+  `2026-09-30-000001_state_nonce` run in the same startup. The second adds the
+  plaintext `nonce` column the canonical-nonce endpoint reads (see "Storage
+  encryption" above).
 
-Operator actions are the 0.16 list below with one addition:
+Operator actions are the 0.16 list below, with the Miden 0.17 node in step 3,
+plus:
 
+- **Deploy the server before the SDKs.** The 0.18.x SDKs ask GUARDIAN for the
+  canonical nonce (`GET /state/nonce`, gRPC `GetCanonicalNonce`) before every
+  sync and fail against a server that does not serve it.
 - **Client stores must be recreated**, not just cleared: a Rust SQLite store or a
   browser IndexedDB store created under 0.16 does not open under 0.17.
+- **Recreated accounts must hold the chain's native fee asset.** On Miden 0.17
+  the guarded-multisig auth procedure pays the transaction fee from the
+  account's vault, including on the transaction that deploys the account, so an
+  unfunded account cannot transact. Fund each account before its first
+  proposal (on devnet, through the node's `RegisterAccount` RPC; see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+- **Review the defaults that are new in 0.18.x**: `GUARDIAN_ENV=prod` now
+  applies the production runtime defaults inside the server, the release sweep
+  runs by default, and `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` is available. The
+  reset deletes `account_metadata`, so every Falcon account registered before
+  the upgrade counts as new afterwards and an `ecdsa`-only gate rejects it.
+  Set `ecdsa` only when those accounts will be recreated as ECDSA; otherwise
+  keep `falcon,ecdsa` until they have re-registered (see
+  [Account signature scheme](#account-signature-scheme)). AWS deployments
+  apply the release's Terraform, which adds the alarm notification, release
+  sweep, and account-scheme variables, before rolling the image.
 
 ## Upgrading to Miden 0.16
 
@@ -401,6 +440,8 @@ and metadata directories, and preserve the keystore directory.
 | Match a Guardian release to a Miden version | [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md) |
 | Step-by-step setup for a specific run mode | [`guides/`](./guides/README.md) |
 | Deploy or update the AWS stack | [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md) |
+| Route CloudWatch alarms to Slack or SNS | [`SERVER_AWS_DEPLOY.md` → Alarm notifications](./SERVER_AWS_DEPLOY.md#alarm-notifications) |
+| Set up the IAM roles behind the AWS Deploy workflow | [`runbooks/github-oidc-deploy-roles.md`](./runbooks/github-oidc-deploy-roles.md) |
 | Understand the AWS topology and Terraform ownership | [`architecture/infra.md`](./architecture/infra.md) |
 | Understand server storage modes and why prod uses Postgres | [`architecture/services.md`](./architecture/services.md#storage-modes) |
 | Check runtime and deploy-time env vars | [`CONFIGURATION.md`](./CONFIGURATION.md) |
