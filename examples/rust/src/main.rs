@@ -7,7 +7,6 @@ use std::sync::Arc;
 use clap::{Parser, ValueEnum};
 use miden_client::account::Account;
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
 use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word};
@@ -73,11 +72,8 @@ async fn create_miden_client(
         .map_err(|err| format!("Failed to open SQLite store: {err}"))?;
     let store = Arc::new(store);
 
-    let rng = Box::new(RandomCoin::new(Word::default()));
-
     configured_client_builder(endpoint)
         .store(store)
-        .rng(rng)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()
