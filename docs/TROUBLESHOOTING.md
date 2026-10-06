@@ -39,7 +39,7 @@ because the queue is full, and on a deeper queue
 (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1) because its nonce is not
 the stuck candidate's plus one, which a proposal built on the canonical state
 (the one `/state` serves, labelled with the account's next nonce as both SDKs
-do) never carries; a TypeScript SDK proposal from 0.18.0-rc.3 or earlier carries
+do) never carries; a TypeScript SDK proposal from 0.18.0 or earlier carries
 a timestamp label and is refused there too (see
 [`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
 before proposing again, with `abandon_candidate(nonce)` /

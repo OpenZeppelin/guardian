@@ -702,7 +702,7 @@ period and the retry budget run out (about eighteen minutes as the server
 ships), far beyond any step budget.
 
 **Proposal nonces.** Both SDKs label a proposal with the account's next nonce
-(the TypeScript SDK used `Date.now()` through 0.18.0-rc.3), and GUARDIAN records
+(the TypeScript SDK used `Date.now()` through 0.18.0), and GUARDIAN records
 a proposal behind a queued candidate only at that candidate's nonce plus one,
 which is what stops a cosigner on the canonical state from proposing something
 doomed behind another device's candidate. The candidate-queue scenarios use the

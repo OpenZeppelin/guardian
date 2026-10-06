@@ -171,7 +171,7 @@ export interface CreateProposalOptions {
    * history and the candidate queue by it, and when it queues chained
    * candidates (issue #17) records a proposal only at the queue tail's
    * nonce plus one. Pass it only to label from another record of the
-   * account's nonce. Through 0.18.0-rc.3 the default was `Date.now()`.
+   * account's nonce. Through 0.18.0 the default was `Date.now()`.
    */
   nonce?: number;
   /**
@@ -456,7 +456,7 @@ export class Multisig {
    * have. That is what the Rust SDK labels with, what the stale-proposal
    * filters compare with the account nonce, and what GUARDIAN's candidate
    * queue requires of a proposal built on its tail (issue #17). Through
-   * 0.18.0-rc.3 the default was `Date.now()`, a key no admission rule
+   * 0.18.0 the default was `Date.now()`, a key no admission rule
    * could relate to the account's state. The label is read after any sync
    * the method performs (note authentication, the offline switch's node
    * sync), on the account the summary is then built from; a caller that
@@ -928,7 +928,7 @@ export class Multisig {
    * Nonce-based staleness hiding is the caller's job (see the examples'
    * `filterVisibleProposals`). This SDK labels a proposal with the account's
    * next nonce by default, as the Rust SDK does, but a caller may label with
-   * its own `nonce` (and proposals made through 0.18.0-rc.3 carry a
+   * its own `nonce` (and proposals made through 0.18.0 carry a
    * timestamp), so the Rust client's `proposal.nonce <= account.nonce()`
    * filter is not applied here. This is an intentional TS/Rust surface
    * difference.

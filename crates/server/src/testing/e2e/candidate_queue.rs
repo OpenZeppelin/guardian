@@ -48,7 +48,7 @@
 //! candidate queued, a proposal is recorded only at the tail's nonce plus
 //! one, pinned to the tail; one labelled at or below the tail's nonce, or
 //! past the tail's nonce plus one (a timestamp, the TypeScript SDK's
-//! default through 0.18.0-rc.3), is refused.
+//! default through 0.18.0), is refused.
 
 use std::sync::Arc;
 

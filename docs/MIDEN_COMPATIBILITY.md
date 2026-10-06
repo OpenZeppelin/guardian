@@ -20,9 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
-| 0.18.0-rc.3 | 0.17 (rc) | `=0.17.0-rc.9` | `=0.17.0-rc.5` | `0.17.0-rc.5` (exact) |
-| 0.18.0-rc.2 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.4` | `0.17.0-rc.4` (exact) |
-| 0.18.0-rc.1 | 0.17 (rc) | `=0.17.0-rc.7` | `=0.17.0-rc.3` | `0.17.0-rc.3` (exact) |
+| 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
 | 0.15.x | 0.15 | `0.15.x` | `0.15.0` | `^0.15.0` |
@@ -30,13 +28,10 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.x tracks the Miden 0.17 release candidates. `@miden-sdk/miden-sdk` 0.17.0-rc.5
-embeds `miden-client` 0.17.0-rc.5 and `miden-protocol` / `miden-standards` 0.17.0-rc.9,
-which is why the Rust pins are rc.9 for the protocol crates and rc.5 for the client
-crates. It is not a production target until Miden 0.17.0 is stable and devnet and
-testnet run it. The 0.18 release candidates are published to npm under the `rc`
-dist-tag, so `npm install` without an explicit version still resolves the 0.17.x
-line (Miden 0.16).
+0.18.0 builds on the stable Miden 0.17 release. `@miden-sdk/miden-sdk` 0.17.0 embeds
+`miden-client` 0.17.0 and `miden-protocol` / `miden-standards` 0.17.0, so every Rust pin
+is 0.17.0. The 0.18.0 release candidates tracked the Miden 0.17 release candidates, were
+published to npm under the `rc` dist-tag, and are not supported.
 
 0.17.0 builds on the stable Miden 0.16 release. `@miden-sdk/miden-sdk` 0.16.0 embeds
 `miden-client` 0.16.0 and `miden-protocol` / `miden-standards` 0.16.1, which is why the
@@ -50,7 +45,59 @@ pin, so the CI parity gates are what catch drift. See
 **Upgrading from 0.17.0 (Miden 0.16) to 0.18.x (Miden 0.17)** is a protocol-line change.
 Stored Miden account data is reset by the embedded migration listed below, accounts
 must be recreated, and both the Rust SQLite store and the browser IndexedDB store
-must be recreated: a store created under 0.16 does not open under 0.17.
+must be recreated: a store created under 0.16 does not open under 0.17. 0.18.0 also
+changes SDK and server contracts:
+
+- **It needs a node on 0.17.0.** A node rejects a client whose version carries a
+  different pre-release label, so a stable client and an `rc` node (or the reverse)
+  cannot talk (`accept header validation failed`). See "Public networks" under
+  [Open upstream items](#open-upstream-items).
+- **Deploy the server first.** Both multisig SDKs ask GUARDIAN for the canonical nonce
+  (`GET /state/nonce`, gRPC `GetCanonicalNonce`) before fetching the state: Rust `sync()`
+  and `sync_from_guardian()`, TypeScript `syncState()`. A failed pre-check is a sync
+  error, not a fallback to the full fetch, so these SDKs fail every sync against a server
+  that does not serve the endpoint. The server migration `2026-09-30-000001_state_nonce`
+  adds a nullable `nonce` column next to `commitment` in `states`, which the endpoint
+  reads instead of decoding the stored account. Filesystem-backed deployments need no
+  step.
+- **`Multisig.syncState()` returns `SyncStateResult` instead of `AccountState`**:
+  `{ source: 'guardian', state }` when it fetched and reconciled GUARDIAN's state, or
+  `{ source: 'local', localNonce, guardianNonce }` when GUARDIAN had nothing newer.
+  Callers that used the returned state read `state` after checking `source`, or call
+  `fetchState()` when they need GUARDIAN's copy either way.
+- **The TypeScript multisig SDK runs only on the supplied `MidenClient`.** It no longer
+  opens a second `WasmWebClient` on that client's store; every store read and write,
+  chain sync and transaction execution goes through the given client.
+  `createMultisigAccount`, the `build*TransactionRequest` builders and
+  `executeForSummary` / `executeForSummaryAt` / `executeForSummaryAtTip` take only a
+  `MidenClient`. `midenRpcEndpoint` is removed from those helpers and from
+  `SignatureOptions`, and the `MidenClientSignatureOptions` and
+  `MidenClientMultisigRequestOptions` types are removed; `MultisigClient` still requires
+  `midenRpcEndpoint`, now only for the SDK's direct node reads. SDK calls queue on the
+  application's client, show up in its `observer` and can reach its keystore callbacks,
+  so `executeForSummary*` on a transaction the client can fully authorize rejects with
+  `TRANSACTION_ALREADY_AUTHORIZED`.
+- **`getConsumableNotes()` applies the web SDK's consumable-now rule**
+  (`notes.listAvailable`), so notes the account can never consume are no longer
+  returned, matching the Rust SDK's `list_consumable_notes`.
+- **Browser clients need `useWorker: false`** until the web SDK fixes worker mode; see
+  "Web SDK worker mode" under [Open upstream items](#open-upstream-items).
+- **Proposals execute at the chain tip** (see
+  [`MULTISIG_SDK.md`](./MULTISIG_SDK.md#tip-execution-and-the-bound-block)).
+- **Note transport requires inclusion proofs.** A private note can be relayed only after
+  the transaction that created it is committed: Rust `send_private_note_with_proof`,
+  TypeScript `notes.sendPrivate({ inclusionProof })` or `notes.sendPrivateOutput`.
+- **A delta that carries account code no longer means a new account**, because a code
+  upgrade (`native_account::upgrade`) carries code too. GUARDIAN and both SDKs treat a
+  code-carrying delta as an account creation only when the account has not executed a
+  transaction yet (nonce zero), and apply it as a code upgrade otherwise.
+- **The Rust SDK no longer supplies its own random generator.** `ClientBuilder::rng` is
+  available only under the `testing` feature, and the client always uses an OS-seeded
+  `ChaCha20Rng`.
+- **Custom-proposal producers must serialize `TransactionRequest`s with a client on the
+  same pin as the SDK**, because `propose_custom_transaction` / `createCustomProposal`
+  and `prepare_custom_execution` / `prepareCustomExecution` take serialized request
+  bytes, and their encoding changed across the 0.17 line.
 
 **Upgrading from 0.16.x (Miden 0.15) to 0.17.0 (Miden 0.16)** is a protocol-line change:
 the guarded-multisig auth component now pays the transaction fee and transaction summaries
@@ -69,112 +116,14 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
-**Moving from 0.18.0-rc.1 to 0.18.0-rc.2** (the `miden-client` 0.17.0-rc.4 pin) keeps the protocol
-pin (0.17.0-rc.7), so procedure roots, accounts and stored data are unchanged.
-`miden-client` / `@miden-sdk/miden-sdk` 0.17.0-rc.4 always serialize a
-`TransactionRequest`'s declared block numbers, so request bytes written by 0.17.0-rc.3 or
-earlier do not deserialize under rc.4, and the reverse. A GUARDIAN proposal carries no
-serialized request, but a custom-proposal producer passes one to
-`propose_custom_transaction` / `createCustomProposal` and
-`prepare_custom_execution` / `prepareCustomExecution`, so it must serialize the request
-with a client on the same pin as the SDK. Proposals now execute at the chain tip (see
-[`MULTISIG_SDK.md`](./MULTISIG_SDK.md#tip-execution-and-the-bound-block)). A proposal
-still pending from 0.18.0-rc.1 carries the chain anchor a rebuild reads its bound block
-from, so it verifies and executes the same way. A 0.18.0-rc.1 client still re-executes at
-the anchor and cannot verify a proposal older than the node's account history (about 50
-blocks on devnet).
-
-**Moving from 0.18.0-rc.2 to 0.18.0-rc.3: the canonical-nonce sync pre-check** (issue #191) keeps the
-protocol pins and stored data, but changes two SDK contracts and adds a server migration:
-
-- **Deploy the server first.** Both multisig SDKs ask GUARDIAN for the canonical nonce
-  (`GET /state/nonce`, gRPC `GetCanonicalNonce`) before fetching the state: Rust `sync()`
-  and `sync_from_guardian()`, TypeScript `syncState()`. A failed pre-check is a sync
-  error, not a fallback to the full fetch, so these SDKs fail every sync against a server
-  that does not serve the endpoint.
-- **`Multisig.syncState()` returns `SyncStateResult` instead of `AccountState`**:
-  `{ source: 'guardian', state }` when it fetched and reconciled GUARDIAN's state, or
-  `{ source: 'local', localNonce, guardianNonce }` when GUARDIAN had nothing newer.
-  Callers that used the returned state read `state` after checking `source`, or call
-  `fetchState()` when they need GUARDIAN's copy either way.
-- **Server migration `2026-09-30-000001_state_nonce`** adds a nullable `nonce` column next
-  to `commitment` in `states`, which the endpoint reads instead of decoding the stored
-  account. It is additive, not a reset. A row written before it gets its nonce on its
-  first canonical-nonce read. During a rolling deploy, a trigger clears the nonce of any
-  row a replica still on the previous version moves to a new commitment, so a stale nonce
-  is never served. Filesystem-backed deployments need no step: state files without a
-  nonce are filled in the same way.
-
-**Moving from 0.18.0-rc.2 to 0.18.0-rc.3: the TypeScript multisig SDK runs only on the supplied
-`MidenClient`** (issue #481) keeps the protocol pins, stored data and server, but changes
-TypeScript SDK signatures and behavior. The SDK no longer opens a second `WasmWebClient`
-on the store of the `MidenClient` it is given; every store read and write, chain sync
-and transaction execution goes through that client:
-
-- **`WasmWebClient` is no longer accepted.** `createMultisigAccount`, the
-  `build*TransactionRequest` builders and `executeForSummary` / `executeForSummaryAt` /
-  `executeForSummaryAtTip` take only a `MidenClient`. Pass the one the application
-  executes transactions with.
-- **`midenRpcEndpoint` is removed from the helpers**: the third argument of
-  `createMultisigAccount`, the last argument of `executeForSummary*`, and the field of
-  `SignatureOptions` (so of every builder's options). The `MidenClientSignatureOptions`
-  and `MidenClientMultisigRequestOptions` types are removed. Drop the argument or field:
-  execution uses the `MidenClient`'s own node. `MultisigClient` still requires
-  `midenRpcEndpoint`, now only for the SDK's direct node reads (on-chain commitments and
-  note inclusion proofs).
-- **`getConsumableNotes()` applies the web SDK's consumable-now rule**
-  (`notes.listAvailable`), so notes the account can never consume are no longer
-  returned. The Rust SDK's `list_consumable_notes` already used this rule.
-- **SDK calls run on the application's client**: they queue on its serialized call chain,
-  show up in its `observer`, and can reach its keystore callbacks. So `executeForSummary*`
-  on a transaction the client can fully authorize, such as one from a single-signature
-  account whose key is in its keystore, rejects with `TRANSACTION_ALREADY_AUTHORIZED`:
-  `transactions.preview` produces no summary for an authorized transaction.
-- **Browser clients need `useWorker: false`** until the web SDK fixes worker mode; see
-  "Web SDK worker mode" under [Open upstream items](#open-upstream-items).
-
-**Moving from 0.18.0-rc.2 to 0.18.0-rc.3: protocol 0.17.0-rc.9 and client 0.17.0-rc.5** is not a
-protocol-line change, but accounts created under the rc.7 / rc.4 pins do not carry over:
-
-- **Procedure roots moved.** Standard account components now link their libraries
-  dynamically (protocol 0.17.0-rc.8), so `auth_tx`, `update_signers`,
-  `update_procedure_threshold` and `send_asset` hash differently, and so do the code
-  commitment and the account ID of a newly built account. An account created under the
-  previous pins is rejected with `UnsupportedContractVersion` and must be recreated.
-- **Stored state is forward-compatible only.** Account code, note scripts and
-  transaction scripts now serialize their MAST forest in the hashless format. This build
-  still reads Miden state GUARDIAN stored under the previous pins: it decodes code through
-  `UntrustedMastForest`, which accepts both formats, and states stored by 0.18.0-rc.2
-  replay to the commitments recorded there. The reverse does not hold: 0.18.0-rc.2 and
-  earlier cannot read state this build writes (`HASHLESS flag is set; use
-  UntrustedMastForest for untrusted input`), so once this build has written Miden state,
-  rolling GUARDIAN back means wiping Miden storage. Devnet starts from empty Miden storage
-  regardless, because its chain was reset with node 0.17.0-rc.4 and the moved roots
-  strand every earlier account. The browser IndexedDB store written under the previous
-  pins cannot be read and must be recreated; the web SDK keeps the same database name, so
-  it does not delete the old store on open. The Rust SDK opens a new SQLite store each
-  session, so nothing carries over there either way.
-- **`TransactionRequest` bytes changed again** (a trailing code-upgrade field), so a
-  custom-proposal producer must serialize requests with a client on the new pins.
-- **The node speaks the v1 gRPC API** (`miden.node.v1.NodeService`, node 0.17.0-rc.4).
-  This build cannot reach a node on an earlier release candidate, and the previous
-  pins cannot reach a node on 0.17.0-rc.4 or later (`Unimplemented`).
-- **Note transport requires inclusion proofs.** A private note can be relayed only after
-  the transaction that created it is committed: Rust `send_private_note_with_proof`,
-  TypeScript `notes.sendPrivate({ inclusionProof })` or `notes.sendPrivateOutput`.
-- **A delta that carries account code no longer means a new account**, because a code
-  upgrade (`native_account::upgrade`) carries code too. GUARDIAN and both SDKs treat a
-  code-carrying delta as an account creation only when the account has not executed a
-  transaction yet (nonce zero), and apply it as a code upgrade otherwise.
-
-**Moving past 0.18.0-rc.3: TypeScript proposals are labelled with the account's next
+**Moving past 0.18.0: TypeScript proposals are labelled with the account's next
 nonce** keeps the protocol pins, stored data and server contracts, but changes a
 TypeScript SDK default and two admission rules of a server that queues chained
 candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
 
 - **`create*Proposal` defaults `nonce` to the store account's nonce plus one**, the
   nonce the executed transaction will have, as the Rust SDK has since #72. Through
-  0.18.0-rc.3 the default was `Date.now()`. `options.nonce` still overrides it, and
+  0.18.0 the default was `Date.now()`. `options.nonce` still overrides it, and
   an account nonce at or above `Number.MAX_SAFE_INTEGER` makes the default throw
   rather than round. The delta and proposal nonce is GUARDIAN's storage key
   (`UNIQUE(account_id, nonce)`), the order of `/delta/since`, the history and the
@@ -184,7 +133,7 @@ candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
   lists those rows last and the history (newest-first) lists them first, and neither
   order is chain order across the switch; `/delta/since?nonce=N` from a nonce-keyed
   cursor returns the timestamp-keyed rows every time.
-- **Mixed-version cosigners.** A cosigner still on 0.18.0-rc.3 or earlier labels with a
+- **Mixed-version cosigners.** A cosigner still on 0.18.0 or earlier labels with a
   timestamp. A server at the default depth accepts that proposal as before; a queueing
   server refuses it with `409 conflict_pending_delta` while a candidate is queued (next
   item). Upgrade the proposing devices first; signing and executing a proposal another
@@ -244,14 +193,12 @@ Nothing stored under Miden 0.16 survives:
   `MultisigAuthArgs`; TypeScript starts from `feeAwareTransactionRequestBuilder`.
   A 0.16 request that only declared `fee_conversion_salt` is one word short and
   aborts in the auth procedure.
-- **The guarded-multisig auth procedure pays the transaction fee** (since
-  `miden-standards` 0.17.0-rc.7). It creates the `TX_FEE` note from the
+- **The guarded-multisig auth procedure pays the transaction fee.** It creates the `TX_FEE` note from the
   account's vault before the transaction summary is built, so the fee note is
   covered by the approver and GUARDIAN signatures. Every transaction therefore
   needs a balance in the chain's native fee asset, including the first one
   that deploys the account. A node rejects a transaction without a canonical
-  `TX_FEE` note, and an account created by a build pinned to an earlier release
-  candidate never creates one, so it cannot transact and must be recreated.
+  `TX_FEE` note.
 - **The fee asset left the block header.** It lives in the chain's protocol
   configuration, which the client receives from the node with each sync and
   stores per header. The auth args name the fee faucet of the configuration at
@@ -266,15 +213,14 @@ Nothing stored under Miden 0.16 survives:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-01.
+Last checked 2026-10-05.
 
-- **Public networks.** Devnet serves only the v1 gRPC API (node 0.17.0-rc.4 or
-  later), which this build's pins speak and the 0.18.0-rc.2 pins do not. The run
-  below was made on node 0.17.0-rc.2 with the previous pins and has not been
-  repeated on these. Then, this build's protocol
-  configuration for devnet's fee asset hashes to the commitment in devnet's
-  block headers, so the transaction kernels match. A guarded 2-of-2 multisig
-  from this build ran two proposals there end to end, a first consume-notes
+- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach.
+  The devnet run below was made on the Miden 0.17 release candidates and has not
+  been repeated on 0.17.0. There, this build's protocol
+  configuration for devnet's fee asset hashed to the commitment in devnet's
+  block headers, so the transaction kernels matched. A guarded 2-of-2 multisig
+  ran two proposals there end to end, a first consume-notes
   transaction and a P2ID send. Each was verified, signed and executed at the tip
   more than 70 blocks after the block it binds, once devnet already answered
   `block N has been pruned` for that block's account state. Devnet keeps about
@@ -287,7 +233,7 @@ Last checked 2026-10-01.
   reports every account as already allowed. Testnet runs Miden 0.16, so
   on testnet the examples need a local `miden-node` from the pinned line until
   it upgrades.
-- **miden-client fee path.** miden-client (still in 0.17.0-rc.5) commits the
+- **miden-client fee path.** miden-client (still in 0.17.0) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
@@ -302,17 +248,18 @@ Last checked 2026-10-01.
   applies the first one after a `syncState()` import on stale trees, saving a
   storage root that leaves the import out. The transactions still reach the
   chain; only the device's store breaks. Tracked as
-  [0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441), open in
-  web SDK 0.17.0-rc.5. Until it is fixed, browser clients pass
+  [0xMiden/web-sdk#441](https://github.com/0xMiden/web-sdk/issues/441), which
+  was closed on 2026-09-30 without a web SDK fix. Web SDK 0.17.0 changes how
+  clients sharing a database refresh account witnesses (web-sdk#453), but worker
+  mode has not been re-verified on it. Until it is, browser clients pass
   `useWorker: false`, as `examples/web` and `examples/smoke-web` do; symptoms
   and recovery are in
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
-- **Pins.** The workspace pins protocol 0.17.0-rc.9 and client 0.17.0-rc.5 (see
-  the matrix). The protocol pin follows the client and web SDK releases, not the
-  protocol tags, because both SDKs must embed the same kernel. Moving to stable
-  re-pins, regenerates roots, fixtures and the cross-SDK determinism vectors,
-  and is the point at which 0.18.0 is released.
+- **Pins.** The workspace pins the stable 0.17.0 protocol and client crates and
+  web SDK 0.17.0 (see the matrix). The protocol pin follows the client and web
+  SDK releases, not the protocol tags, because both SDKs must embed the same
+  kernel.
 
 Data effect: full reset, see above. Client stores are recreated, not migrated.
 Operator steps: [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017).

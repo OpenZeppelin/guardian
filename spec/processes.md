@@ -363,7 +363,7 @@ sequenceDiagram
   admitted: while the queue is full, when a queue exists and their nonce
   is not the tail's plus one, or behind a tail that changes the signer set
   or guardian key. Both SDKs label a proposal with the account's next
-  nonce (the TypeScript SDK since the release after 0.18.0-rc.3; earlier
+  nonce (the TypeScript SDK since the release after 0.18.0; earlier
   releases used a timestamp, which the rule refuses), so a proposal built
   on the tail carries the tail's nonce plus one, and one built on the
   canonical state (all `/state` serves) carries the tail's nonce or less:

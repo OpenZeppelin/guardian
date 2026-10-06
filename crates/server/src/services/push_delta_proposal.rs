@@ -101,7 +101,7 @@ pub async fn push_delta_proposal(
     //   its delta is refused while the queue holds the slot and collides
     //   with the promoted candidate once it drains. Past the tail's nonce
     //   plus one the label was not derived from the tail either (a
-    //   timestamp, the TypeScript SDK's default through 0.18.0-rc.3, or
+    //   timestamp, the TypeScript SDK's default through 0.18.0, or
     //   any client-chosen value): nothing here can tell which state such
     //   a summary was built on, and recorded against the tail it would be
     //   signed only to fail at execution, holding a proposal slot for as
@@ -1298,7 +1298,7 @@ mod tests {
     /// cosigner that synced the canonical state and proposed on it while
     /// another device's candidate was queued. Past the tail's nonce plus
     /// one the label did not come from the tail either (a timestamp, the
-    /// TypeScript SDK's default through 0.18.0-rc.3): refused the same
+    /// TypeScript SDK's default through 0.18.0): refused the same
     /// way, before any cosigner signs it.
     #[tokio::test]
     async fn test_push_delta_proposal_refused_unless_it_extends_the_tail_by_one() {
