@@ -219,7 +219,7 @@ Synchronous, none creating a reservation (FR-022):
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | Proposal was created without execution mode, see step 1 |
 | `GUARDIAN_PROPOSAL_NOT_READY` | Below the effective threshold of **valid** signatures |
 | `GUARDIAN_EXECUTION_CONFLICT` | Another execution holds the account; `meta.blocking_proposal_id` names it |
-| `GUARDIAN_EXECUTION_BUSY` | Another request is starting an execution for the account; retry shortly |
+| `GUARDIAN_EXECUTION_BUSY` | Another request is starting an execution for the account, or the server already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions; nothing was reserved, retry shortly |
 | `GUARDIAN_CONFLICT_PENDING_DELTA` | Account already holds a pending candidate |
 
 Asynchronous and pre-boundary, reported as `state: "failed"` with the proposal kept, so a retry

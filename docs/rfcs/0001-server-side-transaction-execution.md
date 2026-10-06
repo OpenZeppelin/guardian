@@ -2,15 +2,16 @@
 
 | | |
 |---|---|
-| **Status** | Accepted for implementation — comments welcome, no closing date |
+| **Status** | Implemented on branch `254-execution-impl` ([PR #510](https://github.com/OpenZeppelin/guardian/pull/510)); comments still welcome, no closing date |
 | **Feature** | [#254](https://github.com/OpenZeppelin/guardian/issues/254) (parent [#253](https://github.com/OpenZeppelin/guardian/issues/253), "Transaction Orchestration") |
 | **Audience** | Integrators, operators, and upstream reviewers (Miden team or anyone reading publicly) |
 | **Working artifacts** | [`speckit/features/254-guardian-prove-and-commit/`](../../speckit/features/254-guardian-prove-and-commit/) — see appendix |
-| **Revision** | 17 (2026-09-30): re-verified against the Miden 0.17 release-candidate pins on `main` (protocol 0.17.0-rc.7, client 0.17.0-rc.4). The signed summary binds a proposer-chosen bound block rather than the reference block, so Guardian reproduces at the chain tip and revision 16's anchored reproduction is withdrawn (Appendix A.3). Foreign public accounts, the approval expiration, and sealed submission inputs enter the design. Gate 0 spike code stays on the `254-execution-spike` branch; this document and its working artifacts are the only content merged to `main` |
+| **Revision** | 18 (2026-10-06): implemented on `254-execution-impl`. Pins moved to stable Miden 0.17.0 (protocol / standards / tx / client / node-proto 0.17.0, web SDK 0.17.0). Live devnet qualification passed on both SDKs on 2026-10-06 against node 0.17.0. Earlier revisions follow as history |
+| **Revision 17** | 2026-09-30: re-verified against the Miden 0.17 release-candidate pins on `main` (protocol 0.17.0-rc.7, client 0.17.0-rc.4). The signed summary binds a proposer-chosen bound block rather than the reference block, so Guardian reproduces at the chain tip and revision 16's anchored reproduction is withdrawn (Appendix A.3). Foreign public accounts, the approval expiration, and sealed submission inputs enter the design. Gate 0 spike code stays on the `254-execution-spike` branch; this document and its working artifacts are the only content merged to `main` |
 
-> **Implementation status:** this RFC describes the **proposed end state**. The wire API, execution lifecycle, and SDK changes are not implemented yet; the one exception is the Gate 0 witness-assembly spike, which lives on the [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch (commit `769e2a90`) and is **not on `main`**. Every spike code path and test name cited in this document (`crates/server/src/network/miden/execution/`, `crates/miden-rpc-client/src/`) resolves against that branch; its tests passed there against the Miden 0.16 rc pins. The spike was last built on the Miden 0.16 release candidates and has to be ported to the 0.17 pins before its results count again. The linked working artifacts are the implementation plan, and numeric defaults given here are proposals unless the linked contract marks them normative.
+> **Implementation status:** this design is **implemented** on the `254-execution-impl` branch ([PR #510](https://github.com/OpenZeppelin/guardian/pull/510)). The implementation comprises the three endpoints (execute: `POST /delta/proposal/execution`; status: `GET /delta/proposal/execution`; current: `GET /delta/execution/current`) on HTTP and on gRPC (`ExecuteDeltaProposal`, `GetDeltaProposalExecution`, `GetCurrentExecution`), the execution reservation tables (`execution_reservations`, `execution_submissions`, `execution_outcomes`), the `guardian_executable` execution mode in both multisig SDKs, and the server execution module `crates/server/src/network/miden/execution/`. The [`254-execution-spike`](https://github.com/OpenZeppelin/guardian/tree/254-execution-spike) branch (commit `769e2a90`) is historical: it holds the Gate 0 witness-assembly spike that earlier revisions cite. The linked working artifacts are the implementation plan, and numeric defaults given here are proposals unless the linked contract marks them normative.
 >
-> **Miden version:** this revision targets the Miden 0.17 release candidates `main` pins (protocol / standards / tx 0.17.0-rc.7, `miden-client` 0.17.0-rc.4, `miden-node-proto-build` 0.17.0-rc.3, web SDK 0.17.0-rc.4) and devnet, which runs node 0.17.0-rc.2. Testnet still runs 0.16. Shipping to production waits for stable 0.17 and the re-pin that comes with it (see `docs/MIDEN_COMPATIBILITY.md`).
+> **Miden version:** the implementation pins stable Miden 0.17.0 (protocol / standards / tx / `miden-client` / `miden-node-proto-build` 0.17.0, web SDK 0.17.0). The file:line citations in the body were read on the release candidates (protocol / standards / tx 0.17.0-rc.7, `miden-client` 0.17.0-rc.4) and are kept as dated evidence; they are not re-pinned to 0.17.0.
 
 ---
 
@@ -373,6 +374,8 @@ Defaults below are **proposed by this RFC**; the normative contract ([`contracts
 | `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | No | TBD | Aggregate cap on stored requests per account. |
 | `GUARDIAN_EXECUTION_LEASE_SECS` | No | `120` | Duration of the reservation lease before a stalled worker times out. |
 | `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` | No | `30` | How often reconciliation re-checks unresolved submissions against the chain. |
+| `GUARDIAN_EXECUTION_MAX_CONCURRENT` | No | `64` | Safety bound on memory: executions one process holds at once, from acceptance until the worker finishes. A request arriving at the bound is refused with `GUARDIAN_EXECUTION_BUSY` (retryable) and nothing is reserved. |
+| `GUARDIAN_TX_PROVER_MAX_CONCURRENT` | No | Unset | Optional limit on proofs one process has at the prover at once, for a shared or small prover. The slot covers the prover call alone; executions beyond it wait instead of reaching the prover. Unset, proofs are bounded only by `GUARDIAN_EXECUTION_MAX_CONCURRENT`. |
 | `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | No | `512` (at least 256) | Maximum allowed distance from the attempt's reference block to the proven expiration; exceeding it refuses the execution before the no-retry boundary (never a wait). This is a chain-height bound; resolution still requires eventual trustworthy chain observation. |
 
 #### Example `.env` Configuration
@@ -385,6 +388,9 @@ GUARDIAN_PROVING_ENABLED=true
 # Execution & Lease Controls
 GUARDIAN_EXECUTION_LEASE_SECS=120
 GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS=30
+GUARDIAN_EXECUTION_MAX_CONCURRENT=64
+# Set for a shared or small prover:
+# GUARDIAN_TX_PROVER_MAX_CONCURRENT=8
 ```
 
 > **Warning for Operators:** The upstream prover client's own default timeout (10 seconds) is below real testnet proving times (6–20 s), which is why the proposed Guardian default is far higher. If you override `GUARDIAN_TX_PROVER_TIMEOUT_SECS`, keep it well above observed proving times for your prover.

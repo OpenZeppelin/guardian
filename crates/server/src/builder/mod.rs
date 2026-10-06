@@ -620,6 +620,9 @@ impl ServerBuilder {
                 rand::RngExt::fill(&mut rand::rng(), &mut id);
                 format!("replica-{}", hex::encode(id))
             },
+            capacity: crate::services::execute_proposal::ExecutionState::capacity_for(
+                &self.execution,
+            ),
             config: self.execution.clone(),
         };
 

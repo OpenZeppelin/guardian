@@ -4,6 +4,7 @@ use crate::secret::CredentialUrl;
 
 pub const ENV_TX_PROVER_URL: &str = "GUARDIAN_TX_PROVER_URL";
 pub const ENV_TX_PROVER_TIMEOUT_SECS: &str = "GUARDIAN_TX_PROVER_TIMEOUT_SECS";
+pub const ENV_TX_PROVER_MAX_CONCURRENT: &str = "GUARDIAN_TX_PROVER_MAX_CONCURRENT";
 pub const ENV_PROVING_ENABLED: &str = "GUARDIAN_PROVING_ENABLED";
 pub const ENV_MAX_PROPOSAL_REQUEST_BYTES: &str = "GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES";
 pub const ENV_MAX_ACCOUNT_REQUEST_BYTES: &str = "GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES";
@@ -12,6 +13,7 @@ pub const ENV_EXECUTION_RECONCILE_INTERVAL_SECS: &str =
     "GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS";
 pub const ENV_EXECUTION_EXPIRATION_HORIZON_BLOCKS: &str =
     "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS";
+pub const ENV_EXECUTION_MAX_CONCURRENT: &str = "GUARDIAN_EXECUTION_MAX_CONCURRENT";
 
 /// The upstream remote-prover client defaults to 10 s, below observed proving
 /// times, so Guardian always sets its own.
@@ -21,6 +23,10 @@ pub const DEFAULT_MAX_ACCOUNT_REQUEST_BYTES: u32 = 4 * 1024 * 1024;
 pub const DEFAULT_EXECUTION_LEASE_SECS: u32 = 120;
 pub const DEFAULT_EXECUTION_RECONCILE_INTERVAL_SECS: u32 = 30;
 pub const DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 512;
+/// Executions one process holds at once, a safety bound sized to memory: each holds an account
+/// reservation, its chain view and its proving inputs, and the ones beyond the prover cap wait in
+/// memory for a proof permit rather than reaching the prover.
+pub const DEFAULT_EXECUTION_MAX_CONCURRENT: u32 = 64;
 
 /// Every built-in Guardian-executable proposal signs this relative
 /// transaction expiration, so a horizon below it would refuse all of them.
@@ -35,6 +41,9 @@ pub const MAX_EXECUTION_LEASE_SECS: u32 = 3600;
 pub struct ProverConfig {
     pub(crate) url: CredentialUrl,
     pub timeout: Duration,
+    /// Proofs this process has at the prover at once; `None` leaves them bounded only by the
+    /// executions it holds. Set for a shared or small prover, which times out when overloaded.
+    pub max_concurrent: Option<u32>,
 }
 
 /// Why this server does not offer Guardian execution.
@@ -94,6 +103,7 @@ pub struct ExecutionConfig {
     pub lease: Duration,
     pub reconcile_interval: Duration,
     pub expiration_horizon_blocks: u32,
+    pub max_concurrent_executions: u32,
 }
 
 impl Default for ExecutionConfig {
@@ -108,6 +118,7 @@ impl Default for ExecutionConfig {
                 DEFAULT_EXECUTION_RECONCILE_INTERVAL_SECS,
             )),
             expiration_horizon_blocks: DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS,
+            max_concurrent_executions: DEFAULT_EXECUTION_MAX_CONCURRENT,
         }
     }
 }
@@ -131,12 +142,17 @@ impl ExecutionConfig {
             ENV_TX_PROVER_TIMEOUT_SECS,
             DEFAULT_TX_PROVER_TIMEOUT_SECS,
         )?;
+        let max_concurrent_proofs = match non_blank(lookup(ENV_TX_PROVER_MAX_CONCURRENT)?) {
+            Some(_) => Some(positive_u32(&lookup, ENV_TX_PROVER_MAX_CONCURRENT, 1)?),
+            None => None,
+        };
         let prover = match non_blank(lookup(ENV_TX_PROVER_URL)?) {
             Some(url) => {
                 ensure_prover_url(&url)?;
                 Some(ProverConfig {
                     url: CredentialUrl::new(url),
                     timeout: Duration::from_secs(u64::from(timeout)),
+                    max_concurrent: max_concurrent_proofs,
                 })
             }
             None => None,
@@ -197,6 +213,11 @@ impl ExecutionConfig {
             lease: Duration::from_secs(u64::from(lease_secs)),
             reconcile_interval: Duration::from_secs(u64::from(reconcile_secs)),
             expiration_horizon_blocks,
+            max_concurrent_executions: positive_u32(
+                &lookup,
+                ENV_EXECUTION_MAX_CONCURRENT,
+                DEFAULT_EXECUTION_MAX_CONCURRENT,
+            )?,
         })
     }
 
@@ -329,6 +350,19 @@ mod tests {
         assert_eq!(config.expiration_horizon_blocks, 512);
         assert_eq!(config.lease, Duration::from_secs(120));
         assert_eq!(config.reconcile_interval, Duration::from_secs(30));
+        assert_eq!(config.max_concurrent_executions, 64);
+    }
+
+    #[test]
+    fn the_execution_cap_must_be_positive() {
+        assert!(config_from(&[(ENV_EXECUTION_MAX_CONCURRENT, "0")]).is_err());
+        assert!(config_from(&[(ENV_EXECUTION_MAX_CONCURRENT, "many")]).is_err());
+        assert_eq!(
+            config_from(&[(ENV_EXECUTION_MAX_CONCURRENT, "3")])
+                .unwrap()
+                .max_concurrent_executions,
+            3
+        );
     }
 
     #[test]
@@ -336,6 +370,16 @@ mod tests {
         let config = config_from(&[(ENV_TX_PROVER_URL, "https://prover.example:50051")]).unwrap();
         let prover = config.prover.expect("prover configured");
         assert_eq!(prover.timeout, Duration::from_secs(300));
+        assert_eq!(
+            prover.max_concurrent, None,
+            "proofs are not limited unless asked"
+        );
+        let limited = config_from(&[
+            (ENV_TX_PROVER_URL, "https://prover.example:50051"),
+            (ENV_TX_PROVER_MAX_CONCURRENT, "4"),
+        ])
+        .unwrap();
+        assert_eq!(limited.prover.unwrap().max_concurrent, Some(4));
         assert_eq!(DEFAULT_TX_PROVER_TIMEOUT_SECS, 300);
     }
 
@@ -362,6 +406,7 @@ mod tests {
     fn zero_and_malformed_integers_are_rejected_with_the_variable_name() {
         for key in [
             ENV_TX_PROVER_TIMEOUT_SECS,
+            ENV_TX_PROVER_MAX_CONCURRENT,
             ENV_MAX_PROPOSAL_REQUEST_BYTES,
             ENV_MAX_ACCOUNT_REQUEST_BYTES,
             ENV_EXECUTION_LEASE_SECS,

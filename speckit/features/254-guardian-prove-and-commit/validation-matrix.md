@@ -33,6 +33,13 @@ remaining case runs through the same `DataStore` and the same witness assembly. 
 live-RPC note-block paths are now validated independently through `SyncNotes`; joining that
 assembly to a live note-consuming execution remains deferred, as does submission.
 
+**2026-10-06 resolution:** live submission and the joined live consume-notes flow are done, by
+live qualification on devnet, first on the release-candidate pins (2026-10-01) and again on
+stable Miden 0.17.0 (2026-10-06, node 0.17.0, 14/14 legs passing on both SDKs). Every scenario
+below is executed by the server: consume-notes 2-of-3 on Falcon and ECDSA, add-signer, the
+base-client request, a P2ID send 60+ blocks after its bound block, and consume-notes after the
+bound block. Only the custom family (#266) stays deferred.
+
 Original gate wording, retained for the record: the architecture was to be considered not
 final until a compile-tested spike executed, proved, and submitted all four proposal families
 against a local node with a locally-run `miden-remote-prover`:
@@ -41,9 +48,9 @@ against a local node with a locally-run `miden-remote-prover`:
 |---|---|---|
 | P2ID payment | Real send script from `AccountInterface::build_send_notes_script`; exercises vault witnesses and output-note recipients | **done** — `guardian_executes_the_p2id_send_family` |
 | Configuration | Real `update_signers_and_threshold` from the multisig MASM library; script-arg + config-hash advice | **done** — `guardian_executes_the_configuration_family` |
-| `consume_notes` | Input notes — the only family needing notes in the store | **prepared execution done**; snapshot-pinned live-RPC note-block assembly done independently; joined live flow pending |
+| `consume_notes` | Input notes: the only family needing notes in the store | **done** (2026-10-06): prepared execution done offline; joined live flow done by `live-guardian-execute-2of3-{falcon,ecdsa}`, which consume the funding note, and `live-guardian-execute-consume-late-2of3-falcon` (consumes after the bound block) |
 | Custom (#266) | Opaque request, no recipe, account-default threshold | **deferred** — unrun; structurally identical to the above (an opaque script through the same seam) |
-| Live submission | The only step that mutates chain state | **deferred** — needs a funded, Guardian-registered testnet account; not blocked by infrastructure |
+| Live submission | The only step that mutates chain state | **done** (2026-10-06): live qualification on devnet, on the rc pins (Oct 1) and on stable 0.17.0 (Oct 6, 14/14 legs on both SDKs), server-executed: consume-notes 2-of-3 Falcon and ECDSA, add-signer, base-client, P2ID 60+ blocks after the bound block, consume-notes after the bound block |
 
 Also covered: the full authorized path (`guardian_executes_signs_and_proves_end_to_end`) —
 execute unsigned, sign as cosigner and as GUARDIAN, re-execute with advice, prove locally — and
@@ -113,9 +120,13 @@ of it.
 > normative FR-061 construction again, but only after the port; the new inputs
 > (`ProtocolConfig`, bound-block tracking, foreign public accounts, sealing) need their own tests.
 
-**Genuinely still deferred**: live **submission** (now sealed, FR-059); the live-RPC
-**note-block** path joined to note-consuming execution in one flow; and the **custom family**
-(#266). Foreign-account inputs are **no longer an exclusion** on 0.17: every devnet fee payment
+**Genuinely still deferred** (updated 2026-10-06): only the **custom family** (#266). Live
+**submission** (sealed, FR-059) and the live-RPC **note-block** path joined to note-consuming
+execution are done by the live qualification runs recorded in the 2026-10-06 resolution above.
+
+**Named follow-ups** (not covered on this branch): custom proposals end to end (#266); FR-016
+per-proposer count quotas (T087/T088, see the upstream review checks below); and a real
+multi-process Postgres concurrency test for SC-005. Foreign-account inputs are **no longer an exclusion** on 0.17: every devnet fee payment
 loads the fee faucet as a foreign account, so foreign public accounts loaded at `R` are required
 behavior (FR-050) and private or unservable foreign state is a distinct refusal.
 
@@ -336,7 +347,7 @@ happy-path tests:
   stays `canonical`; existing `candidate_landed` error codes are unchanged.
 - No v1 preparation, automatic execution, chaining or batching API is introduced.
 
-## Success criteria status (2026-09-30)
+## Success criteria status (2026-10-06)
 
 Where each criterion stands against the implementation on `254-execution-impl`. **Pass** names
 the passing evidence; **Partial** names what is covered and what is not; **Gap** has no test yet.
@@ -344,21 +355,21 @@ Test names are in `crates/server/src` unless another crate is named.
 
 | SC | Status | Evidence, and what is missing |
 |---|---|---|
-| SC-001 | Partial | Live qualification `live-guardian-execute-2of3-{falcon,ecdsa}` commits on devnet with the cosigners only signing. `live-guardian-execute-base-client-2of3-ecdsa` takes the request and the polling over the base clients alone, on both SDKs, and the base-client dependency guards keep them free of any Miden client. Missing: a live run of that scenario (it is required on testnet). |
+| SC-001 | Pass | Live qualification `live-guardian-execute-2of3-{falcon,ecdsa}` commits on devnet with the cosigners only signing. `live-guardian-execute-base-client-2of3-ecdsa` takes the request and the polling over the base clients alone, on both SDKs, and the base-client dependency guards keep them free of any Miden client. Its live run passed on devnet on 2026-10-02 and again on 2026-10-06 (stable 0.17.0 pins), on both SDKs. |
 | SC-002 | Pass | `binding_tests::an_account_advanced_past_the_base_is_a_state_mismatch_before_any_chain_work`, `network::miden::execution::tests::executor::a_request_that_does_not_reproduce_the_signed_summary_is_a_binding_mismatch`. |
 | SC-003 | Pass | `execute_proposal::tests` refusals, `binding_tests::a_second_proposal_is_refused_while_another_holds_the_account`, `a_paused_account_is_refused_and_nothing_is_reserved`, `capability_tests`. |
 | SC-004 | Pass | `network::miden::execution::tests::threshold` (override versus default); readiness uses it in selection. |
-| SC-005 | Pass | `concurrency_tests::two_concurrent_requests_for_one_proposal_start_one_execution`, `two_replicas_sharing_storage_prove_and_submit_once` (in-process replicas over one store). A Postgres multi-process variant is not written. |
+| SC-005 | Pass | `concurrency_tests::two_concurrent_requests_for_one_proposal_start_one_execution`, `two_replicas_sharing_storage_prove_and_submit_once` (in-process replicas over one store). These replicas share one process: a real multi-process Postgres concurrency test is not written and is a named follow-up. |
 | SC-006 | Pass | `binding_tests::every_pre_boundary_failure_is_reported_leaves_no_trace_and_can_be_retried`. |
 | SC-007 | Pass | `fault_injection_tests::a_pre_boundary_lease_that_lapses_in_steady_state_is_lease_expired`, `an_attempt_interrupted_by_a_restart_is_abandoned_and_the_proposal_stays_executable`. |
 | SC-008 | Pass | `fault_injection_tests`: committed via promotion, superseded, expired at base, and the outage test that holds then recovers. |
 | SC-009 | Pass | Rust: `a_default_client_stores_no_request_and_signs_no_extra_bound`. TypeScript: `multisig.test.ts` `stores the request and both bounds only on a guardian_executable client` (the default payload has no `transaction_request`). |
 | SC-010 | Pass | `fixtures/miden-multisig-client/request-envelope.json` declares protocol line `0.16`; `guardian_shared::request_envelope` refuses it before decoding. |
-| SC-011 | Exception | Baseline telemetry, not a gate. **Recorded for 0.17 on 2026-10-01** (devnet, six Guardian executions from a live qualification run, no prover retries): proving about 2.0 s per execution (12.2 s over six, all under 5 s); chain view about 0.16 s (0.97 s over six, all between 0.1 and 0.25 s); seeding is in-memory inside the chain view. RFC 0001 Appendix A.4, finding 5. The qualification stack saves these histograms with every run (`execution-metrics.prom`). |
+| SC-011 | Exception | Baseline telemetry, not a gate. **Recorded for 0.17 on 2026-10-01** (devnet, six Guardian executions from a live qualification run, no prover retries): proving about 2.0 s per execution (12.2 s over six, all under 5 s); chain view about 0.16 s (0.97 s over six, all between 0.1 and 0.25 s); seeding is in-memory inside the chain view. RFC 0001 Appendix A.4, finding 5. The qualification stack saves these histograms with every run (`execution-metrics.prom`). **2026-10-06, stable 0.17.0 pins** (devnet, ten Guardian executions, server log): request to submit 3.1 to 7.2 s, submit to canonical 1.5 to 5.1 s. |
 | SC-012 | Partial | Untouched paths are covered by the unchanged SDK suites (Rust 263, TS 730) and the example harnesses build: `examples/demo` compiles, `examples/smoke-web` typechecks and builds after a clean `npm ci` of it and `_shared/multisig-browser`. Missing: the interactive runs through both harnesses (T133), which need a 0.17 node (devnet, or a local node newer than the installed 0.15.1). |
 | SC-013 | Pass | TS drift guards against `guardian_shared::execution` and the Rust SDK constants (`execution.test.ts`, `error-codes.test.ts`, `transaction/expiration.test.ts`). |
 | SC-014 | Pass | `capability_tests::a_server_that_offers_no_execution_refuses_every_request_the_same_way`; qualification `det-guardian-execution-unavailable`. |
-| SC-015 | Partial | Built-in lifecycles proven by live qualification on devnet on both SDKs: consume-notes (`live-guardian-execute-2of3-{falcon,ecdsa}`), an add-signer change that GUARDIAN then authorizes (`live-guardian-execute-add-signer-2of3-falcon`), and a P2ID send executed 60 blocks after its bound block (`live-guardian-execute-p2id-late-2of3-ecdsa`), all passing Oct 1, 2026. Custom type and the example harnesses missing (T135). |
+| SC-015 | Partial | Built-in lifecycles proven by live qualification on devnet on both SDKs: consume-notes (`live-guardian-execute-2of3-{falcon,ecdsa}`), an add-signer change that GUARDIAN then authorizes (`live-guardian-execute-add-signer-2of3-falcon`), and a P2ID send executed 60 blocks after its bound block (`live-guardian-execute-p2id-late-2of3-ecdsa`), all passing Oct 1, 2026, and again on Oct 6, 2026 on the stable 0.17.0 pins (14/14 legs on both SDKs, adding consume-notes after the bound block, `live-guardian-execute-consume-late-2of3-falcon`). Custom type and the example harnesses missing (T135). |
 | SC-016 | Pass | `api::execution_tests` (state strings on both transports); the envelope exposes only the five states. |
 | SC-017 | Pass | `api::execution_tests::a_conflict_names_the_blocking_proposal_on_both_transports`. |
 | SC-018 | Pass | `storage::execution_reservation_tests` (reservation versus client candidate, both orders) on filesystem and Postgres. |

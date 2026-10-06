@@ -11,6 +11,8 @@ scope (FR-050), expiration has two bounds (FR-051), fee info travels in the requ
 steps with the boundary at step 12 and the send at step 14. The 0.16 anchored design is withdrawn,
 see RFC 0001 Appendix A.3)
 
+**Implementation note (2026-10-06)**: the implementation (branch `254-execution-impl`, PR #510) pins stable Miden 0.17.0 (protocol / standards / tx / `miden-client` / `miden-node-proto-build` 0.17.0, web SDK 0.17.0). The release-candidate file:line citations below are dated evidence from the revision that read them and are not re-pinned.
+
 ## Summary
 
 Let a client hand Guardian a fully-signed proposal and have Guardian execute,

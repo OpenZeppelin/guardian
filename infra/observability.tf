@@ -249,6 +249,7 @@ locals {
               "^guardian_execution_chain_view_duration_seconds$",
               "^guardian_execution_proving_duration_seconds$",
               "^guardian_execution_prover_retries_total$",
+              "^guardian_execution_capacity_refusals_total$",
               "^guardian_execution_oldest_reservation_age_seconds$",
               "^guardian_execution_observation_outage_seconds$",
             ]

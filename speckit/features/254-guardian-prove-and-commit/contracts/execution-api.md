@@ -205,7 +205,7 @@ record created:
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 | Proposal was created by a self-executed client, so it carries no stored transaction request (FR-010). Names the cause, so the caller learns to create the proposal with a Guardian-executable client |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 | Below the effective threshold (FR-005) |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 | Active reservation for a different proposal (FR-008). `meta.blocking_proposal_id` MUST name the blocker (FR-036) |
-| `GUARDIAN_EXECUTION_BUSY` | 409 | Another request holds the account's execution lease but has not yet reserved the account, so there is no proposal to name. `meta.retryable` is `true`; retry shortly. Decided 2026-10-01 |
+| `GUARDIAN_EXECUTION_BUSY` | 409 | Guardian cannot start the execution now and reserved nothing: another request holds the account's execution lease but has not yet reserved the account, so there is no proposal to name, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions. `meta.retryable` is `true`; retry shortly. Decided 2026-10-01; capacity cause added 2026-10-06 |
 | `conflict_pending_delta` | 409 | Existing; account holds a pending candidate |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 | Existing |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 | Existing |
@@ -376,6 +376,8 @@ changes no proposal ID (FR-012).
 | `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES` | no | Per-account aggregate cap (FR-016) |
 | `GUARDIAN_EXECUTION_LEASE_SECS` | no | Reservation lease duration (FR-023, FR-028) |
 | `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` | no | How often reconciliation re-checks unresolved submissions (FR-040) |
+| `GUARDIAN_EXECUTION_MAX_CONCURRENT` | no | Safety bound on memory: executions one process holds at once, from acceptance until the worker finishes; a request arriving at the bound is refused with `GUARDIAN_EXECUTION_BUSY` and nothing is reserved. Default 64 |
+| `GUARDIAN_TX_PROVER_MAX_CONCURRENT` | no | Optional limit on proofs one process has at the prover at once, held only for the prover call; admitted executions beyond it wait for a slot. Unset, proofs are bounded only by `GUARDIAN_EXECUTION_MAX_CONCURRENT` |
 | `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` | no | Maximum allowed `proven expiration_block_num − R`, `R` being the attempt's reference block; exceeding it refuses the execution before the no-retry boundary with `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` (FR-046). The default MUST be at least 256, the built-in transaction expiration delta, so every built-in proposal passes; proposed default 512 |
 
 All MUST be documented in `docs/CONFIGURATION.md`.

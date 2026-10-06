@@ -549,7 +549,9 @@ Stable error codes include:
 - `rpc_validation_failed`
 - Guardian execution: `GUARDIAN_PROVING_UNAVAILABLE`, `GUARDIAN_PROPOSAL_NOT_READY`,
   `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, `GUARDIAN_EXECUTION_CONFLICT`
-  (`meta.blocking_proposal_id`), `GUARDIAN_EXECUTION_BUSY` (retryable),
+  (`meta.blocking_proposal_id`), `GUARDIAN_EXECUTION_BUSY` (retryable: another request is
+  starting an execution for the account, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT`
+  executions; nothing is reserved),
   `GUARDIAN_EXECUTION_NOT_FOUND`,
   `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`, `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`. Their
   HTTP and gRPC status pairs are verified by `crates/server/src/api/execution_tests.rs`.
@@ -661,6 +663,7 @@ behavior.
 | `guardian_execution_chain_view_duration_seconds` | histogram | — |
 | `guardian_execution_proving_duration_seconds` | histogram (1 s to 20 min) | — |
 | `guardian_execution_prover_retries_total` | counter | — |
+| `guardian_execution_capacity_refusals_total` | counter | none |
 | `guardian_execution_oldest_reservation_age_seconds` | gauge | — |
 | `guardian_execution_observation_outage_seconds` | gauge | — |
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |

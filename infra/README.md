@@ -256,6 +256,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_execution_lease_secs` | `null` | Overrides `GUARDIAN_EXECUTION_LEASE_SECS` (server default 120, at most 3600) |
 | `guardian_execution_reconcile_interval_secs` | `null` | Overrides `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` (server default 30; must stay below the lease) |
 | `guardian_execution_expiration_horizon_blocks` | `null` | Overrides `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (server default 512, at least 256) |
+| `guardian_execution_max_concurrent` | `null` | Overrides `GUARDIAN_EXECUTION_MAX_CONCURRENT`, a memory safety bound on executions one task holds at once (server default 64, at least 1); raise it only with `server_memory` |
+| `guardian_tx_prover_max_concurrent` | `null` | Sets `GUARDIAN_TX_PROVER_MAX_CONCURRENT`, an optional limit on proofs one task has at the prover at once (unset by default, at least 1 when set); set it for a shared or small prover, which sees this times the task count |
 | `guardian_evm_entrypoint_address` | `""` | Shared EVM EntryPoint address injected into the server task |
 | `guardian_cors_allowed_origins` | `""` | Comma-separated explicit HTTP origins allowed by credentialed CORS |
 | `guardian_allowed_account_schemes` | `""` (every scheme) | Comma-separated signature schemes new accounts may register with (`falcon`, `ecdsa`); the production checklist recommends `ecdsa`. Existing accounts unaffected |

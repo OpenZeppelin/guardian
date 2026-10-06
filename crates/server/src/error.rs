@@ -181,8 +181,9 @@ pub enum GuardianError {
         blocking_proposal_id: String,
     },
     /// Another request holds the account's execution lease but has not reserved the account
-    /// yet, so there is no proposal to name. Stable code `GUARDIAN_EXECUTION_BUSY`, HTTP 409,
-    /// gRPC `ABORTED`, `meta.retryable: true`.
+    /// yet, so there is no proposal to name, or the process already admits as many executions as
+    /// `GUARDIAN_EXECUTION_MAX_CONCURRENT` allows. Stable code `GUARDIAN_EXECUTION_BUSY`, HTTP
+    /// 409, gRPC `ABORTED`, `meta.retryable: true`.
     ExecutionBusy,
     /// The proposal exists but was never executed by Guardian. Stable code
     /// `GUARDIAN_EXECUTION_NOT_FOUND`, HTTP 404, gRPC `NOT_FOUND`.
@@ -482,7 +483,7 @@ impl GuardianError {
                 "Guardian is already executing another transaction for this account."
             }
             GuardianError::ExecutionBusy => {
-                "Guardian is starting another execution for this account. Try again shortly."
+                "Guardian can't start this execution right now. Try again shortly."
             }
             GuardianError::ExecutionNotFound { .. } => {
                 "Guardian hasn't been asked to execute this transaction."
@@ -679,7 +680,8 @@ impl fmt::Display for GuardianError {
             ),
             GuardianError::ExecutionBusy => write!(
                 f,
-                "Another request holds the account's execution lease and has not reserved it yet"
+                "Another request holds the account's execution lease and has not reserved it yet, or \
+                 the server runs its maximum number of executions"
             ),
             GuardianError::ExecutionNotFound {
                 account_id,

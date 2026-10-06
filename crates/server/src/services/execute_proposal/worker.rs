@@ -36,6 +36,8 @@ pub(super) struct ExecutionJob {
     pub lease: Lease,
     pub elector: Arc<dyn LeaderElector>,
     pub executor: Arc<dyn ProposalExecutor>,
+    /// Counts this execution towards the server's cap until the worker returns.
+    pub permit: tokio::sync::OwnedSemaphorePermit,
 }
 
 /// Why the worker stopped before the boundary.
@@ -194,6 +196,7 @@ pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
         }
     }
     release_quietly(job.elector.as_ref(), job.lease.clone()).await;
+    drop(job.permit);
 }
 
 async fn run_to_boundary(

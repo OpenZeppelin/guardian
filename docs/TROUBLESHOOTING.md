@@ -590,6 +590,18 @@ once come back synchronously and create nothing.
   transaction's expiration block with the account unchanged, or `CANDIDATE_DISCARDED` when the account
   moved elsewhere. It never settles by elapsed time. `guardian_execution_observation_outage_seconds`
   above zero means the chain cannot be read.
+- **An execution stays `submitted` after a restart.** If the Guardian process died after the
+  boundary commit (the state reads `submitted` from then on) but before the send had a definite
+  outcome, the transaction may never have reached the node. Reconciliation only observes the chain
+  and never resends, so the account stays reserved: new execution requests get
+  `GUARDIAN_EXECUTION_CONFLICT` and client deltas are refused. Once the chain passes the
+  transaction's recorded expiration block with the account unchanged (256 blocks after the
+  reference block for built-in proposals), it settles as `GUARDIAN_EXECUTION_EXPIRED` and the
+  proposal is deleted; the cosigners must propose and sign again. This is an accepted risk, not a
+  fault to repair by hand. The signal is `guardian_execution_oldest_reservation_age_seconds`
+  climbing; it drops back once the execution settles. The AWS reservation-age alarm
+  (`alarm_execution_reservation_age_threshold_seconds`, default 1800 s) sits above the 256-block
+  window, so it fires only when a reservation outlives it, which is worth investigating.
 
 ### Rate limits triggered
 
@@ -721,7 +733,7 @@ Synchronous refusals of `POST /delta/proposal/execution` and the proposal-creati
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 (gRPC `FailedPrecondition`) | Fewer valid cosigner signatures than the effective threshold. |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 (gRPC `FailedPrecondition`) | The proposal was created by a self-executed client; create it again from a Guardian-executable one. |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active. |
-| `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the account and has not reserved it yet. Retryable; retry shortly. |
+| `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Either another request is starting an execution for the same account and has not reserved it yet, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions (default 64), a safety bound on memory. Nothing was reserved. Retryable; retry shortly. If `guardian_execution_capacity_refusals_total` keeps rising, give the task more memory before raising the bound. |
 | `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone. |
 | `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 (gRPC `InvalidArgument`) | Stored request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`. |
 | `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED` | 409 (gRPC `FailedPrecondition`) | The account's viable proposals already hold `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`; finish or discard one. |

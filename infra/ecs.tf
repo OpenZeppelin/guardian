@@ -285,6 +285,18 @@ resource "aws_ecs_task_definition" "server" {
               name  = "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS"
               value = tostring(var.guardian_execution_expiration_horizon_blocks)
             }
+          ] : [],
+          var.guardian_execution_max_concurrent != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_MAX_CONCURRENT"
+              value = tostring(var.guardian_execution_max_concurrent)
+            }
+          ] : [],
+          var.guardian_tx_prover_max_concurrent != null ? [
+            {
+              name  = "GUARDIAN_TX_PROVER_MAX_CONCURRENT"
+              value = tostring(var.guardian_tx_prover_max_concurrent)
+            }
           ] : []
         )
 

@@ -241,6 +241,19 @@ database's guarantees:
   `rds_multi_az = true` if the deployment needs automatic failover to a
   standby replica; this is an availability trade-off (roughly double the
   instance cost), not a backup mechanism.
+- **Guardian execution across a crash (accepted risk).** If the process dies
+  after an execution's boundary commit (state `submitted`) and before the
+  send has a definite outcome, the transaction may never have been sent.
+  Reconciliation only observes the chain and never resends, so the account
+  stays reserved (new executions get `GUARDIAN_EXECUTION_CONFLICT`, client
+  deltas are refused) until the chain passes the transaction's expiration
+  (256 blocks after the reference block for built-in proposals). It then
+  settles as `GUARDIAN_EXECUTION_EXPIRED`, the proposal is deleted, and the
+  cosigners must propose and sign again. The signal is
+  `guardian_execution_oldest_reservation_age_seconds` climbing; the AWS
+  reservation-age alarm (default 1800 s) is set above this window, so it
+  fires only if the reservation outlives it. See
+  [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution-fails-or-never-starts).
 
 What is deliberately **not** provided: cross-region replicas, automated
 disaster-recovery drills, or backup-failure alarms (see

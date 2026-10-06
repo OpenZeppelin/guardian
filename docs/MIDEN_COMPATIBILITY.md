@@ -181,14 +181,15 @@ Nothing stored under Miden 0.16 survives:
 
 Guardian 0.18.x adds server-side execution of Guardian-executable proposals on this line. A
 stored request declaring a protocol line other than `0.17` is refused before it is decoded.
-Within the line, `TransactionRequest` serialization carries no version tag and prerelease
-clients have changed it, so the SDK that created a proposal and the server should run the same
-`miden-client`. A request from a different client either fails to decode
+Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
+release candidates changed it, so the SDK that created a proposal and the server should run the
+same `miden-client`: this build pins the stable 0.17.0 client in the server and the Rust SDK and
+web SDK 0.17.0 in the TypeScript SDK. A request from a different client either fails to decode
 (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
 (`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
-scenarios (`live-guardian-execute-*`) have been run by hand on devnet; the qualification matrix
-requires them on testnet and excludes them from devnet runs, whose step budget they exceed. Treat
-the capability as production-ready only once the line moves to stable 0.17 pins.
+scenarios (`live-guardian-execute-*`) passed by hand on devnet (node 0.17.0) on 2026-10-06 with
+these stable pins, on both SDKs; the qualification matrix requires them on testnet and excludes
+them from devnet runs, whose step budget they exceed.
 
 Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators upgrading:
 

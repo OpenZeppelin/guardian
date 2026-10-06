@@ -22,12 +22,25 @@ pub struct ExecutionState {
     pub leases: Arc<dyn ExecutionLeases>,
     pub executor: Option<Arc<dyn ProposalExecutor>>,
     pub replica_id: String,
+    /// One permit per execution this process holds in memory at once, from acceptance until its
+    /// worker finishes: a safety bound sized to memory, not a throughput setting.
+    pub capacity: Arc<tokio::sync::Semaphore>,
+}
+
+impl ExecutionState {
+    pub fn capacity_for(config: &ExecutionConfig) -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(
+            config.max_concurrent_executions as usize,
+        ))
+    }
 }
 
 impl Default for ExecutionState {
     fn default() -> Self {
+        let config = ExecutionConfig::default();
         Self {
-            config: ExecutionConfig::default(),
+            capacity: Self::capacity_for(&config),
+            config,
             leases: Arc::new(InMemoryExecutionLeases::new()),
             executor: None,
             replica_id: "single-process".to_string(),
@@ -151,6 +164,12 @@ pub async fn request_execution(
         });
     }
 
+    let Ok(permit) = state.execution.capacity.clone().try_acquire_owned() else {
+        crate::metrics::execution::record_capacity_refusal();
+        tracing::info!(%account_id, %proposal_id, "execution refused: the process admits no more executions at once");
+        return already_executing(state, &account_id, proposal_id).await;
+    };
+
     let holder_id = state.execution.new_holder_id();
     let elector = state.execution.leases.elector(&account_id, &holder_id);
     let lease_ttl = state.execution.config.lease;
@@ -228,6 +247,7 @@ pub async fn request_execution(
         lease,
         elector,
         executor,
+        permit,
     };
     let worker_state = state.clone();
     tokio::spawn(async move { run_execution(&worker_state, job).await });

@@ -995,3 +995,29 @@ variable "guardian_execution_expiration_horizon_blocks" {
     error_message = "guardian_execution_expiration_horizon_blocks must be a whole number between 256 and 65535."
   }
 }
+
+variable "guardian_execution_max_concurrent" {
+  description = "Optional override for GUARDIAN_EXECUTION_MAX_CONCURRENT, a memory safety bound on the executions one task holds at once (server default 64, a positive integer); raise it only with the task's memory"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_max_concurrent == null ? true : (
+      var.guardian_execution_max_concurrent >= 1 &&
+      floor(var.guardian_execution_max_concurrent) == var.guardian_execution_max_concurrent
+    )
+    error_message = "guardian_execution_max_concurrent must be a whole number of at least 1."
+  }
+}
+
+variable "guardian_tx_prover_max_concurrent" {
+  description = "Optional override for GUARDIAN_TX_PROVER_MAX_CONCURRENT, an optional limit on proofs one task has at the prover at once (unset by default, a positive integer when set). Set it for a shared or small prover; the prover sees this times the task count."
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_tx_prover_max_concurrent == null ? true : (
+      var.guardian_tx_prover_max_concurrent >= 1 &&
+      floor(var.guardian_tx_prover_max_concurrent) == var.guardian_tx_prover_max_concurrent
+    )
+    error_message = "guardian_tx_prover_max_concurrent must be a whole number of at least 1."
+  }
+}

@@ -4,6 +4,7 @@
 **Created**: 2026-07-27
 **Last Revised**: 2026-09-30 (review revision 11: re-verified against the Miden 0.17 release-candidate pins on `main`, protocol / standards / tx `0.17.0-rc.7`, `miden-client` `0.17.0-rc.4`, `miden-node-proto-build` `0.17.0-rc.3`, web SDK `0.17.0-rc.4`. The signed summary binds a proposer-chosen bound block, so reproduction runs at the chain tip (FR-056, FR-061); foreign public accounts are in scope (FR-050); expiration has an approval bound and a transaction bound (FR-051); fee info travels in the request's auth arg (FR-057); submission inputs are sealed before the boundary (FR-059). Revision 10's anchored design is withdrawn, see RFC 0001 Appendix A.3)
 **Status**: Draft
+**Implementation note (2026-10-06)**: the implementation (branch `254-execution-impl`, PR #510) pins stable Miden 0.17.0 (protocol / standards / tx / `miden-client` / `miden-node-proto-build` 0.17.0, web SDK 0.17.0). The release-candidate file:line citations below are dated evidence from the revision that read them and are not re-pinned.
 **Input**: Issue #254 (parent: #253 META - Transaction Orchestration): "Enable the Guardian to handle the full prove-and-commit lifecycle for a transaction. The user submits a signed `TransactionSummary` to the Guardian; the Guardian generates the ZK proof; the Guardian submits the proven transaction to the Miden network."
 
 ## Context *(why this feature exists)*

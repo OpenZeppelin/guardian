@@ -64,6 +64,7 @@ pub const EXECUTION_CHAIN_VIEW_DURATION_SECONDS: &str =
     "guardian_execution_chain_view_duration_seconds";
 pub const EXECUTION_PROVING_DURATION_SECONDS: &str = "guardian_execution_proving_duration_seconds";
 pub const EXECUTION_PROVER_RETRIES_TOTAL: &str = "guardian_execution_prover_retries_total";
+pub const EXECUTION_CAPACITY_REFUSALS_TOTAL: &str = "guardian_execution_capacity_refusals_total";
 pub const EXECUTION_OLDEST_RESERVATION_AGE_SECONDS: &str =
     "guardian_execution_oldest_reservation_age_seconds";
 pub const EXECUTION_OBSERVATION_OUTAGE_SECONDS: &str =
@@ -338,6 +339,12 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Transient prover failures Guardian retried under a held reservation.",
     },
     MetricDef {
+        name: EXECUTION_CAPACITY_REFUSALS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Execution requests refused as busy because the process already held GUARDIAN_EXECUTION_MAX_CONCURRENT executions.",
+    },
+    MetricDef {
         name: EXECUTION_OLDEST_RESERVATION_AGE_SECONDS,
         kind: MetricKind::Gauge,
         labels: &[],
@@ -353,7 +360,7 @@ pub const REGISTRY: &[MetricDef] = &[
         name: EXECUTION_RECONCILE_OUTCOMES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
-        help: "Guardian executions visited by reconciliation, by outcome (owned, released, awaiting_promotion, waiting, observation_unavailable, resolved).",
+        help: "Guardian executions visited by reconciliation, by outcome (owned, released, awaiting_promotion, committed, waiting, observation_unavailable, resolved).",
     },
     MetricDef {
         name: CANONICALIZATION_RECONCILE_RUNS_TOTAL,

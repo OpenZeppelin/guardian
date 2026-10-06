@@ -641,6 +641,46 @@ async fn account_lease_is_free(f: &Fixture) -> bool {
 }
 
 #[tokio::test]
+async fn a_server_at_its_execution_cap_refuses_as_busy_and_reserves_nothing() {
+    let mut f = Fixture::new(Script::default()).await;
+    f.state.execution.capacity = Arc::new(tokio::sync::Semaphore::new(0));
+    assert!(matches!(
+        f.request().await,
+        Err(crate::error::GuardianError::ExecutionBusy)
+    ));
+    assert!(
+        f.state
+            .storage
+            .load_active_execution(ACCOUNT)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_finished_execution_gives_its_capacity_back() {
+    let mut f = Fixture::new(Script {
+        submission: SubmissionOutcome::Rejected {
+            reason: "stale".to_string(),
+        },
+        ..Script::default()
+    })
+    .await;
+    let capacity = Arc::new(tokio::sync::Semaphore::new(1));
+    f.state.execution.capacity = capacity.clone();
+    f.request().await.unwrap();
+    f.settle(|state| state == ExecutionState::Failed).await;
+    for _ in 0..100 {
+        if capacity.available_permits() == 1 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("the worker kept its permit after it finished");
+}
+
+#[tokio::test]
 async fn a_rejected_submission_gives_the_account_lease_up() {
     let f = Fixture::new(Script {
         submission: SubmissionOutcome::Rejected {
