@@ -2699,26 +2699,24 @@ export class Multisig {
   /**
    * A switch_guardian proposal as the pre-switch GUARDIAN serves it, so the
    * state it pinned the proposal to is checked as for every other type, or
-   * `undefined` when that GUARDIAN cannot serve it: it never received the
-   * proposal (one made offline) or it is unreachable, the case the offline
-   * path exists for. The switch then executes from its cached summary
-   * without the check. Any other answer (it is up and refuses: an
-   * authentication failure, a paused or released account, rate limiting, a
-   * server fault) fails the execution, as it does for every other type:
-   * executing unchecked is what the pinned-base check exists to prevent.
+   * `undefined` when that GUARDIAN does not serve it. Not holding the
+   * proposal (one made offline) is the designed offline case. Any other
+   * failure, whether the GUARDIAN is unreachable or answers with an error
+   * (an authentication failure, a paused or released account, rate limiting,
+   * a server fault), is warned about. In every one of those cases the switch
+   * then executes from its cached summary without the check: rotating away
+   * from a GUARDIAN that is down or refusing service is what the switch
+   * exists for, so that GUARDIAN cannot be what blocks it.
    */
   private async servedSwitchProposal(normalizedProposalId: string): Promise<DeltaObject | undefined> {
     try {
       return await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
     } catch (error) {
-      if (error instanceof GuardianHttpError) {
-        if (error.code === 'proposal_not_found') {
-          return undefined;
-        }
-        throw error;
+      if (error instanceof GuardianHttpError && error.code === 'proposal_not_found') {
+        return undefined;
       }
       console.warn(
-        'The pre-switch GUARDIAN is unreachable; executing the switch proposal without ' +
+        'The pre-switch GUARDIAN did not serve the switch proposal; executing it without ' +
           'checking the state it was pinned to',
         error,
       );

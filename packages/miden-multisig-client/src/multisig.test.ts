@@ -6674,7 +6674,7 @@ describe('Multisig', () => {
       try {
         await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
         expect(warnSpy).toHaveBeenCalledWith(
-          expect.stringContaining('The pre-switch GUARDIAN is unreachable'),
+          expect.stringContaining('The pre-switch GUARDIAN did not serve the switch proposal'),
           expect.anything(),
         );
       } finally {
@@ -6729,24 +6729,58 @@ describe('Multisig', () => {
       expect(executionPushes()).toHaveLength(1);
     });
 
-    it('fails the switch when the pre-switch GUARDIAN refuses to serve the proposal', async () => {
-      const config = {
-        threshold: 1,
-        signerCommitments: ['0x' + 'a'.repeat(64)],
-        guardianCommitment: '0x' + 'c'.repeat(64),
-      };
-      const multisig = createTestMultisig(config);
-      const proposalId = '0x' + 'c'.repeat(64);
-      readySwitchProposal(multisig, proposalId, '0x' + '1'.repeat(64));
+    for (const [status, code] of [
+      [401, 'authentication_failed'],
+      [409, 'GUARDIAN_ACCOUNT_PAUSED'],
+      [429, 'rate_limited'],
+      [503, 'service_unavailable'],
+    ] as const) {
+      it(`still switches when the pre-switch GUARDIAN refuses to serve the proposal (${status})`, async () => {
+        const config = {
+          threshold: 1,
+          signerCommitments: ['0x' + 'a'.repeat(64)],
+          guardianCommitment: '0x' + 'c'.repeat(64),
+        };
+        const multisig = createTestMultisig(config);
+        const proposalId = '0x' + 'c'.repeat(64);
+        const newGuardianPubkey = '0x' + '1'.repeat(64);
+        readySwitchProposal(multisig, proposalId, newGuardianPubkey);
 
-      // Up and refusing (here: this client's request is not authorized): the
-      // pinned base cannot be checked, so nothing executes.
-      mockFetch.mockResolvedValueOnce(guardianRefusal(401, 'authentication_failed'));
-
-      await expect(multisig.executeProposal(proposalId)).rejects.toThrow(/authentication_failed/);
-      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
-      expect(executionPushes()).toEqual([]);
-    });
+        // Up and refusing: an operator the account is rotating away from
+        // must not be able to block the rotation by answering with an error.
+        mockFetch.mockResolvedValueOnce(guardianRefusal(status, code));
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ commitment: newGuardianPubkey }),
+        });
+        mockFetch.mockResolvedValueOnce(guardianRefusal(status, code));
+        vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+        mockImportNotesFromProposals.mockReset();
+        mockImportNotesFromProposals.mockResolvedValue([]);
+        mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+        mockWebClient.accounts.get.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+        });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+          expect(warnSpy).toHaveBeenCalledWith(
+            expect.stringContaining('The pre-switch GUARDIAN did not serve the switch proposal'),
+            expect.anything(),
+          );
+        } finally {
+          warnSpy.mockRestore();
+        }
+        expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
+        expect(executionPushes()).toEqual([
+          expect.objectContaining({ nonce: 1, prev_commitment: LOCAL_ACCOUNT_COMMITMENT }),
+        ]);
+      });
+    }
 
     it('imports notes embedded in pending proposals from the pre-switch GUARDIAN before repointing (#417)', async () => {
       const config = {
