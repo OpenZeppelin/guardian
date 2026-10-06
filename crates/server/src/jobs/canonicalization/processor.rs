@@ -1473,6 +1473,9 @@ impl DeltasProcessorBase {
 
         let now = self.state.clock.now_rfc3339();
 
+        let new_auth = applied.updated_auth(&account_metadata.auth);
+        let new_guardian_commitment = applied.guardian_commitment;
+
         let updated_state = StateObject {
             account_id: delta.account_id.clone(),
             state_json: applied.state_json,
@@ -1483,15 +1486,6 @@ impl DeltasProcessorBase {
             auth_scheme: String::new(),
         };
 
-        let new_auth = {
-            let client = &self.state.network_client;
-            client
-                .should_update_auth(&updated_state.state_json, &account_metadata.auth)
-                .await
-                .map_err(|e| {
-                    GuardianError::StorageError(format!("Failed to check auth update: {e}"))
-                })?
-        };
         if new_auth.is_some() {
             tracing::debug!(
                 account_id = %delta.account_id,
@@ -1597,7 +1591,7 @@ impl DeltasProcessorBase {
         crate::services::release_on_switch::release_if_guardian_switched(
             &self.state,
             &account_metadata,
-            &updated_state.state_json,
+            new_guardian_commitment.as_deref(),
             delta.nonce,
             &updated_state.commitment,
         )
@@ -2147,6 +2141,15 @@ mod tests {
 
         fn apply_delta(
             &self,
+            _prev_state_json: &serde_json::Value,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<AppliedState, String> {
+            unreachable!()
+        }
+
+        fn verify_and_apply_delta(
+            &self,
+            _prev_proof: &str,
             _prev_state_json: &serde_json::Value,
             _delta_payload: &serde_json::Value,
         ) -> std::result::Result<AppliedState, String> {
@@ -4678,12 +4681,14 @@ mod tests {
             .with_submit_delta(Ok(()));
 
         let mock_network = MockNetworkClient::new()
-            .with_apply_delta(Ok((
-                serde_json::json!({"new": "state"}),
-                "new_commitment".to_string(),
-            )))
-            .with_verify_commitment(Ok(StateVerification::Match))
-            .with_should_update_auth(Ok(Some(new_auth)));
+            .with_applied_state(Ok(AppliedState {
+                state_json: serde_json::json!({"new": "state"}),
+                commitment: "new_commitment".to_string(),
+                nonce: None,
+                cosigner_commitments: vec!["0xnew_commitment".to_string()],
+                guardian_commitment: None,
+            }))
+            .with_verify_commitment(Ok(StateVerification::Match));
 
         let mock_metadata = MockMetadataStore::new()
             .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
@@ -4692,6 +4697,7 @@ mod tests {
             .with_get(Ok(Some(create_test_metadata(account_id))))
             .with_set(Ok(())) // For update_auth
             .with_set(Ok(())); // For clearing has_pending_candidate
+        let metadata_handle = mock_metadata.clone();
 
         let state = create_test_app_state_with_mocks(
             Arc::new(mock_storage),
@@ -4704,6 +4710,13 @@ mod tests {
 
         let result = processor.process_all_accounts().await;
         assert!(result.is_ok());
+        assert!(
+            metadata_handle
+                .get_set_calls()
+                .iter()
+                .any(|metadata| metadata.auth == new_auth),
+            "promotion must persist the cosigner commitments the applied state carries"
+        );
     }
 
     #[tokio::test]

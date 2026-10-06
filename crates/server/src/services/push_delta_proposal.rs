@@ -5,6 +5,7 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::{normalize_payload, resolve_account};
 use guardian_shared::{DeltaSignature, EcdsaMessageFormat};
+use std::sync::Arc;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -146,21 +147,21 @@ pub async fn push_delta_proposal(
 
     // Validate delta using network client (check validity but don't apply)
     // and compute the delta commitment
-    let commitment = {
-        let client = &state.network_client;
-        client
-            .verify_delta(
-                &current_state.commitment,
-                &current_state.state_json,
-                tx_summary,
-            )
-            .map_err(GuardianError::InvalidDelta)?;
+    {
+        let client = state.network_client.clone();
+        let prev_commitment = current_state.commitment.clone();
+        let prev_state_json = current_state.state_json.clone();
+        let tx_summary = Arc::new(tx_summary.clone());
+        crate::network::reconstructor()
+            .run(move || client.verify_delta(&prev_commitment, &prev_state_json, &tx_summary))
+            .await?;
+    }
 
-        // Compute the delta proposal ID from the tx_summary
-        client
-            .delta_proposal_id(&account_id, nonce, tx_summary)
-            .map_err(GuardianError::InvalidDelta)?
-    };
+    // Compute the delta proposal ID from the tx_summary
+    let commitment = state
+        .network_client
+        .delta_proposal_id(&account_id, nonce, tx_summary)
+        .map_err(GuardianError::InvalidDelta)?;
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
     let proposer_id = resolved.signer_commitment.clone();

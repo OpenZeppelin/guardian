@@ -542,6 +542,14 @@ mod tests {
         ) -> std::result::Result<crate::network::AppliedState, String> {
             unimplemented!()
         }
+        fn verify_and_apply_delta(
+            &self,
+            _: &str,
+            _: &serde_json::Value,
+            _: &serde_json::Value,
+        ) -> std::result::Result<crate::network::AppliedState, String> {
+            unimplemented!()
+        }
         fn merge_deltas(
             &self,
             _: Vec<serde_json::Value>,

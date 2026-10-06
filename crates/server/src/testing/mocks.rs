@@ -160,6 +160,8 @@ impl MockNetworkClient {
             state_json,
             commitment,
             nonce: None,
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }))
     }
 
@@ -259,8 +261,20 @@ impl NetworkClient for MockNetworkClient {
                     state_json: serde_json::json!({}),
                     commitment: "mock_new_commitment".to_string(),
                     nonce: None,
+                    cosigner_commitments: Vec::new(),
+                    guardian_commitment: None,
                 })
             })
+    }
+
+    fn verify_and_apply_delta(
+        &self,
+        prev_proof: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> StdResult<AppliedState, String> {
+        self.verify_delta(prev_proof, prev_state_json, delta_payload)?;
+        self.apply_delta(prev_state_json, delta_payload)
     }
 
     fn merge_deltas(

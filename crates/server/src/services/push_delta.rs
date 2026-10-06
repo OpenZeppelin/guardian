@@ -83,8 +83,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         let delta_payload = Arc::new(params.delta.delta_payload.clone());
         crate::network::reconstructor()
             .run(move || {
-                client.verify_delta(&prev_commitment, &prev_state_json, &delta_payload)?;
-                client.apply_delta(&prev_state_json, &delta_payload)
+                client.verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
             })
             .await?
     };
