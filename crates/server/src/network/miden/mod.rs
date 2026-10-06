@@ -812,6 +812,22 @@ impl NetworkClient for MidenNetworkClient {
         Ok(Some(account.nonce().as_canonical_u64()))
     }
 
+    fn account_auth_binding(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<Option<crate::network::AuthBinding>, String> {
+        let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
+        // Sorted, so that two bindings compare as sets: a membership change
+        // re-packs the signer map's indices, and only who may sign matters.
+        let mut signers = inspector.extract_slot_1_pubkeys();
+        signers.sort_unstable();
+        Ok(Some(crate::network::AuthBinding {
+            signers,
+            guardian: inspector.extract_guardian_public_key(),
+        }))
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,

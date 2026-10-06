@@ -32,12 +32,12 @@ qual_swap_server_image() {
     && mv "${tmp}" "${env_file}" || return 1
 
   # Every GUARDIAN in the stack, not only the one most scenarios talk to. The
-  # migration target and the scheme-gated server run the same image, and leaving
-  # them on the seeded release meant the phase that is supposed to judge the
-  # image under test was still asking an older one: `det-scheme-gate` failed
-  # after a successful upgrade because the gate it asserts did not exist in the
-  # release the third server was still running.
+  # migration target, the scheme-gated, the executing and the queue server run
+  # the same image, and leaving them on the seeded release meant the phase that
+  # is supposed to judge the image under test was still asking an older one:
+  # `det-scheme-gate` failed after a successful upgrade because the gate it
+  # asserts did not exist in the release the third server was still running.
   docker compose -p "${project}" -f "${compose_file}" --env-file "${env_file}" \
     up -d --no-deps --force-recreate \
-    server server-migration-target server-scheme-gated server-executing >/dev/null 2>&1
+    server server-migration-target server-scheme-gated server-executing server-queue >/dev/null 2>&1
 }

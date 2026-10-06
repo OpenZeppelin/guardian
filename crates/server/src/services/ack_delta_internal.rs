@@ -7,7 +7,6 @@ use crate::delta_object::DeltaObject;
 use crate::error::Result;
 use crate::network::AppliedState;
 use crate::state::AppState;
-use crate::state_object::StateObject;
 
 /// A delta verified against the account's current state and acknowledged by Guardian, not yet
 /// committed anywhere.
@@ -17,19 +16,21 @@ pub(crate) struct AcknowledgedDelta {
     pub matched_proposal: bool,
 }
 
-/// Verifies `delta` against `current_state`, derives its metadata, and signs Guardian's
-/// acknowledgment. Persists nothing and sets no pending-candidate flag: the public push path
+/// Verifies `delta` against the state it builds on, derives its metadata, and signs Guardian's
+/// acknowledgment. The base is the canonical state for a Guardian execution and the queue tail
+/// for a pushed delta. Persists nothing and sets no pending-candidate flag: the public push path
 /// commits the result itself, and a Guardian execution admits it only at its boundary commit.
 pub(crate) async fn acknowledge_delta(
     state: &AppState,
     scheme: &SignatureScheme,
-    current_state: &StateObject,
+    base_commitment: &str,
+    base_state_json: &serde_json::Value,
     delta: &DeltaObject,
 ) -> Result<AcknowledgedDelta> {
     let applied = {
         let client = state.network_client.clone();
-        let prev_commitment = current_state.commitment.clone();
-        let prev_state_json = current_state.state_json.clone();
+        let prev_commitment = base_commitment.to_string();
+        let prev_state_json = base_state_json.clone();
         let delta_payload = Arc::new(delta.delta_payload.clone());
         crate::network::reconstructor()
             .run(move || {

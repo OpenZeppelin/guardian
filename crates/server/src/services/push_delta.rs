@@ -2,9 +2,11 @@ use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
+use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
 use crate::services::resolve_account;
 use crate::state::AppState;
+use crate::storage::ChainPosition;
 
 #[derive(Debug, Clone)]
 pub struct PushDeltaParams {
@@ -34,7 +36,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         });
     }
 
-    let current_state = resolved
+    let mut current_state = resolved
         .storage
         .pull_state(&params.delta.account_id)
         .await
@@ -59,39 +61,107 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         });
     }
 
-    // Check for pending candidates before accepting new delta
-    let has_pending = resolved
-        .storage
-        .has_pending_candidate(&params.delta.account_id)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                account_id = %params.delta.account_id,
-                error = %e,
-                "Failed to check deltas in push_delta"
-            );
-            GuardianError::StorageError(format!("Failed to check deltas: {e}"))
-        })?;
-
-    if has_pending {
+    // Queue admission (issue #17), in the order the storage gate applies
+    // under the account lock (`storage::gate_candidate_submission`), so
+    // two racing submissions cannot both extend the tail:
+    // - a full queue refuses every delta (409, wait for it to drain);
+    //   checked first, so depth 1 is exactly the historical one
+    //   in-flight candidate gate, whatever the delta's base;
+    // - the delta must extend the chain at its tail: building on the
+    //   canonical state or on a non-tail candidate while a later
+    //   candidate already occupies that slot is a competing submission
+    //   (409); building on a state this server does not know is a
+    //   commitment mismatch against the canonical commitment the client
+    //   can resync to (400);
+    // - its nonce must exceed the tail's: a lower one collides with a
+    //   queued candidate's slot (409, like the in-lock gate);
+    // - the tail must not change who may act on the account: nothing
+    //   chains behind a candidate that changes the signer set or the
+    //   guardian key until it promotes (409; `ensure_tail_keeps_auth`,
+    //   judged on the replayed tail, so it runs after the replay and in
+    //   the request path only; its docs say why that is race-safe);
+    // - behind a queued candidate, its nonce must be the nonce the delta
+    //   leaves the account at (409): the queue orders, gates and looks up
+    //   candidates by that label, so a timestamp label would sort past
+    //   every real nonce and refuse each correctly labelled successor
+    //   until it promoted. Request path only, after `apply_delta`, like
+    //   the auth binding: the storage gate does not repeat it, and a
+    //   delta that fails it never reaches the lock. A candidate admitted
+    //   after the queue was read moves the tail, so the lock-side
+    //   position check refuses this delta as competing. With nothing
+    //   queued the label is not checked, so older clients that label
+    //   with a timestamp keep working at the head.
+    let chain = CandidateChain::load_for_admission(
+        resolved.storage.as_ref(),
+        &params.delta.account_id,
+        &mut current_state,
+        Some(&params.delta.prev_commitment),
+    )
+    .await?;
+    let max_pending_candidates = candidate_chain::max_pending_candidates(state);
+    if chain.len() >= max_pending_candidates {
+        tracing::info!(
+            account_id = %params.delta.account_id,
+            nonce = params.delta.nonce,
+            queued = chain.len(),
+            max_pending_candidates,
+            "Candidate queue is full; rejecting as pending-delta conflict"
+        );
         return Err(GuardianError::ConflictPendingDelta);
     }
-
-    if params.delta.prev_commitment != current_state.commitment {
-        return Err(GuardianError::CommitmentMismatch {
-            expected: current_state.commitment.clone(),
-            actual: params.delta.prev_commitment.clone(),
-        });
+    match chain.position(&current_state.commitment, &params.delta.prev_commitment) {
+        ChainPosition::Tail => {}
+        ChainPosition::Competing => {
+            tracing::debug!(
+                account_id = %params.delta.account_id,
+                nonce = params.delta.nonce,
+                queued = chain.len(),
+                "Delta competes with a queued candidate for its base state"
+            );
+            return Err(GuardianError::ConflictPendingDelta);
+        }
+        ChainPosition::Unrelated => {
+            return Err(GuardianError::CommitmentMismatch {
+                expected: current_state.commitment.clone(),
+                actual: params.delta.prev_commitment.clone(),
+            });
+        }
     }
+    if let Some(tail_nonce) = chain.tail_nonce()
+        && params.delta.nonce <= tail_nonce
+    {
+        tracing::info!(
+            account_id = %params.delta.account_id,
+            nonce = params.delta.nonce,
+            tail_nonce,
+            "Delta nonce does not extend the candidate queue; rejecting as pending-delta conflict"
+        );
+        return Err(GuardianError::ConflictPendingDelta);
+    }
+    let tail = chain.reconstruct_tail(state, &current_state).await?;
+    candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
     let scheme = resolved.metadata.auth.scheme();
     let acknowledged = crate::services::ack_delta_internal::acknowledge_delta(
         state,
         &scheme,
-        &current_state,
+        &tail.commitment,
+        &tail.state_json,
         &params.delta,
     )
     .await?;
+    if !chain.is_empty()
+        && let Some(applied_nonce) = acknowledged.applied.nonce
+        && applied_nonce != params.delta.nonce
+    {
+        tracing::info!(
+            account_id = %params.delta.account_id,
+            nonce = params.delta.nonce,
+            applied_nonce,
+            "Chained delta is not labelled with the nonce it produces; rejecting as pending-delta conflict"
+        );
+        return Err(GuardianError::ConflictPendingDelta);
+    }
     let mut result_delta = acknowledged.delta;
     let applied = acknowledged.applied;
 
@@ -478,6 +548,498 @@ mod tests {
         assert!(
             matches!(err, GuardianError::AuthenticationFailed(_)),
             "unauthenticated caller must not learn pause state; got: {err:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #17: per-account candidate queue admission.
+    // ------------------------------------------------------------------
+
+    fn candidate_mode_state(
+        storage: MockStorageBackend,
+        network: MockNetworkClient,
+        metadata: MockMetadataStore,
+        max_pending_candidates: usize,
+    ) -> AppState {
+        let mut state = create_test_app_state_with_mocks(
+            Arc::new(storage),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+        state.canonicalization = Some(
+            crate::canonicalization::CanonicalizationConfig::default()
+                .with_max_pending_candidates_per_account(max_pending_candidates),
+        );
+        state
+    }
+
+    fn active_metadata(account_id: &str, signer_commitment: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer_commitment.to_string()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: true,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        }
+    }
+
+    fn stored_state(account_id: &str, commitment: &str) -> crate::state_object::StateObject {
+        crate::state_object::StateObject {
+            account_id: account_id.to_string(),
+            state_json: serde_json::json!({"step": 0}),
+            commitment: commitment.to_string(),
+            nonce: None,
+            created_at: "2026-05-25T08:00:00Z".into(),
+            updated_at: "2026-05-25T08:00:00Z".into(),
+            auth_scheme: String::new(),
+        }
+    }
+
+    fn queued(account_id: &str, nonce: u64, prev: &str, new: &str) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: prev.to_string(),
+            new_commitment: Some(new.to_string()),
+            delta_payload: crate::testing::helpers::create_test_delta_payload(account_id),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: crate::delta_object::DeltaStatus::candidate("2026-05-25T08:00:00Z".into()),
+            metadata: None,
+        }
+    }
+
+    fn request(account_id: &str, nonce: u64, prev: &str) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce,
+            prev_commitment: prev.to_string(),
+            new_commitment: None,
+            delta_payload: crate::testing::helpers::create_test_delta_payload(account_id),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: Default::default(),
+            metadata: None,
+        }
+    }
+
+    /// One queued candidate (nonce 1, base → 0xc1) on a canonical state
+    /// at 0xbase; the request under test is applied against the mocks.
+    async fn push_against_queue(
+        max_pending_candidates: usize,
+        queue: Vec<DeltaObject>,
+        delta: DeltaObject,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        MockNetworkClient,
+    ) {
+        push_against_queue_with(max_pending_candidates, queue, delta, |network| network).await
+    }
+
+    /// [`push_against_queue`] with extra canned network answers, for the
+    /// checks that read the replayed tail.
+    async fn push_against_queue_with(
+        max_pending_candidates: usize,
+        queue: Vec<DeltaObject>,
+        delta: DeltaObject,
+        configure_network: impl FnOnce(MockNetworkClient) -> MockNetworkClient,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        MockNetworkClient,
+    ) {
+        let account_id = delta.account_id.clone();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        // Two canned state reads: the admission path re-reads the state
+        // once when the queue does not chain, to tolerate a promotion
+        // racing the request.
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(stored_state(&account_id, "0xbase")))
+            .with_pull_state(Ok(stored_state(&account_id, "0xbase")))
+            .with_pull_candidate_deltas(Ok(queue.clone()))
+            .with_pull_candidate_deltas(Ok(queue))
+            .with_pull_delta_proposal(Err("no matching proposal".to_string()))
+            .with_submit_delta(Ok(()));
+        // Responses pop LIFO: the new delta's application is queued
+        // first, the queue replay (candidate 1) last.
+        let network = configure_network(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_verify_delta(Ok(()))
+                .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string()))),
+        );
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(active_metadata(&account_id, &signer_commitment))))
+            .with_get(Ok(Some(active_metadata(&account_id, &signer_commitment))));
+        let state = candidate_mode_state(
+            storage.clone(),
+            network.clone(),
+            metadata,
+            max_pending_candidates,
+        );
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta,
+                credentials: Credentials::signature(
+                    signer_pubkey,
+                    signer_signature,
+                    signer_timestamp,
+                ),
+            },
+        )
+        .await;
+        (result, storage, network)
+    }
+
+    #[tokio::test]
+    async fn chained_delta_extends_the_candidate_queue_tail() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+        )
+        .await;
+        let result = result.expect("a delta chained from the tail is admitted");
+        assert!(result.delta.status.is_candidate());
+        assert_eq!(result.delta.prev_commitment, "0xc1");
+        assert_eq!(
+            result.delta.new_commitment.as_deref(),
+            Some("0xc2"),
+            "applied on the replayed tail state, not the canonical one"
+        );
+        let persisted = storage
+            .get_submit_delta_calls()
+            .pop()
+            .expect("candidate persisted");
+        assert_eq!(persisted.nonce, 2);
+        assert!(persisted.status.is_candidate());
+    }
+
+    #[tokio::test]
+    async fn competing_delta_is_refused_while_a_candidate_holds_its_base() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, network) = push_against_queue(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xbase"),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            2,
+            "refused before any reconstruction"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_queue_refuses_a_correctly_chained_delta() {
+        // Depth 1 is the historical single-candidate gate.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue(
+            1,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chained_delta_must_extend_the_queue_in_nonce_order() {
+        // A nonce at or below the tail's collides with a queued
+        // candidate's slot: the same conflict the in-lock gate returns.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        for nonce in [4, 5] {
+            let (result, storage, network) = push_against_queue(
+                4,
+                vec![queued(account_id, 5, "0xbase", "0xc1")],
+                request(account_id, nonce, "0xc1"),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(GuardianError::ConflictPendingDelta)),
+                "nonce {nonce}: {result:?}"
+            );
+            assert!(storage.get_submit_delta_calls().is_empty());
+            assert_eq!(
+                network.apply_delta_responses.lock().unwrap().len(),
+                2,
+                "refused before any reconstruction"
+            );
+        }
+    }
+
+    fn applied(
+        state_json: serde_json::Value,
+        commitment: &str,
+        nonce: u64,
+    ) -> crate::network::AppliedState {
+        crate::network::AppliedState {
+            state_json,
+            commitment: commitment.to_string(),
+            nonce: Some(nonce),
+        }
+    }
+
+    /// Network answers where the delta under test leaves the account at
+    /// `nonce`, replacing the canned ones. Answers pop LIFO: the new
+    /// delta's application first, the queued candidate's replay last.
+    fn producing_nonce(nonce: u64) -> impl FnOnce(MockNetworkClient) -> MockNetworkClient {
+        move |network| {
+            network.apply_delta_responses.lock().unwrap().clear();
+            network
+                .with_applied_state(Ok(applied(serde_json::json!({"step": 2}), "0xc2", nonce)))
+                .with_apply_delta(Ok((serde_json::json!({"step": 1}), "0xc1".to_string())))
+        }
+    }
+
+    #[tokio::test]
+    async fn chained_delta_labelled_with_another_nonce_is_refused() {
+        // A timestamp label behind a queued candidate would sort past
+        // every real nonce and become the tail.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 1_791_279_079_000, "0xc1"),
+            producing_nonce(2),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn chained_delta_labelled_with_the_nonce_it_produces_is_admitted() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+            producing_nonce(2),
+        )
+        .await;
+        result.expect("a correctly labelled chained delta is admitted");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn head_delta_label_is_not_checked_against_the_nonce_it_produces() {
+        // Nothing queued: an older client labelling with a timestamp keeps
+        // working, as it did before the queue existed.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue_with(
+            4,
+            Vec::new(),
+            request(account_id, 1_791_279_079_000, "0xbase"),
+            |network| {
+                network.apply_delta_responses.lock().unwrap().clear();
+                network.with_applied_state(Ok(applied(serde_json::json!({"step": 1}), "0xc1", 1)))
+            },
+        )
+        .await;
+        result.expect("a head delta is admitted whatever its label");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    fn binding(signers: &[&str]) -> crate::network::AuthBinding {
+        crate::network::AuthBinding {
+            signers: signers.iter().map(|s| s.to_string()).collect(),
+            guardian: Some("0xguardian".to_string()),
+        }
+    }
+
+    /// Nothing chains behind a candidate that changes who may act on the
+    /// account: the gate runs after the tail replay and before the delta
+    /// itself is applied or stored. The decision matrix lives in
+    /// `candidate_chain`; this proves the wiring.
+    #[tokio::test]
+    async fn delta_behind_a_signer_changing_candidate_is_refused() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, network) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+            // Bindings pop LIFO: the canonical state is read first.
+            |network| {
+                network
+                    .with_account_auth_binding(Ok(Some(binding(&["0xaa", "0xbb"]))))
+                    .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))))
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert_eq!(
+            network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "refused on the replayed tail, before the delta itself is applied"
+        );
+    }
+
+    #[tokio::test]
+    async fn delta_behind_a_candidate_that_keeps_the_binding_is_admitted() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, _, _) = push_against_queue_with(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xc1"),
+            |network| {
+                network
+                    .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))))
+                    .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))))
+            },
+        )
+        .await;
+        let result = result.expect("an unchanged binding does not block the queue");
+        assert_eq!(result.delta.new_commitment.as_deref(), Some("0xc2"));
+    }
+
+    #[tokio::test]
+    async fn full_queue_is_a_conflict_whatever_the_base() {
+        // Depth 1 with a candidate in flight behaves as before the queue
+        // existed: the pending check came first, so an unknown base was a
+        // conflict, never a commitment mismatch.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        for prev in ["0xzzz", "0xbase", "0xc1"] {
+            let (result, storage, _) = push_against_queue(
+                1,
+                vec![queued(account_id, 1, "0xbase", "0xc1")],
+                request(account_id, 2, prev),
+            )
+            .await;
+            assert!(
+                matches!(result, Err(GuardianError::ConflictPendingDelta)),
+                "{prev}: {result:?}"
+            );
+            assert!(storage.get_submit_delta_calls().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn delta_on_the_tail_admitted_after_the_last_candidate_promotes_mid_request() {
+        // The request read the state at 0xbase; the worker then promoted
+        // the only queued candidate (state → 0xc1) before the queue read,
+        // which came back empty. The delta builds on 0xc1, the real tail:
+        // it must be admitted against the fresh state, not refused as
+        // unrelated with the stale 0xbase as the commitment to resync to.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(account_id);
+        let mut promoted = stored_state(account_id, "0xc1");
+        promoted.state_json = serde_json::json!({"step": 1});
+        // Reads pop LIFO: the request's first read sees 0xbase; the
+        // commitment re-read peeks at, and the full re-read takes, 0xc1.
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(promoted))
+            .with_pull_state(Ok(stored_state(account_id, "0xbase")))
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_candidate_deltas(Ok(vec![]))
+            .with_pull_delta_proposal(Err("no matching proposal".to_string()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((serde_json::json!({"step": 2}), "0xc2".to_string())));
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(active_metadata(account_id, &signer_commitment))))
+            .with_get(Ok(Some(active_metadata(account_id, &signer_commitment))));
+        let state = candidate_mode_state(storage.clone(), network, metadata, 4);
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta: request(account_id, 2, "0xc1"),
+                credentials: Credentials::signature(
+                    signer_pubkey,
+                    signer_signature,
+                    signer_timestamp,
+                ),
+            },
+        )
+        .await
+        .expect("the delta on the promoted tail is admitted");
+        assert_eq!(result.delta.prev_commitment, "0xc1");
+        assert_eq!(result.delta.new_commitment.as_deref(), Some("0xc2"));
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_base_is_a_commitment_mismatch_against_the_canonical_state() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue(
+            4,
+            vec![queued(account_id, 1, "0xbase", "0xc1")],
+            request(account_id, 2, "0xzzz"),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::CommitmentMismatch { ref expected, ref actual })
+                    if expected == "0xbase" && actual == "0xzzz"
+            ),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn broken_queue_refuses_admission_until_the_worker_sweeps_it() {
+        // The queued candidate does not chain from the canonical state
+        // (its predecessor was parked): nothing can be admitted, not
+        // even on the canonical base, until the orphan is swept.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, storage, _) = push_against_queue(
+            4,
+            vec![queued(account_id, 2, "0xgone", "0xc2")],
+            request(account_id, 3, "0xbase"),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_queue_admits_the_canonical_base_only() {
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, _, _) = push_against_queue(4, vec![], request(account_id, 1, "0xc1")).await;
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::CommitmentMismatch { ref expected, .. }) if expected == "0xbase"
+            ),
+            "{result:?}"
         );
     }
 }

@@ -114,6 +114,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_db_pool_max_size = 32
 # guardian_metadata_db_pool_max_size = 32
 # guardian_canonicalization_fast_promotion_enabled = false
+# guardian_max_pending_candidates_per_account = 4  # opt in to queueing chained candidates (server default 1, max 16; upgrade TS clients first, see docs/CONFIGURATION.md)
 # guardian_release_sweep_enabled = false         # kill switch for the chain-driven release sweep
 
 # Optional: dashboard operator Falcon public keys managed by Terraform
@@ -297,6 +298,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_db_pool_max_size` | `16` in dev, `32` in prod | Guardian storage DB pool size |
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
+| `guardian_max_pending_candidates_per_account` | server default (`1`) | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`: chained candidate deltas one account may hold in flight (issue #17). `1` keeps one in-flight candidate per account; `2` to `16` opts in to queueing back-to-back transactions, after TypeScript clients are upgraded (see [`docs/CONFIGURATION.md`](../docs/CONFIGURATION.md)) |
 | `guardian_release_sweep_enabled` | `true` | Runs the chain-driven release sweep; `false` is its kill switch |
 | `guardian_release_sweep_rotation_seconds` | server default (`21600`) | Target time for one release sweep walk of the fleet |
 | `guardian_release_sweep_max_rate_per_second` | server default (`5`) | Cap on release sweep account visits per second (its share of chain-node RPC capacity) |

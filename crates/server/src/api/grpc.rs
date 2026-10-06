@@ -646,6 +646,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                     "retry_exhausted".to_string()
                 }
                 Some(crate::delta_object::RetainReason::Diverged) => "diverged".to_string(),
+                Some(crate::delta_object::RetainReason::Orphaned) => "orphaned".to_string(),
                 None => String::new(),
             },
         }),

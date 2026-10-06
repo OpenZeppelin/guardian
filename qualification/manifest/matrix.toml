@@ -53,6 +53,8 @@ excluded_scenarios = [
   "live-guardian-execute-2of3-falcon",
   "live-guardian-execute-2of3-ecdsa",
   "live-guardian-execute-base-client-2of3-ecdsa",
+  "live-candidate-queue-chained-1of1-ecdsa",
+  "live-candidate-queue-stranded-head-1of1-ecdsa",
 ]
 
 [[pair]]
@@ -85,4 +87,6 @@ excluded_scenarios = [
   "live-guardian-execute-2of3-falcon",
   "live-guardian-execute-2of3-ecdsa",
   "live-guardian-execute-base-client-2of3-ecdsa",
+  "live-candidate-queue-chained-1of1-ecdsa",
+  "live-candidate-queue-stranded-head-1of1-ecdsa",
 ]

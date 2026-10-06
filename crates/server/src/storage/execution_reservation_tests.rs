@@ -241,7 +241,7 @@ async fn reservation_is_refused_while_a_client_candidate_exists(h: &Harness) {
     let now = Utc::now().to_rfc3339();
     assert_eq!(
         h.storage
-            .submit_candidate(h.metadata.as_ref(), &h.candidate(1), &now)
+            .submit_candidate(h.metadata.as_ref(), &h.candidate(1), &now, 4)
             .await
             .unwrap(),
         CandidateSubmission::Submitted
@@ -405,7 +405,7 @@ async fn a_client_candidate_is_refused_while_reserved(h: &Harness) {
     let now = Utc::now().to_rfc3339();
     assert_eq!(
         h.storage
-            .submit_candidate(h.metadata.as_ref(), &h.candidate(1), &now)
+            .submit_candidate(h.metadata.as_ref(), &h.candidate(1), &now, 4)
             .await
             .unwrap(),
         CandidateSubmission::ExecutionReserved {
@@ -429,7 +429,7 @@ async fn a_client_candidate_is_refused_while_guardian_holds_its_own(h: &Harness)
     let now = Utc::now().to_rfc3339();
     assert_eq!(
         h.storage
-            .submit_candidate(h.metadata.as_ref(), &h.candidate(2), &now)
+            .submit_candidate(h.metadata.as_ref(), &h.candidate(2), &now, 4)
             .await
             .unwrap(),
         CandidateSubmission::ExecutionReserved {
@@ -936,6 +936,7 @@ impl Harness {
             proposal,
             request_bytes,
             max_viable_proposals: 3,
+            queue_tail_nonce: None,
             max_account_request_bytes: 100,
         }
     }

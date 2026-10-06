@@ -34,9 +34,9 @@ pub struct DashboardDeltaDetail {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
-    /// Why the row left the active candidate path: `retry_exhausted` or
-    /// `diverged` on `retained` rows, `client_abandoned` on `discarded`
-    /// rows; absent elsewhere.
+    /// Why the row left the active candidate path: `retry_exhausted`,
+    /// `diverged`, or `orphaned` on `retained` rows, `client_abandoned`
+    /// on `discarded` rows; absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<&'static str>,
     /// When background reconciliation gives up on a `retained` row for
@@ -45,10 +45,12 @@ pub struct DashboardDeltaDetail {
     /// established (e.g. optimistic mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained_expires_at: Option<String>,
-    /// Whether the `retained` row still chains from the stored account
-    /// state — `false` means the row is structurally obsolete (the base
-    /// moved out from under it) and can only age out. Present only on
-    /// `retained` rows, and absent when the state read fails.
+    /// Whether the `retained` row builds directly on the stored account
+    /// state. `false` means it does not: reconciliation can still promote
+    /// it when other retained rows chain from the stored state to its base
+    /// (an `orphaned` successor whose predecessor is promoted first), and
+    /// otherwise it can only age out. Present only on `retained` rows, and
+    /// absent when the state read fails.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_matches_stored_state: Option<bool>,
 

@@ -15,6 +15,20 @@ use serde_json::Value;
 /// must carry the matching acknowledgement identity.
 const FIXTURE_DIR: &str = "crates/server/src/testing/fixtures";
 
+/// One of the fixture account's chained deltas: `queue_1` builds on the
+/// registered state, and each later one on its predecessor's post-state. They
+/// change only the threshold, so the signer set GUARDIAN authorizes against
+/// stays as created and they can be queued behind one another; `delta_1` and
+/// `delta_2` each add a signer, and nothing queues behind a signer change
+/// (issue #17).
+pub struct ChainedDelta {
+    pub nonce: u64,
+    pub prev_commitment: String,
+    pub payload: Value,
+    /// The commitment GUARDIAN computes for the state this delta produces.
+    pub post_commitment: String,
+}
+
 pub struct Fixtures {
     pub account: Value,
     pub account_id: String,
@@ -25,6 +39,8 @@ pub struct Fixtures {
     pub delta: Value,
     /// A second committed transaction summary, for a proposal distinct from the first.
     pub second_delta: Value,
+    /// `queue_1`, `queue_2` and `queue_3`, in nonce order.
+    pub chained: Vec<ChainedDelta>,
     signer_key: SecretKey,
     /// Every cosigner key of the fixture account, signer 1 first.
     cosigner_keys: Vec<SecretKey>,
@@ -58,6 +74,31 @@ impl Fixtures {
             .as_str()
             .ok_or_else(|| anyhow!("commitments.json has no initial_commitment"))?
             .to_string();
+
+        let chained = (1..=3)
+            .map(|index| -> anyhow::Result<ChainedDelta> {
+                let delta = read(&format!("queue_{index}.json"))?;
+                let field = |name: &str| {
+                    delta[name]
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| anyhow!("queue_{index}.json has no {name}"))
+                };
+                Ok(ChainedDelta {
+                    nonce: delta["nonce"]
+                        .as_u64()
+                        .ok_or_else(|| anyhow!("queue_{index}.json has no nonce"))?,
+                    prev_commitment: field("prev_commitment")?,
+                    payload: delta["delta_payload"].clone(),
+                    post_commitment: commitments[format!("commitment_after_queue_{index}")]
+                        .as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            anyhow!("commitments.json has no commitment_after_queue_{index}")
+                        })?,
+                })
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
 
         let secret_hex = keys["signer_1_secret_key"]
             .as_str()
@@ -97,6 +138,7 @@ impl Fixtures {
             cosigner_commitments,
             delta,
             second_delta,
+            chained,
             signer_key,
             cosigner_keys,
             operator_key,
@@ -137,7 +179,13 @@ impl Fixtures {
     /// the scenario cannot drift from the wire shape the multisig client
     /// actually produces.
     pub fn proposal_payload(&self) -> anyhow::Result<ProposalPayload> {
-        let summary = TransactionSummary::from_json(&self.delta["delta_payload"])
+        Self::proposal_payload_for(&self.delta["delta_payload"])
+    }
+
+    /// [`Self::proposal_payload`] for any fixture transaction summary, such as
+    /// one of the [`ChainedDelta`] payloads.
+    pub fn proposal_payload_for(summary: &Value) -> anyhow::Result<ProposalPayload> {
+        let summary = TransactionSummary::from_json(summary)
             .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?;
         Ok(ProposalPayload::new(&summary).with_custom_metadata("qualification".to_string()))
     }
@@ -294,6 +342,21 @@ mod tests {
         assert!(fixtures.account_id.starts_with("0x"));
         assert_eq!(fixtures.cosigner_commitments.len(), 3);
         assert!(fixtures.account.is_object());
+    }
+
+    /// The queue scenario pushes the fixture deltas as one chain, so each has
+    /// to build on the one before it, and the first on the registered state.
+    #[test]
+    fn the_chained_deltas_form_one_chain_from_the_registered_state() {
+        let fixtures = Fixtures::load(&repo_root()).expect("fixtures load");
+        assert_eq!(fixtures.chained.len(), 3);
+        let mut base = fixtures.initial_commitment.clone();
+        for (index, delta) in fixtures.chained.iter().enumerate() {
+            assert_eq!(delta.nonce, index as u64 + 1);
+            assert_eq!(delta.prev_commitment, base, "queue_{} chains", index + 1);
+            assert!(delta.payload.is_object());
+            base = delta.post_commitment.clone();
+        }
     }
 
     #[test]

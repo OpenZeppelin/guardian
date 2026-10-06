@@ -19,6 +19,11 @@ export interface LiveContext {
   readonly midenRpcEndpoint: string;
   /** A second GUARDIAN deployment, required only by the migration scenario. */
   readonly migrationEndpoint?: string;
+  /**
+   * A GUARDIAN with candidate queueing switched on (issue #17), required only
+   * by the candidate-queue scenarios.
+   */
+  readonly queueEndpoint?: string;
 }
 
 export interface ActionContext {
@@ -49,6 +54,18 @@ export const HANDLERS: Readonly<Record<string, ActionHandler>> = {
   'operator-allowlist-reload': assertAllowlistReload,
 };
 
+/**
+ * A scenario that hands its proposal to GUARDIAN, through the SDK or the base client alone,
+ * creates it Guardian-executable; every other scenario keeps the default. Mirrors
+ * `execution_mode_for` in the Rust driver.
+ */
+function executionModeFor(scenario: Scenario): 'guardian_executable' | 'self_executed' {
+  return scenario.actions.includes('guardian-execute') ||
+    scenario.actions.includes('guardian-execute-base-client')
+    ? 'guardian_executable'
+    : 'self_executed';
+}
+
 async function runLiveAction(
   action: string,
   context: ActionContext,
@@ -61,12 +78,7 @@ async function runLiveAction(
         scenario.id,
         scenario.shape,
         scenario.scheme as 'falcon' | 'ecdsa',
-        // A scenario that hands its proposal to GUARDIAN, through the SDK or the base client
-        // alone, creates it Guardian-executable; every other scenario keeps the default.
-        // Mirrors `execution_mode_for` in the Rust driver.
-        scenario.actions.includes('guardian-execute') || scenario.actions.includes('guardian-execute-base-client')
-          ? 'guardian_executable'
-          : 'self_executed',
+        executionModeFor(scenario),
       );
     case 'guardian-execute':
       return live.guardianExecute(context, scenario.id);
@@ -74,6 +86,20 @@ async function runLiveAction(
       return live.advancePastBound(context, scenario.id);
     case 'guardian-execute-base-client':
       return live.guardianExecuteBaseClient(context, scenario.id);
+    case 'queue-account-create':
+      return live.createQueuedAccount(
+        context,
+        scenario.id,
+        scenario.shape,
+        scenario.scheme as 'falcon' | 'ecdsa',
+        executionModeFor(scenario),
+      );
+    case 'queue-transfers-chained':
+      return live.sendChainedTransfers(context, scenario.id);
+    case 'queue-head-blocks-proposal':
+      return live.assertStrandedHeadBlocksProposal(context, scenario.id);
+    case 'queue-head-abandon-recover':
+      return live.abandonStrandedHeadAndRecover(context, scenario.id);
     case 'account-register':
       return live.registerAccount(context, scenario.id);
     case 'commitment-verify':

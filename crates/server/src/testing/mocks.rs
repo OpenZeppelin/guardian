@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex as StdMutex};
 type StdResult<T, E> = std::result::Result<T, E>;
 type ApplyDeltaResult = StdResult<AppliedState, String>;
 type ShouldUpdateAuthResult = StdResult<Option<Auth>, String>;
+type AccountAuthBindingResult = StdResult<Option<crate::network::AuthBinding>, String>;
 type ExtractGuardianCommitmentResult = StdResult<Option<String>, String>;
 type OnChainGuardianBindingResult = StdResult<crate::network::OnChainGuardianBinding, String>;
 type TransactionSearchResult = StdResult<crate::network::TransactionSearch, String>;
@@ -40,6 +41,7 @@ pub struct MockNetworkClient {
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
+    pub account_auth_binding_responses: Arc<StdMutex<Vec<AccountAuthBindingResult>>>,
     pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
     pub fetch_on_chain_guardian_binding_responses: Arc<StdMutex<Vec<OnChainGuardianBindingResult>>>,
     pub fetch_on_chain_guardian_binding_calls: Arc<StdMutex<Vec<String>>>,
@@ -167,6 +169,16 @@ impl MockNetworkClient {
 
     pub fn with_applied_state(self, response: StdResult<AppliedState, String>) -> Self {
         self.apply_delta_responses.lock().unwrap().push(response);
+        self
+    }
+
+    /// Queue one `account_auth_binding` answer. Answers pop LIFO, so queue
+    /// the answer for the state read last first.
+    pub fn with_account_auth_binding(self, response: AccountAuthBindingResult) -> Self {
+        self.account_auth_binding_responses
+            .lock()
+            .unwrap()
+            .push(response);
         self
     }
 
@@ -387,6 +399,16 @@ impl NetworkClient for MockNetworkClient {
             .unwrap_or(Ok(None))
     }
 
+    fn account_auth_binding(&self, _state_json: &serde_json::Value) -> AccountAuthBindingResult {
+        // Default `Ok(None)` ("no notion of an auth binding") keeps the
+        // candidate-queue gate inert in tests that don't opt in.
+        self.account_auth_binding_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
     fn delta_proposal_id(
         &self,
         _account_id: &str,
@@ -413,6 +435,10 @@ pub struct MockStorageBackend {
     pub submit_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_calls: Arc<StdMutex<Vec<DeltaObject>>>,
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
+    /// The state `pull_state` last returned: what the commitment and head
+    /// reads describe once no further state is queued, since the stored
+    /// state has not moved since.
+    pub last_pulled_state: Arc<StdMutex<Option<StateObject>>>,
     pub pull_delta_responses: Arc<StdMutex<Vec<StdResult<DeltaObject, String>>>>,
     pub pull_deltas_after_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
     pub pull_candidate_deltas_responses: Arc<StdMutex<Vec<PullDeltasResult>>>,
@@ -517,6 +543,22 @@ pub struct MockStorageBackend {
 impl MockStorageBackend {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The stored state as the payload-free reads (`pull_state_commitment`,
+    /// `pull_state_head`) see it, without consuming a response: the state
+    /// the next `pull_state` would return, or, once none is queued, the
+    /// one it last returned. Both describe the same stored state.
+    fn peek_stored_state(&self) -> StdResult<StateObject, String> {
+        match self.pull_state_responses.lock().unwrap().last() {
+            Some(response) => response.clone(),
+            None => self
+                .last_pulled_state
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or_else(|| "No state found".to_string()),
+        }
     }
 
     pub fn with_kind(mut self, kind: crate::storage::StorageType) -> Self {
@@ -997,37 +1039,35 @@ impl StorageBackend for MockStorageBackend {
     }
 
     async fn pull_state(&self, _account_id: &str) -> StdResult<StateObject, String> {
-        self.pull_state_responses
+        let response = self
+            .pull_state_responses
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No state found".to_string()))
-    }
-
-    /// The commitment of the state the next `pull_state` would return,
-    /// without consuming it: both reads describe the same stored state.
-    async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
-        match self.pull_state_responses.lock().unwrap().last() {
-            Some(Ok(state)) => Ok(state.commitment.clone()),
-            Some(Err(error)) => Err(error.clone()),
-            None => Err("No state found".to_string()),
+            .unwrap_or_else(|| Err("No state found".to_string()));
+        if let Ok(state) = &response {
+            *self.last_pulled_state.lock().unwrap() = Some(state.clone());
         }
+        response
     }
 
-    /// The head of the state the next `pull_state` would return, without
-    /// consuming it: both reads describe the same stored state.
+    /// The commitment of the stored state, without consuming a response:
+    /// see [`Self::peek_stored_state`].
+    async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
+        self.peek_stored_state().map(|state| state.commitment)
+    }
+
+    /// The head of the stored state, without consuming a response: see
+    /// [`Self::peek_stored_state`].
     async fn pull_state_head(
         &self,
         _account_id: &str,
     ) -> StdResult<crate::state_object::StateHead, String> {
-        match self.pull_state_responses.lock().unwrap().last() {
-            Some(Ok(state)) => Ok(crate::state_object::StateHead {
-                commitment: state.commitment.clone(),
+        self.peek_stored_state()
+            .map(|state| crate::state_object::StateHead {
+                commitment: state.commitment,
                 nonce: state.nonce,
-            }),
-            Some(Err(error)) => Err(error.clone()),
-            None => Err("No state found".to_string()),
-        }
+            })
     }
 
     async fn backfill_state_nonce(
@@ -1157,7 +1197,12 @@ impl StorageBackend for MockStorageBackend {
             .pull_pending_proposals(&admission.proposal.account_id)
             .await?
             .into_iter()
-            .filter(|record| record.proposal.prev_commitment == admission.proposal.prev_commitment)
+            .filter(|record| {
+                record.proposal.prev_commitment == admission.proposal.prev_commitment
+                    && admission
+                        .queue_tail_nonce
+                        .is_none_or(|tail| record.proposal.nonce > tail)
+            })
             .count();
         if viable >= admission.max_viable_proposals {
             return Ok(crate::storage::ProposalWrite::PendingLimit {
@@ -1284,11 +1329,19 @@ impl StorageBackend for MockStorageBackend {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         if let Some(response) = self.submit_candidate_responses.lock().unwrap().pop() {
             return response;
         }
-        crate::storage::submit_candidate_sequential(self, metadata, delta, now).await
+        crate::storage::submit_candidate_sequential(
+            self,
+            metadata,
+            delta,
+            now,
+            max_pending_candidates,
+        )
+        .await
     }
 
     async fn promote_candidate(

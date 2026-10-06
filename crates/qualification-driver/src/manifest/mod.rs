@@ -181,6 +181,12 @@ pub enum Action {
     GuardianExecutionRefusals,
     ChainAdvancePastBound,
     GuardianExecuteBaseClient,
+    QueueCosignerProposalRefused,
+    QueueDepthLimit,
+    QueueAccountCreate,
+    QueueTransfersChained,
+    QueueHeadBlocksProposal,
+    QueueHeadAbandonRecover,
     Unknown(String),
 }
 
@@ -241,6 +247,12 @@ impl From<String> for Action {
             "guardian-execution-refusals" => Self::GuardianExecutionRefusals,
             "chain-advance-past-bound" => Self::ChainAdvancePastBound,
             "guardian-execute-base-client" => Self::GuardianExecuteBaseClient,
+            "queue-cosigner-proposal-refused" => Self::QueueCosignerProposalRefused,
+            "queue-depth-limit" => Self::QueueDepthLimit,
+            "queue-account-create" => Self::QueueAccountCreate,
+            "queue-transfers-chained" => Self::QueueTransfersChained,
+            "queue-head-blocks-proposal" => Self::QueueHeadBlocksProposal,
+            "queue-head-abandon-recover" => Self::QueueHeadAbandonRecover,
             other => Self::Unknown(other.to_string()),
         }
     }

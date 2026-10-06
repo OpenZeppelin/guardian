@@ -282,23 +282,27 @@ async fn acknowledge(
         status: DeltaStatus::candidate(Utc::now().to_rfc3339()),
         metadata: None,
     };
-    acknowledge_delta(state, &job.scheme, current_state, &delta)
-        .await
-        .map_err(|error| {
-            let code = match error {
-                GuardianError::SigningError(_)
-                | GuardianError::StorageError(_)
-                | GuardianError::ConfigurationError(_) => {
-                    ExecutionFailureCode::AcknowledgementFailed
-                }
-                _ => ExecutionFailureCode::BindingMismatch,
-            };
-            ExecutionFailure::new(
-                code,
-                format!("Guardian could not acknowledge the reproduced delta: {error}"),
-            )
-            .into()
-        })
+    acknowledge_delta(
+        state,
+        &job.scheme,
+        &current_state.commitment,
+        &current_state.state_json,
+        &delta,
+    )
+    .await
+    .map_err(|error| {
+        let code = match error {
+            GuardianError::SigningError(_)
+            | GuardianError::StorageError(_)
+            | GuardianError::ConfigurationError(_) => ExecutionFailureCode::AcknowledgementFailed,
+            _ => ExecutionFailureCode::BindingMismatch,
+        };
+        ExecutionFailure::new(
+            code,
+            format!("Guardian could not acknowledge the reproduced delta: {error}"),
+        )
+        .into()
+    })
 }
 
 async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), Stop> {
