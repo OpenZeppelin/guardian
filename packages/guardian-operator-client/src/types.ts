@@ -429,9 +429,11 @@ export interface DashboardDeltaDetail {
   /** When background reconciliation gives up on a `retained` row for
    * good (RFC 3339). Present only on `retained` rows. */
   retainedExpiresAt?: string;
-  /** Whether the `retained` row still chains from the stored account
-   * state; `false` means it is structurally obsolete and can only age
-   * out. Present only on `retained` rows. */
+  /** Whether the `retained` row builds directly on the stored account
+   * state. `false` means it does not: reconciliation can still promote it
+   * when other retained rows chain from the stored state to its base (an
+   * `orphaned` successor whose predecessor is promoted first), and
+   * otherwise it can only age out. Present only on `retained` rows. */
   baseMatchesStoredState?: boolean;
   /** Server-curated classification from push-time metadata. */
   category?: DashboardDeltaCategory;

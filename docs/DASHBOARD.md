@@ -134,9 +134,12 @@ TTL expires. The triage fields:
   `client_abandoned` on `discarded` rows.
 - `retained_expires_at` (detail): when the recovery net gives up for
   good. Retained age is `now − status_timestamp`.
-- `base_matches_stored_state` (detail): whether the row still chains
-  from the stored account state; `false` means it is structurally
-  obsolete and can only age out.
+- `base_matches_stored_state` (detail): whether the row builds directly
+  on the stored account state. `false` does not by itself mean the row is
+  dead: reconciliation can still promote it when other retained rows on
+  the account chain from the stored state to its base, as for an
+  `orphaned` successor whose predecessor is promoted first. A `false` row
+  with no such chain can only age out.
 - The latest reconciliation activity is in the worker logs as stable
   `event=reconcile_*` records (see TROUBLESHOOTING.md).
 

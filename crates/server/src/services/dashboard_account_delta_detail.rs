@@ -45,10 +45,12 @@ pub struct DashboardDeltaDetail {
     /// established (e.g. optimistic mode).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained_expires_at: Option<String>,
-    /// Whether the `retained` row still chains from the stored account
-    /// state — `false` means the row is structurally obsolete (the base
-    /// moved out from under it) and can only age out. Present only on
-    /// `retained` rows, and absent when the state read fails.
+    /// Whether the `retained` row builds directly on the stored account
+    /// state. `false` means it does not: reconciliation can still promote
+    /// it when other retained rows chain from the stored state to its base
+    /// (an `orphaned` successor whose predecessor is promoted first), and
+    /// otherwise it can only age out. Present only on `retained` rows, and
+    /// absent when the state read fails.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_matches_stored_state: Option<bool>,
 
