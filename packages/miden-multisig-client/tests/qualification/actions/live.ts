@@ -2578,7 +2578,7 @@ function isPendingDeltaConflict(error: unknown): boolean {
  * an integration computing its own nonces might, which GUARDIAN records pinned
  * to the head's post-state. This client never held that state, so the SDK
  * refuses to execute the proposal and nothing reaches GUARDIAN or the chain. An
- * SDK that pushed the pinned base regardless (0.18.0-rc.2 and earlier) had the
+ * SDK that pushed the pinned base regardless (0.18.0 and earlier) had the
  * execution admitted behind the head while the transaction itself landed on the
  * head's base.
  */

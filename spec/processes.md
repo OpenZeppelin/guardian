@@ -79,6 +79,9 @@ sequenceDiagram
       end
       S->>N: verify_delta(tail_commitment, tail_state, payload)
       S->>N: apply_delta(tail_state, payload)\n(new_state_json, new_commitment, new_nonce)
+      alt a candidate is queued and new_nonce is not the delta's nonce
+        S-->>C: 409 ConflictPendingDelta
+      end
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
       alt canonicalization enabled
         S->>ST: submit_candidate(candidate)\n(the same gate again, under the account lock)
@@ -344,13 +347,20 @@ sequenceDiagram
   than on a proposal label, since a direct push changes signers without
   one): requests stay authorized against the canonical signer set until
   that candidate promotes, and a successor this server acknowledges behind
-  a queued guardian switch could never land — all with `409
+  a queued guardian switch could never land; and last, a delta behind a
+  queued candidate whose label is not the nonce it leaves the account at
+  (checked on the request path only, once the delta is applied and before
+  the storage gate runs, so one that fails never reaches the lock: a
+  timestamp label would sort past every real nonce and refuse each
+  correctly labelled successor until it promoted; with nothing queued the
+  label is not checked, so a client that labels with a timestamp still
+  works at the head), all with `409
   conflict_pending_delta`; a delta building on a state the server does not
   know gets `400 commitment_mismatch` against the canonical commitment.
   Both storage backends re-evaluate the chain-position rules under the
   account lock, so two racing submissions cannot both extend the tail and
-  nothing is admitted behind an orphan; the binding rule is judged in the
-  request path only, which is safe because a successor can only name a
+  nothing is admitted behind an orphan; the binding and label rules are
+  judged in the request path only, which is safe because a successor can only name a
   tail that exists once its candidate is admitted, and a candidate
   admitted in between moves the tail, so the lock-side position check
   refuses the successor as competing. The state and the queue are read separately, so a promotion
@@ -373,7 +383,7 @@ sequenceDiagram
   one. The server cannot tell which state a summary was built on, so the
   nonce rule and, at execution, the SDKs keep a proposal from executing
   anywhere but on the tail: both SDKs refuse to execute a proposal pinned
-  to a state the client does not hold (TypeScript 0.18.0-rc.2 and earlier
+  to a state the client does not hold (TypeScript 0.18.0 and earlier
   pushed the pinned base regardless; a switch proposal is checked while
   the pre-switch GUARDIAN serves it), and both push the state they
   executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the

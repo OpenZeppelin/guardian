@@ -136,9 +136,13 @@ candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
 - **Mixed-version cosigners.** A cosigner still on 0.18.0 or earlier labels with a
   timestamp. A server at the default depth accepts that proposal as before; a queueing
   server refuses it with `409 conflict_pending_delta` while a candidate is queued (next
-  item). Upgrade the proposing devices first; signing and executing a proposal another
-  device created is unchanged, and a proposal GUARDIAN already holds under a timestamp
-  key stays executable from the device that holds the state it is pinned to.
+  item), and refuses a delta labelled with anything but the nonce it leaves the account
+  at while a candidate is queued, so a timestamp label cannot take the queue's tail. With
+  nothing queued, a timestamp-labelled delta is still accepted, and the queue then holds
+  only that candidate until it promotes, because no real nonce exceeds its label. Upgrade
+  the proposing devices first; signing and executing a proposal another device created is
+  unchanged, and a proposal GUARDIAN already holds under a timestamp key stays executable
+  from the device that holds the state it is pinned to.
 - **A queueing server records a proposal behind a queued candidate only at that
   candidate's nonce plus one**, and **admits nothing behind a candidate that changes the
   account's signer set or guardian key** until it promotes, both `409
