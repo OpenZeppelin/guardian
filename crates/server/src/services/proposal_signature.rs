@@ -75,6 +75,7 @@ pub(crate) fn verify_proposal_signature(
     }
 }
 
+/// Decodes an optionally `0x`-prefixed hex string into `T`.
 fn parse_hex<T: Deserializable>(value: &str, label: &str) -> Result<T> {
     let bytes = hex::decode(value.trim_start_matches("0x"))
         .map_err(|e| GuardianError::InvalidProposalSignature(format!("Invalid {label}: {e}")))?;
@@ -82,10 +83,12 @@ fn parse_hex<T: Deserializable>(value: &str, label: &str) -> Result<T> {
         .map_err(|e| GuardianError::InvalidProposalSignature(format!("Invalid {label}: {e}")))
 }
 
+/// Formats a key commitment the way account metadata stores it.
 fn commitment_hex(commitment: Word) -> String {
     format!("0x{}", hex::encode(commitment.to_bytes()))
 }
 
+/// The rejection for a well-formed signature that does not verify.
 fn invalid_signature() -> GuardianError {
     GuardianError::InvalidProposalSignature("Signature does not match the proposal".to_string())
 }
@@ -97,10 +100,12 @@ mod tests {
 
     const ACCOUNT_ID: &str = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
 
+    /// The transaction summary every test approval signs.
     fn summary() -> TransactionSummary {
         TransactionSummary::from_json(&create_test_delta_payload(ACCOUNT_ID)).unwrap()
     }
 
+    /// A raw ECDSA approval.
     fn ecdsa(signature: String, public_key: Option<String>) -> ProposalSignature {
         ProposalSignature::Ecdsa {
             signature,

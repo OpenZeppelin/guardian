@@ -736,6 +736,7 @@ mod tests {
         );
     }
 
+    /// The commitment the fixture proposal's approvals sign.
     fn fixture_summary_commitment() -> Word {
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
@@ -744,6 +745,7 @@ mod tests {
             .to_commitment()
     }
 
+    /// A `signatures[]` entry as the Rust SDK attaches it.
     fn falcon_signature_entry(signer_id: &str, signature: String) -> serde_json::Value {
         serde_json::json!({
             "signer_id": signer_id,

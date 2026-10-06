@@ -490,6 +490,7 @@ async fn configure_fixture_account(app: &axum::Router, signer: &TestSigner) -> (
     (account_id_hex, summary.to_commitment())
 }
 
+/// The fixture proposal as a `POST /delta/proposal` body.
 fn fixture_proposal_body(
     account_id_hex: &str,
     signer: &TestSigner,
@@ -529,6 +530,7 @@ fn proposal_request(
         .unwrap()
 }
 
+/// Reads a response body as JSON.
 async fn json_body(response: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     serde_json::from_slice(&bytes).unwrap()
