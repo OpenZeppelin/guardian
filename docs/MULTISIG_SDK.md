@@ -864,7 +864,9 @@ notes are not imported here.
 
 Every `create*Proposal` method takes a single trailing options object (issue
 #387). All of them accept an optional `nonce` that identifies the proposal
-(defaults to `Date.now()`); method-specific options are listed with each
+(defaults to the store account's nonce plus one, the nonce the executed
+transaction will have, as the Rust SDK labels proposals; through 0.18.0
+the default was `Date.now()`); method-specific options are listed with each
 method below. Passing a legacy positional `nonce` number where the options
 object is expected throws instead of silently applying defaults.
 

@@ -3,12 +3,12 @@
 ## Services overview
 
 - **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
-- **push_delta**: verifies a Miden delta against the current state, computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
+- **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
-- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against state and deriving IDs through the Miden network client.
+- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set or guardian key.
 - **sign_delta_proposal**: appends one signer signature to a pending Miden proposal.
 - **evm_session**: issues an EIP-712 wallet challenge, recovers the EOA with `ecrecover`, consumes the nonce once, and creates a cookie-backed session.
 - **evm_accounts**: registers EVM smart accounts under `/evm/accounts` by validating the cookie session signer, server-owned chain config, ERC-7579 validator installation, and signer snapshot before storing account metadata without state or acknowledgement data.
@@ -62,15 +62,29 @@ sequenceDiagram
     S-->>C: error unsupported_for_network
   else Miden account
     S->>ST: pull_state(account_id)
-    S->>ST: pull_deltas_after(account_id, 0)
-    alt pending candidate exists
+    S->>ST: pull_candidate_deltas(account_id)
+    opt the queue no longer chains from the state read, or it is empty\nand prev_commitment is not the state read
+      S->>ST: pull_state_commitment(account_id)\n(a promotion may have raced the two reads)
+      S->>ST: on a change: pull_state + pull_candidate_deltas again
+    end
+    alt the queue is full, still does not chain from the canonical state,\nprev_commitment competes with a queued candidate's base,\nor nonce does not exceed the newest queued candidate's
       S-->>C: 409 ConflictPendingDelta
-    else no pending candidate
-      S->>N: verify_delta(prev_commitment, prev_state, payload)
-      S->>N: apply_delta(prev_state, payload)\n(new_state_json, new_commitment, new_nonce)
+    else prev_commitment is neither the canonical commitment\nnor a queued candidate's post-state
+      S-->>C: 400 CommitmentMismatch (expected = canonical)
+    else prev_commitment is the queue tail
+      S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
+      S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
+      alt the tail binds another signer set or guardian key
+        S-->>C: 409 ConflictPendingDelta
+      end
+      S->>N: verify_delta(tail_commitment, tail_state, payload)
+      S->>N: apply_delta(tail_state, payload)\n(new_state_json, new_commitment, new_nonce)
+      alt a candidate is queued and new_nonce is not the delta's nonce
+        S-->>C: 409 ConflictPendingDelta
+      end
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
       alt canonicalization enabled
-        S->>ST: submit_delta(candidate)
+        S->>ST: submit_candidate(candidate)\n(the same gate again, under the account lock)
       else optimistic mode
         S->>ST: submit_state(new_state)
         S->>ST: submit_delta(canonical)
@@ -169,10 +183,29 @@ sequenceDiagram
   S->>S: check timestamp > last_auth_timestamp (per signer)
   S->>M: update last_auth_timestamp (per signer, CAS)
   S->>ST: pull_state(account_id)
-  S->>N: verify_delta(prev_commitment, state_json, tx_summary)
-  S->>N: delta_proposal_id(account_id, nonce, tx_summary)
-  S->>ST: submit_delta_proposal(id, pending_delta)
-  S-->>C: 200 {delta, commitment:id}
+  S->>ST: pull_candidate_deltas(account_id)
+  opt the queue no longer chains from the state read, or it is empty
+    S->>ST: pull_state_commitment(account_id)\n(a promotion may have raced the two reads)
+    S->>ST: on a change: pull_state + pull_candidate_deltas again
+  end
+  alt the queue is full, does not chain from the canonical state,\nor a queue exists and nonce is not the newest queued candidate's plus one
+    S-->>C: 409 ConflictPendingDelta
+  else
+    S->>ST: pull_pending_proposals(account_id)
+    alt viable proposals (pinned to the tail, nonce above the tail's) reach the limit
+      S-->>C: 409 PendingProposalsLimit
+    else
+      S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
+      S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
+      alt the tail binds another signer set or guardian key
+        S-->>C: 409 ConflictPendingDelta
+      end
+      S->>N: verify_delta(tail_commitment, tail_state, tx_summary)
+      S->>N: delta_proposal_id(account_id, nonce, tx_summary)
+      S->>ST: submit_delta_proposal(id, pending_delta)\n(prev_commitment = tail commitment)
+      S-->>C: 200 {delta, commitment:id}
+    end
+  end
 ```
 
 #### sign_delta_proposal
@@ -282,20 +315,108 @@ sequenceDiagram
   visited fairly. The pass stops admitting new work when its next cadence tick
   or the next full-pass tick is due; already-started candidate work finishes.
   It first compares each stored `new_commitment` with the chain and reconstructs
-  state only after that cheap probe matches. Promotion still requires the
-  reconstructed commitment to equal the claimed commitment before the normal
-  auth refresh and fenced write. Missing, incorrect, or not-yet-landed claims
-  are left unchanged for the next full pass.
+  state only after that cheap probe matches (a probe that reports the
+  post-state of a candidate queued after this one qualifies too — the chain
+  landed through it). Promotion still requires the candidate to chain from
+  the stored state and the reconstructed commitment to equal the claimed
+  commitment before the normal auth refresh and fenced write. Missing,
+  incorrect, or not-yet-landed claims, and orphaned candidates, are left
+  unchanged for the next full pass.
 - The fast pass never increments `retry_count` or `divergence_count`, applies
   `submission_grace_period_seconds`, or discards a candidate. Those behaviors
   belong exclusively to full passes. Both pass types use
   `max_concurrent_accounts`; candidates within one account remain sequential.
+- Candidate queue (issue #17): an account holds up to
+  `max_pending_candidates_per_account` candidates (env
+  `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`, at most 16; the default,
+  `1`, is the historical one-in-flight behavior and queueing deeper is an
+  operator opt-in) as a strictly ordered chain. `push_delta` admits a
+  delta only on the queue *tail* — the newest queued candidate's
+  post-state, or the canonical state when nothing is queued — with a nonce
+  above the tail's; the tail state is replayed from the canonical state on
+  demand and never persisted. The admission rules, in order: a full queue
+  refuses every delta, whatever its base (so depth 1 behaves exactly as
+  before the queue existed); a queue that no longer chains from the
+  canonical state (a predecessor left it without promoting and the worker
+  has not swept the orphans yet) refuses everything; a delta competing for
+  a base another queued candidate already claimed, or whose nonce does not
+  exceed the tail's, is refused; so is anything behind a tail that changes
+  who may act on the account (the signer set or guardian key its state
+  binds differs from the canonical state's; both bindings are read in one
+  task on the reconstruction pool and compared on the replayed tail rather
+  than on a proposal label, since a direct push changes signers without
+  one): requests stay authorized against the canonical signer set until
+  that candidate promotes, and a successor this server acknowledges behind
+  a queued guardian switch could never land; and last, a delta behind a
+  queued candidate whose label is not the nonce it leaves the account at
+  (checked on the request path only, once the delta is applied and before
+  the storage gate runs, so one that fails never reaches the lock: a
+  timestamp label would sort past every real nonce and refuse each
+  correctly labelled successor until it promoted; with nothing queued the
+  label is not checked, so a client that labels with a timestamp still
+  works at the head), all with `409
+  conflict_pending_delta`; a delta building on a state the server does not
+  know gets `400 commitment_mismatch` against the canonical commitment.
+  Both storage backends re-evaluate the chain-position rules under the
+  account lock, so two racing submissions cannot both extend the tail and
+  nothing is admitted behind an orphan; the binding and label rules are
+  judged in the request path only, which is safe because a successor can only name a
+  tail that exists once its candidate is admitted, and a candidate
+  admitted in between moves the tail, so the lock-side position check
+  refuses the successor as competing. The state and the queue are read separately, so a promotion
+  can land between the two reads; admission re-reads the stored
+  commitment when that would change its verdict (a queue that no longer
+  chains, or an empty one that a delta on another base or a proposal is
+  judged against) and re-validates against the fresh state. Proposals are
+  pinned to the tail as well (their `prev_commitment` is the tail
+  commitment) and are refused up front when their delta could never be
+  admitted: while the queue is full, when a queue exists and their nonce
+  is not the tail's plus one, or behind a tail that changes the signer set
+  or guardian key. Both SDKs label a proposal with the account's next
+  nonce (the TypeScript SDK since the release after 0.18.0; earlier
+  releases used a timestamp, which the rule refuses), so a proposal built
+  on the tail carries the tail's nonce plus one, and one built on the
+  canonical state (all `/state` serves) carries the tail's nonce or less:
+  the cosigner on another device proposing while this device's candidate
+  is queued. The queue therefore serves the device that pushed the newest
+  candidate; every other cosigner is refused until it drains, as at depth
+  one. The server cannot tell which state a summary was built on, so the
+  nonce rule and, at execution, the SDKs keep a proposal from executing
+  anywhere but on the tail: both SDKs refuse to execute a proposal pinned
+  to a state the client does not hold (TypeScript 0.18.0 and earlier
+  pushed the pinned base regardless; a switch proposal is checked while
+  the pre-switch GUARDIAN serves it), and both push the state they
+  executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the
+  tail's) count toward the pending-proposal limit, which is checked before
+  the tail replay. Promotion of the oldest candidate
+  moves the canonical state *along* the chain, so the tail commitment —
+  and every proposal pinned to it — stays valid while the queue drains.
+  A queued payload that no longer replays (an upgrade changed delta
+  application while it was queued) refuses admissions with `409
+  conflict_pending_delta` until the queue drains. The pending-candidate
+  flag is released only once no candidate remains queued.
 - For each account with a pending candidate:
   - Pull candidate deltas (`pull_candidate_deltas`, a store-side status
     filter — canonical and discarded history rows never leave the store);
-    process in nonce order.
+    process in nonce order, as a chain from the stored state: a candidate
+    whose base is the stored state is verified; one whose base is the
+    post-state of the candidate queued just before it, while that
+    predecessor is still queued (deferred or retried), is waiting on it,
+    so the account's pass stops there; one whose base is neither — or
+    whose predecessor left the queue on this very pass (parked,
+    discarded, or abandoned) — is an *orphan* and is parked as
+    `retained` with reason `orphaned` (discarded when retention is off)
+    without any chain observation, together with every candidate queued
+    after it, until one chains from the stored state again. A client
+    abandon intent on an orphan resolves as `client_abandoned` instead.
   - Apply delta locally to compute expected state and commitment.
   - Fetch the on-chain commitment and classify:
+    - Matches the post-state of a candidate queued after this one: the
+      chain landed *through* this candidate (its successors were admitted
+      chained from its post-state), so canonicalize it with the recomputed
+      state exactly as below — provided the recomputed commitment is still
+      the post-state its successors chained from; the successors verify on
+      their own turn as the stored base advances along the chain.
     - Matches the expected new commitment: canonicalize —
       persist new state (atomic with delta status update when possible),
       optionally update auth from chain via `should_update_auth`, set delta
@@ -378,15 +499,21 @@ sequenceDiagram
     promotes — and require the recomputed commitment to equal the
     observed one before the same fenced promotion the candidate pass
     uses (auto-recovering an account whose stored state fell behind the
-    chain). Anything else waits for a later tick — the TTL is the only
-    bound.
+    chain). Recoverable rows may also form a chain (issue #17: a parked
+    predecessor followed by its orphaned successors); when the stored
+    hints link the stored base to the on-chain commitment through more
+    than one row, that path is reconstructed hop by hop — every hop must
+    reproduce its row's hint and the last the on-chain commitment — and
+    promoted in order, base-first. Anything else waits for a later tick
+    — the TTL is the only bound.
   - A new candidate submission at a retained or client-abandoned delta's
     nonce supersedes (deletes) that row inside the submission
     transaction — without the abandoned-row supersede, the resubmission
     the abandon endpoint exists to enable would be refused forever at
     the nonce's unique constraint. Deltas are unique per
     `(account_id, nonce)` and admission requires chaining from the
-    current canonical head, so same-nonce supersede is the only
+    account's queue tail (the canonical head when nothing is queued), so
+    same-nonce supersede is the only
     replacement path; a retained row orphaned by an out-of-band base
     move (e.g. `configure`) can never promote — the base gate rules it
     out — and ages out through the TTL.
@@ -530,12 +657,21 @@ so the sweep is deliberately slow and rate-bounded.
      reported as `own_key_mismatch`; when it moved on, the detectors
      below decide.
   3. **Chain moved past the stored base: candidate match.** Every
-     pending proposal (whatever its label: the post-state's guardian key
-     decides, not the client-written type) and every recoverable delta
-     (`retained`, or `discarded { client_abandoned }` within
-     `retained_ttl_seconds`) that chains from the stored base is applied
-     to the stored state (the same `apply_delta` canonicalization uses;
-     computed once per candidate and base, failures included). The
+     pending proposal and every recoverable delta (`retained`, or
+     `discarded { client_abandoned }` within `retained_ttl_seconds`)
+     that chains from the stored base is applied to the stored state
+     (the same `apply_delta` canonicalization uses; computed once per
+     candidate and base, failures included). A proposal counts whatever
+     its label (the post-state's guardian key decides, not the
+     client-written type) and whatever base it was recorded against: the
+     candidate queue records a proposal against its tail. One built on
+     the stored state behind a queued candidate is refused unless its
+     nonce is the tail's plus one, but a summary does not name its base,
+     so one labelled exactly so is recorded against the tail all the
+     same.
+     A switch delta queued behind another candidate and parked with
+     it does not chain from the stored base and is not matched yet
+     (issue #504). The
      resulting commitment is looked for on chain: first at the head
      (free: the probe already read it), then — for post-states that move
      the guardian key away — in the account's transaction history

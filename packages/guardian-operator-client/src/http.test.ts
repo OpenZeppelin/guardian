@@ -691,6 +691,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
             retained_ttl_seconds: 86400,
             reconcile_interval_seconds: 60,
             reconcile_page_size: 100,
+            max_pending_candidates_per_account: 4,
           },
           release_sweep: {
             rotation_seconds: 21600,
@@ -718,6 +719,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
       retainedTtlSeconds: 86400,
       reconcileIntervalSeconds: 60,
       reconcilePageSize: 100,
+      maxPendingCandidatesPerAccount: 4,
     });
     expect(info.backend.releaseSweep).toEqual({
       rotationSeconds: 21600,

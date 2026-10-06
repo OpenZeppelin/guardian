@@ -91,8 +91,13 @@ if (!inSync) {
 ### Abandon a Stuck Candidate
 
 If an approved transaction died client-side after guardian approval, its
-candidate keeps the account locked (`409 conflict_pending_delta` on new
-proposals). Record an abandon intent and poll for the resolution:
+candidate keeps the account locked: new proposals and deltas answer
+`409 conflict_pending_delta` while the account's candidate queue (one
+candidate by default) is full, when they build on the state that candidate
+already claimed, or when their nonce does not extend the queue (a proposal's
+must be the newest queued candidate's plus one), and any candidate queued
+behind it can never land. Record an
+abandon intent and poll for the resolution:
 
 ```typescript
 const accepted = await client.abandonCandidate(accountId, nonce);

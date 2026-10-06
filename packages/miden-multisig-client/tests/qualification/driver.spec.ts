@@ -32,6 +32,7 @@ const context: ActionContext = {
         midenRpcEndpoint:
           process.env.QUAL_MIDEN_RPC_ENDPOINT ?? `https://rpc.${network}.miden.io`,
         migrationEndpoint: process.env.QUAL_GUARDIAN_MIGRATION_ENDPOINT,
+        queueEndpoint: process.env.QUAL_GUARDIAN_QUEUE_ENDPOINT || undefined,
       }
     : undefined,
 };
