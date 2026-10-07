@@ -54,6 +54,7 @@ export default function App() {
     midenRpcEndpoint: DEFAULT_MIDEN_RPC_URL,
     signerSource: 'local',
     signatureScheme: 'falcon',
+    executionMode: 'self_executed',
     browserLabel: DEFAULT_BROWSER_LABEL,
   });
   const [threshold, setThreshold] = useState('2');
@@ -94,10 +95,12 @@ export default function App() {
       midenRpcEndpoint: snapshot.midenRpcEndpoint ?? DEFAULT_MIDEN_RPC_URL,
       signerSource: snapshot.signerSource ?? 'local',
       signatureScheme: snapshot.signatureScheme ?? 'falcon',
+      executionMode: snapshot.executionMode ?? 'self_executed',
       browserLabel: snapshot.browserLabel ?? DEFAULT_BROWSER_LABEL,
     });
   }, [
     snapshot.browserLabel,
+    snapshot.executionMode,
     snapshot.guardianEndpoint,
     snapshot.midenRpcEndpoint,
     snapshot.signatureScheme,
@@ -261,6 +264,21 @@ export default function App() {
                 <option value="ecdsa">ECDSA</option>
               </select>
             </label>
+            <label>
+              <span>Proposal execution</span>
+              <select
+                value={sessionForm.executionMode ?? 'self_executed'}
+                onChange={(event) =>
+                  setSessionForm((current) => ({
+                    ...current,
+                    executionMode: event.target.value as InitSessionInput['executionMode'],
+                  }))
+                }
+              >
+                <option value="self_executed">Browser proves and submits</option>
+                <option value="guardian_executable">GUARDIAN proves and submits</option>
+              </select>
+            </label>
             <label className="wide">
               <span>Browser label</span>
               <input
@@ -317,6 +335,16 @@ export default function App() {
             <div>
               <span className="label">Scheme</span>
               <strong>{snapshot.signatureScheme ?? 'n/a'}</strong>
+            </div>
+            <div>
+              <span className="label">Proposal execution</span>
+              <strong>
+                {snapshot.executionMode === 'guardian_executable'
+                  ? 'GUARDIAN'
+                  : snapshot.executionMode === 'self_executed'
+                    ? 'Browser'
+                    : 'n/a'}
+              </strong>
             </div>
             <div>
               <span className="label">Guardian pubkey</span>
@@ -551,6 +579,12 @@ export default function App() {
             >
               List proposals
             </button>
+            <button
+              disabled={!sessionReady || !accountLoaded}
+              onClick={() => runAction(async () => api.guardianExecutionStatus())}
+            >
+              GUARDIAN execution status
+            </button>
             <button disabled={!sessionReady || !accountLoaded} onClick={handleImportProposal}>
               Import proposal
             </button>
@@ -598,9 +632,23 @@ export default function App() {
                         runAction(async () => api.executeProposal({ proposalId: proposal.id }))
                       }
                     >
-                      Execute
+                      {snapshot.executionMode === 'guardian_executable'
+                        ? 'Execute via GUARDIAN'
+                        : 'Execute'}
                     </button>
                   )}
+                  {snapshot.executionMode === 'guardian_executable' ? (
+                    <button
+                      disabled={!sessionReady}
+                      onClick={() =>
+                        runAction(async () =>
+                          api.guardianExecutionStatus({ proposalId: proposal.id }),
+                        )
+                      }
+                    >
+                      Execution status
+                    </button>
+                  ) : null}
                   <button
                     disabled={!sessionReady}
                     onClick={() =>
@@ -687,6 +735,7 @@ await window.smoke.initSession({
   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
   signerSource: 'local',
   signatureScheme: 'falcon',
+  executionMode: 'guardian_executable', // or 'self_executed' (default)
   browserLabel: 'chrome-a',
 });
 

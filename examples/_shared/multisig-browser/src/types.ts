@@ -12,6 +12,7 @@ import type {
   VaultBalance,
   ProverConfig,
   RpcConfig,
+  ProposalExecutionMode,
 } from '@openzeppelin/miden-multisig-client';
 
 export type BrowserProverConfig = ProverConfig;
@@ -116,6 +117,7 @@ export interface BrowserSessionSnapshot {
   midenRpcEndpoint: string | null;
   signerSource: WalletSource | null;
   signatureScheme: SignatureScheme | null;
+  executionMode: ProposalExecutionMode | null;
   guardianPubkey: string | null;
   localSigners: SerializedSignerInfo | null;
   midenWallet: SerializedExternalWalletState;

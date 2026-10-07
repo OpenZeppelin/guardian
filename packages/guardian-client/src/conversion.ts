@@ -34,11 +34,13 @@ import type {
   ServerSignProposalRequest,
   ServerStateObject,
 } from './server-types.js';
+import { decodeTransactionRequestEnvelope, type TransactionRequestEnvelope } from './request-envelope.js';
 
 type ServerProposalDeltaPayload = {
   tx_summary: { data: string };
   signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
   metadata?: ServerProposalMetadata;
+  transaction_request?: unknown;
 };
 
 type ServerExecutionDeltaPayload = {
@@ -53,11 +55,16 @@ function extractDeltaPayload(payload: ServerDeltaPayload): {
   txSummary: { data: string };
   signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
   metadata?: ServerProposalMetadata;
+  transactionRequest?: TransactionRequestEnvelope;
 } {
   const txSummary = 'tx_summary' in payload ? payload.tx_summary : { data: payload.data };
   const signatures = 'signatures' in payload && Array.isArray(payload.signatures) ? payload.signatures : [];
   const metadata = 'metadata' in payload ? payload.metadata : undefined;
-  return { txSummary, signatures, metadata };
+  const transactionRequest =
+    'transaction_request' in payload && payload.transaction_request !== undefined && payload.transaction_request !== null
+      ? decodeTransactionRequestEnvelope(payload.transaction_request)
+      : undefined;
+  return { txSummary, signatures, metadata, transactionRequest };
 }
 
 export function fromServerSignature(signature: ServerProposalSignature): ProposalSignature {
@@ -125,7 +132,9 @@ export function fromServerProposalMetadata(server: ServerProposalMetadata): Prop
 }
 
 export function fromServerDeltaObject(server: ServerDeltaObject): DeltaObject {
-  const { txSummary, signatures, metadata } = extractDeltaPayload(server.delta_payload as ServerDeltaPayload);
+  const { txSummary, signatures, metadata, transactionRequest } = extractDeltaPayload(
+    server.delta_payload as ServerDeltaPayload
+  );
 
   return {
     accountId: server.account_id,
@@ -139,6 +148,7 @@ export function fromServerDeltaObject(server: ServerDeltaObject): DeltaObject {
         signature: fromServerSignature(s.signature),
       })),
       metadata: metadata ? fromServerProposalMetadata(metadata) : undefined,
+      ...(transactionRequest ? { transactionRequest } : {}),
     },
     ackSig: server.ack_sig,
     ackPubkey: server.ack_pubkey,
@@ -270,6 +280,9 @@ export function toServerDeltaProposalRequest(req: DeltaProposalRequest): ServerD
         signature: toServerSignature(s.signature),
       })),
       metadata: req.deltaPayload.metadata ? toServerProposalMetadata(req.deltaPayload.metadata) : undefined,
+      ...(req.deltaPayload.transactionRequest
+        ? { transaction_request: req.deltaPayload.transactionRequest }
+        : {}),
     },
   };
 }

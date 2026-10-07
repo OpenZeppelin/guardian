@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, GuardianHttpError, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, GuardianHttpError, type ProposalExecution, type TransactionRequestEnvelope, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -17,6 +17,12 @@ import type {
   ProposalType,
 } from './types.js';
 import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
+import {
+  ExecutionWait,
+  refusingWith,
+  startWaitRuntime,
+  type ExecutionWaitOptions,
+} from './multisig/guardianExecution.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
 import {
@@ -57,7 +63,16 @@ import {
   p2idNoteTypeToMetadata,
   type P2ideHeightOptions,
 } from './transaction.js';
-import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import {
+  buildConsumeNotesTransactionRequestFromNotes,
+  buildPinnedConsumeNotesTransactionRequest,
+} from './transaction/consumeNotes.js';
+import {
+  approvalExpirationDeltaFor,
+  attachmentFor,
+  transactionExpirationDeltaFor,
+  type ProposalExecutionMode,
+} from './transaction/expiration.js';
 import type { MultisigRequestOptions } from './transaction/options.js';
 import { validateMultisigConfig } from './account/builder.js';
 import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
@@ -246,20 +261,43 @@ function assertProposalOptionsBag(
 
 /**
  * What a rebuild of a proposal's request pins so the signed summary
- * reproduces: the salt, the block its anchor names, and the approval
- * expiration the summary binds, as the delta the builders take.
+ * reproduces: the salt, the block its anchor names, the approval
+ * expiration the summary binds, as the delta the builders take, and the
+ * transaction expiration it binds.
  */
 interface ProposalRequestBinding {
   saltHex: string;
   boundBlockNum: number;
   approvalExpirationDelta: number | undefined;
+  transactionExpirationDelta: number | undefined;
+}
+
+/**
+ * Refuses an anchor that does not name the block the signed summary binds. The summary carries
+ * that block only as a header commitment, and the anchor's header commitment covers its block
+ * number, so once they match the anchor's number is the one the summary signed.
+ */
+function assertAnchorBindsSummary(
+  proposalId: string,
+  anchor: ChainAnchor,
+  summary: TransactionSummary,
+): void {
+  const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
+  const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
+  if (anchorCommitment !== summaryBlockCommitment) {
+    throw new Error(
+      `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposalId}`,
+    );
+  }
 }
 
 function proposalRequestBinding(
+  proposalId: string,
   summary: TransactionSummary,
   anchor: ChainAnchor,
   saltHex: string,
 ): ProposalRequestBinding {
+  assertAnchorBindsSummary(proposalId, anchor, summary);
   const boundBlockNum = anchor.blockNum();
   return {
     saltHex: normalizeHexWord(saltHex),
@@ -268,6 +306,7 @@ function proposalRequestBinding(
       summaryApprovalExpirationBlockNum(summary),
       boundBlockNum,
     ),
+    transactionExpirationDelta: summary.expirationDelta() || undefined,
   };
 }
 
@@ -364,6 +403,9 @@ export class Multisig {
   /** Pending sync shared by overlapping {@link syncProposals} callers. */
   private syncProposalsInFlight?: Promise<Proposal[]>;
 
+  /** Whether proposals this client creates can be executed by Guardian. */
+  readonly executionMode: ProposalExecutionMode;
+
   constructor(
     account: Account,
     config: MultisigConfig,
@@ -374,7 +416,9 @@ export class Multisig {
     midenRpcEndpoint: string,
     proverConfig?: ResolvedProverConfig,
     rpcConfig?: ResolvedRpcConfig,
+    executionMode: ProposalExecutionMode = 'self_executed',
   ) {
+    this.executionMode = executionMode;
     this.account = account;
     this.threshold = config.threshold;
     this.signerCommitments = config.signerCommitments;
@@ -611,11 +655,25 @@ export class Multisig {
    */
   private proposalRequestOptions(options: {
     approvalExpirationDelta?: number;
-  }): Pick<MultisigRequestOptions, 'accountId' | 'approvalExpirationDelta' | 'signatureScheme'> {
+  }): Pick<
+    MultisigRequestOptions,
+    'accountId' | 'approvalExpirationDelta' | 'signatureScheme' | 'transactionExpirationDelta'
+  > {
     return {
       accountId: this._accountId,
-      approvalExpirationDelta: options.approvalExpirationDelta,
       signatureScheme: this.signer.scheme,
+      ...this.proposalBounds(this.executionMode, options.approvalExpirationDelta),
+    };
+  }
+
+  /** The two expiration bounds a new proposal applies under `mode`. */
+  private proposalBounds(
+    mode: ProposalExecutionMode,
+    approvalExpirationDelta: number | undefined,
+  ): Pick<MultisigRequestOptions, 'approvalExpirationDelta' | 'transactionExpirationDelta'> {
+    return {
+      approvalExpirationDelta: approvalExpirationDeltaFor(mode, approvalExpirationDelta),
+      transactionExpirationDelta: transactionExpirationDeltaFor(mode),
     };
   }
 
@@ -1111,6 +1169,21 @@ export class Multisig {
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
   async createProposal(nonce: number, txSummaryBase64: string, metadata: ProposalMetadata): Promise<Proposal> {
+    if (this.executionMode === 'guardian_executable') {
+      throw new Error(
+        'createProposal takes a summary without its request, which Guardian cannot execute; ' +
+          'use a typed create*Proposal method or createCustomProposal on a guardian_executable client',
+      );
+    }
+    return this.pushProposal(nonce, txSummaryBase64, metadata, undefined);
+  }
+
+  private async pushProposal(
+    nonce: number,
+    txSummaryBase64: string,
+    metadata: ProposalMetadata,
+    transactionRequest: TransactionRequestEnvelope | undefined,
+  ): Promise<Proposal> {
     const guardianMetadata = ProposalMetadataCodec.toGuardian(metadata);
 
     const response = await this.guardian.pushDeltaProposal({
@@ -1120,6 +1193,7 @@ export class Multisig {
         txSummary: { data: txSummaryBase64 },
         signatures: [],
         metadata: guardianMetadata,
+        ...(transactionRequest ? { transactionRequest } : {}),
       },
     });
 
@@ -1129,6 +1203,38 @@ export class Multisig {
     this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
+  }
+
+  /**
+   * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
+   * accepted; {@link executionStatus} reports the outcome. The proposal must have been created
+   * by a `guardian_executable` client.
+   */
+  async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
+    return refusingWith(this.guardian.executeDeltaProposal(this._accountId, proposalId));
+  }
+
+  /** The latest Guardian execution of a proposal. */
+  async executionStatus(proposalId: string): Promise<ProposalExecution> {
+    return refusingWith(this.guardian.getDeltaProposalExecution(this._accountId, proposalId));
+  }
+
+  /** The account's in-flight Guardian execution, or `null`. */
+  async currentExecution(): Promise<ProposalExecution | null> {
+    return refusingWith(this.guardian.getCurrentExecution(this._accountId));
+  }
+
+  /**
+   * Wait for a requested Guardian execution to finish and resolve with it once `committed` or
+   * `failed`. Status reads that fail with a retryable or transport error are retried; any other
+   * error is thrown. Past `options.deadlineMs` it throws `GuardianExecutionWaitTimeoutError`.
+   * It never requests execution, so call {@link requestGuardianExecution} first.
+   */
+  async waitForGuardianExecution(proposalId: string, options: ExecutionWaitOptions = {}): Promise<ProposalExecution> {
+    return new ExecutionWait(proposalId, options).run(
+      () => this.guardian.getDeltaProposalExecution(this._accountId, proposalId),
+      startWaitRuntime(),
+    );
   }
 
   /**
@@ -1164,6 +1270,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1179,7 +1286,7 @@ export class Multisig {
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1223,6 +1330,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1238,7 +1346,7 @@ export class Multisig {
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1270,6 +1378,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1285,7 +1394,7 @@ export class Multisig {
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   async createUpdateProcedureThresholdProposal(
@@ -1319,6 +1428,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1337,7 +1447,7 @@ export class Multisig {
       description: action,
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1353,17 +1463,18 @@ export class Multisig {
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     assertProposalOptionsBag('createSwitchGuardianProposal', options);
-    const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
+    const { summaryBase64, metadata, transactionRequest } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
       options.approvalExpirationDelta,
+      this.executionMode,
     );
 
     // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
     const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1376,7 +1487,12 @@ export class Multisig {
     newGuardianEndpoint: string,
     newGuardianPubkey: string,
     approvalExpirationDelta: number | undefined,
-  ): Promise<{ summaryBase64: string; metadata: ProposalMetadata }> {
+    mode: ProposalExecutionMode,
+  ): Promise<{
+    summaryBase64: string;
+    metadata: ProposalMetadata;
+    transactionRequest: TransactionRequestEnvelope | undefined;
+  }> {
     // What `auth_tx_guarded_multisig` asserts after a guardian rotation, checked
     // before any signature is collected.
     validateMultisigConfig({
@@ -1391,11 +1507,12 @@ export class Multisig {
       newGuardianPubkey,
       {
         accountId: this._accountId,
-        approvalExpirationDelta,
         signatureScheme: this.signer.scheme,
+        ...this.proposalBounds(mode, approvalExpirationDelta),
       },
     );
 
+    const transactionRequest = await attachmentFor(mode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1411,7 +1528,7 @@ export class Multisig {
       description: `Switch GUARDIAN to ${newGuardianEndpoint}`,
     };
 
-    return { summaryBase64, metadata };
+    return { summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1434,6 +1551,10 @@ export class Multisig {
    * proposal the current GUARDIAN never received, so even if that GUARDIAN is
    * back up at execution time it keeps serving the account until background
    * reconciliation (issue #305) — same outcome as executing while it is down.
+   *
+   * The proposal is always self-executed, whatever this client's execution
+   * mode: it never reaches GUARDIAN, so it carries no stored request and
+   * neither Guardian-executable bound.
    *
    * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
    * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
@@ -1463,6 +1584,7 @@ export class Multisig {
       newGuardianEndpoint,
       newGuardianPubkey,
       options.approvalExpirationDelta,
+      'self_executed',
     );
 
     const exported: ExportedProposal = {
@@ -1513,12 +1635,20 @@ export class Multisig {
     const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
-    const { request, salt } = await buildConsumeNotesTransactionRequestFromNotes(
-      this.midenClient,
-      fetchedNotes,
-      this.proposalRequestOptions(options),
-    );
+    const { request, salt } =
+      this.executionMode === 'guardian_executable'
+        ? await buildPinnedConsumeNotesTransactionRequest(
+            this.midenClient,
+            fetchedNotes,
+            this.proposalRequestOptions(options),
+          )
+        : await buildConsumeNotesTransactionRequestFromNotes(
+            this.midenClient,
+            fetchedNotes,
+            this.proposalRequestOptions(options),
+          );
 
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1545,7 +1675,7 @@ export class Multisig {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1579,10 +1709,11 @@ export class Multisig {
       recipientId,
       faucetId,
       amount,
-      noteOptions,
+      { ...noteOptions, ...this.proposalBounds(this.executionMode, noteOptions.approvalExpirationDelta) },
     );
 
     const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1604,7 +1735,7 @@ export class Multisig {
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -2284,6 +2415,7 @@ export class Multisig {
 
     const request = deserializeTransactionRequest(transactionRequestBytes);
     const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => transactionRequestBytes);
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -2297,7 +2429,7 @@ export class Multisig {
       requiredSignatures: this.getEffectiveThreshold('custom'),
     };
 
-    return this.createProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -2681,7 +2813,7 @@ export class Multisig {
     const anchor = this.requireProposalAnchor(proposalId, metadata);
     let binding: ProposalRequestBinding;
     try {
-      binding = proposalRequestBinding(txSummary, anchor, saltHex);
+      binding = proposalRequestBinding(proposalId, txSummary, anchor, saltHex);
     } finally {
       anchor.free();
     }
@@ -2936,13 +3068,7 @@ export class Multisig {
     // header/chain consistency.
     const anchor = this.requireProposalAnchor(proposal.id, proposal.metadata);
     try {
-      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-      const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
-      if (anchorCommitment !== summaryBlockCommitment) {
-        throw new Error(
-          `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposal.id}`,
-        );
-      }
+      assertAnchorBindsSummary(proposal.id, anchor, summary);
 
       if (proposal.metadata.proposalType === 'custom') {
         // Custom proposals have no per-type reconstruction recipe;
@@ -2955,6 +3081,7 @@ export class Multisig {
       // type, switch_guardian included (as in the Rust SDK): a mismatched salt
       // would otherwise collect signatures and only fail in the VM.
       const binding = proposalRequestBinding(
+        proposal.id,
         summary,
         anchor,
         this.requireProposalSaltHex(proposal.id, proposal.metadata),
@@ -3106,6 +3233,7 @@ export class Multisig {
         accountId: this._accountId,
         boundBlockNum: binding.boundBlockNum,
         approvalExpirationDelta: binding.approvalExpirationDelta,
+        transactionExpirationDelta: binding.transactionExpirationDelta,
         salt,
         signatureAdviceMap,
         signatureScheme: this.signer.scheme,
