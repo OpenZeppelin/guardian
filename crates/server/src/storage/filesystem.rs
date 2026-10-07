@@ -1194,6 +1194,16 @@ impl StorageBackend for FilesystemService {
         if self.has_pending_candidate(&reservation.account_id).await? {
             return Ok(ReservationWrite::CandidateExists);
         }
+        match self
+            .pull_delta_proposal(&reservation.account_id, &reservation.proposal_id)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if crate::storage::is_storage_not_found(&error) => {
+                return Ok(ReservationWrite::ProposalGone);
+            }
+            Err(error) => return Err(error),
+        }
         let attempt = records
             .iter()
             .filter(|record| record.reservation.proposal_id == reservation.proposal_id)
@@ -1310,6 +1320,7 @@ impl StorageBackend for FilesystemService {
         admission: crate::storage::CandidateAdmission,
     ) -> Result<crate::storage::AdmissionWrite, String> {
         use crate::storage::AdmissionWrite;
+        admission.ensure_evidence_describes_candidate()?;
         let account_id = admission.delta.account_id.clone();
         let _guard = self.delta_write_lock.lock().await;
         let mut records = self.read_executions(&account_id).await?;
