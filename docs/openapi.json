@@ -4567,6 +4567,9 @@
       },
       "CurrentExecutionResponse": {
         "type": "object",
+        "required": [
+          "execution"
+        ],
         "properties": {
           "execution": {
             "oneOf": [

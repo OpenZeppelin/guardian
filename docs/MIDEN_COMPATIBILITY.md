@@ -292,11 +292,13 @@ Server behavior that changes for every client:
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-05.
+Last checked 2026-10-06.
 
-- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach.
-  The devnet run below was made on the Miden 0.17 release candidates and has not
-  been repeated on 0.17.0. There, this build's protocol
+- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
+  live qualification, including the `live-guardian-execute-*` scenarios, passed
+  there on both SDKs on 2026-10-06. The manual devnet run described next is a
+  separate, earlier run on the Miden 0.17 release candidates and has not been
+  repeated on 0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
   block headers, so the transaction kernels matched. A guarded 2-of-2 multisig
   ran two proposals there end to end, a first consume-notes
