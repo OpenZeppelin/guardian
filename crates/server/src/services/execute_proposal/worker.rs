@@ -3,7 +3,7 @@
 //! Before the boundary commit every failure fails and releases the reservation; from the
 //! boundary on the transaction is never proved or sent again, only resolved.
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use chrono::Utc;
 use guardian_shared::SignatureScheme;
@@ -55,9 +55,10 @@ impl From<ExecutionFailure> for Stop {
 }
 
 /// Keeps the worker's lease and reservation alive while it holds the attempt, and records the
-/// phase it reached.
+/// phase it reached. The phase lock is held across each renewal and its write, so a heartbeat
+/// can never persist an older phase or deadline after a newer one.
 struct Heartbeat {
-    phase: Arc<Mutex<ExecutionPhase>>,
+    phase: Arc<tokio::sync::Mutex<ExecutionPhase>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -66,7 +67,7 @@ const HEARTBEAT_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Heartbeat {
     fn start(state: &AppState, job: &ExecutionJob) -> Self {
-        let phase = Arc::new(Mutex::new(ExecutionPhase::Accepted));
+        let phase = Arc::new(tokio::sync::Mutex::new(ExecutionPhase::Accepted));
         let interval = state.execution.config.lease / 3;
         let ttl = state.execution.config.lease;
         let storage = state.storage.clone();
@@ -80,6 +81,7 @@ impl Heartbeat {
             let mut wait = interval;
             loop {
                 tokio::time::sleep(wait).await;
+                let phase = current.lock().await;
                 let renewing_until = lease_deadline(ttl);
                 match elector.renew(&lease, ttl).await {
                     Ok(true) => held_until = renewing_until,
@@ -97,9 +99,8 @@ impl Heartbeat {
                         return;
                     }
                 }
-                let phase = *current.lock().expect("phase lock");
                 match storage
-                    .renew_execution_reservation(&account_id, &fence, renewing_until, phase)
+                    .renew_execution_reservation(&account_id, &fence, renewing_until, *phase)
                     .await
                 {
                     Ok(ReservationUpdate::Applied) => wait = interval,
@@ -126,7 +127,8 @@ impl Heartbeat {
         job: &ExecutionJob,
         phase: ExecutionPhase,
     ) -> Result<(), Stop> {
-        *self.phase.lock().expect("phase lock") = phase;
+        let mut recorded = self.phase.lock().await;
+        *recorded = phase;
         let ttl = state.execution.config.lease;
         let renewing_until = lease_deadline(ttl);
         match job.elector.renew(&job.lease, ttl).await {
