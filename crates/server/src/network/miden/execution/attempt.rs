@@ -93,11 +93,14 @@ fn select(
         let signer = signature.signer_id.to_lowercase();
         let entry = if !cosigners.contains(&signer) {
             Err("not a registered cosigner")
-        } else if !seen.insert(signer.clone()) {
-            Err("a duplicate of an earlier signature from the same cosigner")
+        } else if seen.contains(&signer) {
+            Err("a duplicate of an earlier valid signature from the same cosigner")
         } else {
             verified_advice(signature, &signer, summary)
                 .ok_or("not a valid signature over the signed summary")
+                .inspect(|_| {
+                    seen.insert(signer.clone());
+                })
         };
         match entry {
             Ok(entry) => advice.push(entry),

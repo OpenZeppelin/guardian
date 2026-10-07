@@ -899,6 +899,17 @@ mod executor {
             "a signature under another key is ignored"
         );
 
+        let mut invalid_first = proposal.input(&[0, 0, 1]);
+        invalid_first.cosigner_signatures[0].signature =
+            invalid_first.cosigner_signatures[2].signature.clone();
+        let invalid_first = executor.select_signatures(&invalid_first).unwrap();
+        assert_eq!(
+            (invalid_first.valid, invalid_first.ignored),
+            (2, 1),
+            "an invalid entry does not claim its signer ahead of the signer's valid one"
+        );
+        assert!(invalid_first.is_ready());
+
         let outsider = SecretKey::new();
         let mut with_outsider = proposal.input(&[0, 1]);
         with_outsider.cosigner_signatures.push(CosignerSignature {
