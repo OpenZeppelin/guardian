@@ -5,9 +5,10 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::execution_codec::TransactionRequestEnvelope;
+use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use crate::services::{normalize_payload, resolve_account};
 use crate::storage::{ProposalAdmission, ProposalWrite};
-use guardian_shared::{DeltaSignature, EcdsaMessageFormat};
+use guardian_shared::DeltaSignature;
 use serde::Deserialize;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
@@ -252,7 +253,8 @@ pub async fn push_delta_proposal(
     let proposer_id = resolved.signer_commitment.clone();
     tracing::Span::current().record("proposer_id", tracing::field::display(&proposer_id));
 
-    // Parse cosigner signatures from the payload and add timestamp
+    // At creation only the proposer's own approval may be attached; every
+    // other cosigner approves through the signing endpoint.
     let signature_timestamp = state.clock.now_rfc3339();
     let mut cosigner_sigs = Vec::new();
     for sig_value in signatures {
@@ -260,34 +262,26 @@ pub async fn push_delta_proposal(
             GuardianError::InvalidDelta(format!("Invalid signature entry in payload: {e}"))
         })?;
 
-        if matches!(
-            &parsed.signature,
-            crate::delta_object::ProposalSignature::Ecdsa {
-                message_format: EcdsaMessageFormat::Eip712,
-                ..
-            }
-        ) {
-            return Err(GuardianError::InvalidDelta(
-                "EIP-712 approvals must be submitted through the signing endpoint".to_string(),
+        if !cosigner_sigs.is_empty() || !parsed.signer_id.eq_ignore_ascii_case(&proposer_id) {
+            return Err(GuardianError::InvalidProposalSignature(
+                "Proposal creation accepts only the proposer's own signature".to_string(),
+            ));
+        }
+        let tx_summary = proposal_tx_summary(&delta_payload)?;
+        let approval_signer = verify_proposal_signature(&tx_summary, &parsed.signature)?;
+        if !approval_signer.eq_ignore_ascii_case(&proposer_id) {
+            return Err(GuardianError::InvalidProposalSignature(
+                "Signature does not belong to the proposer".to_string(),
             ));
         }
 
         cosigner_sigs.push(CosignerSignature {
             signature: parsed.signature,
             timestamp: signature_timestamp.clone(),
-            signer_id: parsed.signer_id,
+            signer_id: proposer_id.clone(),
         });
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
-    if !cosigner_sigs.is_empty() {
-        tracing::debug!(
-            signer_ids = ?cosigner_sigs
-                .iter()
-                .map(|sig| sig.signer_id.as_str())
-                .collect::<Vec<_>>(),
-            "Batch-attached cosigner signatures"
-        );
-    }
     // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
@@ -375,10 +369,13 @@ mod tests {
     use crate::metadata::auth::Auth;
     use crate::state_object::StateObject;
     use crate::testing::fixtures;
-    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::helpers::{TestSigner, create_test_app_state_with_mocks};
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
-    use guardian_shared::ProposalSignature;
+    use guardian_shared::{EcdsaMessageFormat, FromJson, ProposalSignature};
+    use miden_protocol::Word;
+    use miden_protocol::transaction::TransactionSummary;
+    use miden_standards::account::auth::Eip712TransactionSummary;
     use std::sync::Arc;
 
     fn create_test_state() -> (
@@ -556,6 +553,14 @@ mod tests {
         let public_key = key.public_key();
         let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
         let proposer_id = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+        let summary = TransactionSummary::from_json(&delta_fixture["delta_payload"]).unwrap();
+        let approval = format!(
+            "0x{}",
+            hex::encode(
+                key.sign_prehash(summary.eip712_hash().into_bytes())
+                    .to_bytes()
+            )
+        );
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -572,7 +577,15 @@ mod tests {
 
         let delta_payload = serde_json::json!({
             "tx_summary": delta_fixture["delta_payload"],
-            "signatures": [],
+            "signatures": [{
+                "signer_id": proposer_id,
+                "signature": {
+                    "scheme": "ecdsa",
+                    "signature": approval,
+                    "public_key": public_key_hex,
+                    "message_format": "eip712"
+                }
+            }],
             "metadata": {
                 "proposal_type": "change_threshold",
                 "target_threshold": 1,
@@ -599,7 +612,7 @@ mod tests {
                 nonce: 1,
                 delta_payload,
                 credentials: Credentials::signature(
-                    public_key_hex,
+                    public_key_hex.clone(),
                     format!("0x{}", hex::encode(signature.to_bytes())),
                     timestamp,
                 )
@@ -617,7 +630,15 @@ mod tests {
                 ..
             } => {
                 assert_eq!(actual, proposer_id);
-                assert!(cosigner_sigs.is_empty());
+                assert_eq!(cosigner_sigs.len(), 1);
+                assert_eq!(
+                    cosigner_sigs[0].signature,
+                    ProposalSignature::Ecdsa {
+                        signature: approval,
+                        public_key: Some(public_key_hex),
+                        message_format: EcdsaMessageFormat::Eip712,
+                    }
+                );
             }
             _ => panic!("expected pending proposal"),
         }
@@ -891,6 +912,7 @@ mod tests {
 
         let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
         let signer = TestEcdsaSigner::new();
+        let approval = signer.sign_word(fixture_summary_commitment());
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -916,7 +938,14 @@ mod tests {
                 "required_signatures": 2,
                 "signer_commitments": [signer.commitment_hex.clone()]
             },
-            "signatures": []
+            "signatures": [{
+                "signer_id": signer.commitment_hex.clone(),
+                "signature": {
+                    "scheme": "ecdsa",
+                    "signature": approval,
+                    "public_key": signer.pubkey_hex.clone()
+                }
+            }]
         });
         let request_body = serde_json::json!({
             "account_id": account_id.clone(),
@@ -950,7 +979,16 @@ mod tests {
                 ..
             } => {
                 assert_eq!(*proposer_id, signer.commitment_hex);
-                assert_eq!(cosigner_sigs.len(), 0);
+                assert_eq!(cosigner_sigs.len(), 1);
+                assert_eq!(cosigner_sigs[0].signer_id, signer.commitment_hex);
+                assert_eq!(
+                    cosigner_sigs[0].signature,
+                    ProposalSignature::Ecdsa {
+                        signature: approval,
+                        public_key: Some(signer.pubkey_hex.clone()),
+                        message_format: EcdsaMessageFormat::Raw,
+                    }
+                );
             }
             _ => panic!("Expected Pending status"),
         }
@@ -963,84 +1001,155 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_push_delta_proposal_with_signature() {
+    /// The commitment the fixture proposal's approvals sign.
+    fn fixture_summary_commitment() -> Word {
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        TransactionSummary::from_json(&delta_fixture["delta_payload"])
+            .unwrap()
+            .to_commitment()
+    }
+
+    /// A `signatures[]` entry as the Rust SDK attaches it.
+    fn falcon_signature_entry(signer_id: &str, signature: String) -> serde_json::Value {
+        serde_json::json!({
+            "signer_id": signer_id,
+            "signature": { "scheme": "falcon", "signature": signature }
+        })
+    }
+
+    /// Creates the fixture proposal as `proposer`, attaching `signatures`.
+    async fn push_with_signatures(
+        proposer: &TestSigner,
+        cosigner: &TestSigner,
+        signatures: Vec<serde_json::Value>,
+    ) -> (Result<PushDeltaProposalResult>, MockStorageBackend) {
         let (state, storage, network, metadata) = create_test_state();
 
         let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
         let delta_fixture: serde_json::Value =
             serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
         let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
-
-        let test_commitment = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
-
-        // Generate valid Falcon signatures for two cosigners
-        let (test_pubkey, test_commitment_hex, test_signature, test_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (_, cosigner_commitment, _, _) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let cosigners = vec![
+            proposer.commitment_hex.clone(),
+            cosigner.commitment_hex.clone(),
+        ];
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
             Auth::MidenFalconRpo {
-                cosigner_commitments: vec![
-                    test_commitment_hex.clone(),
-                    cosigner_commitment.clone(),
-                ],
+                cosigner_commitments: cosigners.clone(),
             },
         ))));
-
-        let _storage = storage.with_pull_state(Ok(create_state_object(
+        let storage = storage.with_pull_state(Ok(create_state_object(
             account_id.clone(),
-            test_commitment.to_string(),
-            account_json.clone(),
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392".to_string(),
+            account_json,
         )));
-
         let network = network.with_verify_delta(Ok(()));
         let _network = network.with_validate_credential(Ok(()));
 
-        let dummy_sig = format!("0x{}", "a".repeat(666));
-        let delta_payload = serde_json::json!({
-            "tx_summary": delta_fixture["delta_payload"].clone(),
-            "signatures": [
-                {
-                    "signer_id": cosigner_commitment.clone(),
-                    "signature": {
-                        "scheme": "falcon",
-                        "signature": dummy_sig
-                    }
-                }
-            ],
-            "metadata": {
-                "proposal_type": "change_threshold",
-                "target_threshold": 1,
-                "signer_commitments": [test_commitment_hex.clone(), cosigner_commitment.clone()]
-            }
-        });
-
+        let (request_signature, timestamp) = proposer.sign(&account_id);
         let params = PushDeltaProposalParams {
             account_id,
             nonce: 1,
-            delta_payload,
-            credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
+            delta_payload: serde_json::json!({
+                "tx_summary": delta_fixture["delta_payload"].clone(),
+                "signatures": signatures,
+                "metadata": {
+                    "proposal_type": "change_threshold",
+                    "target_threshold": 1,
+                    "signer_commitments": cosigners
+                }
+            }),
+            credentials: Credentials::signature(
+                proposer.pubkey_hex.clone(),
+                request_signature,
+                timestamp,
+            ),
         };
+        (push_delta_proposal(&state, params).await, storage)
+    }
 
-        let result = push_delta_proposal(&state, params).await.unwrap();
+    #[tokio::test]
+    async fn test_push_delta_proposal_with_proposer_signature() {
+        let proposer = TestSigner::new();
+        let cosigner = TestSigner::new();
+        let approval = proposer.sign_word(fixture_summary_commitment());
+        let entry = falcon_signature_entry(&proposer.commitment_hex, approval.clone());
 
+        let (result, _storage) = push_with_signatures(&proposer, &cosigner, vec![entry]).await;
+
+        let result = result.unwrap();
         match &result.delta.status {
             DeltaStatus::Pending { cosigner_sigs, .. } => {
                 assert_eq!(cosigner_sigs.len(), 1);
-                assert_eq!(cosigner_sigs[0].signer_id, cosigner_commitment);
-                match &cosigner_sigs[0].signature {
-                    ProposalSignature::Falcon { signature } => {
-                        assert_eq!(*signature, dummy_sig);
+                assert_eq!(cosigner_sigs[0].signer_id, proposer.commitment_hex);
+                assert_eq!(
+                    cosigner_sigs[0].signature,
+                    ProposalSignature::Falcon {
+                        signature: approval
                     }
-                    ProposalSignature::Ecdsa { signature, .. } => {
-                        assert_eq!(*signature, dummy_sig);
-                    }
-                }
+                );
             }
             _ => panic!("Expected Pending status"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_push_delta_proposal_rejects_signatures_other_than_the_proposers() {
+        let proposer = TestSigner::new();
+        let cosigner = TestSigner::new();
+        let summary_commitment = fixture_summary_commitment();
+        let proposer_approval = || {
+            falcon_signature_entry(
+                &proposer.commitment_hex,
+                proposer.sign_word(summary_commitment),
+            )
+        };
+        let cases = [
+            (
+                "another cosigner's valid approval",
+                vec![falcon_signature_entry(
+                    &cosigner.commitment_hex,
+                    cosigner.sign_word(summary_commitment),
+                )],
+            ),
+            (
+                "malformed signature under the proposer's id",
+                vec![falcon_signature_entry(
+                    &proposer.commitment_hex,
+                    format!("0x{}", "a".repeat(666)),
+                )],
+            ),
+            (
+                "another cosigner's signature under the proposer's id",
+                vec![falcon_signature_entry(
+                    &proposer.commitment_hex,
+                    cosigner.sign_word(summary_commitment),
+                )],
+            ),
+            (
+                "proposer's signature over another message",
+                vec![falcon_signature_entry(
+                    &proposer.commitment_hex,
+                    proposer.sign_word(Word::default()),
+                )],
+            ),
+            (
+                "duplicate proposer approval",
+                vec![proposer_approval(), proposer_approval()],
+            ),
+        ];
+
+        for (label, signatures) in cases {
+            let (result, storage) = push_with_signatures(&proposer, &cosigner, signatures).await;
+
+            assert!(
+                matches!(result, Err(GuardianError::InvalidProposalSignature(_))),
+                "{label}: expected InvalidProposalSignature, got: {result:?}"
+            );
+            assert!(storage.get_submit_delta_proposal_calls().is_empty());
         }
     }
 
