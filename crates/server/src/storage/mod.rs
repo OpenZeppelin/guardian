@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::{StateHead, StateObject};
 
+pub use execution::{
+    AdmissionWrite, CandidateAdmission, ClaimWrite, ExecutionFailure, ExecutionFailureCode,
+    ExecutionOutcome, ExecutionPhase, ExecutionRecord, ExecutionReservation, ExecutionResolution,
+    ExecutionTerminal, NewExecutionReservation, ReservationUpdate, ReservationWrite, ResolveWrite,
+    SettleWrite, SubmissionEvidence, execution_lease_name,
+};
+
 /// Returns `true` when a backend-formatted error string represents a
 /// "row not present" outcome. Both Postgres (Diesel) and the filesystem
 /// backend surface errors as `String`, so callers that need to branch
@@ -189,7 +196,7 @@ pub struct ProposalRecord {
 /// row at the protected write boundary. A write that already validated its
 /// lease may finish during a leadership transfer; account locks and conditional
 /// mutations keep overlapping work safe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseFence {
     pub lease_name: String,
     pub holder_id: String,
@@ -206,6 +213,10 @@ pub enum CanonicalWrite {
     /// The target delta is no longer in candidate status (another owner
     /// already promoted or discarded it); nothing was written.
     NotCandidate,
+    /// The candidate belongs to a Guardian execution that crossed its
+    /// no-retry boundary and has not resolved; only that execution may
+    /// discard it. Nothing was written.
+    ProtectedByExecution,
 }
 
 /// Outcome of recording a client abandon request on a candidate.
@@ -241,6 +252,32 @@ pub enum PromoteWrite {
     StaleBase,
 }
 
+/// A new proposal and the capacity it must fit in. Only proposals on `proposal.prev_commitment`,
+/// the account's current base, are viable and count; a proposal on a superseded base can never
+/// become a candidate.
+#[derive(Debug, Clone)]
+pub struct ProposalAdmission {
+    pub commitment: String,
+    pub proposal: DeltaObject,
+    /// Decoded size of the proposal's stored transaction request, zero when it carries none.
+    pub request_bytes: u64,
+    pub max_viable_proposals: usize,
+    /// Nonce of the newest queued candidate. A proposal on the same base at or below it can never
+    /// execute, so it counts towards neither limit; `None` when nothing is queued.
+    pub queue_tail_nonce: Option<u64>,
+    pub max_account_request_bytes: u64,
+}
+
+/// Outcome of [`StorageBackend::admit_delta_proposal`]. The limits are checked and the proposal
+/// inserted as one step under the account lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalWrite {
+    Stored,
+    AlreadyStored,
+    PendingLimit { limit: usize },
+    AccountRequestBytesLimit { limit: u64, used: u64 },
+}
+
 /// Outcome of a candidate submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateSubmission {
@@ -261,6 +298,9 @@ pub enum CandidateSubmission {
     /// the client is behind the canonical chain). `expected` is the
     /// stored canonical commitment the client can resync to.
     CommitmentMismatch { expected: String },
+    /// A Guardian execution holds the account's reservation; a client
+    /// candidate cannot be admitted until it resolves.
+    ExecutionReserved { proposal_id: String },
 }
 
 /// The chain position of one queued candidate, as the submission gate
@@ -613,6 +653,9 @@ pub(crate) async fn update_candidate_status_sequential(
     Ok(CanonicalWrite::Applied)
 }
 pub(crate) mod encryption;
+pub mod execution;
+#[cfg(test)]
+mod execution_reservation_tests;
 pub mod filesystem;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -820,6 +863,11 @@ pub trait StorageBackend: Send + Sync {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String>;
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: ProposalAdmission,
+    ) -> Result<ProposalWrite, String>;
     async fn pull_delta_proposal(
         &self,
         account_id: &str,
@@ -935,6 +983,92 @@ pub trait StorageBackend: Send + Sync {
         status: DeltaStatus,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String>;
+
+    // ----------------------------------------------------------------------
+    // Guardian execution reservations (issue #254). Required on every
+    // implementation for the same reason as the canonicalization writes:
+    // each one is decided under the account lock together with the candidate
+    // writes above, and a default would silently drop that atomicity or the
+    // fence. Every execution-owned write validates the caller's fence against
+    // the active reservation; a stale caller writes nothing.
+    // ----------------------------------------------------------------------
+
+    /// Open a reservation for one attempt, allocating the attempt number
+    /// under the account lock. Refused while a candidate or another active
+    /// reservation exists.
+    async fn create_execution_reservation(
+        &self,
+        reservation: NewExecutionReservation,
+    ) -> Result<ReservationWrite, String>;
+
+    /// Extend the owner's lease on its active reservation and record its
+    /// current phase.
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: ExecutionPhase,
+    ) -> Result<ReservationUpdate, String>;
+
+    /// Transfer a live reservation to `claimant` by compare-and-set on the
+    /// `expected` holder and fence. Never releases the reservation.
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ClaimWrite, String>;
+
+    /// The account's active attempt, if any.
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ExecutionRecord>, String>;
+
+    /// The most recent attempt for a proposal, active or resolved.
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<ExecutionRecord>, String>;
+
+    /// The no-retry boundary: admit the owner's candidate and persist its
+    /// submission evidence as one commit.
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: CandidateAdmission,
+    ) -> Result<AdmissionWrite, String>;
+
+    /// Resolve a boundary-crossed attempt as failed: discard its candidate,
+    /// delete its proposal, persist the outcome and release the reservation
+    /// as one commit.
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: ExecutionResolution,
+    ) -> Result<ResolveWrite, String>;
+
+    /// Fail an attempt that never crossed the boundary: persist the outcome
+    /// and release the reservation as one commit.
+    async fn fail_execution(&self, resolution: ExecutionResolution)
+    -> Result<ResolveWrite, String>;
+
+    /// Record `committed` and release the reservation once its candidate is canonical and the
+    /// account is at the expected state, under the caller's fence. Promotion settles an execution
+    /// itself; this repairs one a promotion left held, such as an interrupted filesystem
+    /// promotion or one made by a replica that predates execution.
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<SettleWrite, String>;
+
+    /// Every unreleased reservation with its evidence, for reconciliation.
+    async fn list_active_executions(&self) -> Result<Vec<ExecutionRecord>, String>;
 
     // ----------------------------------------------------------------------
     // Dashboard read APIs — feature `005-operator-dashboard-metrics`,
