@@ -16,6 +16,7 @@ import {
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
+  type ExecutionFailure,
   type Multisig,
   type MultisigClient,
   type MultisigConfig,
@@ -375,15 +376,79 @@ export async function guardianExecutionStatus(
   return { current, proposal };
 }
 
+/**
+ * Why this client must execute a proposal itself even when GUARDIAN executes its proposals, or
+ * `null` when GUARDIAN can. A GUARDIAN switch is finished by the executing client, which repoints
+ * itself and registers the account on the new GUARDIAN; a private note can only be exported from
+ * the record the client's own execution creates.
+ */
+export function localExecutionReason(proposal: Pick<Proposal, 'metadata'>): string | null {
+  const metadata = proposal.metadata;
+  if (metadata.proposalType === 'switch_guardian') {
+    return 'a GUARDIAN switch is finished by the client that executes it';
+  }
+  if (metadata.proposalType === 'p2id' && metadata.noteType === 'private') {
+    return 'a private note can only be exported by the client that executed it';
+  }
+  return null;
+}
+
+/**
+ * What the caller can do after a failed execution. Follows the failure code: `proposalExists`
+ * says whether the proposal is still stored, not whether executing it again can succeed.
+ */
+function failedExecutionAdvice(error: ExecutionFailure): string {
+  switch (error.code) {
+    case 'GUARDIAN_EXECUTION_CHAIN_BEHIND':
+    case 'GUARDIAN_EXECUTION_NODE_UNAVAILABLE':
+    case 'GUARDIAN_EXECUTION_CHAIN_INCONSISTENT':
+    case 'GUARDIAN_EXECUTION_PROVING_FAILED':
+    case 'GUARDIAN_EXECUTION_SEALING_FAILED':
+    case 'GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED':
+    case 'GUARDIAN_EXECUTION_LEASE_EXPIRED':
+    case 'GUARDIAN_EXECUTION_ABANDONED':
+      return 'Execute it again.';
+    case 'GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES':
+      return 'Collect more signatures, then execute it again.';
+    case 'GUARDIAN_EXECUTION_EXPIRATION_REACHED':
+      return error.bound === 'transaction'
+        ? 'Execute it again: a new attempt gets a fresh transaction window.'
+        : 'Its approval window has passed: create and sign a new proposal.';
+    case 'GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE':
+      return error.reason === 'unavailable'
+        ? 'Execute it again once the node serves the foreign account.'
+        : 'GUARDIAN cannot read a private foreign account: execute it from a client that holds it.';
+    case 'GUARDIAN_EXECUTION_BINDING_MISMATCH':
+    case 'GUARDIAN_EXECUTION_STATE_MISMATCH':
+    case 'GUARDIAN_EXECUTION_REQUEST_CODEC':
+    case 'GUARDIAN_EXECUTION_PROTOCOL_MISMATCH':
+    case 'GUARDIAN_EXECUTION_INSUFFICIENT_FEE':
+    case 'GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON':
+    case 'GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE':
+      return 'Fix the cause before executing it again.';
+    case 'GUARDIAN_EXECUTION_REQUEST_INVALID':
+      return 'GUARDIAN cannot execute this request: execute it from this client instead.';
+    case 'GUARDIAN_EXECUTION_SUBMISSION_REJECTED':
+    case 'GUARDIAN_EXECUTION_CANDIDATE_DISCARDED':
+    case 'GUARDIAN_EXECUTION_EXPIRED':
+      return 'The transaction was sent and did not land: create and sign a new proposal.';
+    default: {
+      const unreachable: never = error;
+      throw new Error(`Unknown execution failure: ${JSON.stringify(unreachable)}`);
+    }
+  }
+}
+
 /** One line naming why GUARDIAN did not commit an execution and what the caller can do next. */
 export function describeFailedExecution(execution: ProposalExecution): string {
-  const cause = execution.error
-    ? `${execution.error.message} (${execution.error.code})`
-    : 'no failure reported';
-  const next = execution.proposalExists
-    ? 'The proposal is kept: fix the cause and execute it again.'
-    : 'The proposal was removed: create and sign a new one.';
-  return `GUARDIAN could not execute the proposal: ${cause}. ${next}`;
+  if (!execution.error) {
+    return 'GUARDIAN could not execute the proposal and reported no cause.';
+  }
+  const stored = execution.proposalExists ? 'still stored' : 'removed';
+  return (
+    `GUARDIAN could not execute the proposal: ${execution.error.message} (${execution.error.code}). ` +
+    `The proposal is ${stored}. ${failedExecutionAdvice(execution.error)}`
+  );
 }
 
 export function exportProposalToJson(

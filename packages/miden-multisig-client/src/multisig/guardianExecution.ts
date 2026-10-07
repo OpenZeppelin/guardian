@@ -93,10 +93,15 @@ export const DEFAULT_EXECUTION_WAIT_OPTIONS: Required<ExecutionWaitOptions> = {
   deadlineMs: 15 * 60 * 1_000,
 };
 
-/** The clock and sleep a wait runs on, injectable so the wait is testable. */
+/** A read bounded by a time budget: its value, or `expired` when it did not settle in time. */
+export type BoundedRead<T> = { kind: 'settled'; value: T } | { kind: 'expired' };
+
+/** The clock, sleep and read bound a wait runs on, injectable so the wait is testable. */
 export interface WaitRuntime {
   elapsedMs(): number;
   sleep(delayMs: number): Promise<void>;
+  /** Settles with `pending`, or `expired` once `budgetMs` passes first; a rejection propagates. */
+  within<T>(budgetMs: number, pending: Promise<T>): Promise<BoundedRead<T>>;
 }
 
 export function startWaitRuntime(): WaitRuntime {
@@ -104,6 +109,20 @@ export function startWaitRuntime(): WaitRuntime {
   return {
     elapsedMs: () => performance.now() - started,
     sleep: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
+    within: <T>(budgetMs: number, pending: Promise<T>) =>
+      new Promise<BoundedRead<T>>((resolve, reject) => {
+        const timer = setTimeout(() => resolve({ kind: 'expired' }), budgetMs);
+        pending.then(
+          (value) => {
+            clearTimeout(timer);
+            resolve({ kind: 'settled', value });
+          },
+          (error: unknown) => {
+            clearTimeout(timer);
+            reject(error);
+          },
+        );
+      }),
   };
 }
 
@@ -113,7 +132,8 @@ type ReadRetry = { kind: 'after'; delayMs: number } | { kind: 'backoff' } | { ki
 
 type PollOutcome =
   | { kind: 'finished'; execution: ProposalExecution }
-  | { kind: 'pause'; pauseMs: number; observed: ProposalExecution | null };
+  | { kind: 'pause'; pauseMs: number; observed: ProposalExecution | null }
+  | { kind: 'expired' };
 
 /**
  * A failed status read and whether the wait retries it: a Guardian error the server marked
@@ -160,8 +180,9 @@ class StatusReadFailure {
 }
 
 /**
- * Polls one proposal's execution until it is terminal or the deadline passes. It only reads: it
- * never asks Guardian to execute.
+ * Polls one proposal's execution until it is terminal or the deadline passes. Every read is
+ * bounded by the time left, so a stalled read cannot outlast the deadline and an answer arriving
+ * after it is not returned. It only reads: it never asks Guardian to execute.
  */
 export class ExecutionWait {
   private readonly options: Required<ExecutionWaitOptions>;
@@ -177,31 +198,60 @@ export class ExecutionWait {
     let backoffMs = this.options.initialBackoffMs;
     let lastObserved: ProposalExecution | null = null;
     for (;;) {
-      const outcome = await this.poll(read, backoffMs);
-      if (outcome.kind === 'finished') {
-        return outcome.execution;
+      const outcome = await this.poll(read, runtime, backoffMs);
+      switch (outcome.kind) {
+        case 'finished':
+          return outcome.execution;
+        case 'expired':
+          throw this.timedOut(lastObserved);
+        case 'pause':
+          break;
+        default: {
+          const unreachable: never = outcome;
+          throw new Error(`Unknown poll outcome: ${JSON.stringify(unreachable)}`);
+        }
       }
       lastObserved = outcome.observed ?? lastObserved;
-      const remainingMs = Math.max(0, this.options.deadlineMs - runtime.elapsedMs());
+      const remainingMs = this.remainingMs(runtime);
       if (remainingMs === 0) {
-        throw new GuardianExecutionWaitTimeoutError({
-          proposalId: this.proposalId,
-          deadlineMs: this.options.deadlineMs,
-          lastObserved,
-        });
+        throw this.timedOut(lastObserved);
       }
       await runtime.sleep(Math.min(outcome.pauseMs, remainingMs));
       backoffMs = Math.min(backoffMs * 2, this.options.maxBackoffMs);
     }
   }
 
-  private async poll(read: () => Promise<ProposalExecution>, backoffMs: number): Promise<PollOutcome> {
-    let execution: ProposalExecution;
+  private remainingMs(runtime: WaitRuntime): number {
+    return Math.max(0, this.options.deadlineMs - runtime.elapsedMs());
+  }
+
+  private timedOut(lastObserved: ProposalExecution | null): GuardianExecutionWaitTimeoutError {
+    return new GuardianExecutionWaitTimeoutError({
+      proposalId: this.proposalId,
+      deadlineMs: this.options.deadlineMs,
+      lastObserved,
+    });
+  }
+
+  private async poll(
+    read: () => Promise<ProposalExecution>,
+    runtime: WaitRuntime,
+    backoffMs: number,
+  ): Promise<PollOutcome> {
+    const remainingMs = this.remainingMs(runtime);
+    if (remainingMs === 0) {
+      return { kind: 'expired' };
+    }
+    let bounded: BoundedRead<ProposalExecution>;
     try {
-      execution = await read();
+      bounded = await runtime.within(remainingMs, read());
     } catch (error) {
       return { kind: 'pause', pauseMs: StatusReadFailure.pauseOrThrow(error, backoffMs), observed: null };
     }
+    if (bounded.kind === 'expired') {
+      return { kind: 'expired' };
+    }
+    const execution = bounded.value;
     return isTerminalExecutionState(execution.state)
       ? { kind: 'finished', execution }
       : { kind: 'pause', pauseMs: backoffMs, observed: execution };

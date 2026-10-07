@@ -7,6 +7,7 @@ import {
   GuardianExecutionRefusedError,
   GuardianExecutionWaitTimeoutError,
   refusingWith,
+  type BoundedRead,
   type WaitRuntime,
 } from './guardianExecution.js';
 
@@ -21,6 +22,23 @@ class FakeRuntime implements WaitRuntime {
   async sleep(delayMs: number): Promise<void> {
     this.nowMs += delayMs;
     this.sleepsMs.push(delayMs);
+  }
+
+  /**
+   * A scripted read settles at once unless it stalls, and advances the clock by however long it
+   * took. One that stalls or takes longer than `budgetMs` ends at the budget, as a real timer would.
+   */
+  async within<T>(budgetMs: number, pending: Promise<T>): Promise<BoundedRead<T>> {
+    const startedMs = this.nowMs;
+    const settled = await Promise.race([
+      pending.then((value) => ({ kind: 'settled' as const, value })),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 0)),
+    ]);
+    if (settled === null || this.nowMs - startedMs > budgetMs) {
+      this.nowMs = startedMs + budgetMs;
+      return { kind: 'expired' };
+    }
+    return settled;
   }
 }
 
@@ -44,22 +62,41 @@ function guardianError(status: number, body: unknown, retryAfter: string | null 
 
 type Read = ProposalExecution | Error;
 
+/** One scripted status read: an immediate answer, an answer after `takesMs`, or one that never answers. */
+type Step = Read | { takesMs: number; read: Read } | 'stall';
+
 class ScriptedReads {
   count = 0;
-  private readonly script: Read[];
+  private readonly script: Step[];
 
-  constructor(script: Read[]) {
+  constructor(
+    script: Step[],
+    private readonly runtime: FakeRuntime | null = null,
+  ) {
     this.script = [...script];
   }
 
   readonly read = async (): Promise<ProposalExecution> => {
     this.count += 1;
-    const next = this.script.shift() ?? execution('pending');
+    await Promise.resolve();
+    const step = this.script.shift() ?? execution('pending');
+    if (step === 'stall') {
+      return new Promise<ProposalExecution>(() => {});
+    }
+    const next = 'takesMs' in step ? this.answerAfter(step.takesMs, step.read) : step;
     if (next instanceof Error) {
       throw next;
     }
     return next;
   };
+
+  private answerAfter(takesMs: number, read: Read): Read {
+    if (this.runtime === null) {
+      throw new Error('a timed step needs the runtime whose clock it advances');
+    }
+    this.runtime.nowMs += takesMs;
+    return read;
+  }
 }
 
 function options(initialSecs: number, maxSecs: number, deadlineSecs: number) {
@@ -186,7 +223,7 @@ describe('ExecutionWait', () => {
     expect(timeout.proposalId).toBe('0xprop');
     expect(timeout.deadlineMs).toBe(5_000);
     expect(timeout.lastObserved?.state).toBe('pending');
-    expect(reads.count).toBe(4);
+    expect(reads.count).toBe(3);
     expect(runtime.sleepsMs).toEqual([1_000, 2_000, 2_000]);
   });
 
@@ -198,6 +235,33 @@ describe('ExecutionWait', () => {
       .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GuardianExecutionWaitTimeoutError);
     expect((error as GuardianExecutionWaitTimeoutError).lastObserved).toBeNull();
-    expect(reads.count).toBe(3);
+    expect(reads.count).toBe(2);
+  });
+
+  it('times out a stalled read at the deadline with the last observed execution', async () => {
+    const runtime = new FakeRuntime();
+    const reads = new ScriptedReads([execution('proving'), 'stall'], runtime);
+    const error = await new ExecutionWait('0xprop', options(1, 10, 5))
+      .run(reads.read, runtime)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GuardianExecutionWaitTimeoutError);
+    expect((error as GuardianExecutionWaitTimeoutError).lastObserved?.state).toBe('proving');
+    expect(reads.count).toBe(2);
+    expect(runtime.nowMs).toBe(5_000);
+  });
+
+  it('does not return a terminal answer that arrives after the deadline', async () => {
+    const runtime = new FakeRuntime();
+    const reads = new ScriptedReads(
+      [execution('submitted'), { takesMs: 10_000, read: execution('committed') }],
+      runtime,
+    );
+    const error = await new ExecutionWait('0xprop', options(1, 10, 5))
+      .run(reads.read, runtime)
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GuardianExecutionWaitTimeoutError);
+    expect((error as GuardianExecutionWaitTimeoutError).lastObserved?.state).toBe('submitted');
+    expect(reads.count).toBe(2);
+    expect(runtime.nowMs).toBe(5_000);
   });
 });
