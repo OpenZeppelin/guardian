@@ -54,4 +54,15 @@ impl MidenEcdsaSigner {
         delta.ack_sig = hex::encode(signature.to_bytes());
         Ok(delta)
     }
+
+    /// Whether `delta`'s ack signature was made with this signer's key.
+    pub(crate) fn signed_ack(&self, delta: &DeltaObject) -> bool {
+        crate::ack::ack_message(delta)
+            .zip(crate::ack::decode_ack_signature::<
+                miden_protocol::crypto::dsa::ecdsa_k256_keccak::Signature,
+            >(&delta.ack_sig))
+            .is_some_and(|(message, signature)| {
+                self.backend.public_key().verify(message, &signature)
+            })
+    }
 }

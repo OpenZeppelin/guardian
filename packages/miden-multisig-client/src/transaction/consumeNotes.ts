@@ -1,30 +1,18 @@
-import type {
-  MidenClient,
-  Note,
-  TransactionRequest,
-  WasmWebClient,
-  Word,
-} from '@miden-sdk/miden-sdk';
-import {
-  NoteAndArgs,
-  NoteAndArgsArray,
-  TransactionRequestBuilder,
-  Word as WordType,
-} from '@miden-sdk/miden-sdk';
+import type { MidenClient, Note, TransactionRequest, Word } from '@miden-sdk/miden-sdk';
+import { NoteAndArgs, NoteAndArgsArray } from '@miden-sdk/miden-sdk';
 import { LegacyConsumeNotesNoteMissingError } from '../multisig/consumeNotesErrors.js';
-import { getRawMidenClient } from '../raw-client.js';
-import { normalizeHexWord } from '../utils/encoding.js';
-import { randomWord } from '../utils/random.js';
-import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
+import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import type { MultisigRequestOptions } from './options.js';
 
 /**
  * Build a consume-notes request from loaded `Note` objects (no local-store
  * read). v2 verification path for issue #229.
  */
-export function buildConsumeNotesTransactionRequestFromNotes(
+export async function buildConsumeNotesTransactionRequestFromNotes(
+  client: MidenClient,
   notes: Note[],
-  options: SignatureOptions = {},
-): { request: TransactionRequest; salt: Word } {
+  options: MultisigRequestOptions,
+): Promise<{ request: TransactionRequest; salt: Word }> {
   if (notes.length === 0) {
     throw new Error('At least one note is required');
   }
@@ -34,60 +22,37 @@ export function buildConsumeNotesTransactionRequestFromNotes(
     noteAndArgsArray.push(new NoteAndArgs(note, null));
   }
 
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-  const authSaltForBuilder = WordType.fromHex(normalizeHexWord(authSaltHex));
-
-  let txBuilder = new TransactionRequestBuilder();
-  txBuilder = txBuilder.withInputNotes(noteAndArgsArray);
-  txBuilder = txBuilder.withFeeConversionSalt(authSaltForBuilder);
-  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
-  // so the handle stays ours to release once the builder has read it.
-  authSaltForBuilder.free?.();
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder.withInputNotes(noteAndArgsArray);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  const authSaltForReturn = WordType.fromHex(normalizeHexWord(authSaltHex));
-
-  return {
-    request: txBuilder.build(),
-    salt: authSaltForReturn,
-  };
+  return buildMultisigRequest(txBuilder, saltHex, options.accountId);
 }
 
 /**
  * Legacy/creation adapter: fetches notes from the local store and delegates
  * to the from-notes variant. v2 verification MUST NOT call this.
  */
-export function buildConsumeNotesTransactionRequest(
+export async function buildConsumeNotesTransactionRequest(
   client: MidenClient,
   noteIds: string[],
-  options: MidenClientSignatureOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
-export function buildConsumeNotesTransactionRequest(
-  client: WasmWebClient,
-  noteIds: string[],
-  options?: SignatureOptions,
-): Promise<{ request: TransactionRequest; salt: Word }>;
-export async function buildConsumeNotesTransactionRequest(
-  client: MidenClient | WasmWebClient,
-  noteIds: string[],
-  options: SignatureOptions = {},
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   if (noteIds.length === 0) {
     throw new Error('At least one note ID is required');
   }
 
-  const rawClient = await getRawMidenClient(client, options.midenRpcEndpoint);
   const notes: Note[] = [];
   for (const noteIdHex of noteIds) {
-    const inputNoteRecord = await rawClient.getInputNote(noteIdHex);
+    const inputNoteRecord = await client.notes.get(noteIdHex);
     if (!inputNoteRecord) {
       throw new LegacyConsumeNotesNoteMissingError(noteIdHex);
     }
     notes.push(inputNoteRecord.toNote());
   }
 
-  return buildConsumeNotesTransactionRequestFromNotes(notes, options);
+  return buildConsumeNotesTransactionRequestFromNotes(client, notes, options);
 }

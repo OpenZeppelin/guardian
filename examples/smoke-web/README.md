@@ -12,6 +12,7 @@ This app is the browser analogue of the Rust CLI smoke surface:
 
 - Use one browser or browser profile per cosigner session.
 - Same-browser concurrent tabs are out of scope because the current browser client path does not expose safe per-session IndexedDB isolation.
+- The Miden client runs with `useWorker: false`, so its WASM work, local proving included, runs on the page's main thread and the page stops responding while it runs; a worker-mode client breaks the multisig accounts it loads or syncs (see [`MIDEN_COMPATIBILITY.md`](../../docs/MIDEN_COMPATIBILITY.md#open-upstream-items)).
 - Miden Wallet parity is reached through `window.smoke.connectMidenWallet()`; no wallet provider wraps the app, and `window.smoke` stays the primary interface.
 
 ## Setup
@@ -108,9 +109,10 @@ request, proposes it via `createCustomProposal`, and after threshold calls
 `prepareCustomExecution` to get the validated advice, which the harness injects
 into a rebuilt request before submitting on-chain. The `recipe` returned by
 `createCustomProposal` is what the producer keeps to reproduce the exact
-transaction at execute time (request inputs and the original salt). Both builds
-pass that salt to `withFeeConversionSalt`; the Miden client derives the native
-fee conversion info from the same execution reference header.
+transaction at execute time (request inputs, the original salt, and the anchor
+block). Both builds pass that salt and block into
+`feeAwareTransactionRequestBuilder`; the Miden client derives the native fee
+conversion info and leaves the three-word multisig auth args in place.
 
 ```js
 // Producer tab: create

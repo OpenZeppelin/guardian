@@ -15,6 +15,7 @@ import {
   type MidenClient,
 } from "@miden-sdk/miden-sdk";
 import { getProcedureRoot } from "../procedures.js";
+import { MAX_SIGNERS } from "./layout.js";
 import type { MultisigConfig, CreateAccountResult } from "../types.js";
 import { normalizeSignerCommitment } from "../utils/signature.js";
 
@@ -82,15 +83,13 @@ function buildGuardedMultisigComponent(
 /**
  * Creates a multisig account with GUARDIAN authentication.
  *
- * @param midenClient - Initialized MidenClient
+ * @param client - Initialized MidenClient
  * @param config - Multisig configuration
- * @param midenRpcEndpoint - RPC endpoint for the MidenClient's network
  * @returns The created account and seed
  */
 export async function createMultisigAccount(
-  midenClient: MidenClient,
+  client: MidenClient,
   config: MultisigConfig,
-  midenRpcEndpoint: string,
 ): Promise<CreateAccountResult> {
   validateMultisigConfig(config);
   const authComponent = buildGuardedMultisigComponent(config);
@@ -115,7 +114,7 @@ export async function createMultisigAccount(
 
   const result = accountBuilder.buildWithoutSchemaCommitment();
 
-  await midenClient.accounts.insert({
+  await client.accounts.insert({
     account: result.account,
     overwrite: false,
   });
@@ -149,6 +148,11 @@ export function validateMultisigConfig(config: MultisigConfig): void {
     signerCommitments.add(normalizedCommitment);
   }
 
+  if (config.signerCommitments.length > MAX_SIGNERS) {
+    throw new Error(
+      `too many signers (${config.signerCommitments.length}): a multisig account holds at most ${MAX_SIGNERS}`,
+    );
+  }
   if (config.threshold > config.signerCommitments.length) {
     throw new Error(
       `threshold (${config.threshold}) cannot exceed number of signers (${config.signerCommitments.length})`,

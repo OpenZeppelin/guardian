@@ -9,7 +9,7 @@ Tracking: issue #242.
 
 | Setting | Why it matters across replicas |
 |---|---|
-| **Postgres backend** (`DATABASE_URL`) | Sessions, login challenges, and the canonicalization lease live in Postgres so they are shared. The filesystem backend is **dev-only** and is refused at startup in the prod stage. |
+| **Postgres backend** (`DATABASE_URL`) | Sessions, login challenges, the canonicalization and `dashboard_stats` leases, and the published `/dashboard/stats` snapshot live in Postgres so they are shared. The filesystem backend is **dev-only** and is refused at startup in the prod stage. |
 | **`GUARDIAN_DASHBOARD_CURSOR_SECRET`** (64 hex chars) | Pagination cursors are signed with this key. The prod Terraform profile injects one pre-created Secrets Manager value into every task. Outside that profile, an unset value makes the server **warn** and generate an ephemeral per-process secret; this degrades pagination across replicas, not custody. |
 | **`GUARDIAN_ENV=prod`** | Activates the prod-stage startup guards (filesystem-backend refusal, 0-req/replica rate-limit refusal). Set by Terraform from `var.deployment_stage`. |
 | **`GUARDIAN_MAX_REPLICAS`** | Rate-limit partitioning divisor (see below). Defaults from the autoscaling max capacity via Terraform. |

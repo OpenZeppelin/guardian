@@ -2,13 +2,15 @@ use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
     ConfigureResponse, DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
-    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
-    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
-    GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest, GetStateResponse,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
+    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
+    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
+    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
+    GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
+    PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
+use guardian_shared::FromJson;
+use miden_protocol::account::Account;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
 use tonic::transport::Server;
@@ -29,8 +31,11 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// The `scheme` field of every `get_pubkey` request, in arrival order.
+    get_pubkey_schemes: Arc<StdMutex<Vec<Option<String>>>>,
     persistent_get_pubkey: Arc<StdMutex<Option<String>>>,
     persistent_get_state: Arc<StdMutex<Option<GetStateResponse>>>,
+    persistent_get_canonical_nonce: Arc<StdMutex<Option<GetCanonicalNonceResponse>>>,
     persistent_get_delta_proposal: Arc<StdMutex<Option<GetDeltaProposalResponse>>>,
     persistent_get_delta_proposals: Arc<StdMutex<Option<GetDeltaProposalsResponse>>>,
 }
@@ -46,6 +51,14 @@ impl MockGuardianHandle {
         self.push_delta_proposal_requests.lock().unwrap().clone()
     }
 
+    /// The signature scheme each `get_pubkey` call asked for, in arrival
+    /// order. GUARDIAN serves one acknowledgement identity per scheme, so a
+    /// caller that omits it (`None`) or names the wrong one is served an
+    /// identity that is not the account's.
+    pub fn get_pubkey_schemes(&self) -> Vec<Option<String>> {
+        self.get_pubkey_schemes.lock().unwrap().clone()
+    }
+
     /// Serve `pubkey` from `get_pubkey` whenever no one-shot response is queued.
     pub fn set_persistent_get_pubkey(&self, pubkey: impl Into<String>) {
         *self.persistent_get_pubkey.lock().unwrap() = Some(pubkey.into());
@@ -54,6 +67,13 @@ impl MockGuardianHandle {
     /// Serve `response` from `get_state` whenever the one-shot queue is empty.
     pub fn set_persistent_get_state(&self, response: GetStateResponse) {
         *self.persistent_get_state.lock().unwrap() = Some(response);
+    }
+
+    /// Serve `response` from `get_canonical_nonce` whenever the one-shot
+    /// queue is empty. When nothing is armed here, the endpoint derives its
+    /// answer from the armed persistent `get_state` (see [`canonical_nonce_of`]).
+    pub fn set_persistent_get_canonical_nonce(&self, response: GetCanonicalNonceResponse) {
+        *self.persistent_get_canonical_nonce.lock().unwrap() = Some(response);
     }
 
     /// Serve `response` from `get_delta_proposal` whenever no one-shot response is queued.
@@ -83,6 +103,7 @@ pub struct MockGuardianService {
     get_delta_history_requests: Arc<StdMutex<Vec<(GetDeltaHistoryRequest, i64, String)>>>,
     get_state_responses: Arc<StdMutex<Vec<Result<GetStateResponse, Status>>>>,
     get_state_auth_headers: Arc<StdMutex<Vec<(i64, String)>>>,
+    get_canonical_nonce_responses: Arc<StdMutex<Vec<Result<GetCanonicalNonceResponse, Status>>>>,
     get_account_by_key_commitment_response:
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
@@ -160,6 +181,20 @@ impl MockGuardianService {
         self
     }
 
+    /// Queue a `get_canonical_nonce` response. Responses are served FIFO;
+    /// once the queue is empty the persistent slot is served, and failing
+    /// that the head is derived from the persistent `get_state` state.
+    pub fn with_get_canonical_nonce(
+        self,
+        response: Result<GetCanonicalNonceResponse, Status>,
+    ) -> Self {
+        self.get_canonical_nonce_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     /// Handle onto the `(x-timestamp, x-signature)` pairs recorded from every
     /// `get_state` request, in arrival order. Clone before moving the service
     /// into `start_mock_server` to observe per-attempt auth metadata.
@@ -216,9 +251,14 @@ fn persistent_or<T: Clone>(slot: &StdMutex<Option<T>>, default: impl FnOnce() ->
 impl Guardian for MockGuardianService {
     async fn get_pubkey(
         &self,
-        _request: Request<GetPubkeyRequest>,
+        request: Request<GetPubkeyRequest>,
     ) -> Result<Response<crate::proto::GetPubkeyResponse>, Status> {
         self.record_call("get_pubkey");
+        self.handle
+            .get_pubkey_schemes
+            .lock()
+            .unwrap()
+            .push(request.into_inner().scheme);
         let response = self
             .get_pubkey_response
             .lock()
@@ -481,6 +521,32 @@ impl Guardian for MockGuardianService {
         response.map(Response::new)
     }
 
+    async fn get_canonical_nonce(
+        &self,
+        _request: Request<GetCanonicalNonceRequest>,
+    ) -> Result<Response<GetCanonicalNonceResponse>, Status> {
+        self.record_call("get_canonical_nonce");
+        let mut responses = self.get_canonical_nonce_responses.lock().unwrap();
+        let response = if responses.is_empty() {
+            Ok(persistent_or(
+                &self.handle.persistent_get_canonical_nonce,
+                || {
+                    canonical_nonce_of(persistent_or(&self.handle.persistent_get_state, || {
+                        GetStateResponse {
+                            success: true,
+                            message: String::new(),
+                            state: Some(create_mock_account_state()),
+                        }
+                    }))
+                },
+            ))
+        } else {
+            responses.remove(0)
+        };
+
+        response.map(Response::new)
+    }
+
     async fn get_state(
         &self,
         request: Request<GetStateRequest>,
@@ -569,6 +635,27 @@ pub fn create_mock_delta() -> ProtoDeltaObject {
         status: None,
         ack_pubkey: None,
         ack_scheme: None,
+    }
+}
+
+/// The canonical-nonce head a real GUARDIAN would report for `state`: the
+/// nonce of the account serialized in `state_json` (0 when the blob is not
+/// a Miden account, as with [`create_mock_account_state`]) and the state's
+/// commitment.
+pub fn canonical_nonce_of(state: GetStateResponse) -> GetCanonicalNonceResponse {
+    let state = state.state.unwrap_or_else(create_mock_account_state);
+    let nonce = serde_json::from_str::<serde_json::Value>(&state.state_json)
+        .ok()
+        .and_then(|value| Account::from_json(&value).ok())
+        .map(|account| account.nonce().as_canonical_u64())
+        .unwrap_or(0);
+    GetCanonicalNonceResponse {
+        success: true,
+        message: String::new(),
+        account_id: state.account_id,
+        nonce,
+        commitment: state.commitment,
+        error_code: String::new(),
     }
 }
 

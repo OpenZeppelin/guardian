@@ -40,11 +40,12 @@ use miden_protocol::account::{Account, AccountType};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::utils::serde::Serializable;
 use miden_protocol::{Felt, Word};
-use miden_standards::account::auth::AuthGuardedMultisig;
+use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
 use miden_standards::code_builder::CodeBuilder;
 use miden_testing::MockChainBuilder;
 use miden_tx::TransactionExecutorError;
 
+use super::MultisigAuthArgsExt;
 use crate::delta_object::DeltaObject;
 use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
@@ -136,6 +137,13 @@ impl StrandedCandidateSetup {
 /// commitment (transaction never landed — the issue's scenario).
 async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     let mut state = create_test_app_state().await;
+    // Issue #17 queues candidates per account; the stranded-candidate
+    // lock this test reproduces is the queue-full refusal, which a depth
+    // of one makes immediate (the historical single-candidate behavior).
+    state.canonicalization = Some(
+        crate::canonicalization::CanonicalizationConfig::default()
+            .with_max_pending_candidates_per_account(1),
+    );
 
     let scheme = SignatureScheme::Falcon;
     let ack_commitment_hex = state.ack.commitment(&scheme);
@@ -177,19 +185,19 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         .expect("library links")
         .compile_tx_script(&tx_script_code)
         .expect("tx script compiles");
-    let salt = Word::from([Felt::new_unchecked(7); 4]);
-
-    // Bare salt rather than a fee-conversion commitment: `MockChain` defaults
-    // `verification_base_fee` to 0, so `fee::pay_fee` creates no note and accepts
-    // it. Both SDKs commit `hash(CONVERSION_INFO || SALT)` instead, so this
-    // fixture deliberately exercises the zero-fee path. Candidate abandonment is
-    // what is under test and only needs *a* summary.
+    // `MockChain` charges no fee and the guarded component pays none on this protocol
+    // line, so the auth args commit no conversion info. Candidate abandonment is what
+    // is under test and only needs *a* summary.
+    let auth_args = MultisigAuthArgs::new(
+        mock_chain.latest_block_header().block_num(),
+        Word::from([Felt::new_unchecked(7); 4]),
+    );
 
     let abort_summary = match mock_chain
         .build_transaction(multisig_account.id())
         .authenticator(None)
         .tx_script(tx_script)
-        .auth_args(salt)
+        .multisig_auth_args(&auth_args)
         .build()
         .expect("tx builds")
         .execute()
@@ -204,11 +212,12 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     // The candidate's expected post-state commitment, computed the same
     // way the server computes it (apply_delta on the initial state).
     let miden_client = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
-    let (_, expected_commitment_hex) = {
+    let expected_commitment_hex = {
         use crate::network::NetworkClient;
         miden_client
             .apply_delta(&multisig_account.to_json(), &delta_payload)
             .expect("delta applies to initial state")
+            .commitment
     };
 
     let registered_commitment = if landed {

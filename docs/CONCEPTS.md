@@ -120,7 +120,7 @@ The status transitions for a delta:
 
 | Status | Meaning |
 |---|---|
-| `candidate` | Guardian accepted and signed it, but the matching Miden update has not yet been observed. |
+| `candidate` | Guardian accepted and signed it, but the matching Miden update has not yet been observed. By default an account holds one candidate at a time. An operator can let accounts queue several as a strictly ordered chain (each building on the previous one's post-state and carrying the next nonce, up to `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), so the client that pushed the newest one need not wait for canonicalization before pushing its next transaction; nothing queues behind a candidate that changes the account's signer set or guardian key. |
 | `canonical` | Guardian observed the matching commitment on Miden. The delta is now durable for other clients of the same account. |
 | `retained` | Guardian stopped actively verifying the candidate and released the account slot. The on-chain outcome remains **uncertain**; background reconciliation may still promote it to `canonical` until its retention TTL expires (default 24 h). A new submission at the same nonce supersedes it. Never read `retained` as "the transaction did not land" — it means *unlocked but unresolved*. |
 | `discarded` | Canonicalization was abandoned by the client (`client_abandoned`), or retention is disabled and verification failed terminally. The client must rebuild from the latest canonical state. |
@@ -228,11 +228,11 @@ flowchart TB
 | Guardian unreachable | gRPC `Unavailable` / HTTP 5xx, no ACK | Continue locally, retry; rotate operator if persistent. |
 | Stale delta (`commitment_mismatch`) | `400` with `code: commitment_mismatch` | `GET /delta/since` → replay canonical chain → retry the local transaction. |
 | Candidate parked (`retained`) | Delta status flips `candidate` → `retained`; the account is released | Usually means the Miden proof was never submitted, the on-chain commitment diverged, or the guardian's RPC view lagged. No action is strictly required: if the transaction actually landed, the guardian reconciles and promotes it automatically. To move on immediately, refetch state, rebuild and resubmit — a new submission at the same nonce supersedes the retained delta. Because superseding forfeits that automatic recovery, check the delta's status once before resubmitting: if it already flipped to `canonical`, the original transaction landed and there is nothing to redo. |
-| Transaction died after approval (stranded candidate) | New proposals answered `409 conflict_pending_delta` while the candidate waits out the grace + retry window | Call `POST /delta/candidate/abandon` (SDKs: `abandonCandidate` / `abandon_candidate`). The worker confirms over a short quarantine that the transaction did not land, flips the delta to `discarded` with reason `client_abandoned`, and releases the account — typically well under a minute. Poll via `abandonStatus` / `abandon_status`. |
+| Transaction died after approval (stranded candidate) | While the candidate waits out the grace + retry window, deltas and proposals that would exceed the account's candidate queue (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), that build on the state the stranded candidate already claimed, or whose nonce does not extend the queue (a delta's must exceed the newest queued candidate's, a proposal's must be that plus one), are answered `409 conflict_pending_delta`; once it leaves the queue, candidates queued behind it are parked as `orphaned` (`retained`, or discarded when retention is disabled) | Call `POST /delta/candidate/abandon` (SDKs: `abandonCandidate` / `abandon_candidate`). The worker confirms over a short quarantine that the transaction did not land, flips the delta to `discarded` with reason `client_abandoned`, and releases the account — typically well under a minute. Poll via `abandonStatus` / `abandon_status`. |
 | Operator censors / withholds | Other cosigners see stale state | Rotate Guardian by meeting the applicable user threshold (the cold key can participate); the new operator inherits canonical state from Miden. |
 | Guardian database corruption (or restore from an older backup) | Accounts whose on-chain commitment advanced past the stored state fail state verification; accounts onboarded after the restore point fail with `account_not_found` because no guardian record remains | For an advanced account, a device holding the newer state re-syncs it, or rotate to another operator. For a missing account, a device holding it re-onboards via `/configure`, which re-registers the account with the state that device holds. The guardian cannot regenerate lost deltas because guarded accounts are private. |
 | Account paused by operator | State-transition, proposal, and EVM mutation paths return `409 GUARDIAN_ACCOUNT_PAUSED` with `paused_reason` (reads and `ConfigureAccount` keep working) | Operator-driven safety lever, not a fault. An operator with `accounts:pause` clears it via `POST /dashboard/accounts/{id}/unpause`. See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server, mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. |
+| Account switched to another guardian | After the `switch_guardian` delta canonicalizes on this server — or, when that delta never arrived, after the background release sweep proves the switch from chain (the post-state of a switch proposal pending here, or of a switch delta received but never promoted, is what the chain holds or a transaction in the account's history ended at, or for a public account the new guardian key is in its published storage) — mutation paths return `409 GUARDIAN_ACCOUNT_RELEASED` with `released_at` (reads and `ConfigureAccount` keep working); the dashboard shows `released_at` | Expected outcome of a guardian switch, not a fault. Terminal until the wallet re-onboards via `/configure`, which re-validates the guardian binding. An operator unpause never reactivates a released account. A **private** account that switched without leaving a proposal here (offline switch) cannot be verified from chain and stays active here until re-onboarded; so does one whose switch delta was queued behind another candidate and parked with it (issue #504). |
 | Pubkey changed unexpectedly | `/pubkey` returns a key your client doesn't pin | Treat as compromise. Halt, verify rotation through an out-of-band channel. |
 
 ## Provider rotation
@@ -251,6 +251,17 @@ operator to another without the current operator's cooperation:
 
 The multisig SDK's `SwitchGuardian` flow implements this. See
 [`docs/MULTISIG_SDK.md`](./MULTISIG_SDK.md).
+
+The old operator learns about the rotation in one of two ways: the SDK
+pushes the `SwitchGuardian` delta to it best-effort, or — when that push
+never happens (offline switch, network-dead old operator) — the old
+operator's background release sweep proves the switch from chain, either
+by finding the post-state of the switch proposal still pending on it, or
+of a switch delta it received but never promoted (at the chain head or in
+the account's transaction history), or by reading the new guardian key
+from the account's published storage.
+Either way it marks the account `released` and stops accepting mutations
+for it.
 
 ## What Guardian is *not*
 

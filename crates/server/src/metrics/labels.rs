@@ -108,9 +108,15 @@ pub enum CandidateOutcome {
     /// nor its expected new commitment, but not yet on enough consecutive
     /// ticks to discard; deferred for another confirmation.
     DivergenceDeferred,
-    /// Discarded because the account advanced past the candidate's base
-    /// state on-chain, making verification permanently unsatisfiable.
+    /// Parked (retained, or discarded when retention is off) because the
+    /// account advanced past the candidate's base state on-chain, making
+    /// verification permanently unsatisfiable.
     Diverged,
+    /// Parked (retained, or discarded when retention is off) because its
+    /// predecessor in the candidate queue (issue #17) was parked,
+    /// discarded, or abandoned: the stored state can no longer reach the
+    /// base this candidate builds on.
+    Orphaned,
     /// Discarded because the client abandoned it via the abandon-candidate
     /// endpoint (issue #319): the client knows its transaction will never
     /// land and releases the account instead of waiting out grace+retries.
@@ -143,6 +149,7 @@ impl CandidateOutcome {
             Self::GraceDeferred => "grace_deferred",
             Self::DivergenceDeferred => "divergence_deferred",
             Self::Diverged => "diverged",
+            Self::Orphaned => "orphaned",
             Self::Abandoned => "abandoned",
             Self::StaleBase => "stale_base",
             Self::Retained => "retained",
@@ -168,6 +175,57 @@ impl PoolKind {
         match self {
             Self::Storage => "storage",
             Self::Metadata => "metadata",
+        }
+    }
+}
+
+/// What the release sweep (issue #434) found for an account whose chain
+/// state moved past the stored one, or whose stored state carries a
+/// guardian key other than this server's
+/// (`guardian_release_sweep_accounts_total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseSweepOutcome {
+    /// The switch was proved on chain; the account was released.
+    Released,
+    /// A foreign guardian key was observed in published storage but not
+    /// yet at enough distinct blocks; re-checked later.
+    Confirming,
+    /// The chain moved but its guardian key is still this server's: the
+    /// stored state lags the chain (issue #345 territory), not a switch.
+    StillBound,
+    /// The account is still bound to the key it was onboarded under,
+    /// which is not this server's current ack key: the server's key
+    /// changed (a new ack secret, or ephemeral keys after a restart).
+    /// Not a switch; never released.
+    OwnKeyMismatch,
+    /// The chain state differs from the stored one, nothing pending here
+    /// explains it, and the account does not publish its storage, so the
+    /// guardian binding cannot be read from chain.
+    StorageOpaque,
+    /// Published storage carries no guardian binding at all.
+    NoBinding,
+    /// A storage read observed a state older than the stored one: the
+    /// stored state has not landed yet (just re-onboarded, or an
+    /// optimistic commit) or the node lags. Never evidence.
+    ChainBehindStored,
+    /// The commitment probe or the storage read failed, or the
+    /// transaction history search failed for an account whose storage is
+    /// private (a public account falls through to the storage read);
+    /// deferred to a later visit.
+    ProbeFailed,
+}
+
+impl ReleaseSweepOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Released => "released",
+            Self::Confirming => "confirming",
+            Self::StillBound => "still_bound",
+            Self::OwnKeyMismatch => "own_key_mismatch",
+            Self::StorageOpaque => "storage_opaque",
+            Self::NoBinding => "no_binding",
+            Self::ChainBehindStored => "chain_behind_stored",
+            Self::ProbeFailed => "probe_failed",
         }
     }
 }
@@ -214,12 +272,21 @@ mod tests {
             CandidateOutcome::GraceDeferred.as_str(),
             CandidateOutcome::DivergenceDeferred.as_str(),
             CandidateOutcome::Diverged.as_str(),
+            CandidateOutcome::Orphaned.as_str(),
             CandidateOutcome::Abandoned.as_str(),
             CandidateOutcome::StaleBase.as_str(),
             CandidateOutcome::Retained.as_str(),
             CandidateOutcome::Reconciled.as_str(),
             CandidateOutcome::ReconcileDeferred.as_str(),
             CandidateOutcome::ReconcileExpired.as_str(),
+            ReleaseSweepOutcome::Released.as_str(),
+            ReleaseSweepOutcome::Confirming.as_str(),
+            ReleaseSweepOutcome::StillBound.as_str(),
+            ReleaseSweepOutcome::OwnKeyMismatch.as_str(),
+            ReleaseSweepOutcome::StorageOpaque.as_str(),
+            ReleaseSweepOutcome::NoBinding.as_str(),
+            ReleaseSweepOutcome::ChainBehindStored.as_str(),
+            ReleaseSweepOutcome::ProbeFailed.as_str(),
             AccountKind::Miden.as_str(),
             PoolKind::Storage.as_str(),
             PoolKind::Metadata.as_str(),

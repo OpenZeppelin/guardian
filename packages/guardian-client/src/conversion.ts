@@ -1,4 +1,5 @@
 import type {
+  CanonicalNonce,
   CosignerSignature,
   ConfigureRequest,
   ConfigureResponse,
@@ -16,6 +17,7 @@ import type {
   StateObject,
 } from './types.js';
 import type {
+  ServerCanonicalNonceResponse,
   ServerCosignerSignature,
   ServerConfigureRequest,
   ServerConfigureResponse,
@@ -64,6 +66,7 @@ export function fromServerSignature(signature: ServerProposalSignature): Proposa
       scheme: 'ecdsa',
       signature: signature.signature,
       publicKey: signature.public_key,
+      ...(signature.message_format ? { messageFormat: signature.message_format } : {}),
     };
   }
   return signature;
@@ -155,6 +158,17 @@ export function fromServerStateObject(server: ServerStateObject): StateObject {
   };
 }
 
+export function fromServerCanonicalNonce(server: ServerCanonicalNonceResponse): CanonicalNonce {
+  if (!Number.isSafeInteger(server.nonce) || server.nonce < 0) {
+    throw new Error(`Invalid canonical nonce from server: ${String(server.nonce)}`);
+  }
+  return {
+    accountId: server.account_id,
+    nonce: server.nonce,
+    commitment: server.commitment,
+  };
+}
+
 export function fromServerConfigureResponse(server: ServerConfigureResponse): ConfigureResponse {
   return {
     success: server.success,
@@ -179,6 +193,7 @@ export function toServerSignature(sig: ProposalSignature): ServerProposalSignatu
       scheme: 'ecdsa',
       signature: sig.signature,
       public_key: sig.publicKey,
+      ...(sig.messageFormat ? { message_format: sig.messageFormat } : {}),
     };
   }
   return sig;

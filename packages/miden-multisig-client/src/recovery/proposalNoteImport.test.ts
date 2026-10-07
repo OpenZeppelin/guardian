@@ -30,20 +30,6 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
       afterBlockNum,
     })),
   },
-  NoteFilter: vi.fn().mockImplementation(function (noteType: number) {
-    return { noteType };
-  }),
-  NoteFilterTypes: {
-    All: 0,
-    Consumed: 1,
-    Committed: 2,
-    Expected: 3,
-    Processing: 4,
-    List: 5,
-    Unique: 6,
-    Nullifiers: 7,
-    Unverified: 8,
-  },
   InputNote: {
     authenticated: vi.fn((note: unknown, proof: unknown) => ({ note, proof })),
   },
@@ -62,9 +48,6 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     };
   }),
 }));
-
-const FILTER_ALL = 0;
-const FILTER_CONSUMED = 1;
 
 const MIDEN_RPC_ENDPOINT = 'https://rpc.devnet.miden.io';
 
@@ -108,7 +91,7 @@ function makeNote(idHex: string) {
   };
 }
 
-/** A store record as returned by `getInputNotes`. `idHex: undefined` models a
+/** A store record as returned by `notes.list`. `idHex: undefined` models a
  * metadata-less record (expected-state details import or consumed-external),
  * which still exposes its details (recipient digest + assets). `detailsOf`
  * names the note whose details the record shares; `assetsOf` overrides the
@@ -177,9 +160,8 @@ function makeProposal(
 describe('importNotesFromProposals', () => {
   let storeRecords: Array<ReturnType<typeof makeRecord>>;
   let consumedRecords: Array<ReturnType<typeof makeRecord>>;
-  let mockWebClient: {
-    getInputNotes: ReturnType<typeof vi.fn>;
-    importNoteFile: ReturnType<typeof vi.fn>;
+  let mockMidenClient: {
+    notes: { list: ReturnType<typeof vi.fn>; import: ReturnType<typeof vi.fn> };
   };
   const noteRegistry = new Map<string, ReturnType<typeof makeNote>>();
 
@@ -199,18 +181,16 @@ describe('importNotesFromProposals', () => {
     });
     storeRecords = [];
     consumedRecords = [];
-    mockWebClient = {
-      getInputNotes: vi.fn().mockImplementation(async (filter: { noteType: number }) => {
-        if (filter.noteType === FILTER_ALL) return [...storeRecords, ...consumedRecords];
-        if (filter.noteType === FILTER_CONSUMED) return consumedRecords;
-        return [];
-      }),
-      importNoteFile: vi.fn().mockResolvedValue(NOTE_ID_1),
+    mockMidenClient = {
+      notes: {
+        list: vi.fn().mockImplementation(async () => [...storeRecords, ...consumedRecords]),
+        import: vi.fn().mockResolvedValue(NOTE_ID_1),
+      },
     };
   });
 
   function run(proposals: Array<Pick<Proposal, 'id' | 'metadata'>>) {
-    return importNotesFromProposals(mockWebClient as never, proposals, {
+    return importNotesFromProposals(mockMidenClient as never, proposals, {
       midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
     });
   }
@@ -223,7 +203,7 @@ describe('importNotesFromProposals', () => {
     expect(outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'proposal', status: 'imported' },
     ]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledWith({
+    expect(mockMidenClient.notes.import).toHaveBeenCalledWith({
       kind: 'with-proof',
       inputNote: { note: noteRegistry.get('note-1'), proof: `proof:${NOTE_ID_1}` },
     });
@@ -237,7 +217,7 @@ describe('importNotesFromProposals', () => {
     expect(outcomes[0].status).toBe('imported');
     // The imported note is the one decoded from the proposal bytes, never
     // the (absent) node-returned body.
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledWith({
+    expect(mockMidenClient.notes.import).toHaveBeenCalledWith({
       kind: 'with-proof',
       inputNote: { note: noteRegistry.get('note-1'), proof: `proof:${NOTE_ID_1}` },
     });
@@ -261,7 +241,7 @@ describe('importNotesFromProposals', () => {
     // `NoteFile::ExpectedNote` + sync hint), so upstream registers a
     // note-source tag it removes once the note commits — never a permanent
     // user-source `addTag`.
-    const expectedFile = mockWebClient.importNoteFile.mock.calls[0][0] as {
+    const expectedFile = mockMidenClient.notes.import.mock.calls[0][0] as {
       kind: string;
       details: { assets: string; recipient: { digest: () => { toHex: () => string } } };
       tag: { asU32: () => number };
@@ -319,7 +299,7 @@ describe('importNotesFromProposals', () => {
       { identifier: NOTE_ID_3, source: 'proposal', status: 'imported' },
     ]);
     // The ID-matched record is never re-imported; the details-key match is.
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(2);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(2);
   });
 
   it('demotes an import whose inclusion proof failed verification to failed', async () => {
@@ -329,7 +309,7 @@ describe('importNotesFromProposals', () => {
     // post-import check must not let it count as recovered. The record only
     // exists after the import, so the pre-scan sees an empty store.
     let storeReads = 0;
-    mockWebClient.getInputNotes.mockImplementation(async () => {
+    mockMidenClient.notes.list.mockImplementation(async () => {
       storeReads += 1;
       return storeReads === 1 ? [] : [makeRecord({ idHex: NOTE_ID_1, invalid: true })];
     });
@@ -359,7 +339,7 @@ describe('importNotesFromProposals', () => {
     expect(outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'proposal', status: 'imported' },
     ]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(1);
   });
 
   it('does not relabel an import as consumed for a same-recipient record with different assets', async () => {
@@ -394,13 +374,13 @@ describe('importNotesFromProposals', () => {
         reason: expect.stringContaining('already consumed on chain'),
       },
     ]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a successful import as imported when the post-import state check fails', async () => {
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
     let storeReads = 0;
-    mockWebClient.getInputNotes.mockImplementation(async () => {
+    mockMidenClient.notes.list.mockImplementation(async () => {
       storeReads += 1;
       if (storeReads === 1) return [];
       throw new Error('store busy');
@@ -419,7 +399,7 @@ describe('importNotesFromProposals', () => {
   });
 
   it('fails every decoded note when the store scan itself fails', async () => {
-    mockWebClient.getInputNotes.mockRejectedValue(new Error('store locked'));
+    mockMidenClient.notes.list.mockRejectedValue(new Error('store locked'));
 
     const outcomes = await run([makeProposal('p-1', [noteBase64('note-1')])]);
 
@@ -431,7 +411,7 @@ describe('importNotesFromProposals', () => {
         reason: expect.stringContaining('failed to read local store'),
       },
     ]);
-    expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    expect(mockMidenClient.notes.import).not.toHaveBeenCalled();
   });
 
   it('reports a transient proof-fetch failure as retryable for every pending note', async () => {
@@ -457,12 +437,12 @@ describe('importNotesFromProposals', () => {
         reason: expect.stringContaining('failed to fetch inclusion proofs'),
       },
     ]);
-    expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    expect(mockMidenClient.notes.import).not.toHaveBeenCalled();
   });
 
   it('isolates an import failure without blocking the rest, classifying retryability', async () => {
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1), makeFetchedNote(NOTE_ID_2)]);
-    mockWebClient.importNoteFile.mockImplementation(
+    mockMidenClient.notes.import.mockImplementation(
       async (file: { inputNote: { note: unknown } }) => {
         if (file.inputNote.note === noteRegistry.get('note-1')) {
           // Transient node failure surfaced through the import's internal RPC.
@@ -505,7 +485,7 @@ describe('importNotesFromProposals', () => {
 
     expect(outcomes).toEqual([]);
     expect(mockGetNotesById).not.toHaveBeenCalled();
-    expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    expect(mockMidenClient.notes.import).not.toHaveBeenCalled();
   });
 
   it('deduplicates the same note embedded by several proposals', async () => {
@@ -519,6 +499,6 @@ describe('importNotesFromProposals', () => {
     expect(outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'proposal', status: 'imported' },
     ]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(1);
   });
 });

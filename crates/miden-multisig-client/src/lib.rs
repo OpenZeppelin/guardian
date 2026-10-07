@@ -43,6 +43,7 @@ use miden_client::Client;
 use miden_client::keystore::FilesystemKeyStore;
 
 mod account;
+mod address;
 mod builder;
 mod client;
 mod error;
@@ -77,6 +78,7 @@ pub use procedures::{ProcedureName, ProcedureThreshold};
 
 // Account types
 pub use account::MultisigAccount;
+pub use address::{parse_account_address, parse_account_id};
 
 // Key management and hex utilities
 pub use keystore::{
@@ -95,6 +97,7 @@ pub use keystore::{
 
 // Proposals
 pub use execution::{SignatureAdvice, build_transfer_asset};
+pub use miden_standards::account::auth::MultisigAuthArgs;
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,
@@ -103,7 +106,10 @@ pub use proposal::{
 pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
-    ProposalBuilder, build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
+    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalOptions, TransactionRequestBuilderExt,
+    build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
+    multisig_auth_args, proposal_auth_args, proposer_auth_args,
+    summary_approval_expiration_block_num, summary_salt, synced_fee_faucet_id,
 };
 
 // Export/Import

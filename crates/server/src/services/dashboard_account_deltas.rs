@@ -127,6 +127,10 @@ pub(crate) fn decode_status_reason(status: &DeltaStatus) -> Option<&'static str>
             reason: Some(RetainReason::Diverged),
             ..
         } => Some("diverged"),
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::Orphaned),
+            ..
+        } => Some("orphaned"),
         DeltaStatus::Discarded {
             reason: Some(DiscardReason::ClientAbandoned),
             ..
@@ -423,6 +427,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -527,6 +532,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -615,6 +621,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

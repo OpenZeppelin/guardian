@@ -22,6 +22,7 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
+| 0.18.x | 0.17.x (pre-release) |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -45,7 +46,7 @@ miden-multisig-client = { git = "https://github.com/OpenZeppelin/guardian", pack
 ```rust
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{MultisigClient, TransactionType};
-use miden_objects::{Word, account::AccountId};
+use miden_objects::Word;
 
 # async fn example() -> anyhow::Result<()> {
 let signer1: Word = /* your RPO Falcon commitment */ Word::default();
@@ -69,10 +70,25 @@ println!("Account registered on GUARDIAN endpoint: {}", client.guardian_endpoint
 
 On a network with a non-zero `verification_base_fee`, a new account needs the
 native fee asset before it can create or execute regular proposals. Send the
-account a note funded by the faucet identified in the block header's
-`fee_parameters.fee_faucet_id`, then consume that note through a
+account a note of the chain's fee asset (its faucet is the one the synced
+protocol configuration names, `synced_fee_faucet_id`), then consume that note
+through a
 `consume_notes` proposal. The bootstrap transaction can pay its fee from the
 note it consumes.
+
+### Syncing with GUARDIAN
+
+`client.sync()` syncs the local store with the Miden node, then with GUARDIAN.
+The GUARDIAN step starts with a canonical-nonce pre-check (`get_canonical_nonce`,
+issue #191). When GUARDIAN's canonical nonce is below the local account's
+nonce, or equal to it at the same commitment, nothing newer exists to pull and
+the full state fetch is skipped. Otherwise the full sync runs as it did before
+the pre-check: a GUARDIAN state ahead of the local account is fetched and
+reconciled, and an equal nonce at a different commitment (divergence) is
+fetched but leaves the local account in place. A failed pre-check is a sync
+error, not a silent fall-through to the full fetch, so the GUARDIAN server must
+serve `GetCanonicalNonce` (issue #191) before this SDK version is rolled out
+against it.
 
 ## Configuration
 
@@ -202,6 +218,44 @@ client.sign_proposal(&to_sign.id).await?;
 client.execute_proposal(&proposal.id).await?;
 ```
 
+### Changing the signer set or the threshold
+
+All three go through the same on-chain procedure, which takes a signer set and
+a threshold together, so each is that call with different arguments.
+
+```rust
+use miden_multisig_client::TransactionType;
+
+// Membership. The new set is derived from the current one, so a caller cannot
+// supply a set that drops a signer by accident. The threshold is left alone.
+let tx = TransactionType::add_cosigner(new_commitment);
+let tx = TransactionType::remove_cosigner(commitment);
+
+// Threshold only. Pass the account's current signer set unchanged.
+let account = client.account().expect("account loaded");
+let tx = TransactionType::update_signers(3, account.cosigner_commitments());
+
+let proposal = client.propose_transaction(tx).await?;
+```
+
+`update_signers` moves the threshold and nothing else. A set that differs from
+the account's current one is refused, pointing at `AddCosigner` and
+`RemoveCosigner`, because deriving membership from current state is what makes
+those two safe. Order does not matter: the set is compared as a set, then the
+request is built from the account's own ordering so storage indices stay put.
+The threshold must be between 1 and the number of signers, and must differ from
+the current one.
+
+This is the account-wide default threshold, the "N" in N-of-M. It is not the
+same as a per-procedure override, which `TransactionType::UpdateProcedureThreshold`
+sets and which takes precedence for the procedure it names. So a proposal's
+required signatures come from the override when one exists, and this default
+otherwise. Changing the default does not clear an override, and this call is
+itself gated by whatever threshold governs `update_signers`.
+
+The TypeScript SDK exposes the same three as `createAddSignerProposal`,
+`createRemoveSignerProposal` and `createChangeThresholdProposal`.
+
 ### Proposal verification status
 
 `list_proposals` checks every proposal's metadata against its signed
@@ -212,8 +266,8 @@ proposal cannot hide the others; only the check itself writes `Verified`,
 and a freshly parsed or imported proposal is `Unchecked`.
 `Failed { retryable: true }` means the re-execution hit a transient node
 error and the proposal may verify on the next listing; `retryable: false`
-means it cannot be reproduced (tampered metadata, or an anchor block the
-node has pruned) and has to be re-proposed. Verification is deliberately
+means it cannot be reproduced (tampered metadata, for example) and has to
+be re-proposed. Verification is deliberately
 not part of `ProposalStatus`: a fully signed proposal can be dead, so
 `Ready` keeps meaning "threshold met" and `proposal.is_actionable()`
 answers "verified and ready". `sign_proposal` and `execute_proposal`
@@ -221,18 +275,27 @@ re-verify the one proposal they act on and fail with the real error. A
 payload that does not parse at all still fails the listing, so malformed
 GUARDIAN data is never silently dropped.
 
-Anchored re-execution needs the node to serve account state at the
-proposal's reference block, and nodes keep that history only briefly
-(devnet: about 50 blocks); once it is gone the proposal is reported as
-`Failed { retryable: false }` for everyone, the proposer included.
-Collect signatures and execute promptly, and re-propose once a proposal
-has aged out.
+Verification and execution run at the chain tip. Since Miden 0.17 a
+multisig summary binds the block its auth args name (the bound block), and
+every request the SDK builds declares that block
+(`TransactionRequestBuilder::block_numbers`), so the summary reproduces at
+any later tip. An execution runs at the Miden client's sync height, so
+`list_proposals`, `sign_proposal`, `execute_proposal` and the custom and
+offline paths sync the client first. Foreign accounts, the fee faucet among
+them, load at the tip, so a proposal stays verifiable however long it waits
+for signatures, even after the node has pruned the bound block's account
+state (devnet keeps about 50 blocks). The proposal's `chain_anchor` still
+names the bound block, and 0.18.0-rc.1 clients still re-execute at it.
 
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
 prover timeout, crash), the approved candidate keeps the account locked on
-GUARDIAN. Record an abandon intent and poll for the resolution:
+GUARDIAN: proposals and deltas answer `conflict_pending_delta` while the
+account's candidate queue (one candidate by default) is full, when they
+build on the state that candidate already claimed, or when their nonce does
+not extend the queue (a proposal's must be the newest queued candidate's plus
+one), and any candidate queued behind it can never land. Record an abandon intent and poll for the resolution:
 
 ```rust
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};
@@ -331,43 +394,68 @@ use miden_multisig_client::{
 };
 use miden_protocol::note::NoteType;
 
-// Producer: build a transaction and propose it under a custom label.
+// Producer: build a transaction and propose it under a custom label. The account's
+// auth procedure reads three words out of the request's auth argument since Miden
+// 0.17 (bound block and approval expiration, salt, fee conversion info); the client
+// builds them, bound to its sync height, and the builder attaches them. Sync first:
+// `propose_custom_transaction` anchors the proposal at that same height and does
+// not sync again, because a sync between build and propose would move the anchor
+// past the block the request binds.
+client.sync().await?;
 let salt = generate_salt();
+let auth_args = client.multisig_auth_args(salt, None, None).await?;
 let mut request = build_p2id_transaction_request(
     account.inner(),
     recipient,
     vec![asset],
     NoteType::Public,
     P2ideHeights::default(),
-    salt,
+    &auth_args,
     std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
+let bound_block_num = proposal.metadata.chain_anchor()?.block_num();
 
 // Cosigners review and sign through the usual list/sign flow.
 
-// Producer (once threshold is met): bind-check the request, fetch the validated
-// advice, inject it into the request, and submit. `prepare_custom_execution`
-// verifies the request against the signed commitment *before* the GUARDIAN ack,
-// re-executing at the proposal's anchored reference block; `submit_transaction`
-// takes the proposal id to execute at that same anchor, since the collected
-// signatures only authorize the summary produced there.
+// Producer (once threshold is met): rebuild the request from the recipe, bound to
+// the proposal's anchor block, bind-check it, fetch the validated advice, inject
+// it, and submit. `prepare_custom_execution` verifies the request against the
+// signed commitment *before* the GUARDIAN ack, re-executing at the chain tip;
+// `submit_transaction` executes at the tip too. Both work because the request
+// declares the block it binds (`TransactionRequestBuilderExt::multisig_auth_args`
+// does this), and refuse one that does not with `BoundBlockNotDeclared`.
+let auth_args = client.multisig_auth_args(salt, Some(bound_block_num), None).await?;
+let mut request = build_p2id_transaction_request(
+    account.inner(), recipient, vec![asset], NoteType::Public, P2ideHeights::default(),
+    &auth_args, std::iter::empty(),
+)?;
 let advice = client.prepare_custom_execution(&proposal.id, &request.to_bytes()).await?;
 request.advice_map_mut().extend(advice);
 client.submit_transaction(&proposal.id, request).await?;
 ```
 
-The integration keeps only its own recipe (build inputs + salt) so it can
-reproduce the exact transaction at execute time — the SDK does not store the
-serialized request. The binding check guarantees the rebuilt transaction matches
-the commitment the cosigners signed.
+The integration keeps its own recipe (build inputs + salt + the proposal's anchor
+block) so it can reproduce the exact transaction at execute time — the SDK does
+not store the serialized request. The binding check guarantees the rebuilt
+transaction matches the commitment the cosigners signed.
 
-Every exported transaction builder declares the recipe's salt with
-`TransactionRequestBuilder::fee_conversion_salt`. When the request executes,
-`miden-client` derives the native 1/1 conversion info from that execution's
-reference header and commits it into the auth argument. A producer assembling a
-different custom request directly with `TransactionRequestBuilder` must declare
-its salt the same way.
+Every exported transaction builder takes the `MultisigAuthArgs` and attaches them
+with `TransactionRequestBuilderExt::multisig_auth_args`: the commitment becomes the
+request's auth argument,
+the preimage goes into the advice map, which `miden-client` then leaves alone, and
+the block they bind is declared with `block_numbers`, so the request executes at
+the chain tip.
+A producer assembling a different custom request directly with
+`TransactionRequestBuilder` must do the same, and must not call
+`fee_conversion_salt`, which would let `miden-client` commit its own auth arg
+over them (the module docs of `transaction/auth_args.rs` explain what it
+commits today and why that does not fit). An approval expiration
+(1 to 65535 blocks, the furthest a transaction can expire after its reference
+block) is opt-in through `ProposalOptions::approval_expiration_delta` on
+`propose_transaction_with_options`, or the third argument of
+`multisig_auth_args` for a custom request; a rebuild reads the expiration the
+summary binds back with `summary_approval_expiration_block_num`.
 
 ## Delta History
 

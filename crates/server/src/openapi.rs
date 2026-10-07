@@ -200,6 +200,7 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::get_delta_since,
         crate::api::http::get_delta_history,
         crate::api::http::get_state,
+        crate::api::http::get_canonical_nonce,
         crate::api::http::lookup,
         crate::api::http::get_pubkey,
         crate::api::http::status,
@@ -230,6 +231,8 @@ pub struct ClientApiDoc;
         crate::api::dashboard::logout_operator,
         crate::api::dashboard::list_operator_accounts,
         crate::api::dashboard::get_dashboard_info_handler,
+        crate::api::dashboard::get_dashboard_stats_handler,
+        crate::api::dashboard::request_dashboard_stats_refresh_handler,
         crate::api::dashboard::get_dashboard_session_handler,
         crate::api::dashboard::get_operator_account,
         crate::api::dashboard::get_operator_account_snapshot,
@@ -416,6 +419,27 @@ mod tests {
             "GET / is an alias of GET /status: their documented contracts must \
              agree on parameters, security, response codes, and body schemas"
         );
+    }
+
+    #[test]
+    fn eip712_request_header_is_documented_on_authenticated_routes() {
+        let json = serde_json::to_value(client_openapi()).unwrap();
+        let signing_params = json["paths"]["/delta/proposal"]["put"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(signing_params.iter().any(|param| {
+            param["name"] == "x-auth-format"
+                && param["in"] == "header"
+                && param["required"] == false
+        }));
+        let lookup_params = json["paths"]["/state/lookup"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert!(lookup_params.iter().any(|param| {
+            param["name"] == "x-auth-format"
+                && param["in"] == "header"
+                && param["required"] == false
+        }));
     }
 
     #[test]

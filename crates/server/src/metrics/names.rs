@@ -72,6 +72,13 @@ pub const CANONICALIZATION_DELTAS_FETCHED_TOTAL: &str =
 pub const CANONICALIZATION_CANDIDATE_AGE_SECONDS: &str =
     "guardian_canonicalization_candidate_age_seconds";
 
+// --- Release sweep (issue #434) --------------------------------------------
+
+pub const RELEASE_SWEEP_ROTATIONS_TOTAL: &str = "guardian_release_sweep_rotations_total";
+pub const RELEASE_SWEEP_ROTATION_DURATION_SECONDS: &str =
+    "guardian_release_sweep_rotation_duration_seconds";
+pub const RELEASE_SWEEP_ACCOUNTS_TOTAL: &str = "guardian_release_sweep_accounts_total";
+
 // --- Delta / proposal lifecycle ------------------------------------------
 
 pub const DELTAS_SUBMITTED_TOTAL: &str = "guardian_deltas_submitted_total";
@@ -92,6 +99,15 @@ pub const ACCOUNTS_GAUGE: &str = "guardian_accounts";
 pub const ACCOUNTS_CREATED_TOTAL: &str = "guardian_accounts_created_total";
 pub const METRICS_REFRESH_TIMESTAMP_SECONDS: &str = "guardian_metrics_refresh_timestamp_seconds";
 pub const METRICS_REFRESH_FAILURES_TOTAL: &str = "guardian_metrics_refresh_failures_total";
+
+// --- Dashboard stats aggregate (set by its background refresher) ---------
+
+pub const DASHBOARD_STATS_REFRESH_TIMESTAMP_SECONDS: &str =
+    "guardian_dashboard_stats_refresh_timestamp_seconds";
+pub const DASHBOARD_STATS_REFRESH_FAILURES_TOTAL: &str =
+    "guardian_dashboard_stats_refresh_failures_total";
+pub const DASHBOARD_STATS_REFRESH_DURATION_SECONDS: &str =
+    "guardian_dashboard_stats_refresh_duration_seconds";
 
 // --- Build identity ------------------------------------------------------
 
@@ -343,6 +359,29 @@ pub const REGISTRY: &[MetricDef] = &[
                are not converging.",
     },
     MetricDef {
+        name: RELEASE_SWEEP_ROTATIONS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Walks of the fleet completed by the release sweep (issue #434), by outcome \
+               (completed: every account was checked; partial: at least one could not be).",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_ROTATION_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Wall-clock duration of one release sweep rotation over the fleet, in seconds.",
+    },
+    MetricDef {
+        name: RELEASE_SWEEP_ACCOUNTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Release sweep findings for accounts whose chain state is not their stored \
+               one, by what the chain showed (released, confirming, still_bound, \
+               own_key_mismatch, storage_opaque, no_binding, chain_behind_stored, \
+               probe_failed). Accounts at their stored base are counted only when that \
+               state's guardian key is not this server's.",
+    },
+    MetricDef {
         name: DELTAS_SUBMITTED_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_KIND],
@@ -420,6 +459,27 @@ pub const REGISTRY: &[MetricDef] = &[
         labels: &[],
         help: "Slow-aggregate refresh attempts that failed (gauges left stale).",
     },
+    MetricDef {
+        name: DASHBOARD_STATS_REFRESH_TIMESTAMP_SECONDS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Unix time of the last successfully published /dashboard/stats aggregate \
+               (the response's as_of). Staleness is time() minus this value.",
+    },
+    MetricDef {
+        name: DASHBOARD_STATS_REFRESH_FAILURES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "/dashboard/stats aggregate refresh attempts that failed (previous \
+               snapshot left published).",
+    },
+    MetricDef {
+        name: DASHBOARD_STATS_REFRESH_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Wall-clock duration of one /dashboard/stats aggregate refresh \
+               (metadata walk, batched state reads, vault decoding).",
+    },
 ];
 
 /// Bound the `route` label to the axum route template. Templates like
@@ -467,6 +527,7 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "AbandonDeltaCandidate"),
     ("guardian.Guardian", "GetAccountByKeyCommitment"),
     ("guardian.Guardian", "GetDeltaHistory"),
+    ("guardian.Guardian", "GetCanonicalNonce"),
     // Served alongside Guardian via tonic-reflection (v1 and v1alpha).
     (
         "grpc.reflection.v1.ServerReflection",

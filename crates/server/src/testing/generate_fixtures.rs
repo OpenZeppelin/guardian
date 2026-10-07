@@ -6,6 +6,7 @@ mod fixtures {
     use miden_confidential_contracts::multisig_guardian::{
         MultisigGuardianBuilder, MultisigGuardianConfig,
     };
+    use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountDelta;
     use miden_protocol::account::delta::AccountVaultDelta;
     use miden_protocol::account::{
@@ -185,7 +186,7 @@ mod fixtures {
             account_id,
             storage_delta_1,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 1");
@@ -194,9 +195,10 @@ mod fixtures {
             delta_1,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             MidenWord::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
 
         let mut account_state: Account =
@@ -293,7 +295,7 @@ mod fixtures {
             account_id,
             storage_delta_2,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 2");
@@ -302,9 +304,10 @@ mod fixtures {
             delta_2,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             MidenWord::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
 
         let prev_commitment_2 = current_commitment;
@@ -376,7 +379,7 @@ mod fixtures {
             account_id,
             storage_delta_3,
             AccountVaultDelta::default(),
-            None,
+            AccountCodePatch::default(),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta 3");
@@ -385,9 +388,10 @@ mod fixtures {
             delta_3,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(0),
             MidenWord::from([ZERO; 4]),
             0,
-            TransactionSummaryUserParams::new([ZERO; 7]),
+            TransactionSummaryUserParams::new([ZERO; 6]),
         );
 
         let prev_commitment_3 = current_commitment;
@@ -501,5 +505,162 @@ mod fixtures {
         println!("  ✓ delta_3.json (increase threshold to 3)");
         println!("  ✓ commitments.json (commitment history)");
         println!("  ✓ keys.json (secret keys for testing)");
+
+        // The queue chain is derived from the account just written, so one
+        // run leaves a consistent fixture set.
+        derive_roster_preserving_queue_fixtures();
+    }
+
+    /// Derives `queue_1.json`, `queue_2.json` and `queue_3.json` from the
+    /// committed `account.json`: three chained deltas that change only the
+    /// threshold, so the signer set (GUARDIAN's auth) and the guardian key
+    /// stay what the account was created with. `delta_1` and `delta_2`
+    /// each add a signer, and nothing may chain behind a candidate that
+    /// changes the signer set (issue #17), so the candidate-queue tests
+    /// chain these instead. Deterministic: no new keys are drawn, so
+    /// `account.json`, `keys.json` and `delta_*.json` are left as they
+    /// are and `commitments.json` only gains `commitment_after_queue_N`.
+    /// `generate_multisig_fixtures` runs this at its end, so one command
+    /// yields a consistent set; this entry point re-derives the queue
+    /// chain alone:
+    ///
+    /// ```text
+    /// cargo test -p guardian-server --features e2e generate_roster_preserving_queue_fixtures -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn generate_roster_preserving_queue_fixtures() {
+        derive_roster_preserving_queue_fixtures();
+    }
+
+    /// The post-states are computed by the server's own `apply_delta`
+    /// (the replay-protection entry included), so the pinned commitments
+    /// agree with what the server computes by construction.
+    #[cfg(test)]
+    fn derive_roster_preserving_queue_fixtures() {
+        use crate::network::NetworkClient;
+
+        let fixtures_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("testing")
+            .join("fixtures");
+        let read = |name: &str| -> serde_json::Value {
+            serde_json::from_str(
+                &fs::read_to_string(fixtures_dir.join(name))
+                    .unwrap_or_else(|e| panic!("reading {name}: {e}")),
+            )
+            .unwrap_or_else(|e| panic!("parsing {name}: {e}"))
+        };
+        let account_json = read("account.json");
+        let mut commitments = match read("commitments.json") {
+            serde_json::Value::Object(map) => map,
+            other => panic!("commitments.json is not an object: {other}"),
+        };
+
+        let account = Account::from_json(&account_json).expect("account.json decodes");
+        let account_id = account.id();
+        let initial_commitment_hex =
+            format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
+        assert_eq!(
+            initial_commitment_hex,
+            commitments["initial_commitment"]
+                .as_str()
+                .expect("initial_commitment"),
+            "account.json must be the state commitments.json was derived from"
+        );
+
+        let threshold_config_name =
+            StorageSlotName::new(THRESHOLD_CONFIG_SLOT).expect("invalid slot name");
+        let threshold_config = account
+            .storage()
+            .get_item(&threshold_config_name)
+            .expect("the multisig threshold slot is present");
+        let signer_count = threshold_config[1].as_canonical_u64();
+        let initial_threshold = threshold_config[0].as_canonical_u64();
+        println!(
+            "\nDeriving roster-preserving queue fixtures from account {account_id} \
+             ({initial_threshold}/{signer_count} + GUARDIAN)\n"
+        );
+
+        let client = crate::network::miden::MidenNetworkClient::lazy_for_test(
+            crate::network::NetworkType::MidenLocal,
+        );
+        let mut state_json = account_json;
+        let mut prev_commitment_hex = initial_commitment_hex;
+        // Threshold-only changes, each valid for the signer count the
+        // account keeps throughout.
+        for (index, threshold) in [signer_count, 1, initial_threshold].into_iter().enumerate() {
+            let nonce = index as u64 + 1;
+            let storage_patch = AccountStoragePatch::from_entries([(
+                threshold_config_name.clone(),
+                StorageSlotPatch::Value(StorageValuePatch::Update {
+                    value: MidenWord::from([
+                        Felt::new_unchecked(threshold),
+                        Felt::new_unchecked(signer_count),
+                        ZERO,
+                        ZERO,
+                    ]),
+                }),
+            )])
+            .expect("threshold patch");
+            let delta = AccountDelta::new(
+                account_id,
+                storage_patch,
+                AccountVaultDelta::default(),
+                AccountCodePatch::default(),
+                Felt::new_unchecked(1),
+            )
+            .expect("threshold-only delta");
+            let tx_summary = TransactionSummary::new(
+                delta,
+                InputNotes::new(Vec::new()).unwrap(),
+                RawOutputNotes::new(Vec::new()).unwrap(),
+                miden_protocol::block::BlockNumber::from(0),
+                MidenWord::from([ZERO; 4]),
+                0,
+                TransactionSummaryUserParams::new([ZERO; 6]),
+            )
+            .to_json();
+
+            let applied = client
+                .apply_delta(&state_json, &tx_summary)
+                .expect("the server applies the threshold-only delta");
+            assert_eq!(
+                applied.nonce,
+                Some(nonce),
+                "the delta advances the nonce by one"
+            );
+
+            let fixture = serde_json::json!({
+                "account_id": format!("{}", account_id),
+                "nonce": nonce,
+                "prev_commitment": prev_commitment_hex,
+                "new_commitment": applied.commitment,
+                "delta_payload": tx_summary
+            });
+            let file_name = format!("queue_{nonce}.json");
+            fs::write(
+                fixtures_dir.join(&file_name),
+                serde_json::to_string_pretty(&fixture).unwrap(),
+            )
+            .unwrap_or_else(|e| panic!("writing {file_name}: {e}"));
+            commitments.insert(
+                format!("commitment_after_queue_{nonce}"),
+                serde_json::json!(applied.commitment),
+            );
+            println!(
+                "Saved {file_name} (threshold {threshold}/{signer_count}): {}",
+                applied.commitment
+            );
+            prev_commitment_hex = applied.commitment;
+            state_json = applied.state_json;
+        }
+
+        fs::write(
+            fixtures_dir.join("commitments.json"),
+            serde_json::to_string_pretty(&serde_json::Value::Object(commitments)).unwrap(),
+        )
+        .expect("writing commitments.json");
+        println!("Updated commitments.json");
     }
 }

@@ -8,6 +8,7 @@ import {
 import {
   AccountInspector,
   buildP2idTransactionRequest,
+  chainAnchorBlockNum,
   EcdsaSigner,
   FalconSigner,
   MidenWalletSigner,
@@ -85,12 +86,6 @@ function currentAccountNonce(multisig: Multisig): number | null {
   }
 }
 
-function proposalNonce(multisig: Multisig): number | undefined {
-  const nonce = currentAccountNonce(multisig);
-  // Proposal nonce is the account's next nonce (current + 1), matching the Rust
-  // client's `proposal.nonce <= account.nonce()` staleness filter.
-  return nonce === null ? undefined : nonce + 1;
-}
 
 export function filterVisibleProposals(
   multisig: Multisig,
@@ -222,16 +217,27 @@ export async function switchMultisigGuardian(
 export async function fetchAccountState(
   multisig: Multisig,
 ): Promise<{ state: AccountState; config: DetectedMultisigConfig }> {
-  const state = await multisig.syncState();
+  // An explicit fetch of GUARDIAN's copy for display and config detection;
+  // store reconciliation (with the canonical-nonce pre-check) is `syncAll`.
+  const state = await multisig.fetchState();
   const config = AccountInspector.fromBase64(state.stateDataBase64);
   return { state, config };
 }
 
 export async function syncAll(
   multisig: Multisig,
-): Promise<{ proposals: Proposal[]; state: AccountState; notes: ConsumableNote[] }> {
-  const state = await multisig.syncState();
-  const proposals = filterVisibleProposals(multisig, await multisig.syncProposals(), state);
+  lastFetchedState?: AccountState,
+): Promise<{ proposals: Proposal[]; state: AccountState | null; notes: ConsumableNote[] }> {
+  // `state` is null when GUARDIAN reported nothing newer than the local
+  // account (the canonical-nonce pre-check skipped the state fetch); the
+  // caller's last fetched copy then keeps the proposal filter's inputs stable.
+  const synced = await multisig.syncState();
+  const state = synced.source === 'guardian' ? synced.state : null;
+  const proposals = filterVisibleProposals(
+    multisig,
+    await multisig.syncProposals(),
+    state ?? lastFetchedState,
+  );
   const notes = await multisig.getConsumableNotes();
   return { proposals, state, notes };
 }
@@ -252,7 +258,6 @@ export async function createAddSignerProposal(
   return createProposalResult(multisig, () => {
     const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
     return multisig.createAddSignerProposal(commitment, {
-      nonce: proposalNonce(multisig),
       newThreshold,
     });
   });
@@ -265,7 +270,6 @@ export async function createRemoveSignerProposal(
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createRemoveSignerProposal(signerToRemove, {
-      nonce: proposalNonce(multisig),
       newThreshold,
     }));
 }
@@ -275,7 +279,7 @@ export async function createChangeThresholdProposal(
   newThreshold: number,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createChangeThresholdProposal(newThreshold, { nonce: proposalNonce(multisig) }));
+    multisig.createChangeThresholdProposal(newThreshold));
 }
 
 export async function createUpdateProcedureThresholdProposal(
@@ -287,7 +291,6 @@ export async function createUpdateProcedureThresholdProposal(
     multisig.createUpdateProcedureThresholdProposal(
       procedure,
       threshold,
-      { nonce: proposalNonce(multisig) },
     ));
 }
 
@@ -296,7 +299,7 @@ export async function createConsumeNotesProposal(
   noteIds: string[],
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createConsumeNotesProposal(noteIds, { nonce: proposalNonce(multisig) }));
+    multisig.createConsumeNotesProposal(noteIds));
 }
 
 export async function createP2idProposal(
@@ -310,7 +313,6 @@ export async function createP2idProposal(
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(recipientId, faucetId, amount, {
       ...heights,
-      nonce: proposalNonce(multisig),
       noteType,
     }));
 }
@@ -326,7 +328,6 @@ export async function createSwitchGuardianProposal(
       multisig.createSwitchGuardianProposal(
         newGuardianEndpoint,
         newGuardianPubkey,
-        { nonce: proposalNonce(multisig) },
       ),
     async (currentMultisig) => listVisibleProposals(currentMultisig),
   );
@@ -380,22 +381,44 @@ export interface CustomProposalRecipe {
   faucetId: string;
   amount: string;
   saltHex: string;
+  /** The block the signed summary binds: the proposal's anchor block. */
+  boundBlockNum: number;
 }
 
-function buildRequestFromRecipe(
+/**
+ * The integration's own recipe rebuilds the exact request at execute time. The
+ * client attaches the multisig auth args, so the recipe pins everything they
+ * bind: the salt and the block, both of which the cosigners signed over.
+ */
+async function buildRequestFromRecipe(
+  midenClient: MidenClient,
   recipe: CustomProposalRecipe,
   signatureAdviceMap?: AdviceMap,
-): TransactionRequest {
-  return buildP2idTransactionRequest(
+): Promise<TransactionRequest> {
+  const { request } = await buildP2idTransactionRequest(
+    midenClient,
     recipe.senderId,
     recipe.recipientId,
     recipe.faucetId,
     BigInt(recipe.amount),
-    { salt: Word.fromHex(recipe.saltHex), signatureAdviceMap },
-  ).request;
+    {
+      salt: Word.fromHex(recipe.saltHex),
+      boundBlockNum: recipe.boundBlockNum,
+      signatureAdviceMap,
+    },
+  );
+  return request;
+}
+
+function proposalBoundBlockNum(proposal: Proposal): number {
+  if (!proposal.metadata.chainAnchor) {
+    throw new Error(`Proposal ${proposal.id} carries no chain anchor`);
+  }
+  return chainAnchorBlockNum(proposal.metadata.chainAnchor);
 }
 
 export async function createCustomP2idProposal(
+  midenClient: MidenClient,
   multisig: Multisig,
   recipientId: string,
   faucetId: string,
@@ -403,7 +426,8 @@ export async function createCustomP2idProposal(
   label: string,
 ): Promise<{ proposal: Proposal; proposals: Proposal[]; recipe: CustomProposalRecipe }> {
   const senderId = multisig.accountId;
-  const { request, salt } = buildP2idTransactionRequest(
+  const { request, salt } = await buildP2idTransactionRequest(
+    midenClient,
     senderId,
     recipientId,
     faucetId,
@@ -411,7 +435,7 @@ export async function createCustomP2idProposal(
   );
 
   const created = await createProposalResult(multisig, () =>
-    multisig.createCustomProposal(request.serialize(), label, { nonce: proposalNonce(multisig) }));
+    multisig.createCustomProposal(request.serialize(), label));
 
   const recipe: CustomProposalRecipe = {
     proposalId: created.proposal.id,
@@ -421,19 +445,21 @@ export async function createCustomP2idProposal(
     faucetId,
     amount: amount.toString(),
     saltHex: salt.toHex(),
+    boundBlockNum: proposalBoundBlockNum(created.proposal),
   };
 
   return { ...created, recipe };
 }
 
 export async function prepareAndSubmitCustomProposal(
+  midenClient: MidenClient,
   multisig: Multisig,
   recipe: CustomProposalRecipe,
 ): Promise<void> {
-  const bindingRequestBytes = buildRequestFromRecipe(recipe).serialize();
-  const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequestBytes);
+  const bindingRequest = await buildRequestFromRecipe(midenClient, recipe);
+  const advice = await multisig.prepareCustomExecution(recipe.proposalId, bindingRequest.serialize());
 
-  const finalRequest = buildRequestFromRecipe(recipe, advice);
+  const finalRequest = await buildRequestFromRecipe(midenClient, recipe, advice);
 
   try {
     await multisig.submitTransaction(recipe.proposalId, finalRequest);

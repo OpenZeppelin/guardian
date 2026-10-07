@@ -7,6 +7,7 @@ export interface ServerEcdsaSignature {
   scheme: 'ecdsa';
   signature: string;
   public_key?: string;
+  message_format?: 'eip712';
 }
 
 export type ServerProposalSignature = ServerFalconSignature | ServerEcdsaSignature;
@@ -21,7 +22,7 @@ export type ServerDeltaStatus =
   | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
+  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' | 'orphaned' }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ServerProposalType =
@@ -108,6 +109,12 @@ export interface ServerStateObject {
   created_at: string;
   updated_at: string;
   auth_scheme?: string;
+}
+
+export interface ServerCanonicalNonceResponse {
+  account_id: string;
+  nonce: number;
+  commitment: string;
 }
 
 export type ServerAuthConfig =

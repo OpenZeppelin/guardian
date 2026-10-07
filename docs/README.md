@@ -77,6 +77,8 @@ You are a contributor.
    misbehaves.
 8. [`spec/`](../spec/index.md) — the formal protocol spec: definitions,
    components, per-RPC processes.
+9. [Qualification](./QUALIFICATION.md) — the black-box end-to-end suite:
+   what it covers, how to run either profile, and what a run may claim.
 
 ### I want to *integrate* my own operator dashboard or harness
 
@@ -104,6 +106,7 @@ You are a contributor.
 
 **Reference**
 - [Configuration (env vars)](./CONFIGURATION.md)
+- [Qualification](./QUALIFICATION.md) — end-to-end qualification suite
 - [OpenAPI specification](./OPENAPI.md) — HTTP API spec ([`openapi.json`](./openapi.json))
 - [`spec/`](../spec/index.md) — protocol specification
 - [`infra/README.md`](../infra/README.md) — Terraform variables
@@ -117,6 +120,7 @@ You are a contributor.
 - [Enabling verified database TLS](./runbooks/enable-db-tls.md)
 - [Database backup and restore](./runbooks/backup-restore.md)
 - [Horizontal scaling](./runbooks/horizontal-scaling.md)
+- [GitHub OIDC deploy roles](./runbooks/github-oidc-deploy-roles.md) — IAM behind the AWS Deploy workflow (off by default)
 - [Operator dashboard](./DASHBOARD.md)
 
 **SDKs**

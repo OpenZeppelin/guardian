@@ -235,7 +235,7 @@ impl MultisigGuardianBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use guardian_shared::hex::{FromHex, IntoHex};
+    use guardian_shared::hex::FromHex;
 
     fn mock_commitment(seed: u8) -> Word {
         Word::from([
@@ -395,11 +395,11 @@ mod tests {
 
         // Cross-SDK parity: the TypeScript builder must derive these same identity
         // values from the same pinned miden-standards version; regenerate both if
-        // the pin changes.
-        assert_eq!(account.id().to_hex(), "0xff5d71f7ac2107011b27a8df4ddbe0");
+        // the pin changes (`packages/miden-multisig-client/tests/browser/determinism.spec.ts`).
+        assert_eq!(account.id().to_hex(), "0xa25ba0624468ecc166fbb26abf3349");
         assert_eq!(
-            account.to_commitment().into_hex(),
-            "0x45ad4dcf0c19662fd1f8f1647159ab4b4a0e80b1d3068d16c6092211a492e6c8"
+            account.to_commitment().to_hex(),
+            "0xe153f89f9750e9842a2afe2bd063d32875e40ea8ee0c25eb0a87df48cff19e78"
         );
     }
 }

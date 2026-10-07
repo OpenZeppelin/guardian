@@ -5,8 +5,9 @@ mod state;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
+    MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
 };
+use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
 use actions::{
@@ -35,21 +36,43 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!();
 
     let network_choice = prompt_input(editor, "Network [1]: ")?;
-    let miden_endpoint = match network_choice.trim() {
-        "" | "1" => Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291)),
-        "2" => Endpoint::new("https".to_string(), "rpc.devnet.miden.io".to_string(), None),
-        "3" => Endpoint::new(
-            "https".to_string(),
-            "rpc.testnet.miden.io".to_string(),
-            None,
+    let local = || Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291));
+    // The network id renders account ids as bech32m addresses and checks pasted
+    // ones; a local node is treated as devnet, and a custom endpoint says which.
+    let (miden_endpoint, network_id) = match network_choice.trim() {
+        "" | "1" => (local(), NetworkId::Devnet),
+        "2" => (
+            Endpoint::new("https".to_string(), "rpc.devnet.miden.io".to_string(), None),
+            NetworkId::Devnet,
+        ),
+        "3" => (
+            Endpoint::new(
+                "https".to_string(),
+                "rpc.testnet.miden.io".to_string(),
+                None,
+            ),
+            NetworkId::Testnet,
         ),
         "4" => {
             let custom_url = prompt_input(editor, "Enter Miden Node URL: ")?;
-            parse_miden_endpoint(&custom_url)?
+            let endpoint = parse_miden_endpoint(&custom_url)?;
+            let network = prompt_input(
+                editor,
+                "Network of this endpoint ([1] devnet, [2] testnet) [1]: ",
+            )?;
+            let network_id = match network.trim() {
+                "" | "1" => NetworkId::Devnet,
+                "2" => NetworkId::Testnet,
+                _ => {
+                    println!("  Invalid choice, using devnet");
+                    NetworkId::Devnet
+                }
+            };
+            (endpoint, network_id)
         }
         _ => {
             println!("  Invalid choice, using local");
-            Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291))
+            (local(), NetworkId::Devnet)
         }
     };
 
@@ -130,16 +153,18 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         scheme_name
     ));
 
+    let mut builder = MultisigClient::builder()
+        .miden_endpoint(miden_endpoint)
+        .guardian_endpoint(&guardian_endpoint)
+        .prover_config(prover_config)
+        .rpc_config(rpc_config);
+    if let Some(url) = note_transport_url {
+        builder = builder.note_transport_endpoint(url);
+    }
+
     let mut state = SessionState::new()?;
     state
-        .initialize_client(
-            miden_endpoint,
-            note_transport_url,
-            &guardian_endpoint,
-            signature_scheme,
-            prover_config,
-            rpc_config,
-        )
+        .initialize_client(builder, signature_scheme, network_id)
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;

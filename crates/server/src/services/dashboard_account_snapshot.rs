@@ -16,7 +16,6 @@
 
 use guardian_shared::FromJson;
 use guardian_shared::hex::IntoHex;
-use miden_protocol::asset::Asset;
 use serde::Serialize;
 
 use crate::error::{GuardianError, Result};
@@ -129,15 +128,15 @@ pub async fn get_account_snapshot(
     let mut fungible = Vec::new();
     let mut non_fungible = Vec::new();
     for asset in account.vault().assets() {
-        match asset {
-            Asset::Fungible(a) => fungible.push(DashboardVaultFungibleEntry {
+        match asset.as_fungible() {
+            Some(a) => fungible.push(DashboardVaultFungibleEntry {
                 faucet_id: a.faucet_id().to_hex(),
                 amount: a.amount().to_string(),
             }),
-            Asset::NonFungible(a) => {
-                let key_word = a.id().to_word();
+            None => {
+                let key_word = asset.to_id_word();
                 non_fungible.push(DashboardVaultNonFungibleEntry {
-                    faucet_id: a.faucet_id().to_hex(),
+                    faucet_id: asset.faucet_id().to_hex(),
                     vault_key: (&key_word).into_hex(),
                 });
             }
@@ -187,6 +186,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -223,6 +223,7 @@ mod tests {
             account_id: account_id.to_string(),
             state_json,
             commitment,
+            nonce: None,
             created_at: "2026-05-11T00:00:00Z".to_string(),
             updated_at: "2026-05-11T00:01:00Z".to_string(),
             auth_scheme: "falcon".to_string(),
@@ -275,6 +276,7 @@ mod tests {
             account_id: "0xacc".to_string(),
             state_json: serde_json::json!({ "data": "not-base64-bytes!" }),
             commitment: "0xc".to_string(),
+            nonce: None,
             created_at: "2026-05-11T00:00:00Z".to_string(),
             updated_at: "2026-05-11T00:01:00Z".to_string(),
             auth_scheme: "falcon".to_string(),

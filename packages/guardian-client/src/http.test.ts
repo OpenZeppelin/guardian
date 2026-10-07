@@ -280,7 +280,107 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('getCanonicalNonce', () => {
+    it('should fetch the canonical nonce with authentication over the query', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 7,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+
+      const accountId = '0x' + 'a'.repeat(30);
+      const head = await client.getCanonicalNonce(accountId);
+
+      expect(head).toEqual({
+        accountId,
+        nonce: 7,
+        commitment: '0x' + 'b'.repeat(64),
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/state/nonce?account_id='),
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({
+            'x-pubkey': mockSigner.publicKey,
+            'x-signature': expect.any(String),
+            'x-timestamp': expect.any(String),
+          }),
+        })
+      );
+    });
+
+    it('should surface a structured server error', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 404,
+        statusText: 'Not Found',
+        text: async () =>
+          JSON.stringify({
+            code: 'account_not_found',
+            message: 'Account not found',
+            meta: { retryable: false },
+          }),
+      });
+
+      const error = await client.getCanonicalNonce('0x' + 'a'.repeat(30)).catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(404);
+      expect(error.code).toBe('account_not_found');
+    });
+
+    it('should reject a nonce the client cannot represent', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 2 ** 53,
+          commitment: '0x' + 'b'.repeat(64),
+        }),
+      });
+
+      await expect(client.getCanonicalNonce('0x' + 'a'.repeat(30))).rejects.toThrow(
+        'Invalid canonical nonce'
+      );
+    });
+  });
+
   describe('getState', () => {
+    it('uses the existing signed headers with an EIP-712 format selector', async () => {
+      const signer: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        requestAuthFormat: 'eip712',
+      };
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          commitment: '0x' + 'b'.repeat(64),
+          state_json: { data: 'state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-01T00:00:00Z',
+        }),
+      });
+
+      await client.getState('0x' + 'a'.repeat(30));
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers['x-pubkey']).toBe(signer.publicKey);
+      expect(headers['x-signature']).toMatch(/^0x/);
+      expect(headers['x-timestamp']).toMatch(/^\d+$/);
+      expect(headers['x-auth-format']).toBe('eip712');
+    });
+
     it('should get account state with authentication', async () => {
       client.setSigner(mockSigner);
 
@@ -424,6 +524,51 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('pushDeltaProposal', () => {
+    it('lets an EIP-712 signer create an unsigned proposal', async () => {
+      const signer: Signer = {
+        ...mockSigner,
+        scheme: 'ecdsa',
+        requestAuthFormat: 'eip712',
+      };
+      client.setSigner(signer);
+      const accountId = '0x' + 'a'.repeat(30);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          delta: {
+            account_id: accountId,
+            nonce: 1,
+            prev_commitment: '0x' + 'b'.repeat(64),
+            delta_payload: {
+              tx_summary: { data: 'base64summary' },
+              signatures: [],
+            },
+            status: {
+              status: 'pending',
+              timestamp: '2024-01-01T00:00:00Z',
+              proposer_id: signer.commitment,
+              cosigner_sigs: [],
+            },
+          },
+          commitment: '0x' + 'd'.repeat(64),
+        }),
+      });
+
+      const result = await client.pushDeltaProposal({
+        accountId,
+        nonce: 1,
+        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+      });
+
+      expect(result.delta.status).toMatchObject({ proposerId: signer.commitment, cosignerSigs: [] });
+      const request = mockFetch.mock.calls[0][1];
+      expect(request.headers['x-auth-format']).toBe('eip712');
+      expect(request.headers['x-pubkey']).toBe(signer.publicKey);
+      expect(request.headers['x-signature']).toMatch(/^0x/);
+      expect(JSON.parse(request.body).delta_payload.signatures).toEqual([]);
+      expect(signer.signRequest).toHaveBeenCalledOnce();
+    });
+
     it('should push a new delta proposal', async () => {
       client.setSigner(mockSigner);
 
@@ -1110,6 +1255,16 @@ describe('GuardianHttpClient', () => {
       expect(init.headers['x-pubkey']).toBe(signer.publicKey);
       expect(init.headers['x-signature']).toMatch(/^0x/);
       expect(init.headers['x-timestamp']).toMatch(/^\d+$/);
+    });
+
+    it('sends the EIP-712 format header for typed lookup signers', async () => {
+      const signer = { ...makeLookupSigner(), requestAuthFormat: 'eip712' as const };
+      client.setSigner(signer);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ accounts: [] }) });
+
+      await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+
+      expect(mockFetch.mock.calls[0][1].headers['x-auth-format']).toBe('eip712');
     });
 
     it('throws a clear error when no signer is configured', async () => {

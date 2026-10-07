@@ -3,9 +3,10 @@ use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, AuthHeader, Credentials};
 use crate::services::{
-    self, AbandonCandidateParams, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams,
-    GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
-    LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
+    self, AbandonCandidateParams, CanonicalNonceResponse, ConfigureAccountParams,
+    GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams, GetDeltaProposalParams,
+    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
+    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -163,6 +164,7 @@ pub struct ConfigureResponse {
     path = "/configure",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = ConfigureRequest,
     responses(
         (status = 200, description = "Account configured", body = ConfigureResponse),
@@ -199,6 +201,7 @@ pub async fn configure(
     path = "/delta",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = DeltaObject,
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
@@ -233,7 +236,7 @@ pub async fn push_delta(
     path = "/delta",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(DeltaQuery),
+    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Delta found", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -265,7 +268,7 @@ pub async fn get_delta(
     path = "/delta/since",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(DeltaQuery),
+    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Merged delta", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -298,7 +301,7 @@ pub async fn get_delta_since(
     path = "/delta/history",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(HistoryQuery),
+    params(HistoryQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "One page of canonical history", body = crate::services::PagedResult<crate::services::HistoryEntry>),
         (status = 400, description = "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
@@ -338,7 +341,7 @@ pub async fn get_delta_history(
     path = "/state",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(StateQuery),
+    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Current account state", body = StateObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -362,6 +365,43 @@ pub async fn get_state(
     Ok(Json(response.state))
 }
 
+/// Nonce and commitment of the latest canonical state (issue #191), read
+/// from the values stored with the state rather than from the state blob.
+/// A client can skip `GET /state` when `nonce` is below its local account
+/// nonce, or equal to it with `commitment` matching the local commitment.
+/// An equal nonce at a different commitment means the account diverged, so
+/// the client fetches the state.
+#[utoipa::path(
+    get,
+    path = "/state/nonce",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(StateQuery),
+    responses(
+        (status = 200, description = "Nonce and commitment of the canonical state", body = CanonicalNonceResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or state not found", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "The stored state carries no nonce and cannot be decoded", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_canonical_nonce(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<StateQuery>,
+) -> Result<Json<CanonicalNonceResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+
+    let params = GetCanonicalNonceParams {
+        account_id: query.account_id,
+        credentials: request_payload.apply_to(credentials),
+    };
+
+    let response = services::get_canonical_nonce(&state, params).await?;
+    Ok(Json(response))
+}
+
 /// `GET /state/lookup?key_commitment=<hex>` — resolves a Miden public-key
 /// commitment to the set of account IDs whose authorization set contains it.
 /// Authentication is by proof-of-possession against the queried commitment.
@@ -370,7 +410,7 @@ pub async fn get_state(
     path = "/state/lookup",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(LookupQuery),
+    params(LookupQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA lookup format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Accounts whose authorization set contains the commitment", body = LookupResponse),
         (status = 400, description = "Malformed key commitment", body = crate::openapi::ApiErrorResponse),
@@ -490,6 +530,7 @@ pub async fn get_pubkey(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = DeltaProposalRequest,
     responses(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
@@ -542,6 +583,7 @@ pub async fn push_delta_proposal(
     path = "/delta/candidate/abandon",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = AbandonCandidateRequest,
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
@@ -582,7 +624,7 @@ pub async fn abandon_candidate(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ProposalQuery),
+    params(ProposalQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Pending proposals", body = ProposalsResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -613,7 +655,7 @@ pub async fn get_delta_proposals(
     path = "/delta/proposal/single",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ProposalItemQuery),
+    params(ProposalItemQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
         (status = 200, description = "Proposal found", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -645,6 +687,7 @@ pub async fn get_delta_proposal(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     request_body = SignProposalRequest,
     responses(
         (status = 200, description = "Signature accepted", body = DeltaObject),
@@ -839,6 +882,7 @@ mod tests {
         StateObject {
             account_id,
             commitment,
+            nonce: None,
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
@@ -1482,6 +1526,104 @@ mod tests {
         };
 
         assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_canonical_nonce_success() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+        // Served from the stored head: no `account_nonce` answer is queued,
+        // so a decode would read the mock's `Ok(None)` and fail.
+        let mut stored = create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            serde_json::json!({ "data": "opaque" }),
+        );
+        stored.nonce = Some(42);
+        let _storage = storage.with_pull_state(Ok(stored));
+
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let Json(response) =
+            get_canonical_nonce(State(state), AuthHeader(credentials), Query(query))
+                .await
+                .expect("get_canonical_nonce should succeed");
+
+        assert_eq!(response.account_id, account_id);
+        assert_eq!(response.nonce, 42);
+        assert_eq!(response.commitment, "0x123");
+    }
+
+    #[tokio::test]
+    async fn test_get_canonical_nonce_not_found() {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+        let _storage = storage.with_pull_state(Err("State not found".to_string()));
+
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
+
+        let credentials = signed_credentials(&signer, &account_id, &query);
+        let err =
+            match get_canonical_nonce(State(state), AuthHeader(credentials), Query(query)).await {
+                Ok(_) => panic!("get_canonical_nonce should fail when state is missing"),
+                Err(err) => err,
+            };
+
+        assert_eq!(err.http_status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_get_canonical_nonce_rejects_unsigned_query() {
+        let (state, storage, network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let signer = TestSigner::new();
+        let commitment = signer.commitment_hex.clone();
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![commitment],
+        ))));
+        let _storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x123".to_string(),
+            serde_json::json!({ "data": "opaque" }),
+        )));
+        let _network = network.with_account_nonce(Ok(Some(42)));
+
+        let signed_for_other_query = StateQuery {
+            account_id: "0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c".to_string(),
+        };
+        let credentials = signed_credentials(&signer, &account_id, &signed_for_other_query);
+        let query = StateQuery {
+            account_id: account_id.clone(),
+        };
+
+        let err =
+            match get_canonical_nonce(State(state), AuthHeader(credentials), Query(query)).await {
+                Ok(_) => panic!("a signature over a different payload must be rejected"),
+                Err(err) => err,
+            };
+
+        assert_eq!(err.http_status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

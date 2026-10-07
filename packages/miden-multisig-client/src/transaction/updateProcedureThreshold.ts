@@ -4,17 +4,14 @@ import {
   type MidenClient,
   Poseidon2,
   TransactionRequest,
-  TransactionRequestBuilder,
   TransactionScript,
-  type WasmWebClient,
   Word,
   Word as WordType,
 } from '@miden-sdk/miden-sdk';
 import { getProcedureRoot, type ProcedureName } from '../procedures.js';
-import { compileTxScript } from '../raw-client.js';
 import { normalizeHexWord } from '../utils/encoding.js';
-import { randomWord } from '../utils/random.js';
-import type { MidenClientSignatureOptions, SignatureOptions } from './options.js';
+import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import type { MultisigRequestOptions } from './options.js';
 
 function buildProcedureThresholdFelts(procedure: ProcedureName, threshold: number): Felt[] {
   const procedureRoot = WordType.fromHex(normalizeHexWord(getProcedureRoot(procedure)));
@@ -39,10 +36,9 @@ function buildProcedureThresholdConfigHash(procedure: ProcedureName, threshold: 
 }
 
 async function buildUpdateProcedureThresholdScript(
-  client: MidenClient | WasmWebClient,
+  client: MidenClient,
   procedure: ProcedureName,
   threshold: number,
-  midenRpcEndpoint?: string,
 ): Promise<TransactionScript> {
   const procedureRoot = normalizeHexWord(getProcedureRoot(procedure));
 
@@ -59,52 +55,24 @@ pub proc main
 end
   `;
 
-  return compileTxScript(client, scriptSource, [], midenRpcEndpoint);
+  return client.compile.txScript({ code: scriptSource });
 }
 
-export function buildUpdateProcedureThresholdTransactionRequest(
+export async function buildUpdateProcedureThresholdTransactionRequest(
   client: MidenClient,
   procedure: ProcedureName,
   threshold: number,
-  options: MidenClientSignatureOptions,
-): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
-export function buildUpdateProcedureThresholdTransactionRequest(
-  client: WasmWebClient,
-  procedure: ProcedureName,
-  threshold: number,
-  options?: SignatureOptions,
-): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }>;
-export async function buildUpdateProcedureThresholdTransactionRequest(
-  client: MidenClient | WasmWebClient,
-  procedure: ProcedureName,
-  threshold: number,
-  options: SignatureOptions = {},
+  options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
   const configHash = buildProcedureThresholdConfigHash(procedure, threshold);
 
-  const script = await buildUpdateProcedureThresholdScript(
-    client,
-    procedure,
-    threshold,
-    options.midenRpcEndpoint,
-  );
-  const authSaltHex = options.salt ? options.salt.toHex() : randomWord().toHex();
-  const authSalt = WordType.fromHex(normalizeHexWord(authSaltHex));
-
-  let txBuilder = new TransactionRequestBuilder();
-  txBuilder = txBuilder.withCustomScript(script);
-  txBuilder = txBuilder.withFeeConversionSalt(authSalt);
-  // Borrows rather than consumes: the glue passes `__wbg_ptr` without taking it,
-  // so the handle stays ours to release once the builder has read it.
-  authSalt.free?.();
+  const script = await buildUpdateProcedureThresholdScript(client, procedure, threshold);
+  const { builder, saltHex } = await multisigRequestBuilder(client, options);
+  let txBuilder = builder.withCustomScript(script);
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);
   }
 
-  return {
-    request: txBuilder.build(),
-    salt: WordType.fromHex(normalizeHexWord(authSaltHex)),
-    configHash,
-  };
+  return { ...buildMultisigRequest(txBuilder, saltHex, options.accountId), configHash };
 }

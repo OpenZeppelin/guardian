@@ -388,8 +388,10 @@ describe('drainPrivateNoteBacklog', () => {
  * `settings` API runs values through the JS<->WASM serde codec, which is NOT
  * the store's raw encoding (seeding through it corrupts the cursor), so the
  * cursor tests read/write the IndexedDB row directly. Schema coupling, kept
- * minimal: store `settings`, keyPath `key`, `value` holds the raw big-endian
- * u64 bytes — the same representation the Rust cursor test pins.
+ * minimal: store `settings`, keyPath `key`, `value` holds the cursor as
+ * miden-client serializes it. Since miden-client 0.17.0-rc.2 that is an
+ * optional (nonce, sequence) pair: a presence byte, then two little-endian
+ * u64s.
  */
 const CURSOR_KEY = 'note_transport_cursor';
 // The settings store is keyed by [scope, key] since miden-client 0.16.0-rc.4.
@@ -436,9 +438,8 @@ async function readRawCursor(): Promise<Uint8Array | undefined> {
  */
 describe('drainPrivateNoteBacklog (wasm mock client)', () => {
   it('recovers a transport-delivered private note into a fresh store, idempotently and tag-scoped', async () => {
-    const { MidenClient, Account, createP2IDNote, NoteVisibility } = await import(
-      '@miden-sdk/miden-sdk'
-    );
+    const { MidenClient, Account, createP2IDNote, NoteVisibility, NoteInclusionProof } =
+      await import('@miden-sdk/miden-sdk');
 
     // Device A: create the account and relay a private self-addressed note
     // via the (mock) transport.
@@ -456,9 +457,13 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
       assets: { token: '0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c', amount: 100 },
       type: NoteVisibility.Private,
     });
-    // The mock chain never commits the note, so any at-or-below-commitment
-    // hint works; 0 is always valid.
-    await deviceA.notes.sendPrivate({ note, to: account, scanAfterBlockNum: 0 });
+    // The mock chain never commits the note and the mock transport does not
+    // verify proofs, so a mock proof at genesis stands in for a real one.
+    await deviceA.notes.sendPrivate({
+      note,
+      to: account,
+      inclusionProof: NoteInclusionProof.mockAtBlock(0),
+    });
     const transportState = await deviceA.serializeMockNoteTransportNode();
 
     // Device B ("new device after loss"): fresh store sharing the same
@@ -471,7 +476,8 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
 
     // Simulate a store whose cursor another account's sync already advanced
     // far past this backlog.
-    const advancedCursor = new Uint8Array(8).fill(0xff);
+    const advancedCursor = new Uint8Array(17).fill(0xff);
+    advancedCursor[0] = 1;
     await seedRawCursor(advancedCursor);
 
     const first = await drainPrivateNoteBacklog(deviceB);

@@ -2,8 +2,8 @@ use crate::delta_object::{DeltaObject, ProposalSignature};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials, ExtractCredentials};
 use crate::services::{
-    self, ConfigureAccountParams, GetDeltaHistoryParams, GetDeltaParams, GetDeltaProposalParams,
-    GetStateParams, LookupAccountParams, PushDeltaParams,
+    self, ConfigureAccountParams, GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams,
+    GetDeltaProposalParams, GetStateParams, LookupAccountParams, PushDeltaParams,
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
@@ -227,6 +227,32 @@ impl Guardian for GuardianService {
                 success: true,
                 message: "State retrieved successfully".to_string(),
                 state: Some(state_to_proto(&response.state)),
+                error_code: String::new(),
+            })),
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
+    async fn get_canonical_nonce(
+        &self,
+        request: Request<GetCanonicalNonceRequest>,
+    ) -> Result<Response<GetCanonicalNonceResponse>, Status> {
+        let auth = authenticated_request(&request)?;
+
+        let req = request.into_inner();
+
+        let params = GetCanonicalNonceParams {
+            account_id: req.account_id,
+            credentials: auth,
+        };
+
+        match services::get_canonical_nonce(&self.app_state, params).await {
+            Ok(response) => Ok(Response::new(GetCanonicalNonceResponse {
+                success: true,
+                message: "Canonical nonce retrieved successfully".to_string(),
+                account_id: response.account_id,
+                nonce: response.nonce,
+                commitment: response.commitment,
                 error_code: String::new(),
             })),
             Err(e) => Err(Status::from(e)),
@@ -543,6 +569,7 @@ fn delta_to_proto(delta: &DeltaObject) -> guardian::DeltaObject {
                     "retry_exhausted".to_string()
                 }
                 Some(crate::delta_object::RetainReason::Diverged) => "diverged".to_string(),
+                Some(crate::delta_object::RetainReason::Orphaned) => "orphaned".to_string(),
                 None => String::new(),
             },
         }),
@@ -595,14 +622,20 @@ fn proposal_signature_to_proto(signature: &ProposalSignature) -> guardian::Propo
             scheme: "falcon".to_string(),
             signature: signature.clone(),
             public_key: None,
+            message_format: String::new(),
         },
         ProposalSignature::Ecdsa {
             signature,
             public_key,
+            message_format,
         } => guardian::ProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
             public_key: public_key.clone(),
+            message_format: match message_format {
+                guardian_shared::EcdsaMessageFormat::Raw => String::new(),
+                guardian_shared::EcdsaMessageFormat::Eip712 => "eip712".to_string(),
+            },
         },
     }
 }
@@ -612,12 +645,21 @@ fn proto_signature_to_internal(
     signature: guardian::ProposalSignature,
 ) -> Result<ProposalSignature, Status> {
     match signature.scheme.as_str() {
-        "falcon" => Ok(ProposalSignature::Falcon {
+        "falcon" if signature.message_format.is_empty() => Ok(ProposalSignature::Falcon {
             signature: signature.signature,
         }),
         "ecdsa" => Ok(ProposalSignature::Ecdsa {
             signature: signature.signature,
             public_key: signature.public_key,
+            message_format: match signature.message_format.as_str() {
+                "" | "raw" => guardian_shared::EcdsaMessageFormat::Raw,
+                "eip712" => guardian_shared::EcdsaMessageFormat::Eip712,
+                other => {
+                    return Err(Status::invalid_argument(format!(
+                        "Unknown ECDSA message format: {other}"
+                    )));
+                }
+            },
         }),
         other => Err(Status::invalid_argument(format!(
             "Unknown signature scheme: {other}"
@@ -685,6 +727,7 @@ mod tests {
         StateObject {
             account_id,
             commitment,
+            nonce: None,
             state_json,
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
@@ -1234,6 +1277,7 @@ mod tests {
                 scheme: "falcon".to_string(),
                 signature: dummy_sig,
                 public_key: None,
+                message_format: String::new(),
             }),
         };
 

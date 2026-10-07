@@ -12,7 +12,8 @@ use miden_confidential_contracts::multisig_guardian::{
 use miden_protocol::Word;
 use miden_protocol::account::AccountStoragePatch;
 use miden_protocol::account::delta::AccountVaultDelta;
-use miden_protocol::account::{AccountDelta, AccountId};
+use miden_protocol::account::{AccountCodePatch, AccountDelta, AccountId};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
     PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
 };
@@ -808,7 +809,7 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
         account_id.to_owned(),
         AccountStoragePatch::default(),
         AccountVaultDelta::default(),
-        None,
+        AccountCodePatch::default(),
         Felt::new_unchecked(nonce),
     )
     .map_err(|e| anyhow!("failed to build account delta: {e}"))?;
@@ -817,9 +818,10 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
         InputNotes::new(Vec::new()).map_err(|e| anyhow!("failed to build input notes: {e}"))?,
         RawOutputNotes::new(Vec::new())
             .map_err(|e| anyhow!("failed to build output notes: {e}"))?,
+        BlockNumber::from(0),
         Word::from([ZERO; 4]),
         0,
-        TransactionSummaryUserParams::new([ZERO; 7]),
+        TransactionSummaryUserParams::new([ZERO; 6]),
     );
     Ok(tx_summary.to_json())
 }

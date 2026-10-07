@@ -33,6 +33,7 @@ use miden_client::account::Account;
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
+use miden_protocol::account::AccountCodePatch;
 use miden_protocol::account::delta::AccountVaultDelta;
 use miden_protocol::account::{AccountDelta, AccountStoragePatch, StorageMapKey, StorageSlotName};
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
@@ -129,7 +130,7 @@ fn build_partial_delta(account: &Account, entries: usize) -> serde_json::Value {
         account.id(),
         storage_patch,
         AccountVaultDelta::default(),
-        None,
+        AccountCodePatch::default(),
         Felt::new_unchecked(1),
     )
     .expect("build account delta");
@@ -145,11 +146,14 @@ fn build_full_state_delta(account: &Account) -> serde_json::Value {
         account.id(),
         AccountStoragePatch::default(),
         AccountVaultDelta::default(),
-        Some(account.code().clone()),
+        AccountCodePatch::new(Some(account.code().clone())),
         Felt::new_unchecked(1),
     )
     .expect("build account delta");
-    assert!(delta.is_full_state(), "delta must be a full-state delta");
+    assert!(
+        !delta.code().is_empty(),
+        "delta must carry the account code"
+    );
     tx_summary_json(delta)
 }
 
@@ -158,9 +162,10 @@ fn tx_summary_json(delta: AccountDelta) -> serde_json::Value {
         delta,
         InputNotes::new(Vec::new()).expect("input notes"),
         RawOutputNotes::new(Vec::new()).expect("output notes"),
+        miden_protocol::block::BlockNumber::from(0),
         MidenWord::from([ZERO; 4]),
         0,
-        TransactionSummaryUserParams::new([ZERO; 7]),
+        TransactionSummaryUserParams::new([ZERO; 6]),
     )
     .to_json()
 }

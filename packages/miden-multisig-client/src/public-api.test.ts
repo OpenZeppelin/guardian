@@ -16,21 +16,21 @@ import type { AuthArgErrorCode } from './index.js';
 describe('package entry point', () => {
   it('exports AuthArgErrorCode, so a caller can branch on the codes exhaustively', () => {
     const codes: AuthArgErrorCode[] = [
-      'proposal_auth_arg_unresolvable',
       'proposal_salt_malformed',
-      'fee_faucet_anchor_mismatch',
+      'multisig_auth_args_missing',
+      'bound_block_not_declared',
     ];
 
-    expect(new api.ProposalAuthArgUnresolvableError({
-      proposalId: '0xaaaa',
-      signedAuthArgHex: '0xf00d',
-      saltHex: '0xbeef',
-      feeFaucetIdHex: '0xcafe',
-    }).code).toBe(codes[0]);
     expect(new api.ProposalSaltMalformedError({
       proposalId: '0xaaaa',
       saltHex: '0xnope',
       reason: 'expected a 32-byte hex word',
-    }).code).toBe(codes[1]);
+    }).code).toBe(codes[0]);
+    expect(new api.MultisigAuthArgsMissingError('0xaaaa').code).toBe(codes[1]);
+    expect(new api.BoundBlockNotDeclaredError(7).code).toBe(codes[2]);
+  });
+
+  it('exports the tip-execution helper a multisig proposal is reproduced with', () => {
+    expect(typeof api.executeForSummaryAtTip).toBe('function');
   });
 });

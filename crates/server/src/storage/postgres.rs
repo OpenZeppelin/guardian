@@ -1,7 +1,7 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
 use crate::schema::{account_metadata, delta_proposals, deltas, states, storage_encryption_marker};
-use crate::state_object::StateObject;
+use crate::state_object::{StateHead, StateObject};
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
@@ -558,6 +558,7 @@ struct StateRow {
     commitment: String,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
+    nonce: Option<i64>,
 }
 
 #[derive(Queryable, Selectable)]
@@ -613,6 +614,21 @@ struct NewState<'a> {
     commitment: &'a str,
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
+    nonce: Option<i64>,
+}
+
+/// The `states.nonce` column value for a state nonce. A nonce past
+/// `i64::MAX` (unreachable: a Miden nonce counts the account's
+/// transactions) is stored as unknown rather than wrapped, so readers
+/// decode it instead.
+fn nonce_column(nonce: Option<u64>) -> Option<i64> {
+    nonce.and_then(|nonce| i64::try_from(nonce).ok())
+}
+
+/// The state nonce a `states.nonce` column value encodes. The server never
+/// writes a negative value; one written by hand reads as unknown.
+fn state_nonce(column: Option<i64>) -> Option<u64> {
+    column.and_then(|nonce| u64::try_from(nonce).ok())
 }
 
 #[derive(Insertable, AsChangeset)]
@@ -701,6 +717,7 @@ impl From<StateRow> for StateObject {
             account_id: row.account_id,
             state_json: row.state_json,
             commitment: row.commitment,
+            nonce: state_nonce(row.nonce),
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
             auth_scheme: String::new(),
@@ -952,12 +969,14 @@ impl StorageBackend for PostgresService {
             .parse()
             .map_err(|e| format!("Failed to parse updated_at: {e}"))?;
 
+        let nonce = nonce_column(state.nonce);
         let new_state = NewState {
             account_id: &state.account_id,
             state_json: &state.state_json,
             commitment: &state.commitment,
             created_at,
             updated_at,
+            nonce,
         };
 
         diesel::insert_into(states::table)
@@ -967,6 +986,7 @@ impl StorageBackend for PostgresService {
             .set((
                 states::state_json.eq(&state.state_json),
                 states::commitment.eq(&state.commitment),
+                states::nonce.eq(nonce),
                 states::updated_at.eq(updated_at),
             ))
             .execute(&mut conn)
@@ -1045,6 +1065,70 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to pull state: {e}"))?;
 
         Ok(row.into())
+    }
+
+    async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        states::table
+            .filter(states::account_id.eq(account_id))
+            .select(states::commitment)
+            .first::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull state commitment: {e}"))
+    }
+
+    // Two columns of one row, looked up by primary key: `state_json` is
+    // never read (so never detoasted, and never decrypted above).
+    async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let (commitment, nonce) = states::table
+            .filter(states::account_id.eq(account_id))
+            .select((states::commitment, states::nonce))
+            .first::<(String, Option<i64>)>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull state head: {e}"))?;
+        Ok(StateHead {
+            commitment,
+            nonce: state_nonce(nonce),
+        })
+    }
+
+    async fn backfill_state_nonce(
+        &self,
+        account_id: &str,
+        commitment: &str,
+        nonce: u64,
+    ) -> Result<bool, String> {
+        let Some(nonce) = nonce_column(Some(nonce)) else {
+            return Ok(false);
+        };
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        // The whole guard lives in the predicate, so a write that moved
+        // the row after the caller decoded it simply matches nothing.
+        let written = diesel::update(states::table)
+            .filter(states::account_id.eq(account_id))
+            .filter(states::commitment.eq(commitment))
+            .filter(states::nonce.is_null())
+            .set(states::nonce.eq(nonce))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to backfill state nonce: {e}"))?;
+        Ok(written > 0)
     }
 
     async fn pull_states_batch(
@@ -1565,6 +1649,7 @@ impl StorageBackend for PostgresService {
         _metadata: &dyn MetadataStore,
         delta: &DeltaObject,
         now: &str,
+        max_pending_candidates: usize,
     ) -> Result<CandidateSubmission, String> {
         let mut conn = self
             .pool
@@ -1593,25 +1678,40 @@ impl StorageBackend for PostgresService {
                     .select(states::commitment)
                     .first::<String>(conn)
                     .await?;
-                if current_commitment != delta.prev_commitment {
-                    return Ok(CandidateSubmission::CommitmentMismatch {
-                        expected: current_commitment,
-                    });
-                }
 
                 // Race-proof twin of the service-layer admission gate:
                 // two submissions that both passed the pre-commit scan
                 // serialize on the account lock, and the loser sees the
-                // winner's candidate here.
-                let pending: bool = diesel::select(diesel::dsl::exists(
-                    deltas::table
-                        .filter(deltas::account_id.eq(&delta.account_id))
-                        .filter(deltas::status_kind.eq("candidate")),
-                ))
-                .get_result(conn)
-                .await?;
-                if pending {
-                    return Ok(CandidateSubmission::Conflict);
+                // winner's candidate in the queue read here. The depth,
+                // chain, and tail rules (issue #17) are evaluated on the
+                // committed queue, in nonce order.
+                let queue: Vec<crate::storage::QueuedCandidate> = deltas::table
+                    .filter(deltas::account_id.eq(&delta.account_id))
+                    .filter(deltas::status_kind.eq("candidate"))
+                    .order(deltas::nonce.asc())
+                    .select((
+                        deltas::nonce,
+                        deltas::prev_commitment,
+                        deltas::new_commitment,
+                    ))
+                    .load::<(i64, String, Option<String>)>(conn)
+                    .await?
+                    .into_iter()
+                    .map(|(nonce, prev_commitment, new_commitment)| {
+                        crate::storage::QueuedCandidate {
+                            nonce: nonce as u64,
+                            prev_commitment,
+                            new_commitment,
+                        }
+                    })
+                    .collect();
+                if let Some(refused) = crate::storage::gate_candidate_submission(
+                    &current_commitment,
+                    &queue,
+                    &delta,
+                    max_pending_candidates,
+                ) {
+                    return Ok(refused);
                 }
 
                 // A retained row (issue #345) or client-abandoned
@@ -1781,6 +1881,7 @@ impl StorageBackend for PostgresService {
                         .set((
                             states::state_json.eq(&state.state_json),
                             states::commitment.eq(&state.commitment),
+                            states::nonce.eq(nonce_column(state.nonce)),
                             states::updated_at.eq(state_updated_at),
                         ))
                         .execute(conn)
@@ -2840,10 +2941,70 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_canonical_delta_keeps_the_ack_the_release_sweep_verifies() {
+        // The release sweep proves "this server acknowledged the switch"
+        // from the stored ack signature (this backend keeps no
+        // `ack_pubkey`), so the newest canonical delta must read back with
+        // a signature that still verifies against the key that made it.
+        use diesel::sql_types::Text;
+        use guardian_shared::SignatureScheme;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xack{}", chrono::Utc::now().timestamp_micros());
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let keystore =
+            std::env::temp_dir().join(format!("guardian_pg_ack_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&keystore).expect("keystore dir");
+        let ack = crate::ack::AckRegistry::new(keystore.clone())
+            .await
+            .expect("ack registry");
+        for nonce in 1u64..=2 {
+            let mut delta = create_test_delta(&account_id, nonce);
+            delta.delta_payload = crate::testing::helpers::create_test_delta_payload(
+                "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b",
+            );
+            delta.new_commitment = Some(format!("0xstate{nonce}"));
+            let delta = ack
+                .ack_delta(delta, &SignatureScheme::Falcon)
+                .await
+                .expect("ack signs");
+            service.submit_delta(&delta).await.expect("canonical");
+        }
+
+        let latest = service
+            .list_canonical_deltas_paged(&account_id, 1, None)
+            .await
+            .expect("latest canonical delta");
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].nonce, 2);
+        assert_eq!(latest[0].new_commitment.as_deref(), Some("0xstate2"));
+        assert!(
+            latest[0].ack_pubkey.is_empty(),
+            "this backend keeps no ack_pubkey"
+        );
+        assert!(ack.acked_with_current_key(&latest[0], &SignatureScheme::Falcon));
+        std::fs::remove_dir_all(keystore).ok();
+    }
+
     fn create_test_state(account_id: &str) -> StateObject {
         StateObject {
             account_id: account_id.to_string(),
             commitment: "0x789".to_string(),
+            nonce: None,
             state_json: serde_json::json!({"test": "state"}),
             created_at: "2024-11-14T12:00:00Z".to_string(),
             updated_at: "2024-11-14T12:00:00Z".to_string(),
@@ -2862,6 +3023,260 @@ mod tests {
     fn test_create_test_state() {
         let state = create_test_state("0x123");
         assert_eq!(state.account_id, "0x123");
+    }
+
+    #[test]
+    fn nonce_column_never_wraps() {
+        assert_eq!(nonce_column(Some(7)), Some(7));
+        assert_eq!(nonce_column(None), None);
+        assert_eq!(nonce_column(Some(i64::MAX as u64)), Some(i64::MAX));
+        assert_eq!(nonce_column(Some(i64::MAX as u64 + 1)), None);
+        assert_eq!(state_nonce(Some(7)), Some(7));
+        assert_eq!(state_nonce(Some(-1)), None);
+        assert_eq!(state_nonce(None), None);
+    }
+
+    fn head(commitment: &str, nonce: Option<u64>) -> StateHead {
+        StateHead {
+            commitment: commitment.to_string(),
+            nonce,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn state_nonce_is_stored_and_backfilled_only_at_its_own_commitment() {
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xnonce{}", chrono::Utc::now().timestamp_micros());
+
+        // A current writer stores the nonce with the state.
+        let mut state = create_test_state(&account_id);
+        state.nonce = Some(5);
+        service.submit_state(&state).await.expect("submit");
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0x789", Some(5))
+        );
+        assert_eq!(
+            service.pull_state(&account_id).await.unwrap().nonce,
+            Some(5)
+        );
+        assert!(
+            !service
+                .backfill_state_nonce(&account_id, "0x789", 9)
+                .await
+                .unwrap(),
+            "a stored nonce is never overwritten"
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0x789", Some(5))
+        );
+
+        // A row without a nonce, as rows written before the column read.
+        state.commitment = "0xlegacy".to_string();
+        state.nonce = None;
+        service.submit_state(&state).await.expect("submit");
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0xlegacy", None)
+        );
+        assert!(
+            !service
+                .backfill_state_nonce(&account_id, "0xother", 7)
+                .await
+                .unwrap(),
+            "a backfill for another commitment must not land"
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0xlegacy", None)
+        );
+        assert!(
+            service
+                .backfill_state_nonce(&account_id, "0xlegacy", 7)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0xlegacy", Some(7))
+        );
+        let batch = service
+            .pull_states_batch(&[account_id.as_str()])
+            .await
+            .unwrap();
+        assert_eq!(batch[&account_id].nonce, Some(7));
+
+        // A missing account: the head read is not-found, the backfill a no-op.
+        let missing = format!("{account_id}missing");
+        let err = service.pull_state_head(&missing).await.unwrap_err();
+        assert!(crate::storage::is_storage_not_found(&err), "got {err}");
+        assert!(
+            !service
+                .backfill_state_nonce(&missing, "0xlegacy", 7)
+                .await
+                .unwrap()
+        );
+    }
+
+    /// Replicas still on the previous server version write states without
+    /// the `nonce` column during a rolling deploy. The migration's trigger
+    /// must clear a nonce such a write would leave paired with a newer
+    /// commitment, and leave current writes alone.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_commitment_change_that_keeps_the_old_nonce_clears_it() {
+        use diesel::sql_types::Text;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xstale{}", chrono::Utc::now().timestamp_micros());
+        let head_now = || async { service.pull_state_head(&account_id).await.unwrap() };
+
+        let mut state = create_test_state(&account_id);
+        state.commitment = "0xc1".to_string();
+        state.nonce = Some(5);
+        service.submit_state(&state).await.expect("submit");
+
+        // The previous version's `submit_state` upsert.
+        let previous_upsert = "INSERT INTO states \
+             (account_id, state_json, commitment, created_at, updated_at) \
+             VALUES ($1, '{}'::jsonb, $2, now(), now()) \
+             ON CONFLICT (account_id) DO UPDATE SET \
+             state_json = EXCLUDED.state_json, commitment = EXCLUDED.commitment, \
+             updated_at = EXCLUDED.updated_at";
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(previous_upsert)
+            .bind::<Text, _>(&account_id)
+            .bind::<Text, _>("0xc2")
+            .execute(&mut conn)
+            .await
+            .expect("previous-version upsert");
+        assert_eq!(head_now().await, head("0xc2", None));
+
+        // Re-writing the same state keeps the nonce: it still belongs to it.
+        assert!(
+            service
+                .backfill_state_nonce(&account_id, "0xc2", 6)
+                .await
+                .unwrap()
+        );
+        diesel::sql_query(previous_upsert)
+            .bind::<Text, _>(&account_id)
+            .bind::<Text, _>("0xc2")
+            .execute(&mut conn)
+            .await
+            .expect("previous-version upsert of the same state");
+        assert_eq!(head_now().await, head("0xc2", Some(6)));
+
+        // The previous version's promotion UPDATE.
+        diesel::sql_query(
+            "UPDATE states SET state_json = '{}'::jsonb, commitment = $2, updated_at = now() \
+             WHERE account_id = $1 AND commitment = $3",
+        )
+        .bind::<Text, _>(&account_id)
+        .bind::<Text, _>("0xc3")
+        .bind::<Text, _>("0xc2")
+        .execute(&mut conn)
+        .await
+        .expect("previous-version promotion");
+        drop(conn);
+        assert_eq!(head_now().await, head("0xc3", None));
+
+        // A current write sets both columns together.
+        state.commitment = "0xc4".to_string();
+        state.nonce = Some(8);
+        service.submit_state(&state).await.expect("submit");
+        assert_eq!(head_now().await, head("0xc4", Some(8)));
+
+        // A current write that moves the commitment at the same nonce
+        // (re-configuring a divergent state) reads back as unknown, so the
+        // next read decodes it rather than trusting the old value.
+        state.commitment = "0xc5".to_string();
+        service.submit_state(&state).await.expect("submit");
+        assert_eq!(head_now().await, head("0xc5", None));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn promotion_stores_the_nonce_of_the_promoted_state() {
+        use crate::coordination::LeaderElector;
+        use crate::coordination::postgres::PgLeaseElector;
+        use crate::storage::CandidatePromotion;
+        use diesel::sql_types::Text;
+        use std::time::Duration;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xpromotenonce{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), true)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let mut base = create_test_state(&account_id);
+        base.commitment = "0xbase".to_string();
+        base.nonce = Some(3);
+        service.submit_state(&base).await.expect("base state");
+        let mut candidate = create_test_delta(&account_id, 4);
+        candidate.prev_commitment = "0xbase".to_string();
+        candidate.status = DeltaStatus::candidate(now.clone());
+        service.submit_delta(&candidate).await.expect("candidate");
+
+        let lease = PgLeaseElector::new(
+            build_postgres_pool_lazy(&url, 2).unwrap(),
+            format!("promote-nonce-{stamp}"),
+            "holder",
+        )
+        .try_acquire(Duration::from_secs(60))
+        .await
+        .expect("acquire")
+        .expect("holder owns the lease");
+
+        let mut promoted = create_test_state(&account_id);
+        promoted.commitment = "0xpromoted".to_string();
+        promoted.nonce = Some(4);
+        let mut canonical = candidate.clone();
+        canonical.status = DeltaStatus::canonical(now.clone());
+        canonical.new_commitment = Some("0xpromoted".to_string());
+        let outcome = service
+            .promote_candidate(
+                &metadata_store,
+                CandidatePromotion {
+                    state: promoted,
+                    delta: canonical,
+                    new_auth: None,
+                    now,
+                    fence: Some(LeaseFence {
+                        lease_name: lease.name.clone(),
+                        holder_id: lease.holder_id.clone(),
+                        fence_token: lease.fence_token,
+                    }),
+                    source: PromotableKind::Candidate,
+                },
+            )
+            .await
+            .expect("promotion resolves");
+        assert_eq!(outcome, PromoteWrite::Applied);
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0xpromoted", Some(4))
+        );
     }
 
     #[tokio::test]
@@ -3392,7 +3807,7 @@ mod tests {
         resubmission.prev_commitment = "0xreconciled".to_string();
         resubmission.status = DeltaStatus::candidate(now.clone());
         let superseded = service
-            .submit_candidate(&metadata_store, &resubmission, &now)
+            .submit_candidate(&metadata_store, &resubmission, &now, 4)
             .await
             .expect("resubmission resolves");
         assert_eq!(superseded, CandidateSubmission::Submitted);
@@ -3462,6 +3877,196 @@ mod tests {
             .await;
     }
 
+    /// Issue #17: the in-transaction admission gate queues chained
+    /// candidates up to the configured depth, in nonce order, refuses a
+    /// submission competing for a claimed base, reports an unknown base
+    /// against the canonical commitment, and serializes two racing
+    /// extensions of the same tail so exactly one commits.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn submit_candidate_queues_chained_candidates_under_the_account_lock() {
+        use diesel::sql_types::Text;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xqueue{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let initial_state = create_test_state(&account_id);
+        let base = initial_state.commitment.clone();
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+
+        let chained = |nonce: u64, prev: &str, new: &str| {
+            let mut delta = create_test_delta(&account_id, nonce);
+            delta.status = DeltaStatus::candidate(now.clone());
+            delta.prev_commitment = prev.to_string();
+            delta.new_commitment = Some(new.to_string());
+            delta
+        };
+
+        let submit = |delta: DeltaObject, depth: usize| {
+            let service = &service;
+            let metadata_store = &metadata_store;
+            let now = now.clone();
+            async move {
+                service
+                    .submit_candidate(metadata_store, &delta, &now, depth)
+                    .await
+                    .expect("submission resolves")
+            }
+        };
+
+        assert_eq!(
+            submit(chained(1, &base, "0xc1"), 2).await,
+            CandidateSubmission::Submitted
+        );
+        assert_eq!(
+            submit(chained(2, &base, "0xother"), 2).await,
+            CandidateSubmission::Conflict,
+            "the canonical base is claimed by nonce 1"
+        );
+        assert_eq!(
+            submit(chained(2, "0xc1", "0xc2"), 2).await,
+            CandidateSubmission::Submitted,
+            "a delta chained from the tail extends the queue"
+        );
+        assert_eq!(
+            submit(chained(3, "0xc2", "0xc3"), 2).await,
+            CandidateSubmission::Conflict,
+            "depth 2 is full"
+        );
+        assert_eq!(
+            submit(chained(2, "0xc2", "0xc3"), 4).await,
+            CandidateSubmission::Conflict,
+            "a chained delta must extend the queue in nonce order"
+        );
+        assert_eq!(
+            submit(chained(3, "0xzzz", "0xc3"), 4).await,
+            CandidateSubmission::CommitmentMismatch {
+                expected: base.clone()
+            },
+            "an unknown base is reported against the canonical commitment"
+        );
+        assert_eq!(
+            submit(chained(3, "0xc2", "0xc3"), 3).await,
+            CandidateSubmission::Submitted
+        );
+
+        // Two racing extensions of the same tail: exactly one commits,
+        // the other sees the winner in the locked queue read.
+        let (left, right) = tokio::join!(
+            submit(chained(4, "0xc3", "0xc4"), 8),
+            submit(chained(5, "0xc3", "0xc5"), 8),
+        );
+        let outcomes = [left, right];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == CandidateSubmission::Submitted)
+                .count(),
+            1,
+            "exactly one tail extension wins: {outcomes:?}"
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|o| **o == CandidateSubmission::Conflict)
+                .count(),
+            1,
+            "the loser is refused: {outcomes:?}"
+        );
+
+        let queue = service
+            .pull_candidate_deltas(&account_id)
+            .await
+            .expect("queue readable");
+        assert_eq!(queue.len(), 4);
+        assert_eq!(
+            queue.iter().map(|d| d.nonce).take(3).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let tail = queue.last().expect("tail").clone();
+        let tail_post_state = tail.new_commitment.clone().expect("tail post-state");
+
+        // A full queue refuses every base, an unknown one included: depth 1
+        // with a candidate in flight is the historical single-candidate gate.
+        assert_eq!(
+            submit(chained(tail.nonce + 1, "0xzzz", "0xc6"), 4).await,
+            CandidateSubmission::Conflict
+        );
+
+        // The head is parked: the rest of the queue no longer chains from
+        // the stored state, so nothing is admitted behind the orphans — a
+        // delta extending the orphaned tail would be acknowledged and then
+        // orphaned on the next pass.
+        service
+            .update_delta_status(
+                &account_id,
+                1,
+                DeltaStatus::retained(
+                    now.clone(),
+                    crate::delta_object::RetainReason::RetryExhausted,
+                ),
+            )
+            .await
+            .expect("the head is parked");
+        assert_eq!(
+            submit(chained(tail.nonce + 1, &tail_post_state, "0xc6"), 8).await,
+            CandidateSubmission::Conflict,
+            "the orphaned tail admits nothing"
+        );
+        assert_eq!(
+            submit(chained(tail.nonce + 1, &base, "0xc6"), 8).await,
+            CandidateSubmission::Conflict,
+            "the stored base admits nothing until the orphans are swept"
+        );
+        assert_eq!(
+            service
+                .pull_candidate_deltas(&account_id)
+                .await
+                .expect("queue readable")
+                .len(),
+            3
+        );
+        let flag = {
+            let mut conn = service.pool.get().await.expect("conn");
+            account_metadata::table
+                .filter(account_metadata::account_id.eq(&account_id))
+                .select(account_metadata::has_pending_candidate)
+                .first::<bool>(&mut conn)
+                .await
+                .expect("flag read")
+        };
+        assert!(flag, "queued candidates keep the pending flag set");
+
+        let mut conn = service.pool.get().await.expect("conn");
+        for table in ["deltas", "states", "account_metadata"] {
+            let _ = diesel::sql_query(format!("DELETE FROM {table} WHERE account_id = $1"))
+                .bind::<Text, _>(&account_id)
+                .execute(&mut conn)
+                .await;
+        }
+    }
+
     /// End-to-end proof of the transactional fence: a superseded lease
     /// holder's retry, discard, and promotion are all refused with no row
     /// mutated; the current holder promotes atomically; and once canonical,
@@ -3509,13 +4114,13 @@ mod tests {
         candidate.prev_commitment = initial_commitment.clone();
         candidate.status = DeltaStatus::candidate(now.clone());
         let submitted = service
-            .submit_candidate(&metadata_store, &candidate, &now)
+            .submit_candidate(&metadata_store, &candidate, &now, 4)
             .await
             .expect("candidate insert + flag set commit together");
         assert_eq!(submitted, CandidateSubmission::Submitted);
 
         let racing_duplicate = service
-            .submit_candidate(&metadata_store, &candidate, &now)
+            .submit_candidate(&metadata_store, &candidate, &now, 4)
             .await
             .expect("duplicate submission resolves");
         assert_eq!(
@@ -3528,7 +4133,7 @@ mod tests {
         second_nonce.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
-                .submit_candidate(&metadata_store, &second_nonce, &now)
+                .submit_candidate(&metadata_store, &second_nonce, &now, 4)
                 .await
                 .expect("second-nonce submission resolves"),
             CandidateSubmission::Conflict,
@@ -3708,7 +4313,7 @@ mod tests {
         stale_state_candidate.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
-                .submit_candidate(&metadata_store, &stale_state_candidate, &now)
+                .submit_candidate(&metadata_store, &stale_state_candidate, &now, 4)
                 .await
                 .expect("stale-state submission resolves"),
             CandidateSubmission::CommitmentMismatch {
@@ -3820,7 +4425,7 @@ mod tests {
         candidate.prev_commitment = initial_commitment.clone();
         candidate.status = DeltaStatus::candidate(now.clone());
         service
-            .submit_candidate(&metadata_store, &candidate, &now)
+            .submit_candidate(&metadata_store, &candidate, &now, 4)
             .await
             .expect("candidate insert");
 

@@ -42,9 +42,9 @@ pub struct DashboardGlobalDeltaEntry {
     pub new_commitment: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_count: Option<u32>,
-    /// Why the row left the active candidate path: `retry_exhausted` or
-    /// `diverged` on `retained` rows, `client_abandoned` on `discarded`
-    /// rows; absent elsewhere.
+    /// Why the row left the active candidate path: `retry_exhausted`,
+    /// `diverged`, or `orphaned` on `retained` rows, `client_abandoned`
+    /// on `discarded` rows; absent elsewhere.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_reason: Option<&'static str>,
 
@@ -254,6 +254,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -358,6 +359,7 @@ mod tests {
             network_client: Arc::new(MockNetworkClient::new()),
             ack,
             canonicalization: None,
+            release_sweep: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

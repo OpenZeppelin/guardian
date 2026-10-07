@@ -178,9 +178,11 @@ impl MultisigClient {
             }
             Err(err) => {
                 let (status, retryable) = classify_drain_failure(&err);
-                // `Unavailable` promises "nothing was imported"; a connection
-                // lost mid-drain after partial progress is an interrupted
-                // drain, so report it as a retryable failure instead.
+                // `Unavailable` promises "nothing was imported". Each transport
+                // sync imports atomically once its fetch succeeded, so partial
+                // progress only arises across the passes above: a pass that
+                // imported followed by one that failed is an interrupted drain,
+                // reported as a retryable failure instead.
                 let status = if imported > 0 && status == TransportRecoveryStatus::Unavailable {
                     TransportRecoveryStatus::Failed
                 } else {
@@ -310,8 +312,12 @@ fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) 
             NoteTransportError::PaginationDidNotTerminate(_) => {
                 (TransportRecoveryStatus::Failed, true)
             }
-            // Undecodable payloads: a rerun would hit the same bytes again.
-            NoteTransportError::Deserialization(_) => (TransportRecoveryStatus::Failed, false),
+            // Undecodable or inconsistent payloads: a rerun would hit the same
+            // bytes again.
+            NoteTransportError::Deserialization(_)
+            | NoteTransportError::NoteDetailsMismatch { .. }
+            | NoteTransportError::InvalidFetchedNote(_)
+            | NoteTransportError::UnrequestedTag(_) => (TransportRecoveryStatus::Failed, false),
         },
         // Each fetched batch is imported through the node (inclusion-proof
         // lookup), so a node RPC failure interrupts the drain mid-way; the
@@ -326,12 +332,10 @@ fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) 
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::Arc;
 
     use miden_client::ClientError;
     use miden_client::note_transport::{NoteTransportClient, NoteTransportError};
-    use miden_client::rpc::Endpoint;
     use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
     use miden_protocol::note::{Note, NoteTag, NoteType};
     use miden_tx::utils::sync::RwLock;
@@ -622,12 +626,12 @@ mod tests {
 
     #[async_trait::async_trait]
     impl NoteTransportClient for InterruptibleTransport {
-        async fn send_note(
+        async fn send_note_with_proof(
             &self,
-            header: miden_protocol::note::NoteHeader,
-            details: Vec<u8>,
+            note: miden_client::note_transport::TransportNote,
+            inclusion_proof: miden_protocol::note::NoteInclusionProof,
         ) -> std::result::Result<(), NoteTransportError> {
-            self.inner.send_note(header, details);
+            self.inner.send_note_with_proof(note, &inclusion_proof);
             Ok(())
         }
 
@@ -657,26 +661,15 @@ mod tests {
             }
             Ok(self.inner.fetch_notes(tags, cursor))
         }
-
-        async fn stream_notes(
-            &self,
-            _tag: NoteTag,
-            _cursor: miden_client::note_transport::NoteTransportCursor,
-        ) -> std::result::Result<
-            Box<dyn miden_client::note_transport::NoteStream>,
-            NoteTransportError,
-        > {
-            Ok(Box::new(
-                miden_client::testing::note_transport::DummyNoteStream {},
-            ))
-        }
     }
 
-    /// A connection lost mid-drain after partial progress must not report
-    /// `Unavailable` ("nothing was imported"): it is an interrupted,
-    /// retryable drain and the partial count is kept.
+    /// A connection lost mid-drain imports nothing: since miden-client 0.17 a
+    /// transport sync fetches every page first and imports only once the whole
+    /// fetch succeeded, so the first page is not kept when the second fails.
+    /// The drain is reported `Unavailable` and retryable; the transport cursor
+    /// is left where it was, so the retry requests the same pages again.
     #[tokio::test]
-    async fn interrupted_drain_with_partial_progress_reports_a_retryable_failure() {
+    async fn interrupted_drain_imports_nothing_and_is_retryable() {
         let dir = tempfile::tempdir().unwrap();
         // Cap each response at one note so the two-note backlog needs two
         // fetches; the transport dies after the first.
@@ -696,9 +689,9 @@ mod tests {
 
         let report = client.drain_private_note_backlog().await.unwrap();
 
-        assert_eq!(report.status, TransportRecoveryStatus::Failed);
+        assert_eq!(report.status, TransportRecoveryStatus::Unavailable);
         assert!(report.retryable);
-        assert_eq!(report.imported, 1);
+        assert_eq!(report.imported, 0);
         assert!(report.reason.unwrap().contains("connection dropped"));
     }
 
@@ -749,89 +742,5 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
-    }
-
-    // ---------------------------------------------------------------------
-    // live smoke (real testnet transport) — run explicitly:
-    //   cargo test -p miden-multisig-client --lib live_testnet -- --ignored
-    // ---------------------------------------------------------------------
-
-    async fn live_client(dir: &Path, with_transport: bool) -> MultisigClient {
-        use miden_client::note_transport::NOTE_TRANSPORT_TESTNET_ENDPOINT;
-
-        let mut builder = MultisigClient::builder()
-            .miden_endpoint(Endpoint::testnet())
-            .guardian_endpoint("http://localhost:1")
-            .account_dir(dir)
-            .generate_key();
-        if with_transport {
-            builder = builder.note_transport_endpoint(NOTE_TRANSPORT_TESTNET_ENDPOINT);
-        }
-        builder.build().await.expect("live client builds")
-    }
-
-    /// The full device-loss round trip over the real testnet transport (the
-    /// scenario spike #412 validated): relay a private note, recover it into
-    /// a fresh store via the drain, and check idempotence plus the
-    /// disabled-transport report. Network-dependent, hence ignored in CI.
-    #[tokio::test]
-    #[ignore = "requires network access to the Miden testnet"]
-    async fn live_testnet_transport_drain_round_trip() {
-        use miden_protocol::address::Address;
-
-        let dir = tempfile::tempdir().unwrap();
-        let account = test_wallet(9);
-
-        // "Old device": relay a private note addressed at the account.
-        // Transport delivery needs no on-chain transaction.
-        let mut sender = live_client(&dir.path().join("sender"), true).await;
-        sender
-            .miden_client
-            .send_private_note_with_block_hint(
-                private_note_for(&account, 77),
-                &Address::new(account.id()),
-                // The note never commits on the mock chain, so any
-                // at-or-below-commitment hint is valid.
-                miden_protocol::block::BlockNumber::from(0u32),
-            )
-            .await
-            .expect("transport send succeeds");
-
-        // "New device": fresh store; pulling the account tracks its tag.
-        let mut recovered = live_client(&dir.path().join("recovered"), true).await;
-        recovered
-            .add_or_update_account(&account, false)
-            .await
-            .unwrap();
-
-        let report = recovered.drain_private_note_backlog().await.unwrap();
-        assert_eq!(report.status, TransportRecoveryStatus::Completed);
-        assert!(
-            report.imported >= 1,
-            "the relayed note must be recovered, got {report:?}"
-        );
-
-        let report = recovered.drain_private_note_backlog().await.unwrap();
-        assert_eq!(report.status, TransportRecoveryStatus::Completed);
-        assert_eq!(report.imported, 0, "re-drain must be idempotent");
-
-        // A custom node endpoint derives no transport service (the testnet
-        // preset keeps the upstream default transport), so the drain reports
-        // Unavailable without touching the network.
-        let mut no_transport = MultisigClient::builder()
-            .miden_endpoint(Endpoint::new(
-                "http".to_string(),
-                "node".to_string(),
-                Some(1),
-            ))
-            .guardian_endpoint("http://localhost:1")
-            .account_dir(dir.path().join("no-transport"))
-            .generate_key()
-            .build()
-            .await
-            .expect("custom-endpoint client builds");
-        let report = no_transport.drain_private_note_backlog().await.unwrap();
-        assert_eq!(report.status, TransportRecoveryStatus::Unavailable);
-        assert!(!report.retryable);
     }
 }

@@ -3,9 +3,12 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ensureNotesAuthenticated } from './noteAuthentication.js';
 import { ConsumeNoteNotAuthenticatedError } from '../multisig/consumeNotesErrors.js';
 
-const { mockGetNotesById, mockGetRawMidenClient } = vi.hoisted(() => ({
+const { mockGetNotesById, mockEndpoint } = vi.hoisted(() => ({
   mockGetNotesById: vi.fn(),
-  mockGetRawMidenClient: vi.fn(),
+  // Constructor mocks must be real functions: vitest rejects `new` on an arrow mock.
+  mockEndpoint: vi.fn().mockImplementation(function (url: string) {
+    return { url };
+  }),
 }));
 
 vi.mock('@miden-sdk/miden-sdk', () => ({
@@ -22,17 +25,10 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     authenticated: vi.fn((note: unknown, proof: unknown) => ({ note, proof })),
   },
   NoteDetails: vi.fn(),
-  // Constructor mocks must be real functions: vitest rejects `new` on an arrow mock.
-  Endpoint: vi.fn().mockImplementation(function (url: string) {
-    return { url };
-  }),
+  Endpoint: mockEndpoint,
   RpcClient: vi.fn().mockImplementation(function () {
     return { getNotesById: mockGetNotesById };
   }),
-}));
-
-vi.mock('../raw-client.js', () => ({
-  getRawMidenClient: mockGetRawMidenClient,
 }));
 
 const NOTE_A = `0x${'aa'.repeat(32)}`;
@@ -50,32 +46,32 @@ function makeFetched(idHex: string) {
 describe('ensureNotesAuthenticated (issue #409)', () => {
   /** Per-note store state; `undefined` models a record the store never held. */
   let records: Map<string, { authenticated: boolean }>;
-  let webClient: {
-    getInputNote: ReturnType<typeof vi.fn>;
-    importNoteFile: ReturnType<typeof vi.fn>;
-    syncState: ReturnType<typeof vi.fn>;
+  let midenClient: {
+    notes: { get: ReturnType<typeof vi.fn>; import: ReturnType<typeof vi.fn> };
+    syncChain: ReturnType<typeof vi.fn>;
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     records = new Map();
-    webClient = {
-      getInputNote: vi.fn(async (idHex: string) => {
-        const record = records.get(idHex);
-        return record ? { isAuthenticated: () => record.authenticated } : undefined;
-      }),
-      // A successful committed import authenticates the record.
-      importNoteFile: vi.fn(async (file: { inputNote: { note: { id: () => { toString: () => string } } } }) => {
-        records.set(file.inputNote.note.id().toString(), { authenticated: true });
-        return 'ok';
-      }),
-      syncState: vi.fn(async () => undefined),
+    midenClient = {
+      notes: {
+        get: vi.fn(async (idHex: string) => {
+          const record = records.get(idHex);
+          return record ? { isAuthenticated: () => record.authenticated } : null;
+        }),
+        // A successful committed import authenticates the record.
+        import: vi.fn(async (file: { inputNote: { note: { id: () => { toString: () => string } } } }) => {
+          records.set(file.inputNote.note.id().toString(), { authenticated: true });
+          return 'ok';
+        }),
+      },
+      syncChain: vi.fn(async () => undefined),
     };
-    mockGetRawMidenClient.mockResolvedValue(webClient);
   });
 
   function run(notes: ReturnType<typeof makeNote>[]) {
-    return ensureNotesAuthenticated({} as never, notes as never, {
+    return ensureNotesAuthenticated(midenClient as never, notes as never, {
       midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
     });
   }
@@ -84,14 +80,24 @@ describe('ensureNotesAuthenticated (issue #409)', () => {
     records.set(NOTE_A, { authenticated: true });
     await run([makeNote(NOTE_A)]);
     expect(mockGetNotesById).not.toHaveBeenCalled();
-    expect(webClient.importNoteFile).not.toHaveBeenCalled();
+    expect(midenClient.notes.import).not.toHaveBeenCalled();
   });
 
-  it('resolves the raw client with the configured RPC endpoint', async () => {
-    // A public MidenClient wrapper needs the endpoint to build its raw client.
-    records.set(NOTE_A, { authenticated: true });
-    await run([makeNote(NOTE_A)]);
-    expect(mockGetRawMidenClient).toHaveBeenCalledWith(expect.anything(), MIDEN_RPC_ENDPOINT);
+  it('fetches inclusion proofs from the configured RPC endpoint', async () => {
+    mockGetNotesById.mockResolvedValue([makeFetched(NOTE_A)]);
+    await ensureNotesAuthenticated(midenClient as never, [makeNote(NOTE_A)] as never, {
+      midenRpcEndpoint: `  ${MIDEN_RPC_ENDPOINT}\n`,
+    });
+    expect(mockEndpoint).toHaveBeenCalledWith(MIDEN_RPC_ENDPOINT);
+  });
+
+  it.each(['', '   '])('rejects a missing RPC endpoint %j before reading the store', async (endpoint) => {
+    await expect(
+      ensureNotesAuthenticated(midenClient as never, [makeNote(NOTE_A)] as never, {
+        midenRpcEndpoint: endpoint,
+      }),
+    ).rejects.toThrow('missing required configuration: midenRpcEndpoint');
+    expect(midenClient.notes.get).not.toHaveBeenCalled();
   });
 
   it('fetches the proofs of unauthenticated notes in one round trip and imports each as committed', async () => {
@@ -102,8 +108,8 @@ describe('ensureNotesAuthenticated (issue #409)', () => {
     await run([makeNote(NOTE_A), makeNote(NOTE_B)]);
 
     expect(mockGetNotesById).toHaveBeenCalledTimes(1);
-    expect(webClient.importNoteFile).toHaveBeenCalledTimes(2);
-    expect(webClient.importNoteFile.mock.calls[0][0]).toEqual({
+    expect(midenClient.notes.import).toHaveBeenCalledTimes(2);
+    expect(midenClient.notes.import.mock.calls[0][0]).toEqual({
       kind: 'with-proof',
       inputNote: { note: expect.anything(), proof: `proof:${NOTE_A}` },
     });
@@ -129,12 +135,12 @@ describe('ensureNotesAuthenticated (issue #409)', () => {
       noteId: NOTE_A,
       message: expect.stringContaining('failed to fetch inclusion proofs'),
     });
-    expect(webClient.importNoteFile).not.toHaveBeenCalled();
+    expect(midenClient.notes.import).not.toHaveBeenCalled();
   });
 
   it('surfaces an import failure as a not-authenticated error', async () => {
     mockGetNotesById.mockResolvedValue([makeFetched(NOTE_A)]);
-    webClient.importNoteFile.mockRejectedValue(new Error('store locked'));
+    midenClient.notes.import.mockRejectedValue(new Error('store locked'));
     await expect(run([makeNote(NOTE_A)])).rejects.toMatchObject({
       name: 'ConsumeNoteNotAuthenticatedError',
       noteId: NOTE_A,
@@ -142,30 +148,30 @@ describe('ensureNotesAuthenticated (issue #409)', () => {
     });
   });
 
-  it('syncs once when an imported note is still unverified, then succeeds', async () => {
+  it('syncs the chain once when an imported note is still unverified, then succeeds', async () => {
     mockGetNotesById.mockResolvedValue([makeFetched(NOTE_A)]);
     // The note's block is newer than the sync height: the import lands
     // unverified and the sync is what verifies it.
-    webClient.importNoteFile.mockImplementation(async () => {
+    midenClient.notes.import.mockImplementation(async () => {
       records.set(NOTE_A, { authenticated: false });
       return 'ok';
     });
-    webClient.syncState.mockImplementation(async () => {
+    midenClient.syncChain.mockImplementation(async () => {
       records.set(NOTE_A, { authenticated: true });
     });
     await run([makeNote(NOTE_A)]);
-    expect(webClient.syncState).toHaveBeenCalledTimes(1);
+    expect(midenClient.syncChain).toHaveBeenCalledTimes(1);
   });
 
   it('does not sync when the imports already authenticated every note', async () => {
     mockGetNotesById.mockResolvedValue([makeFetched(NOTE_A)]);
     await run([makeNote(NOTE_A)]);
-    expect(webClient.syncState).not.toHaveBeenCalled();
+    expect(midenClient.syncChain).not.toHaveBeenCalled();
   });
 
   it('fails closed when the note is still unverified even after a sync', async () => {
     mockGetNotesById.mockResolvedValue([makeFetched(NOTE_A)]);
-    webClient.importNoteFile.mockImplementation(async () => {
+    midenClient.notes.import.mockImplementation(async () => {
       records.set(NOTE_A, { authenticated: false });
       return 'ok';
     });
@@ -174,6 +180,6 @@ describe('ensureNotesAuthenticated (issue #409)', () => {
       noteId: NOTE_A,
       message: expect.stringContaining('even after a sync'),
     });
-    expect(webClient.syncState).toHaveBeenCalledTimes(1);
+    expect(midenClient.syncChain).toHaveBeenCalledTimes(1);
   });
 });

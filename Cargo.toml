@@ -9,6 +9,7 @@ members = [
     "crates/miden-keystore",
     "crates/contracts",
     "crates/miden-multisig-client",
+    "crates/qualification-driver",
     "examples/rust",
     "examples/demo",
 ]
@@ -24,7 +25,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 rust-version = "1.98.1"
 authors = ["OpenZeppelin"]
@@ -77,13 +78,13 @@ chrono = "0.4"
 # parameter inference for axum `Query`/`Path` extractors.
 utoipa = { version = "5", features = ["axum_extras"] }
 
-# Miden 0.16 line: exact pins only. Must match the versions embedded in
+# Miden 0.17 line: exact pins only. Must match the versions embedded in
 # the @miden-sdk/miden-sdk WASM build, or the two clients compute different
 # transaction summary commitments and auth procedure roots.
-miden-protocol = "=0.16.1"
-miden-standards = "=0.16.1"
-miden-tx = "=0.16.1"
-miden-node-proto-build = { version = "=0.16.0", default-features = false }
-miden-testing = "=0.16.1"
-miden-client = "=0.16.0"
-miden-client-sqlite-store = "=0.16.0"
+miden-protocol = "=0.17.0"
+miden-standards = "=0.17.0"
+miden-tx = "=0.17.0"
+miden-node-proto-build = { version = "=0.17.0", default-features = false }
+miden-testing = "=0.17.0"
+miden-client = "=0.17.0"
+miden-client-sqlite-store = "=0.17.0"

@@ -726,7 +726,13 @@ mod tests {
             &self,
             block_num: BlockNumber,
             include_proof: bool,
-        ) -> std::result::Result<miden_protocol::block::ProvenBlock, RpcError> {
+        ) -> std::result::Result<
+            (
+                miden_protocol::block::SignedBlock,
+                Option<miden_protocol::vm::ExecutionProof>,
+            ),
+            RpcError,
+        > {
             self.inner
                 .get_block_by_number(block_num, include_proof)
                 .await
@@ -781,7 +787,7 @@ mod tests {
 
         async fn submit_proven_transaction(
             &self,
-            _proven_transaction: miden_protocol::transaction::ProvenTransaction,
+            _proven_transaction: &miden_protocol::transaction::ProvenTransaction,
             _transaction_inputs: miden_client::rpc::encryption::SealedTransactionInputs,
         ) -> std::result::Result<BlockNumber, RpcError> {
             unimplemented!("not exercised by the backfill tests")
@@ -789,10 +795,25 @@ mod tests {
 
         async fn submit_proven_batch(
             &self,
-            _proven_batch: miden_protocol::batch::ProvenBatch,
-            _proposed_batch: miden_protocol::batch::ProposedBatch,
+            _proven_batch: &miden_protocol::batch::ProvenBatch,
+            _proposed_batch: &miden_protocol::batch::ProposedBatch,
             _transaction_inputs: Vec<miden_client::rpc::encryption::SealedTransactionInputs>,
         ) -> std::result::Result<BlockNumber, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn register_account(
+            &self,
+            _invitation_code: &str,
+            _account_id: AccountId,
+        ) -> std::result::Result<(), RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
+        async fn is_account_allowed(
+            &self,
+            _account_id: AccountId,
+        ) -> std::result::Result<bool, RpcError> {
             unimplemented!("not exercised by the backfill tests")
         }
 

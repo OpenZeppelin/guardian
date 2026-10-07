@@ -109,9 +109,23 @@ describe("createMultisigAccount", () => {
       accounts: {
         insert: vi.fn().mockResolvedValue(undefined),
       },
+      sync: {},
     };
     return { webClient };
   }
+
+  it("inserts the new account through the supplied MidenClient without overwriting", async () => {
+    const { webClient } = makeClient();
+
+    const { account } = await createMultisigAccount(webClient as never, {
+      threshold: 1,
+      signerCommitments: ["0x" + "1".repeat(64)],
+      guardianCommitment: "0x" + "2".repeat(64),
+    });
+
+    expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
+    expect(webClient.accounts.insert).toHaveBeenCalledWith({ account, overwrite: false });
+  });
 
   it("builds the guarded component from the upstream standard component (Falcon)", async () => {
     const { webClient } = makeClient();
@@ -123,7 +137,6 @@ describe("createMultisigAccount", () => {
         signerCommitments: ["0x" + "1".repeat(64)],
         guardianCommitment: "0x" + "2".repeat(64),
       },
-      "http://localhost:57291",
     );
 
     // The component must come from the SDK, not from MASM compiled here: a locally compiled
@@ -145,7 +158,6 @@ describe("createMultisigAccount", () => {
         guardianCommitment: "0x" + "2".repeat(64),
         signatureScheme: "ecdsa",
       },
-      "http://localhost:57291",
     );
 
     // The scheme is no longer implicit in the MASM — it is an explicit parameter, and the
@@ -170,7 +182,6 @@ describe("createMultisigAccount", () => {
           { procedure: "update_signers", threshold: 2 },
         ],
       } as never,
-      "http://localhost",
     );
 
     // `send_asset` and `update_signers` are this package's names. The component exports
@@ -200,6 +211,32 @@ describe("validateMultisigConfig", () => {
         guardianCommitment: signer,
       }),
     ).toThrow(/different from all signer commitments/);
+  });
+
+  it("rejects more signers than the on-chain approver cap (matches ApproverSet::MAX_APPROVERS)", () => {
+    const signers = Array.from({ length: 65 }, (_, i) =>
+      "0x" + i.toString(16).padStart(64, "0"),
+    );
+    expect(() =>
+      validateMultisigConfig({
+        threshold: 1,
+        signerCommitments: signers,
+        guardianCommitment: "0x" + "f".repeat(64),
+      }),
+    ).toThrow(/at most 64/);
+  });
+
+  it("accepts a signer set at the cap", () => {
+    const signers = Array.from({ length: 64 }, (_, i) =>
+      "0x" + i.toString(16).padStart(64, "0"),
+    );
+    expect(() =>
+      validateMultisigConfig({
+        threshold: 1,
+        signerCommitments: signers,
+        guardianCommitment: "0x" + "f".repeat(64),
+      }),
+    ).not.toThrow();
   });
 
   it("accepts a distinct guardian commitment", () => {

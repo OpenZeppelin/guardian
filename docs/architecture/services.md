@@ -272,8 +272,13 @@ its own session/auth ([`authz.rs`](../../crates/server/src/dashboard/authz.rs),
 allowlist of operator public keys ([`allowlist.rs`](../../crates/server/src/dashboard/allowlist.rs)),
 permission model ([`permissions.rs`](../../crates/server/src/dashboard/permissions.rs)),
 shared state ([`state.rs`](../../crates/server/src/dashboard/state.rs)),
-and pagination cursor logic
-([`cursor.rs`](../../crates/server/src/dashboard/cursor.rs)).
+pagination cursor logic
+([`cursor.rs`](../../crates/server/src/dashboard/cursor.rs)), and the
+lease-held inventory / vault aggregate behind `GET /dashboard/stats`
+([`stats.rs`](../../crates/server/src/dashboard/stats.rs)), published
+through the shared coordination store
+([`coordination/stats_store.rs`](../../crates/server/src/coordination/stats_store.rs);
+see [DASHBOARD.md — Aggregate stats](../DASHBOARD.md#aggregate-stats)).
 
 It piggybacks on the same Postgres backend as the rest of the server but
 authenticates operators through Falcon-signed challenges rather than the

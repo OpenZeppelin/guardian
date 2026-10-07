@@ -221,6 +221,9 @@ export type DashboardErrorCode =
   | 'invalid_cursor'
   | 'invalid_limit'
   | 'invalid_status_filter'
+  // `GET /dashboard/stats?updated_since=` rejected a non-RFC3339 value
+  // (issue #371 FR-2).
+  | 'invalid_timestamp'
   | 'data_unavailable'
   // Snapshot endpoint distinguishes EVM (permanent) from
   // missing/undecodable state (transient) via separate codes — both
@@ -419,16 +422,18 @@ export interface DashboardDeltaDetail {
   newCommitment: string | null;
   retryCount?: number;
   /** Why the row left the active candidate path. Documented values:
-   * `retry_exhausted` / `diverged` on `retained` rows,
+   * `retry_exhausted` / `diverged` / `orphaned` on `retained` rows,
    * `client_abandoned` on `discarded` rows. Kept as an open string so
    * new server-side labels never fail feed decoding. */
   statusReason?: string;
   /** When background reconciliation gives up on a `retained` row for
    * good (RFC 3339). Present only on `retained` rows. */
   retainedExpiresAt?: string;
-  /** Whether the `retained` row still chains from the stored account
-   * state; `false` means it is structurally obsolete and can only age
-   * out. Present only on `retained` rows. */
+  /** Whether the `retained` row builds directly on the stored account
+   * state. `false` means it does not: reconciliation can still promote it
+   * when other retained rows chain from the stored state to its base (an
+   * `orphaned` successor whose predecessor is promoted first), and
+   * otherwise it can only age out. Present only on `retained` rows. */
   baseMatchesStoredState?: boolean;
   /** Server-curated classification from push-time metadata. */
   category?: DashboardDeltaCategory;
@@ -553,6 +558,125 @@ export interface DashboardAccountSnapshot {
   vault: DashboardVaultSnapshot;
 }
 
+/** Query options for {@link GuardianOperatorHttpClient.getDashboardStats}. */
+export interface DashboardStatsOptions {
+  /** Restrict the **asset** aggregate to accounts whose metadata
+   * `updatedAt >= updatedSince` (RFC3339 string or `Date`). Account
+   * counts are always unfiltered. Omitted → every account. */
+  updatedSince?: string | Date;
+}
+
+/** Mutually exclusive lifecycle counts: `released` when `releasedAt`
+ * is set, else `paused` when `pausedAt` is set, else `active`. */
+export interface DashboardLifecycleCounts {
+  active: number;
+  paused: number;
+  released: number;
+}
+
+/** Accounts sharing one `(authMethod, authorizedSignerCount)` shape.
+ * Lets a consumer reproduce its own account-shape heuristics without
+ * Guardian asserting which client a shape belongs to. */
+export interface DashboardAuthMethodSignerCount {
+  /** Stable auth-method label (`miden_falcon`, `miden_ecdsa`, `evm`). */
+  authMethod: string;
+  authorizedSignerCount: number;
+  count: number;
+}
+
+/** Unfiltered account counts (`updatedSince` does not apply). */
+export interface DashboardAccountStats {
+  total: number;
+  byLifecycle: DashboardLifecycleCounts;
+  /** Never omitted above an inventory threshold: the aggregate is
+   * maintained incrementally server-side. */
+  byAuthMethod: Record<string, number>;
+  /** Sorted by `(authMethod, authorizedSignerCount)`. */
+  byAuthMethodAndSignerCount: DashboardAuthMethodSignerCount[];
+  /** Accounts whose metadata `updatedAt` is within 7 days of `asOf`. */
+  updatedWithin7d: number;
+  /** Same, for 30 days. */
+  updatedWithin30d: number;
+}
+
+/** Base-unit fungible total for one faucet across covered accounts.
+ * `totalAmount` is a base-10 decimal string that may exceed `u64` and
+ * `Number.MAX_SAFE_INTEGER`; use `BigInt(totalAmount)`. No decimals
+ * normalization or pricing is applied. */
+export interface DashboardFungibleTotal {
+  faucetId: string;
+  totalAmount: string;
+}
+
+/** Non-fungible asset count for one faucet across covered accounts. */
+export interface DashboardNonFungibleTotal {
+  faucetId: string;
+  count: number;
+}
+
+/** Asset totals over eligible Miden accounts plus the coverage that
+ * qualifies them. `covered + sum(skipped) === eligible` always holds. */
+export interface DashboardAssetStats {
+  /** Miden accounts passing the `updatedSince` filter. EVM accounts
+   * have no Miden vault and are never eligible. */
+  eligible: number;
+  /** Eligible accounts whose vault was decoded into the totals. */
+  covered: number;
+  /** Eligible accounts not covered, by stable reason. Keys are the
+   * server's closed `SkipReason` vocabulary (`state_unavailable`,
+   * `state_undecodable`); a new reason is additive. */
+  skipped: Record<string, number>;
+  /** `true` only when every eligible account is covered; a skipped
+   * account never appears as a zero balance. */
+  complete: boolean;
+  /** Sorted by `faucetId`. */
+  fungible: DashboardFungibleTotal[];
+  /** Sorted by `faucetId`. */
+  nonFungible: DashboardNonFungibleTotal[];
+}
+
+/**
+ * `GET /dashboard/stats` (issue #371): account and Miden vault
+ * aggregates in one request, served from a background-maintained
+ * snapshot. No per-account follow-up requests are needed.
+ */
+export interface DashboardStatsResponse {
+  /** RFC3339 time the published aggregate's walk began; derive its age
+   * from this. It is the only truthful age signal: a slow or failed
+   * walk keeps the previous publication. */
+  asOf: string;
+  /** The applied filter, normalized to RFC3339, or `null`. */
+  updatedSince: string | null;
+  /** Configured cadence at which the lease holder starts a new walk.
+   * Not a bound on the age of `asOf`: a slow or failed walk keeps the
+   * previous publication. */
+  refreshIntervalSeconds: number;
+  /** Publication counter; identical across replicas for one
+   * publication. */
+  version: number;
+  accounts: DashboardAccountStats;
+  assets: DashboardAssetStats;
+}
+
+/**
+ * `POST /dashboard/stats/refresh` (issue #371, `202 Accepted`): the
+ * request is `queued` for the lease holder (also when one was already
+ * pending) or a walk is already `in_progress`. A request inside the
+ * cooldown is rejected with `rate_limit_exceeded` (429) instead.
+ */
+export interface DashboardStatsRefreshResponse {
+  status: 'queued' | 'in_progress';
+  /** RFC3339 time the pending request was recorded (`queued`). */
+  requestedAt: string | null;
+  /** RFC3339 time the running walk started (`in_progress`). */
+  startedAt: string | null;
+  /** `asOf` of the snapshot currently served, or `null` before the
+   * first publication. */
+  currentAsOf: string | null;
+  /** Minimum seconds between accepted operator requests. */
+  cooldownSeconds: number;
+}
+
 export interface DeltaDetailOptions {
   /** When true, requests `?include=raw` so the server attaches the
    * base64-encoded persisted `TransactionSummary` (debug only). */
@@ -602,6 +726,32 @@ export interface DashboardCanonicalizationConfig {
   reconcileIntervalSeconds?: number;
   /** Accounts one reconcile pass visits at most (rotation cursor). */
   reconcilePageSize?: number;
+  /** Candidate deltas one account may hold in flight at once, as a
+   * strictly ordered chain (issue #17). `1`, the server default, is the
+   * historical one-in-flight-candidate behavior; deeper queues (up to 16)
+   * are an operator opt-in. Absent on servers predating the candidate
+   * queue, which behave as a depth of 1. */
+  maxPendingCandidatesPerAccount?: number;
+}
+
+/** Chain-driven release sweep settings (issue #434): the background
+ * task that releases accounts whose on-chain guardian key is no longer
+ * this server's even when the switch delta never reached the push
+ * path. */
+export interface DashboardReleaseSweepConfig {
+  /** Target time for one full walk of the fleet; every unreleased
+   * Miden account is visited once per rotation. */
+  rotationSeconds: number;
+  /** Upper bound on account visits per second, rotation and
+   * confirmation re-checks together. */
+  maxRatePerSecond: number;
+  /** Delay between confirmation re-checks of an account whose published
+   * storage showed a foreign guardian key. */
+  recheckSeconds: number;
+  /** Observations of a foreign guardian key in published storage, each
+   * at a strictly later block, required before releasing on that
+   * evidence. */
+  confirmations: number;
 }
 
 /** Backend configuration snapshot. */
@@ -614,6 +764,9 @@ export interface DashboardBackendInfo {
   supportedAckSchemes: string[];
   /** `null` in optimistic-commit mode. */
   canonicalization: DashboardCanonicalizationConfig | null;
+  /** Release sweep settings; `null` when the sweep is disabled, absent
+   * on servers predating it. */
+  releaseSweep?: DashboardReleaseSweepConfig | null;
 }
 
 export interface DashboardInfoResponse {
@@ -622,6 +775,11 @@ export interface DashboardInfoResponse {
   build: DashboardBuildInfo;
   backend: DashboardBackendInfo;
   totalAccountCount: number;
+  /** RFC3339 time of the published `/dashboard/stats` snapshot every
+   * cross-account aggregate below is served from; `null` until the
+   * first publication (they are then all listed in
+   * `degradedAggregates`). Absent on servers predating issue #371. */
+  aggregatesAsOf?: string | null;
   /** Counts of accounts grouped by stable auth-method label
    * (`"miden_falcon"`, `"miden_ecdsa"`, `"evm"`). Empty when marked
    * degraded — check `degradedAggregates` for

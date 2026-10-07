@@ -5,12 +5,13 @@ use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
     ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
-    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
-    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
-    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
-    GetStateRequest, GetStateResponse, ProposalSignature as ProtoProposalSignature,
-    PushDeltaProposalRequest, PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse,
-    SignDeltaProposalRequest, SignDeltaProposalResponse,
+    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetDeltaHistoryRequest,
+    GetDeltaHistoryResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
+    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
+    GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
+    SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
@@ -132,7 +133,7 @@ impl GuardianClient {
     ///
     /// The server derives the public key from the signature itself (Falcon
     /// embeds it; ECDSA recovers it). The `x-pubkey` header is sent for
-    /// API consistency but ignored by the lookup verification path.
+    /// API consistency; raw lookup derives identity from the signature.
     fn add_lookup_auth_metadata<T: prost::Message + std::fmt::Debug>(
         &self,
         request: &mut tonic::Request<T>,
@@ -343,6 +344,34 @@ impl GuardianClient {
         let inner = self
             .send_with_replay_retry(account_id, message, async |client, request| {
                 client.get_state(request).await
+            })
+            .await?;
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Retrieves the nonce and commitment of the latest canonical state
+    /// without the state blob. Mirror of HTTP `GET /state/nonce`.
+    ///
+    /// A client can skip [`Self::get_state`] when the returned nonce is below
+    /// its local account nonce, or equal to it with the same commitment
+    /// (issue #191). An equal nonce at a different commitment means the local
+    /// account diverged from GUARDIAN, so it fetches the state.
+    pub async fn get_canonical_nonce(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<GetCanonicalNonceResponse> {
+        let message = GetCanonicalNonceRequest {
+            account_id: account_id.to_string(),
+        };
+
+        let inner = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.get_canonical_nonce(request).await
             })
             .await?;
 
@@ -583,14 +612,20 @@ fn proto_signature_from_json(signature: &JsonProposalSignature) -> ProtoProposal
             scheme: "falcon".to_string(),
             signature: signature.clone(),
             public_key: None,
+            message_format: String::new(),
         },
         JsonProposalSignature::Ecdsa {
             signature,
             public_key,
+            message_format,
         } => ProtoProposalSignature {
             scheme: "ecdsa".to_string(),
             signature: signature.clone(),
             public_key: public_key.clone(),
+            message_format: match message_format {
+                guardian_shared::EcdsaMessageFormat::Raw => String::new(),
+                guardian_shared::EcdsaMessageFormat::Eip712 => "eip712".to_string(),
+            },
         },
     }
 }

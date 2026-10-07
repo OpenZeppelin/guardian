@@ -1,7 +1,8 @@
 //! Operator permission vocabulary for feature 006-operator-authz.
 //!
 //! v1 vocabulary (FR-004): `dashboard:read`, `accounts:pause`,
-//! `policies:write`. The vocabulary is server-defined; unknown strings
+//! `policies:write`; `stats:refresh` (issue #371) gates operator-triggered
+//! refreshes of the `/dashboard/stats` aggregate. The vocabulary is server-defined; unknown strings
 //! are rejected at allowlist load time so a typo in a deployment's
 //! config surfaces explicitly rather than silently degrading to a
 //! no-permission grant.
@@ -24,6 +25,7 @@ pub enum Permission {
     DashboardRead,
     AccountsPause,
     PoliciesWrite,
+    StatsRefresh,
 }
 
 /// Wire string for [`Permission::DashboardRead`]. Hard-coded by
@@ -36,6 +38,11 @@ pub const ACCOUNTS_PAUSE: &str = "accounts:pause";
 
 /// Wire string for [`Permission::PoliciesWrite`].
 pub const POLICIES_WRITE: &str = "policies:write";
+
+/// Wire string for [`Permission::StatsRefresh`]: may request an
+/// out-of-cycle refresh of the `/dashboard/stats` aggregate
+/// (`POST /dashboard/stats/refresh`).
+pub const STATS_REFRESH: &str = "stats:refresh";
 
 /// Returned by [`Permission::from_str`] when the input is not in the
 /// v1 vocabulary. The offending string is preserved so the allowlist
@@ -59,6 +66,7 @@ impl Permission {
             Self::DashboardRead => DASHBOARD_READ,
             Self::AccountsPause => ACCOUNTS_PAUSE,
             Self::PoliciesWrite => POLICIES_WRITE,
+            Self::StatsRefresh => STATS_REFRESH,
         }
     }
 }
@@ -80,6 +88,7 @@ impl std::str::FromStr for Permission {
             DASHBOARD_READ => Ok(Self::DashboardRead),
             ACCOUNTS_PAUSE => Ok(Self::AccountsPause),
             POLICIES_WRITE => Ok(Self::PoliciesWrite),
+            STATS_REFRESH => Ok(Self::StatsRefresh),
             other => Err(UnknownPermission(other.to_owned())),
         }
     }
@@ -103,6 +112,10 @@ mod tests {
         assert_eq!(
             Permission::from_str(POLICIES_WRITE).unwrap(),
             Permission::PoliciesWrite
+        );
+        assert_eq!(
+            Permission::from_str(STATS_REFRESH).unwrap(),
+            Permission::StatsRefresh
         );
     }
 
@@ -142,6 +155,7 @@ mod tests {
             Permission::DashboardRead,
             Permission::AccountsPause,
             Permission::PoliciesWrite,
+            Permission::StatsRefresh,
         ] {
             let parsed = Permission::from_str(permission.as_str()).unwrap();
             assert_eq!(parsed, permission);

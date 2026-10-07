@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  fromServerCanonicalNonce,
   fromServerCosignerSignature,
   fromServerConfigureResponse,
   fromServerDeltaObject,
@@ -34,6 +35,23 @@ import type {
 
 describe('conversion', () => {
   describe('fromServer conversions (server → camelCase)', () => {
+    it('fromServerCanonicalNonce maps the head and rejects unsafe nonces', () => {
+      expect(
+        fromServerCanonicalNonce({
+          account_id: '0xabc',
+          nonce: 5,
+          commitment: '0x' + 'c'.repeat(64),
+        }),
+      ).toEqual({ accountId: '0xabc', nonce: 5, commitment: '0x' + 'c'.repeat(64) });
+
+      expect(() =>
+        fromServerCanonicalNonce({ account_id: '0xabc', nonce: -1, commitment: '0x' }),
+      ).toThrow('Invalid canonical nonce');
+      expect(() =>
+        fromServerCanonicalNonce({ account_id: '0xabc', nonce: 1.5, commitment: '0x' }),
+      ).toThrow('Invalid canonical nonce');
+    });
+
     it('converts CosignerSignature', () => {
       const server: ServerCosignerSignature = {
         signer_id: '0xabc',
@@ -391,6 +409,37 @@ describe('conversion', () => {
         commitment: '0xcommit',
         signature: { scheme: 'falcon', signature: '0x123' },
       });
+    });
+
+    it('preserves the EIP-712 approval format without changing raw signatures', () => {
+      const eip = toServerSignProposalRequest({
+        accountId: '0xaccount',
+        commitment: '0xcommit',
+        signature: {
+          scheme: 'ecdsa',
+          signature: '0xsig',
+          publicKey: '0xkey',
+          messageFormat: 'eip712',
+        },
+      });
+      expect(eip.signature).toEqual({
+        scheme: 'ecdsa',
+        signature: '0xsig',
+        public_key: '0xkey',
+        message_format: 'eip712',
+      });
+      expect(fromServerCosignerSignature({
+        signer_id: '0xsigner',
+        signature: eip.signature,
+        timestamp: '2026-01-01T00:00:00Z',
+      }).signature).toMatchObject({ messageFormat: 'eip712' });
+
+      const raw = toServerSignProposalRequest({
+        accountId: '0xaccount',
+        commitment: '0xcommit',
+        signature: { scheme: 'ecdsa', signature: '0xsig', publicKey: '0xkey' },
+      });
+      expect(raw.signature).not.toHaveProperty('message_format');
     });
 
     it('converts ExecutionDelta', () => {

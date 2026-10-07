@@ -538,6 +538,65 @@ variable "guardian_canonicalization_fast_promotion_enabled" {
   default     = true
 }
 
+variable "guardian_max_pending_candidates_per_account" {
+  description = <<-EOT
+    Optional override for GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT, how many
+    chained candidate deltas one account may hold in flight (issue #17). Unset
+    keeps the server default, 1: one in-flight candidate per account, so a
+    client waits for each transaction to canonicalize before pushing the next.
+    2 to 16 opts in to queueing, which lets a wallet submit back-to-back
+    transactions without that wait.
+  EOT
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_max_pending_candidates_per_account == null ? true : (
+      var.guardian_max_pending_candidates_per_account >= 1 &&
+      var.guardian_max_pending_candidates_per_account <= 16 &&
+      floor(var.guardian_max_pending_candidates_per_account) == var.guardian_max_pending_candidates_per_account
+    )
+    error_message = "guardian_max_pending_candidates_per_account must be an integer between 1 and 16 when provided."
+  }
+}
+
+variable "guardian_release_sweep_enabled" {
+  description = <<-EOT
+    Whether the chain-driven release sweep runs (GUARDIAN_RELEASE_SWEEP_ENABLED).
+    false is the kill switch: release detection then relies on the push path
+    alone.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "guardian_release_sweep_rotation_seconds" {
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS, the target time for one walk of the fleet (server default 21600)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_release_sweep_rotation_seconds == null ? true : (
+      var.guardian_release_sweep_rotation_seconds >= 1 &&
+      var.guardian_release_sweep_rotation_seconds <= 2592000 &&
+      floor(var.guardian_release_sweep_rotation_seconds) == var.guardian_release_sweep_rotation_seconds
+    )
+    error_message = "guardian_release_sweep_rotation_seconds must be an integer between 1 and 2592000 when provided."
+  }
+}
+
+variable "guardian_release_sweep_max_rate_per_second" {
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 5)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_release_sweep_max_rate_per_second == null ? true : (
+      var.guardian_release_sweep_max_rate_per_second >= 1 &&
+      var.guardian_release_sweep_max_rate_per_second <= 1000 &&
+      floor(var.guardian_release_sweep_max_rate_per_second) == var.guardian_release_sweep_max_rate_per_second
+    )
+    error_message = "guardian_release_sweep_max_rate_per_second must be an integer between 1 and 1000 when provided."
+  }
+}
+
 variable "guardian_log_format" {
   description = "Log output format for GUARDIAN_LOG_FORMAT (text, json, compact). json enables flattened JSON for CloudWatch Logs Insights"
   type        = string
@@ -607,9 +666,55 @@ variable "metrics_namespace" {
 }
 
 variable "alarm_actions" {
-  description = "ARNs (e.g. SNS topics) notified when a Guardian CloudWatch alarm transitions to ALARM or back to OK. Empty leaves alarms visible in the console only."
+  description = "ARNs (e.g. SNS topics) notified when a Guardian CloudWatch alarm transitions to ALARM or back to OK. Appended to the Terraform-managed topic when alarm_notifications_enabled is true; with neither, alarms are visible in the console only."
   type        = list(string)
   default     = []
+}
+
+variable "alarm_notifications_enabled" {
+  description = <<-EOT
+    Whether Terraform provisions an SNS topic (<stack_name>-alarms) and routes
+    every Guardian CloudWatch alarm's ALARM and OK transitions to it, in
+    addition to any alarm_actions ARNs. Effective only while the metrics
+    pipeline (cloudwatch_metrics_enabled) is on, since that is what creates
+    the alarms. Set alarm_slack_workspace_id and alarm_slack_channel_id to
+    deliver the topic to a Slack channel.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "alarm_slack_workspace_id" {
+  description = <<-EOT
+    Slack workspace (team) ID, e.g. T0123456789, that Amazon Q Developer in
+    chat applications has been authorized for in this AWS account (a one-time
+    console step; the ID is shown on the workspace details page). Together
+    with alarm_slack_channel_id, creates a channel configuration subscribed
+    to the managed alarm topic; requires alarm_notifications_enabled.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alarm_slack_workspace_id == "" || can(regex("^[A-Z0-9]+$", var.alarm_slack_workspace_id))
+    error_message = "alarm_slack_workspace_id must be a Slack workspace ID (e.g. T0123456789), not a name or URL."
+  }
+}
+
+variable "alarm_slack_channel_id" {
+  description = <<-EOT
+    Slack channel ID, e.g. C0123456789, that receives this stack's alarm
+    notifications (public or private; the Amazon Q app must be invited to
+    the channel). Use one channel per environment so the destination itself
+    carries the environment context.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.alarm_slack_channel_id == "" || can(regex("^[A-Z0-9]+$", var.alarm_slack_channel_id))
+    error_message = "alarm_slack_channel_id must be a Slack channel ID (e.g. C0123456789), not a channel name."
+  }
 }
 
 variable "alarm_error_rate_threshold_percent" {
@@ -653,6 +758,30 @@ variable "alarm_memory_threshold_percent" {
   validation {
     condition     = var.alarm_memory_threshold_percent > 0 && var.alarm_memory_threshold_percent <= 100
     error_message = "alarm_memory_threshold_percent must be in (0, 100]."
+  }
+}
+
+variable "cloudwatch_log_alarms_enabled" {
+  description = <<-EOT
+    Whether CloudWatch Logs metric filters count the server's ERROR (and,
+    with the dashboard, WARN) log lines under <metrics_namespace>/Logs and
+    an alarm fires on sustained ERROR output. Independent of the metrics
+    pipeline. Requires
+    guardian_log_format = json (plan-time check); set to false to run text
+    or compact logs. See docs/SERVER_AWS_DEPLOY.md#log-level-alarms.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "alarm_log_error_threshold" {
+  description = "ERROR-level server log lines per 5-minute period above which the log-errors alarm fires when exceeded in two consecutive periods. 0 fires on any sustained ERROR output."
+  type        = number
+  default     = 0
+
+  validation {
+    condition     = var.alarm_log_error_threshold >= 0 && floor(var.alarm_log_error_threshold) == var.alarm_log_error_threshold
+    error_message = "alarm_log_error_threshold must be a non-negative integer."
   }
 }
 
@@ -727,4 +856,55 @@ variable "server_log_group_name" {
   description = "CloudWatch log group name for the server"
   type        = string
   default     = ""
+}
+
+variable "github_oidc_enabled" {
+  description = "Manage the GitHub Actions OIDC roles used by .github/workflows/aws-deploy.yml. The roles are shared by every stack in the account, so enable this on exactly one stack"
+  type        = bool
+  default     = false
+}
+
+variable "github_oidc_provider_arn" {
+  description = "ARN of the GitHub Actions OIDC identity provider in the root account (arn:aws:iam::<root-account>:oidc-provider/token.actions.githubusercontent.com). Required when github_oidc_enabled is true"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_root_account_role_arn" {
+  description = "Role assumed in the root account to manage the OIDC bootstrap role. When github_oidc_enabled is true, set this or github_oidc_root_account_profile"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_root_account_profile" {
+  description = "Named AWS CLI profile that already resolves to root-account credentials, used instead of github_oidc_root_account_role_arn when the stack credentials cannot assume a root-account role"
+  type        = string
+  default     = ""
+}
+
+variable "github_oidc_role_name" {
+  description = "Name of the OIDC bootstrap role in the root account"
+  type        = string
+  default     = "github-actions-solutions-account-guardian-oidc-role"
+}
+
+variable "github_deploy_role_name" {
+  description = "Name of the deploy role in this account that the bootstrap role chains into"
+  type        = string
+  default     = "GithubOIDCGuardianRole"
+}
+
+variable "github_oidc_subjects" {
+  description = "GitHub OIDC subject claims allowed to assume the bootstrap role, matched exactly; one per GitHub environment of the AWS Deploy workflow"
+  type        = list(string)
+  default = [
+    "repo:OpenZeppelin/guardian:environment:devnet",
+    "repo:OpenZeppelin/guardian:environment:testnet",
+  ]
+}
+
+variable "github_deploy_stack_names" {
+  description = "Stacks (stack_name values) the AWS Deploy workflow may roll out; scopes the deploy role to their ECR repositories, ECS services, task definitions, and task roles under the default resource naming"
+  type        = list(string)
+  default     = ["guardian", "guardian-prod"]
 }

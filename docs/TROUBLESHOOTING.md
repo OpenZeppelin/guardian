@@ -11,12 +11,100 @@ For local-dev setup see [`docs/LOCAL_DEV.md`](./LOCAL_DEV.md).
 
 ### Client and node disagree about the network version
 
-A Guardian server or SDK built on the Miden 0.16 line rejects a 0.15 node
-(and vice versa) at the RPC boundary: the Miden client sends the genesis
-commitment with every request, so a version mismatch surfaces as a gRPC
-rejection when connecting or syncing, not as silent corruption. Point the
-client at a node running the matching Miden line (devnet runs the 0.16
-node; for local work run a matching `miden-node`).
+A Guardian server or SDK rejects a node from a different Miden line (for
+example a 0.17 build against a 0.16 node, or the reverse) at the RPC
+boundary: the Miden client sends the genesis commitment with every request,
+so a version mismatch surfaces as a gRPC rejection when connecting or
+syncing, not as silent corruption. Point the client at a node running the
+line this build pins. The
+[compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) lists that
+line and the public networks running it; a local `miden-node` from that
+line is the fallback when none does.
+
+### "does not contain a canonical TX_FEE output note" on submission
+
+The node rejected a transaction that pays no transaction fee. The current
+guarded-multisig auth procedure always creates the fee note, so this means the
+account was deployed by a build pinned to an earlier Miden 0.17 release
+candidate, whose auth procedure never paid the fee. Funding that account does
+not help, because its code cannot change: recreate it with the current build
+(see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+
+The execute path requests the GUARDIAN acknowledgement before it submits, so a
+rejected submission leaves the delta pending on GUARDIAN as a candidate. The
+next transaction for the account builds on the state that candidate already
+claimed, so its acknowledgement is refused with `conflict_pending_delta`. A new
+proposal is refused the same way up front: at the default queue depth of one
+because the queue is full, and on a deeper queue
+(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1) because its nonce is not
+the stuck candidate's plus one, which a proposal built on the canonical state
+(the one `/state` serves, labelled with the account's next nonce as both SDKs
+do) never carries; a TypeScript SDK proposal from 0.18.0 or earlier carries
+a timestamp label and is refused there too (see
+[`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
+before proposing again, with `abandon_candidate(nonce)` /
+`abandonCandidate(nonce)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
+for the submission grace period to expire.
+
+### "the amount of the asset in the vault is less than the amount to remove" when proposing or executing
+
+The full message is `failed to remove the fungible asset from the vault since
+the amount of the asset in the vault is less than the amount to remove`. On
+Miden 0.17 the guarded-multisig auth procedure pays the transaction fee from
+the account's own vault, so the account needs a balance in the chain's native
+fee asset for every transaction, including the first one that deploys it. The
+fee is paid before any signature is checked, so the failure already appears
+when the proposal is created (the unsigned run that produces the transaction
+summary), before anything is signed or submitted.
+
+Fund the account with the fee asset, then retry. On devnet, which has no
+faucet front end, call the node's `RegisterAccount` RPC for the undeployed
+account (`scripts/devnet-register-account.sh <account-id>`), sync until the
+note arrives, and consume it; see
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
+
+### "account data wasn't found" or "incomplete storage map" in a browser
+
+A browser `MidenClient` created with the default `useWorker: true` executes and
+applies transactions in a Web Worker that never sees the account state the
+multisig SDK writes with `accounts.insert` when it loads or syncs an account
+from GUARDIAN. The device's local copy of the account then breaks in one of two
+ways:
+
+- The device's first transaction after `MultisigClient.load` is submitted,
+  then fails to apply with `failed to apply transaction result: storage error:
+  account data wasn't found for account id 0x…`, whether it runs through
+  `executeProposal` or through your own submit path.
+- After a `syncState()` that imported another cosigner's change, the device's
+  next transaction applies without an error, but every later read of the
+  account fails with `failed to get account: storage error: database-related
+  non-query error: incomplete storage map for slot
+  miden::standards::auth::multisig::executed_transactions (expected root 0x…,
+  got 0x…)`. Once the page reloads, no client can open that store any more:
+  creating one fails with `Failed to initialize IdxdbStore`.
+
+Either way the transaction reached the chain and GUARDIAN canonicalizes it, so
+do not propose it again. Recover by creating the device's client with
+`useWorker: false` and calling `MultisigClient.load` again:
+
+- After the first error the store is intact, so reopen the same store.
+- After the second, open a new store (a new `storeName`). Nothing in the old
+  store can be read back through the SDK, including keys kept only in its
+  keystore: `exportStore` fails on it with the same `incomplete storage map`
+  error.
+
+The upstream bug and its status are in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
+
+### State created on Miden 0.16 fails to load after the 0.17 upgrade
+
+The same shape as the 0.15 to 0.16 case below. A Rust SQLite store or a
+browser IndexedDB store created under 0.16 does not open under 0.17, stored
+accounts fail to deserialize with a version error, and the first 0.17 server
+startup runs the irreversible Miden reset. Recreate client stores rather than
+clearing them, and recreate accounts. Operator steps are in
+[`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017); what changed is in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md).
 
 ### State created on Miden 0.15 fails to load after the 0.16 upgrade
 
@@ -296,13 +384,29 @@ probing the chain (backing off as the row ages) and promotes it
 automatically if the transaction ever shows up, for up to
 `retained_ttl_seconds` (default 24 h). The `status_reason` on the
 dashboard feed says which verdict parked it (`retry_exhausted` /
-`diverged`); a `diverged` row that later reconciles means the
-divergence verdict was spurious (e.g. a lagging RPC node).
+`diverged` / `orphaned`); a `diverged` row that later reconciles means
+the divergence verdict was spurious (e.g. a lagging RPC node). An
+`orphaned` row (issue #17) was queued behind a candidate that was
+parked, discarded, or abandoned: it could never verify from the stored
+state on its own, and is recovered by the reconcile pass together with
+its predecessor if the chain turns out to have landed.
 
 Recovery for the client: check the delta's status first — if it flipped
 to `canonical`, the transaction landed and there is nothing to redo.
 Otherwise `GET /delta/since` → replay canonical chain → rebuild the
 transaction → resubmit (this supersedes the retained row).
+
+An error log `Failed to replay the candidate queue onto the canonical
+state` (or `Candidate queue replay does not reproduce the stored tail
+commitment`) names an account whose queued payloads no longer apply the
+way they did when they were admitted. Only an upgrade that changed delta
+application while candidates were queued does that, and only with
+queueing enabled: at the default depth of `1` no admission replays a
+queue. Until the worker drains the queue, every delta and proposal for
+that account gets `409 conflict_pending_delta`. If the worker also logs
+`Failed to canonicalize delta` for the account's oldest candidate on
+every pass, that candidate no longer applies to the stored state either,
+and the worker cannot resolve it on its own, at any depth.
 
 Operator checks:
 - Canonicalization worker is running (look for `jobs::canonicalization`
@@ -312,8 +416,13 @@ Operator checks:
 - No `network_error` storms.
 - `guardian_canonicalization_candidates_total{outcome=...}` breaks down
   what the worker decided per candidate (`retained` is the default
-  give-up path; `diverged` and `discarded` are the delete paths when
-  retention is disabled; `stale_base` means a promotion was rolled back
+  give-up after the retry budget, `discarded` the same give-up when
+  retention is disabled; `diverged` (the chain moved past the
+  candidate's base) and `orphaned` (a queued successor whose predecessor
+  left the queue without promoting) count the candidate whether it was
+  kept as `retained` or, with retention disabled, deleted — the
+  `event=candidate_retained` log tells the two apart; `stale_base` means a
+  promotion was rolled back
   because the stored state moved mid-pass and will retry next tick;
   `reconciled` / `reconcile_deferred` / `reconcile_expired` are the
   reconcile pass resolving retained rows).
@@ -333,7 +442,14 @@ Operator checks:
 - Retention and reconciliation emit stable `event` / `reason` fields for
   log-based triage (with `account_id`, `nonce`, and `age_seconds` /
   `retention_reason` / `expires_at` where applicable):
-  - `event=candidate_retained reason=retry_exhausted|diverged`
+  - `event=candidate_retained reason=retry_exhausted|diverged|orphaned`,
+    with `account_released`: `true` when this was the account's last
+    queued candidate, so the account takes new submissions again; `false`
+    while candidates remain queued behind it (the same full pass parks
+    them as orphans, and the last one reports the release) or when
+    reading the queue or clearing the account's pending flag failed,
+    which a later pass heals.
+    `Client-abandoned candidate discarded` carries the same field.
   - `event=reconcile_deferred reason=chain_at_stored_base|chain_probe_unavailable|end_state_not_on_chain|base_no_longer_applies|recomputed_commitment_mismatch|no_matching_recoverable_delta`
   - `event=reconcile_skipped reason=obsolete_base`
   - `event=reconcile_promoted`
@@ -344,6 +460,63 @@ Operator checks:
   `guardian_canonicalization_candidates_total` — a healthy steady state
   probes every due account and finds the chain unmoved, and counting
   that would dwarf every other outcome.
+- The release sweep (issue #434, its own task with the `release_sweep`
+  lease) emits its own stable events, with `account_id` and, where
+  applicable, `stored_commitment` / `on_chain` /
+  `new_guardian_commitment` / `candidate` / `proposal_id`:
+  - `Release sweep rotation started` (with `fleet_size`, `spacing_ms`,
+    `rotation_seconds`) and `Release sweep rotation completed` (with
+    `accounts`, `unchecked_accounts`, `duration_seconds`)
+  - `event=release_sweep_skipped reason=pending_candidate`
+  - `event=release_sweep_deferred reason=chain_at_stored_base|not_on_chain|chain_probe_unavailable|history_read_unavailable|binding_read_unavailable|storage_opaque|chain_behind_stored|no_guardian_binding|guardian_still_bound|stored_base_moved`
+  - `event=release_sweep_confirming` (with `observations` / `confirmations` / `block_num`)
+  - `event=release_sweep_own_key_mismatch` (warn, with `guardian_commitment` / `own_guardian_commitment`)
+  - `event=release_sweep_unwritten_push_release` (with `delta_nonce`)
+  - `event=release_sweep_released` (with `detected_by=proposal_match|recoverable_delta|chain_sweep|delta`)
+  - `event=release_sweep_proposal_finalized`
+  `storage_opaque` at info level is the one to watch: the chain state of
+  a **private** account differs from the stored one (usually it moved
+  past it; in optimistic mode it can also still be behind it), no
+  pending proposal or unpromoted delta on this server reached the chain
+  (neither at the head nor in the account's transaction history), and
+  the guardian key cannot be read from chain. If that account is known to have switched
+  guardians (an offline switch with no proposal here, or a switch delta
+  that was queued behind another candidate, issue #504), it will not
+  release by itself. `own_key_mismatch` (warn) means the account is
+  bound to a guardian key this server does not hold and nothing on chain
+  moved it there: this server's ack key changed since the account was
+  onboarded. See the watch list below. `chain_behind_stored` means a
+  node served a state older than the one this server stores (the stored
+  state has not landed yet, or the node lags): ignored, never evidence.
+  `guardian_still_bound` means the chain moved but the account is still
+  bound here — the stored state lags the chain (see the `retained`
+  section above). `history_read_unavailable` means the transaction
+  history could not be searched: the visit falls back to the storage
+  read, and a private account is retried on its next visit.
+  `not_on_chain` (debug) means the account has no state on chain yet.
+  `stored_base_moved` means the stored state was replaced (a
+  `/configure`, or a promoted delta) before the release was written,
+  which voids the evidence; the next visit re-evaluates from the new
+  base. `release_sweep_unwritten_push_release` means a promoted
+  `switch_guardian` delta's own release write had failed; the sweep
+  writes it with the same `detected_by=delta` audit row.
+- `guardian_release_sweep_rotations_total{outcome=...}` counts walks of
+  the fleet (`completed`, or `partial` when at least one account could
+  not be checked and waits for the next rotation) and
+  `guardian_release_sweep_rotation_duration_seconds` times them;
+  `guardian_release_sweep_accounts_total{outcome=...}` counts
+  per-account findings (`released`, `confirming`, `still_bound`,
+  `own_key_mismatch`, `storage_opaque`, `no_binding`,
+  `chain_behind_stored`, `probe_failed`). Accounts at their stored base
+  — the healthy steady state — are counted only when that state's
+  guardian key is not this server's (`chain_at_stored_base` is logged at
+  debug only). A failed probe or storage read is counted as
+  `probe_failed`; so is a failed transaction-history search for a
+  private account, while for a public one the visit falls through to the
+  storage read and counts its outcome. Every sweep node call shows up in
+  `guardian_miden_rpc_requests_total` under `get_account_commitment`,
+  `get_account_with_details`, `get_chain_tip` and `sync_transactions`,
+  failed history searches included.
 - `guardian_canonicalization_commitment_mismatches_total` counting up
   means a client omitted `new_commitment` or claimed one that differs
   from the recomputed value. The full pass can promote using the value it
@@ -447,6 +620,12 @@ script or Terraform variables rather than disabling rate limiting.
   cookie. Re-authenticate.
 - **`GUARDIAN_OPERATOR_PUBLIC_KEYS_*` env not set.** No source means no
   allowlist means the dashboard refuses every login. Check task env.
+- **Allowlist edited in place.** The file is re-read on every
+  authenticated request. A load failure is retried three times over
+  100ms, which covers a writer replacing the file, but an editor that
+  leaves it truncated or invalid for longer fails every dashboard
+  request with `configuration_error` until it is valid again. Write a
+  sibling and rename it into place.
 
 ### Browser dashboard returns CORS errors
 
@@ -498,12 +677,12 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | A non-canonical delta is in-flight; wait for it to finalise. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, a delta behind a queued candidate is labelled with a nonce other than the one it leaves the account at (a client labelling with a timestamp), the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian (a canonicalized `switch_guardian` delta moved the guardian key away from this server) and this server released it. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep proved the switch from chain: either a pending proposal or an unpromoted switch delta on this server whose post-state the chain reached, at the head or in the account's transaction history (`detected_by: proposal_match` / `recoverable_delta`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). A canonicalized switch delta whose own release write failed is released by the sweep with the same `detected_by: delta` row. The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
 
 ### Validation
 
@@ -540,7 +719,7 @@ come from
 |---|---|---|
 | `storage_error` | 500 | Persistence backend rejected the write. Check disk (filesystem) or DB (Postgres) health. |
 | `signing_error` | 500 | ACK signer failed. Check the keystore mount and Secrets Manager IAM. |
-| `configuration_error` | 500 | Server misconfiguration. Almost always means a startup-time env var was wrong. |
+| `configuration_error` | 500 | Server misconfiguration. Usually a startup-time env var. On the dashboard routes it can also mean the operator allowlist source was unreadable: it is re-read per request and retried three times over 100ms, so this code means it stayed unreadable, not that a writer caught it mid-update. |
 
 ## Logging and observability
 
@@ -592,7 +771,8 @@ network network=MidenTestnet rpc_endpoint="https://rpc.testnet.miden.io"
 storage backend storage=Postgres
 ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecdsa_commitment=0x…
 dashboard operators=0 cursor_secret="ephemeral"
-canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10
+canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 max_pending_candidates_per_account=1 retained_ttl_seconds=86400 reconcile_interval_seconds=60
+release sweep rotation_seconds=21600 max_rate_per_second=5 page_size=100 recheck_seconds=60 confirmations=2
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================
@@ -640,6 +820,31 @@ ECS Exec requires the task role's `ssmmessages:*` actions
 - **`authentication_failed` rate** — sudden spike usually means a client
   clock drift event or an attacker probing.
 - **ACK pubkey on `GET /pubkey`** — should not change unless you rotated.
+- **`guardian_release_sweep_accounts_total{outcome="own_key_mismatch"}`
+  above zero** — accounts are bound to an ack key this server does not
+  hold: its ack secret changed (check `GUARDIAN_ACK_SECRET_PROVIDER` and
+  the secret it points to; left unset outside prod, it generates new
+  keys on every boot). The sweep releases none of these accounts, but
+  none of them can transact through this server until the previous key
+  is restored.
+- **`guardian_release_sweep_accounts_total{outcome="storage_opaque"}`
+  growing** — private accounts whose chain state moved past the stored
+  one with no pending proposal or unpromoted delta explaining it; the
+  sweep cannot verify their guardian binding, so switched ones stay
+  active here until the wallet re-onboards. There is no manual release;
+  pausing the account is the operator's lever for refusing its
+  mutations meanwhile.
+- **`guardian_release_sweep_accounts_total{outcome="chain_behind_stored"}`
+  growing** — the configured node keeps serving states older than this
+  server's: it is lagging, which also delays canonicalization. Expected
+  in optimistic mode and briefly after a re-onboarding, while the stored
+  state has not landed on chain yet.
+- **`guardian_release_sweep_rotations_total` not advancing** for twice
+  `GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS` — no replica holds the
+  `release_sweep` lease, or the walk keeps failing (see the rotation
+  log lines). A rotation always ends slightly after the window, and a
+  fleet too large for it at `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND`
+  takes longer, so alert on a multiple of the window, not the window.
 
 There are no Terraform-managed dashboards or alarms yet — building these
 out remains an open production-hardening item.

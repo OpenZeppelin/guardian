@@ -36,20 +36,6 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
     withAccountTarget: vi.fn((accountId: { hex: string }) => ({ target: accountId.hex })),
   },
   NoteType: { Private: 0, Public: 1 },
-  NoteFilter: vi.fn().mockImplementation(function (noteType: number) {
-    return { noteType };
-  }),
-  NoteFilterTypes: {
-    All: 0,
-    Consumed: 1,
-    Committed: 2,
-    Expected: 3,
-    Processing: 4,
-    List: 5,
-    Unique: 6,
-    Nullifiers: 7,
-    Unverified: 8,
-  },
   InputNote: {
     authenticated: vi.fn((note: unknown, proof: unknown) => ({ note, proof })),
   },
@@ -68,8 +54,6 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   }),
 }));
 
-const FILTER_ALL = 0;
-const FILTER_CONSUMED = 1;
 
 const MIDEN_RPC_ENDPOINT = 'https://rpc.devnet.miden.io';
 const ACCOUNT_ID = `0x${'7b'.repeat(15)}`;
@@ -108,7 +92,7 @@ function makeNote(
   const assets = noteAssets(idHex);
   const scriptRoot = options.scriptRoot ?? P2ID_ROOT;
   const targetHex = options.targetHex ?? ACCOUNT_ID;
-  // P2ID note storage layout: [target.suffix, target.prefix].
+  // The screen reads the target pair at the front of P2ID storage.
   const storageItems = [
     { asInt: () => BigInt('0x' + targetHex.slice(-8)) },
     { asInt: () => BigInt('0x' + targetHex.slice(2, 10)) },
@@ -147,7 +131,7 @@ function makeFetchedNote(
   };
 }
 
-/** A store record as returned by `getInputNotes`; `idHex: undefined` models a
+/** A store record as returned by `notes.list`; `idHex: undefined` models a
  * metadata-less record (details import or consumed-external) matched by its
  * details instead, and `proofBacked: false` models an expected record that
  * never received its inclusion proof. */
@@ -176,22 +160,19 @@ function makeRecord(options: {
 describe('backfillPublicNotesByTag', () => {
   let storeRecords: Array<ReturnType<typeof makeRecord>>;
   let consumedRecords: Array<ReturnType<typeof makeRecord>>;
-  let mockWebClient: {
-    getInputNotes: ReturnType<typeof vi.fn>;
-    importNoteFile: ReturnType<typeof vi.fn>;
+  let mockMidenClient: {
+    notes: { list: ReturnType<typeof vi.fn>; import: ReturnType<typeof vi.fn> };
   };
 
   beforeEach(() => {
     vi.clearAllMocks();
     storeRecords = [];
     consumedRecords = [];
-    mockWebClient = {
-      getInputNotes: vi.fn().mockImplementation(async (filter: { noteType: number }) => {
-        if (filter.noteType === FILTER_ALL) return [...storeRecords, ...consumedRecords];
-        if (filter.noteType === FILTER_CONSUMED) return consumedRecords;
-        return [];
-      }),
-      importNoteFile: vi.fn().mockResolvedValue(undefined),
+    mockMidenClient = {
+      notes: {
+        list: vi.fn().mockImplementation(async () => [...storeRecords, ...consumedRecords]),
+        import: vi.fn().mockResolvedValue(undefined),
+      },
     };
     mockGetBlockHeaderByNumber.mockResolvedValue({ blockNum: () => 42 });
     mockSyncNotes.mockResolvedValue(syncInfoWith());
@@ -199,7 +180,7 @@ describe('backfillPublicNotesByTag', () => {
   });
 
   function run(overrides: Partial<BackfillPublicNotesOptions> = {}) {
-    return backfillPublicNotesByTag(mockWebClient as never, {
+    return backfillPublicNotesByTag(mockMidenClient as never, {
       accountId: ACCOUNT_ID,
       midenRpcEndpoint: MIDEN_RPC_ENDPOINT,
       ...overrides,
@@ -226,7 +207,7 @@ describe('backfillPublicNotesByTag', () => {
     // The scan covered the default range with the account's standard tag.
     expect(mockSyncNotes).toHaveBeenCalledTimes(1);
     expect(mockSyncNotes).toHaveBeenCalledWith(0, 42, [{ target: ACCOUNT_ID }]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledWith({
+    expect(mockMidenClient.notes.import).toHaveBeenCalledWith({
       kind: 'with-proof',
       inputNote: expect.objectContaining({ proof: `proof:${NOTE_ID_1}` }),
     });
@@ -287,7 +268,7 @@ describe('backfillPublicNotesByTag', () => {
     expect(report.outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'backfill', status: 'imported' },
     ]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(1);
   });
 
   it('skips notes the store already tracks, including metadata-less records', async () => {
@@ -317,7 +298,7 @@ describe('backfillPublicNotesByTag', () => {
       },
     ]);
     // The ID-matched record is never re-imported; the details-key match is.
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(1);
   });
 
   it('upgrades a proof-less expected record with the fetched proof instead of skipping it', async () => {
@@ -336,7 +317,7 @@ describe('backfillPublicNotesByTag', () => {
     expect(report.outcomes).toEqual([
       { identifier: NOTE_ID_1, source: 'backfill', status: 'imported' },
     ]);
-    expect(mockWebClient.importNoteFile).toHaveBeenCalledTimes(1);
+    expect(mockMidenClient.notes.import).toHaveBeenCalledTimes(1);
   });
 
   it('rebuilds fresh NoteId handles for each body-fetch retry attempt', async () => {
@@ -452,7 +433,7 @@ describe('backfillPublicNotesByTag', () => {
     // Retryable outcomes surface at report level too, so orchestration keyed
     // on the report alone knows a rerun can help.
     expect(report.retryable).toBe(true);
-    expect(mockWebClient.importNoteFile).not.toHaveBeenCalled();
+    expect(mockMidenClient.notes.import).not.toHaveBeenCalled();
   });
 
   it('reports a public note the node returned without a body', async () => {
@@ -475,7 +456,7 @@ describe('backfillPublicNotesByTag', () => {
   it('reports a store read failure per note without throwing', async () => {
     mockSyncNotes.mockResolvedValue(syncInfoWith(makeCommitted(NOTE_ID_1, 1)));
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1)]);
-    mockWebClient.getInputNotes.mockRejectedValue(new Error('idb exploded'));
+    mockMidenClient.notes.list.mockRejectedValue(new Error('idb exploded'));
 
     const report = await run();
 
@@ -494,7 +475,7 @@ describe('backfillPublicNotesByTag', () => {
       syncInfoWith(makeCommitted(NOTE_ID_1, 1), makeCommitted(NOTE_ID_2, 1)),
     );
     mockGetNotesById.mockResolvedValue([makeFetchedNote(NOTE_ID_1), makeFetchedNote(NOTE_ID_2)]);
-    mockWebClient.importNoteFile.mockImplementation(
+    mockMidenClient.notes.import.mockImplementation(
       async (file: { inputNote: { proof: string } }) => {
         if (file.inputNote.proof === `proof:${NOTE_ID_1}`) {
           throw new Error('import rejected');

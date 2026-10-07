@@ -39,6 +39,26 @@ resource "aws_lb" "main" {
       condition     = var.alias_acm_certificate_arn == "" || local.alias_domain_enabled
       error_message = "alias_acm_certificate_arn requires an enabled alias_subdomain because the secondary certificate attaches through SNI."
     }
+
+    # Alarm Slack delivery (alerting.tf) checks the raw variables so that
+    # turning the metrics pipeline off still cascades everything off
+    # instead of failing here.
+    precondition {
+      condition     = (var.alarm_slack_workspace_id == "") == (var.alarm_slack_channel_id == "")
+      error_message = "alarm_slack_workspace_id and alarm_slack_channel_id must be set together (both or neither)."
+    }
+
+    precondition {
+      condition     = !local.alarm_slack_ids_complete || var.alarm_notifications_enabled
+      error_message = "The Slack alarm channel subscribes to the managed SNS topic: set alarm_notifications_enabled = true or unset alarm_slack_workspace_id and alarm_slack_channel_id."
+    }
+
+    # CloudWatch accepts at most five actions per alarm state; the managed
+    # topic takes one slot when enabled.
+    precondition {
+      condition     = length(var.alarm_actions) + (local.alarm_notifications_enabled ? 1 : 0) <= 5
+      error_message = "CloudWatch allows at most 5 alarm actions per state: alarm_actions plus the managed topic (alarm_notifications_enabled) exceed that."
+    }
   }
 }
 

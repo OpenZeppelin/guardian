@@ -29,6 +29,14 @@ pub(crate) enum RecordAad<'a> {
         account_id: &'a str,
         commitment: &'a str,
     },
+    /// The published `/dashboard/stats` snapshot payload, bound to its
+    /// publication version so an envelope cannot be replayed under a
+    /// different version. Only the Postgres stats store seals payloads;
+    /// the filesystem backend's in-memory store never touches disk.
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    DashboardStats {
+        version: i64,
+    },
 }
 
 impl RecordAad<'_> {
@@ -40,6 +48,7 @@ impl RecordAad<'_> {
                 account_id,
                 commitment,
             } => format!("proposal:{account_id}:{commitment}"),
+            RecordAad::DashboardStats { version } => format!("dashboard_stats:{version}"),
         }
         .into_bytes()
     }

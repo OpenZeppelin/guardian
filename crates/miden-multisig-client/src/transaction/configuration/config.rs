@@ -6,9 +6,11 @@ use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, T
 use miden_protocol::assembly::Package;
 use miden_protocol::{Felt, Hasher, Word};
 use miden_standards::StandardsLib;
+use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
+use crate::transaction::TransactionRequestBuilderExt;
 
 /// Builds the multisig configuration advice map entry.
 ///
@@ -81,7 +83,7 @@ pub fn build_update_signers_script() -> Result<TransactionScript> {
 pub fn build_update_signers_transaction_request<I>(
     threshold: u64,
     signer_commitments: &[Word],
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     extra_advice: I,
     scheme: SignatureScheme,
 ) -> Result<(TransactionRequest, Word)>
@@ -97,7 +99,7 @@ where
         .script_arg(config_hash)
         .extend_advice_map([(config_hash, config_values)])
         .extend_advice_map(extra_advice)
-        .fee_conversion_salt(salt)
+        .multisig_auth_args(auth_args)
         .build()?;
 
     Ok((request, config_hash))
@@ -143,7 +145,7 @@ pub fn build_update_procedure_threshold_script(
 pub fn build_update_procedure_threshold_transaction_request<I>(
     procedure: ProcedureName,
     threshold: u32,
-    salt: Word,
+    auth_args: &MultisigAuthArgs,
     extra_advice: I,
 ) -> Result<TransactionRequest>
 where
@@ -154,7 +156,7 @@ where
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
         .extend_advice_map(extra_advice)
-        .fee_conversion_salt(salt)
+        .multisig_auth_args(auth_args)
         .build()?;
 
     Ok(request)

@@ -3,6 +3,7 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalS
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
+use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use crate::services::resolve_account;
 use crate::utils::normalize_commitment_hex;
 use guardian_shared::DeltaSignature;
@@ -89,19 +90,7 @@ pub async fn sign_delta_proposal(
         }
     };
 
-    // Extract signer ID from credentials
-    let signer_commitment_hex = match &credentials {
-        Credentials::Signature { pubkey, .. } => resolved
-            .metadata
-            .auth
-            .compute_signer_commitment(pubkey)
-            .map_err(|e| {
-                GuardianError::AuthenticationFailed(format!(
-                    "invalid signer public key for {}: {}",
-                    account_id, e
-                ))
-            })?,
-    };
+    let signer_commitment_hex = resolved.signer_commitment.clone();
     tracing::Span::current().record(
         "signer_commitment",
         tracing::field::display(&signer_commitment_hex),
@@ -117,7 +106,14 @@ pub async fn sign_delta_proposal(
         });
     }
 
-    // Create the proposal signature based on scheme
+    let tx_summary = proposal_tx_summary(&delta_proposal.delta_payload)?;
+    let approval_signer = verify_proposal_signature(&tx_summary, &signature)?;
+    if !approval_signer.eq_ignore_ascii_case(&signer_commitment_hex) {
+        return Err(GuardianError::InvalidProposalSignature(
+            "Approval signer differs from request signer".to_string(),
+        ));
+    }
+
     // Add the new signature
     let new_signature = CosignerSignature {
         signature,
@@ -186,10 +182,16 @@ mod tests {
     use crate::delta_object::DeltaStatus;
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
-    use crate::testing::fixtures;
-    use crate::testing::helpers::create_test_app_state_with_mocks;
+    use crate::testing::helpers::{
+        TestSigner, create_test_app_state_with_mocks, create_test_delta_payload,
+    };
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
+    use guardian_shared::{EcdsaMessageFormat, FromJson};
+    use miden_protocol::Word;
+    use miden_protocol::transaction::TransactionSummary;
+    use miden_protocol::utils::serde::Serializable;
+    use miden_standards::account::auth::Eip712TransactionSummary;
     use std::sync::Arc;
 
     fn create_test_state() -> (
@@ -231,16 +233,13 @@ mod tests {
         proposer_id: String,
         cosigner_sigs: Vec<CosignerSignature>,
     ) -> DeltaObject {
-        let delta_fixture: serde_json::Value =
-            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
-
         DeltaObject {
             account_id: account_id.clone(),
             nonce,
             prev_commitment: "0x123".to_string(),
             new_commitment: None,
             delta_payload: serde_json::json!({
-                "tx_summary": delta_fixture["delta_payload"].clone(),
+                "tx_summary": create_test_delta_payload(&account_id),
                 "signatures": []
             }),
             ack_sig: String::new(),
@@ -255,18 +254,26 @@ mod tests {
         }
     }
 
+    /// Returns the summary every pending test proposal carries and its commitment.
+    fn proposal_summary(account_id: &str) -> (TransactionSummary, String) {
+        let summary =
+            TransactionSummary::from_json(&create_test_delta_payload(account_id)).unwrap();
+        let commitment = format!("0x{}", hex::encode(summary.to_commitment().as_bytes()));
+        (summary, commitment)
+    }
+
     #[tokio::test]
-    async fn test_sign_delta_proposal_success() {
+    async fn test_sign_delta_proposal_credits_verified_falcon_signer() {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
-        let commitment =
-            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string();
+        let (summary, commitment) = proposal_summary(&account_id);
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
+        let (proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let signer_commitment = signer.commitment_hex.clone();
+        let (signer_signature, signer_timestamp) = signer.sign(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -282,15 +289,15 @@ mod tests {
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))
             .with_update_delta_proposal(Ok(()));
 
-        let dummy_sig = format!("0x{}", "a".repeat(666));
+        let approval = signer.sign_word(summary.to_commitment());
         let params = SignDeltaProposalParams {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
             signature: ProposalSignature::Falcon {
-                signature: dummy_sig.clone(),
+                signature: approval.clone(),
             },
             credentials: Credentials::signature(
-                signer_pubkey.clone(),
+                proposer_pubkey,
                 signer_signature.clone(),
                 signer_timestamp,
             ),
@@ -305,14 +312,12 @@ mod tests {
             DeltaStatus::Pending { cosigner_sigs, .. } => {
                 assert_eq!(cosigner_sigs.len(), 1);
                 assert_eq!(cosigner_sigs[0].signer_id, signer_commitment);
-                match &cosigner_sigs[0].signature {
-                    ProposalSignature::Falcon { signature } => {
-                        assert_eq!(*signature, dummy_sig);
+                assert_eq!(
+                    cosigner_sigs[0].signature,
+                    ProposalSignature::Falcon {
+                        signature: approval
                     }
-                    ProposalSignature::Ecdsa { signature, .. } => {
-                        assert_eq!(*signature, dummy_sig);
-                    }
-                }
+                );
             }
             _ => panic!("Expected Pending status"),
         }
@@ -331,15 +336,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_sign_delta_proposal_success_for_ecdsa() {
+    async fn test_sign_delta_proposal_credits_verified_ecdsa_signer() {
         use crate::testing::helpers::TestEcdsaSigner;
         use guardian_shared::auth_request_payload::AuthRequestPayload;
 
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
-        let commitment =
-            "0xabababababababababababababababababababababababababababababababab".to_string();
+        let (summary, commitment) = proposal_summary(&account_id);
 
         let proposer = TestEcdsaSigner::new();
         let signer = TestEcdsaSigner::new();
@@ -365,10 +369,11 @@ mod tests {
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))
             .with_update_delta_proposal(Ok(()));
 
-        let dummy_sig = format!("0x{}", "b".repeat(130));
+        let approval = signer.sign_word(summary.to_commitment());
         let proposal_signature = ProposalSignature::Ecdsa {
-            signature: dummy_sig.clone(),
+            signature: approval.clone(),
             public_key: Some(signer.pubkey_hex.clone()),
+            message_format: EcdsaMessageFormat::Raw,
         };
         let request_body = serde_json::json!({
             "account_id": account_id.clone(),
@@ -383,7 +388,7 @@ mod tests {
             commitment: commitment.clone(),
             signature: proposal_signature,
             credentials: Credentials::signature(
-                signer.pubkey_hex.clone(),
+                proposer.pubkey_hex.clone(),
                 signer_signature,
                 signer_timestamp,
             )
@@ -403,8 +408,9 @@ mod tests {
                     ProposalSignature::Ecdsa {
                         signature,
                         public_key,
+                        ..
                     } => {
-                        assert_eq!(*signature, dummy_sig);
+                        assert_eq!(*signature, approval);
                         assert_eq!(public_key.as_deref(), Some(signer.pubkey_hex.as_str()));
                     }
                     ProposalSignature::Falcon { .. } => {
@@ -421,23 +427,121 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_sign_delta_proposal_with_eip712_approval_and_request_auth() {
+        use guardian_shared::auth_request_eip712::request_digest;
+        use guardian_shared::auth_request_message::AuthRequestMessage;
+        use guardian_shared::auth_request_payload::AuthRequestPayload;
+        use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey;
+
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let key = SigningKey::new();
+        let public_key = key.public_key();
+        let public_key_hex = format!("0x{}", hex::encode(public_key.to_bytes()));
+        let signer_commitment = format!("0x{}", hex::encode(public_key.to_commitment().to_bytes()));
+        let (summary, commitment) = proposal_summary(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenEcdsa {
+                cosigner_commitments: vec![signer_commitment.clone()],
+            },
+        ))));
+        let pending =
+            create_pending_proposal(account_id.clone(), 1, signer_commitment.clone(), vec![]);
+        let storage = storage
+            .with_pull_delta_proposal(Ok(pending))
+            .with_update_delta_proposal(Ok(()));
+
+        let approval_signature = key.sign_prehash(summary.eip712_hash().into_bytes());
+        let mut approval_bytes = approval_signature.to_bytes();
+        approval_bytes[64] ^= 1;
+        let proposal_signature = ProposalSignature::Ecdsa {
+            signature: format!("0x{}", hex::encode(approval_bytes)),
+            public_key: Some(public_key_hex.clone()),
+            message_format: EcdsaMessageFormat::Eip712,
+        };
+        let body = serde_json::json!({
+            "account_id": account_id,
+            "commitment": commitment,
+            "signature": proposal_signature,
+        });
+        let payload = AuthRequestPayload::from_json_serializable(&body).unwrap();
+        let timestamp = chrono::Utc::now().timestamp_millis();
+        let request_hash =
+            AuthRequestMessage::from_account_id_hex(&account_id, timestamp, payload.clone())
+                .unwrap()
+                .to_word();
+        let request_signature = key.sign_prehash(request_digest(request_hash));
+        let params = SignDeltaProposalParams {
+            account_id: account_id.clone(),
+            commitment: commitment.clone(),
+            signature: proposal_signature,
+            credentials: Credentials::signature(
+                public_key_hex,
+                format!("0x{}", hex::encode(request_signature.to_bytes())),
+                timestamp,
+            )
+            .with_auth_format(crate::metadata::auth::RequestAuthFormat::Eip712)
+            .with_request_payload(payload),
+        };
+
+        let result = sign_delta_proposal(&state, params).await.unwrap();
+        assert!(matches!(result.delta.status, DeltaStatus::Pending { .. }));
+        assert_eq!(storage.get_update_delta_proposal_calls().len(), 1);
+
+        let wrong_approval = ProposalSignature::Ecdsa {
+            signature: format!("0x{}", hex::encode(key.sign_prehash([0u8; 32]).to_bytes())),
+            public_key: Some(format!("0x{}", hex::encode(public_key.to_bytes()))),
+            message_format: EcdsaMessageFormat::Eip712,
+        };
+        let wrong_body = serde_json::json!({
+            "account_id": account_id,
+            "commitment": commitment,
+            "signature": wrong_approval,
+        });
+        let wrong_payload = AuthRequestPayload::from_json_serializable(&wrong_body).unwrap();
+        let next_timestamp = timestamp + 1;
+        let next_hash = AuthRequestMessage::from_account_id_hex(
+            &account_id,
+            next_timestamp,
+            wrong_payload.clone(),
+        )
+        .unwrap()
+        .to_word();
+        let wrong_params = SignDeltaProposalParams {
+            account_id,
+            commitment,
+            signature: wrong_approval,
+            credentials: Credentials::signature(
+                format!("0x{}", hex::encode(public_key.to_bytes())),
+                format!(
+                    "0x{}",
+                    hex::encode(key.sign_prehash(request_digest(next_hash)).to_bytes())
+                ),
+                next_timestamp,
+            )
+            .with_auth_format(crate::metadata::auth::RequestAuthFormat::Eip712)
+            .with_request_payload(wrong_payload),
+        };
+        assert!(sign_delta_proposal(&state, wrong_params).await.is_err());
+        assert_eq!(storage.get_update_delta_proposal_calls().len(), 1);
+    }
+
+    #[tokio::test]
     async fn test_sign_delta_proposal_second_signature() {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
-        let commitment =
-            "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string();
+        let (summary, commitment) = proposal_summary(&account_id);
 
         let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
         let (_first_signer_pubkey, first_signer_commitment, _, _) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (
-            second_signer_pubkey,
-            second_signer_commitment,
-            second_signer_signature,
-            second_signer_timestamp,
-        ) = crate::testing::helpers::generate_falcon_signature(&account_id);
+        let second_signer = TestSigner::new();
+        let second_signer_commitment = second_signer.commitment_hex.clone();
+        let (second_signer_signature, second_signer_timestamp) = second_signer.sign(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -468,7 +572,7 @@ mod tests {
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))
             .with_update_delta_proposal(Ok(()));
 
-        let second_sig = format!("0x{}", "b".repeat(666));
+        let second_sig = second_signer.sign_word(summary.to_commitment());
         let params = SignDeltaProposalParams {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
@@ -476,7 +580,7 @@ mod tests {
                 signature: second_sig.clone(),
             },
             credentials: Credentials::signature(
-                second_signer_pubkey.clone(),
+                second_signer.pubkey_hex.clone(),
                 second_signer_signature.clone(),
                 second_signer_timestamp,
             ),
@@ -492,6 +596,92 @@ mod tests {
             }
             _ => panic!("Expected Pending status"),
         }
+    }
+
+    /// Signs the pending test proposal as `signer`; `proposer` is the other cosigner.
+    async fn sign_as(
+        signer: &TestSigner,
+        proposer: &TestSigner,
+        signature: ProposalSignature,
+    ) -> (Result<SignDeltaProposalResult>, MockStorageBackend) {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let (_summary, commitment) = proposal_summary(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![
+                    proposer.commitment_hex.clone(),
+                    signer.commitment_hex.clone(),
+                ],
+            },
+        ))));
+        let storage = storage
+            .with_pull_delta_proposal(Ok(create_pending_proposal(
+                account_id.clone(),
+                1,
+                proposer.commitment_hex.clone(),
+                vec![],
+            )))
+            .with_update_delta_proposal(Ok(()));
+
+        let (request_signature, timestamp) = signer.sign(&account_id);
+        let params = SignDeltaProposalParams {
+            account_id,
+            commitment,
+            signature,
+            credentials: Credentials::signature(
+                signer.pubkey_hex.clone(),
+                request_signature,
+                timestamp,
+            ),
+        };
+        (sign_delta_proposal(&state, params).await, storage)
+    }
+
+    #[tokio::test]
+    async fn test_sign_delta_proposal_rejects_unverified_approval() {
+        let signer = TestSigner::new();
+        let proposer = TestSigner::new();
+        let cases = [
+            ("malformed signature", format!("0x{}", "a".repeat(666))),
+            (
+                "signature over another message",
+                signer.sign_word(Word::default()),
+            ),
+        ];
+
+        for (label, approval) in cases {
+            let signature = ProposalSignature::Falcon {
+                signature: approval,
+            };
+            let (result, storage) = sign_as(&signer, &proposer, signature).await;
+
+            assert!(
+                matches!(result, Err(GuardianError::InvalidProposalSignature(_))),
+                "{label}: expected InvalidProposalSignature, got: {result:?}"
+            );
+            assert!(storage.get_update_delta_proposal_calls().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sign_delta_proposal_rejects_approval_from_another_cosigner() {
+        let signer = TestSigner::new();
+        let proposer = TestSigner::new();
+        let (summary, _commitment) = proposal_summary("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b");
+        let signature = ProposalSignature::Falcon {
+            signature: proposer.sign_word(summary.to_commitment()),
+        };
+
+        let (result, storage) = sign_as(&signer, &proposer, signature).await;
+
+        assert!(
+            matches!(result, Err(GuardianError::InvalidProposalSignature(_))),
+            "Expected InvalidProposalSignature, got: {result:?}"
+        );
+        assert!(storage.get_update_delta_proposal_calls().is_empty());
     }
 
     #[tokio::test]
@@ -646,13 +836,13 @@ mod tests {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
-        let commitment =
-            "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
+        let (summary, commitment) = proposal_summary(&account_id);
 
         let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
             crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let signer = TestSigner::new();
+        let signer_commitment = signer.commitment_hex.clone();
+        let (signer_signature, signer_timestamp) = signer.sign(&account_id);
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
@@ -668,14 +858,18 @@ mod tests {
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))
             .with_update_delta_proposal(Err("Storage write failed".to_string()));
 
-        let dummy_sig = format!("0x{}", "a".repeat(666));
+        let approval = signer.sign_word(summary.to_commitment());
         let params = SignDeltaProposalParams {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
             signature: ProposalSignature::Falcon {
-                signature: dummy_sig,
+                signature: approval,
             },
-            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
+            credentials: Credentials::signature(
+                signer.pubkey_hex.clone(),
+                signer_signature,
+                signer_timestamp,
+            ),
         };
 
         let result = sign_delta_proposal(&state, params).await;

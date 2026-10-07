@@ -21,11 +21,13 @@ import type {
   Signer,
   StateObject,
   StatusResponse,
+  CanonicalNonce,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
+  ServerCanonicalNonceResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerHistoryPage,
@@ -38,6 +40,7 @@ import type {
   ServerStatusResponse,
 } from './server-types.js';
 import {
+  fromServerCanonicalNonce,
   fromServerConfigureResponse,
   fromServerDeltaObject,
   fromServerHistoryPage,
@@ -295,6 +298,23 @@ export class GuardianHttpClient {
   }
 
   /**
+   * Nonce and commitment of the latest canonical state, without the state
+   * blob (`GET /state/nonce`). A client can skip `getState` when the
+   * returned nonce is below its local account nonce, or equal to it with
+   * the same commitment; an equal nonce at a different commitment means the
+   * local account diverged from GUARDIAN, so it fetches the state.
+   */
+  async getCanonicalNonce(accountId: string): Promise<CanonicalNonce> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/state/nonce?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery);
+    const server = (await response.json()) as ServerCanonicalNonceResponse;
+    return fromServerCanonicalNonce(server);
+  }
+
+  /**
    * Resolve a public-key commitment to the set of account IDs whose
    * authorization set contains it. Authentication is by proof-of-possession:
    * the configured signer MUST hold the private key behind `keyCommitmentHex`
@@ -541,8 +561,8 @@ export class GuardianHttpClient {
     if (!this.signer.signLookupMessage) {
       throw new Error(
         'Signer does not implement signLookupMessage. Account recovery by key requires a ' +
-          'signer that produces signatures over LookupAuthMessage::to_word; the canonical ' +
-          'helper lives in @openzeppelin/miden-multisig-client.'
+          'signer that signs the lookup hash in raw or EIP-712 format; the canonical ' +
+          'lookup-hash helper lives in @openzeppelin/miden-multisig-client.'
       );
     }
 
@@ -553,12 +573,10 @@ export class GuardianHttpClient {
       ...init,
       headers: {
         ...init.headers,
-        // Sent for API consistency with per-account requests; the server's
-        // lookup path derives the pubkey from the signature itself and
-        // ignores this header for verification.
         'x-pubkey': this.signer.publicKey,
         'x-signature': signature,
         'x-timestamp': timestamp.toString(),
+        ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
       },
     });
   }
@@ -588,6 +606,7 @@ export class GuardianHttpClient {
           'x-pubkey': this.signer.publicKey,
           'x-signature': signature,
           'x-timestamp': timestamp.toString(),
+          ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
         },
       });
     } catch (err) {

@@ -40,22 +40,19 @@ let status = client.get_status().await?;
 // Get block header (optionally with MMR proof)
 let header = client.get_block_header(Some(12345), true).await?;
 
-// Submit transaction
-let response = client.submit_transaction(proven_tx_bytes).await?;
+// Submit a proven transaction. Since Miden 0.17 the node takes a structured
+// `submission::ProvenTransactionSubmission`, not opaque transaction bytes.
+client.submit_transaction(submission).await?;
 
-// Sync state for accounts and notes
-let sync_response = client.sync_state(
-    block_num,
-    account_ids,
-    note_tags,
-).await?;
+// Sync notes. Account state sync lives on the miden-client APIs; a non-empty
+// account id list is rejected here.
+let sync_response = client.sync_state(block_num, Vec::new(), note_tags).await?;
 
-// Check nullifiers
-let proofs = client.check_nullifiers(nullifiers).await?;
-
-// Get notes by ID
+// Get notes by ID. Each id is a `primitives::Word`.
 let notes = client.get_notes_by_id(note_ids).await?;
 
 // Get account commitment (convenience wrapper)
-let commitment = client.get_account_commitment(&account_id).await?;
+let commitment = client
+    .get_account_commitment(&account_id, miden_rpc_client::RpcReadMode::Configured)
+    .await?;
 ```
