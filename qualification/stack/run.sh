@@ -212,6 +212,9 @@ qual_reap_orphans ""
 if [[ "${PROFILE}" == "deterministic" ]]; then
   NETWORK_TYPE="MidenLocal"
   RPC_ENDPOINT="http://rpc-stub:57291"
+  # A prover inherited from the caller's environment would make the main server
+  # offer execution, and the no-prover refusal this profile asserts would fail.
+  unset QUAL_TX_PROVER_URL
 else
   case "${NETWORK}" in
     devnet) NETWORK_TYPE="MidenDevnet"; RPC_ENDPOINT="https://rpc.devnet.miden.io" ;;
@@ -535,9 +538,14 @@ if [[ -n "${UPGRADE_FROM}" ]]; then
     # against an empty database. An upgrade check that cannot tell a migrated
     # database from a fresh one proves nothing, and it is also what makes a
     # silently empty seed phase visible here.
+    #
+    # `--upgrade-target` because the older release cannot write everything a
+    # second pass reads back: it has no Guardian execution, so the refusals
+    # scenario runs its own first pass here and the restart pass below reads
+    # what that left.
     qual_run_phase "${QUAL_RUN_ID}" "${OUT_DIR}" \
       "${SERVER_DIGEST}" "${IMAGE_REVISION}" selected \
-      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart
+      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart --upgrade-target
     DRIVER_EXIT=${PHASE_EXIT}
   fi
 else
@@ -552,7 +560,8 @@ fi
 if [[ "${PROFILE}" == "deterministic" && ( "${SDK}" == "both" || "${SDK}" == "rust" ) ]]; then
   echo "==> restarting Guardian and re-checking durability"
   if qual_restart_server "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" \
-     && qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
+     && qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180 \
+     && qual_wait_ready "${QUAL_HTTP_PORT_D}" "${QUAL_GRPC_PORT_D}" 180; then
     # Rust alone: `--post-restart` is a Rust argument, and the durability
     # assertion is a Rust action, so re-running the TypeScript leg here would
     # cost a second pass to assert nothing new.

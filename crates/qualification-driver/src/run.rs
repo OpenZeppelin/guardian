@@ -18,6 +18,7 @@ pub struct RunOptions {
     pub core_only: bool,
     pub filtered: bool,
     pub post_restart: bool,
+    pub upgrade_target: bool,
     pub account_dir: PathBuf,
     pub treasury_dir: PathBuf,
     pub run_id: String,
@@ -72,6 +73,7 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
     )?
     .with_fixtures(fixtures)
     .post_restart(options.post_restart)
+    .upgrade_target(options.upgrade_target)
     .with_live(options.network.map(|network| {
         crate::scenario::live::LiveContext {
             network,
