@@ -49,6 +49,8 @@ pub struct MockNetworkClient {
     /// `(account_id, final_state_commitment, from_block)` per search.
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
+    /// The block every observed commitment reports it was read at.
+    pub observed_block: Arc<StdMutex<u32>>,
 }
 
 impl MockNetworkClient {
@@ -242,6 +244,21 @@ impl NetworkClient for MockNetworkClient {
             .unwrap()
             .pop()
             .unwrap_or(Ok(StateVerification::Match))
+    }
+
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
+    ) -> StdResult<crate::network::ObservedState, String> {
+        let verification = self
+            .verify_commitment(account_id, expected_commitment, read_mode)
+            .await?;
+        Ok(crate::network::ObservedState {
+            verification,
+            block: *self.observed_block.lock().unwrap(),
+        })
     }
 
     fn verify_delta(
@@ -469,6 +486,31 @@ pub struct MockStorageBackend {
     pub discard_candidate_calls: Arc<StdMutex<Vec<(String, u64, crate::storage::DeltaStatusKind)>>>,
     pub update_candidate_status_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+    // Execution reservation writes. A queued outcome is returned (LIFO);
+    // otherwise the call reports the uncontended success variant, and the
+    // loads report no execution.
+    pub create_execution_reservation_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ReservationWrite, String>>>>,
+    pub create_execution_reservation_calls:
+        Arc<StdMutex<Vec<crate::storage::NewExecutionReservation>>>,
+    pub renew_execution_reservation_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ReservationUpdate, String>>>>,
+    pub claim_execution_reservation_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ClaimWrite, String>>>>,
+    pub load_active_execution_responses:
+        Arc<StdMutex<Vec<StdResult<Option<crate::storage::ExecutionRecord>, String>>>>,
+    pub load_latest_execution_responses:
+        Arc<StdMutex<Vec<StdResult<Option<crate::storage::ExecutionRecord>, String>>>>,
+    pub admit_execution_candidate_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::AdmissionWrite, String>>>>,
+    pub admit_execution_candidate_calls: Arc<StdMutex<Vec<crate::storage::CandidateAdmission>>>,
+    pub resolve_execution_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ResolveWrite, String>>>>,
+    pub fail_execution_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ResolveWrite, String>>>>,
+    pub execution_resolution_calls: Arc<StdMutex<Vec<crate::storage::ExecutionResolution>>>,
+    pub list_active_executions_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ExecutionRecord>, String>>>>,
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     // Each queue is consumed LIFO via `Vec::pop`, mirroring the
     // existing helpers — callers either push N identical responses or
@@ -494,6 +536,8 @@ pub struct MockStorageBackend {
     pub backfill_state_nonce_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     /// `(account_id, commitment, nonce)` per backfill.
     pub backfill_state_nonce_calls: Arc<StdMutex<Vec<(String, String, u64)>>>,
+    /// Makes `admit_delta_proposal` report the proposal as already stored.
+    pub admit_already_stored: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockStorageBackend {
@@ -650,6 +694,12 @@ impl MockStorageBackend {
         self
     }
 
+    pub fn with_admit_already_stored(self) -> Self {
+        self.admit_already_stored
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
     pub fn with_pull_delta_proposal(self, response: StdResult<DeltaObject, String>) -> Self {
         self.pull_delta_proposal_responses
             .lock()
@@ -742,6 +792,102 @@ impl MockStorageBackend {
         response: StdResult<crate::storage::PromoteWrite, String>,
     ) -> Self {
         self.promote_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_create_execution_reservation(
+        self,
+        response: StdResult<crate::storage::ReservationWrite, String>,
+    ) -> Self {
+        self.create_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_renew_execution_reservation(
+        self,
+        response: StdResult<crate::storage::ReservationUpdate, String>,
+    ) -> Self {
+        self.renew_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_claim_execution_reservation(
+        self,
+        response: StdResult<crate::storage::ClaimWrite, String>,
+    ) -> Self {
+        self.claim_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_load_active_execution(
+        self,
+        response: StdResult<Option<crate::storage::ExecutionRecord>, String>,
+    ) -> Self {
+        self.load_active_execution_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_load_latest_execution(
+        self,
+        response: StdResult<Option<crate::storage::ExecutionRecord>, String>,
+    ) -> Self {
+        self.load_latest_execution_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_admit_execution_candidate(
+        self,
+        response: StdResult<crate::storage::AdmissionWrite, String>,
+    ) -> Self {
+        self.admit_execution_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_resolve_execution(
+        self,
+        response: StdResult<crate::storage::ResolveWrite, String>,
+    ) -> Self {
+        self.resolve_execution_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_fail_execution(
+        self,
+        response: StdResult<crate::storage::ResolveWrite, String>,
+    ) -> Self {
+        self.fail_execution_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_list_active_executions(
+        self,
+        response: StdResult<Vec<crate::storage::ExecutionRecord>, String>,
+    ) -> Self {
+        self.list_active_executions_responses
             .lock()
             .unwrap()
             .push(response);
@@ -1037,6 +1183,43 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or(Ok(()))
     }
 
+    async fn admit_delta_proposal(
+        &self,
+        admission: crate::storage::ProposalAdmission,
+    ) -> Result<crate::storage::ProposalWrite, String> {
+        if self
+            .admit_already_stored
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(crate::storage::ProposalWrite::AlreadyStored);
+        }
+        let viable = self
+            .pull_pending_proposals(&admission.proposal.account_id)
+            .await?
+            .into_iter()
+            .filter(|record| {
+                record.proposal.prev_commitment == admission.proposal.prev_commitment
+                    && admission
+                        .queue_tail_nonce
+                        .is_none_or(|tail| record.proposal.nonce > tail)
+            })
+            .count();
+        if viable >= admission.max_viable_proposals {
+            return Ok(crate::storage::ProposalWrite::PendingLimit {
+                limit: admission.max_viable_proposals,
+            });
+        }
+        if admission.request_bytes > admission.max_account_request_bytes {
+            return Ok(crate::storage::ProposalWrite::AccountRequestBytesLimit {
+                limit: admission.max_account_request_bytes,
+                used: 0,
+            });
+        }
+        self.submit_delta_proposal(&admission.commitment, &admission.proposal)
+            .await?;
+        Ok(crate::storage::ProposalWrite::Stored)
+    }
+
     async fn pull_delta_proposal(
         &self,
         account_id: &str,
@@ -1174,6 +1357,136 @@ impl StorageBackend for MockStorageBackend {
             return response;
         }
         crate::storage::promote_candidate_sequential(self, metadata, promotion).await
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        self.create_execution_reservation_calls
+            .lock()
+            .unwrap()
+            .push(reservation);
+        self.create_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ReservationWrite::Created { attempt: 1 }))
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        _account_id: &str,
+        _fence: &crate::storage::LeaseFence,
+        _lease_expires_at: chrono::DateTime<chrono::Utc>,
+        _phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        self.renew_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ReservationUpdate::Applied))
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        _account_id: &str,
+        _expected: &crate::storage::LeaseFence,
+        _claimant: &crate::storage::LeaseFence,
+        _lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        self.claim_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ClaimWrite::Claimed))
+    }
+
+    async fn load_active_execution(
+        &self,
+        _account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_active_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
+    async fn load_latest_execution(
+        &self,
+        _account_id: &str,
+        _proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_latest_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        _metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        self.admit_execution_candidate_calls
+            .lock()
+            .unwrap()
+            .push(admission);
+        self.admit_execution_candidate_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::AdmissionWrite::Admitted))
+    }
+
+    async fn resolve_execution(
+        &self,
+        _metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.execution_resolution_calls
+            .lock()
+            .unwrap()
+            .push(resolution);
+        self.resolve_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ResolveWrite::Resolved))
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.execution_resolution_calls
+            .lock()
+            .unwrap()
+            .push(resolution);
+        self.fail_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ResolveWrite::Resolved))
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        _account_id: &str,
+        _fence: &crate::storage::LeaseFence,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        Ok(crate::storage::SettleWrite::NotPromoted)
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        self.list_active_executions_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(Vec::new()))
     }
 
     async fn discard_candidate(
