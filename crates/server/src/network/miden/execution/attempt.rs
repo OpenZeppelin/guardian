@@ -11,26 +11,28 @@ use guardian_shared::hex::{FromHex, IntoHex};
 use guardian_shared::retry::{
     RPC_TRANSPORT_SIGNALS, StructuredEvidence, grpc_code_evidence, is_transient_error_with,
 };
-use guardian_shared::{FromJson, SignatureScheme, ToJson};
+use guardian_shared::{
+    EcdsaMessageFormat, FromJson, ProposalSignature, SignatureScheme, ToJson,
+    parse_ecdsa_public_key_hex,
+};
 use miden_client::rpc::NodeRpcClient;
 use miden_client::rpc::encryption::SealedTransactionInputs;
 use miden_client::transaction::TransactionProver;
 use miden_protocol::account::Account;
 use miden_protocol::account::auth::Signature as AccountSignature;
-use miden_protocol::block::BlockNumber;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak;
+use miden_protocol::block::{BlockHeader, BlockNumber};
 use miden_protocol::transaction::{
     ExecutedTransaction, ProvenTransaction, TransactionInputs, TransactionSummary,
     TransactionVerifier,
 };
-use miden_protocol::utils::serde::Deserializable;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::Eip712TransactionSummary;
 use miden_tx::auth::UnreachableAuth;
 use miden_tx::{TransactionExecutor, TransactionExecutorError};
+use serde::Deserialize;
 
 use super::aborts::Abort;
-use super::chain::{ChainViewError, build_chain_view};
+use super::chain::{ChainViewError, build_chain_view_from, fetch_genesis};
 use super::foreign::ForeignAccountUnavailable;
 use super::request::{StoredRequest, approval_expiration_block};
 use super::sealing::seal_for_submission;
@@ -38,12 +40,14 @@ use super::store::ExecutionDataStore;
 use super::threshold::{InvokedProcedure, effective_threshold};
 use crate::delta_object::CosignerSignature;
 use crate::error::GuardianError;
+use crate::metrics::execution::{record_chain_view, record_prover_retry, record_proving};
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::execute_proposal::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
     ProvenTransactionInfo, SignatureSelection, SubmissionOutcome,
 };
 use crate::services::execution_codec::TransactionRequestEnvelope;
+use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use crate::storage::execution::{ExpirationBound, ForeignAccountUnavailableReason};
 use crate::storage::{ExecutionFailure, ExecutionFailureCode};
 
@@ -54,6 +58,7 @@ const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
 pub struct MidenExecutor {
     rpc: Arc<dyn NodeRpcClient>,
     prover: Arc<dyn TransactionProver + Send + Sync>,
+    genesis: tokio::sync::OnceCell<BlockHeader>,
 }
 
 impl MidenExecutor {
@@ -61,7 +66,28 @@ impl MidenExecutor {
         rpc: Arc<dyn NodeRpcClient>,
         prover: Arc<dyn TransactionProver + Send + Sync>,
     ) -> Self {
-        Self { rpc, prover }
+        Self {
+            rpc,
+            prover,
+            genesis: tokio::sync::OnceCell::new(),
+        }
+    }
+
+    /// The node's genesis header, read once and pinned on the RPC client so later reads are
+    /// verified against it.
+    async fn genesis(&self) -> Result<&BlockHeader, ExecutionFailure> {
+        self.genesis
+            .get_or_try_init(|| async {
+                let genesis = fetch_genesis(self.rpc.as_ref()).await?;
+                if self.rpc.has_genesis_commitment().is_none() {
+                    self.rpc
+                        .set_genesis_commitment(genesis.commitment())
+                        .await?;
+                }
+                Ok(genesis)
+            })
+            .await
+            .map_err(chain_view_failure)
     }
 }
 
@@ -125,71 +151,55 @@ fn select(
     }
 }
 
-/// The advice entry for `signature` when it is `signer`'s valid signature over `summary`. An
-/// EIP-712 signature signs the summary's typed-data digest, so it is verified against that and
-/// keyed as the auth procedure reads it, exactly as the SDKs build it for local execution.
+/// The advice entry for `signature` when it is `signer`'s valid signature over `summary`, under
+/// the same acceptance rule as signing. An EIP-712 signature signs the summary's typed-data
+/// digest, so it is keyed as the auth procedure reads it, exactly as the SDKs build it for local
+/// execution.
 fn verified_advice(
     signature: &CosignerSignature,
     signer: &str,
     summary: &TransactionSummary,
 ) -> Option<(Word, Vec<Felt>)> {
+    verify_proposal_signature(summary, &signature.signature)
+        .ok()?
+        .eq_ignore_ascii_case(signer)
+        .then_some(())?;
     let commitment = <Word as FromHex>::from_hex(signer).ok()?;
     let message = summary.to_commitment();
     match &signature.signature {
-        guardian_shared::ProposalSignature::Falcon { signature } => {
+        ProposalSignature::Falcon { signature } => {
             let parsed = SignatureScheme::Falcon
                 .parse_signature_hex(signature)
                 .ok()?;
-            let AccountSignature::Falcon512Poseidon2(falcon) = &parsed else {
-                return None;
-            };
-            let public_key = falcon.public_key();
-            (public_key.to_commitment() == commitment && public_key.verify(message, falcon))
-                .then_some(())?;
             SignatureScheme::Falcon
                 .build_signature_advice_entry(commitment, message, &parsed, None)
                 .ok()
         }
-        guardian_shared::ProposalSignature::Ecdsa {
+        ProposalSignature::Ecdsa {
             signature,
             public_key,
             message_format,
         } => {
-            let public_key_hex = public_key.as_deref()?;
             let parsed = SignatureScheme::Ecdsa.parse_signature_hex(signature).ok()?;
-            let AccountSignature::EcdsaK256Keccak(ecdsa) = &parsed else {
-                return None;
-            };
-            let key_bytes = hex::decode(public_key_hex.trim_start_matches("0x")).ok()?;
-            let key = ecdsa_k256_keccak::PublicKey::read_from_bytes(&key_bytes).ok()?;
-            (key.to_commitment() == commitment).then_some(())?;
             match message_format {
-                guardian_shared::EcdsaMessageFormat::Raw => {
-                    key.verify(message, ecdsa).then_some(())?;
-                    SignatureScheme::Ecdsa
-                        .build_signature_advice_entry(
-                            commitment,
-                            message,
-                            &parsed,
-                            Some(public_key_hex),
-                        )
-                        .ok()
-                }
-                guardian_shared::EcdsaMessageFormat::Eip712 => {
-                    key.verify_prehash(summary.eip712_hash().into_bytes(), ecdsa)
-                        .then_some(())?;
+                EcdsaMessageFormat::Raw => SignatureScheme::Ecdsa
+                    .build_signature_advice_entry(
+                        commitment,
+                        message,
+                        &parsed,
+                        public_key.as_deref(),
+                    )
+                    .ok(),
+                EcdsaMessageFormat::Eip712 => {
+                    let AccountSignature::EcdsaK256Keccak(ecdsa) = &parsed else {
+                        return None;
+                    };
+                    let key = parse_ecdsa_public_key_hex(public_key.as_deref()?).ok()?;
                     Some(summary.eip712_signature_advice(&key, ecdsa))
                 }
             }
         }
     }
-}
-
-fn summary_of(payload: &serde_json::Value) -> Result<TransactionSummary, String> {
-    let tx_summary = payload
-        .get("tx_summary")
-        .ok_or_else(|| "proposal carries no tx_summary".to_string())?;
-    TransactionSummary::from_json(tx_summary)
 }
 
 fn invoked_procedure(payload: &serde_json::Value) -> InvokedProcedure {
@@ -258,7 +268,7 @@ impl ProposalExecutor for MidenExecutor {
         input: &ExecutionInput,
     ) -> Result<SignatureSelection, GuardianError> {
         let account = Account::from_json(&input.state_json).map_err(GuardianError::InvalidDelta)?;
-        let summary = summary_of(&input.proposal_payload).map_err(GuardianError::InvalidDelta)?;
+        let summary = proposal_tx_summary(&input.proposal_payload)?;
         Ok(select(input, &account, &summary).selection)
     }
 
@@ -269,12 +279,13 @@ impl ProposalExecutor for MidenExecutor {
         let started = std::time::Instant::now();
         let codec =
             |message: String| ExecutionFailure::new(ExecutionFailureCode::RequestCodec, message);
-        let envelope: TransactionRequestEnvelope = input
+        let envelope = input
             .proposal_payload
             .get("transaction_request")
-            .cloned()
             .ok_or_else(|| codec("proposal carries no transaction request".to_string()))
-            .and_then(|value| serde_json::from_value(value).map_err(|e| codec(e.to_string())))?;
+            .and_then(|value| {
+                TransactionRequestEnvelope::deserialize(value).map_err(|e| codec(e.to_string()))
+            })?;
         let bytes = envelope.verified_bytes().map_err(|rejection| {
             ExecutionFailure::new(rejection.failure_code(), rejection.to_string())
         })?;
@@ -284,7 +295,8 @@ impl ProposalExecutor for MidenExecutor {
                  be the version that serialized it: {e}"
             ))
         })?;
-        let summary = summary_of(&input.proposal_payload).map_err(codec)?;
+        let summary =
+            proposal_tx_summary(&input.proposal_payload).map_err(|e| codec(e.to_string()))?;
         request.check_against(&summary).map_err(|reason| {
             ExecutionFailure::new(
                 ExecutionFailureCode::RequestInvalid(reason),
@@ -295,21 +307,7 @@ impl ProposalExecutor for MidenExecutor {
         let selected = select(&input, &account, &summary);
         let decoded = started.elapsed();
 
-        if self.rpc.has_genesis_commitment().is_none() {
-            let (genesis, _) = self
-                .rpc
-                .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
-                .await
-                .map_err(|e| {
-                    ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, e.to_string())
-                })?;
-            self.rpc
-                .set_genesis_commitment(genesis.commitment())
-                .await
-                .map_err(|e| {
-                    ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, e.to_string())
-                })?;
-        }
+        let genesis = self.genesis().await?;
         let approval_expiration = approval_expiration_block(&summary);
         let tip = chain_tip(self.rpc.as_ref()).await?;
         if u64::from(tip.as_u32()) >= approval_expiration {
@@ -348,12 +346,11 @@ impl ProposalExecutor for MidenExecutor {
             tracked.insert(block);
         }
         let assembly = std::time::Instant::now();
-        let view = build_chain_view(self.rpc.as_ref(), &tracked)
+        let view = build_chain_view_from(self.rpc.as_ref(), genesis, &tracked)
             .await
             .map_err(chain_view_failure)?;
         let chain_view = assembly.elapsed();
-        metrics::histogram!(crate::metrics::names::EXECUTION_CHAIN_VIEW_DURATION_SECONDS)
-            .record(chain_view.as_secs_f64());
+        record_chain_view(chain_view);
         let notes: Vec<_> = unsigned
             .input_notes
             .iter()
@@ -645,10 +642,7 @@ impl ExecutionAttempt for MidenAttempt {
         let inputs: TransactionInputs = self.executed().tx_inputs().clone();
         let mut backoff = PROVER_BACKOFF_START;
         let proving = std::time::Instant::now();
-        let record_duration = || {
-            metrics::histogram!(crate::metrics::names::EXECUTION_PROVING_DURATION_SECONDS)
-                .record(proving.elapsed().as_secs_f64());
-        };
+        let record_duration = || record_proving(proving.elapsed());
         let proven = loop {
             match self.prover.prove(inputs.clone()).await {
                 Ok(proven) => {
@@ -656,8 +650,7 @@ impl ExecutionAttempt for MidenAttempt {
                     break proven;
                 }
                 Err(error) if is_transient(&error) => {
-                    metrics::counter!(crate::metrics::names::EXECUTION_PROVER_RETRIES_TOTAL)
-                        .increment(1);
+                    record_prover_retry();
                     tracing::warn!(
                         error = %with_sources(&error),
                         retry_in = ?backoff,

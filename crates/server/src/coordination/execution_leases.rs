@@ -6,8 +6,10 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 use crate::coordination::leader::{LeaderElector, Lease};
-use crate::error::Result;
-use crate::storage::execution_lease_name;
+use crate::error::{GuardianError, Result};
+use crate::storage::{
+    ExecutionPhase, LeaseFence, ReservationUpdate, StorageBackend, execution_lease_name,
+};
 
 /// When a lease taken now for `ttl` runs out.
 pub fn lease_deadline(ttl: Duration) -> DateTime<Utc> {
@@ -21,6 +23,60 @@ fn deadline_after(start: DateTime<Utc>, ttl: Duration) -> DateTime<Utc> {
         .ok()
         .and_then(|ttl| start.checked_add_signed(ttl))
         .unwrap_or(DateTime::<Utc>::MAX_UTC)
+}
+
+/// What renewing an execution lease, then the reservation it fences, came to. The reservation's
+/// deadline only ever moves to one the lease itself was renewed past, so storage never
+/// authorizes a lease the elector has already lost.
+pub enum Renewal {
+    /// Both were renewed; the lease is held until the deadline.
+    Held(DateTime<Utc>),
+    /// The elector reports the lease lost; the reservation was not touched.
+    LeaseLost,
+    /// The lease could not be renewed, so whether it is still held is unknown; the reservation
+    /// was not touched.
+    LeaseUnavailable(GuardianError),
+    /// The lease was renewed, but the reservation is no longer this holder's.
+    ReservationLost,
+    /// The lease was renewed until `renewed_until`, but the reservation write failed.
+    ReservationUnavailable {
+        renewed_until: DateTime<Utc>,
+        error: String,
+    },
+}
+
+impl Renewal {
+    /// Renews `lease` for `ttl`, then moves the reservation fenced by `fence` to the same
+    /// deadline and records `phase` on it.
+    pub async fn attempt(
+        elector: &dyn LeaderElector,
+        lease: &Lease,
+        fence: &LeaseFence,
+        storage: &dyn StorageBackend,
+        account_id: &str,
+        ttl: Duration,
+        phase: ExecutionPhase,
+    ) -> Self {
+        let renewing_until = lease_deadline(ttl);
+        match elector.renew(lease, ttl).await {
+            Ok(true) => {}
+            Ok(false) => return Renewal::LeaseLost,
+            Err(error) => return Renewal::LeaseUnavailable(error),
+        }
+        match storage
+            .renew_execution_reservation(account_id, fence, renewing_until, phase)
+            .await
+        {
+            Ok(ReservationUpdate::Applied) => Renewal::Held(renewing_until),
+            Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+                Renewal::ReservationLost
+            }
+            Err(error) => Renewal::ReservationUnavailable {
+                renewed_until: renewing_until,
+                error,
+            },
+        }
+    }
 }
 
 /// Releases `lease`. A failed release is harmless: the lease expires on its own.

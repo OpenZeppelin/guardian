@@ -150,6 +150,31 @@ impl OutcomeRow {
     }
 }
 
+#[derive(Queryable, Selectable)]
+#[diesel(table_name = execution_reservations)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+struct RecordRow {
+    #[diesel(embed)]
+    reservation: ReservationRow,
+    #[diesel(embed)]
+    evidence: Option<SubmissionRow>,
+    #[diesel(embed)]
+    outcome: Option<OutcomeRow>,
+}
+
+impl RecordRow {
+    fn into_record(self) -> Result<ExecutionRecord, String> {
+        Ok(ExecutionRecord {
+            reservation: self.reservation.into_reservation()?,
+            evidence: self
+                .evidence
+                .map(SubmissionRow::into_evidence)
+                .transpose()?,
+            outcome: self.outcome.map(OutcomeRow::into_outcome).transpose()?,
+        })
+    }
+}
+
 #[derive(Insertable)]
 #[diesel(table_name = execution_outcomes)]
 struct NewOutcomeRow<'a> {
@@ -271,37 +296,23 @@ async fn insert_outcome(conn: &mut AsyncPgConnection, outcome: NewOutcomeRow<'_>
         .map(|_| ())
 }
 
-async fn attach_records(
-    conn: &mut AsyncPgConnection,
-    rows: Vec<ReservationRow>,
-) -> TxResult<Vec<Result<ExecutionRecord, String>>> {
-    let mut records = Vec::with_capacity(rows.len());
-    for row in rows {
-        let evidence =
-            attempt_evidence(conn, &row.account_id, &row.proposal_id, row.attempt).await?;
-        let outcome = execution_outcomes::table
-            .filter(execution_outcomes::account_id.eq(&row.account_id))
-            .filter(execution_outcomes::proposal_id.eq(&row.proposal_id))
-            .filter(execution_outcomes::attempt.eq(row.attempt))
-            .select(OutcomeRow::as_select())
-            .first(conn)
-            .await
-            .optional()?;
-        records.push((|| {
-            Ok(ExecutionRecord {
-                reservation: row.into_reservation()?,
-                evidence: evidence.map(SubmissionRow::into_evidence).transpose()?,
-                outcome: outcome.map(OutcomeRow::into_outcome).transpose()?,
-            })
-        })());
-    }
-    Ok(records)
-}
-
-fn collect_records(
-    records: Vec<Result<ExecutionRecord, String>>,
-) -> Result<Vec<ExecutionRecord>, String> {
-    records.into_iter().collect()
+/// Each attempt's reservation with its evidence and outcome, joined on the attempt key both
+/// carry uniquely.
+#[diesel::dsl::auto_type]
+fn execution_records() -> _ {
+    execution_reservations::table
+        .left_join(
+            execution_submissions::table.on(execution_submissions::account_id
+                .eq(execution_reservations::account_id)
+                .and(execution_submissions::proposal_id.eq(execution_reservations::proposal_id))
+                .and(execution_submissions::attempt.eq(execution_reservations::attempt))),
+        )
+        .left_join(
+            execution_outcomes::table.on(execution_outcomes::account_id
+                .eq(execution_reservations::account_id)
+                .and(execution_outcomes::proposal_id.eq(execution_reservations::proposal_id))
+                .and(execution_outcomes::attempt.eq(execution_reservations::attempt))),
+        )
 }
 
 /// Whether the candidate at `nonce` belongs to the account's unresolved,
@@ -335,15 +346,16 @@ async fn owning_reservation(
 }
 
 /// Persist `committed` and release the reservation whose candidate the
-/// caller's transaction just promoted. Callers must hold the account lock.
+/// caller's transaction just promoted, reporting whether one did. Callers
+/// must hold the account lock.
 pub(super) async fn commit_promoted_execution(
     conn: &mut AsyncPgConnection,
     account_id: &str,
     nonce: u64,
     now: DateTime<Utc>,
-) -> TxResult<()> {
+) -> TxResult<bool> {
     let Some(reservation) = owning_reservation(conn, account_id, nonce).await? else {
-        return Ok(());
+        return Ok(false);
     };
     insert_outcome(
         conn,
@@ -359,7 +371,8 @@ pub(super) async fn commit_promoted_execution(
         },
     )
     .await?;
-    release_reservation(conn, reservation.id, now).await
+    release_reservation(conn, reservation.id, now).await?;
+    Ok(true)
 }
 
 /// The proposal whose execution holds the account, if any. Callers must hold
@@ -543,13 +556,16 @@ impl PostgresService {
         account_id: &str,
     ) -> Result<Option<ExecutionRecord>, String> {
         let mut conn = self.connection().await?;
-        let row = active_reservation(&mut conn, account_id)
+        execution_records()
+            .filter(execution_reservations::account_id.eq(account_id))
+            .filter(execution_reservations::released_at.is_null())
+            .select(RecordRow::as_select())
+            .first(&mut conn)
             .await
-            .map_err(|e| format!("Failed to load active execution: {e}"))?;
-        let records = attach_records(&mut conn, row.into_iter().collect())
-            .await
-            .map_err(|e| format!("Failed to load active execution: {e}"))?;
-        Ok(collect_records(records)?.into_iter().next())
+            .optional()
+            .map_err(|e| format!("Failed to load active execution: {e}"))?
+            .map(RecordRow::into_record)
+            .transpose()
     }
 
     pub(super) async fn load_latest_execution_tx(
@@ -558,19 +574,17 @@ impl PostgresService {
         proposal_id: &str,
     ) -> Result<Option<ExecutionRecord>, String> {
         let mut conn = self.connection().await?;
-        let row = execution_reservations::table
+        execution_records()
             .filter(execution_reservations::account_id.eq(account_id))
             .filter(execution_reservations::proposal_id.eq(proposal_id))
             .order(execution_reservations::attempt.desc())
-            .select(ReservationRow::as_select())
+            .select(RecordRow::as_select())
             .first(&mut conn)
             .await
             .optional()
-            .map_err(|e| format!("Failed to load execution: {e}"))?;
-        let records = attach_records(&mut conn, row.into_iter().collect())
-            .await
-            .map_err(|e| format!("Failed to load execution: {e}"))?;
-        Ok(collect_records(records)?.into_iter().next())
+            .map_err(|e| format!("Failed to load execution: {e}"))?
+            .map(RecordRow::into_record)
+            .transpose()
     }
 
     pub(super) async fn admit_execution_candidate_tx(
@@ -855,16 +869,15 @@ impl PostgresService {
 
     pub(super) async fn list_active_executions_tx(&self) -> Result<Vec<ExecutionRecord>, String> {
         let mut conn = self.connection().await?;
-        let rows = execution_reservations::table
+        execution_records()
             .filter(execution_reservations::released_at.is_null())
             .order(execution_reservations::account_id.asc())
-            .select(ReservationRow::as_select())
+            .select(RecordRow::as_select())
             .load(&mut conn)
             .await
-            .map_err(|e| format!("Failed to list active executions: {e}"))?;
-        let records = attach_records(&mut conn, rows)
-            .await
-            .map_err(|e| format!("Failed to list active executions: {e}"))?;
-        collect_records(records)
+            .map_err(|e| format!("Failed to list active executions: {e}"))?
+            .into_iter()
+            .map(RecordRow::into_record)
+            .collect()
     }
 }

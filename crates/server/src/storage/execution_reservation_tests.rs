@@ -785,7 +785,9 @@ async fn promotion_commits_and_releases_the_execution(h: &Harness) {
             .promote_candidate(h.metadata.as_ref(), promotion)
             .await
             .unwrap(),
-        PromoteWrite::Applied
+        PromoteWrite::Applied {
+            settled_execution: true
+        }
     );
     assert!(
         h.storage
@@ -1157,7 +1159,7 @@ async fn race_promotion_against_resolution(h: &Harness, promotion_first: bool) -
         (promoted, resolved)
     };
     let (promoted, resolved) = (promoted.unwrap(), resolved.unwrap());
-    let promotion_won = promoted == PromoteWrite::Applied;
+    let promotion_won = matches!(promoted, PromoteWrite::Applied { .. });
     let resolution_won = resolved == ResolveWrite::Resolved;
     assert!(
         promotion_won != resolution_won,
@@ -1299,7 +1301,7 @@ async fn write_terminal(
                 .promote_candidate(h.metadata.as_ref(), promotion(h))
                 .await?
             {
-                PromoteWrite::Applied => Ok(true),
+                PromoteWrite::Applied { .. } => Ok(true),
                 _ => h
                     .storage
                     .settle_promoted_execution(&h.account_id, owner, chrono::Utc::now())
@@ -2144,7 +2146,7 @@ mod postgres {
                 })
             };
             let (promoted, resolved) = (promote.await.unwrap(), resolve.await.unwrap());
-            let promotion_won = promoted == PromoteWrite::Applied;
+            let promotion_won = matches!(promoted, PromoteWrite::Applied { .. });
             let resolution_won = resolved == ResolveWrite::Resolved;
             assert!(
                 promotion_won != resolution_won,

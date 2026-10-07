@@ -101,6 +101,18 @@ impl ExecutionReservation {
     pub fn is_owned_by(&self, fence: &LeaseFence) -> bool {
         self.fence == *fence
     }
+
+    /// Whether `fence` owns this reservation and its lease has not expired at `now`.
+    pub fn owns_live(&self, fence: &LeaseFence, now: DateTime<Utc>) -> bool {
+        self.is_owned_by(fence) && now < self.lease_expires_at
+    }
+
+    /// Whether `fence`'s holder runs this reservation's attempt of `proposal_id`.
+    pub fn authorizes(&self, fence: &LeaseFence, proposal_id: &str, attempt: u32) -> bool {
+        self.fence.holder_id == fence.holder_id
+            && self.proposal_id == proposal_id
+            && self.attempt == attempt
+    }
 }
 
 /// Request to open a reservation. The attempt number is allocated by the
@@ -207,6 +219,15 @@ pub struct ExecutionRecord {
 impl ExecutionRecord {
     pub fn boundary_crossed(&self) -> bool {
         self.evidence.is_some()
+    }
+
+    /// Whether this unresolved, boundary-crossed execution owns the candidate at `nonce`.
+    pub fn owns_candidate(&self, nonce: u64) -> bool {
+        self.reservation.is_active()
+            && self
+                .evidence
+                .as_ref()
+                .is_some_and(|evidence| evidence.candidate_nonce == nonce)
     }
 }
 

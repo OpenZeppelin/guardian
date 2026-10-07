@@ -421,7 +421,12 @@ async fn a_threshold_met_proposal_is_executed_submitted_and_committed_by_promoti
     assert!(!candidate.ack_sig.is_empty());
     assert_eq!(candidate.new_commitment.as_deref(), Some(NEW_COMMITMENT));
 
-    assert_eq!(f.promote().await, PromoteWrite::Applied);
+    assert_eq!(
+        f.promote().await,
+        PromoteWrite::Applied {
+            settled_execution: true
+        }
+    );
     let committed = f.read().await.unwrap();
     assert_eq!(committed.state, ExecutionState::Committed);
     assert!(

@@ -35,7 +35,7 @@ mod get_delta_since;
 mod get_state;
 mod lookup_account;
 pub mod pause_account;
-mod proposal_signature;
+pub(crate) mod proposal_signature;
 mod push_delta;
 mod push_delta_proposal;
 pub mod release_on_switch;

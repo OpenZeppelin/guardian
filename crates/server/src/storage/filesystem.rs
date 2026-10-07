@@ -1067,13 +1067,14 @@ impl StorageBackend for FilesystemService {
             &promotion.now,
         )
         .await?;
-        self.commit_promoted_execution(
-            &promotion.state.account_id,
-            promotion.delta.nonce,
-            promoted_at,
-        )
-        .await?;
-        Ok(crate::storage::PromoteWrite::Applied)
+        let settled_execution = self
+            .commit_promoted_execution(
+                &promotion.state.account_id,
+                promotion.delta.nonce,
+                promoted_at,
+            )
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied { settled_execution })
     }
 
     async fn discard_candidate(
@@ -1250,7 +1251,7 @@ impl StorageBackend for FilesystemService {
         else {
             return Ok(ReservationUpdate::NotActive);
         };
-        if !owns_live_reservation(&active.reservation, fence, now) {
+        if !active.reservation.owns_live(fence, now) {
             return Ok(ReservationUpdate::StaleLease);
         }
         active.reservation.lease_expires_at = lease_expires_at;
@@ -1330,8 +1331,7 @@ impl StorageBackend for FilesystemService {
         else {
             return Ok(AdmissionWrite::NotAuthorized);
         };
-        if !authorizes(
-            &active.reservation,
+        if !active.reservation.authorizes(
             &admission.fence,
             &admission.evidence.proposal_id,
             admission.evidence.attempt,
@@ -1339,7 +1339,10 @@ impl StorageBackend for FilesystemService {
         {
             return Ok(AdmissionWrite::NotAuthorized);
         }
-        if !owns_live_reservation(&active.reservation, &admission.fence, admission.now) {
+        if !active
+            .reservation
+            .owns_live(&admission.fence, admission.now)
+        {
             return Ok(AdmissionWrite::StaleLease);
         }
         let current_state = self.pull_state(&account_id).await?;
@@ -1481,7 +1484,7 @@ impl StorageBackend for FilesystemService {
         else {
             return Ok(SettleWrite::NotActive);
         };
-        if !owns_live_reservation(&active.reservation, fence, now) {
+        if !active.reservation.owns_live(fence, now) {
             return Ok(SettleWrite::StaleLease);
         }
         let Some(evidence) = active.evidence.clone() else {
@@ -1941,32 +1944,24 @@ impl FilesystemService {
             .read_executions(account_id)
             .await?
             .iter()
-            .any(|record| {
-                record.reservation.is_active()
-                    && record
-                        .evidence
-                        .as_ref()
-                        .is_some_and(|evidence| evidence.candidate_nonce == nonce)
-            }))
+            .any(|record| record.owns_candidate(nonce)))
     }
 
     /// Persist `committed` and release the reservation whose candidate was
-    /// just promoted. Callers must hold `delta_write_lock`.
+    /// just promoted, reporting whether one did. Callers must hold
+    /// `delta_write_lock`.
     async fn commit_promoted_execution(
         &self,
         account_id: &str,
         nonce: u64,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut records = self.read_executions(account_id).await?;
-        let Some(record) = records.iter_mut().find(|record| {
-            record.reservation.is_active()
-                && record
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.candidate_nonce == nonce)
-        }) else {
-            return Ok(());
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.owns_candidate(nonce))
+        else {
+            return Ok(false);
         };
         record.outcome = Some(crate::storage::ExecutionOutcome {
             account_id: account_id.to_string(),
@@ -1977,27 +1972,9 @@ impl FilesystemService {
         });
         record.reservation.released_at = Some(now);
         record.reservation.updated_at = now;
-        self.write_executions(account_id, &records).await
+        self.write_executions(account_id, &records).await?;
+        Ok(true)
     }
-}
-
-fn owns_live_reservation(
-    reservation: &crate::storage::ExecutionReservation,
-    fence: &crate::storage::LeaseFence,
-    now: DateTime<Utc>,
-) -> bool {
-    reservation.is_owned_by(fence) && now < reservation.lease_expires_at
-}
-
-fn authorizes(
-    reservation: &crate::storage::ExecutionReservation,
-    fence: &crate::storage::LeaseFence,
-    proposal_id: &str,
-    attempt: u32,
-) -> bool {
-    reservation.fence.holder_id == fence.holder_id
-        && reservation.proposal_id == proposal_id
-        && reservation.attempt == attempt
 }
 
 fn resolvable<'a>(
@@ -2015,15 +1992,17 @@ fn resolvable<'a>(
     if record.outcome.is_some() {
         return Err(ResolveWrite::AlreadyResolved);
     }
-    if !authorizes(
-        &record.reservation,
+    if !record.reservation.authorizes(
         &resolution.fence,
         &resolution.proposal_id,
         resolution.attempt,
     ) {
         return Err(ResolveWrite::NotAuthorized);
     }
-    if !owns_live_reservation(&record.reservation, &resolution.fence, resolution.now) {
+    if !record
+        .reservation
+        .owns_live(&resolution.fence, resolution.now)
+    {
         return Err(ResolveWrite::StaleLease);
     }
     Ok(record)
@@ -2683,7 +2662,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, crate::storage::PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            crate::storage::PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             flag().await,
             "the queued successor keeps the account flagged"

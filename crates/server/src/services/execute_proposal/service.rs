@@ -278,7 +278,6 @@ pub async fn request_execution(
         nonce: proposal.nonce,
         base_commitment: proposal.prev_commitment,
         scheme: resolved.metadata.auth.scheme(),
-        input,
         fence,
         lease,
         elector,
@@ -286,7 +285,7 @@ pub async fn request_execution(
         permit,
     };
     let worker_state = state.clone();
-    tokio::spawn(async move { run_execution(&worker_state, job).await });
+    tokio::spawn(async move { run_execution(&worker_state, job, input).await });
 
     let record = state
         .storage

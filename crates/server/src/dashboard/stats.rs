@@ -684,11 +684,7 @@ pub async fn refresh_dashboard_stats_as(
     lease: Lease,
 ) -> Result<Arc<StatsSnapshot>, String> {
     let store = state.dashboard.stats_store();
-    let fence = LeaseFence {
-        lease_name: lease.name.clone(),
-        holder_id: lease.holder_id.clone(),
-        fence_token: lease.fence_token,
-    };
+    let fence = LeaseFence::from(&lease);
     if !store
         .mark_refresh_started(&fence, state.clock.now())
         .await
