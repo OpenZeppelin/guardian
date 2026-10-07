@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GuardianHttpClient, GuardianHttpError } from './http.js';
-import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse } from './types.js';
+import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse, SessionRequestSigner } from './types.js';
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -1630,5 +1630,444 @@ describe('GuardianHttpError', () => {
       expect(e.meta?.retryable).toBe(true);
       expect(mockFetch).toHaveBeenCalledTimes(3);
     });
+  });
+});
+
+describe('GuardianHttpClient sessions', () => {
+  const sessionPublicKey = '0x02' + 'c'.repeat(64);
+  const stateBody = {
+    account_id: '0xabc',
+    commitment: '0x' + '0'.repeat(64),
+    state_json: { data: 'AAAA' },
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    auth_scheme: 'falcon',
+  };
+  let client: GuardianHttpClient;
+  let session: SessionRequestSigner;
+
+  function sessionExpiringIn(seconds: number): SessionRequestSigner {
+    return {
+      publicKey: sessionPublicKey,
+      signerCommitment: mockSigner.commitment,
+      expiresAt: Math.floor(Date.now() / 1000) + seconds,
+      signRequest: vi.fn().mockReturnValue('0x' + 'd'.repeat(128)),
+      signLogout: vi.fn().mockReturnValue('0x' + 'e'.repeat(128)),
+      onEnded: vi.fn(),
+    };
+  }
+
+  function lastHeaders(): Record<string, string> {
+    return mockFetch.mock.calls.at(-1)![1].headers as Record<string, string>;
+  }
+
+  function rejectWith(code: string, status = 401): void {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      headers: new Headers(),
+      status,
+      statusText: 'Unauthorized',
+      text: async () => JSON.stringify({ code, message: code, meta: { retryable: false } }),
+    });
+  }
+
+  beforeEach(() => {
+    client = new GuardianHttpClient('http://localhost:3000');
+    client.setSigner(mockSigner);
+    session = sessionExpiringIn(3600);
+    mockFetch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('signs every session-eligible route with the session key', async () => {
+    client.setSession(session);
+    const accountId = '0xabc';
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ['getState', () => client.getState(accountId)],
+      ['getCanonicalNonce', () => client.getCanonicalNonce(accountId)],
+      ['getDelta', () => client.getDelta(accountId, 1)],
+      ['getDeltaSince', () => client.getDeltaSince(accountId, 1)],
+      ['getDeltaHistory', () => client.getDeltaHistory(accountId)],
+      ['getDeltaProposals', () => client.getDeltaProposals(accountId)],
+      ['getDeltaProposal', () => client.getDeltaProposal(accountId, '0x' + 'e'.repeat(64))],
+      [
+        'pushDeltaProposal',
+        () =>
+          client.pushDeltaProposal({
+            accountId,
+            nonce: 1,
+            deltaPayload: { txSummary: { data: 'AAAA' }, signatures: [] },
+          }),
+      ],
+      [
+        'signDeltaProposal',
+        () =>
+          client.signDeltaProposal({
+            accountId,
+            commitment: '0x' + 'e'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) },
+          }),
+      ],
+    ];
+
+    for (const [name, call] of calls) {
+      // Only the request headers matter; the empty body may fail to parse.
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      await call().catch(() => undefined);
+      expect(lastHeaders()['x-auth-format'], name).toBe('session');
+      expect(lastHeaders()['x-pubkey'], name).toBe(sessionPublicKey);
+    }
+    expect(session.signRequest).toHaveBeenCalledTimes(calls.length);
+    expect(mockSigner.signRequest).not.toHaveBeenCalled();
+  });
+
+  it('does not use a session without a wallet signer', () => {
+    const unsigned = new GuardianHttpClient('http://localhost:3000');
+    unsigned.setSession(session);
+    expect(unsigned.getSession()).toBeNull();
+  });
+
+  it('re-signs a replay-rejected request with the session', async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      headers: new Headers(),
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () =>
+        JSON.stringify({
+          code: 'authentication_replay',
+          message: 'replay',
+          meta: { retryable: true },
+        }),
+    });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState('0xabc');
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [first, second] = mockFetch.mock.calls.map(([, init]) => init.headers);
+    expect(second['x-auth-format']).toBe('session');
+    expect(second['x-timestamp']).not.toBe(first['x-timestamp']);
+    expect(session.signRequest).toHaveBeenCalledTimes(2);
+    expect(client.getSession()).toBe(session);
+  });
+
+  it('does not use a session granted by another wallet', async () => {
+    client.setSession({ ...session, signerCommitment: '0x' + '9'.repeat(64) });
+    expect(client.getSession()).toBeNull();
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState('0xabc');
+
+    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(session.signRequest).not.toHaveBeenCalled();
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it('signs per-account requests with the session key', async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState('0xabc');
+
+    expect(lastHeaders()).toMatchObject({
+      'x-pubkey': sessionPublicKey,
+      'x-signature': '0x' + 'd'.repeat(128),
+      'x-auth-format': 'session',
+    });
+    expect(session.signRequest).toHaveBeenCalledOnce();
+    expect(mockSigner.signRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps configure on the wallet while a session is set', async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x01' }),
+    });
+
+    await client.configure({
+      accountId: '0xabc',
+      auth: { MidenFalconRpo: { cosigner_commitments: [] } },
+      initialState: { data: 'AAAA', accountId: '0xabc' },
+    });
+
+    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+    expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps pushDelta and abandonCandidate on the wallet while a session is set', async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        account_id: '0xabc',
+        nonce: 1,
+        new_commitment: '0x' + 'd'.repeat(64),
+        ack_sig: '0x01',
+        ack_pubkey: '0x02',
+        ack_scheme: 'falcon',
+      }),
+    });
+
+    await client.pushDelta({
+      accountId: '0xabc',
+      nonce: 1,
+      prevCommitment: '0x' + 'b'.repeat(64),
+      deltaPayload: { data: 'base64summary' },
+      status: {
+        status: 'pending' as const,
+        timestamp: '2024-01-01T00:00:00Z',
+        proposerId: '0x' + 'c'.repeat(64),
+        cosignerSigs: [],
+      },
+    });
+    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        account_id: '0xabc',
+        nonce: 1,
+        state: 'abandon_requested',
+        abandon_requested_at: '2024-01-01T00:00:00Z',
+      }),
+    });
+    await client.abandonCandidate('0xabc', 1);
+    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+    expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it('revokes every session with a wallet signature and stops using the session', async () => {
+    const wallet: Signer = {
+      ...mockSigner,
+      signSessionRevokeAll: vi.fn().mockReturnValue('0x' + '7'.repeat(128)),
+    };
+    client.setSigner(wallet);
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ revoked: 2 }) });
+
+    await expect(client.revokeAllSessions()).resolves.toBe(2);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://localhost:3000/session/revoke-all');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({ signer_commitment: mockSigner.commitment });
+    expect(init.headers).toMatchObject({
+      'x-pubkey': mockSigner.publicKey,
+      'x-signature': '0x' + '7'.repeat(128),
+    });
+    expect(init.headers['x-auth-format']).toBeUndefined();
+    const timestamp = Number(init.headers['x-timestamp']);
+    expect(wallet.signSessionRevokeAll).toHaveBeenCalledWith(mockSigner.commitment, timestamp);
+    expect(client.getSession()).toBeNull();
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith('logout');
+    expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps the session when revoke-all fails', async () => {
+    client.setSigner({
+      ...mockSigner,
+      signSessionRevokeAll: vi.fn().mockReturnValue('0x' + '7'.repeat(128)),
+    });
+    client.setSession(session);
+    mockFetch.mockRejectedValueOnce(new TypeError('network down'));
+
+    await expect(client.revokeAllSessions()).rejects.toThrow();
+
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it('drops a session the server ended and lets the wallet sign the next request', async () => {
+    const reasons = {
+      session_revoked: 'revoked',
+      session_expired: 'expired',
+      authentication_failed: 'rejected',
+    } as const;
+    for (const [code, reason] of Object.entries(reasons)) {
+      const current = sessionExpiringIn(3600);
+      client.setSession(current);
+      rejectWith(code);
+
+      await expect(client.getState('0xabc')).rejects.toMatchObject({ code });
+      expect(client.getSession()).toBeNull();
+      expect(current.onEnded).toHaveBeenCalledExactlyOnceWith(reason);
+
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+      await client.getState('0xabc');
+      expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    }
+  });
+
+  it('keeps the session on errors that do not end it', async () => {
+    client.setSession(session);
+    // `authorization_failed`: the signer does not cosign this account, but the
+    // session still works for its other accounts.
+    for (const code of ['wallet_signature_required', 'authorization_failed']) {
+      rejectWith(code, 403);
+
+      await expect(client.getState('0xabc')).rejects.toMatchObject({ code });
+
+      expect(client.getSession()).toBe(session);
+    }
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it('a late rejection of an old session ends it but leaves the new one in use', async () => {
+    client.setSession(session);
+    let respond!: (value: unknown) => void;
+    mockFetch.mockReturnValueOnce(new Promise((resolve) => (respond = resolve)));
+    const pending = client.getState('0xabc');
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledOnce());
+
+    const next = sessionExpiringIn(3600);
+    client.setSession(next);
+    respond({
+      ok: false,
+      headers: new Headers(),
+      status: 401,
+      statusText: 'Unauthorized',
+      text: async () =>
+        JSON.stringify({ code: 'session_revoked', message: 'ended', meta: { retryable: false } }),
+    });
+    await expect(pending).rejects.toMatchObject({ code: 'session_revoked' });
+
+    expect(client.getSession()).toBe(next);
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith('revoked');
+    expect(next.onEnded).not.toHaveBeenCalled();
+  });
+
+  it('tells a session it ended only once', async () => {
+    client.setSession(session);
+    rejectWith('session_revoked');
+    rejectWith('session_revoked');
+
+    const results = await Promise.allSettled([client.getState('0xabc'), client.getState('0xabc')]);
+
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith('revoked');
+  });
+
+  it('falls back to the wallet when the session is about to expire', async () => {
+    const expiring = sessionExpiringIn(10);
+    client.setSession(expiring);
+    expect(client.getSession()).toBeNull();
+    expect(expiring.onEnded).toHaveBeenCalledExactlyOnceWith('expired');
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState('0xabc');
+
+    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+  });
+
+  it('posts a session grant in the server shape', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ signer_commitment: '0x11', expires_at: '2026-10-06T18:00:00+00:00' }),
+    });
+
+    const created = await client.createSession({
+      scheme: 'ecdsa',
+      authFormat: 'eip712',
+      publicKey: '0x03' + 'f'.repeat(64),
+      signature: '0x' + '9'.repeat(130),
+      grant: {
+        signerCommitment: '0x11',
+        sessionPublicKey,
+        origin: 'https://app.example',
+        issuedAt: 1791280800,
+        expiresAt: 1791309600,
+        guardianCommitment: '0x22',
+        network: 'devnet',
+      },
+    });
+
+    expect(created).toEqual({ signerCommitment: '0x11', expiresAt: '2026-10-06T18:00:00+00:00' });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://localhost:3000/session');
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body)).toEqual({
+      scheme: 'ecdsa',
+      auth_format: 'eip712',
+      public_key: '0x03' + 'f'.repeat(64),
+      signature: '0x' + '9'.repeat(130),
+      grant: {
+        signer_commitment: '0x11',
+        session_public_key: sessionPublicKey,
+        origin: 'https://app.example',
+        issued_at: 1791280800,
+        expires_at: 1791309600,
+        guardian_commitment: '0x22',
+        network: 'devnet',
+      },
+    });
+  });
+
+  it('revokes with a session-key-signed logout and stops using the session', async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ revoked: true }) });
+
+    await expect(client.revokeSession()).resolves.toBe(true);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe('http://localhost:3000/session/logout');
+    expect(init.headers).toMatchObject({
+      'x-pubkey': sessionPublicKey,
+      'x-signature': '0x' + 'e'.repeat(128),
+    });
+    const timestamp = Number(init.headers['x-timestamp']);
+    expect(session.signLogout).toHaveBeenCalledWith(timestamp);
+    expect(client.getSession()).toBeNull();
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith('logout');
+    await expect(client.revokeSession()).resolves.toBe(false);
+  });
+
+  it('keeps the session when logout fails', async () => {
+    client.setSession(session);
+    rejectWith('storage_error', 500);
+
+    await expect(client.revokeSession()).rejects.toMatchObject({ code: 'storage_error' });
+
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it('logs out a given session without touching the current one', async () => {
+    const old = sessionExpiringIn(3600);
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ revoked: true }) });
+
+    await expect(client.revokeSession(old)).resolves.toBe(true);
+
+    expect(old.signLogout).toHaveBeenCalledOnce();
+    expect(client.getSession()).toBe(session);
+  });
+
+  it('maps advertised session parameters from GET /status', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        status: 'ok',
+        version: '0.18.0',
+        git_commit: 'abc',
+        environment: 'devnet',
+        started_at: '2026-10-06T00:00:00Z',
+        uptime_seconds: 1,
+        sessions: { max_ttl_seconds: 28800 },
+      }),
+    });
+
+    const status = await client.getStatus();
+
+    expect(status.sessions).toEqual({ maxTtlSeconds: 28800 });
   });
 });

@@ -56,7 +56,16 @@ pub fn derive_pubkey_from_lookup_signature(
     key_commitment: Word,
 ) -> Result<LookupPublicKey, String> {
     let digest = LookupAuthMessage::new(timestamp_ms, key_commitment).to_word();
+    derive_pubkey_from_raw_signature(signature_hex, digest)
+}
 
+/// Derive the public key from a raw (Falcon or ECDSA) signature over `digest`
+/// and verify it in one step; see [`derive_pubkey_from_lookup_signature`] for
+/// the parsing rules. Shared by the lookup and session revoke-all paths.
+pub fn derive_pubkey_from_raw_signature(
+    signature_hex: &str,
+    digest: Word,
+) -> Result<LookupPublicKey, String> {
     if let Ok(signature) = FalconSignature::from_hex(signature_hex) {
         let public_key = signature.public_key().clone();
         if public_key.verify(digest, &signature) {
@@ -88,25 +97,74 @@ pub fn verify_eip712_lookup_signature(
     timestamp_ms: i64,
     key_commitment: Word,
 ) -> Result<LookupPublicKey, String> {
+    let lookup_hash = LookupAuthMessage::new(timestamp_ms, key_commitment).to_word();
+    verify_eip712_signature(
+        "lookup",
+        signature_hex,
+        public_key_hex,
+        lookup_digest(lookup_hash),
+    )
+}
+
+/// Verify an ECDSA signature over an EIP-712 `digest` against the supplied
+/// public key. Shared by the lookup and session revoke-all paths; `label`
+/// names the message in errors.
+pub fn verify_eip712_signature(
+    label: &str,
+    signature_hex: &str,
+    public_key_hex: &str,
+    digest: [u8; 32],
+) -> Result<LookupPublicKey, String> {
+    let label = format!("EIP-712 {label}");
+    let signature = parse_ecdsa_signature(&label, signature_hex)?;
+    let public_key = parse_ecdsa_public_key(&label, public_key_hex)?;
+    if !public_key.verify_prehash(digest, &signature) {
+        return Err(format!("{label} signature verification failed"));
+    }
+    Ok(LookupPublicKey::Ecdsa(public_key))
+}
+
+/// Whether `signature_hex` has the length of a raw ECDSA signature.
+pub fn is_ecdsa_signature_hex(signature_hex: &str) -> bool {
+    hex::decode(signature_hex.trim_start_matches("0x"))
+        .is_ok_and(|bytes| bytes.len() == ECDSA_SIGNATURE_LEN)
+}
+
+/// Verify a raw ECDSA signature over `digest` against the supplied public
+/// key: the fallback for wallets whose signature does not recover to their
+/// key (another recovery-byte encoding), as request auth already allows.
+pub fn verify_raw_ecdsa_signature(
+    label: &str,
+    signature_hex: &str,
+    public_key_hex: &str,
+    digest: Word,
+) -> Result<LookupPublicKey, String> {
+    let signature = parse_ecdsa_signature(label, signature_hex)?;
+    let public_key = parse_ecdsa_public_key(label, public_key_hex)?;
+    if !public_key.verify(digest, &signature) {
+        return Err(format!("{label} signature verification failed"));
+    }
+    Ok(LookupPublicKey::Ecdsa(public_key))
+}
+
+fn parse_ecdsa_signature(label: &str, signature_hex: &str) -> Result<EcdsaSignature, String> {
     let signature_bytes = hex::decode(signature_hex.trim_start_matches("0x"))
-        .map_err(|e| format!("invalid EIP-712 lookup signature hex: {e}"))?;
+        .map_err(|e| format!("invalid {label} signature hex: {e}"))?;
     if signature_bytes.len() != ECDSA_SIGNATURE_LEN {
         return Err(format!(
-            "invalid EIP-712 lookup signature: expected {ECDSA_SIGNATURE_LEN} bytes, got {}",
+            "invalid {label} signature: expected {ECDSA_SIGNATURE_LEN} bytes, got {}",
             signature_bytes.len()
         ));
     }
-    let signature = EcdsaSignature::read_from_bytes(&signature_bytes)
-        .map_err(|e| format!("invalid EIP-712 lookup signature: {e}"))?;
+    EcdsaSignature::read_from_bytes(&signature_bytes)
+        .map_err(|e| format!("invalid {label} signature: {e}"))
+}
+
+fn parse_ecdsa_public_key(label: &str, public_key_hex: &str) -> Result<EcdsaPublicKey, String> {
     let public_key_bytes = hex::decode(public_key_hex.trim_start_matches("0x"))
-        .map_err(|e| format!("invalid EIP-712 lookup public key hex: {e}"))?;
-    let public_key = EcdsaPublicKey::read_from_bytes(&public_key_bytes)
-        .map_err(|e| format!("invalid EIP-712 lookup public key: {e}"))?;
-    let lookup_hash = LookupAuthMessage::new(timestamp_ms, key_commitment).to_word();
-    if !public_key.verify_prehash(lookup_digest(lookup_hash), &signature) {
-        return Err("EIP-712 lookup signature verification failed".to_string());
-    }
-    Ok(LookupPublicKey::Ecdsa(public_key))
+        .map_err(|e| format!("invalid {label} public key hex: {e}"))?;
+    EcdsaPublicKey::read_from_bytes(&public_key_bytes)
+        .map_err(|e| format!("invalid {label} public key: {e}"))
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]

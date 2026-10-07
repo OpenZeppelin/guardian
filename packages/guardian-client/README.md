@@ -47,6 +47,45 @@ const signer: Signer = {
 client.setSigner(signer);
 ```
 
+### Sessions
+
+When the Guardian advertises `sessions` on `getStatus()`, a wallet can sign one
+session grant and let a delegated signer (a P-256 key) sign the
+session-eligible requests. `@openzeppelin/miden-multisig-client` builds and
+signs the grant (`startGuardianSession`); this client only routes requests:
+
+```typescript
+client.setSession(session); // a SessionRequestSigner
+await client.getState(accountId); // signed by the delegated signer
+
+await client.revokeSession(); // session-key-signed logout; back to the wallet
+await client.revokeAllSessions(); // wallet-signed: ends every session of the signer
+```
+
+The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getDelta`,
+`getDeltaSince`, `getDeltaHistory`), proposal reads and proposal create/sign
+(`getDeltaProposals`, `getDeltaProposal`, `pushDeltaProposal`,
+`signDeltaProposal`). Every other route uses the wallet signer, including
+`configure`, `pushDelta`, `abandonCandidate`, account lookup and
+`revokeAllSessions`; the server rejects session credentials there with
+`wallet_signature_required`.
+
+A session is used only while the wallet that granted it
+(`session.signerCommitment`) is the client's signer. It is dropped 30 seconds
+before it expires (`expired`), or as soon as Guardian answers
+`session_expired`, `session_revoked` or `authentication_failed` to a request
+it signed (`expired`, `revoked`, `rejected`); requests then fall back to the
+wallet and `session.onEnded(reason)` is called once, so the app can start a
+new session. `authorization_failed` (the wallet does not cosign that account)
+keeps the session. Logout and revoke-all drop the session only after Guardian
+confirms, with the reason `logout`: the app ended it itself.
+
+Revoke-all ends sessions already registered with Guardian. A page that got a
+grant signed can still register it for up to about 10 minutes afterwards, and
+a revoking device whose clock runs behind can miss sessions started just
+before it. When a session key may be compromised, run `revokeAllSessions`
+again 10 minutes later.
+
 ### Configure an Account
 
 ```typescript

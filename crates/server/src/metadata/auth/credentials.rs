@@ -4,18 +4,24 @@ use guardian_shared::auth_request_payload::AuthRequestPayload;
 
 /// Maximum allowed clock skew in milliseconds between client and server timestamps
 pub const MAX_TIMESTAMP_SKEW_MS: i64 = 300_000; // 5 minutes in milliseconds
+/// [`MAX_TIMESTAMP_SKEW_MS`] in seconds, for values carried in Unix seconds.
+pub const MAX_TIMESTAMP_SKEW_SECS: u64 = MAX_TIMESTAMP_SKEW_MS as u64 / 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestAuthFormat {
     Raw,
     Eip712,
+    /// Signed by a P-256 session key registered through `POST /session`;
+    /// `x-pubkey` carries the session public key.
+    Session,
 }
 
 impl RequestAuthFormat {
-    fn parse(value: Option<&str>) -> Result<Self, String> {
+    pub(crate) fn parse(value: Option<&str>) -> Result<Self, String> {
         match value {
             None | Some("raw") => Ok(Self::Raw),
             Some("eip712") => Ok(Self::Eip712),
+            Some("session") => Ok(Self::Session),
             Some(other) => Err(format!("Unsupported x-auth-format: {other}")),
         }
     }

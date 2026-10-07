@@ -1,9 +1,10 @@
-import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
+import type { RequestAuthPayload, SessionGrantFields } from '@openzeppelin/guardian-client';
 import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
 import { bytesToHex, normalizeHexWord } from '../utils/encoding.js';
 import { lookupAuthDigest } from '../lookupAuth.js';
+import { sessionGrantDigest, sessionRevokeAllDigest } from '../session/grant.js';
 import { tryComputeEcdsaCommitmentHex } from '../utils/signature.js';
 import { wordToBytes } from '../utils/word.js';
 
@@ -128,6 +129,14 @@ export class MidenWalletSigner implements Signer {
     return candidate;
   }
 
+  /**
+   * The delegate `localAuthSigner` signs request auth, session grants and
+   * revoke-all, so Guardian must read its signatures in its format.
+   */
+  get requestAuthFormat(): 'eip712' | undefined {
+    return this.localAuthSigner?.requestAuthFormat;
+  }
+
   async signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> {
     if (this.localAuthSigner) {
       return this.localAuthSigner.signAccountIdWithTimestamp(accountId, timestamp);
@@ -162,6 +171,25 @@ export class MidenWalletSigner implements Signer {
     }
     const digest = lookupAuthDigest(timestampMs, keyCommitmentHex);
     return this.signWord(digest);
+  }
+
+  /**
+   * Sign a session grant. Follows the same signer as request
+   * authentication, so the session acts for the key Guardian already knows.
+   */
+  async signSessionGrant(grant: SessionGrantFields): Promise<string> {
+    if (this.localAuthSigner?.signSessionGrant) {
+      return this.localAuthSigner.signSessionGrant(grant);
+    }
+    return this.signWord(sessionGrantDigest(grant));
+  }
+
+  /** Sign a session revoke-all with the same signer as request authentication. */
+  async signSessionRevokeAll(signerCommitment: string, timestampMs: number): Promise<string> {
+    if (this.localAuthSigner?.signSessionRevokeAll) {
+      return this.localAuthSigner.signSessionRevokeAll(signerCommitment, timestampMs);
+    }
+    return this.signWord(sessionRevokeAllDigest(signerCommitment, timestampMs));
   }
 
   private async signWord(word: { toFelts: () => Array<{ asInt: () => bigint }> }): Promise<string> {

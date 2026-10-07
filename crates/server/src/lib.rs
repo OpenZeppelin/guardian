@@ -29,6 +29,7 @@ pub mod network;
 pub mod openapi;
 pub(crate) mod secret;
 pub mod services;
+pub mod session;
 pub mod state_object;
 pub mod storage;
 mod utils;

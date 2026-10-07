@@ -1,5 +1,5 @@
 use crate::error::{GuardianError, Result};
-use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS};
+use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat};
 use crate::metadata::{AccountMetadata, LEGACY_ACCOUNT_AUTH_FLOOR};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
@@ -11,6 +11,7 @@ mod abandon_candidate;
 pub mod account_status;
 pub mod candidate_chain;
 mod configure_account;
+mod create_session;
 mod dashboard_account_delta_detail;
 mod dashboard_account_deltas;
 mod dashboard_account_proposals;
@@ -35,6 +36,8 @@ mod proposal_signature;
 mod push_delta;
 mod push_delta_proposal;
 pub mod release_on_switch;
+mod revoke_all_sessions;
+mod revoke_session;
 mod sign_delta_proposal;
 mod status;
 pub mod unpause_account;
@@ -47,6 +50,7 @@ pub use crate::jobs::canonicalization::{
     process_canonicalizations_now, start_canonicalization_worker,
 };
 pub use configure_account::{ConfigureAccountParams, ConfigureAccountResult, configure_account};
+pub use create_session::{CreateSessionParams, CreateSessionResult, create_session};
 pub use dashboard_account_delta_detail::{
     DashboardDeltaDetail, DetailIncludeFlags, get_account_delta_detail,
 };
@@ -99,10 +103,14 @@ pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use push_delta_proposal::{
     PushDeltaProposalParams, PushDeltaProposalResult, push_delta_proposal,
 };
+pub use revoke_all_sessions::{
+    RevokeAllSessionsParams, RevokeAllSessionsResult, revoke_all_sessions,
+};
+pub use revoke_session::{RevokeSessionParams, RevokeSessionResult, revoke_session};
 pub use sign_delta_proposal::{
     SignDeltaProposalParams, SignDeltaProposalResult, sign_delta_proposal,
 };
-pub use status::{StatusResponse, build_status};
+pub use status::{SessionsStatus, StatusResponse, build_status};
 
 #[derive(Clone)]
 pub struct ResolvedAccount {
@@ -121,15 +129,41 @@ impl std::fmt::Debug for ResolvedAccount {
     }
 }
 
+/// Resolves an account and authenticates a request on a wallet-only route.
+///
+/// Session (delegated-signer) credentials are denied by default: a route
+/// accepts them only by calling [`resolve_account_allowing_session`]. Routes
+/// added later, and gRPC methods without an HTTP twin, are wallet-only until
+/// they opt in.
+pub async fn resolve_account(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<ResolvedAccount> {
+    resolve_account_with(state, account_id, creds, false).await
+}
+
+/// Resolves an account and authenticates a request on a session-eligible
+/// route: reads, proposal list/get and proposal create/sign (FR-008 of
+/// issue #219). The wallet may always sign these too.
+pub async fn resolve_account_allowing_session(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<ResolvedAccount> {
+    resolve_account_with(state, account_id, creds, true).await
+}
+
 #[tracing::instrument(
     level = "debug",
     skip(state, creds),
     fields(account_id = %account_id)
 )]
-pub async fn resolve_account(
+async fn resolve_account_with(
     state: &AppState,
     account_id: &str,
     creds: &Credentials,
+    session_eligible: bool,
 ) -> Result<ResolvedAccount> {
     let metadata = state
         .metadata
@@ -156,16 +190,26 @@ pub async fn resolve_account(
         });
     }
 
-    let signer_commitment = metadata.auth.verify(account_id, creds).map_err(|e| {
-        tracing::warn!(
-            account_id = %account_id,
-            error = %e,
-            "Authentication failed in resolve_account"
-        );
-        GuardianError::AuthenticationFailed(e)
-    })?;
+    let (signer_commitment, replay_floor) = if creds.auth_format() == RequestAuthFormat::Session {
+        let (signer_commitment, session_public_key) =
+            verify_session_request(state, account_id, &metadata, creds, session_eligible).await?;
+        (
+            signer_commitment,
+            crate::session::replay_floor_key(&session_public_key),
+        )
+    } else {
+        let signer_commitment = metadata.auth.verify(account_id, creds).map_err(|e| {
+            tracing::warn!(
+                account_id = %account_id,
+                error = %e,
+                "Authentication failed in resolve_account"
+            );
+            GuardianError::AuthenticationFailed(e)
+        })?;
+        (signer_commitment.clone(), signer_commitment)
+    };
 
-    consume_auth_timestamp(state, account_id, &signer_commitment, request_timestamp).await?;
+    consume_auth_timestamp(state, account_id, &replay_floor, request_timestamp).await?;
 
     let storage = state.storage.clone();
 
@@ -174,6 +218,145 @@ pub async fn resolve_account(
         storage,
         signer_commitment,
     })
+}
+
+/// Authenticates delegated-signer credentials on a wallet-only route that
+/// does not go through [`resolve_account`] (`/configure`, `/state/lookup`,
+/// `/session/revoke-all`) and returns the error to reject them with:
+/// `wallet_signature_required` once the delegated signature over `message`
+/// verifies and the session is live, otherwise the authentication error.
+/// Never returns success.
+pub(crate) async fn reject_session_credentials(
+    state: &AppState,
+    creds: &Credentials,
+    message: miden_protocol::Word,
+) -> GuardianError {
+    match authenticate_delegated_signer(state, creds, message).await {
+        Ok(_) => GuardianError::WalletSignatureRequired,
+        Err(error) => error,
+    }
+}
+
+/// Verifies a delegated signer's signature over `message` and returns its
+/// session public key and live session. The grant's origin is shown to the
+/// user by the wallet and is not checked against the request: a page that
+/// holds the key can send its requests from anywhere.
+async fn authenticate_delegated_signer(
+    state: &AppState,
+    creds: &Credentials,
+    message: miden_protocol::Word,
+) -> Result<(
+    [u8; guardian_shared::session_grant::SESSION_PUBLIC_KEY_LEN],
+    crate::session::MidenSession,
+)> {
+    let (pubkey_hex, signature_hex, _) = creds.as_signature().ok_or_else(|| {
+        GuardianError::AuthenticationFailed("Session requests require signature credentials".into())
+    })?;
+    // Signature first: a signature that does not verify never reaches the
+    // session store.
+    let session_public_key = crate::session::credential_public_key(pubkey_hex)?;
+    crate::session::verify_signature(&session_public_key, signature_hex, message)?;
+    let session = state
+        .miden_sessions
+        .find(&session_public_key, state.clock.now())
+        .await?;
+    Ok((session_public_key, session))
+}
+
+/// Authenticates a request signed by a delegated signer, in the order the
+/// spec fixes (FR-007): verifies the P-256 signature over the same
+/// `AuthRequestMessage` a wallet would sign, resolves the session to its
+/// grant, rejects a wallet-only route, re-checks that the grant still names
+/// this Guardian's ACK key and network, and that its signer is still a
+/// cosigner. Returns the signer commitment and the session public key, whose
+/// own replay floor the request advances.
+async fn verify_session_request(
+    state: &AppState,
+    account_id: &str,
+    metadata: &AccountMetadata,
+    creds: &Credentials,
+    session_eligible: bool,
+) -> Result<(
+    String,
+    [u8; guardian_shared::session_grant::SESSION_PUBLIC_KEY_LEN],
+)> {
+    let message = auth_request_word(account_id, creds)?;
+    let (session_public_key, session) =
+        authenticate_delegated_signer(state, creds, message).await?;
+    // Only after the delegated signature verified and the session resolved,
+    // so an unauthenticated caller cannot probe which routes accept
+    // sessions, and an ended session is reported as ended.
+    if !session_eligible {
+        return Err(GuardianError::WalletSignatureRequired);
+    }
+    // Key rotation or a network change ends every session granted before it.
+    if !session
+        .guardian_commitment
+        .eq_ignore_ascii_case(&state.ack.commitment(&metadata.auth.scheme()))
+        || session.network != state.dashboard.environment()
+    {
+        tracing::warn!(
+            account_id = %account_id,
+            signer_commitment = %session.signer_commitment,
+            "Session grant names another Guardian key or network"
+        );
+        return Err(GuardianError::AuthenticationFailed(
+            "Session grant names another Guardian key or network".to_string(),
+        ));
+    }
+    let signer_commitment = session.signer_commitment;
+    if !metadata
+        .auth
+        .cosigner_commitments()
+        .contains(&signer_commitment)
+    {
+        tracing::warn!(
+            account_id = %account_id,
+            signer_commitment = %signer_commitment,
+            "Session signer is not an authorized cosigner"
+        );
+        // The session itself is valid (and stays usable for the signer's
+        // other accounts): this is an authorization failure, which clients
+        // do not treat as the session ending.
+        return Err(GuardianError::AuthorizationFailed(
+            "Session signer is not an authorized cosigner of this account".to_string(),
+        ));
+    }
+    Ok((signer_commitment, session_public_key))
+}
+
+/// The `AuthRequestMessage` word a request's credentials sign.
+pub(crate) fn auth_request_word(
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<miden_protocol::Word> {
+    guardian_shared::auth_request_message::AuthRequestMessage::from_account_id_hex(
+        account_id,
+        creds.timestamp(),
+        creds.request_payload().clone(),
+    )
+    .map(|message| message.to_word())
+    .map_err(GuardianError::AuthenticationFailed)
+}
+
+/// Rejects a session-route request timestamp (ms) outside the allowed clock
+/// skew window. Account requests use [`validate_request_timestamp`].
+pub(crate) fn validate_timestamp_skew(state: &AppState, timestamp_ms: i64) -> Result<()> {
+    let server_now_ms = state.clock.now().timestamp_millis();
+    let time_diff_ms = server_now_ms.abs_diff(timestamp_ms);
+    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS as u64 {
+        tracing::warn!(
+            request_timestamp = %timestamp_ms,
+            server_now_ms = %server_now_ms,
+            time_diff_ms = %time_diff_ms,
+            max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
+            "Request timestamp outside allowed skew window"
+        );
+        return Err(GuardianError::AuthenticationFailed(format!(
+            "Request timestamp outside allowed window: {time_diff_ms}ms drift (max {MAX_TIMESTAMP_SKEW_MS}ms)"
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_request_timestamp(
@@ -201,6 +384,9 @@ pub(crate) fn validate_request_timestamp(
     Ok(request_timestamp)
 }
 
+/// Advances the replay floor of (`account_id`, `signer_commitment`). For a
+/// session request `signer_commitment` is the delegated key's floor key
+/// (`session-…`), so a session never advances its wallet's floor.
 pub(crate) async fn consume_auth_timestamp(
     state: &AppState,
     account_id: &str,
@@ -466,6 +652,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(network),

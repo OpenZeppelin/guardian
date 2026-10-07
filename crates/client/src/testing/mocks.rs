@@ -1,13 +1,16 @@
 use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
-    ConfigureResponse, DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
+    ConfigureResponse, CreateSessionRequest, CreateSessionResponse,
+    DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
     GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
     GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
     GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
     GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
     GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
-    PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest, SignDeltaProposalResponse,
+    PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest, RevokeAllSessionsResponse,
+    RevokeSessionRequest, RevokeSessionResponse, SignDeltaProposalRequest,
+    SignDeltaProposalResponse,
 };
 use guardian_shared::FromJson;
 use miden_protocol::account::Account;
@@ -15,6 +18,9 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
 use tonic::transport::Server;
 use tonic::{Request, Response, Status};
+
+/// `(request, x-pubkey, x-signature, x-timestamp)` of a RevokeAllSessions call.
+pub type RevokeAllSessionsCall = (RevokeAllSessionsRequest, String, String, i64);
 
 /// Post-start control surface for a [`MockGuardianService`]: the service is
 /// moved into `start_mock_server`, so tests clone a handle first to observe
@@ -108,9 +114,45 @@ pub struct MockGuardianService {
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
         Arc<StdMutex<Option<Result<AbandonDeltaCandidateResponse, Status>>>>,
+    create_session_requests: Arc<StdMutex<Vec<CreateSessionRequest>>>,
+    /// (x-pubkey, x-signature, x-timestamp) of each RevokeSession call.
+    revoke_session_auth: Arc<StdMutex<Vec<(String, String, i64)>>>,
+    /// Each RevokeAllSessions call.
+    revoke_all_sessions_calls: Arc<StdMutex<Vec<RevokeAllSessionsCall>>>,
+    /// x-auth-format of each PushDelta and AbandonDeltaCandidate call.
+    wallet_route_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
+    /// x-auth-format and x-pubkey of each GetState call.
+    get_state_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
+    /// x-auth-format of each Configure call.
+    configure_auth_formats: Arc<StdMutex<Vec<String>>>,
 }
 
 impl MockGuardianService {
+    pub fn create_session_requests_handle(&self) -> Arc<StdMutex<Vec<CreateSessionRequest>>> {
+        self.create_session_requests.clone()
+    }
+
+    pub fn revoke_session_auth_handle(&self) -> Arc<StdMutex<Vec<(String, String, i64)>>> {
+        self.revoke_session_auth.clone()
+    }
+
+    pub fn revoke_all_sessions_calls_handle(&self) -> Arc<StdMutex<Vec<RevokeAllSessionsCall>>> {
+        self.revoke_all_sessions_calls.clone()
+    }
+
+    /// `(rpc, x-auth-format)` of each PushDelta and AbandonDeltaCandidate call.
+    pub fn wallet_route_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
+        self.wallet_route_auth_formats.clone()
+    }
+
+    pub fn get_state_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
+        self.get_state_auth_formats.clone()
+    }
+
+    pub fn configure_auth_formats_handle(&self) -> Arc<StdMutex<Vec<String>>> {
+        self.configure_auth_formats.clone()
+    }
+
     pub fn with_get_pubkey(self, response: Result<String, Status>) -> Self {
         *self.get_pubkey_response.lock().unwrap() = Some(response);
         self
@@ -280,8 +322,18 @@ impl Guardian for MockGuardianService {
 
     async fn configure(
         &self,
-        _request: Request<ConfigureRequest>,
+        request: Request<ConfigureRequest>,
     ) -> Result<Response<ConfigureResponse>, Status> {
+        let auth_format = request
+            .metadata()
+            .get("x-auth-format")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        self.configure_auth_formats
+            .lock()
+            .unwrap()
+            .push(auth_format);
         self.record_call("configure");
         let response = self
             .configure_response
@@ -399,6 +451,10 @@ impl Guardian for MockGuardianService {
         &self,
         request: Request<AbandonDeltaCandidateRequest>,
     ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
+        self.wallet_route_auth_formats.lock().unwrap().push((
+            "abandon_delta_candidate".to_string(),
+            metadata_str(&request, "x-auth-format"),
+        ));
         let data = request.into_inner();
         let response = self
             .abandon_delta_candidate_response
@@ -422,9 +478,13 @@ impl Guardian for MockGuardianService {
 
     async fn push_delta(
         &self,
-        _request: Request<PushDeltaRequest>,
+        request: Request<PushDeltaRequest>,
     ) -> Result<Response<PushDeltaResponse>, Status> {
         self.record_call("push_delta");
+        self.wallet_route_auth_formats.lock().unwrap().push((
+            "push_delta".to_string(),
+            metadata_str(&request, "x-auth-format"),
+        ));
         let response = self
             .push_delta_response
             .lock()
@@ -567,6 +627,10 @@ impl Guardian for MockGuardianService {
             .lock()
             .unwrap()
             .push((timestamp, signature));
+        self.get_state_auth_formats.lock().unwrap().push((
+            metadata_str(&request, "x-auth-format"),
+            metadata_str(&request, "x-pubkey"),
+        ));
 
         self.record_call("get_state");
         let mut responses = self.get_state_responses.lock().unwrap();
@@ -598,6 +662,61 @@ impl Guardian for MockGuardianService {
 
         response.map(Response::new)
     }
+
+    async fn create_session(
+        &self,
+        request: Request<CreateSessionRequest>,
+    ) -> Result<Response<CreateSessionResponse>, Status> {
+        let request = request.into_inner();
+        let signer_commitment = request
+            .grant
+            .as_ref()
+            .map(|grant| grant.signer_commitment.clone())
+            .unwrap_or_default();
+        self.create_session_requests.lock().unwrap().push(request);
+        Ok(Response::new(CreateSessionResponse {
+            signer_commitment,
+            expires_at: String::new(),
+        }))
+    }
+
+    async fn revoke_session(
+        &self,
+        request: Request<RevokeSessionRequest>,
+    ) -> Result<Response<RevokeSessionResponse>, Status> {
+        self.revoke_session_auth.lock().unwrap().push((
+            metadata_str(&request, "x-pubkey"),
+            metadata_str(&request, "x-signature"),
+            metadata_str(&request, "x-timestamp")
+                .parse()
+                .unwrap_or_default(),
+        ));
+        Ok(Response::new(RevokeSessionResponse { revoked: true }))
+    }
+
+    async fn revoke_all_sessions(
+        &self,
+        request: Request<RevokeAllSessionsRequest>,
+    ) -> Result<Response<RevokeAllSessionsResponse>, Status> {
+        self.revoke_all_sessions_calls.lock().unwrap().push((
+            request.get_ref().clone(),
+            metadata_str(&request, "x-pubkey"),
+            metadata_str(&request, "x-signature"),
+            metadata_str(&request, "x-timestamp")
+                .parse()
+                .unwrap_or_default(),
+        ));
+        Ok(Response::new(RevokeAllSessionsResponse { revoked: 2 }))
+    }
+}
+
+fn metadata_str<T>(request: &Request<T>, name: &str) -> String {
+    request
+        .metadata()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub async fn start_mock_server(

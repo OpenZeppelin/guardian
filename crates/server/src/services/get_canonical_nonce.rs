@@ -12,7 +12,7 @@
 
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::{ResolvedAccount, resolve_account};
+use crate::services::{ResolvedAccount, resolve_account_allowing_session};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 
@@ -44,7 +44,8 @@ pub async fn get_canonical_nonce(
 ) -> Result<CanonicalNonceResponse> {
     tracing::debug!("Getting canonical nonce");
 
-    let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
+    let resolved =
+        resolve_account_allowing_session(state, &params.account_id, &params.credentials).await?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),

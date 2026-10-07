@@ -180,6 +180,47 @@ use guardian_client::auth;
 let auth_config = auth::miden_falcon_rpo_auth(vec![pubkey_hex]);
 ```
 
+### 4. Sign Requests With a Session (optional)
+
+When the Guardian accepts sessions (it advertises `sessions` on HTTP
+`GET /status`; an older Guardian answers `CreateSession` as unimplemented),
+the wallet can sign one session grant and let a delegated P-256 key sign the
+session-eligible requests (state and delta reads, proposal
+list/get/create/sign):
+
+```rust
+use std::time::Duration;
+
+use guardian_client::StartSessionOptions;
+
+let info = client
+    .start_session(StartSessionOptions {
+        network: "devnet".to_string(), // the Guardian's network: local, devnet or testnet
+        ttl: Duration::from_secs(3600), // more than 5 minutes, at most the Guardian's maximum (8 hours by default)
+    })
+    .await?;
+
+// ...get_state, get_delta_since, push_delta_proposal: signed by the session key.
+
+client.revoke_session().await?; // this session only, signed by the session key
+client.revoke_all_sessions().await?; // every session of the wallet, wallet-signed
+```
+
+Every other route, including `configure`, `push_delta`, `abandon` and account
+lookup, keeps using the wallet signer. The session is used only while the
+wallet that granted it is the client's signer. When Guardian answers a
+session-signed request with `session_expired`, `session_revoked` or
+`authentication_failed`, the client drops the session and the next request is
+wallet-signed; start a new session then (`session()` returns `None`).
+`authorization_failed` (the wallet does not cosign that account) leaves the
+session in place. The grant is signed by the configured signer, which this
+client holds in process, so there is no confirmation step.
+
+`revoke_all_sessions` ends the sessions already registered with Guardian. A
+grant that was signed but not yet registered can still be registered for up
+to about 10 minutes, so when a key may be compromised, call it again 10
+minutes later.
+
 ## Server Signature Verification
 
 After pushing a delta, the server returns an Acknowledgment signature that signs the new commitment. You should verify this signature to ensure the server is signing with the expected public key.

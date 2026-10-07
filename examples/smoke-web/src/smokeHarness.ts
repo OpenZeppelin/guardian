@@ -174,6 +174,13 @@ export interface SmokeApi {
     proposals: Array<ReturnType<typeof serializeProposal>>;
   }>;
   recoverByKey(): Promise<RecoveredAccount[]>;
+  startGuardianSession(input?: { ttlSeconds?: number }): Promise<{
+    publicKey: string;
+    expiresAt: number;
+  }>;
+  endGuardianSession(): Promise<{ revoked: boolean }>;
+  /** Wallet-signed: ends every session of the current signer on the Guardian. */
+  revokeAllGuardianSessions(): Promise<{ revoked: number }>;
   recoverNotes(input?: RecoverNotesOptions): Promise<{
     report: NoteRecoveryReport;
     status: BrowserSessionSnapshot;
@@ -1487,6 +1494,46 @@ export function useSmokeHarness(): {
     [multisigClientRef, resolveSignerContext, withCommand],
   );
 
+  const startGuardianSession = useCallback(
+    async (input: { ttlSeconds?: number } = {}): Promise<{ publicKey: string; expiresAt: number }> =>
+      withCommand('startGuardianSession', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        const signerContext = resolveSignerContext();
+        const session = await currentMultisigClient.startSession(signerContext.signerInstance, {
+          ...input,
+          // The harness is driven by scripts that requested the session; a
+          // real app shows describeSessionGrant(grant) to the user here.
+          confirm: () => true,
+        });
+        return { publicKey: session.publicKey, expiresAt: session.expiresAt };
+      }),
+    [multisigClientRef, resolveSignerContext, withCommand],
+  );
+
+  const endGuardianSession = useCallback(
+    async (): Promise<{ revoked: boolean }> =>
+      withCommand('endGuardianSession', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        return { revoked: await currentMultisigClient.endSession() };
+      }),
+    [multisigClientRef, withCommand],
+  );
+
+  const revokeAllGuardianSessions = useCallback(
+    async (): Promise<{ revoked: number }> =>
+      withCommand('revokeAllGuardianSessions', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        const signerContext = resolveSignerContext();
+        return {
+          revoked: await currentMultisigClient.revokeAllSessions(signerContext.signerInstance),
+        };
+      }),
+    [multisigClientRef, resolveSignerContext, withCommand],
+  );
+
   const recoverNotes = useCallback(
     async (
       input: RecoverNotesOptions = {},
@@ -1572,6 +1619,9 @@ export function useSmokeHarness(): {
     signProposalOffline,
     importProposal,
     recoverByKey,
+    startGuardianSession,
+    endGuardianSession,
+    revokeAllGuardianSessions,
     recoverNotes,
     clearLocalState,
     events: listEvents,

@@ -19,6 +19,7 @@ use crate::metadata::auth::lookup::{
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat};
 use crate::state::AppState;
 use guardian_shared::hex::FromHex;
+use guardian_shared::lookup_auth_message::LookupAuthMessage;
 use miden_protocol::Word;
 
 /// Length of a Miden public-key commitment in hex characters (32 bytes ×
@@ -95,6 +96,14 @@ pub async fn lookup_account(
             request_timestamp,
             key_commitment_word,
         ),
+        // Account recovery proves possession of the wallet key itself:
+        // wallet-only (#219).
+        RequestAuthFormat::Session => {
+            let message = LookupAuthMessage::new(request_timestamp, key_commitment_word).to_word();
+            return Err(
+                super::reject_session_credentials(state, &params.credentials, message).await,
+            );
+        }
     }
     .map_err(GuardianError::AuthenticationFailed)?;
 

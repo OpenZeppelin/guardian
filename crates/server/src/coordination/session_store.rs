@@ -23,6 +23,16 @@ pub enum SessionSubject {
     Evm {
         address: String,
     },
+    /// Miden account session: a wallet-authorized P-256 delegated signer
+    /// acting for `signer_commitment`. The Guardian ACK-key commitment and
+    /// network the grant named are re-checked on every request; the origin is
+    /// kept only to tell grants apart.
+    Miden {
+        signer_commitment: String,
+        origin: String,
+        guardian_commitment: String,
+        network: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -40,19 +50,55 @@ pub struct StoredSession {
 #[async_trait]
 pub trait SessionStore: Send + Sync {
     async fn insert(&self, key: SessionKey, session: StoredSession) -> Result<()>;
+    /// Insert only if no row exists for `key`, active, revoked or expired but
+    /// not yet swept. Returns whether the session was inserted. Used where the
+    /// key is chosen by the client (Miden session keys), so a revoked session
+    /// can never be revived by registering the same key again.
+    async fn insert_new(&self, key: SessionKey, session: StoredSession) -> Result<bool>;
     async fn get(&self, key: &SessionKey, now: DateTime<Utc>) -> Result<Option<StoredSession>>;
+    /// Whether a row exists for `key` that `get` no longer returns: `Some(true)`
+    /// when it was revoked, `Some(false)` when it only expired, `None` when there
+    /// is no row (never registered, or swept). Lets callers report why a
+    /// session stopped working.
+    async fn inactive_reason(&self, key: &SessionKey) -> Result<Option<bool>>;
     /// Revoke a session (logout), returning the prior session if present for
     /// logout-side logging. The cross-replica contract: once revoked, `get` MUST
-    /// reject it on every replica until its natural expiry. The Postgres
-    /// implementation marks `revoked_at` and keeps the row until expiry; the
-    /// in-memory implementation removes it.
+    /// reject it on every replica until its natural expiry. Both
+    /// implementations keep the revoked entry until expiry.
     async fn revoke(&self, key: &SessionKey) -> Result<Option<StoredSession>>;
+    /// Revoke every active session whose subject contains `filter` (JSON
+    /// containment, as Postgres `@>`) and that was issued at or before
+    /// `issued_at_or_before`. Returns how many were revoked.
+    async fn revoke_by_subject(
+        &self,
+        filter: &serde_json::Value,
+        issued_at_or_before: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<u64>;
     async fn sweep_expired(&self, now: DateTime<Utc>) -> Result<u64>;
+}
+
+/// `filter` is contained in `value`: every key of a filter object is present
+/// with a contained value; other values must be equal.
+fn json_contains(value: &serde_json::Value, filter: &serde_json::Value) -> bool {
+    match (value, filter) {
+        (serde_json::Value::Object(value), serde_json::Value::Object(filter)) => filter
+            .iter()
+            .all(|(key, inner)| value.get(key).is_some_and(|v| json_contains(v, inner))),
+        _ => value == filter,
+    }
+}
+
+/// In-memory entry; `revoked` mirrors the Postgres `revoked_at` column.
+#[derive(Clone)]
+struct InMemoryEntry {
+    session: StoredSession,
+    revoked: bool,
 }
 
 #[derive(Clone, Default)]
 pub struct InMemorySessionStore {
-    sessions: Arc<Mutex<HashMap<SessionKey, StoredSession>>>,
+    sessions: Arc<Mutex<HashMap<SessionKey, InMemoryEntry>>>,
 }
 
 impl InMemorySessionStore {
@@ -64,8 +110,27 @@ impl InMemorySessionStore {
 #[async_trait]
 impl SessionStore for InMemorySessionStore {
     async fn insert(&self, key: SessionKey, session: StoredSession) -> Result<()> {
-        self.sessions.lock().await.insert(key, session);
+        let entry = InMemoryEntry {
+            session,
+            revoked: false,
+        };
+        self.sessions.lock().await.insert(key, entry);
         Ok(())
+    }
+
+    async fn insert_new(&self, key: SessionKey, session: StoredSession) -> Result<bool> {
+        let mut sessions = self.sessions.lock().await;
+        if sessions.contains_key(&key) {
+            return Ok(false);
+        }
+        sessions.insert(
+            key,
+            InMemoryEntry {
+                session,
+                revoked: false,
+            },
+        );
+        Ok(true)
     }
 
     async fn get(&self, key: &SessionKey, now: DateTime<Utc>) -> Result<Option<StoredSession>> {
@@ -74,18 +139,62 @@ impl SessionStore for InMemorySessionStore {
             .lock()
             .await
             .get(key)
-            .filter(|session| session.expires_at > now)
-            .cloned())
+            .filter(|entry| !entry.revoked && entry.session.expires_at > now)
+            .map(|entry| entry.session.clone()))
+    }
+
+    async fn inactive_reason(&self, key: &SessionKey) -> Result<Option<bool>> {
+        Ok(self
+            .sessions
+            .lock()
+            .await
+            .get(key)
+            .map(|entry| entry.revoked))
     }
 
     async fn revoke(&self, key: &SessionKey) -> Result<Option<StoredSession>> {
-        Ok(self.sessions.lock().await.remove(key))
+        let mut sessions = self.sessions.lock().await;
+        Ok(sessions
+            .get_mut(key)
+            .filter(|entry| !entry.revoked)
+            .map(|entry| {
+                entry.revoked = true;
+                entry.session.clone()
+            }))
+    }
+
+    async fn revoke_by_subject(
+        &self,
+        filter: &serde_json::Value,
+        issued_at_or_before: DateTime<Utc>,
+        now: DateTime<Utc>,
+    ) -> Result<u64> {
+        let mut sessions = self.sessions.lock().await;
+        let mut revoked = 0;
+        for entry in sessions.values_mut() {
+            if entry.revoked
+                || entry.session.expires_at <= now
+                || entry.session.issued_at > issued_at_or_before
+            {
+                continue;
+            }
+            let subject = serde_json::to_value(&entry.session.subject).map_err(|error| {
+                crate::error::GuardianError::StorageError(format!(
+                    "session subject encode: {error}"
+                ))
+            })?;
+            if json_contains(&subject, filter) {
+                entry.revoked = true;
+                revoked += 1;
+            }
+        }
+        Ok(revoked)
     }
 
     async fn sweep_expired(&self, now: DateTime<Utc>) -> Result<u64> {
         let mut sessions = self.sessions.lock().await;
         let before = sessions.len();
-        sessions.retain(|_, session| session.expires_at > now);
+        sessions.retain(|_, entry| entry.session.expires_at > now);
         Ok((before - sessions.len()) as u64)
     }
 }

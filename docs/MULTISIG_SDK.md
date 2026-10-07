@@ -1130,6 +1130,46 @@ support it. Multiple matches are valid: the same key commitment may authorize
 more than one account, and the method returns all matches instead of choosing
 one implicitly.
 
+### Signing Requests With a Session
+
+Every Guardian request is otherwise signed by the wallet, which means a prompt
+per request on a hardware wallet. When the Guardian advertises `sessions` on
+`GET /status`, the wallet can sign one session grant; a non-extractable
+WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing
+and proposal create/sign until the session ends. Transaction approvals,
+account registration, delta pushes, candidate abandons and account lookup
+still use the wallet.
+
+```typescript
+import { IndexedDbSessionKeyStore, describeSessionGrant } from '@openzeppelin/miden-multisig-client';
+
+const store = new IndexedDbSessionKeyStore();
+const onEnded = (reason) => {
+  // 'expired' | 'revoked' | 'rejected': requests are wallet-signed again.
+  // 'logout': the app ended the session itself.
+};
+const session =
+  (await client.resumeSession(signer, store, { onEnded })) ??
+  (await client.startSession(signer, {
+    store,
+    onEnded,
+    confirm: (grant) => showToUser(describeSessionGrant(grant)), // required for raw wallets
+  }));
+
+await client.endSession(store); // this session
+await client.revokeAllSessions(signer, store); // every session of the signer, wallet-signed
+```
+
+The grant covers every account the signer cosigns on this Guardian until it
+expires. Its `origin` is written by the page and unverified; the trustworthy
+signal is the wallet's own indicator of the requesting site. Raw (Falcon, raw
+ECDSA) wallets show only a hash, so `startSession` requires `confirm`, which
+helps on an honest page but not against a phishing page. Revoke-all ends the
+sessions already registered; a page can register a grant it got signed for up
+to about 10 minutes, so run `revokeAllSessions` again 10 minutes later when a
+key may be compromised. The full protocol is in `spec/api.md` (Session
+Authentication).
+
 ### API Reference
 
 #### MultisigClient
@@ -1139,6 +1179,10 @@ one implicitly.
 | `create(config, signer)` | Create new multisig account |
 | `load(accountId, signer)` | Load existing account from GUARDIAN |
 | `recoverByKey(signer)` | Discover accounts that authorize the signer's key and fetch each current state |
+| `startSession(signer, { ttlSeconds?, origin?, confirm?, store?, onEnded? }?)` | Sign one session grant; the delegated signer then signs session-eligible requests. Logs out a session this client already holds |
+| `resumeSession(signer, store, { onEnded? }?)` | Reuse a stored session key without a wallet prompt; `null` when none or about to expire |
+| `endSession(store?)` | Log out the current session and forget its stored key |
+| `revokeAllSessions(signer, store?)` | Wallet-signed: revoke every session of the signer on this Guardian |
 | `guardianClient` | Access to underlying GUARDIAN HTTP client |
 
 #### Multisig
@@ -1190,6 +1234,8 @@ one implicitly.
 | `signRequest(id, timestamp, requestPayload)` | Sign account ID + timestamp + request payload digest for auth |
 | `signCommitment(hex)` | Sign commitment/word |
 | `signLookupMessage(timestamp, keyCommitment)` | Sign account-less lookup digest for `recoverByKey` |
+| `signSessionGrant(grant)` | Sign a session grant digest for `startSession` |
+| `signSessionRevokeAll(signerCommitment, timestamp)` | Sign the account-less revoke-all digest for `revokeAllSessions` |
 
 #### AccountInspector
 

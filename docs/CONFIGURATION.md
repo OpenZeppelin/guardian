@@ -264,6 +264,17 @@ exposed metric taxonomy and cardinality rules are documented in
 [Observability guide](./guides/observability/README.md) for scraping and a
 one-command Grafana dashboard stack.
 
+## Runtime — sessions
+
+Session authentication for Miden accounts ([issue #219](https://github.com/OpenZeppelin/guardian/issues/219)):
+a wallet signs one session grant, then a client-held P-256 delegated signer
+signs per-account requests. Always on; `GET /status` advertises the maximum
+lifetime. See [`spec/api.md`](../spec/api.md#session-authentication).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_SESSION_MAX_TTL_SECONDS` | `28800` (8 h) | Latest a session may expire, counted from registration; grants asking for longer are rejected. Operators may only shorten it: the value must be between 301 (longer than the 5-minute request clock-skew window) and 28800, otherwise startup fails. Sessions live in `auth_sessions` (realm `miden`) on Postgres, in memory otherwise (lost on restart; clients start a new session). |
+
 ## Runtime — dashboard
 
 | Variable | Default | Notes |

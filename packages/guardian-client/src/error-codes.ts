@@ -44,6 +44,8 @@ export const GUARDIAN_ERROR_CODES = [
   'rate_limit_exceeded',
   'rpc_unavailable',
   'rpc_validation_failed',
+  'session_expired',
+  'session_revoked',
   'signature_scheme_not_allowed',
   'signer_not_authorized',
   'signing_error',
@@ -51,6 +53,7 @@ export const GUARDIAN_ERROR_CODES = [
   'storage_error',
   'unsupported_evm_chain',
   'unsupported_for_network',
+  'wallet_signature_required',
 ] as const;
 
 /**

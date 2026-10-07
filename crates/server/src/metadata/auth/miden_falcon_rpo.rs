@@ -1,5 +1,6 @@
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::session_grant::SessionGrant;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
@@ -58,6 +59,20 @@ pub fn verify_request_signature(
         );
         Err("Signature verification failed: invalid signature".to_string())
     }
+}
+
+/// Verify a wallet's Falcon signature over a session grant and return the
+/// signer commitment derived from the public key embedded in the signature.
+pub fn verify_session_grant(grant: &SessionGrant, signature: &str) -> Result<String, String> {
+    let sig = parse_signature(signature)?;
+    let public_key = sig.public_key();
+    if !public_key.verify(grant.to_word(), &sig) {
+        return Err("Session grant signature verification failed".to_string());
+    }
+    Ok(format!(
+        "0x{}",
+        hex::encode(public_key.to_commitment().to_bytes())
+    ))
 }
 
 /// Convert account ID + timestamp + request payload to a message digest (Word)

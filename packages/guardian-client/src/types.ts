@@ -31,6 +31,109 @@ export interface Signer {
     keyCommitmentHex: string,
     timestampMs: number
   ): Promise<string> | string;
+
+  /**
+   * Sign a session grant once, authorizing a delegated signer to sign
+   * per-account requests. Raw signers sign the grant's RPO digest; EIP-712
+   * signers sign readable `GuardianSession` typed data. The canonical
+   * implementation lives in `@openzeppelin/miden-multisig-client`.
+   */
+  signSessionGrant?(grant: SessionGrantFields): Promise<string> | string;
+
+  /**
+   * Sign the account-less revoke-all message for `POST /session/revoke-all`,
+   * which ends every session of this signer on the Guardian. Raw signers sign
+   * its RPO digest; EIP-712 signers sign `GuardianSessionRevokeAll` typed data.
+   */
+  signSessionRevokeAll?(
+    signerCommitment: string,
+    timestampMs: number
+  ): Promise<string> | string;
+}
+
+/**
+ * Fields of a session grant, as the wallet signs and displays them. The scope
+ * is fixed in v1 (every account the signer cosigns on this Guardian) and is
+ * not a field.
+ */
+export interface SessionGrantFields {
+  /** Hex commitment of the wallet key that signs the grant. */
+  signerCommitment: string;
+  /** Hex SEC1-compressed P-256 delegated-signer public key (33 bytes). */
+  sessionPublicKey: string;
+  /**
+   * The website asking for the session, e.g. `https://app.example`; empty
+   * outside a browser. The wallet displays it so the user sees who asks;
+   * Guardian does not check it against requests.
+   */
+  origin: string;
+  /** Unix seconds. */
+  issuedAt: number;
+  /** Unix seconds. */
+  expiresAt: number;
+  /** This Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey`). */
+  guardianCommitment: string;
+  /** `environment` from `GET /status`. */
+  network: string;
+}
+
+/**
+ * Why a client stopped using a session:
+ * - `logout`: the app ended it (`revokeSession`, `revokeAllSessions`, or a
+ *   replacement session); do not start a new one in response;
+ * - `expired`: it reached its expiry;
+ * - `revoked`: Guardian answered `session_revoked` (logout or revoke-all
+ *   elsewhere);
+ * - `rejected`: Guardian no longer accepts it (`authentication_failed`, e.g.
+ *   after a restart forgot it or the Guardian key was rotated).
+ */
+export type SessionEndReason = 'logout' | 'expired' | 'revoked' | 'rejected';
+
+/**
+ * Signs session-eligible requests on behalf of a wallet after a session grant
+ * was registered. Requests carry `x-auth-format: session`.
+ */
+export interface SessionRequestSigner {
+  /** Hex SEC1-compressed P-256 session public key, sent as `x-pubkey`. */
+  readonly publicKey: string;
+  /**
+   * Commitment of the wallet that granted the session. The client only uses
+   * the session while that wallet is its signer.
+   */
+  readonly signerCommitment: string;
+  /** Unix seconds. */
+  readonly expiresAt: number;
+  signRequest(
+    accountId: string,
+    timestamp: number,
+    requestPayload: RequestAuthPayload
+  ): Promise<string> | string;
+  /** Sign the account-less `SessionLogoutMessage` for `POST /session/logout`. */
+  signLogout(timestampMs: number): Promise<string> | string;
+  /** Called once when the client stops using the session. */
+  onEnded?(reason: SessionEndReason): void;
+}
+
+export interface CreateSessionRequest {
+  scheme: SignatureScheme;
+  /** `eip712` for EIP-712 wallet signatures; omitted for raw signatures. */
+  authFormat?: 'eip712';
+  /** Wallet public key; required for ECDSA. */
+  publicKey?: string;
+  signature: string;
+  grant: SessionGrantFields;
+}
+
+export interface CreateSessionResponse {
+  signerCommitment: string;
+  /** RFC 3339 UTC. */
+  expiresAt: string;
+}
+
+/** Session parameters a Guardian advertises on `GET /status`. */
+export interface SessionsStatus {
+  /** Grants may expire at most this many seconds after registration. */
+  maxTtlSeconds: number;
 }
 
 export interface FalconSignature {
@@ -204,6 +307,8 @@ export interface StatusResponse {
   environment: string;
   startedAt: string;
   uptimeSeconds: number;
+  /** Present on every Guardian that accepts session grants; absent on older servers. */
+  sessions?: SessionsStatus;
 }
 
 export interface DeltaProposalRequest {

@@ -574,6 +574,16 @@ impl ServerBuilder {
             Arc::new(EvmAppState::from_env_with_sessions(sessions).await?)
         };
 
+        let miden_sessions = {
+            let config =
+                crate::session::SessionConfig::from_env().map_err(|error| error.to_string())?;
+            let store = match coordination.as_ref() {
+                Some(handles) => handles.miden_sessions.clone(),
+                None => Arc::new(crate::coordination::InMemorySessionStore::new()),
+            };
+            Arc::new(crate::session::MidenSessions::new(config, store))
+        };
+
         let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
         let network_client = rpc_settings.connect().await?;
 
@@ -643,6 +653,7 @@ impl ServerBuilder {
             clock: Arc::new(SystemClock),
             dashboard,
             auditor,
+            miden_sessions,
             #[cfg(feature = "evm")]
             evm,
         };

@@ -7,6 +7,7 @@
 - Miden `x-pubkey` is interpreted by the account auth policy:
   - Miden Falcon/ECDSA accounts use the serialized public key or its commitment.
 - EVM HTTP requests under `/evm/*` use a `guardian_evm_session` cookie. The session EOA is recovered from a wallet signature and is checked against the configured account signer set or proposal signer snapshot.
+- Miden per-account requests MAY instead be signed by a delegated signer registered through `POST /session` (`x-auth-format: session`, see [Session Authentication](#session-authentication)).
 - Replay protection applies to every Miden signed request. EVM challenge nonces are single-use and time-limited, and EVM sessions expire.
 
 ### Replay Protection
@@ -58,6 +59,149 @@ Raw Falcon and ECDSA signatures remain supported. ECDSA signers may instead send
 - Signed message format: `RPO256_hash([DOMAIN_TAG_w0..w3, timestamp_ms, key_commitment_w0..w3])`.
 - Authentication: proof-of-possession of the queried commitment. Raw signatures derive the identity from the signature itself — Falcon embeds the public key and ECDSA recovers it. A raw signature must be exactly 1524 bytes (Falcon) or 65 bytes (ECDSA `r || s || v`), and an EIP-712 signature exactly 65 bytes; any other length is rejected. For EIP-712, the server verifies the typed digest against `x-pubkey`. Both paths require the verified public key's commitment to equal the queried commitment. Raw lookup continues to ignore `x-pubkey`.
 - Replay protection: `MAX_TIMESTAMP_SKEW_MS` skew window only. No per-commitment last-seen tracking; a replayed valid request returns the same `account_id` to a key holder who already obtained it.
+
+### Session Authentication
+
+Issue #219. A wallet authorizes a client-held P-256 key, the **delegated
+signer**, once with a signed session grant; the delegated signer then signs
+per-account Miden requests, so wallets (including hardware wallets) are not
+prompted for every request. Per-account authentication stays explicit and
+replay-protected: requests are still signed over the same `AuthRequestMessage`,
+only the signing key is delegated. Sessions remove request prompts, not
+approval prompts: the wallet still signs every transaction summary.
+
+- Every Guardian that accepts grants advertises `sessions: { max_ttl_seconds }`
+  on `GET /status`; an older Guardian omits it, and SDKs fail early instead of
+  falling back silently.
+- **Grant.** The wallet signs, in the clear:
+  - `signer_commitment`: the commitment of the wallet key that signs;
+  - `session_public_key`: the delegated signer's SEC1-compressed P-256 key (33 bytes; the 65-byte uncompressed form is rejected);
+  - `origin`: the website that asked for the grant, e.g. `https://app.example`, at most 256 bytes; empty for clients outside a browser. The page writes it, so it is unverified; wallets display it, and Guardian does not check it against requests;
+  - `issued_at` and `expires_at` (Unix seconds), plus `expires`, the canonical readable form of `expires_at` (`YYYY-MM-DD HH:MM:SS UTC`);
+  - the scope, a fixed text every v1 grant states: *Every account this signer cosigns on this Guardian, now or later, until this grant expires*;
+  - `guardian_commitment`: this Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey`);
+  - `network`: the status `environment`, exactly `local`, `devnet` or `testnet` (not a bech32 HRP: local and devnet share `mdev`).
+
+  `expires` and the scope are derived by Guardian, never sent: a wallet that
+  displayed anything else signed a different digest and is rejected.
+- Falcon and raw ECDSA wallets sign the RPO digest of these fields under the
+  domain tag `guardian.session.v1`. EIP-712 wallets sign them as readable typed
+  data, every field a top-level member, so the device shows what it authorizes:
+  `GuardianSession(bytes32 signer,bytes sessionKey,string origin,uint64 issuedAt,uint64 expiresAt,string expires,string scope,bytes32 guardianKey,string network)`
+  in domain `{ name: "Guardian Session", version: "1" }`. Raw wallets show only
+  a hash, so SDKs show the grant fields to the user before asking them to sign.
+  That is UX, not phishing protection: a phishing page shows what it wants, so
+  raw wallets blind-sign the grant there (accepted for v1; the follow-up is the
+  wallet rendering the `guardian.session.v1` grant itself).
+- `POST /session` (gRPC `CreateSession`) carries the scheme, the optional
+  `auth_format` (`eip712`), the wallet public key, the signature and the grant
+  fields. Falcon embeds its key; raw ECDSA recovers it and falls back to the
+  supplied key; EIP-712 always uses the supplied key. Guardian rejects grants
+  that:
+  - name another network or ACK key;
+  - have an `issued_at` outside the 5-minute (300-second) skew window;
+  - expire within 300 seconds, or later than `GUARDIAN_SESSION_MAX_TTL_SECONDS` from now;
+  - carry a session key that is not a valid compressed P-256 point;
+  - carry a wallet signature that does not verify, or a signer commitment that does not match the signing key;
+  - come from a key that is not a cosigner of any account on this Guardian (`authorization_failed`, HTTP 403).
+
+  Checks that need no cryptography run before signature verification; the
+  cosigner check runs after it, so only the key's holder learns whether it
+  cosigns anything. Guardian records the session as issued at the earlier of
+  the grant's `issued_at` and the registration time. Re-submitting the grant
+  of a live session (also re-signed with another `issued_at`) succeeds and
+  returns the same expiry while its `issued_at` is inside the skew window, the
+  retry after a lost response it exists for (later the grant fails the
+  `issued_at` check); the record, including its
+  recorded issue time, is left unchanged, so a re-submission cannot escape a
+  revoke-all. A key already bound to a
+  different grant (another signer, origin or expiry) is refused, so another
+  cosigner who learns a session key from `x-pubkey` cannot re-bind it;
+  clients generate a fresh key for every grant, renewals included. The grant
+  of a revoked session is refused until its record is swept after expiry, so a
+  revoked session cannot be revived.
+- **Requests.** `x-pubkey` is the compressed session public key, `x-signature`
+  the delegated signer's ECDSA P-256/SHA-256 signature (raw `r || s`, 64
+  bytes) over the 32 bytes of `AuthRequestMessage`, plus
+  `x-auth-format: session`. On every request Guardian, in this order, verifies
+  the signature, resolves the session to its grant (ended or unknown sessions
+  fail here, see below), applies the route allow-list (see Routes), re-checks
+  that the grant names this Guardian's current ACK key for the account's
+  scheme and its network (key rotation ends sessions), requires the grant's
+  signer to be a current cosigner of the account, and finally applies the
+  replay check. A signer that does not cosign the account
+  gets `authorization_failed` (HTTP 403, gRPC `PERMISSION_DENIED`) and keeps
+  its session for its other accounts; removing a signer ends its delegated
+  access to that account, adding it back restores an unexpired grant.
+- **Origin is informational.** Guardian never compares the grant's `origin`
+  with a request's `Origin`. A page that obtains a grant holds the key and can
+  send requests from anywhere, so such a check would only stop a careless
+  phishing page. The field is written by the page and unverified: the real
+  signal is the wallet's own indicator of the requesting site (e.g.
+  MetaMask's); hardware-wallet users have no verified origin in v1. The read
+  exposure to a page the user wrongly approves is an accepted risk.
+- **Replay protection.** Session requests advance their own timestamp floor
+  per (account, delegated key); wallet requests keep the floor per (account,
+  signer). A stolen session that stamps requests at the edge of the skew window
+  therefore cannot lock the wallet out. Parallel requests on the same floor can
+  still lose the race with `authentication_replay`; SDKs re-sign with a new
+  timestamp and retry. Session floors are stored next to wallet floors, keyed
+  `session-<hex SHA-256 of the session key>`, which never collides with a
+  signer commitment or the legacy floor row. A session floor is deleted once
+  no session can use it any more: `GUARDIAN_SESSION_MAX_TTL_SECONDS` plus twice the skew window
+  after its last request.
+- **Routes.** Session credentials are accepted only on the session-eligible
+  routes: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
+  `GET /delta/history`, `GET /delta/proposal`, `GET /delta/proposal/single`,
+  `POST /delta/proposal` and `PUT /delta/proposal` (and their gRPC twins).
+  Every other route is wallet-only by default, including routes added later:
+  after the delegated signature verifies and the session resolves (an ended
+  session gets its own code first), it is rejected with
+  `wallet_signature_required` (HTTP 403, gRPC `PERMISSION_DENIED`) before any
+  state change. An unverifiable delegated signature is `authentication_failed`.
+  `POST /delta` stays wallet-only until Guardian verifies cosigner signatures
+  and threshold when it admits a candidate (#524).
+- **Ended sessions.** A request from an expired session fails with
+  `session_expired`, from a revoked one with `session_revoked` (both HTTP 401,
+  gRPC `UNAUTHENTICATED`). An unknown key (an expired one whose record was
+  swept, or any key after a restart of a Guardian without persistent
+  sessions), or a grant naming a rotated key or another network is
+  `authentication_failed`. On any of these three answers to a
+  session-signed request, SDKs stop using the session, sign with the wallet
+  again and tell the app (`onEnded`), which starts a new session.
+- **Logout.** `POST /session/logout` (gRPC `RevokeSession`) is signed by the
+  delegated signer over `SessionLogoutMessage` (domain tag
+  `guardian.session.logout.v1`, timestamp, session public key). The timestamp
+  is Unix milliseconds, the request's `x-timestamp`. Idempotent once the
+  delegated signature verifies; never answered with
+  `wallet_signature_required`.
+- **Revoke all.** `POST /session/revoke-all` (gRPC `RevokeAllSessions`) is
+  signed by the wallet over `SessionRevokeAllMessage` (domain tag
+  `guardian.session.revoke_all.v1`, timestamp, signer commitment), raw or as
+  `GuardianSessionRevokeAll(bytes32 signer,uint64 timestamp)` typed data
+  (`x-auth-format: eip712`), with the signer commitment in the body. The
+  timestamp is Unix milliseconds, the request's `x-timestamp`. It revokes
+  every session of that signer whose recorded issue time is at or before the
+  signed timestamp and returns the count: a replay inside the skew window
+  cannot end a session granted after it. It is account-less, so it never
+  touches a replay floor and no session request can block it. Page logout is
+  not revocation, since a script that holds the key keeps it; this is the
+  recovery path for a compromised page. The message names no Guardian: a
+  revoke-all signature also ends that signer's older sessions on any other
+  Guardian it reaches within the skew window. It can only revoke, so this is
+  accepted. The signed timestamp comes from the revoking device's clock and a
+  session's issue time from the granting device's (capped at server time), so
+  a replay inside the skew window can also end a session started just after
+  it on a device whose clock runs behind; the user starts a new session.
+  Accepted limits: revoke-all ends only sessions already registered, so a
+  grant a page got signed but has not registered yet can still be registered
+  afterwards, up to about 10 minutes after signing (its `issued_at` may lie
+  up to 5 minutes ahead and must be within 5 minutes of registration); and a
+  revoking device whose clock runs behind Guardian's misses sessions started
+  in that gap. SDKs therefore advise running revoke-all again 10 minutes
+  later when a key may be compromised.
+- `POST /session`, `/session/logout` and `/session/revoke-all` are covered by
+  the per-IP rate limiter like every other client route.
 
 ### EVM Session Authentication
 
@@ -332,6 +476,9 @@ component schemas.
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
 | client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
+| client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
+| client | `POST /session/logout` | session-key-signed headers | Revoke this session |
+| client | `POST /session/revoke-all` | wallet-signed headers | Revoke every session of a signer |
 | dashboard | `GET /auth/challenge` | public | Operator login challenge |
 | dashboard | `POST /auth/verify` | public | Verify challenge, establish session |
 | dashboard | `POST /auth/logout` | session | Invalidate the operator session |
@@ -493,6 +640,8 @@ Stable error codes include:
 - `rpc_unavailable`
 - `rpc_validation_failed`
 - `signer_not_authorized`
+- `wallet_signature_required` (session credentials on a wallet-only route; HTTP 403 / gRPC `PermissionDenied`)
+- `session_expired`, `session_revoked` (the delegated signer's session ended; HTTP 401 / gRPC `Unauthenticated`)
 - `invalid_evm_proposal`
 - `insufficient_signatures`
 - `rate_limit_exceeded`
@@ -529,6 +678,9 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
 - `GetDeltaHistory(GetDeltaHistoryRequest) -> GetDeltaHistoryResponse`
 - `GetCanonicalNonce(GetCanonicalNonceRequest) -> GetCanonicalNonceResponse`
+- `CreateSession(CreateSessionRequest) -> CreateSessionResponse`
+- `RevokeSession(RevokeSessionRequest) -> RevokeSessionResponse`
+- `RevokeAllSessions(RevokeAllSessionsRequest) -> RevokeAllSessionsResponse`
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection

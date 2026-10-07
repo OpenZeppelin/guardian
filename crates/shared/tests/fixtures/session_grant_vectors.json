@@ -1,0 +1,126 @@
+{
+  "schema": "guardian.session_grant.v1",
+  "scope": "Every account this signer cosigns on this Guardian, now or later, until this grant expires",
+  "domain_tag_hex": "0xac62ee24384746dc4fc59bb5296771fa4c7c7920369b643fb83b235e704accea",
+  "logout_domain_tag_hex": "0x53bfa72fd58ee8e1ad1193ac2eaea740babad6b6163455797a1be9af460fdbc1",
+  "revoke_all_domain_tag_hex": "0xd965ceace55d1cb4c768bd96480f35e685cc0608629898789d268dbae9f37d8b",
+  "grants": [
+    {
+      "name": "devnet_8h",
+      "signer_commitment_hex": "0x0100000000000000020000000000000003000000000000000400000000000000",
+      "session_public_key_hex": "0x026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16",
+      "origin": "https://multisig.miden.xyz",
+      "issued_at": 1791280800,
+      "expires_at": 1791309600,
+      "guardian_commitment_hex": "0x0500000000000000060000000000000007000000000000000800000000000000",
+      "network": "devnet",
+      "expected_expires": "2026-10-06 18:00:00 UTC",
+      "expected_digest_hex": "0xccd826283b2b87133db0b2a434d784b500fbdd732c363cd1d87fe4ee088e503e",
+      "expected_eip712_digest_hex": "0x5175c632ad4927e18e6bc081a2238a7f9168fa852a188fad05ad3c6eddcfab62"
+    },
+    {
+      "name": "testnet_1h",
+      "signer_commitment_hex": "0xefbeadde00000000bebafeca0000000078563412000000002143658700000000",
+      "session_public_key_hex": "0x02550f471003f3df97c3df506ac797f6721fb1a1fb7b8f6f83d224498a65c88e24",
+      "origin": "https://wallet.example:8443",
+      "issued_at": 1704067200,
+      "expires_at": 1704070800,
+      "guardian_commitment_hex": "0xaa00000000000000bb00000000000000cc00000000000000dd00000000000000",
+      "network": "testnet",
+      "expected_expires": "2024-01-01 01:00:00 UTC",
+      "expected_digest_hex": "0x07b78415d7d1d4889be967e127bcd69b0ac0f534a3bf6acca0562b75be873d15",
+      "expected_eip712_digest_hex": "0xf12843a1687607f0dfcbd7d580b54ed309eb48927a14277e96ecb956ff0a75dd"
+    },
+    {
+      "name": "local_leap_day",
+      "signer_commitment_hex": "0x0000000000000000000000000000000000000000000000000000000000000000",
+      "session_public_key_hex": "0x02591ab771ebbcfd6d9cb9094d106528add1a69d44c2c1f627f089ec58b9c61adf",
+      "origin": "",
+      "issued_at": 951696000,
+      "expires_at": 951782400,
+      "guardian_commitment_hex": "0xffffffff00000000ffffffff00000000ffffffff00000000ffffffff00000000",
+      "network": "local",
+      "expected_expires": "2000-02-29 00:00:00 UTC",
+      "expected_digest_hex": "0xf22c006b7820c06c88774997c63db10c2e113ea5b49a12394cd51e995dfde17a",
+      "expected_eip712_digest_hex": "0x0e13f52a3112ce8dde09092adbdf779129a26d81ba4591f7125619b905ba66f0"
+    },
+    {
+      "name": "unicode_network",
+      "signer_commitment_hex": "0x0000008000000000000000800000000000000080000000000000008000000000",
+      "session_public_key_hex": "0x0273103ec30b3ccf57daae08e93534aef144a35940cf6bbba12a0cf7cbd5d65a64",
+      "origin": "https://xn--r8jz45g.jp",
+      "issued_at": 1800000000,
+      "expires_at": 1800000001,
+      "guardian_commitment_hex": "0x0900000000000000090000000000000009000000000000000900000000000000",
+      "network": "dévnet 测试",
+      "expected_expires": "2027-01-15 08:00:01 UTC",
+      "expected_digest_hex": "0x95d2fdd25ac4ac54cb70ed8bac8712facb7b7a5683e68bc51e20ff2c5f0e0234",
+      "expected_eip712_digest_hex": "0xfb6d1e8d63a33b5aabfd7d95d1af623532867c7197b052d1df4ae0227d4356b0"
+    },
+    {
+      "name": "far_future",
+      "signer_commitment_hex": "0x0700000000000000070000000000000007000000000000000700000000000000",
+      "session_public_key_hex": "0x0307810ea974cea5773e63b897f37e3be9a09e7a5fe9b971a44d1065ac2a3a9311",
+      "origin": "http://localhost:3000",
+      "issued_at": 4102358400,
+      "expires_at": 4102444799,
+      "guardian_commitment_hex": "0x0300000000000000010000000000000004000000000000000100000000000000",
+      "network": "devnet",
+      "expected_expires": "2099-12-31 23:59:59 UTC",
+      "expected_digest_hex": "0xc133b6a3c063a6bad745e71b969570bc071813082add96d51a565535a66e53da",
+      "expected_eip712_digest_hex": "0x95133d032c8a42bac89ca362186acf0bc56f4e913b19b5bffe12e7ef50f25bae"
+    }
+  ],
+  "logouts": [
+    {
+      "name": "zero_timestamp",
+      "session_public_key_hex": "0x026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16",
+      "timestamp_ms": 0,
+      "expected_digest_hex": "0xec493f9e11cde32d55ab86029367abd4b040f0f88321ab00178f2721b35d89d4"
+    },
+    {
+      "name": "typical",
+      "session_public_key_hex": "0x02550f471003f3df97c3df506ac797f6721fb1a1fb7b8f6f83d224498a65c88e24",
+      "timestamp_ms": 1791280800000,
+      "expected_digest_hex": "0xe4c04cbf716a5d0f496d6f1a2a9294393edf65ac57a82e7a9d76ac796cef14ec"
+    },
+    {
+      "name": "negative_timestamp",
+      "session_public_key_hex": "0x02591ab771ebbcfd6d9cb9094d106528add1a69d44c2c1f627f089ec58b9c61adf",
+      "timestamp_ms": -1,
+      "expected_digest_hex": "0x40f4daef2ec9dc963a07ff4835d150d8861634055bcc6296ee8b5fa5d55db710"
+    }
+  ],
+  "revoke_alls": [
+    {
+      "name": "zero_timestamp",
+      "signer_commitment_hex": "0x0100000000000000020000000000000003000000000000000400000000000000",
+      "timestamp_ms": 0,
+      "expected_digest_hex": "0x582271f691e3899aa663456a08602c33c03bbed080981600152faac3debef70b",
+      "expected_eip712_digest_hex": "0x174c838d3da64852bbc8d4a071511c4e64d216ae0e5cb435b3b19ef472d2df97"
+    },
+    {
+      "name": "typical",
+      "signer_commitment_hex": "0xefbeadde00000000bebafeca0000000078563412000000002143658700000000",
+      "timestamp_ms": 1791280800000,
+      "expected_digest_hex": "0x589e09623717d68ad90f402e47212bdf48a8906c5a4528a5bd2da646d69338a6",
+      "expected_eip712_digest_hex": "0xf635fa26e9080362ef8d9fba703c8060d8482f5b840327b206ef83f566467f9b"
+    }
+  ],
+  "session_keys": [
+    {
+      "name": "seed_01",
+      "secret_hex": "0x0101010101010101010101010101010101010101010101010101010101010101",
+      "expected_public_key_hex": "0x026ff03b949241ce1dadd43519e6960e0a85b41a69a05c328103aa2bce1594ca16",
+      "message_hex": "0x0100000000000000020000000000000003000000000000000400000000000000",
+      "signature_hex": "0x3a7ecef57623e4642dbf733b066bbfba9fbd00182817f732ee699946b0f59bff1fd1b60f1879872af3eac60405332503f52a873ff336cb1b2ba4cff060e1d3b2"
+    },
+    {
+      "name": "seed_7f",
+      "secret_hex": "0x7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f",
+      "expected_public_key_hex": "0x02680b8b98b32f8e1b93ba0e54aa7c7a5c04b4395161eb4c8a4bc90a7834cc5472",
+      "message_hex": "0xffffffff000000000000000000000000ffffffff000000000000000000000000",
+      "signature_hex": "0x28befc9d66a5dfb500e9a030425ef489db2b7aef6c10e4286ebdd5e753f9ccb984d770a36a4dc86a7f7780e8b790b1175d8f0f0264cef6d03ce23d2da8514849"
+    }
+  ]
+}

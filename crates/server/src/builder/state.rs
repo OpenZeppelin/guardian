@@ -8,6 +8,7 @@ use crate::evm::EvmAppState;
 use crate::metadata::MetadataStore;
 use crate::network::NetworkClient;
 use crate::release_sweep::ReleaseSweepConfig;
+use crate::session::MidenSessions;
 use crate::storage::StorageBackend;
 use std::sync::Arc;
 
@@ -28,6 +29,8 @@ pub struct AppState {
     /// builds it is `LogAuditor` and a one-shot startup warning is
     /// emitted at construction time (FR-020 / FR-021).
     pub auditor: SharedAuditor,
+    /// Miden account sessions.
+    pub miden_sessions: Arc<MidenSessions>,
     #[cfg(feature = "evm")]
     pub evm: Arc<EvmAppState>,
 }

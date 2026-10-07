@@ -251,6 +251,14 @@ pub trait MetadataStore: Send + Sync {
         new_timestamp: i64,
     ) -> Result<bool, String>;
 
+    /// Delete delegated-signer replay floors (issue #219) last advanced
+    /// before `before_ms`. Every session key gets its own floor per account
+    /// it touches, and an ended session can no longer authenticate, so its
+    /// floors can go. Returns how many were deleted.
+    async fn purge_session_floors(&self, _before_ms: i64) -> Result<u64, String> {
+        Ok(0)
+    }
+
     /// Find every account whose Miden cosigner-commitment authorization set
     /// contains the given commitment. Used by the `/state/lookup` endpoint.
     ///

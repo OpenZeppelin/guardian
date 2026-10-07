@@ -63,6 +63,12 @@ pub enum GuardianError {
     RpcUnavailable(String),
     RpcValidationFailed(String),
     SignerNotAuthorized(String),
+    /// Delegated-signer (session) credentials on a wallet-only route (#219).
+    WalletSignatureRequired,
+    /// The delegated signer's session reached its `expires_at`.
+    SessionExpired,
+    /// The delegated signer's session was revoked by logout or revoke-all.
+    SessionRevoked,
     InvalidEvmProposal(String),
     InsufficientSignatures {
         required: usize,
@@ -186,6 +192,9 @@ impl GuardianError {
             GuardianError::RpcUnavailable(_) => StatusCode::BAD_GATEWAY,
             GuardianError::RpcValidationFailed(_) => StatusCode::BAD_GATEWAY,
             GuardianError::SignerNotAuthorized(_) => StatusCode::FORBIDDEN,
+            GuardianError::WalletSignatureRequired => StatusCode::FORBIDDEN,
+            GuardianError::SessionExpired => StatusCode::UNAUTHORIZED,
+            GuardianError::SessionRevoked => StatusCode::UNAUTHORIZED,
             GuardianError::InvalidEvmProposal(_) => StatusCode::BAD_REQUEST,
             GuardianError::InsufficientSignatures { .. } => StatusCode::BAD_REQUEST,
             GuardianError::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -233,6 +242,9 @@ impl GuardianError {
             GuardianError::RpcUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::RpcValidationFailed(_) => tonic::Code::Unavailable,
             GuardianError::SignerNotAuthorized(_) => tonic::Code::PermissionDenied,
+            GuardianError::WalletSignatureRequired => tonic::Code::PermissionDenied,
+            GuardianError::SessionExpired => tonic::Code::Unauthenticated,
+            GuardianError::SessionRevoked => tonic::Code::Unauthenticated,
             GuardianError::InvalidEvmProposal(_) => tonic::Code::InvalidArgument,
             GuardianError::InsufficientSignatures { .. } => tonic::Code::FailedPrecondition,
             GuardianError::RateLimitExceeded { .. } => tonic::Code::ResourceExhausted,
@@ -287,6 +299,9 @@ impl GuardianError {
             GuardianError::RpcUnavailable(_) => "rpc_unavailable",
             GuardianError::RpcValidationFailed(_) => "rpc_validation_failed",
             GuardianError::SignerNotAuthorized(_) => "signer_not_authorized",
+            GuardianError::WalletSignatureRequired => "wallet_signature_required",
+            GuardianError::SessionExpired => "session_expired",
+            GuardianError::SessionRevoked => "session_revoked",
             GuardianError::InvalidEvmProposal(_) => "invalid_evm_proposal",
             GuardianError::InsufficientSignatures { .. } => "insufficient_signatures",
             GuardianError::RateLimitExceeded { .. } => "rate_limit_exceeded",
@@ -360,6 +375,15 @@ impl GuardianError {
             }
             GuardianError::InsufficientOperatorPermission { .. } => {
                 "You don't have permission to do that."
+            }
+            GuardianError::WalletSignatureRequired => {
+                "This action needs your wallet's signature, not the session's. Please sign with your wallet."
+            }
+            GuardianError::SessionExpired => {
+                "Your Guardian session has expired. Please start a new session."
+            }
+            GuardianError::SessionRevoked => {
+                "Your Guardian session was ended. Please start a new session."
             }
             GuardianError::ProposalAlreadySigned { .. } => {
                 "You've already signed this transaction."
@@ -501,6 +525,12 @@ impl fmt::Display for GuardianError {
             GuardianError::RpcUnavailable(msg) => write!(f, "RPC unavailable: {msg}"),
             GuardianError::RpcValidationFailed(msg) => write!(f, "RPC validation failed: {msg}"),
             GuardianError::SignerNotAuthorized(msg) => write!(f, "Signer not authorized: {msg}"),
+            GuardianError::WalletSignatureRequired => write!(
+                f,
+                "Wallet signature required: delegated-signer credentials are not accepted on this route"
+            ),
+            GuardianError::SessionExpired => write!(f, "Session expired"),
+            GuardianError::SessionRevoked => write!(f, "Session revoked"),
             GuardianError::InvalidEvmProposal(msg) => write!(f, "Invalid EVM proposal: {msg}"),
             GuardianError::InsufficientSignatures { required, got } => {
                 write!(f, "Insufficient signatures: required {required}, got {got}")
@@ -1518,6 +1548,9 @@ mod tests {
             GuardianError::RpcUnavailable("https://rpc.internal:8080".into()),
             GuardianError::RpcValidationFailed("https://rpc.internal".into()),
             GuardianError::SignerNotAuthorized("0xSIGNER".into()),
+            GuardianError::WalletSignatureRequired,
+            GuardianError::SessionExpired,
+            GuardianError::SessionRevoked,
             GuardianError::InvalidEvmProposal("0xCALLDATA".into()),
             GuardianError::InsufficientSignatures {
                 required: 3,
