@@ -184,7 +184,15 @@ impl Reconciler {
             };
         };
 
-        let settled = match self.observe(state, evidence).await {
+        let observation_budget = state.execution.config.lease / 2;
+        let observed = tokio::time::timeout(observation_budget, self.observe(state, evidence))
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "the chain read did not answer within {observation_budget:?}, half the lease"
+                ))
+            });
+        let settled = match observed {
             Ok(settled) => settled,
             Err(error) => {
                 tracing::warn!(
@@ -196,6 +204,12 @@ impl Reconciler {
                 self.hold(state, record, elector.as_ref(), lease).await;
                 return Reconciled::ObservationUnavailable;
             }
+        };
+        let Some(lease) = self
+            .renew_after_observing(state, record, elector.as_ref(), lease)
+            .await
+        else {
+            return Reconciled::Owned;
         };
         match settled {
             Observed::AtExpected => {
@@ -332,6 +346,55 @@ impl Reconciler {
             ));
         }
         Ok(Observed::Pending)
+    }
+
+    /// The observation may have taken a large part of the lease, so the lease and the
+    /// reservation are renewed before the verdict is written. A reconciler that cannot renew
+    /// acts on nothing and leaves the execution to the next pass.
+    async fn renew_after_observing(
+        &self,
+        state: &AppState,
+        record: &ExecutionRecord,
+        elector: &dyn LeaderElector,
+        mut lease: Lease,
+    ) -> Option<Lease> {
+        let account_id = &record.reservation.account_id;
+        let ttl = state.execution.config.lease;
+        let renewing_until = crate::coordination::lease_deadline(ttl);
+        match elector.renew(&lease, ttl).await {
+            Ok(true) => lease.expires_at = renewing_until,
+            Ok(false) => {
+                tracing::warn!(%account_id, "lost the execution lease while observing the chain");
+                return None;
+            }
+            Err(error) => {
+                tracing::warn!(%account_id, %error, "could not renew the execution lease after observing the chain");
+                release_quietly(elector, lease).await;
+                return None;
+            }
+        }
+        match state
+            .storage
+            .renew_execution_reservation(
+                account_id,
+                &LeaseFence::from(&lease),
+                renewing_until,
+                ExecutionPhase::Reconciling,
+            )
+            .await
+        {
+            Ok(ReservationUpdate::Applied) => Some(lease),
+            Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+                tracing::warn!(%account_id, "the reconciled reservation is no longer this reconciler's");
+                release_quietly(elector, lease).await;
+                None
+            }
+            Err(error) => {
+                tracing::warn!(%account_id, %error, "failed to renew a reconciled reservation after observing the chain");
+                release_quietly(elector, lease).await;
+                None
+            }
+        }
     }
 
     /// Keeps the reservation until the next pass, then gives the lease up: a request arriving

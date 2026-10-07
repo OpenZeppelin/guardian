@@ -31,7 +31,7 @@ locals {
   http_error_statuses = ["500", "501", "502", "503", "504"]
   grpc_error_codes    = ["internal", "unavailable", "unknown", "data_loss", "deadline_exceeded"]
 
-  # The eleven Prometheus histograms. The awsemf exporter delta-converts
+  # The Prometheus histograms forwarded to CloudWatch. The awsemf exporter delta-converts
   # cumulative counters but NOT histograms (their sum/count would be
   # republished as process-lifetime totals every scrape, making
   # CloudWatch Average lifetime-weighted — hours of cheap health checks

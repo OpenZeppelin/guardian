@@ -634,8 +634,8 @@ distinct cosigner signatures fall short of the effective per-procedure threshold
 14. Send the sealed, proven transaction once.
 
 A failure before step 12 records a `failed` outcome with its code and releases the account;
-the proposal stays executable. A definite rejection at step 14 discards the candidate and
-deletes the proposal. An unknown outcome leaves the execution `submitted`.
+the proposal stays executable. A definite rejection at step 14 deletes the candidate and the
+proposal; no delta is kept with a `discarded` status. An unknown outcome leaves the execution `submitted`.
 
 ```mermaid
 sequenceDiagram
@@ -662,9 +662,11 @@ Only promotion writes `committed`. When a worker's lease lapses, the reconciler 
 reservation over by compare-and-set on its fence. Before the boundary it fails the attempt
 (`GUARDIAN_EXECUTION_LEASE_EXPIRED`, or `GUARDIAN_EXECUTION_ABANDONED` on the first pass after a
 restart). A process that is asked to stop (SIGTERM or Ctrl-C) refuses new executions as busy,
-fails its own attempts short of the boundary with `GUARDIAN_EXECUTION_ABANDONED`, and lets
-attempts past it finish their send, so a planned stop does not hold accounts until their leases
-lapse. After the boundary, reconciliation settles only from the chain:
+fails its own attempts short of the boundary with `GUARDIAN_EXECUTION_ABANDONED`, and gives
+attempts past it up to 8 seconds to finish their send before exiting. An attempt still running
+when that grace ends (one past the boundary still sending, or one whose local execution is on the
+CPU and has not reached an await) is left to the lease and reconciliation, as after an
+unplanned stop. After the boundary, reconciliation settles only from the chain:
 
 - the account at the expected commitment: wait for promotion, write nothing;
 - still at the base with the chain strictly past the expiration block: `GUARDIAN_EXECUTION_EXPIRED`;

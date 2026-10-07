@@ -1001,6 +1001,13 @@ variable "guardian_execution_reconcile_interval_secs" {
     )
     error_message = "guardian_execution_reconcile_interval_secs must be a whole number between 1 and 3599."
   }
+  validation {
+    condition = (
+      coalesce(var.guardian_execution_reconcile_interval_secs, 30) <
+      coalesce(var.guardian_execution_lease_secs, 120)
+    )
+    error_message = "The execution reconcile interval must be below the execution lease, counting server defaults (interval 30, lease 120) for whichever is unset; the server refuses to start otherwise."
+  }
 }
 
 variable "guardian_execution_expiration_horizon_blocks" {
