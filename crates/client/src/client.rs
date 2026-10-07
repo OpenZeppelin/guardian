@@ -1,12 +1,14 @@
 use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
+use crate::execution::ProposalExecution;
 use crate::keystore::Signer;
 use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
-    ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
-    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetDeltaHistoryRequest,
-    GetDeltaHistoryResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    ConfigureResponse, ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest,
+    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
+    GetCurrentExecutionRequest, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalExecutionRequest, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
     GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
@@ -563,6 +565,63 @@ impl GuardianClient {
         }
 
         Ok(inner)
+    }
+
+    /// Ask Guardian to prove and submit a threshold-met proposal. Returns once the request is
+    /// accepted; poll [`Self::get_delta_proposal_execution`] for the outcome. Repeating the
+    /// request while the execution runs returns it with `newly_accepted: false`.
+    pub async fn execute_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        proposal_id: &str,
+    ) -> ClientResult<ProposalExecution> {
+        let message = ExecuteDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+        };
+        let response = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.execute_delta_proposal(request).await
+            })
+            .await?;
+        crate::execution::required(response.execution)
+    }
+
+    /// The latest execution attempt of a proposal.
+    pub async fn get_delta_proposal_execution(
+        &mut self,
+        account_id: &AccountId,
+        proposal_id: &str,
+    ) -> ClientResult<ProposalExecution> {
+        let message = GetDeltaProposalExecutionRequest {
+            account_id: account_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+        };
+        let response = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.get_delta_proposal_execution(request).await
+            })
+            .await?;
+        crate::execution::required(response.execution)
+    }
+
+    /// The account's in-flight execution, if any. A finished execution is not in flight.
+    pub async fn get_current_execution(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<Option<ProposalExecution>> {
+        let message = GetCurrentExecutionRequest {
+            account_id: account_id.to_string(),
+        };
+        let response = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.get_current_execution(request).await
+            })
+            .await?;
+        response
+            .execution
+            .map(ProposalExecution::try_from)
+            .transpose()
     }
 }
 

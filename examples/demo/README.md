@@ -36,6 +36,18 @@ once.
 
 All of these steps are surfaced via the interactive menu—run it in multiple terminals to simulate different cosigners.
 
+## GUARDIAN Executes
+
+At startup the demo asks who executes the proposals the session creates. Pick **[2] GUARDIAN proves and submits them** to test server-side execution:
+
+1. Run the GUARDIAN server with `GUARDIAN_TX_PROVER_URL` set (for devnet, `https://tx-prover.devnet.miden.io`) and check that `GET /status` reports `"execution":{"enabled":true}`.
+2. Fund the multisig with the network's fee asset: GUARDIAN executes with the account paying its own fee, and an unfunded account fails with `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`.
+3. Create the proposal from the session in GUARDIAN-executes mode, so it carries the transaction request GUARDIAN reproduces. Cosigners can sign it from a session in either mode.
+4. **Execute a proposal** (`4` in Proposal Management) then asks GUARDIAN to execute it and waits until it is `committed` or `failed`. A failure says whether the proposal is kept (execute again once the cause is fixed) or removed (create a new one).
+5. **Show GUARDIAN execution status** (`9`) shows the execution in flight on the account and, for a proposal ID you enter, its latest execution.
+
+A proposal created by a session that executes itself carries no request, and GUARDIAN refuses it with `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`.
+
 ## Tips
 
 - Copy the full commitment hex shown when generating keys; you’ll need it for account creation.

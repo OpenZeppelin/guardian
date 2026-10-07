@@ -431,6 +431,7 @@ impl MultisigClient {
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
             self.key_manager.scheme(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 
@@ -495,6 +496,10 @@ impl MultisigClient {
         };
 
         let payload = crate::payload::ProposalPayload::new(&tx_summary)
+            .with_transaction_request(
+                self.execution_mode
+                    .attachment_of_bytes(transaction_request_bytes),
+            )
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures)
@@ -695,6 +700,7 @@ impl MultisigClient {
         let node_rpc = self.node_rpc_client();
         ProposalBuilder::new(transaction_type)
             .with_options(options)
+            .with_execution_mode(self.execution_mode)
             .build(
                 &mut self.miden_client,
                 &node_rpc,

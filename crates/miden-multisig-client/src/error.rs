@@ -28,6 +28,30 @@ pub enum MultisigError {
     #[error("GUARDIAN server error: {0}")]
     GuardianServer(String),
 
+    /// GUARDIAN refused a Guardian-execution request with a stable code, such as
+    /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. `retryable` is the
+    /// server's `meta.retryable`; `retry_after` is the server's backoff hint, when it sent one;
+    /// `blocking_proposal_id` names the proposal whose execution holds the account, on a
+    /// conflict.
+    #[error("GUARDIAN refused execution ({code}): {message}")]
+    GuardianExecutionRefused {
+        code: String,
+        message: String,
+        retryable: bool,
+        retry_after: Option<std::time::Duration>,
+        blocking_proposal_id: Option<String>,
+    },
+
+    /// [`wait_for_guardian_execution`](crate::MultisigClient::wait_for_guardian_execution)
+    /// reached its deadline before the execution finished. `last_observed` is the last execution
+    /// it read, if any read succeeded; the execution itself keeps running.
+    #[error("GUARDIAN execution of proposal {proposal_id} did not finish within {deadline:?}")]
+    GuardianExecutionWaitTimedOut {
+        proposal_id: String,
+        deadline: std::time::Duration,
+        last_observed: Option<Box<guardian_client::ProposalExecution>>,
+    },
+
     /// Miden client error.
     #[error("miden client error: {0}")]
     MidenClient(String),
