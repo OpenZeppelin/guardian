@@ -253,7 +253,7 @@ every other code is pre-boundary, so its proposal still exists and FR-042 permit
 | `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` | Submitted, but the candidate reached `discarded`, or the account was observed superseded (FR-040) |
 | `GUARDIAN_EXECUTION_EXPIRED` | Submitted, but the chain passed the recorded expiration block with the account still at base: the transaction can never land (FR-040) |
 | `GUARDIAN_EXECUTION_LEASE_EXPIRED` | Lease expired without renewal **before the no-retry boundary** (FR-028). After the boundary, expiry transfers ownership to reconciliation instead of failing, even if the network send never began |
-| `GUARDIAN_EXECUTION_ABANDONED` | Interrupted before the no-retry boundary and resolved failed on restart (FR-031) |
+| `GUARDIAN_EXECUTION_ABANDONED` | Interrupted before the no-retry boundary and resolved failed on restart, or failed by the process itself on a planned stop (FR-031) |
 
 `meta.bound` and `meta.reason` are closed vocabularies: consumers MUST handle every listed
 value, and adding one is a contract change.

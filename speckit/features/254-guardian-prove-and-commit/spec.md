@@ -1100,7 +1100,10 @@ This is an admission/execution policy, not a universal property of signed summar
   **not** crossed MUST be reported `failed` and released. One that had crossed it MUST be
   resolved by chain observation per FR-030. This is the one place a finer internal state is
   normatively required (FR-025). No execution may be left in a state where the account is
-  locked with nothing making progress.
+  locked with nothing making progress. A planned stop (SIGTERM) SHOULD apply the pre-boundary
+  rule before the process exits rather than leave it to the lease: refuse new executions,
+  fail attempts short of the boundary as `GUARDIAN_EXECUTION_ABANDONED`, release their
+  accounts, and let attempts past it finish their send within a bounded grace.
 - **FR-032**: Every refused or **pre-boundary** `failed` execution MUST leave the account
   unlocked, record no delta of its own, release its reservation, and leave the proposal
   intact and executable by any supported path. This MUST be covered by explicit tests for
