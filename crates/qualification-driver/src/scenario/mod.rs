@@ -102,6 +102,10 @@ pub struct Runner {
     pub http: reqwest::Client,
     pub fixtures: Option<Fixtures>,
     pub post_restart: bool,
+    /// This pass runs on a database an older release seeded and the image under test then
+    /// migrated. A scenario whose second pass reads back what only its own first pass wrote
+    /// runs that first pass here instead, because the older release could not have written it.
+    pub upgrade_target: bool,
     pub live: Option<live::LiveContext>,
     /// Scoped to one scenario: its actions share the account they act on, and
     /// it is cleared between scenarios so no run can inherit another's state.
@@ -123,6 +127,7 @@ impl Runner {
             http,
             fixtures: None,
             post_restart: false,
+            upgrade_target: false,
             live: None,
             session: tokio::sync::Mutex::new(None),
         })
@@ -135,6 +140,11 @@ impl Runner {
 
     pub fn post_restart(mut self, post_restart: bool) -> Self {
         self.post_restart = post_restart;
+        self
+    }
+
+    pub fn upgrade_target(mut self, upgrade_target: bool) -> Self {
+        self.upgrade_target = upgrade_target;
         self
     }
 

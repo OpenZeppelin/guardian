@@ -199,7 +199,11 @@ The target phase then runs **both** SDKs against the upgraded server, with
 without it the remaining scenarios re-register the fixture account, which is
 idempotent and would pass just as happily against an empty database, and an
 upgrade check that cannot tell a migrated database from a fresh one proves
-nothing.
+nothing. It also passes `--upgrade-target`, because the older release cannot
+write everything a second pass reads back: it has no Guardian execution, so
+`det-guardian-execution-refusals` runs its own first pass here, and the restart
+pass that follows (which restarts `server` and `server-executing`) reads what
+that pass left.
 
 Needs no treasury, so it belongs to the deterministic profile, and is refused
 on the live profile, where it would fund every scenario twice. The

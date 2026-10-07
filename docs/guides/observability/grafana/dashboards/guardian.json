@@ -2513,7 +2513,7 @@
       "id": 55,
       "fieldConfig": {
         "defaults": {
-          "unit": "ops",
+          "unit": "s",
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 12,

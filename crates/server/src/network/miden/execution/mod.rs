@@ -30,12 +30,12 @@ pub fn executor_for(
     prover: &crate::config::execution::ProverConfig,
 ) -> Result<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>, String> {
     use miden_client::remote_prover::RemoteTransactionProver;
-    use miden_client::rpc::{Endpoint, GrpcClient};
+    use miden_client::rpc::{Endpoint, GrpcClient, VerifyingRpcClient};
 
     let endpoint = Endpoint::try_from(node_endpoint)
         .map_err(|e| format!("invalid Miden node endpoint for execution: {e}"))?;
     let timeout_ms = u64::try_from(node_timeout.as_millis()).unwrap_or(u64::MAX);
-    let rpc = GrpcClient::new(&endpoint, timeout_ms);
+    let rpc = VerifyingRpcClient::new(GrpcClient::new(&endpoint, timeout_ms));
     let remote = RemoteTransactionProver::new(prover.url.expose_secret().to_string())
         .with_timeout(prover.timeout);
     let prover: std::sync::Arc<dyn miden_client::transaction::TransactionProver + Send + Sync> =

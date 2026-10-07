@@ -18,6 +18,7 @@ this doc covers *how* to bootstrap, replace, and respond to compromise.
 | Storage encryption key (optional) | Secrets Manager — ID from `GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID` | Created once against an empty store; rotate by adding keys to the structured secret | ECS task **runtime** role, at server startup (loaded once, cached) |
 | Operator public keys | Secrets Manager (Terraform-managed or pre-existing ARN) | Updated by editing Terraform var or rotating the secret value | ECS task runtime role, on each dashboard challenge **and each authenticated `/dashboard/*` request** (hot-reloaded — no restart needed) |
 | EVM allowed chains + RPC URLs | Secrets Manager (Terraform-managed) | Updated by editing `config/evm/chains.json` and redeploying | ECS task execution role; surfaced as env to the task |
+| Remote prover URL (optional, Guardian execution) | Secrets Manager: Terraform-managed `<stack>/server/tx-prover-url` from `guardian_tx_prover_url`, or a pre-existing ARN in `guardian_tx_prover_url_secret_arn` | Updated by changing the Terraform var (or rotating the existing secret) and redeploying; the managed secret is deleted immediately on destroy (`recovery_window_in_days = 0`) | ECS task execution role; surfaced as `GUARDIAN_TX_PROVER_URL` to the task |
 
 The ACK secret name is one value that travels through three places. They
 have **different variable names by design** — each layer has a distinct
@@ -543,6 +544,7 @@ relevant principals you should see hitting each secret:
 | ACK Falcon / ECDSA | ECS task runtime role (on cold start) + operators running `bootstrap-ack-keys` or emergency replacement |
 | Operator pubkeys | ECS task runtime role + operators updating the list |
 | EVM chains / RPCs | ECS task execution role only |
+| Prover URL | ECS task execution role only |
 
 Any other principal touching these secrets is suspicious.
 

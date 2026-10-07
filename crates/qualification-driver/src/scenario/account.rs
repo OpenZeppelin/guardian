@@ -705,6 +705,10 @@ pub async fn assert_execution_unavailable(runner: &Runner) -> ActionOutcome {
 /// execution and so refuses every request at the capability gate before any of this is
 /// reached. Its chain RPC is the stack's stub, so an accepted execution fails at its first chain
 /// read: deterministically, before the no-retry boundary, with the proposal untouched.
+///
+/// On an upgrade target the first pass runs even under `--post-restart`: the seed phase talks
+/// to an older release that cannot create an execution, so there is nothing to read back yet.
+/// The restart pass that follows the upgrade then reads what this pass left.
 pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
     use guardian_client::execution::ExecutionFailureCode;
     use guardian_client::{ExecutionState, Signer};
@@ -723,7 +727,7 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
         Ok(id) => id,
         Err(outcome) => return outcome,
     };
-    if runner.post_restart {
+    if runner.post_restart && !runner.upgrade_target {
         return assert_execution_outcome_survived(fixtures, &id, &endpoint).await;
     }
     let cosigners = || {

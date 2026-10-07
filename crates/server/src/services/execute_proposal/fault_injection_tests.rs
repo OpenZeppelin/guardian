@@ -70,6 +70,11 @@ impl Faults {
         *self.chain.observed_block.lock().unwrap() = block;
     }
 
+    /// How long the chain's next account reads take to answer.
+    fn chain_answers_after(&self, delay: Duration) {
+        *self.chain.observation_delay.lock().unwrap() = delay;
+    }
+
     async fn reconcile(&self, kind: PassKind) -> Reconciled {
         let report = Reconciler::new(&self.f.state)
             .pass(&self.f.state, kind)
@@ -930,4 +935,29 @@ async fn a_worker_whose_reservation_is_taken_just_before_the_send_never_sends() 
         .expect("the attempt is left to its new owner");
     assert_eq!(record.reservation.fence.holder_id, "successor");
     assert!(record.outcome.is_none(), "the stale worker wrote nothing");
+}
+
+#[tokio::test]
+async fn a_chain_read_slower_than_half_the_lease_settles_nothing_and_keeps_the_reservation() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(357);
+    faults.chain_answers_after(LEASE);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: BASE.to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::ObservationUnavailable
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+
+    faults.chain_answers_after(LEASE / 4);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: BASE.to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired)
+    );
 }

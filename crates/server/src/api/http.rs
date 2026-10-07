@@ -641,6 +641,7 @@ pub struct CurrentExecutionQuery {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct CurrentExecutionResponse {
+    #[schema(required = true)]
     pub execution: Option<crate::services::execution_status::ExecutionEnvelope>,
 }
 

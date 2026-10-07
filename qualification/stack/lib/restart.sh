@@ -1,12 +1,14 @@
 # shellcheck shell=bash
-# Restarts only the Guardian container, leaving the database and its volume
-# untouched. Restarting the whole stack would prove nothing: the data has to
-# outlive the process that wrote it, not be rewritten by a fresh one.
+# Restarts the Guardian containers whose data the restart pass reads back,
+# leaving the database and its volumes untouched. Restarting the whole stack
+# would prove nothing: the data has to outlive the process that wrote it, not be
+# rewritten by a fresh one. The executing server is included because the
+# refusals scenario asserts that its failed execution survives a restart.
 
 qual_restart_server() {
   local project="$1" compose_file="$2" env_file="$3"
   docker compose -p "${project}" -f "${compose_file}" --env-file "${env_file}" \
-    restart server >/dev/null 2>&1
+    restart server server-executing >/dev/null 2>&1
 }
 
 # Replaces the Guardian container with a different image, leaving the database

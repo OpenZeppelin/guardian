@@ -16,7 +16,7 @@ services:
     ports:
       - "${QUAL_HTTP_PORT:-3000}:3000"
       - "${QUAL_GRPC_PORT:-50051}:50051"
-      - "${QUAL_METRICS_PORT:-9464}:9464"
+      - "127.0.0.1:${QUAL_METRICS_PORT:-9464}:9464"
     volumes:
       - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
       - ${QUAL_OPERATOR_DIR:?set QUAL_OPERATOR_DIR}:/var/guardian/operator:ro
