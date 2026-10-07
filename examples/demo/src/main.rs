@@ -5,7 +5,8 @@ mod state;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
+    MultisigClient, ProposalExecutionMode, ProverConfig, ProverRetryPolicy, RpcConfig,
+    RpcRetryPolicy, SignatureScheme,
 };
 use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
@@ -148,6 +149,21 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
         SignatureScheme::Ecdsa => "ECDSA",
     };
 
+    println!("\n  Who executes proposals this session creates?");
+    println!("    [1] This demo proves and submits them");
+    println!("    [2] GUARDIAN proves and submits them (the server needs GUARDIAN_TX_PROVER_URL)");
+    println!();
+
+    let execution_choice = prompt_input(editor, "Proposal execution [1]: ")?;
+    let execution_mode = match execution_choice.trim() {
+        "" | "1" => ProposalExecutionMode::SelfExecuted,
+        "2" => ProposalExecutionMode::GuardianExecutable,
+        _ => {
+            println!("  Invalid choice, the demo executes");
+            ProposalExecutionMode::SelfExecuted
+        }
+    };
+
     print_waiting(&format!(
         "Initializing MultisigClient with new {} keypair",
         scheme_name
@@ -164,13 +180,21 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
 
     let mut state = SessionState::new()?;
     state
-        .initialize_client(builder, signature_scheme, network_id)
+        .initialize_client(builder, signature_scheme, network_id, execution_mode)
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;
 
     print_success("Client initialized!");
     println!("  Signature scheme: {}", state.signature_scheme_name());
+    println!(
+        "  Proposal execution: {}",
+        if state.guardian_executes() {
+            "GUARDIAN proves and submits"
+        } else {
+            "this demo proves and submits"
+        }
+    );
     if state.is_ecdsa() {
         println!("  Your commitment: {}", shorten_hex_32(&commitment_hex));
         print_full_hex("  Your commitment (full)", &commitment_hex);
