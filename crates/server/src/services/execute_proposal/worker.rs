@@ -185,10 +185,12 @@ impl PhaseTimings {
         }
     }
 
-    /// Closes `phase`, which ran since the previous mark.
+    /// Closes `phase`, which ran since the previous mark, and records it.
     fn mark(&mut self, phase: &'static str) {
         let now = std::time::Instant::now();
-        self.phases.push((phase, now - self.last));
+        let took = now - self.last;
+        crate::metrics::execution::record_phase(phase, took);
+        self.phases.push((phase, took));
         self.last = now;
     }
 
@@ -246,12 +248,45 @@ pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
     drop(job.permit);
 }
 
+/// A shutdown stops the attempt anywhere short of the boundary commit, never inside it: the work
+/// before it only reads, signs and proves, so dropping it leaves nothing behind but the
+/// reservation, which the failure then releases.
 async fn run_to_boundary(
     state: &AppState,
     job: &ExecutionJob,
     heartbeat: &Heartbeat,
     timings: &mut PhaseTimings,
 ) -> Result<Box<dyn ExecutionAttempt>, Stop> {
+    let (attempt, acknowledged, proven) = tokio::select! {
+        biased;
+        _ = state.execution.shutdown.cancelled() => {
+            return Err(ExecutionFailure::new(
+                ExecutionFailureCode::Abandoned,
+                "the server shut down before the attempt reached the no-retry boundary; \
+                 request execution again",
+            )
+            .into());
+        }
+        reached = approach_boundary(state, job, heartbeat, timings) => reached?,
+    };
+    cross_boundary(state, job, acknowledged, &proven).await?;
+    timings.mark("boundary");
+    Ok(attempt)
+}
+
+async fn approach_boundary(
+    state: &AppState,
+    job: &ExecutionJob,
+    heartbeat: &Heartbeat,
+    timings: &mut PhaseTimings,
+) -> Result<
+    (
+        Box<dyn ExecutionAttempt>,
+        AcknowledgedDelta,
+        ProvenTransactionInfo,
+    ),
+    Stop,
+> {
     let current_state = state
         .storage
         .pull_state(&job.account_id)
@@ -313,10 +348,7 @@ async fn run_to_boundary(
     ensure_admissible(state, job).await?;
     ensure_unexpired(job, &proven).await?;
     timings.mark("checks");
-
-    cross_boundary(state, job, acknowledged, &proven).await?;
-    timings.mark("boundary");
-    Ok(attempt)
+    Ok((attempt, acknowledged, proven))
 }
 
 async fn acknowledge(

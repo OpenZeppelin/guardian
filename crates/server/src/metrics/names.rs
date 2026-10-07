@@ -63,6 +63,7 @@ pub const EXECUTION_OUTCOMES_TOTAL: &str = "guardian_execution_outcomes_total";
 pub const EXECUTION_CHAIN_VIEW_DURATION_SECONDS: &str =
     "guardian_execution_chain_view_duration_seconds";
 pub const EXECUTION_PROVING_DURATION_SECONDS: &str = "guardian_execution_proving_duration_seconds";
+pub const EXECUTION_PHASE_DURATION_SECONDS: &str = "guardian_execution_phase_duration_seconds";
 pub const EXECUTION_PROVER_RETRIES_TOTAL: &str = "guardian_execution_prover_retries_total";
 pub const EXECUTION_CAPACITY_REFUSALS_TOTAL: &str = "guardian_execution_capacity_refusals_total";
 pub const EXECUTION_OLDEST_RESERVATION_AGE_SECONDS: &str =
@@ -141,6 +142,7 @@ pub const LABEL_POOL: &str = "pool";
 pub const LABEL_VERSION: &str = "version";
 pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
+pub const LABEL_PHASE: &str = "phase";
 
 /// The closed value set for `LABEL_TRANSPORT`.
 pub const TRANSPORT_HTTP: &str = "http";
@@ -165,6 +167,7 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_VERSION,
     LABEL_GIT_COMMIT,
     LABEL_PROFILE,
+    LABEL_PHASE,
 ];
 
 /// Metric type, mirroring the Prometheus instrument kinds in use.
@@ -331,6 +334,12 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Histogram,
         labels: &[],
         help: "Time from the first proving attempt to a proof or a terminal prover failure, retries included, in seconds.",
+    },
+    MetricDef {
+        name: EXECUTION_PHASE_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[LABEL_PHASE],
+        help: "Time a Guardian execution worker spent in each phase (prepare, acknowledge, execute, prove, seal, checks, boundary, send), in seconds.",
     },
     MetricDef {
         name: EXECUTION_PROVER_RETRIES_TOTAL,

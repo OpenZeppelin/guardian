@@ -72,6 +72,11 @@ impl ExecutionDataStore {
         self.foreign.failure()
     }
 
+    /// Time spent reading foreign accounts from the node so far in this attempt.
+    pub fn foreign_fetch_time(&self) -> std::time::Duration {
+        self.foreign.fetch_time()
+    }
+
     /// Starts a new execution's record of foreign-account failures. The loaded accounts are
     /// kept: they are pinned to the same reference block.
     pub fn begin_execution(&self) {

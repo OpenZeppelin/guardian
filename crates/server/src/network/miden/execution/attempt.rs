@@ -263,6 +263,7 @@ impl ProposalExecutor for MidenExecutor {
         &self,
         input: ExecutionInput,
     ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
+        let started = std::time::Instant::now();
         let codec =
             |message: String| ExecutionFailure::new(ExecutionFailureCode::RequestCodec, message);
         let envelope: TransactionRequestEnvelope = input
@@ -289,6 +290,7 @@ impl ProposalExecutor for MidenExecutor {
         })?;
         let account = Account::from_json(&input.state_json).map_err(codec)?;
         let selected = select(&input, &account, &summary);
+        let decoded = started.elapsed();
 
         if self.rpc.has_genesis_commitment().is_none() {
             let (genesis, _) = self
@@ -313,6 +315,8 @@ impl ProposalExecutor for MidenExecutor {
                 format!("approval expired at block {approval_expiration}; the tip is {tip}"),
             ));
         }
+
+        let tip_read = started.elapsed() - decoded;
 
         let unsigned = request
             .execution_inputs(&account, [])
@@ -343,11 +347,10 @@ impl ProposalExecutor for MidenExecutor {
         let assembly = std::time::Instant::now();
         let view = build_chain_view(self.rpc.as_ref(), &tracked)
             .await
-            .inspect(|_| {
-                metrics::histogram!(crate::metrics::names::EXECUTION_CHAIN_VIEW_DURATION_SECONDS)
-                    .record(assembly.elapsed().as_secs_f64());
-            })
             .map_err(chain_view_failure)?;
+        let chain_view = assembly.elapsed();
+        metrics::histogram!(crate::metrics::names::EXECUTION_CHAIN_VIEW_DURATION_SECONDS)
+            .record(chain_view.as_secs_f64());
         let notes: Vec<_> = unsigned
             .input_notes
             .iter()
@@ -358,6 +361,7 @@ impl ProposalExecutor for MidenExecutor {
         let reference = store.chain().reference_block();
         let executor: TransactionExecutor<'_, '_, _, UnreachableAuth> =
             TransactionExecutor::new(&store);
+        let reproducing = std::time::Instant::now();
         let reproduced = match executor
             .execute_transaction(
                 account.id(),
@@ -376,6 +380,19 @@ impl ProposalExecutor for MidenExecutor {
                 ));
             }
         };
+        let unsigned_run = reproducing.elapsed();
+        let foreign_fetch = store.foreign_fetch_time();
+        tracing::debug!(
+            account_id = %account.id(),
+            decode_ms = decoded.as_millis(),
+            tip_ms = tip_read.as_millis(),
+            chain_view_ms = chain_view.as_millis(),
+            unsigned_run_ms = unsigned_run.as_millis(),
+            foreign_fetch_ms = foreign_fetch.as_millis(),
+            vm_ms = unsigned_run.saturating_sub(foreign_fetch).as_millis(),
+            total_ms = started.elapsed().as_millis(),
+            "Guardian execution prepare breakdown"
+        );
         if reproduced.to_commitment() != summary.to_commitment() {
             log_output_note_difference(&summary, &reproduced);
             return Err(ExecutionFailure::new(

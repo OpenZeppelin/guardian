@@ -624,6 +624,7 @@ impl ServerBuilder {
                 &self.execution,
             ),
             config: self.execution.clone(),
+            shutdown: tokio_util::sync::CancellationToken::new(),
         };
 
         let startup_info = startup::StartupInfo::new(

@@ -37,6 +37,7 @@ pub struct ForeignAccounts {
     reference_block: BlockNumber,
     loaded: Mutex<BTreeMap<AccountId, (Account, AccountInputs)>>,
     failure: Mutex<Option<ForeignAccountUnavailable>>,
+    fetching: Mutex<std::time::Duration>,
 }
 
 impl ForeignAccounts {
@@ -46,6 +47,7 @@ impl ForeignAccounts {
             reference_block,
             loaded: Mutex::new(BTreeMap::new()),
             failure: Mutex::new(None),
+            fetching: Mutex::new(std::time::Duration::ZERO),
         }
     }
 
@@ -53,6 +55,11 @@ impl ForeignAccounts {
     /// an opaque data-store error, so the typed cause is kept here for the caller.
     pub fn failure(&self) -> Option<ForeignAccountUnavailable> {
         self.failure.lock().expect("foreign failure lock").clone()
+    }
+
+    /// Time spent reading foreign accounts from the node so far in this attempt.
+    pub fn fetch_time(&self) -> std::time::Duration {
+        *self.fetching.lock().expect("foreign fetch time lock")
     }
 
     /// Forgets the recorded failure, so the next execution reports only its own.
@@ -66,7 +73,9 @@ impl ForeignAccounts {
         account_id: AccountId,
         ref_block: BlockNumber,
     ) -> Result<AccountInputs, ForeignAccountUnavailable> {
+        let started = std::time::Instant::now();
         let result = self.load(account_id, ref_block).await;
+        *self.fetching.lock().expect("foreign fetch time lock") += started.elapsed();
         if let Err(failure) = &result {
             self.failure
                 .lock()

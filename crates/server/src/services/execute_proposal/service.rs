@@ -25,6 +25,9 @@ pub struct ExecutionState {
     /// One permit per execution this process holds in memory at once, from acceptance until its
     /// worker finishes: a safety bound sized to memory, not a throughput setting.
     pub capacity: Arc<tokio::sync::Semaphore>,
+    /// Cancelled when the process starts shutting down: no execution is accepted after it, and
+    /// attempts short of the no-retry boundary fail and release their accounts.
+    pub shutdown: tokio_util::sync::CancellationToken,
 }
 
 impl ExecutionState {
@@ -44,6 +47,7 @@ impl Default for ExecutionState {
             leases: Arc::new(InMemoryExecutionLeases::new()),
             executor: None,
             replica_id: "single-process".to_string(),
+            shutdown: tokio_util::sync::CancellationToken::new(),
         }
     }
 }
@@ -66,6 +70,22 @@ impl ExecutionState {
                 .err()
                 .unwrap_or(ExecutionUnavailable::ProverNotConfigured)),
         }
+    }
+
+    /// Stops accepting executions, fails every attempt short of the no-retry boundary, and waits
+    /// up to `grace` for every worker to finish. Returns whether all of them did; an attempt
+    /// still running at exit is resolved by reconciliation on another replica or the next start.
+    ///
+    /// The capacity is closed on return, whatever the outcome, so no request admitted after the
+    /// drain can take a permit and reserve an account the exiting process would leave held.
+    pub async fn drain(&self, grace: std::time::Duration) -> bool {
+        self.shutdown.cancel();
+        let every_permit = self
+            .capacity
+            .acquire_many(self.config.max_concurrent_executions);
+        let drained = matches!(tokio::time::timeout(grace, every_permit).await, Ok(Ok(_)));
+        self.capacity.close();
+        drained
     }
 
     fn available(&self, canonicalization_enabled: bool) -> Result<Arc<dyn ProposalExecutor>> {
@@ -164,6 +184,10 @@ pub async fn request_execution(
         });
     }
 
+    if state.execution.shutdown.is_cancelled() {
+        tracing::info!(%account_id, %proposal_id, "execution refused: the server is shutting down");
+        return Err(GuardianError::ExecutionBusy);
+    }
     let Ok(permit) = state.execution.capacity.clone().try_acquire_owned() else {
         crate::metrics::execution::record_capacity_refusal();
         tracing::info!(%account_id, %proposal_id, "execution refused: the process admits no more executions at once");
@@ -180,6 +204,11 @@ pub async fn request_execution(
     else {
         return already_executing(state, &account_id, proposal_id).await;
     };
+    if state.execution.shutdown.is_cancelled() {
+        release_quietly(elector.as_ref(), lease).await;
+        tracing::info!(%account_id, %proposal_id, "execution refused: the server is shutting down");
+        return Err(GuardianError::ExecutionBusy);
+    }
     let fence = LeaseFence::from(&lease);
     let now = Utc::now();
     let reservation = NewExecutionReservation {

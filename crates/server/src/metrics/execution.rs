@@ -2,7 +2,8 @@
 
 use crate::metrics::names::{
     EXECUTION_CAPACITY_REFUSALS_TOTAL, EXECUTION_OBSERVATION_OUTAGE_SECONDS,
-    EXECUTION_OLDEST_RESERVATION_AGE_SECONDS, EXECUTION_OUTCOMES_TOTAL, LABEL_CODE, LABEL_OUTCOME,
+    EXECUTION_OLDEST_RESERVATION_AGE_SECONDS, EXECUTION_OUTCOMES_TOTAL,
+    EXECUTION_PHASE_DURATION_SECONDS, LABEL_CODE, LABEL_OUTCOME, LABEL_PHASE,
 };
 use crate::storage::ExecutionFailureCode;
 
@@ -19,6 +20,12 @@ pub fn record_outcome(failure: Option<&ExecutionFailureCode>) {
 /// Counts a request refused because the process already ran its maximum number of executions.
 pub fn record_capacity_refusal() {
     metrics::counter!(EXECUTION_CAPACITY_REFUSALS_TOTAL).increment(1);
+}
+
+/// Records how long one worker phase took. `phase` is one of the worker's fixed phase names.
+pub fn record_phase(phase: &'static str, took: std::time::Duration) {
+    metrics::histogram!(EXECUTION_PHASE_DURATION_SECONDS, LABEL_PHASE => phase)
+        .record(took.as_secs_f64());
 }
 
 pub fn record_oldest_reservation_age(seconds: f64) {

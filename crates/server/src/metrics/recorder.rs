@@ -51,6 +51,13 @@ const PROVING_BUCKETS: &[f64] = &[
     1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1200.0,
 ];
 
+/// Execution phases range from milliseconds (acknowledge, boundary) to the proving range, where
+/// retries against an unreachable prover run until the transaction expires.
+const EXECUTION_PHASE_BUCKETS: &[f64] = &[
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0,
+    600.0, 1200.0,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -99,6 +106,11 @@ pub fn build_recorder() -> PrometheusRecorder {
             PROVING_BUCKETS,
         )
         .expect("static proving buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::EXECUTION_PHASE_DURATION_SECONDS.to_string()),
+            EXECUTION_PHASE_BUCKETS,
+        )
+        .expect("static execution phase buckets are non-empty")
         .build_recorder()
 }
 

@@ -664,6 +664,7 @@ behavior.
 | `guardian_execution_reconcile_outcomes_total` | counter | `outcome` |
 | `guardian_execution_chain_view_duration_seconds` | histogram | — |
 | `guardian_execution_proving_duration_seconds` | histogram (1 s to 20 min) | — |
+| `guardian_execution_phase_duration_seconds` | histogram | `phase` (`prepare`, `acknowledge`, `execute`, `prove`, `seal`, `checks`, `boundary`, `send`) |
 | `guardian_execution_prover_retries_total` | counter | — |
 | `guardian_execution_capacity_refusals_total` | counter | none |
 | `guardian_execution_oldest_reservation_age_seconds` | gauge | — |

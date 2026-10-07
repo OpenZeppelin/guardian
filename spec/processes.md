@@ -661,7 +661,10 @@ sequenceDiagram
 Only promotion writes `committed`. When a worker's lease lapses, the reconciler takes the
 reservation over by compare-and-set on its fence. Before the boundary it fails the attempt
 (`GUARDIAN_EXECUTION_LEASE_EXPIRED`, or `GUARDIAN_EXECUTION_ABANDONED` on the first pass after a
-restart). After it, it settles only from the chain:
+restart). A process that is asked to stop (SIGTERM or Ctrl-C) refuses new executions as busy,
+fails its own attempts short of the boundary with `GUARDIAN_EXECUTION_ABANDONED`, and lets
+attempts past it finish their send, so a planned stop does not hold accounts until their leases
+lapse. After the boundary, reconciliation settles only from the chain:
 
 - the account at the expected commitment: wait for promotion, write nothing;
 - still at the base with the chain strictly past the expiration block: `GUARDIAN_EXECUTION_EXPIRED`;

@@ -285,10 +285,65 @@ impl ServerHandle {
             return;
         }
 
-        // Wait for all servers
-        for task in tasks {
-            let _ = task.await;
+        let servers = async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        };
+        tokio::select! {
+            _ = servers => {}
+            _ = shutdown_signal() => self.drain_executions().await,
         }
+    }
+
+    /// Releases the accounts of executions short of the no-retry boundary before the process
+    /// exits, so a deploy does not hold them until their leases lapse.
+    async fn drain_executions(&self) {
+        tracing::info!(
+            grace_secs = EXECUTION_DRAIN_GRACE.as_secs(),
+            "shutdown requested; draining Guardian executions"
+        );
+        if self.app_state.execution.drain(EXECUTION_DRAIN_GRACE).await {
+            tracing::info!("Guardian executions drained; exiting");
+        } else {
+            tracing::warn!(
+                "Guardian executions still running at exit; reconciliation resolves them once \
+                 their leases lapse"
+            );
+        }
+    }
+}
+
+/// How long a shutdown waits for execution workers. A worker short of the boundary fails at
+/// once, and one past it needs only its send, so this fits inside Docker's default 10-second stop
+/// timeout.
+const EXECUTION_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Resolves on Ctrl-C, or on SIGTERM where the platform has it (what Docker and ECS send).
+async fn shutdown_signal() {
+    let interrupt = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "cannot listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
     }
 }
 

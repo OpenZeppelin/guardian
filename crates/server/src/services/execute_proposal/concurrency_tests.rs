@@ -134,3 +134,76 @@ async fn a_client_push_is_refused_while_an_execution_holds_the_account() {
         other => panic!("after the boundary: expected an execution conflict, got {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn a_shutdown_fails_an_attempt_short_of_the_boundary_and_releases_its_account() {
+    let f = Fixture::new(Script {
+        proving_time: std::time::Duration::from_secs(30),
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    f.settle(|state| state == ExecutionState::Proving).await;
+
+    assert!(
+        f.state
+            .execution
+            .drain(std::time::Duration::from_secs(5))
+            .await,
+        "the worker did not finish within the grace"
+    );
+
+    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
+    assert_eq!(
+        failed.error.as_ref().map(|error| error.code.as_str()),
+        Some("GUARDIAN_EXECUTION_ABANDONED")
+    );
+    assert!(failed.proposal_exists);
+    assert!(
+        f.state
+            .storage
+            .load_active_execution(ACCOUNT)
+            .await
+            .unwrap()
+            .is_none(),
+        "the account is still reserved"
+    );
+    assert!(
+        f.state.storage.pull_delta(ACCOUNT, 1).await.is_err(),
+        "no candidate was admitted"
+    );
+    assert_eq!(f.calls.lock().unwrap().submitted, 0);
+}
+
+#[tokio::test]
+async fn a_request_during_shutdown_is_refused_as_busy_and_reserves_nothing() {
+    let f = Fixture::new(Script::default()).await;
+    assert!(
+        f.state
+            .execution
+            .drain(std::time::Duration::from_secs(1))
+            .await
+    );
+    assert!(matches!(
+        f.request().await,
+        Err(GuardianError::ExecutionBusy)
+    ));
+    assert!(
+        f.state
+            .storage
+            .load_active_execution(ACCOUNT)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(f.calls.lock().unwrap().prepared, 0);
+    assert!(
+        f.state
+            .execution
+            .capacity
+            .clone()
+            .try_acquire_owned()
+            .is_err(),
+        "a drained process still hands out execution permits"
+    );
+}

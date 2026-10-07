@@ -50,6 +50,7 @@ locals {
     "guardian_release_sweep_rotation_duration_seconds",
     "guardian_execution_chain_view_duration_seconds",
     "guardian_execution_proving_duration_seconds",
+    "guardian_execution_phase_duration_seconds",
   ]
 
   http_error_rate_expression = "100 * (${join(" + ", [for s in local.http_error_statuses : "FILL(h${s}, 0)"])}) / FILL(hall, 1)"
@@ -243,6 +244,10 @@ locals {
           {
             metric_name_selectors = ["^guardian_execution_reconcile_outcomes_total$"]
             dimensions            = [["outcome"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_execution_phase_duration_seconds$"]
+            dimensions            = [["phase"]]
           },
           {
             metric_name_selectors = [
@@ -588,11 +593,13 @@ resource "aws_cloudwatch_dashboard" "server" {
       {
         type = "metric", x = 16, y = 42, width = 8, height = 6
         properties = {
-          title  = "Proving & chain view (avg s), prover retries"
+          title  = "Execution phases (avg s), prover retries"
           region = var.aws_region, view = "timeSeries", period = 300
           metrics = [
             ["${local.metrics_namespace}", "guardian_execution_proving_duration_seconds", { stat = "Average", label = "proving avg" }],
             ["${local.metrics_namespace}", "guardian_execution_chain_view_duration_seconds", { stat = "Average", label = "chain view avg" }],
+            ["${local.metrics_namespace}", "guardian_execution_phase_duration_seconds", "phase", "prepare", { stat = "Average", label = "prepare avg" }],
+            ["${local.metrics_namespace}", "guardian_execution_phase_duration_seconds", "phase", "send", { stat = "Average", label = "send avg" }],
             ["${local.metrics_namespace}", "guardian_execution_prover_retries_total", { stat = "Sum", label = "prover retries", yAxis = "right" }],
           ]
         }

@@ -241,6 +241,17 @@ database's guarantees:
   `rds_multi_az = true` if the deployment needs automatic failover to a
   standby replica; this is an availability trade-off (roughly double the
   instance cost), not a backup mechanism.
+- **Guardian execution across a planned stop.** On SIGTERM (what ECS and
+  Docker send) the server refuses new executions with
+  `GUARDIAN_EXECUTION_BUSY`, fails its attempts that have not reached the
+  boundary commit with `GUARDIAN_EXECUTION_ABANDONED` (retryable, the
+  proposal is kept), and waits up to 8 seconds for attempts past it to send,
+  then exits. A deploy or scale-in therefore releases those accounts at once
+  instead of after the 120-second lease. A kill that skips SIGTERM (OOM,
+  `SIGKILL`) still leaves them to the lease and reconciliation, and so does
+  an attempt whose local transaction execution is already running on the
+  CPU when the signal lands: it stops only at its next await, which can
+  come after the grace.
 - **Guardian execution across a crash (accepted risk).** If the process dies
   after an execution's boundary commit (state `submitted`) and before the
   send has a definite outcome, the transaction may never have been sent.
