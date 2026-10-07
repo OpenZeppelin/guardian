@@ -221,6 +221,29 @@ pub struct CandidateAdmission {
     pub now: DateTime<Utc>,
 }
 
+impl CandidateAdmission {
+    /// The boundary evidence must describe the candidate it is admitted with exactly, or
+    /// canonicalization could not tell that the candidate belongs to the execution.
+    pub fn ensure_evidence_describes_candidate(&self) -> Result<(), String> {
+        if self.evidence.account_id != self.delta.account_id
+            || self.evidence.candidate_nonce != self.delta.nonce
+            || self.evidence.base_commitment != self.delta.prev_commitment
+        {
+            return Err(format!(
+                "submission evidence for account {} nonce {} on base {} does not describe the \
+                 candidate for account {} nonce {} on base {}",
+                self.evidence.account_id,
+                self.evidence.candidate_nonce,
+                self.evidence.base_commitment,
+                self.delta.account_id,
+                self.delta.nonce,
+                self.delta.prev_commitment
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// A terminal failure written by the execution's current owner.
 #[derive(Debug, Clone)]
 pub struct ExecutionResolution {
@@ -243,6 +266,9 @@ pub enum ReservationWrite {
         proposal_id: String,
     },
     CandidateExists,
+    /// The proposal left storage after the request read it, for example because an earlier
+    /// attempt's submission was definitely rejected. Nothing is reserved.
+    ProposalGone,
     StaleLease,
 }
 

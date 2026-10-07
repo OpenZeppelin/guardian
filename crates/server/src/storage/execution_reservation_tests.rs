@@ -106,7 +106,21 @@ impl Harness {
         }
     }
 
+    /// A reservation is refused for a proposal storage no longer holds, so tests that reserve
+    /// store the proposal first unless they already did.
+    async fn ensure_proposal(&self, proposal_id: &str) {
+        if self
+            .storage
+            .pull_delta_proposal(&self.account_id, proposal_id)
+            .await
+            .is_err()
+        {
+            self.store_proposal(proposal_id, 1).await;
+        }
+    }
+
     async fn reserve(&self, proposal_id: &str, fence: &LeaseFence) -> u32 {
+        self.ensure_proposal(proposal_id).await;
         match self
             .storage
             .create_execution_reservation(self.new_reservation(proposal_id, fence))
@@ -234,6 +248,24 @@ async fn reservation_is_created_only_on_a_clean_account(h: &Harness) {
             holder_id: fence.holder_id.clone(),
             proposal_id: proposal.clone(),
         }
+    );
+}
+
+async fn reservation_is_refused_for_a_proposal_storage_no_longer_holds(h: &Harness) {
+    let fence = h.lease("worker-a", Duration::from_secs(60)).await;
+    assert_eq!(
+        h.storage
+            .create_execution_reservation(h.new_reservation(&proposal_commitment(9), &fence))
+            .await
+            .unwrap(),
+        ReservationWrite::ProposalGone
+    );
+    assert!(
+        h.storage
+            .load_active_execution(&h.account_id)
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 
@@ -367,12 +399,28 @@ async fn admission_refuses_a_moved_base(h: &Harness) {
     let attempt = h.reserve(&proposal, &owner).await;
     let mut admission = h.admission(&proposal, attempt, &owner, 1);
     admission.delta.prev_commitment = "0xelsewhere".to_string();
+    admission.evidence.base_commitment = "0xelsewhere".to_string();
     assert_eq!(
         h.storage
             .admit_execution_candidate(h.metadata.as_ref(), admission)
             .await
             .unwrap(),
         AdmissionWrite::StaleBase
+    );
+    assert!(h.delta_at(1).await.is_none());
+}
+
+async fn admission_refuses_evidence_that_does_not_describe_its_candidate(h: &Harness) {
+    let proposal = proposal_commitment(1);
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let attempt = h.reserve(&proposal, &owner).await;
+    let mut admission = h.admission(&proposal, attempt, &owner, 1);
+    admission.evidence.candidate_nonce = 2;
+    assert!(
+        h.storage
+            .admit_execution_candidate(h.metadata.as_ref(), admission)
+            .await
+            .is_err()
     );
     assert!(h.delta_at(1).await.is_none());
 }
@@ -1278,9 +1326,11 @@ mod filesystem {
 
     filesystem_tests!(
         reservation_is_created_only_on_a_clean_account,
+        reservation_is_refused_for_a_proposal_storage_no_longer_holds,
         reservation_is_refused_while_a_client_candidate_exists,
         only_the_owner_crosses_the_boundary,
         admission_refuses_a_moved_base,
+        admission_refuses_evidence_that_does_not_describe_its_candidate,
         admission_refuses_an_account_paused_after_the_reservation,
         a_client_candidate_is_refused_while_reserved,
         a_client_candidate_is_refused_while_guardian_holds_its_own,
@@ -1636,6 +1686,7 @@ mod filesystem {
         let h = Harness::filesystem().await;
         let proposal = proposal_commitment(1);
         let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+        h.ensure_proposal(&proposal).await;
         let mut reservation = h.new_reservation(&proposal, &owner);
         reservation.lease_expires_at = Utc::now() + chrono::Duration::milliseconds(20);
         let ReservationWrite::Created { attempt } = h
@@ -1723,9 +1774,11 @@ mod postgres {
 
     postgres_tests!(
         reservation_is_created_only_on_a_clean_account,
+        reservation_is_refused_for_a_proposal_storage_no_longer_holds,
         reservation_is_refused_while_a_client_candidate_exists,
         only_the_owner_crosses_the_boundary,
         admission_refuses_a_moved_base,
+        admission_refuses_evidence_that_does_not_describe_its_candidate,
         admission_refuses_an_account_paused_after_the_reservation,
         a_client_candidate_is_refused_while_reserved,
         a_client_candidate_is_refused_while_guardian_holds_its_own,
@@ -1781,6 +1834,9 @@ mod postgres {
         let pg = pg_harness().await;
         let h = Arc::new(pg.harness);
         let fence = h.lease("worker-a", Duration::from_secs(60)).await;
+        for tag in 0..8u8 {
+            h.ensure_proposal(&proposal_commitment(tag + 1)).await;
+        }
         let attempts = (0..8u8).map(|tag| {
             let h = h.clone();
             let fence = fence.clone();

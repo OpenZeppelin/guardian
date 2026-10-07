@@ -146,11 +146,13 @@ impl ExecutionConfig {
             Some(_) => Some(positive_u32(&lookup, ENV_TX_PROVER_MAX_CONCURRENT, 1)?),
             None => None,
         };
-        let prover = match non_blank(lookup(ENV_TX_PROVER_URL)?) {
+        let prover = match non_blank(lookup(ENV_TX_PROVER_URL)?)
+            .map(|url| CredentialUrl::new(url.trim().to_string()))
+        {
             Some(url) => {
-                ensure_prover_url(&url)?;
+                ensure_prover_url(url.expose_secret())?;
                 Some(ProverConfig {
-                    url: CredentialUrl::new(url),
+                    url,
                     timeout: Duration::from_secs(u64::from(timeout)),
                     max_concurrent: max_concurrent_proofs,
                 })
@@ -326,6 +328,11 @@ mod tests {
             assert!(!error.contains("secret"), "{error}");
         }
         assert!(config_from(&[(ENV_TX_PROVER_URL, "https://prover.example:50051")]).is_ok());
+        let padded = config_from(&[(ENV_TX_PROVER_URL, "  https://prover.example:50051  ")])
+            .unwrap()
+            .prover
+            .expect("a prover is configured");
+        assert_eq!(padded.url.expose_secret(), "https://prover.example:50051");
     }
 
     #[test]

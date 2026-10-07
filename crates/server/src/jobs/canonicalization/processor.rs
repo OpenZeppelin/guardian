@@ -915,6 +915,12 @@ impl DeltasProcessorBase {
         // moved out-of-band; either way it can never verify from here
         // (issue #17).
         if current_state.commitment != delta.prev_commitment {
+            if let Some(step) = self
+                .finish_interrupted_promotion(&delta, &current_state)
+                .await?
+            {
+                return Ok(step);
+            }
             self.handle_orphaned_candidate(delta).await?;
             return Ok(CandidateStep::Orphaned);
         }
@@ -1806,6 +1812,50 @@ impl DeltasProcessorBase {
     /// Promote `delta` to canonical with the state `applied` carries: the
     /// state its reconstruction produced, whose commitment the caller just
     /// verified against the chain.
+    /// A filesystem promotion is several file writes, so one interrupted after its state write
+    /// leaves the stored state at the candidate's own target with the candidate still queued.
+    /// That candidate is not orphaned: its promotion is finished once the chain confirms the
+    /// stored state. Postgres promotes atomically and never leaves this shape. Returns `None`
+    /// when the candidate is not such a leftover.
+    async fn finish_interrupted_promotion(
+        &self,
+        delta: &DeltaObject,
+        current_state: &StateObject,
+    ) -> Result<Option<CandidateStep>> {
+        if delta.new_commitment.as_deref() != Some(current_state.commitment.as_str()) {
+            return Ok(None);
+        }
+        let verified = self
+            .state
+            .network_client
+            .verify_commitment(
+                &delta.account_id,
+                &current_state.commitment,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
+            .await;
+        if !matches!(verified, Ok(StateVerification::Match)) {
+            return Ok(None);
+        }
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            "Stored state is already this candidate's verified target; finishing an interrupted promotion"
+        );
+        let applied = AppliedState {
+            state_json: current_state.state_json.clone(),
+            commitment: current_state.commitment.clone(),
+            nonce: current_state.nonce,
+        };
+        self.canonicalize_verified_delta(
+            delta.clone(),
+            applied,
+            crate::metrics::labels::CandidateOutcome::Canonicalized,
+        )
+        .await?;
+        Ok(Some(CandidateStep::Processed))
+    }
+
     async fn canonicalize_verified_delta(
         &self,
         delta: DeltaObject,
@@ -4070,6 +4120,68 @@ mod tests {
                 (account_id.to_string(), "0xc2".to_string()),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_head_whose_promotion_stopped_after_the_state_write_is_finished_not_orphaned() {
+        let account_id = "0xtest_account";
+        let head = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![head]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_promote_candidate(Ok(crate::storage::PromoteWrite::Applied)),
+        );
+        let network =
+            Arc::new(MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Match)));
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state =
+            create_test_app_state_with_mocks(storage.clone(), network.clone(), metadata.clone());
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert_eq!(storage.promote_candidate_fences.lock().unwrap().len(), 1);
+        assert!(
+            storage.get_update_delta_status_calls().is_empty(),
+            "the candidate is not parked as orphaned"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_head_at_its_own_target_is_orphaned_when_the_chain_does_not_confirm_it() {
+        let account_id = "0xtest_account";
+        let head = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![head]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1"))),
+        );
+        let network = Arc::new(MockNetworkClient::new().with_verify_commitment(Ok(
+            StateVerification::Mismatch {
+                on_chain: "0xelsewhere".to_string(),
+            },
+        )));
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state =
+            create_test_app_state_with_mocks(storage.clone(), network.clone(), metadata.clone());
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert!(storage.promote_candidate_fences.lock().unwrap().is_empty());
+        let writes = storage.get_update_delta_status_calls();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].2.retain_reason(), Some(RetainReason::Orphaned));
     }
 
     #[tokio::test]

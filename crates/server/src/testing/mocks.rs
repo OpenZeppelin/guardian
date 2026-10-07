@@ -51,6 +51,8 @@ pub struct MockNetworkClient {
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
     /// The block every observed commitment reports it was read at.
     pub observed_block: Arc<StdMutex<u32>>,
+    /// How long every observed commitment takes to answer.
+    pub observation_delay: Arc<StdMutex<std::time::Duration>>,
 }
 
 impl MockNetworkClient {
@@ -252,6 +254,8 @@ impl NetworkClient for MockNetworkClient {
         expected_commitment: &str,
         read_mode: crate::network::RpcReadMode,
     ) -> StdResult<crate::network::ObservedState, String> {
+        let delay = *self.observation_delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
         let verification = self
             .verify_commitment(account_id, expected_commitment, read_mode)
             .await?;
