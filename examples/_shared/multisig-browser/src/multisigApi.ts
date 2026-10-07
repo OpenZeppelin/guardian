@@ -22,6 +22,8 @@ import {
   type ProcedureName,
   type ProcedureThreshold,
   type Proposal,
+  type ProposalExecution,
+  type ProposalExecutionMode,
   type SignatureScheme,
   type WalletSigningContext,
 } from '@openzeppelin/miden-multisig-client';
@@ -152,12 +154,14 @@ export async function initMultisigClient(
   midenRpcEndpoint: string,
   prover?: import('@openzeppelin/miden-multisig-client').ProverConfig,
   rpc?: import('@openzeppelin/miden-multisig-client').RpcConfig,
+  executionMode: ProposalExecutionMode = 'self_executed',
 ): Promise<{ client: MultisigClient; guardianPubkey: string }> {
   const client = new MultisigClientClass(midenClient, {
     guardianEndpoint,
     midenRpcEndpoint,
     prover,
     rpc,
+    executionMode,
   });
   const response = await client.guardianClient.getPubkey();
   const guardianPubkey = typeof response === 'string' ? response : response.commitment;
@@ -346,6 +350,40 @@ export async function executeProposal(
   proposalId: string,
 ): Promise<void> {
   await multisig.executeProposal(proposalId);
+}
+
+/**
+ * Hands a threshold-met proposal to GUARDIAN, which proves and submits it, and waits until the
+ * execution is `committed` or `failed`. The proposal must have been created by a client in
+ * `guardian_executable` mode.
+ */
+export async function executeThroughGuardian(
+  multisig: Multisig,
+  proposalId: string,
+): Promise<ProposalExecution> {
+  await multisig.requestGuardianExecution(proposalId);
+  return multisig.waitForGuardianExecution(proposalId);
+}
+
+/** The account's in-flight GUARDIAN execution and, when asked, one proposal's latest. */
+export async function guardianExecutionStatus(
+  multisig: Multisig,
+  proposalId?: string,
+): Promise<{ current: ProposalExecution | null; proposal: ProposalExecution | null }> {
+  const current = await multisig.currentExecution();
+  const proposal = proposalId ? await multisig.executionStatus(proposalId) : null;
+  return { current, proposal };
+}
+
+/** One line naming why GUARDIAN did not commit an execution and what the caller can do next. */
+export function describeFailedExecution(execution: ProposalExecution): string {
+  const cause = execution.error
+    ? `${execution.error.message} (${execution.error.code})`
+    : 'no failure reported';
+  const next = execution.proposalExists
+    ? 'The proposal is kept: fix the cause and execute it again.'
+    : 'The proposal was removed: create and sign a new one.';
+  return `GUARDIAN could not execute the proposal: ${cause}. ${next}`;
 }
 
 export function exportProposalToJson(

@@ -52,7 +52,7 @@ The page follows the `examples/web` lifecycle:
 
 The app exposes `window.smoke` with JSON-safe methods:
 
-- `initSession({ guardianEndpoint, midenRpcEndpoint, signerSource, signatureScheme, browserLabel })`
+- `initSession({ guardianEndpoint, midenRpcEndpoint, signerSource, signatureScheme, executionMode, browserLabel })`
 - `connectMidenWallet()`
 - `status()`
 - `createAccount({ threshold, otherCommitments, guardianCommitment, procedureThresholds })`
@@ -68,6 +68,7 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `executeCustomProposal({ proposalId })` or `executeCustomProposal({ recipe })`
 - `signProposal({ proposalId })`
 - `executeProposal({ proposalId })`
+- `guardianExecutionStatus({ proposalId? })`
 - `exportProposal({ proposalId })`
 - `signProposalOffline({ proposalId, json })`
 - `importProposal({ json })`
@@ -99,6 +100,35 @@ await window.smoke.createProposal({
   commitment: '0x...',
   increaseThreshold: false,
 });
+```
+
+### GUARDIAN execution
+
+`executionMode` chooses who proves and submits the proposals the session creates: `'self_executed'` (default, the browser) or `'guardian_executable'` (GUARDIAN). The UI offers the same choice as **Proposal execution** in the session form.
+
+In `guardian_executable` mode, proposals carry the transaction request GUARDIAN reproduces, and `executeProposal({ proposalId })` asks GUARDIAN to execute and waits until the execution is `committed` or `failed`. A failure throws with the error code and says whether the proposal is kept (execute again once the cause is fixed) or removed (create a new one). `guardianExecutionStatus({ proposalId })` returns the account's in-flight execution (`current`) and, when a proposal ID is given, that proposal's latest execution (`proposal`).
+
+To test it:
+
+1. Run the GUARDIAN server with `GUARDIAN_TX_PROVER_URL` set and check that `GET /status` reports `"execution":{"enabled":true}`.
+2. Initialize the session with `executionMode: 'guardian_executable'`, create the multisig, and fund it with the network's fee asset: GUARDIAN executes with the account paying its own fee, and an unfunded account fails with `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`.
+3. Create the proposal from that session; cosigners can sign it from a session in either mode.
+4. Call `executeProposal({ proposalId })` (or **Execute via GUARDIAN** in the UI).
+
+A proposal created by a session that executes itself carries no request, and GUARDIAN refuses it with `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`.
+
+```js
+await window.smoke.initSession({
+  guardianEndpoint: 'http://localhost:3000',
+  midenRpcEndpoint: 'https://rpc.devnet.miden.io',
+  signerSource: 'local',
+  signatureScheme: 'ecdsa',
+  executionMode: 'guardian_executable',
+  browserLabel: 'chrome-a',
+});
+
+await window.smoke.executeProposal({ proposalId: '0x...' });
+await window.smoke.guardianExecutionStatus({ proposalId: '0x...' });
 ```
 
 ### Custom proposal producer API
@@ -140,7 +170,7 @@ Use this harness for manual smoke flows that need:
 - local Falcon and ECDSA signers
 - Miden Wallet connectivity checks
 - create/load/register/sync/state verification
-- proposal create/sign/execute loops
+- proposal create/sign/execute loops, self-executed or executed by GUARDIAN
 - custom (producer-API) propose/sign/prepare/submit loops
 - offline export/import/sign flows
 - switch-GUARDIAN proposal orchestration
