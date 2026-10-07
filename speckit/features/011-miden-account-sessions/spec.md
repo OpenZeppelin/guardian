@@ -176,8 +176,9 @@ expected code.
    session.
 5. **Given** a session whose signer is removed from an account, **When** the
    delegated signer signs a request for that account, **Then** Guardian
-   rejects it; if the signer is added back before the grant expires, the
-   grant works again.
+   rejects it with `authorization_failed` while the session keeps working for
+   the signer's other accounts; if the signer is added back before the grant
+   expires, the grant works again.
 
 ---
 
@@ -229,8 +230,10 @@ confirm the SDK raises a dedicated error.
 - **FR-003 — Session grant contents**: A grant binds:
   - the signer commitment of the wallet key that signs it;
   - the delegated signer's public key (FR-002);
-  - `origin`: the web origin allowed to use the session (scheme, host and
-    port, e.g. `https://app.example`), or empty for clients outside a browser;
+  - `origin`: the web origin allowed to use the session, as a browser
+    serializes it in `Origin` (lowercase `scheme://host[:port]`, no path or
+    trailing slash, never `null`, at most 256 bytes, e.g.
+    `https://app.example`), or empty for clients outside a browser;
   - `issued_at` and `expires_at`, in Unix **seconds**;
   - `expires`: one canonical UTC rendering of `expires_at`
     (`YYYY-MM-DD HH:MM:SS UTC`), for devices that show raw numbers;
@@ -263,22 +266,27 @@ confirm the SDK raises a dedicated error.
     maximum lifetime; the 300-second floor only keeps a session alive past
     the skew window;
   - the delegated signer public key is a valid 33-byte compressed P-256 point;
-  - `origin` is at most 256 bytes and, when the registration request carries
-    an `Origin`, equals it;
+  - `origin` is empty or a serialized web origin (FR-003) and, when the
+    registration request carries an `Origin`, equals it;
   - the wallet signature verifies with the existing key rules: Falcon embeds
     its public key; raw ECDSA recovers the key and falls back to the optional
     supplied public key when recovery fails or yields another key; EIP-712
     always uses the supplied public key; the verified key's commitment MUST
     equal the grant's signer commitment;
   - the signer commitment is a current cosigner of at least one account on
-    this Guardian (`authorization_failed` otherwise), so arbitrary keys cannot
-    create session records.
+    this Guardian (`authorization_failed`, HTTP 403, otherwise), so arbitrary
+    keys cannot create session records.
 
-  Checks that need no cryptography MUST run before signature verification.
+  Checks that need no cryptography MUST run before signature verification;
+  the cosigner check runs after it, so only the key's holder learns whether
+  it cosigns anything. Guardian MUST record the session as issued at the
+  earlier of `issued_at` and the registration time, so a grant dated into the
+  skew window's future cannot outlive a revoke-all (FR-013).
 - **FR-006 — Grant lifecycle**: Re-submitting the same grant while its session
-  is live MUST succeed and return the same expiry. A grant for a key that is
-  already bound to a different grant (another signer commitment, origin or
-  lifetime) MUST be rejected, so another cosigner who learns a session key
+  is live MUST succeed and return the same expiry, also when the wallet
+  re-signed it with another `issued_at` inside the skew window. A grant for a
+  key that is already bound to a different grant (another signer commitment,
+  origin or expiry) MUST be rejected, so another cosigner who learns a session key
   from `x-pubkey` cannot re-bind it to their identity; clients MUST use a
   fresh key for every grant, renewal included. A revoked session MUST stay
   revoked until its `expires_at`, so re-submitting its grant fails; the
@@ -300,7 +308,9 @@ confirm the SDK raises a dedicated error.
   - re-check that the grant's ACK-key commitment and network still match this
     Guardian for the account's scheme, so key rotation ends sessions;
   - require the grant's signer commitment to be a current cosigner of the
-    account;
+    account, failing with `authorization_failed` (HTTP 403, gRPC
+    `PERMISSION_DENIED`) otherwise: the session stays valid for the signer's
+    other accounts;
   - apply the replay CAS keyed by **(account, delegated key)**. Wallet
     requests keep their CAS keyed by (account, signer commitment). A session
     therefore cannot advance the wallet's floor: a stolen session that stamps
@@ -308,6 +318,13 @@ confirm the SDK raises a dedicated error.
     wallet-only routes. Requests on one floor that race (parallel reads of
     the same account through one session) can lose with
     `authentication_replay`; the SDK retries that code with a new timestamp.
+    A session floor MUST be deleted once no session can use it: the maximum
+    lifetime plus twice the skew window after its last request.
+
+  Browsers send no `Origin` on same-origin `GET` requests, so a session cannot
+  read from a Guardian served on the app's own origin: Guardian MUST be
+  deployed on a different origin than the app (e.g. `guardian.example` for
+  `app.example`), and the SDK guide MUST say so.
 - **FR-008 — Session-eligible routes**: A delegated signer MAY sign exactly:
   - reads: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
     `GET /delta/history`;
@@ -351,13 +368,17 @@ confirm the SDK raises a dedicated error.
   account-less message carrying the signer commitment and a timestamp T in the
   skew window (raw RPO digest, or
   `GuardianSessionRevokeAll(bytes32 signer,uint64 timestamp)` typed data),
-  MUST revoke every session of that signer on this Guardian whose `issued_at`
-  is at or before T, and return how many. A replay of the request therefore
+  MUST revoke every session of that signer on this Guardian whose recorded
+  `issued_at` (FR-005) is at or before T, and return how many. A replay of the request therefore
   cannot end a session granted after T, with no extra stored floor. It MUST
   NOT read or advance any replay floor, so no session request can block it.
-  It is idempotent. The SDK sets T to the current time.
+  It is idempotent. The SDK sets T to the current time. The message names no
+  Guardian, so within the skew window the same signature also ends the
+  signer's older sessions on any other Guardian it is sent to; it can only
+  revoke, so this is accepted.
 - **FR-014 — Signer removal**: Removing a signer from an account MUST end
-  delegated access to that account on the next request (FR-007). Adding the
+  delegated access to that account on the next request, with
+  `authorization_failed` (FR-007). Adding the
   signer back restores any grant that has not expired; this MUST be
   documented.
 - **FR-015 — Advertisement**: `GET /status` MUST advertise the sessions block
@@ -367,17 +388,25 @@ confirm the SDK raises a dedicated error.
 - **FR-016 — Ended-session codes**: A request from an expired session MUST
   fail with `session_expired`, and from a revoked one with `session_revoked`,
   both HTTP 401 / gRPC `UNAUTHENTICATED`, so the SDK can tell revoke-all from
-  expiry instead of treating both as `authentication_failed`. On either code
-  the SDK drops the session; a new session needs a new grant and key. An
-  unknown key, or an expired one whose record was swept, is
-  `authentication_failed`.
+  expiry instead of treating both as `authentication_failed`. An unknown key
+  (an expired one whose record was swept, or any key after a restart of a
+  Guardian without persistent sessions), another origin, or a grant naming a
+  rotated key or another network is `authentication_failed`. On any of these
+  three codes in answer to a session-signed request the SDK MUST stop using
+  the session, sign with the wallet again, forget the stored key and notify
+  the app; `authorization_failed` (FR-007) leaves the session in place. A new
+  session needs a new grant and key.
 - **FR-017 — SDK `SessionSigner`**: Session handling lives in the Guardian SDKs
   as a `SessionSigner`, not in each dApp: key generation and storage, building
   the grant (with the page's origin by default), showing its fields to the
-  user for raw wallets, signing it through the wallet, choosing the wallet or
-  the delegated signer per route (FR-008, FR-009), retrying
-  `authentication_replay`, dropping ended sessions (FR-016) and renewal. When
-  a grant expires the SDK MUST discard the key. The TypeScript SDK keeps the
+  user for raw wallets (the SDK MUST NOT start a session for a raw wallet
+  without that confirmation step), signing it through the wallet, choosing
+  the wallet or the delegated signer per route (FR-008, FR-009) with the
+  wallet as the default, retrying `authentication_replay`, and dropping ended
+  sessions and notifying the app so it can renew (FR-016). The SDK uses a
+  session only while the wallet that granted it is the client's signer, and
+  clears local session state only after logout or revoke-all succeed. When a
+  grant expires the SDK MUST discard the key. The TypeScript SDK keeps the
   key non-extractable and MAY persist it in IndexedDB. The Rust SDK uses the
   same `x-auth-format: session` path with an in-memory key and an empty
   origin.
@@ -420,8 +449,8 @@ confirm the SDK raises a dedicated error.
   why a record is inactive (`revoked_at` set or not) for records not yet
   swept.
 - Session requests add one replay-floor row per (account, delegated key)
-  they touch, in the existing account auth state; a session lives at most 8
-  hours, so these rows are short-lived.
+  they touch, in the existing account auth state; the session sweep deletes
+  them once no session can use them (FR-007).
 - Filesystem deployments use the in-memory session store with the same
   semantics, but a restart drops the revoked markers: a revoked grant can then
   be registered again until its `issued_at` leaves the skew window. Postgres
@@ -436,7 +465,9 @@ confirm the SDK raises a dedicated error.
 - **Another cosigner registers a victim's session key**: rejected; the key
   stays bound to its first grant (FR-006).
 - **Grant signed long before submission**: rejected by the `issued_at` skew
-  check.
+  check; the SDK dates the grant after the user confirms it.
+- **Grant dated in the future**: recorded as issued at registration, so a
+  revoke-all signed after registration still ends it (FR-005).
 - **Clock skew between client and server**: grant lifetime is capped against
   server time; SDKs request less than the advertised maximum to absorb drift.
 - **Guardian ACK-key rotation or network change**: existing sessions stop
@@ -452,8 +483,14 @@ confirm the SDK raises a dedicated error.
 - **Delegated signer used on a wallet-only route**:
   `wallet_signature_required`, no state change; an unverifiable delegated
   signature is `authentication_failed` (FR-009).
-- **Signer removed, then added back**: access ends, then returns for the
-  unexpired grant (FR-014).
+- **Signer removed, then added back**: access ends with
+  `authorization_failed`, then returns for the unexpired grant (FR-014); the
+  session keeps working for the signer's other accounts meanwhile.
+- **Guardian restarts without persistent sessions**: every key is unknown;
+  the SDK drops the session on the first `authentication_failed` and notifies
+  the app (FR-016).
+- **Guardian served on the app's origin**: session reads fail because
+  browsers omit `Origin` on same-origin `GET`; unsupported (FR-007).
 - **Account the signer is added to after the grant**: covered, because the v1
   scope is every account the signer cosigns; the signed message says so.
 - **Compromised page**: injected script can use the delegated signer until the
@@ -494,8 +531,9 @@ confirm the SDK raises a dedicated error.
   (`session_expired`), revoked grant (`session_revoked`), re-submitted revoked
   grant, a second signer's grant for a bound key, grant for another Guardian
   key or network, stale `issued_at`, lifetime within the skew window or over
-  the maximum, a non-cosigner registration, removed signer, and a rotated ACK
-  key.
+  the maximum, a malformed origin, a non-cosigner registration, a request for
+  an account the signer does not cosign (`authorization_failed`), removed
+  signer, and a rotated ACK key.
 - **SC-004**: Rust and TypeScript produce byte-identical grant, logout and
   revoke-all digests and EIP-712 digests for the shared vectors, and the
   EIP-712 digests match an independent implementation.
@@ -543,6 +581,14 @@ confirm the SDK raises a dedicated error.
 - Q: May anyone register a grant? → A: No: the signer must cosign at least one account on this Guardian.
 - Q: Delegated-key collision? → A: A key stays bound to its first grant; a different grant for it is rejected; clients use a fresh key per grant.
 - Q: Phishing (no audience)? → A: The grant names its origin, the wallet shows it, and Guardian checks it against the request `Origin`; the residual read exposure from non-browser replay is accepted for v1 (Edge Cases).
+
+### Session 2026-10-08 (implementation review)
+
+- Q: Can the dApp and Guardian share an origin? → A: No: browsers omit `Origin` on same-origin `GET`, so session reads would fail. Guardian is deployed on a different origin, and the grant origin must be a serialized web origin (FR-003, FR-007).
+- Q: Can a grant dated into the future outlive revoke-all? → A: No: Guardian records the earlier of `issued_at` and the registration time (FR-005).
+- Q: Should the revoke-all message name the Guardian? → A: No: it can only revoke; the cross-Guardian effect inside the skew window is accepted (FR-013).
+- Q: Which answers end a session in the SDK? → A: `session_expired`, `session_revoked` and `authentication_failed` on a session-signed request. A request for an account the signer does not cosign is `authorization_failed` and keeps the session (FR-007, FR-016).
+- Q: Do session replay floors accumulate? → A: No: the sweep deletes a floor once no session can use it (FR-007).
 
 ### Open for review
 
