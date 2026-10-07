@@ -43,7 +43,9 @@ At startup the demo asks who executes the proposals the session creates. Pick **
 1. Run the GUARDIAN server with `GUARDIAN_TX_PROVER_URL` set (for devnet, `https://tx-prover.devnet.miden.io`) and check that `GET /status` reports `"execution":{"enabled":true}`.
 2. Fund the multisig with the network's fee asset: GUARDIAN executes with the account paying its own fee, and an unfunded account fails with `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`.
 3. Create the proposal from the session in GUARDIAN-executes mode, so it carries the transaction request GUARDIAN reproduces. Cosigners can sign it from a session in either mode.
-4. **Execute a proposal** (`4` in Proposal Management) then asks GUARDIAN to execute it and waits until it is `committed` or `failed`. A failure says whether the proposal is kept (execute again once the cause is fixed) or removed (create a new one).
+4. **Execute a proposal** (`4` in Proposal Management) then asks GUARDIAN to execute it and waits until it is `committed` or `failed`. A failure prints its code and what to do next, which follows the code: execute again, fix the cause first, or create and sign a new proposal. A proposal that is still stored is not always worth executing again.
+
+   Two kinds of proposal are executed by the demo even in this mode: a switch GUARDIAN, because the executing client repoints itself and registers the account on the new GUARDIAN, and a private P2ID, because the note file for the recipient comes from the record the demo's own execution creates.
 5. **Show GUARDIAN execution status** (`9`) shows the execution in flight on the account and, for a proposal ID you enter, its latest execution.
 
 A proposal created by a session that executes itself carries no request, and GUARDIAN refuses it with `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`.
