@@ -639,6 +639,328 @@ async fn attempt_proposal_while_paused(
     }
 }
 
+/// A server with no prover refuses Guardian execution before touching the proposal, reports
+/// nothing in flight, and distinguishes a never-executed proposal from a missing one.
+pub async fn assert_execution_unavailable(runner: &Runner) -> ActionOutcome {
+    let Some(fixtures) = runner.fixtures.as_ref() else {
+        return ActionOutcome::failed_setup("the server fixtures were not loaded");
+    };
+    let id = match account_id(fixtures) {
+        Ok(id) => id,
+        Err(outcome) => return outcome,
+    };
+    let proposal_id = match fixtures.proposal_id() {
+        Ok(proposal_id) => proposal_id,
+        Err(error) => return ActionOutcome::failed_setup(error.to_string()),
+    };
+    let mut client = match connect(runner, fixtures).await {
+        Ok(client) => client,
+        Err(outcome) => return outcome,
+    };
+
+    match client.execute_delta_proposal(&id, &proposal_id).await {
+        Err(error) if error.guardian_code().as_deref() == Some("GUARDIAN_PROVING_UNAVAILABLE") => {}
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "execution on a server with no prover was refused with the wrong cause: {error}"
+            ));
+        }
+        Ok(execution) => {
+            return ActionOutcome::failed_product(format!(
+                "a server with no prover accepted an execution: {execution:?}"
+            ));
+        }
+    }
+    match client.get_current_execution(&id).await {
+        Ok(None) => {}
+        Ok(Some(execution)) => {
+            return ActionOutcome::failed_product(format!(
+                "a refused execution is reported in flight: {execution:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "reading the in-flight execution failed: {error}"
+            ));
+        }
+    }
+    match client.get_delta_proposal_execution(&id, &proposal_id).await {
+        Err(error) if error.guardian_code().as_deref() == Some("GUARDIAN_EXECUTION_NOT_FOUND") => {
+            ActionOutcome::Passed
+        }
+        Err(error) => ActionOutcome::failed_product(format!(
+            "a never-executed proposal was not reported as execution-not-found: {error}"
+        )),
+        Ok(execution) => ActionOutcome::failed_product(format!(
+            "a refused request left an execution record: {execution:?}"
+        )),
+    }
+}
+
+/// The execution refusals a GUARDIAN that offers execution makes before it reads the chain,
+/// and the pre-boundary failure that follows when its node cannot be read, against the shipped
+/// image on a real database.
+///
+/// Runs against its own GUARDIAN, which configures a prover, because the main one offers no
+/// execution and so refuses every request at the capability gate before any of this is
+/// reached. Its chain RPC is the stack's stub, so an accepted execution fails at its first chain
+/// read: deterministically, before the no-retry boundary, with the proposal untouched.
+pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
+    use guardian_client::execution::ExecutionFailureCode;
+    use guardian_client::{ExecutionState, Signer};
+
+    let Some(fixtures) = runner.fixtures.as_ref() else {
+        return ActionOutcome::failed_setup("the server fixtures were not loaded");
+    };
+    let Ok(endpoint) = std::env::var("QUAL_GUARDIAN_EXECUTING_GRPC") else {
+        return ActionOutcome::EnvironmentBlocked {
+            reason: "QUAL_GUARDIAN_EXECUTING_GRPC is unset, so no GUARDIAN that offers \
+                     execution is running"
+                .to_string(),
+        };
+    };
+    let id = match account_id(fixtures) {
+        Ok(id) => id,
+        Err(outcome) => return outcome,
+    };
+    if runner.post_restart {
+        return assert_execution_outcome_survived(fixtures, &id, &endpoint).await;
+    }
+    let cosigners = || {
+        fixtures
+            .cosigners()
+            .map_err(|e| ActionOutcome::failed_setup(e.to_string()))
+    };
+    let (executable, without_request, proposal_id, second_id) = match (
+        fixtures.executable_proposal_payload(),
+        fixtures.second_proposal_payload(),
+        fixtures
+            .executable_summary()
+            .map(|summary| summary.to_commitment().to_hex()),
+        fixtures.second_proposal_id(),
+    ) {
+        (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
+        (Err(error), ..) | (_, Err(error), ..) | (.., Err(error), _) | (.., Err(error)) => {
+            return ActionOutcome::failed_setup(format!("building the fixture proposals: {error}"));
+        }
+    };
+    let connect_as = |signer: guardian_client::FalconKeyStore| {
+        let endpoint = endpoint.clone();
+        async move {
+            GuardianClient::connect(endpoint.clone())
+                .await
+                .map(|client| client.with_signer(Arc::new(signer)))
+                .map_err(|error| {
+                    ActionOutcome::failed_setup(format!(
+                        "cannot reach the executing GUARDIAN at {endpoint}: {error}"
+                    ))
+                })
+        }
+    };
+    let proposer = match cosigners() {
+        Ok(mut all) => all.remove(0),
+        Err(outcome) => return outcome,
+    };
+    let mut client = match connect_as(proposer).await {
+        Ok(client) => client,
+        Err(outcome) => return outcome,
+    };
+
+    let auth = AuthConfig {
+        auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+            cosigner_commitments: fixtures.cosigner_commitments.clone(),
+        })),
+    };
+    if let Err(error) = client.configure(&id, auth, &fixtures.account).await {
+        return ActionOutcome::failed_setup(format!(
+            "registering the fixture account on the executing GUARDIAN: {error}"
+        ));
+    }
+    for (payload, nonce) in [
+        (&without_request, 2),
+        (&executable, fixtures.proposal_nonce()),
+    ] {
+        if let Err(error) = client.push_delta_proposal(&id, nonce, payload).await {
+            return ActionOutcome::failed_setup(format!("pushing a fixture proposal: {error}"));
+        }
+    }
+
+    let refused =
+        |result: Result<guardian_client::ProposalExecution, guardian_client::ClientError>,
+         expected: &str,
+         case: &str| match result {
+            Err(error) if error.guardian_code().as_deref() == Some(expected) => None,
+            Err(error) => Some(ActionOutcome::failed_product(format!(
+                "{case}: refused with the wrong cause, expected `{expected}`: {error}"
+            ))),
+            Ok(execution) => Some(ActionOutcome::failed_product(format!(
+                "{case}: accepted, expected `{expected}`: {execution:?}"
+            ))),
+        };
+    if let Some(outcome) = refused(
+        client.execute_delta_proposal(&id, &second_id).await,
+        "GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST",
+        "a proposal created without a stored request",
+    ) {
+        return outcome;
+    }
+    if let Some(outcome) = refused(
+        client.execute_delta_proposal(&id, &proposal_id).await,
+        "GUARDIAN_PROPOSAL_NOT_READY",
+        "a proposal with no cosigner signatures",
+    ) {
+        return outcome;
+    }
+
+    let message = match fixtures.executable_summary() {
+        Ok(summary) => summary.to_commitment(),
+        Err(error) => return ActionOutcome::failed_setup(error.to_string()),
+    };
+    let signers = match cosigners() {
+        Ok(signers) => signers,
+        Err(outcome) => return outcome,
+    };
+    for signer in signers {
+        let signature = guardian_shared::ProposalSignature::Falcon {
+            signature: signer.sign_word_hex(message),
+        };
+        let mut cosigner = match connect_as(signer).await {
+            Ok(cosigner) => cosigner,
+            Err(outcome) => return outcome,
+        };
+        if let Err(error) = cosigner
+            .sign_delta_proposal(&id, &proposal_id, signature)
+            .await
+        {
+            return ActionOutcome::failed_setup(format!(
+                "a fixture cosigner could not sign: {error}"
+            ));
+        }
+    }
+
+    for attempt in 1..=2 {
+        match client.execute_delta_proposal(&id, &proposal_id).await {
+            Ok(execution) if execution.newly_accepted => {}
+            Ok(execution) => {
+                return ActionOutcome::failed_product(format!(
+                    "attempt {attempt}: a threshold-met proposal was not newly accepted: {execution:?}"
+                ));
+            }
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "attempt {attempt}: a threshold-met proposal was refused: {error}"
+                ));
+            }
+        }
+        let started = std::time::Instant::now();
+        let settled = loop {
+            match client.get_delta_proposal_execution(&id, &proposal_id).await {
+                Ok(execution) if execution.state == ExecutionState::Failed => break execution,
+                Ok(execution)
+                    if execution.state == ExecutionState::Pending
+                        || execution.state == ExecutionState::Proving => {}
+                Ok(execution) => {
+                    return ActionOutcome::failed_product(format!(
+                        "attempt {attempt}: an execution that cannot read the chain reached \
+                         `{}`: {execution:?}",
+                        execution.state.as_str()
+                    ));
+                }
+                Err(error) => {
+                    return ActionOutcome::failed_product(format!(
+                        "attempt {attempt}: reading the execution failed: {error}"
+                    ));
+                }
+            }
+            if started.elapsed() > std::time::Duration::from_secs(60) {
+                return ActionOutcome::failed_product(format!(
+                    "attempt {attempt}: the execution did not settle within 60 s"
+                ));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        };
+        if settled.error.as_ref().map(|error| error.code)
+            != Some(ExecutionFailureCode::NodeUnavailable)
+        {
+            return ActionOutcome::failed_product(format!(
+                "attempt {attempt}: expected `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`: {settled:?}"
+            ));
+        }
+        if !settled.proposal_exists {
+            return ActionOutcome::failed_product(format!(
+                "attempt {attempt}: a pre-boundary failure deleted the proposal: {settled:?}"
+            ));
+        }
+        match client.get_current_execution(&id).await {
+            Ok(None) => {}
+            Ok(Some(active)) => {
+                return ActionOutcome::failed_product(format!(
+                    "attempt {attempt}: a failed execution still holds the account: {active:?}"
+                ));
+            }
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "attempt {attempt}: reading the in-flight execution failed: {error}"
+                ));
+            }
+        }
+    }
+    ActionOutcome::Passed
+}
+
+/// The second pass of the refusals scenario, after GUARDIAN restarted on the same database:
+/// running it again would only recreate its own state, so it reads what the first pass left.
+/// The failed attempt is still reported with its cause, the proposal still exists, and nothing
+/// holds the account.
+async fn assert_execution_outcome_survived(
+    fixtures: &Fixtures,
+    id: &AccountId,
+    endpoint: &str,
+) -> ActionOutcome {
+    use guardian_client::ExecutionState;
+    use guardian_client::execution::ExecutionFailureCode;
+
+    let (Ok(summary), Ok(mut signers)) = (fixtures.executable_summary(), fixtures.cosigners())
+    else {
+        return ActionOutcome::failed_setup("cannot read the fixture proposal or cosigners");
+    };
+    let proposal_id = summary.to_commitment().to_hex();
+    let mut client = match GuardianClient::connect(endpoint.to_string()).await {
+        Ok(client) => client.with_signer(Arc::new(signers.remove(0))),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "cannot reach the executing GUARDIAN at {endpoint}: {error}"
+            ));
+        }
+    };
+    match client.get_delta_proposal_execution(id, &proposal_id).await {
+        Ok(execution)
+            if execution.state == ExecutionState::Failed
+                && execution.error.as_ref().map(|error| error.code)
+                    == Some(ExecutionFailureCode::NodeUnavailable)
+                && execution.proposal_exists => {}
+        Ok(execution) => {
+            return ActionOutcome::failed_product(format!(
+                "after a restart the failed execution reads differently: {execution:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "after a restart the failed execution cannot be read: {error}"
+            ));
+        }
+    }
+    match client.get_current_execution(id).await {
+        Ok(None) => ActionOutcome::Passed,
+        Ok(Some(active)) => ActionOutcome::failed_product(format!(
+            "after a restart a failed execution holds the account: {active:?}"
+        )),
+        Err(error) => ActionOutcome::failed_product(format!(
+            "after a restart the in-flight execution cannot be read: {error}"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::same_commitment;

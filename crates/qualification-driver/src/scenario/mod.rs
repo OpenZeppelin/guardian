@@ -213,12 +213,31 @@ impl Runner {
         // path never produced, twice.
         let handled = if live_profile {
             match action {
-                Action::AccountCreate => {
-                    Some(live::create(self, scenario.shape, scenario.scheme, run_tag).await)
+                Action::AccountCreate => Some(
+                    live::create(
+                        self,
+                        scenario.shape,
+                        scenario.scheme,
+                        run_tag,
+                        execution_mode_for(scenario),
+                    )
+                    .await,
+                ),
+                Action::GuardianExecute => Some(live::guardian_execute(self).await),
+                Action::ChainAdvancePastBound => Some(live::advance_past_bound(self).await),
+                Action::GuardianExecuteBaseClient => {
+                    Some(live::guardian_execute_base_client(self).await)
                 }
-                Action::QueueAccountCreate => {
-                    Some(live::create_queued(self, scenario.shape, scenario.scheme, run_tag).await)
-                }
+                Action::QueueAccountCreate => Some(
+                    live::create_queued(
+                        self,
+                        scenario.shape,
+                        scenario.scheme,
+                        run_tag,
+                        execution_mode_for(scenario),
+                    )
+                    .await,
+                ),
                 Action::QueueTransfersChained => Some(live::send_chained_transfers(self).await),
                 Action::QueueHeadBlocksProposal => {
                     Some(live::assert_stranded_head_blocks_proposal(self).await)
@@ -285,6 +304,12 @@ impl Runner {
                 Action::AccountPausedRefuses => {
                     Some(account::assert_paused_account_refuses(self).await)
                 }
+                Action::GuardianExecutionUnavailable => {
+                    Some(account::assert_execution_unavailable(self).await)
+                }
+                Action::GuardianExecutionRefusals => {
+                    Some(account::assert_execution_refusals(self).await)
+                }
                 Action::QueueCosignerProposalRefused => {
                     Some(queue::assert_cosigner_proposal_refused(self).await)
                 }
@@ -305,6 +330,21 @@ impl Runner {
                 reason: format!("no driver implementation yet for action {other:?}"),
             },
         }
+    }
+}
+
+/// A scenario that hands its proposal to GUARDIAN, through the SDK or the base client alone,
+/// creates it Guardian-executable; every other scenario keeps the default, so it covers exactly
+/// what it did before.
+fn execution_mode_for(scenario: &Scenario) -> miden_multisig_client::ProposalExecutionMode {
+    if scenario.actions.contains(&Action::GuardianExecute)
+        || scenario
+            .actions
+            .contains(&Action::GuardianExecuteBaseClient)
+    {
+        miden_multisig_client::ProposalExecutionMode::GuardianExecutable
+    } else {
+        miden_multisig_client::ProposalExecutionMode::SelfExecuted
     }
 }
 

@@ -82,8 +82,10 @@ gitignored directories, and tears it down afterwards:
 | Acknowledgement keys, per server | `ack-keygen` from the built image, into the run's own directory under `qualification/stack/runs/`, mode 0600 |
 | The migration target's own identity | a second, separate key directory, because migrating an account to the Guardian it already uses is not a state change |
 | A third Guardian restricted to ECDSA | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`, so the registration gate is exercised as an operator would configure it rather than only as parsed |
-| A fourth Guardian that queues chained candidates | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` set to `2` in the deterministic profile and `4` in the live one (`QUAL_QUEUE_DEPTH` overrides it), the main server's acknowledgement identity, and a database of its own, so the candidate queue (issue #17) is qualified as an operator opts into it while the main server keeps the default of one in-flight candidate |
+| A fourth Guardian that offers execution, `server-executing` | a configured prover and a database of its own (`guardian_executing`), so execution requests get past the capability gate in the deterministic profile |
+| A fifth Guardian that queues chained candidates, `server-queue` | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` set to `2` in the deterministic profile and `4` in the live one (`QUAL_QUEUE_DEPTH` overrides it), the main server's acknowledgement identity, and a database of its own, so the candidate queue (issue #17) is qualified as an operator opts into it while the main server keeps the default of one in-flight candidate |
 | Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
+| Guardian execution | the live profile points the server at the network's public prover (`https://tx-prover.<network>.miden.io`, overridable with `QUAL_TX_PROVER_URL`), so it offers execution; the deterministic stack configures none, so execution must be refused |
 | Postgres password | random per run |
 | Ports | picked per run, so concurrent runs do not collide |
 | Everything written per run | one directory per run under `qualification/stack/runs/`, removed with the stack: the generated environment file, both acknowledgement key directories and the operator allowlist, so a second run cannot overwrite what the first one's server is still mounting |
@@ -204,6 +206,68 @@ on the live profile, where it would fund every scenario twice. The
 `Qualification (deterministic)` workflow takes the same value as its
 `upgrade-from` input, and once its `pull_request` trigger is restored it will
 also run this by itself whenever a change touches `crates/server/migrations/`.
+
+### Guardian execution
+
+Eight scenarios cover Guardian executing a proposal instead of a cosigner:
+
+- `det-guardian-execution-unavailable` (deterministic, Rust): the stack's server has no
+  prover, so an execution request is refused with `GUARDIAN_PROVING_UNAVAILABLE`, nothing is
+  reported in flight, and the never-executed fixture proposal reads as
+  `GUARDIAN_EXECUTION_NOT_FOUND`.
+- `det-guardian-execution-refusals` (deterministic, Rust): runs against the stack's fourth
+  server, `server-executing`, which configures a prover so requests get past the capability
+  gate. A proposal without a stored request is refused with
+  `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, one with no cosigner signatures with
+  `GUARDIAN_PROPOSAL_NOT_READY`. That proposal carries the fixture's effects re-signed as a
+  Guardian-executable client signs them (the 256-block transaction delta and an approval
+  expiration), because the committed fixture comes from a self-executed client and is refused
+  with `approval_expiration_missing`. Once the fixture cosigners sign it, the request is accepted and
+  fails before the no-retry boundary with `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, because the
+  stack's chain RPC is a stub. The proposal survives, nothing stays in flight, and a second
+  request is accepted and fails the same way. Nothing is ever proved, so the prover URL only
+  has to parse. On the pass after the stack restarts Guardian, it reads instead of writing:
+  the failed attempt is still reported with its cause, and nothing holds the account.
+- `live-guardian-execute-2of3-falcon` and `live-guardian-execute-2of3-ecdsa` (live, both
+  SDKs, required on testnet): the cosigners create the proposal in the Guardian-executable mode and sign it to
+  threshold, then Guardian proves, submits and commits it. The pass is judged the same way a
+  self-execution is, by the chain and GUARDIAN's history agreeing, not by GUARDIAN reporting
+  `committed`. The proposal is the consume of the account's funding note, so pinned input
+  notes and the fee are exercised too.
+- `live-guardian-execute-add-signer-2of3-falcon` (live, both SDKs, required on testnet): Guardian executes an
+  add-signer proposal. `signer-set-assert` reads the new set on chain and through the newly
+  admitted signer, so it fails unless promotion moved GUARDIAN's own authorization list.
+- `live-guardian-execute-p2id-late-2of3-ecdsa` (live, TypeScript, required on testnet): a P2ID send is signed to
+  threshold, then `chain-advance-past-bound` waits until the tip is 60 blocks past the block the
+  summary binds, beyond devnet's window of historical account state, before Guardian executes
+  it. The vault and the sent note are asserted as for a self-executed send.
+- `live-guardian-execute-consume-late-2of3-falcon` (live, TypeScript, required on testnet): the same wait for a
+  consume-notes proposal, whose funding note is pinned with an inclusion proof at its own, older
+  block, so the late execution authenticates both blocks at the tip.
+- `live-guardian-execute-base-client-2of3-ecdsa` (live, both SDKs, required on testnet): the
+  request and the polling go over the base client alone (`crates/client` on the Rust leg,
+  `packages/guardian-client` on the TypeScript leg), signed as one cosigner, with no multisig
+  SDK and no node on the caller's side. The SDK clients only create and sign the proposal, and
+  read the chain afterwards to judge the outcome. With the base clients' dependency guards, this
+  is the evidence that executing needs no Miden capability.
+
+Every run saves the main server's `guardian_execution_*` metrics to
+`execution-metrics.prom` in its results directory once the scenarios finish. A live run's
+chain-view and proving histograms are the recorded per-execution baseline; nothing asserts on
+them.
+
+A scenario that names `guardian-execute` builds its clients in the Guardian-executable mode;
+no other scenario changes. Every live one has passed on devnet, and every one is required on
+testnet; devnet's pairs exclude them for the window reason below.
+
+The two late scenarios run on the TypeScript SDK only. Their 60-block wait dominates the live
+job, the behavior they prove is GUARDIAN's rather than an SDK's, and the integrators who leave a
+proposal pending that long are on the JavaScript SDK; the SDK-specific halves (declaring the
+bound block, pinning notes) are covered on both SDKs by the scenarios that execute at once.
+They are required on testnet. Devnet's pairs exclude them, because a scenario required there
+must fit its step budget inside devnet's 150 s historical window, and the wait alone exceeds
+it; they still run there. Testnet runs Miden 0.16 until its 0.17 upgrade, so until then a
+testnet run of this line fails them along with everything else on 0.17.
 
 ## Reading the outcome
 
