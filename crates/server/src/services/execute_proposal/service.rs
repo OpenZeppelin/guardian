@@ -258,6 +258,13 @@ pub async fn request_execution(
             release_quietly(elector.as_ref(), lease).await;
             return Err(GuardianError::ConflictPendingDelta);
         }
+        ReservationWrite::ProposalGone => {
+            release_quietly(elector.as_ref(), lease).await;
+            return Err(GuardianError::ProposalNotFound {
+                account_id: account_id.clone(),
+                commitment: proposal_id.clone(),
+            });
+        }
         ReservationWrite::StaleLease => {
             release_quietly(elector.as_ref(), lease).await;
             return already_executing(state, &account_id, proposal_id).await;
@@ -289,7 +296,10 @@ pub async fn request_execution(
         .ok_or_else(|| {
             GuardianError::StorageError("the new reservation is not readable".to_string())
         })?;
-    Ok(ExecutionEnvelope::from_record(&record, true, true))
+    let exists =
+        crate::services::execution_status::proposal_exists(state, &account_id, &proposal_id)
+            .await?;
+    Ok(ExecutionEnvelope::from_record(&record, exists, true))
 }
 
 /// The answer for a request that lost the race for the account's lease: the winner's execution

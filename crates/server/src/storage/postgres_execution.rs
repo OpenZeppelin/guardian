@@ -415,6 +415,16 @@ impl PostgresService {
                 if candidate_exists {
                     return Ok(ReservationWrite::CandidateExists);
                 }
+                let proposal_exists: bool = diesel::select(diesel::dsl::exists(
+                    delta_proposals::table
+                        .filter(delta_proposals::account_id.eq(&reservation.account_id))
+                        .filter(delta_proposals::commitment.eq(&reservation.proposal_id)),
+                ))
+                .get_result(conn)
+                .await?;
+                if !proposal_exists {
+                    return Ok(ReservationWrite::ProposalGone);
+                }
                 let previous: Option<i32> = execution_reservations::table
                     .filter(execution_reservations::account_id.eq(&reservation.account_id))
                     .filter(execution_reservations::proposal_id.eq(&reservation.proposal_id))
@@ -567,6 +577,7 @@ impl PostgresService {
         &self,
         admission: CandidateAdmission,
     ) -> Result<AdmissionWrite, String> {
+        admission.ensure_evidence_describes_candidate()?;
         let CandidateAdmission {
             fence,
             delta,

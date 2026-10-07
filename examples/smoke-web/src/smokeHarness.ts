@@ -36,6 +36,7 @@ import {
   describeFailedExecution,
   executeProposal as executeOnlineProposal,
   executeThroughGuardian,
+  localExecutionReason,
   guardianExecutionStatus as readGuardianExecutionStatus,
   exportProposalToJson,
   fetchAccountState,
@@ -1296,7 +1297,11 @@ export function useSmokeHarness(): {
           throw new Error('No multisig account is loaded');
         }
 
-        if (currentMultisig.executionMode === 'guardian_executable') {
+        const proposal = currentMultisig.listProposals().find(({ id }) => id === proposalId);
+        const guardianExecutes =
+          currentMultisig.executionMode === 'guardian_executable' &&
+          (proposal === undefined || localExecutionReason(proposal) === null);
+        if (guardianExecutes) {
           const execution = await executeThroughGuardian(currentMultisig, proposalId);
           if (execution.state === 'failed') {
             throw new Error(describeFailedExecution(execution));

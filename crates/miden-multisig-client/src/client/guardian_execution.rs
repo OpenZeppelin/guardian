@@ -102,10 +102,18 @@ fn is_transport(error: &ClientError) -> bool {
     }
 }
 
+type StatusRead = std::result::Result<ProposalExecution, StatusReadFailure>;
+
 #[async_trait::async_trait]
 trait WaitRuntime: Send + Sync {
     fn elapsed(&self) -> Duration;
     async fn sleep(&self, duration: Duration);
+    /// The read's result, or `None` when it did not finish within `budget`.
+    async fn within<'f>(
+        &self,
+        budget: Duration,
+        read: futures::future::BoxFuture<'f, StatusRead>,
+    ) -> Option<StatusRead>;
 }
 
 struct TokioWaitRuntime {
@@ -129,11 +137,19 @@ impl WaitRuntime for TokioWaitRuntime {
     async fn sleep(&self, duration: Duration) {
         tokio::time::sleep(duration).await;
     }
+
+    async fn within<'f>(
+        &self,
+        budget: Duration,
+        read: futures::future::BoxFuture<'f, StatusRead>,
+    ) -> Option<StatusRead> {
+        tokio::time::timeout(budget, read).await.ok()
+    }
 }
 
 #[async_trait::async_trait]
 trait ExecutionStatusSource: Send {
-    async fn read(&mut self) -> std::result::Result<ProposalExecution, StatusReadFailure>;
+    async fn read(&mut self) -> StatusRead;
 }
 
 /// Reads one proposal's execution from Guardian, over a fresh authenticated connection each time.
@@ -145,7 +161,7 @@ struct GuardianStatusSource<'a> {
 
 #[async_trait::async_trait]
 impl ExecutionStatusSource for GuardianStatusSource<'_> {
-    async fn read(&mut self) -> std::result::Result<ProposalExecution, StatusReadFailure> {
+    async fn read(&mut self) -> StatusRead {
         let mut guardian = self
             .client
             .create_authenticated_guardian_client()
@@ -158,8 +174,9 @@ impl ExecutionStatusSource for GuardianStatusSource<'_> {
     }
 }
 
-/// Polls one proposal's execution until it is terminal or the deadline passes. It only reads:
-/// it never asks Guardian to execute.
+/// Polls one proposal's execution until it is terminal or the deadline passes. Every read is
+/// bounded by the time left, so a stalled read cannot outlast the deadline and an answer arriving
+/// after it is not returned. It only reads: it never asks Guardian to execute.
 struct ExecutionWait<'a> {
     proposal_id: &'a str,
     options: ExecutionWaitOptions,
@@ -174,7 +191,14 @@ impl ExecutionWait<'_> {
         let mut backoff = self.options.initial_backoff;
         let mut last_observed = None;
         loop {
-            let pause = match source.read().await {
+            let remaining = self.options.deadline.saturating_sub(runtime.elapsed());
+            if remaining.is_zero() {
+                return Err(self.timed_out(last_observed));
+            }
+            let Some(read) = runtime.within(remaining, source.read()).await else {
+                return Err(self.timed_out(last_observed));
+            };
+            let pause = match read {
                 Ok(execution) if execution.state.is_terminal() => return Ok(execution),
                 Ok(execution) => {
                     last_observed = Some(execution);
@@ -361,6 +385,24 @@ mod tests {
             *self.now.lock().unwrap() += duration;
             self.sleeps.lock().unwrap().push(duration);
         }
+
+        /// A scripted read is ready on its first poll unless it stalls, and advances the clock
+        /// by however long it took. One that stalls or takes longer than `budget` ends at the
+        /// budget, as a real timeout would.
+        async fn within<'f>(
+            &self,
+            budget: Duration,
+            read: futures::future::BoxFuture<'f, StatusRead>,
+        ) -> Option<StatusRead> {
+            let started = self.elapsed();
+            match futures::FutureExt::now_or_never(read) {
+                Some(read) if self.elapsed() - started <= budget => Some(read),
+                Some(_) | None => {
+                    *self.now.lock().unwrap() = started + budget;
+                    None
+                }
+            }
+        }
     }
 
     impl FakeRuntime {
@@ -391,20 +433,44 @@ mod tests {
         }
     }
 
-    type Read = std::result::Result<ProposalExecution, StatusReadFailure>;
+    type Read = StatusRead;
 
-    struct ScriptedSource {
-        script: VecDeque<Read>,
+    /// One scripted status read: an answer after `takes`, or one that never answers.
+    enum Step {
+        Answer { takes: Duration, read: Read },
+        Stall,
+    }
+
+    impl From<Read> for Step {
+        fn from(read: Read) -> Self {
+            Step::Answer {
+                takes: Duration::ZERO,
+                read,
+            }
+        }
+    }
+
+    struct ScriptedSource<'a> {
+        runtime: &'a FakeRuntime,
+        script: VecDeque<Step>,
         reads: usize,
     }
 
     #[async_trait::async_trait]
-    impl ExecutionStatusSource for ScriptedSource {
+    impl ExecutionStatusSource for ScriptedSource<'_> {
         async fn read(&mut self) -> Read {
             self.reads += 1;
-            self.script
+            match self
+                .script
                 .pop_front()
-                .unwrap_or_else(|| Ok(execution(ExecutionState::Pending)))
+                .unwrap_or_else(|| Ok(execution(ExecutionState::Pending)).into())
+            {
+                Step::Answer { takes, read } => {
+                    *self.runtime.now.lock().unwrap() += takes;
+                    read
+                }
+                Step::Stall => std::future::pending().await,
+            }
         }
     }
 
@@ -421,8 +487,22 @@ mod tests {
         options: ExecutionWaitOptions,
         reads: Vec<Read>,
     ) -> (Result<ProposalExecution>, usize) {
+        wait_steps(
+            runtime,
+            options,
+            reads.into_iter().map(Step::from).collect(),
+        )
+        .await
+    }
+
+    async fn wait_steps(
+        runtime: &FakeRuntime,
+        options: ExecutionWaitOptions,
+        steps: Vec<Step>,
+    ) -> (Result<ProposalExecution>, usize) {
         let mut source = ScriptedSource {
-            script: VecDeque::from(reads),
+            runtime,
+            script: VecDeque::from(steps),
             reads: 0,
         };
         let wait = ExecutionWait {
@@ -544,7 +624,7 @@ mod tests {
             last_observed.map(|execution| execution.state),
             Some(ExecutionState::Pending)
         );
-        assert_eq!(reads, 4);
+        assert_eq!(reads, 3);
         assert_eq!(runtime.sleeps_secs(), vec![1, 2, 2]);
     }
 
@@ -556,25 +636,70 @@ mod tests {
                 MultisigError::GuardianConnection("refused".to_string()),
             ))
         };
-        let mut source = ScriptedSource {
-            script: VecDeque::from([
+        let (outcome, reads) = wait(
+            &runtime,
+            options(1, 1, 2),
+            vec![
                 connection_refused(),
                 connection_refused(),
                 connection_refused(),
-            ]),
-            reads: 0,
-        };
-        let wait = ExecutionWait {
-            proposal_id: "0xprop",
-            options: options(1, 1, 2),
-        };
-        let outcome = wait.run(&runtime, &mut source).await;
+            ],
+        )
+        .await;
         let Err(MultisigError::GuardianExecutionWaitTimedOut { last_observed, .. }) = outcome
         else {
             panic!("expected a timeout, got {outcome:?}");
         };
         assert!(last_observed.is_none());
-        assert_eq!(source.reads, 3);
+        assert_eq!(reads, 2);
+    }
+
+    #[tokio::test]
+    async fn a_stalled_read_times_out_at_the_deadline_with_the_last_observed_execution() {
+        let runtime = FakeRuntime::default();
+        let (outcome, reads) = wait_steps(
+            &runtime,
+            options(1, 10, 5),
+            vec![Ok(execution(ExecutionState::Proving)).into(), Step::Stall],
+        )
+        .await;
+        let Err(MultisigError::GuardianExecutionWaitTimedOut { last_observed, .. }) = outcome
+        else {
+            panic!("expected a timeout, got {outcome:?}");
+        };
+        assert_eq!(
+            last_observed.map(|execution| execution.state),
+            Some(ExecutionState::Proving)
+        );
+        assert_eq!(reads, 2);
+        assert_eq!(runtime.elapsed(), Duration::from_secs(5));
+    }
+
+    #[tokio::test]
+    async fn a_terminal_answer_arriving_after_the_deadline_is_not_returned() {
+        let runtime = FakeRuntime::default();
+        let (outcome, reads) = wait_steps(
+            &runtime,
+            options(1, 10, 5),
+            vec![
+                Ok(execution(ExecutionState::Submitted)).into(),
+                Step::Answer {
+                    takes: Duration::from_secs(10),
+                    read: Ok(execution(ExecutionState::Committed)),
+                },
+            ],
+        )
+        .await;
+        let Err(MultisigError::GuardianExecutionWaitTimedOut { last_observed, .. }) = outcome
+        else {
+            panic!("expected a timeout, got {outcome:?}");
+        };
+        assert_eq!(
+            last_observed.map(|execution| execution.state),
+            Some(ExecutionState::Submitted)
+        );
+        assert_eq!(reads, 2);
+        assert_eq!(runtime.elapsed(), Duration::from_secs(5));
     }
 
     #[allow(dead_code)]

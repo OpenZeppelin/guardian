@@ -8,8 +8,9 @@ use std::pin::Pin;
 use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
-    word_from_hex, Asset, ExecutionState, ExecutionWaitOptions, ExportedProposal, MultisigError,
-    NoteId, P2ideHeights, ProcedureName, Proposal, ProposalExecution, ProposalVerification,
+    word_from_hex, Asset, ExecutionFailureCode, ExecutionState, ExecutionWaitOptions,
+    ExpirationBound, ExportedProposal, ForeignAccountUnavailableReason, MultisigError, NoteId,
+    P2ideHeights, ProcedureName, Proposal, ProposalExecution, ProposalVerification,
     TransactionType,
 };
 use miden_protocol::account::AccountId;
@@ -536,7 +537,12 @@ async fn action_execute_proposal(
     };
 
     if state.guardian_executes() {
-        return execute_through_guardian(state, editor, &proposal_id, private_note_id).await;
+        match local_execution_reason(&proposal.transaction_type) {
+            None => return execute_through_guardian(state, &proposal_id).await,
+            Some(reason) => print_info(&format!(
+                "Executing this proposal here rather than through GUARDIAN: {reason}."
+            )),
+        }
     }
 
     print_waiting("Executing proposal");
@@ -590,13 +596,75 @@ async fn action_execute_proposal(
     }
 }
 
+/// Why this client must execute a proposal itself even when GUARDIAN executes its proposals, or
+/// `None` when GUARDIAN can. A GUARDIAN switch is finished by the executing client, which repoints
+/// itself and registers the account on the new GUARDIAN; a private note can only be exported from
+/// the output-note record the client's own execution creates.
+fn local_execution_reason(transaction_type: &TransactionType) -> Option<&'static str> {
+    match transaction_type {
+        TransactionType::SwitchGuardian { .. } => {
+            Some("a GUARDIAN switch is finished by the client that executes it")
+        }
+        TransactionType::P2ID {
+            note_type: NoteType::Private,
+            ..
+        } => Some("a private note can only be exported by the client that executed it"),
+        _ => None,
+    }
+}
+
+/// What the caller can do after a failed execution. Follows the failure code: whether the
+/// proposal is still stored does not say whether executing it again can succeed.
+fn failed_execution_advice(code: ExecutionFailureCode) -> &'static str {
+    match code {
+        ExecutionFailureCode::ChainBehind
+        | ExecutionFailureCode::NodeUnavailable
+        | ExecutionFailureCode::ChainInconsistent
+        | ExecutionFailureCode::ProvingFailed
+        | ExecutionFailureCode::SealingFailed
+        | ExecutionFailureCode::AcknowledgementFailed
+        | ExecutionFailureCode::LeaseExpired
+        | ExecutionFailureCode::Abandoned => "Execute it again.",
+        ExecutionFailureCode::InsufficientSignatures => {
+            "Collect more signatures, then execute it again."
+        }
+        ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction) => {
+            "Execute it again: a new attempt gets a fresh transaction window."
+        }
+        ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval) => {
+            "Its approval window has passed: create and sign a new proposal."
+        }
+        ExecutionFailureCode::ForeignAccountUnavailable(
+            ForeignAccountUnavailableReason::Unavailable,
+        ) => "Execute it again once the node serves the foreign account.",
+        ExecutionFailureCode::ForeignAccountUnavailable(
+            ForeignAccountUnavailableReason::Private,
+        ) => {
+            "GUARDIAN cannot read a private foreign account: execute it from a client that holds it."
+        }
+        ExecutionFailureCode::BindingMismatch
+        | ExecutionFailureCode::StateMismatch
+        | ExecutionFailureCode::RequestCodec
+        | ExecutionFailureCode::ProtocolMismatch
+        | ExecutionFailureCode::InsufficientFee
+        | ExecutionFailureCode::ExpirationBeyondHorizon
+        | ExecutionFailureCode::AccountInadmissible => "Fix the cause before executing it again.",
+        ExecutionFailureCode::RequestInvalid(_) => {
+            "GUARDIAN cannot execute this request: execute it from this client instead."
+        }
+        ExecutionFailureCode::SubmissionRejected
+        | ExecutionFailureCode::CandidateDiscarded
+        | ExecutionFailureCode::Expired => {
+            "The transaction was sent and did not land: create and sign a new proposal."
+        }
+    }
+}
+
 /// Hands a threshold-met proposal to GUARDIAN, which proves and submits it, and waits for the
 /// outcome. The proposal must have been created by a client in GUARDIAN-executes mode.
 async fn execute_through_guardian(
     state: &mut SessionState,
-    editor: &mut DefaultEditor,
     proposal_id: &str,
-    private_note_id: Option<String>,
 ) -> Result<(), String> {
     print_waiting("Asking GUARDIAN to execute the proposal");
     let requested = retry_on_recency_condition(state, |state| {
@@ -639,16 +707,11 @@ async fn execute_through_guardian(
             } else {
                 print_success("State synced successfully");
             }
-            if let Some(note_id) = private_note_id {
-                offer_private_note_export(state, editor, &note_id).await;
-            }
             Ok(())
         }
         ExecutionState::Failed => {
-            if finished.proposal_exists {
-                print_info("The proposal is kept: fix the cause above and execute it again.");
-            } else {
-                print_info("The proposal was removed: create and sign a new one.");
+            if let Some(error) = &finished.error {
+                print_info(failed_execution_advice(error.code));
             }
             Err("GUARDIAN could not execute the proposal".to_string())
         }

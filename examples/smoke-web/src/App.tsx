@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { normalizeError } from '@multisig-browser/errors';
+import { localExecutionReason } from '@multisig-browser/multisigApi';
 import {
   type CreateProposalInput,
   type InitSessionInput,
@@ -632,7 +633,8 @@ export default function App() {
                         runAction(async () => api.executeProposal({ proposalId: proposal.id }))
                       }
                     >
-                      {snapshot.executionMode === 'guardian_executable'
+                      {snapshot.executionMode === 'guardian_executable' &&
+                      localExecutionReason(proposal) === null
                         ? 'Execute via GUARDIAN'
                         : 'Execute'}
                     </button>
