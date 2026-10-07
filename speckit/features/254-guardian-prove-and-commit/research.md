@@ -12,6 +12,273 @@ the tree at the time of writing; file references are `path:line`.
 > carries the 0.16 equivalent, and where it describes assembling a chain view at the tip from
 > `SyncChainMmr` and `SyncNotes`, that is the historical spike construction: FR-056 admits no
 > anchorless proposal and forbids substituting the tip.
+>
+> **2026-09-30, superseded in part**: the 0.16 anchored-reproduction decisions named in the note
+> above (execute at the proposal's `ChainAnchor`, never substitute the tip; derive fee conversion
+> advice server-side; the `GUARDIAN_EXECUTION_ANCHOR_EXPIRED` stale-anchor stop) are withdrawn by
+> the Miden 0.17 re-verification below and recorded as withdrawn in RFC 0001 A.3 (revision 17).
+> The historical spike construction the note calls non-normative, a chain view at the tip from
+> `SyncChainMmr`, is normative again as FR-061. The note is kept unedited as the 0.16 record.
+
+## Miden 0.17 re-verification (2026-09-30)
+
+Re-verified against the pins on `main` at `34920008`: `miden-protocol` / `miden-standards` /
+`miden-tx` `0.17.0-rc.7`, `miden-client` `0.17.0-rc.4`, `miden-node-proto-build` `0.17.0-rc.3`,
+web SDK `0.17.0-rc.4`, including #485 (0.17 port) and #498 (tip execution). Crate paths are
+relative to `~/.cargo/registry/src/index.crates.io-*/`. The full review, with the blocking (B1 to
+B6) and non-blocking (N1 to N11) findings, is `rfc-0001-miden-017-review.md` at the repository
+root; the decisions D1 to D5 there are normative for spec revision 11 and RFC revision 17.
+
+Tags: **[READ]** was checked against the cited source on 2026-09-30. **[RAN]** was executed.
+**[INFERRED]** follows from [READ] facts but was not executed. Nothing on the 0.17 line has been
+[RAN] by this feature's work: the spike (`254-execution-spike`, `769e2a90`) is still on the 0.16
+release candidates (protocol rc.9, client rc.4) and must be ported to 0.17 rc.7 before any of its
+tests mean anything. The only 0.17 runs cited below are the SDK work recorded in
+`docs/MIDEN_COMPATIBILITY.md` ("Open upstream items", last checked 2026-09-28), marked
+*observed by the SDK work*.
+
+Environments: live work targets **devnet** (node 0.17.0-rc.2). **Testnet runs Miden 0.16**, so
+the testnet-equivalent environment on 0.17 is a local `miden-node` from the pinned line.
+Production is gated on stable 0.17 plus the re-pin (procedure roots, fixtures, cross-SDK
+determinism vectors).
+
+### The summary binds a chosen bound block, not the reference block
+
+- **[READ]** `TransactionSummary` carries `block_number` and `block_commitment`, "the block the
+  summary binds", plus the transaction's `expiration_delta` and the user params
+  (`miden-protocol-0.17.0-rc.7/src/transaction/tx_summary.rs:23-39`).
+- **[READ]** The commitment preimage is 24 felts:
+  `[version, metadata, user_param0, user_param1], [user_param2..5], ACCOUNT_DELTA_COMMITMENT,
+  INPUT_NOTES_COMMITMENT, OUTPUT_NOTES_COMMITMENT, BLOCK_COMMITMENT` (layout
+  `tx_summary.rs:137-143`, `to_elements` `:209-222`, `NUM_ELEMENTS` `:58-59`). There are six user
+  params (`:365`). The metadata felt packs `expiration_delta` (16 bits) and `block_number`
+  (32 bits) (`:276-282`).
+- **[READ]** The auth procedure builds it with `create_tx_summary_with_block(bound_block, ...)`,
+  whose bound block "must not exceed the transaction reference block number"
+  (`miden-standards-0.17.0-rc.7/asm/standards/auth/mod.masm:48-49,67-99`). The kernel's
+  `get_block_commitment` asserts `bound_block <= ref_block` and resolves an older block through
+  the partial blockchain MMR (`miden-protocol-0.17.0-rc.7/asm/kernels/transaction-core/src/tx.masm:98-130`).
+- **[READ]** The host rejects a summary whose bound block the transaction inputs do not
+  authenticate: `TransactionSummaryUnknownBlockNumber` (`miden-tx-0.17.0-rc.7/src/host/mod.rs:504-516`).
+- **[INFERRED]** Consequence: executing at the proposal's anchored block is no longer required
+  for the binding. Any reference block `R >= bound_block` whose partial blockchain tracks the
+  bound block reproduces the same `BLOCK_COMMITMENT`. The bound block's commitment is proven by
+  an MMR path under `R`'s chain commitment, so the trust root reduces to "is `R`'s header
+  canonical" (upstream question 2).
+
+This also corrects "CORRECTED: expiration is not part of the signed transaction summary" below
+for the 0.17 line: the transaction's expiration delta is now in the signed metadata (see the
+guarded multisig section).
+
+### Tip reproduction, and why the anchor fails on 0.17
+
+- **[READ]** On `main` both SDKs verify, sign and execute at the tip (#498): Rust
+  `execute_for_summary_at_tip` (`crates/miden-multisig-client/src/transaction/mod.rs:111-127`),
+  TypeScript `executeForSummaryAtTip` (`packages/miden-multisig-client/src/transaction/summary.ts:148-169`).
+  The Rust SDK refuses a request whose `block_numbers()` lacks the bound block
+  (`BoundBlockNotDeclared`, `transaction/mod.rs:205-217`) and a local store behind the bound block
+  (`ChainBehindBoundBlock`, `:152-173`).
+- **[READ]** `chain_anchor` on `main` only names the bound block; nothing executes against it,
+  and the server never reads it (`crates/miden-multisig-client/src/payload.rs:82-86`).
+- *Observed by the SDK work* (`docs/MIDEN_COMPATIBILITY.md`, open upstream items): devnet keeps
+  about 50 blocks of account history and answers `block N has been pruned` past that. Its fee
+  faucet enables asset callbacks, so every fee payment loads the faucet as a foreign account at
+  the reference block. Two guarded 2-of-2 proposals were verified, signed and executed at the
+  tip more than 70 blocks after their bound block (#462).
+- **[INFERRED]** An anchored execution (FR-056 revision 10) therefore fails at the foreign
+  fee-faucet load for any execution requested more than about 50 blocks after proposal creation,
+  which is the normal case for human-paced signature collection. The 0.16 decision "MUST NOT
+  substitute the chain tip" is **superseded**: FR-056 becomes tip reproduction under the signed
+  bound block, and FR-058 (`ANCHOR_EXPIRED`) loses its premise and becomes the
+  expiration-reached stop (`GUARDIAN_EXECUTION_EXPIRATION_REACHED`, D3).
+
+### `DataStore` on 0.17
+
+- **[READ]** The seam survives: five methods plus `MastForestStore`. The only signature change is
+  that `get_transaction_inputs` also returns a `ProtocolConfig`, which "must be the one the
+  returned block header commits to" (`miden-tx-0.17.0-rc.7/src/executor/data_store.rs:19-96`,
+  requirement at `:29-30`). FR-060.
+- **[READ]** The reference block's header carries `PROTOCOL_CONFIG_COMMITMENT` and the
+  `verification_base_fee` the kernel reads (prologue advice layout,
+  `miden-protocol-0.17.0-rc.7/asm/kernels/transaction-core/src/prologue.masm:265-300`).
+- **[READ]** `prepare_tx_inputs` builds `ref_blocks` from the input notes' blocks plus the
+  reference block only (`miden-tx-0.17.0-rc.7/src/executor/mod.rs:280-281`); the bound block is
+  not among them. Lazy block-witness loading is a TODO: `TxBeforeBlockWitnessLoad` returns `None`
+  (`host/tx_event.rs:491-494`). `ClientDataStore` closes the gap by adding the request's
+  registered block numbers to the requested set
+  (`miden-client-0.17.0-rc.4/src/store/data_store/mod.rs:115-121,335-342`).
+- **[INFERRED]** Guardian's `DataStore` must do the same: the `PartialBlockchain` it returns must
+  track `request.block_numbers()` (which on a valid request includes the bound block) in addition
+  to the note blocks, or the host raises `TransactionSummaryUnknownBlockNumber`. FR-061.
+- **[READ]** `execute_transaction(account_id, block_ref, notes, tx_args)` takes the reference
+  block explicitly (`miden-tx-0.17.0-rc.7/src/executor/mod.rs:189-194`), so Guardian chooses `R`.
+- **[READ]** Foreign accounts are loaded lazily through
+  `DataStore::get_foreign_account_inputs(id, ref_block)` (`executor/exec_host.rs:178-186`).
+
+### Guarded multisig auth flow
+
+- **[READ]** The guarded multisig component's auth procedure resolves the auth args, asserts the
+  approval has not expired, pays the fee, builds and signs the summary, verifies the guardian
+  signature, then applies the approval expiration
+  (`miden-standards-0.17.0-rc.7/asm/components/auth/guarded_multisig/guarded_multisig.masm:49-113`).
+  The library procedures it calls are in `asm/standards/auth/multisig.masm:827-1053`.
+- **[READ]** `resolve_auth_args` requires the auth-arg preimage in the advice map
+  (`ERR_AUTH_ARGS_PREIMAGE_MISSING`) and pipes **three** words: `[bound_block,
+  approval_expiration, 0, 0]`, `SALT`, `CONVERSION_INFO` (`multisig.masm:827-854`). The approval
+  expiration is user param 0 of the summary (`multisig.masm:956-965,995-1053`).
+- **[READ]** `assert_approval_not_expired` aborts the VM with `ERR_MULTISIG_APPROVAL_EXPIRED` when
+  `ref_block >= approval_expiration` and otherwise returns the delta clamped to
+  `MAX_EXPIRATION_BLOCK_DELTA` (65,535) (`multisig.masm:884-914`).
+- **[READ]** `apply_approval_expiration` calls `tx::update_expiration_block_delta` and must run
+  after every event that reports the summary to the host (`multisig.masm:931-942`).
+  `update_expiration_block_delta` accepts 1..65,535, adds it to the reference block, and only
+  stores the result if it is lower than the current value, so it keeps the minimum
+  (`tx.masm:143-169`).
+- **[READ]** The expiration delta is relative: `get_expiration_delta` returns
+  `expiration_block - ref_block`, or 0 when unset (`tx.masm:177-189`). At summary time the host
+  rejects a summary whose metadata delta differs from the kernel's
+  (`TransactionSummaryExpirationDeltaMismatch`, `miden-tx-0.17.0-rc.7/src/host/tx_event.rs:787-795`).
+- **[INFERRED]** Two bounds result (D1). A relative transaction delta (256 for built-in families)
+  is signed as a delta, so it reproduces at any `R`; the approval expiration is absolute and
+  signed. The approval clamp runs after the summary, so the proven expiration is
+  `R + min(256, approval_expiration - R)`, and a custom producer with no script delta falls back
+  to the approval bound clamped to 65,535 from `R`. The proven expiration therefore moves with
+  `R`, so the FR-046 horizon is measured as `proven expiration_block_num - R` for the attempt's
+  own `R`.
+- **[READ]** Neither SDK sets a transaction `expiration_delta` on `main`; the only `256` is the
+  Rust client's stale-sync bound `max_block_number_delta(256)`
+  (`crates/miden-multisig-client/src/builder.rs:354`). `TransactionRequestBuilder::expiration_delta`
+  is still rejected together with a custom script
+  (`miden-client-0.17.0-rc.4/src/transaction/request/builder.rs:305,682-687`). The shared
+  256-block constant and `GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA = 28_800` are D1
+  decisions, not yet implemented.
+
+### Fees
+
+- **[READ]** `compute_fee` is `(ilog2(clk + extra_cycles) + 1) × verification_base_fee` plus an
+  output-notes fee that currently returns 0; the base fee is read from kernel memory populated
+  from the reference block header (`tx.masm:309-339`, `prologue.masm:265-300`).
+- **[READ]** `fee::pay_fee` first creates a FEE_SPONSORSHIP note for every network output note,
+  pricing each through its target account's fee policy via FPI, "which requires that target to be
+  provisioned as a foreign account" (`miden-standards-0.17.0-rc.7/asm/standards/fee/mod.masm:349-352`).
+  A non-zero fee requires committed conversion info pinned to the native asset at 1/1
+  (`ERR_FEE_CONVERSION_INFO_MISSING`, `ERR_FEE_CONVERSION_INFO_NOT_NATIVE`, `fee/mod.masm:379-444`).
+  The brief cites `:378-440`; the procedure spans `:379-444`.
+- **[READ]** Moving an asset whose faucet ID has the callback flag starts a foreign context
+  against the faucet on every movement, even when it registers no callback
+  (`miden-protocol-0.17.0-rc.7/asm/kernels/transaction-core/src/callbacks.masm:102-123`).
+- **[INFERRED]** Foreign public accounts are on the normal path on devnet (fee faucet, callback
+  assets, sponsorship pricing). The v1 exclusion (FR-050 revision 10) would refuse every devnet
+  transaction and is **superseded**: FR-050 supports foreign public accounts loaded lazily at `R`
+  through `GetAccount(account_id, block_num = R, details)`
+  (`miden-node-proto-build-0.17.0-rc.3/proto/rpc.proto:33,345-412`); private or unservable
+  foreign state fails pre-boundary with `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` (D2).
+  The node's `GetAccount` error codes distinguish `AccountNotPublic` (3) and `BlockPruned` (5)
+  (`miden-client-0.17.0-rc.4/src/rpc/errors/node/account.rs:28-45`).
+- **[INFERRED]** Fee drift (N1, **open**): the TX_FEE amount enters the signed output-notes
+  commitment, and Guardian's reproduction at `R` computes it from `R`'s base fee and its own
+  cycle count. A base-fee change, or a cycle count crossing a power of two (an MMR walk for
+  `bound < R` that the proposer's `bound == R` run did not do), changes the summary. The SDK
+  cosigners carry the same risk and the SDK work observed no drift on devnet 70+ blocks past the
+  bound block. Guardian classifies it as `GUARDIAN_EXECUTION_BINDING_MISMATCH` with a logged
+  TX_FEE comparison (D3); it is a candidate upstream question 9.
+
+### Client fee path: 2-word versus 3-word preimage
+
+- **[READ]** miden-client commits a **two-word** `[SALT, CONVERSION_INFO]` preimage when it
+  attaches fee conversion info (`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:289-300`,
+  `miden-standards-0.17.0-rc.7/src/account/auth/fee.rs:110-122`). The guarded multisig pipes three
+  words, so that path aborts in `resolve_auth_args`.
+- **[READ]** The client leaves a request with a non-empty auth arg untouched
+  (`miden-client-0.17.0-rc.4/src/transaction/mod.rs:1535-1540`). Both SDKs set the three-word
+  auth arg and preimage themselves (`docs/MIDEN_COMPATIBILITY.md`, "miden-client fee path").
+- **[INFERRED]** FR-057 revision 10 (Guardian derives and attaches fee conversion info) is
+  **superseded**: Guardian never derives, attaches or repairs it, refuses a request with an empty
+  auth arg or a missing preimage (`GUARDIAN_EXECUTION_REQUEST_INVALID`, `auth_args_missing`), and
+  passes the auth arg through unchanged.
+
+### Sealed submission
+
+- **[READ]** `SubmitProvenTx` takes `ProvenTransactionSubmission{transaction,
+  SealedTransactionInputs{key_id, ciphertext}}`
+  (`miden-node-proto-build-0.17.0-rc.3/proto/types/submission.proto:8-28`); the key comes from
+  `GetTransactionEncryptionKey` with validator attestations (`rpc.proto:74`,
+  `submission.proto:51-97`).
+- **[READ]** `seal_transaction_inputs(rng, key, tx_id, &TransactionInputs)`
+  (`miden-client-0.17.0-rc.4/src/rpc/encryption.rs:445-460`); the client verifies the attested
+  key against the genesis commitment and the tip's validator set before sealing
+  (`transaction/mod.rs:779-845`).
+- **[INFERRED]** The worker must keep the `TransactionInputs` from execution to sealing, and key
+  fetch, attestation check and sealing must complete before the no-retry boundary (FR-059, D4 step
+  10), so a failure fails and releases (`GUARDIAN_EXECUTION_SEALING_FAILED`) rather than
+  stranding the account. Attestation validation is a sibling of question 2.
+
+### RPC surface
+
+- **[READ]** `GetBlockHeaderByNumber` takes `include_mmr_proof` and `include_protocol_config`;
+  its MMR path is "based on the current chain length", returned with `chain_length`
+  (`rpc.proto:268-295`). `main`'s RPC client hardcodes `include_protocol_config: None`
+  (`crates/miden-rpc-client/src/lib.rs:302`) and has no `sync_chain_mmr` (the spike's wrapper is
+  not on `main`).
+- **[READ]** `SyncChainMmr` takes a `FinalityLevel {COMMITTED, PROVEN}` and returns the target
+  header, `repeated primitives.Signature block_signatures`, and the target's `ProtocolConfig` when
+  the caller starts at genesis (`rpc.proto:670-714`). The header response has no signatures.
+- **[READ]** miden-client adjusts a returned path to a given forest with
+  `adjust_merkle_path_for_forest`, which is `pub(crate)`
+  (`miden-client-0.17.0-rc.4/src/sync/block_header.rs:219`).
+- **[READ]** There is still no transaction-status RPC, but `SyncTransactions(block_range,
+  account_ids)` returns `TransactionRecord{block_num, header, ...}` (`rpc.proto:90,798-841`) and
+  `BlockSubscription` / `ProofSubscription` streams exist (`rpc.proto:122,128`). `main`'s RPC
+  client already has `sync_transactions` (`crates/miden-rpc-client/src/lib.rs:518`).
+- **[INFERRED]** `SyncTransactions` is a usable inclusion observation for FR-040's committed path;
+  the "no transaction-status lookup" section below is restated accordingly. Which finality level
+  `R` should be anchored to, and whether Guardian's `committed` means COMMITTED or PROVEN, are
+  open (question 2, N4).
+
+### The spike's tip `ChainView` is normative again (FR-061)
+
+- **[INFERRED]** FR-061: `R` is the node's committed tip at attempt start. The `PartialBlockchain`
+  at forest `R` is assembled from genesis-seeded `SyncChainMmr` peaks (the construction the spike
+  validated live at 0.6 s cold start, see "Validated against public Miden testnet", 0.15/0.16
+  evidence) plus `GetBlockHeaderByNumber(n, include_mmr_proof)` for the bound block and every
+  authenticated note block, with each path adjusted from the returned `chain_length` to forest
+  `R`. This addresses the defect for which the earlier `GetBlockHeaderByNumber` note-path test was
+  withdrawn (paths opened at the current chain length, not the execution forest). If the node tip
+  moves between the peaks read and a header read, the adjustment is what keeps the paths valid.
+- **[INFERRED]** A node below the bound block is a retryable pre-boundary condition
+  (`GUARDIAN_EXECUTION_CHAIN_BEHIND`), mirroring the SDK's `ChainBehindBoundBlock`.
+- The spike code must be ported from 0.16 rc.9 to 0.17 rc.7, forward onto a branch from `main`
+  (`blockchain.rs`, `store.rs`, the RPC `sync_chain_mmr`), rather than resumed on the stale branch.
+
+### `ClientDataStore` and `Store` are still unusable
+
+- **[READ]** `ClientDataStore` is still in a `pub(crate)` module
+  (`miden-client-0.17.0-rc.4/src/store/mod.rs:65-71`); the only public path is the `testing`
+  re-export (`lib.rs:345-358`). `Store` has 61 methods, 45 of them required
+  (`store/mod.rs:191-839`). The round-2 decision (Guardian implements `miden_tx::DataStore`
+  directly) stands. `chain_anchor_at_tip(tracked_blocks)` is private
+  (`transaction/mod.rs:398-427`), a candidate Q5(b) ask shared with the web SDK.
+
+### Request serialization is unversioned across rc.3 and rc.4
+
+- **[READ]** `TransactionRequest` serialization carries no version tag. rc.4 writes
+  `block_numbers` as the **first** field (`miden-client-0.17.0-rc.4/src/transaction/request/mod.rs:447-477`);
+  rc.3 starts with `input_notes` (`miden-client-0.17.0-rc.3/src/transaction/request/mod.rs:439-443`).
+- **[INFERRED]** rc.3 and rc.4 bytes do not decode across each other. This first motivated a
+  serializer-identity allowlist in FR-014, which was dropped on 2026-10-01: a mismatched request
+  fails to decode or fails the comparison against the signed summary, both before proving, so the
+  allowlist added a per-bump maintenance step without protecting anything further.
+
+### Other re-citations
+
+- **[READ]** The remote prover default timeout is still 10 s
+  (`miden-client-0.17.0-rc.4/src/remote_prover/tx_prover.rs:43`). The 0.16 proving timings and the
+  ~26 KB request size are historical: proofs are format 2 (VM 0.33) and the post-#498 request
+  also carries `block_numbers` and the auth-arg preimage. Re-measure on 0.17.
+- **[READ]** `explicit_input_notes` still exists
+  (`miden-client-0.17.0-rc.4/src/transaction/request/builder.rs:178-190`). The consume-notes
+  pinning requirement stands, now checked at execution as `GUARDIAN_EXECUTION_REQUEST_INVALID`
+  (`input_notes_not_pinned`).
 
 ## CORRECTED: note-path assembly is conditional, and `SyncNotes` supplies the pinned forest
 
@@ -48,6 +315,11 @@ exact-note or exact-block proof at an explicit target forest would be a material
 stateless-executor API. This is now upstream Question 3.
 
 ## CORRECTED: expiration is not part of the signed transaction summary
+
+> **2026-09-30, Miden 0.17**: no longer true on 0.17. The summary metadata packs the transaction's
+> `expiration_delta` (relative to the reference block) and the host checks it against the kernel,
+> and the multisig approval expiration is signed as user param 0. See "Miden 0.17
+> re-verification", guarded multisig auth flow. The 0.15 analysis below is kept as the record.
 
 The pinned Miden 0.15.3 `TransactionSummary` contains account delta, input notes, output notes,
 and salt (`miden-protocol-0.15.3/src/transaction/tx_summary.rs:20-24`), and its commitment contains
@@ -224,6 +496,12 @@ Two consequences for this feature, both of which changed the spec:
   post-submission failure would be false. Retry requires a *new* proposal (FR-042).
 
 ## No transaction-status lookup; expiration is the terminal bound
+
+> **2026-09-30, Miden 0.17**: there is still no status-by-id RPC, but `SyncTransactions`
+> returns per-account `TransactionRecord{block_num, header}` and `main`'s RPC client already wraps
+> it, which is a usable inclusion observation for FR-040's committed path. See "Miden 0.17
+> re-verification", RPC surface. `ProvenTransaction::expiration_block_num()` remains the
+> authoritative expiration (FR-039).
 
 `MidenRpcClient` (`crates/miden-rpc-client/src/lib.rs`) exposes `get_status`,
 `get_block_header`, `submit_transaction`, `sync_state`, `get_notes_by_id`,
@@ -409,6 +687,12 @@ larger. Worth measuring before committing to the wire shape.
 
 ## Validated against public Miden testnet
 
+> **2026-09-30**: these runs were on the 0.15 line (and the spike later on the 0.16 release
+> candidates). Testnet still runs Miden 0.16, so none of them cover 0.17. On 0.17 the live
+> environment is devnet (node 0.17.0-rc.2), and the testnet-equivalent is a local `miden-node`
+> from the pinned line. The `SyncChainMmr` cold-start construction validated here is normative
+> again (FR-061) once ported.
+
 Chain-MMR acquisition turned out to be **entirely read-only** — `get_block_header` and
 `sync_chain_mmr` are queries — so validating it needed no account, no funds, and no
 infrastructure of our own. `NetworkType::MidenTestnet` already pointed at
@@ -572,6 +856,11 @@ Checked against PR #340's dependency set — all **prereleases**: `miden-protoco
 
 So 0.16 is porting work with no blocker-removing capability. There is no reason to wait for it.
 
+**2026-09-30, Miden 0.17**: still no peaks field or peaks RPC, so the genesis-seeded
+`SyncChainMmr` cold start remains the peaks source; the response now also carries the target
+header's validator signatures, a `FinalityLevel`, and its `ProtocolConfig` from genesis.
+`ClientDataStore` is still crate-private. See "Miden 0.17 re-verification".
+
 ## SUPERSEDED: PartialBlockchain from RPC: there is no stateless path
 
 Investigated before implementing. The conclusion is a genuine constraint, not a coding
@@ -704,7 +993,9 @@ round 2 and every item in it has since been closed. Do not read it as open scope
   store but its live-RPC note-block path is still unexercised, and the **custom** family (#266)
   is still unrun — both tracked as deferred coverage in `validation-matrix.md`.
 - **Foreign account inputs (FPI) are refused outright**, so any proposal reaching into another
-  account is unsupported. Acceptable for v1 but must be stated.
+  account is unsupported. Acceptable for v1 but must be stated. **Superseded 2026-09-30**: on
+  Miden 0.17 every devnet fee payment loads the fee faucet as a foreign account, so FR-050 now
+  supports foreign public accounts loaded at `R` (see "Miden 0.17 re-verification", fees).
 - **The SC-011 seeding figure is not measured**, though the shape is now known to be cheap: no
   database, no temp directory, no I/O — one `TransactionMastStore` load plus witnesses opened
   on demand from in-memory SMTs.
@@ -790,3 +1081,25 @@ requiring input notes in the store, and that path is entirely untraced. See Gate
 - Input-note supply for `consume_notes` proposals: the v2 metadata embeds serialized notes
   in the payload, which should satisfy the store's note requirements, but this path has
   not been traced end to end.
+
+
+## Phase 2B results (2026-09-30)
+
+- **Tip reproduction [RAN].** Offline, against `MockRpcApi` over a `MockChain`: a guarded 2-of-2
+  guardian-key rotation bound to block 3 reproduces the identical `TransactionSummary`
+  commitment when executed through Guardian's `ExecutionDataStore` at a reference block more
+  than 50 blocks later, then executes there with both cosigner signatures. The same transaction
+  with the bound block left out of the tracked set fails, confirming FR-061's "the executor
+  never asks for the bound block". No fee is charged on the mock chain, so this does not cover
+  fee drift (RFC question 9).
+- **Live devnet [RAN].** Node 0.17 at block 201,010: a genesis-seeded chain view tracking a
+  block 120 back assembles in about 130 ms; the protocol configuration matches the header
+  commitment; the fee faucet named by the protocol configuration loads as a public foreign
+  account at the reference block; the transaction encryption key verifies against the
+  validators of the tip header.
+- **RPC client.** The execution path uses `miden-client`'s `NodeRpcClient` (plan Decision 6).
+  `GrpcClient` retries a submission only after `ResourceExhausted`, never after `Unavailable`.
+
+### Phase 3 result: the stored request cannot be checked byte for byte (2026-09-30)
+
+Decoding a `TransactionRequest` twice from the same bytes and re-encoding each gives two different byte strings: MAST forest deserialization is not canonical at `miden-client 0.17.0-rc.4`. A byte-exact round-trip test is therefore impossible even for miden-client's own type. Guardian's mirror decoder is held to semantic equality instead: its re-encoding, decoded by miden-client, equals miden-client's decoding of the original. The envelope checksum stays over the bytes the proposer stored, which Guardian never re-encodes.
