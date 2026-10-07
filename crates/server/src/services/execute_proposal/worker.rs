@@ -167,30 +167,77 @@ impl Drop for Heartbeat {
     }
 }
 
+/// Wall-clock time of each worker phase, reported on the line that records how the execution
+/// ended, so one log line shows where an execution spent its time.
+struct PhaseTimings {
+    started: std::time::Instant,
+    last: std::time::Instant,
+    phases: Vec<(&'static str, std::time::Duration)>,
+}
+
+impl PhaseTimings {
+    fn start() -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            started: now,
+            last: now,
+            phases: Vec::new(),
+        }
+    }
+
+    /// Closes `phase`, which ran since the previous mark.
+    fn mark(&mut self, phase: &'static str) {
+        let now = std::time::Instant::now();
+        self.phases.push((phase, now - self.last));
+        self.last = now;
+    }
+
+    fn total_ms(&self) -> u128 {
+        self.started.elapsed().as_millis()
+    }
+}
+
+impl std::fmt::Display for PhaseTimings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (index, (phase, took)) in self.phases.iter().enumerate() {
+            if index > 0 {
+                f.write_str(" ")?;
+            }
+            write!(f, "{phase}={}ms", took.as_millis())?;
+        }
+        Ok(())
+    }
+}
+
 /// The worker gives its lease up on every exit. After the send the reservation stays held under
 /// the worker's fence and reconciliation claims it, so a request arriving meanwhile reads the
 /// execution in flight instead of being turned away as busy.
 pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
+    let mut timings = PhaseTimings::start();
     let heartbeat = Heartbeat::start(state, &job);
-    let reached = run_to_boundary(state, &job, &heartbeat).await;
+    let reached = run_to_boundary(state, &job, &heartbeat, &mut timings).await;
     heartbeat.stop().await;
     match reached {
         Ok(mut attempt) => {
             if claim_send(state, &job).await {
-                submit(state, &job, attempt.as_mut()).await;
+                submit(state, &job, attempt.as_mut(), &mut timings).await;
             } else {
                 tracing::warn!(
                     account_id = %job.account_id,
                     proposal_id = %job.proposal_id,
+                    phases = %timings,
+                    total_ms = timings.total_ms(),
                     "lost the reservation after the boundary commit; nothing was sent"
                 );
             }
         }
-        Err(Stop::Failed(failure)) => fail(state, &job, failure).await,
+        Err(Stop::Failed(failure)) => fail(state, &job, failure, &timings).await,
         Err(Stop::OwnershipLost) => {
             tracing::warn!(
                 account_id = %job.account_id,
                 proposal_id = %job.proposal_id,
+                phases = %timings,
+                total_ms = timings.total_ms(),
                 "execution stopped after losing its reservation; the new owner resolves it"
             );
         }
@@ -203,6 +250,7 @@ async fn run_to_boundary(
     state: &AppState,
     job: &ExecutionJob,
     heartbeat: &Heartbeat,
+    timings: &mut PhaseTimings,
 ) -> Result<Box<dyn ExecutionAttempt>, Stop> {
     let current_state = state
         .storage
@@ -221,11 +269,13 @@ async fn run_to_boundary(
     heartbeat
         .advance(state, job, ExecutionPhase::Verified)
         .await?;
+    timings.mark("prepare");
 
     let acknowledged = acknowledge(state, job, &current_state, attempt.as_ref()).await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Acknowledged)
         .await?;
+    timings.mark("acknowledge");
     let ack = attempt.requires_guardian_ack().then(|| GuardianAck {
         scheme: job.scheme,
         signature_hex: acknowledged.delta.ack_sig.clone(),
@@ -251,16 +301,21 @@ async fn run_to_boundary(
     heartbeat
         .advance(state, job, ExecutionPhase::Proving)
         .await?;
+    timings.mark("execute");
 
     let proven = attempt.prove().await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Proved)
         .await?;
+    timings.mark("prove");
     attempt.seal().await?;
+    timings.mark("seal");
     ensure_admissible(state, job).await?;
     ensure_unexpired(job, &proven).await?;
+    timings.mark("checks");
 
     cross_boundary(state, job, acknowledged, &proven).await?;
+    timings.mark("boundary");
     Ok(attempt)
 }
 
@@ -468,20 +523,43 @@ async fn claim_send(state: &AppState, job: &ExecutionJob) -> bool {
     }
 }
 
-async fn submit(state: &AppState, job: &ExecutionJob, attempt: &mut dyn ExecutionAttempt) {
-    match attempt.submit().await {
+async fn submit(
+    state: &AppState,
+    job: &ExecutionJob,
+    attempt: &mut dyn ExecutionAttempt,
+    timings: &mut PhaseTimings,
+) {
+    let outcome = attempt.submit().await;
+    timings.mark("send");
+    match outcome {
         SubmissionOutcome::Accepted => {
-            tracing::info!(account_id = %job.account_id, proposal_id = %job.proposal_id, "Guardian execution submitted");
+            tracing::info!(
+                account_id = %job.account_id,
+                proposal_id = %job.proposal_id,
+                phases = %timings,
+                total_ms = timings.total_ms(),
+                "Guardian execution submitted"
+            );
         }
         SubmissionOutcome::Unknown { reason } => {
             tracing::warn!(
                 account_id = %job.account_id,
                 proposal_id = %job.proposal_id,
                 %reason,
+                phases = %timings,
+                total_ms = timings.total_ms(),
                 "submission outcome unknown; the reservation is held until the chain resolves it"
             );
         }
         SubmissionOutcome::Rejected { reason } => {
+            tracing::warn!(
+                account_id = %job.account_id,
+                proposal_id = %job.proposal_id,
+                %reason,
+                phases = %timings,
+                total_ms = timings.total_ms(),
+                "the node rejected the submission"
+            );
             let resolution = resolution(
                 job,
                 ExecutionFailure::new(ExecutionFailureCode::SubmissionRejected, reason),
@@ -506,12 +584,19 @@ async fn submit(state: &AppState, job: &ExecutionJob, attempt: &mut dyn Executio
     }
 }
 
-async fn fail(state: &AppState, job: &ExecutionJob, failure: ExecutionFailure) {
+async fn fail(
+    state: &AppState,
+    job: &ExecutionJob,
+    failure: ExecutionFailure,
+    timings: &PhaseTimings,
+) {
     tracing::info!(
         account_id = %job.account_id,
         proposal_id = %job.proposal_id,
         code = failure.code.as_str(),
         message = %failure.message,
+        phases = %timings,
+        total_ms = timings.total_ms(),
         "Guardian execution failed before submission"
     );
     let code = failure.code;
@@ -535,5 +620,27 @@ fn resolution(job: &ExecutionJob, failure: ExecutionFailure) -> ExecutionResolut
         fence: job.fence.clone(),
         failure,
         now: Utc::now(),
+    }
+}
+
+#[cfg(test)]
+mod phase_timing_tests {
+    use super::PhaseTimings;
+
+    #[test]
+    fn every_closed_phase_is_reported_in_order_with_its_duration() {
+        let mut timings = PhaseTimings::start();
+        timings.mark("prepare");
+        timings.mark("prove");
+        let rendered = timings.to_string();
+        let phases: Vec<&str> = rendered
+            .split(' ')
+            .map(|phase| phase.split('=').next().unwrap())
+            .collect();
+        assert_eq!(phases, ["prepare", "prove"]);
+        assert!(
+            rendered.split(' ').all(|phase| phase.ends_with("ms")),
+            "{rendered}"
+        );
     }
 }
