@@ -31,6 +31,6 @@
 
 ## Notes
 
-- The maintainer decisions from issue #219 are recorded under **Clarifications**; the account scope (all accounts, stated in the grant) was decided before implementation as requested.
-- Three points remain open for review and are listed under **Open for review**: the error code name and status, how sessions are enabled and whether the grant carries a Guardian display name, and a readable expiry string in the EIP-712 struct.
+- Maintainer decisions are recorded under **Clarifications**: the #219 thread (2026-10-06) and the #527 review (2026-10-07), which answered the earlier open questions (error code and status, Guardian identity without a display name, readable expiry, and route eligibility: `POST /delta` after #524, abandon wallet-only).
+- Two points remain open for review and are listed under **Open for review**: the per-delegated-key replay floor that removes the lock-out, and the origin binding with its residual risk.
 - Protocol vocabulary (endpoints, headers, error codes, EIP-712, P-256) appears because the feature is an authentication protocol; storage and framework choices are left to planning.
