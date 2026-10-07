@@ -179,11 +179,11 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             applied,
         )
         .await?;
-    // Caveat: `lookup_matching_proposal_payload` swallows storage
-    // errors to `None` (non-fatal by design), so under storage faults
-    // a proposal commit can be labeled `direct`. Acceptable skew — the
-    // underlying fault is visible via
-    // storage_operations_total{outcome="error"}.
+    // Caveat: the proposal lookup in `ack_delta_internal`
+    // (`lookup_matching_proposal_payload`) swallows storage errors to
+    // `None` (non-fatal by design), so under storage faults a proposal
+    // commit can be labeled `direct`. Acceptable skew: the underlying
+    // fault is visible via storage_operations_total{outcome="error"}.
     let kind = if acknowledged.matched_proposal {
         crate::metrics::labels::DeltaKind::ProposalCommit
     } else {

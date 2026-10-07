@@ -199,8 +199,20 @@ pub async fn push_delta_proposal(
         })
         .count();
 
+    // Pushing a pending proposal again stores nothing and answers with the stored one, so it
+    // takes no capacity: it reaches storage, which reports it already stored.
+    let already_pending = delta_payload.get("tx_summary").is_some_and(|tx_summary| {
+        state
+            .network_client
+            .delta_proposal_id(&account_id, nonce, tx_summary)
+            .is_ok_and(|id| {
+                pending_proposals
+                    .iter()
+                    .any(|record| record.commitment == id)
+            })
+    });
     let max_pending_proposals = max_pending_proposals_per_account();
-    if viable_pending >= max_pending_proposals {
+    if !already_pending && viable_pending >= max_pending_proposals {
         return Err(GuardianError::PendingProposalsLimit {
             limit: max_pending_proposals,
         });
@@ -785,6 +797,36 @@ mod tests {
             delta.status,
             DeltaStatus::Pending { ref proposer_id, .. } if proposer_id == "the first proposer"
         ));
+    }
+
+    #[tokio::test]
+    async fn pushing_a_stored_proposal_again_at_full_capacity_answers_with_the_stored_proposal() {
+        let base = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+        let stored = stored_proposal_with(envelope(&[7u8; 64]));
+        let account_id = stored.account_id.clone();
+        let full: Vec<DeltaObject> = (0..20u64)
+            .map(|i| {
+                let mut proposal = create_pending_proposal(&account_id, 1 + i);
+                proposal.prev_commitment = base.to_string();
+                proposal.new_commitment = Some(if i == 0 {
+                    format!("0x{}", "ab".repeat(32))
+                } else {
+                    format!("0x{i:064x}")
+                });
+                proposal
+            })
+            .collect();
+        let (result, _) = push_with_request_onto(envelope(&[7u8; 64]), |storage| {
+            storage
+                .with_pull_all_delta_proposals(Ok(full))
+                .with_admit_already_stored()
+                .with_pull_delta_proposal(Ok(stored.clone()))
+        })
+        .await;
+        assert_eq!(
+            result.unwrap().delta.prev_commitment,
+            stored.prev_commitment
+        );
     }
 
     #[tokio::test]
