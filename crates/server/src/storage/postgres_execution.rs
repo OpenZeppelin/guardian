@@ -199,6 +199,74 @@ fn to_i32(value: u32, field: &str) -> Result<i32, String> {
 
 type TxResult<T> = Result<T, diesel::result::Error>;
 
+/// The key of one attempt the retention sweep deletes.
+#[derive(QueryableByName)]
+struct PrunableAttempt {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    account_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    proposal_id: String,
+    #[diesel(sql_type = diesel::sql_types::Integer)]
+    attempt: i32,
+}
+
+/// Finished attempts resolved before the cutoff whose proposal is gone or that a newer attempt
+/// supersedes, oldest first. Driven by the `resolved_at` index; the attempt key indexes answer
+/// both existence checks. Rows another sweep holds are skipped, not waited on.
+const SELECT_PRUNABLE_ATTEMPTS: &str = "\
+    SELECT r.account_id, r.proposal_id, r.attempt \
+    FROM execution_outcomes o \
+    JOIN execution_reservations r \
+      ON r.account_id = o.account_id AND r.proposal_id = o.proposal_id AND r.attempt = o.attempt \
+    WHERE o.resolved_at < $1 \
+      AND r.released_at IS NOT NULL \
+      AND (NOT EXISTS (SELECT 1 FROM delta_proposals p \
+                       WHERE p.account_id = r.account_id AND p.commitment = r.proposal_id) \
+           OR EXISTS (SELECT 1 FROM execution_reservations n \
+                      WHERE n.account_id = r.account_id AND n.proposal_id = r.proposal_id \
+                        AND n.attempt > r.attempt)) \
+    ORDER BY o.resolved_at \
+    LIMIT $2 \
+    FOR UPDATE OF r SKIP LOCKED";
+
+/// Deletes the selected attempts' rows from one table, keyed by the attempt key.
+fn delete_attempts_from(table: &str) -> String {
+    format!(
+        "DELETE FROM {table} \
+         WHERE (account_id, proposal_id, attempt) IN \
+           (SELECT * FROM unnest($1::text[], $2::text[], $3::integer[]))"
+    )
+}
+
+async fn delete_attempts(
+    conn: &mut AsyncPgConnection,
+    table: &str,
+    attempts: &[PrunableAttempt],
+) -> TxResult<usize> {
+    use diesel::sql_types::{Array, Integer, Text};
+    diesel::sql_query(delete_attempts_from(table))
+        .bind::<Array<Text>, _>(
+            attempts
+                .iter()
+                .map(|attempt| attempt.account_id.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .bind::<Array<Text>, _>(
+            attempts
+                .iter()
+                .map(|attempt| attempt.proposal_id.as_str())
+                .collect::<Vec<_>>(),
+        )
+        .bind::<Array<Integer>, _>(
+            attempts
+                .iter()
+                .map(|attempt| attempt.attempt)
+                .collect::<Vec<_>>(),
+        )
+        .execute(conn)
+        .await
+}
+
 async fn active_reservation(
     conn: &mut AsyncPgConnection,
     account_id: &str,
@@ -861,6 +929,35 @@ impl PostgresService {
         })
         .await
         .map_err(|e| format!("Failed to resolve execution: {e}"))
+    }
+
+    pub(super) async fn prune_execution_records_tx(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        use diesel::sql_types::{BigInt, Timestamptz};
+        let limit = i64::try_from(limit)
+            .map_err(|_| format!("prune limit {limit} does not fit the store"))?;
+        let mut conn = self.connection().await?;
+        conn.transaction::<usize, diesel::result::Error, _>(|conn| {
+            async move {
+                let attempts = diesel::sql_query(SELECT_PRUNABLE_ATTEMPTS)
+                    .bind::<Timestamptz, _>(cutoff)
+                    .bind::<BigInt, _>(limit)
+                    .load::<PrunableAttempt>(conn)
+                    .await?;
+                if attempts.is_empty() {
+                    return Ok(0);
+                }
+                delete_attempts(conn, "execution_outcomes", &attempts).await?;
+                delete_attempts(conn, "execution_submissions", &attempts).await?;
+                delete_attempts(conn, "execution_reservations", &attempts).await
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to prune execution records: {e}"))
     }
 
     pub(super) async fn list_active_executions_tx(&self) -> Result<Vec<ExecutionRecord>, String> {
