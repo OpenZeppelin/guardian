@@ -214,7 +214,6 @@ diesel::table! {
         fence_token -> Int8,
         lease_expires_at -> Timestamptz,
         phase -> Text,
-        candidate_nonce -> Nullable<Int8>,
         ignored_signatures -> Int4,
         released_at -> Nullable<Timestamptz>,
         created_at -> Timestamptz,
