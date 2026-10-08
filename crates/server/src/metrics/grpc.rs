@@ -33,6 +33,13 @@ const CODE_CANCELLED: i32 = 1;
 /// (transport error, or a stream that ended without one).
 const CODE_UNKNOWN: i32 = 2;
 
+/// gRPC codes that signal a server-side fault, mirroring the set the
+/// CloudWatch error-rate alarm counts (`infra/observability.tf`). They
+/// are logged here because statuses produced by tonic itself (request
+/// decode failures, transport errors) never pass through `GuardianError`
+/// and would otherwise surface only as a counter increment.
+const SERVER_FAULT_CODES: [i32; 5] = [2, 4, 13, 14, 15];
+
 /// Tower layer recording per-request gRPC metrics. Attached to the
 /// tonic server only when metrics are enabled (mirroring the HTTP
 /// side), so the disabled path does no wrapping or measurement work.
@@ -83,7 +90,7 @@ where
                     // Transport-level failure: no gRPC status will ever
                     // arrive. Count it as unknown so the request isn't
                     // lost (and the in-flight gauge is released).
-                    tracker.record(CODE_UNKNOWN);
+                    tracker.record(CODE_UNKNOWN, None);
                     return Err(error);
                 }
             };
@@ -93,6 +100,7 @@ where
             // for streams that end without trailers.
             let mut tracker = tracker;
             tracker.header_code = grpc_status_from(response.headers());
+            tracker.header_message = grpc_message_from(response.headers());
 
             let (parts, body) = response.into_parts();
             Ok(http::Response::from_parts(
@@ -111,6 +119,13 @@ fn grpc_status_from(headers: &http::HeaderMap) -> Option<i32> {
         .get("grpc-status")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.parse().ok())
+}
+
+fn grpc_message_from(headers: &http::HeaderMap) -> Option<String> {
+    headers
+        .get("grpc-message")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 /// Holds the in-flight gauge slot for one request; decrements on drop
@@ -138,6 +153,7 @@ struct GrpcRequestTracker {
     method: &'static str,
     started: Instant,
     header_code: Option<i32>,
+    header_message: Option<String>,
     _in_flight: InFlightGuard,
 }
 
@@ -149,11 +165,23 @@ impl GrpcRequestTracker {
             method,
             started: Instant::now(),
             header_code: None,
+            header_message: None,
             _in_flight: InFlightGuard::acquire(),
         }
     }
 
-    fn record(self, code: i32) {
+    fn record(self, code: i32, trailer_message: Option<String>) {
+        if SERVER_FAULT_CODES.contains(&code) {
+            let message = trailer_message.or(self.header_message);
+            tracing::warn!(
+                service = self.service,
+                method = self.method,
+                code = grpc_code_label(code),
+                grpc_message = message.as_deref().unwrap_or_default(),
+                elapsed_ms = self.started.elapsed().as_millis() as u64,
+                "gRPC request finished with a server-fault status"
+            );
+        }
         counter!(GRPC_REQUESTS_TOTAL,
             LABEL_SERVICE => self.service,
             LABEL_METHOD => self.method,
@@ -179,7 +207,7 @@ pin_project_lite::pin_project! {
             if let Some(tracker) = this.tracker.take() {
                 // Body dropped before completion: the client went away.
                 let code = tracker.header_code.unwrap_or(CODE_CANCELLED);
-                tracker.record(code);
+                tracker.record(code, None);
             }
         }
     }
@@ -207,7 +235,7 @@ impl<B: Body> Body for MetricsGrpcBody<B> {
                         // call succeeded only if status is present;
                         // absence is unmappable.
                         .unwrap_or(CODE_UNKNOWN);
-                    tracker.record(code);
+                    tracker.record(code, grpc_message_from(trailers));
                 }
             }
             Poll::Ready(None) => {
@@ -215,7 +243,7 @@ impl<B: Body> Body for MetricsGrpcBody<B> {
                     // Stream ended without trailers: trailers-only
                     // response, status was in the headers.
                     let code = tracker.header_code.unwrap_or(CODE_UNKNOWN);
-                    tracker.record(code);
+                    tracker.record(code, None);
                 }
             }
             _ => {}

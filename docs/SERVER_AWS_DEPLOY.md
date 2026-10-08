@@ -287,6 +287,7 @@ aws_region = "us-east-1"
 # alarm_slack_channel_id = "C0123456789"   # e.g. #guardian-alerts-devnet
 # alarm_error_rate_threshold_percent = 5
 # alarm_latency_threshold_seconds = 1
+# alarm_p99_latency_threshold_seconds = 2
 # alarm_cpu_threshold_percent = 85
 # alarm_memory_threshold_percent = 90
 # cloudwatch_log_alarms_enabled = true # ERROR log metric filter + log-errors alarm, WARN filter with the dashboard (needs guardian_log_format = "json")
@@ -618,6 +619,7 @@ exposes no knobs for a routable bind address.
 | `<stack>-http-5xx-rate` | HTTP 5xx responses (500/501/502/503/504) exceed `alarm_error_rate_threshold_percent` (default 5%) of requests for 15 min. ALB health checks count as successful requests and dilute the rate on low-traffic multi-task fleets — treat as a sustained-fault signal |
 | `<stack>-grpc-error-rate` | gRPC server-fault responses (`internal`, `unavailable`, `unknown`, `data_loss`, `deadline_exceeded`) exceed the same threshold for 15 min; the same health-check dilution applies |
 | `<stack>-http-latency` | Average HTTP latency exceeds `alarm_latency_threshold_seconds` (default 1s) for 15 min. Fleet average across all routes — continuous ALB health-check probes dilute it on low-traffic stacks, so treat it as a sustained-degradation signal |
+| `<stack>-alb-p99-latency` | ALB p99 `TargetResponseTime` exceeds `alarm_p99_latency_threshold_seconds` (default 2s) for 15 min. Health checks are excluded, so it catches slow tails that the fleet average hides |
 | `<stack>-canonicalization-failures` | Canonicalization passes (full, fast, or reconcile) report `error` or `partial` (some accounts failed) outcomes for 10 min |
 | `<stack>-metrics-missing` | Application metrics stop arriving — the constant `guardian_build_info` heartbeat disappears (metrics endpoint down, sidecar dead, or scrape failing) |
 | `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
