@@ -688,6 +688,17 @@ unplanned stop. After the boundary, reconciliation settles only from the chain:
 A client `push_delta` is refused with `GUARDIAN_EXECUTION_CONFLICT` while a reservation is
 active, and canonicalization never discards a candidate an execution owns.
 
+### Record retention
+Once a day, starting a few minutes after startup, every replica that runs reconciliation deletes
+the finished attempts (released, with an outcome) resolved more than
+`GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` ago (default 30, `0` keeps them forever) whose proposal
+is gone or that a newer attempt of the same proposal supersedes, with their submission evidence
+and outcome, in bounded batches. An active attempt and the newest attempt of a proposal storage
+still holds are never deleted, so the next attempt of a live proposal is still numbered one past
+its newest and the latest execution of a live proposal stays readable. A status read for a
+proposal whose records were deleted returns `GUARDIAN_EXECUTION_NOT_FOUND`, as for one never
+executed. The sweep is idempotent and needs no lease.
+
 ## Release sweep
 
 A background task (issue #434), independent of the canonicalization

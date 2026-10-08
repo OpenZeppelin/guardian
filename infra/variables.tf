@@ -1043,6 +1043,19 @@ variable "guardian_execution_max_concurrent" {
   }
 }
 
+variable "guardian_execution_record_retention_days" {
+  description = "Optional override for GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS, how long finished execution attempts are kept before the daily retention sweep deletes them (server default 30; 0 keeps them forever, otherwise at least 2)"
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_execution_record_retention_days == null ? true : (
+      (var.guardian_execution_record_retention_days == 0 || var.guardian_execution_record_retention_days >= 2) &&
+      floor(var.guardian_execution_record_retention_days) == var.guardian_execution_record_retention_days
+    )
+    error_message = "guardian_execution_record_retention_days must be 0 (keep forever) or a whole number of at least 2."
+  }
+}
+
 variable "guardian_tx_prover_max_concurrent" {
   description = "Optional override for GUARDIAN_TX_PROVER_MAX_CONCURRENT, an optional limit on proofs one task has at the prover at once (unset by default, a positive integer when set). Set it for a shared or small prover; the prover sees this times the task count."
   type        = number

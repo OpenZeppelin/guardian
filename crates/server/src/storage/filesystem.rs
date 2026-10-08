@@ -11,6 +11,7 @@ use crate::utils::normalize_commitment_hex;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -1560,6 +1561,31 @@ impl StorageBackend for FilesystemService {
         Ok(unresolved)
     }
 
+    /// One account whose records cannot be read or rewritten is skipped, not allowed to stop
+    /// the sweep for every other account.
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let mut pruned = 0;
+        for account_id in self.fanout_account_ids().await? {
+            if pruned >= limit {
+                break;
+            }
+            match self
+                .prune_account_executions(&account_id, cutoff, limit - pruned)
+                .await
+            {
+                Ok(count) => pruned += count,
+                Err(error) => {
+                    tracing::error!(%account_id, %error, "cannot prune the account's execution records; the sweep skips it");
+                }
+            }
+        }
+        Ok(pruned)
+    }
+
     // ----------------------------------------------------------------------
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     //
@@ -1992,6 +2018,62 @@ impl FilesystemService {
             .map_err(|e| format!("Failed to serialize executions: {e}"))?;
         self.write(&self.get_executions_path(account_id), &content)
             .await
+    }
+
+    /// Drops up to `limit` of one account's prunable attempts under `delta_write_lock`,
+    /// rewriting its records only when one was dropped.
+    async fn prune_account_executions(
+        &self,
+        account_id: &str,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let records = self.read_executions(account_id).await?;
+        let mut newest: HashMap<String, u32> = HashMap::new();
+        for record in &records {
+            let attempt = newest
+                .entry(record.reservation.proposal_id.clone())
+                .or_default();
+            *attempt = (*attempt).max(record.reservation.attempt);
+        }
+        let mut proposal_exists: HashMap<String, bool> = HashMap::new();
+        let mut kept = Vec::with_capacity(records.len());
+        let mut dropped = 0;
+        for record in records {
+            if dropped >= limit || !record.finished_before(cutoff) {
+                kept.push(record);
+                continue;
+            }
+            let proposal_id = &record.reservation.proposal_id;
+            let superseded = newest
+                .get(proposal_id)
+                .is_some_and(|attempt| *attempt > record.reservation.attempt);
+            let prunable = superseded || {
+                let exists = match proposal_exists.get(proposal_id) {
+                    Some(exists) => *exists,
+                    None => {
+                        let exists = match self.pull_delta_proposal(account_id, proposal_id).await {
+                            Ok(_) => true,
+                            Err(error) if crate::storage::is_storage_not_found(&error) => false,
+                            Err(error) => return Err(error),
+                        };
+                        proposal_exists.insert(proposal_id.clone(), exists);
+                        exists
+                    }
+                };
+                !exists
+            };
+            if prunable {
+                dropped += 1;
+            } else {
+                kept.push(record);
+            }
+        }
+        if dropped > 0 {
+            self.write_executions(account_id, &kept).await?;
+        }
+        Ok(dropped)
     }
 
     /// Whether `delta` is the candidate of an unresolved boundary-crossed
