@@ -628,6 +628,44 @@ pub async fn store_authorizing_proposal(
     }
 }
 
+/// Store the proposal that authorizes a fixture delta (as loaded by
+/// [`load_fixture_delta`] / [`load_queue_fixture_delta`]) under the
+/// multisig push gate, approved by all three fixture signers. The row
+/// stays in the store afterwards, as it would in production.
+pub async fn store_fixture_authorizing_proposal(
+    state: &crate::state::AppState,
+    fixture_delta: &serde_json::Value,
+) {
+    let delta = crate::delta_object::DeltaObject {
+        account_id: fixture_delta["account_id"]
+            .as_str()
+            .expect("fixture account_id")
+            .to_string(),
+        nonce: fixture_delta["nonce"].as_u64().expect("fixture nonce"),
+        prev_commitment: fixture_delta["prev_commitment"]
+            .as_str()
+            .expect("fixture prev_commitment")
+            .to_string(),
+        new_commitment: None,
+        delta_payload: fixture_delta["delta_payload"].clone(),
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    store_authorizing_proposal(
+        state,
+        &delta,
+        &[
+            fixture_secret_key_n(1),
+            fixture_secret_key_n(2),
+            fixture_secret_key_n(3),
+        ],
+    )
+    .await;
+}
+
 pub fn get_test_account_id() -> (AccountId, String) {
     let account_id_hex = "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a";
     let account_id = AccountId::from_hex(account_id_hex).expect("Valid account ID");
