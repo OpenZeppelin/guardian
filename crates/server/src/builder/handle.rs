@@ -31,6 +31,7 @@ use crate::api::http::{
     lookup, push_delta, push_delta_proposal, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
+use crate::config::execution::RecordRetention;
 use crate::dashboard::require_dashboard_session;
 use crate::metrics::{
     MetricsConfig, MetricsGrpcLayer, describe_metrics, metrics_router, record_build_info,
@@ -137,6 +138,21 @@ impl ServerHandle {
         if self.app_state.canonicalization.is_some() {
             tracing::info!("Starting execution reconciler");
             crate::jobs::execution_reconcile::start_execution_reconciler(self.app_state.clone());
+            match self.app_state.execution.config.record_retention {
+                RecordRetention::Days(days) => {
+                    tracing::info!(
+                        retention_days = days,
+                        "Starting execution record retention sweep"
+                    );
+                    crate::jobs::execution_retention::start_execution_retention_sweep(
+                        self.app_state.clone(),
+                        days,
+                    );
+                }
+                RecordRetention::KeepForever => {
+                    tracing::info!("Execution record retention disabled - records are kept forever")
+                }
+            }
         }
 
         // Issue #434: one lease holder walks the fleet against the chain
