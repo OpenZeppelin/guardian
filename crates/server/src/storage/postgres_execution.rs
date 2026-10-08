@@ -31,7 +31,6 @@ struct ReservationRow {
     fence_token: i64,
     lease_expires_at: DateTime<Utc>,
     phase: String,
-    candidate_nonce: Option<i64>,
     ignored_signatures: i32,
     released_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
@@ -61,10 +60,6 @@ impl ReservationRow {
             attempt: to_u32(i64::from(self.attempt), "attempt")?,
             lease_expires_at: self.lease_expires_at,
             phase: ExecutionPhase::parse(&self.phase)?,
-            candidate_nonce: self
-                .candidate_nonce
-                .map(|nonce| to_u64(nonce, "candidate_nonce"))
-                .transpose()?,
             ignored_signatures: to_u32(i64::from(self.ignored_signatures), "ignored_signatures")?,
             released_at: self.released_at,
             created_at: self.created_at,
@@ -134,7 +129,9 @@ impl OutcomeRow {
                             &code,
                             self.error_meta.as_ref(),
                         )?,
-                        message: self.error_message.unwrap_or_default(),
+                        message: self.error_message.ok_or_else(|| {
+                            "failed execution outcome has no error message".to_string()
+                        })?,
                     },
                 }
             }
@@ -701,7 +698,6 @@ impl PostgresService {
                 diesel::update(execution_reservations::table)
                     .filter(execution_reservations::id.eq(active.id))
                     .set((
-                        execution_reservations::candidate_nonce.eq(Some(delta.nonce as i64)),
                         execution_reservations::phase
                             .eq(ExecutionPhase::SubmissionCommitted.as_str()),
                         execution_reservations::updated_at.eq(now),

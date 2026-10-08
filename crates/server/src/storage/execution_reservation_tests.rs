@@ -344,7 +344,6 @@ async fn only_the_owner_crosses_the_boundary(h: &Harness) {
         .expect("evidence committed with the candidate");
     assert_eq!(evidence.candidate_nonce, 1);
     assert_eq!(evidence.expiration_block, 1_256);
-    assert_eq!(record.reservation.candidate_nonce, Some(1));
     assert_eq!(
         record.reservation.phase,
         ExecutionPhase::SubmissionCommitted

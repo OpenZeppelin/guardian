@@ -86,7 +86,6 @@ pub struct ExecutionReservation {
     pub fence: LeaseFence,
     pub lease_expires_at: DateTime<Utc>,
     pub phase: ExecutionPhase,
-    pub candidate_nonce: Option<u64>,
     pub ignored_signatures: u32,
     pub released_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,

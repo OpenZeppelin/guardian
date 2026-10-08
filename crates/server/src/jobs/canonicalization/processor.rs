@@ -3325,7 +3325,6 @@ mod tests {
                 },
                 lease_expires_at: now,
                 phase: crate::storage::ExecutionPhase::Sent,
-                candidate_nonce: Some(1),
                 ignored_signatures: 0,
                 released_at: None,
                 created_at: now,

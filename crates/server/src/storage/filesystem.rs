@@ -52,6 +52,22 @@ struct StateFile {
     nonce: Option<u64>,
 }
 
+/// The candidate an execution admission is about to write. Recorded before the candidate, it
+/// names what a crash short of the evidence commit may have left behind. It outlives the
+/// commit harmlessly: only a failing attempt without evidence that it names consults it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InterruptedAdmission {
+    proposal_id: String,
+    attempt: u32,
+    nonce: u64,
+}
+
+impl InterruptedAdmission {
+    fn belongs_to(&self, reservation: &crate::storage::ExecutionReservation) -> bool {
+        self.proposal_id == reservation.proposal_id && self.attempt == reservation.attempt
+    }
+}
+
 impl FilesystemService {
     /// Create a new FilesystemService
     pub async fn new(app_path: PathBuf) -> Result<Self, String> {
@@ -1220,7 +1236,6 @@ impl StorageBackend for FilesystemService {
                 fence: reservation.fence,
                 lease_expires_at: reservation.lease_expires_at,
                 phase: crate::storage::ExecutionPhase::Accepted,
-                candidate_nonce: None,
                 ignored_signatures: reservation.ignored_signatures,
                 released_at: None,
                 created_at: reservation.now,
@@ -1372,16 +1387,17 @@ impl StorageBackend for FilesystemService {
         }
 
         // The filesystem cannot commit several files atomically, so the evidence, written last in
-        // one file, is the commit point. The nonce is recorded first, so a crash before the
+        // one file, is the commit point. The admission is recorded first, so a crash before the
         // evidence leaves a pre-boundary attempt that was never sent and whose failure removes
         // exactly the candidate it wrote; a crash after it has everything a boundary-crossed
         // attempt needs.
-        active.reservation.candidate_nonce = Some(admission.delta.nonce);
-        self.write_executions(&account_id, &records).await?;
-        let active = records
-            .iter_mut()
-            .find(|record| record.reservation.is_active())
-            .expect("the reservation found above is still active");
+        let interrupted = InterruptedAdmission {
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            nonce: admission.delta.nonce,
+        };
+        self.write_admission_marker(&account_id, &interrupted)
+            .await?;
         self.write_delta_holding_lock(&admission.delta).await?;
         metadata
             .set_has_pending_candidate(&account_id, true, &admission.now.to_rfc3339())
@@ -1452,12 +1468,21 @@ impl StorageBackend for FilesystemService {
         record.outcome = Some(failed_outcome(&resolution));
         record.reservation.released_at = Some(resolution.now);
         record.reservation.updated_at = resolution.now;
-        // A nonce without evidence is an admission interrupted short of its commit point, which
-        // may have written its candidate. Canonicalization clears the flag it set.
-        if let Some(nonce) = record.reservation.candidate_nonce {
-            match self.pull_delta(&resolution.account_id, nonce).await {
+        // A marker for this attempt without evidence is an admission interrupted short of its
+        // commit point, which may have written its candidate. Canonicalization clears the flag
+        // it set.
+        if let Some(interrupted) = self
+            .read_admission_marker(&resolution.account_id)
+            .await?
+            .filter(|marker| marker.belongs_to(&record.reservation))
+        {
+            match self
+                .pull_delta(&resolution.account_id, interrupted.nonce)
+                .await
+            {
                 Ok(delta) if delta.status.is_candidate() => {
-                    self.delete_delta(&resolution.account_id, nonce).await?;
+                    self.delete_delta(&resolution.account_id, interrupted.nonce)
+                        .await?;
                 }
                 Ok(_) => {}
                 Err(e) if crate::storage::is_storage_not_found(&e) => {}
@@ -1912,6 +1937,38 @@ impl FilesystemService {
 
     fn get_executions_path(&self, account_id: &str) -> PathBuf {
         self.app_path.join(account_id).join("executions.json")
+    }
+
+    fn get_admission_marker_path(&self, account_id: &str) -> PathBuf {
+        self.app_path
+            .join(account_id)
+            .join("execution_admission.json")
+    }
+
+    async fn read_admission_marker(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<InterruptedAdmission>, String> {
+        match fs::read_to_string(self.get_admission_marker_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|e| format!("Failed to deserialize the execution admission marker: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to read the execution admission marker: {e}"
+            )),
+        }
+    }
+
+    async fn write_admission_marker(
+        &self,
+        account_id: &str,
+        marker: &InterruptedAdmission,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string(marker)
+            .map_err(|e| format!("Failed to serialize the execution admission marker: {e}"))?;
+        self.write(&self.get_admission_marker_path(account_id), &content)
+            .await
     }
 
     async fn read_executions(
