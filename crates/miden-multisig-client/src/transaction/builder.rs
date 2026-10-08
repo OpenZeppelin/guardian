@@ -17,6 +17,7 @@ use crate::error::{MultisigError, Result};
 use crate::execution::build_transfer_asset;
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
+use crate::local_execution::LocalExecutionReason;
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{P2ideHeights, Proposal, ProposalMetadata, TransactionType};
@@ -139,9 +140,15 @@ impl ProposalBuilder {
     }
 
     /// Creates the proposal under `mode`: a Guardian-executable proposal stores its request,
-    /// bounded by both expirations.
+    /// bounded by both expirations. A GUARDIAN switch is always created self-executed, since
+    /// GUARDIAN never executes one ([`LocalExecutionReason::SwitchGuardian`]): it stores no
+    /// request and takes no default approval expiration, while an explicit
+    /// [`ProposalOptions::approval_expiration_delta`] still applies.
     pub fn with_execution_mode(mut self, mode: ProposalExecutionMode) -> Self {
-        self.execution_mode = mode;
+        self.execution_mode = match LocalExecutionReason::of(&self.transaction_type) {
+            Some(LocalExecutionReason::SwitchGuardian) => ProposalExecutionMode::SelfExecuted,
+            Some(LocalExecutionReason::PrivateNote) | None => mode,
+        };
         self
     }
 

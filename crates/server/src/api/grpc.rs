@@ -7,7 +7,7 @@ use crate::services::{
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
-use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use prost::Message;
 use tonic::{Request, Response, Status};
 
@@ -425,12 +425,13 @@ impl Guardian for GuardianService {
         &self,
         request: Request<ExecuteDeltaProposalRequest>,
     ) -> Result<Response<ExecuteDeltaProposalResponse>, Status> {
-        let credentials = authenticated_request(&request)?;
+        let credentials = authenticated_operation(&request, SignedOperation::ExecuteDeltaProposal)?;
         let data = request.into_inner();
         let params = crate::services::execute_proposal::RequestExecutionParams {
             account_id: data.account_id,
             proposal_id: data.proposal_id,
             credentials,
+            allow_private_note: data.allow_private_note,
         };
         let envelope =
             crate::services::execute_proposal::request_execution(&self.app_state, params)
@@ -509,6 +510,21 @@ impl Guardian for GuardianService {
 fn authenticated_request<T: Message>(request: &Request<T>) -> Result<Credentials, Status> {
     let request_bytes = request.get_ref().encode_to_vec();
     let request_payload = AuthRequestPayload::from_bytes(&request_bytes);
+    Ok(request
+        .metadata()
+        .extract_credentials()?
+        .with_request_payload(request_payload)
+        .with_request_payload_bytes(request_bytes))
+}
+
+/// [`authenticated_request`] for a request signed as `operation`, whose signed payload is
+/// domain-separated from every other request with the same body.
+fn authenticated_operation<T: Message>(
+    request: &Request<T>,
+    operation: SignedOperation,
+) -> Result<Credentials, Status> {
+    let request_bytes = request.get_ref().encode_to_vec();
+    let request_payload = AuthRequestPayload::for_operation(operation, &request_bytes);
     Ok(request
         .metadata()
         .extract_credentials()?

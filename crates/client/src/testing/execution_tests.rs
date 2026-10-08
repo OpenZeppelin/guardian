@@ -5,8 +5,11 @@ use crate::execution::{
 };
 use crate::testing::mocks::{MockGuardianService, start_mock_server};
 use crate::{ClientError, ExecutionEnvelope, ExecutionError, FalconKeyStore, GuardianClient};
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
+use guardian_shared::hex::FromHex;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::{SecretKey, Signature};
 use std::sync::Arc;
 
 const PROPOSAL: &str = "0x2222";
@@ -44,7 +47,7 @@ async fn an_accepted_request_reports_the_new_execution() {
     accepted.ignored_signatures = 1;
     let mut client = client(MockGuardianService::default().with_execution(Ok(accepted))).await;
     let execution = client
-        .execute_delta_proposal(&account(), PROPOSAL)
+        .execute_delta_proposal(&account(), PROPOSAL, false)
         .await
         .unwrap();
     assert_eq!(execution.state, ExecutionState::Pending);
@@ -139,7 +142,7 @@ async fn a_refusal_arrives_as_a_status_with_its_code() {
     );
     let mut client = client(MockGuardianService::default().with_execution(Err(status))).await;
     let error = client
-        .execute_delta_proposal(&account(), PROPOSAL)
+        .execute_delta_proposal(&account(), PROPOSAL, false)
         .await
         .unwrap_err();
     assert_eq!(
@@ -153,7 +156,7 @@ async fn a_switch_guardian_refusal_names_the_proposal_type() {
     let details = serde_json::json!({
         "code": guardian_shared::execution::refusal_codes::PROPOSAL_EXECUTES_LOCALLY,
         "message": "A guardian switch is executed by the wallet that finishes the handoff. Execute it from your wallet instead.",
-        "meta": { "retryable": false, "proposal_type": "switch_guardian" }
+        "meta": { "retryable": false, "proposal_type": "switch_guardian", "reason": "switch_guardian" }
     });
     let status = Status::with_details(
         tonic::Code::FailedPrecondition,
@@ -162,7 +165,7 @@ async fn a_switch_guardian_refusal_names_the_proposal_type() {
     );
     let mut client = client(MockGuardianService::default().with_execution(Err(status))).await;
     let error = client
-        .execute_delta_proposal(&account(), PROPOSAL)
+        .execute_delta_proposal(&account(), PROPOSAL, false)
         .await
         .unwrap_err();
     assert_eq!(
@@ -173,5 +176,57 @@ async fn a_switch_guardian_refusal_names_the_proposal_type() {
         error.guardian_meta().unwrap()["proposal_type"],
         "switch_guardian"
     );
+    assert_eq!(error.guardian_meta().unwrap()["reason"], "switch_guardian");
     assert!(!error.is_retryable());
+}
+
+#[tokio::test]
+async fn an_execute_request_carries_the_flag_and_signs_the_tagged_payload() {
+    let secret_key = SecretKey::new();
+    let public_key = secret_key.public_key();
+    let service = MockGuardianService::default()
+        .with_execution(Ok(envelope("pending", None)))
+        .with_execution(Ok(envelope("pending", None)));
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(Arc::new(FalconKeyStore::new(secret_key)));
+
+    client
+        .execute_delta_proposal(&account(), PROPOSAL, true)
+        .await
+        .unwrap();
+    client
+        .execute_delta_proposal(&account(), PROPOSAL, false)
+        .await
+        .unwrap();
+
+    let requests = handle.execute_requests();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|signed| signed.request.allow_private_note)
+            .collect::<Vec<_>>(),
+        vec![true, false]
+    );
+    for signed in requests {
+        let bytes = prost::Message::encode_to_vec(&signed.request);
+        let signature = Signature::from_hex(&signed.signature_hex).unwrap();
+        let tagged = AuthRequestMessage::new(
+            account(),
+            signed.timestamp,
+            AuthRequestPayload::for_operation(SignedOperation::ExecuteDeltaProposal, &bytes),
+        )
+        .to_word();
+        let untagged = AuthRequestMessage::new(
+            account(),
+            signed.timestamp,
+            AuthRequestPayload::from_bytes(&bytes),
+        )
+        .to_word();
+        assert!(public_key.verify(tagged, &signature));
+        assert!(!public_key.verify(untagged, &signature));
+    }
 }

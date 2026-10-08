@@ -770,9 +770,9 @@ Synchronous refusals of `POST /delta/proposal/execution` and the proposal-creati
 | `GUARDIAN_PROVING_UNAVAILABLE` | 503 (gRPC `Unavailable`) | The server offers no execution; see its startup log. |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 (gRPC `FailedPrecondition`) | Fewer valid cosigner signatures than the effective threshold. |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 (gRPC `FailedPrecondition`) | The proposal was created by a self-executed client; create it again from a Guardian-executable one. |
-| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 (gRPC `FailedPrecondition`) | `meta.proposal_type` is `switch_guardian`. GUARDIAN never executes a guardian switch, because only the client can finish the handoff (register the account at the new GUARDIAN and switch its endpoint); a GUARDIAN-executed switch would leave the account stuck. Nothing was reserved and the proposal stays pending: execute it locally from the wallet. |
+| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 (gRPC `FailedPrecondition`) | Read `meta.reason`. `switch_guardian`: GUARDIAN never executes a guardian switch, even when the request sets `allow_private_note`, because only the client can finish the handoff (register the account at the new GUARDIAN and switch its endpoint); a GUARDIAN-executed switch would leave the account stuck. `private_note`: the transaction the cosigners signed creates a private output note and the request did not set `allow_private_note`; only the executing party learns a private note's details, so GUARDIAN executes one only on that opt-in, which is part of the signed request. `meta.proposal_type` names the proposal's type either way. Nothing was reserved and the proposal stays pending: execute it locally from the wallet, or, for `private_note`, request execution again with `allow_private_note` set. |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active. |
-| `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the same account and has not reserved it yet, the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions (default 64), a safety bound on memory, or the process is shutting down. Nothing was reserved. Retryable; retry shortly. If `guardian_execution_capacity_refusals_total` keeps rising, give the task more memory before raising the bound. |
+| `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the same account and has not reserved it yet, the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions (default 64), a safety bound on memory, or the process is shutting down (its drain refuses every new execution). Nothing was reserved. Retryable; retry shortly. If `guardian_execution_capacity_refusals_total` keeps rising, give the task more memory before raising the bound. |
 | `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone. |
 | `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 (gRPC `InvalidArgument`) | Stored request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`. |
 | `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED` | 409 (gRPC `FailedPrecondition`) | The account's viable proposals already hold `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`; finish or discard one. |
@@ -788,6 +788,12 @@ Causes of a `failed` execution, in `error.code`:
 | `GUARDIAN_EXECUTION_BINDING_MISMATCH`, `GUARDIAN_EXECUTION_STATE_MISMATCH`, `GUARDIAN_EXECUTION_REQUEST_CODEC`, `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | none | Not until the cause is fixed. |
 | `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` | none | Yes, once more cosigners have signed; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
+
+`error.message` is a fixed, user-safe sentence for its cause, plus chain facts such as block
+numbers and transaction ids. The underlying node, prover, storage or decoder error is never
+stored or served; find it in the server log (`WARN`, same `code`) for the account and proposal.
+A transaction whose execution stopped because the node could not serve a note script it needed
+fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 
 ### Validation
 

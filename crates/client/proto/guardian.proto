@@ -423,9 +423,14 @@ message ExecutionEnvelope {
   string updated_at = 9;
 }
 
+// Signed as the payload tagged with "guardian.ExecuteDeltaProposal\0" followed by the encoded
+// message, so a signed read of the same proposal never authenticates an execute.
 message ExecuteDeltaProposalRequest {
   string account_id = 1;
   string proposal_id = 2;
+  // Execute a transaction that creates a private output note. GUARDIAN refuses one without it,
+  // because only the executing party learns the note's details.
+  bool allow_private_note = 3;
 }
 
 message ExecuteDeltaProposalResponse {
