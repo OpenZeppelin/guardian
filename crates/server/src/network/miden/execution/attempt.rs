@@ -513,10 +513,12 @@ impl MidenAttempt {
 
     /// The prover's answer is not trusted: a proof the node would refuse, or one of another
     /// transaction, is refused here, before the boundary, where the proposal can still be retried.
-    fn ensure_proves_the_executed_transaction(
+    /// Verifying the proof is CPU-bound, so it runs on the blocking pool rather than holding a
+    /// runtime thread that request handlers and lease heartbeats share.
+    async fn ensure_proves_the_executed_transaction(
         &self,
-        proven: &ProvenTransaction,
-    ) -> Result<(), ExecutionFailure> {
+        proven: ProvenTransaction,
+    ) -> Result<ProvenTransaction, ExecutionFailure> {
         let executed = self.executed();
         let refused =
             |message: String| ExecutionFailure::new(ExecutionFailureCode::ProvingFailed, message);
@@ -531,11 +533,14 @@ impl MidenAttempt {
                 executed.id().to_hex()
             )));
         }
-        let _deferred_precompiles_settle_in_the_batch =
+        tokio::task::spawn_blocking(move || {
             TransactionVerifier::new(miden_protocol::MIN_PROOF_SECURITY_LEVEL)
-                .verify(proven)
-                .map_err(|error| refused(format!("the returned proof does not verify: {error}")))?;
-        Ok(())
+                .verify(&proven)
+                .map(|_deferred_precompiles_settle_in_the_batch| proven)
+        })
+        .await
+        .map_err(|error| refused(format!("the proof verification task failed: {error}")))?
+        .map_err(|error| refused(format!("the returned proof does not verify: {error}")))
     }
 
     fn executed(&self) -> &ExecutedTransaction {
@@ -685,7 +690,7 @@ impl ExecutionAttempt for MidenAttempt {
                 }
             }
         };
-        self.ensure_proves_the_executed_transaction(&proven)?;
+        let proven = self.ensure_proves_the_executed_transaction(proven).await?;
         let info = ProvenTransactionInfo {
             transaction_id: proven.id().to_hex(),
             reference_block: self.reference_block(),
