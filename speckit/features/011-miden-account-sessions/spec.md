@@ -35,7 +35,7 @@ dashboard sessions and the EVM cookie sessions are unchanged.
 
 - A session grant, signed once by the wallet, that authorizes a P-256
   delegated signer for every account the signer cosigns on this Guardian,
-  from one web origin (or outside a browser).
+  naming the website that asked for it.
 - Session-signed per-account requests on the routes in FR-008; every other
   route is wallet-only (FR-009).
 - Logout, wallet-signed revoke-all, expiry, and distinct codes for each.
@@ -82,9 +82,6 @@ wallet key.
 3. **Given** the delegated signer's last accepted request timestamp for an
    account, **When** it signs a request for that account with a timestamp that
    is not greater, **Then** Guardian rejects it with `authentication_replay`.
-4. **Given** a grant naming the origin `https://app.example`, **When** a
-   session request arrives from another origin or without an `Origin`,
-   **Then** Guardian rejects it with `authentication_failed`.
 
 ---
 
@@ -230,10 +227,10 @@ confirm the SDK raises a dedicated error.
 - **FR-003 — Session grant contents**: A grant binds:
   - the signer commitment of the wallet key that signs it;
   - the delegated signer's public key (FR-002);
-  - `origin`: the web origin allowed to use the session, as a browser
-    serializes it in `Origin` (lowercase `scheme://host[:port]`, no path or
-    trailing slash, never `null`, at most 256 bytes, e.g.
-    `https://app.example`), or empty for clients outside a browser;
+  - `origin`: the website that asked for the grant (e.g.
+    `https://app.example`, at most 256 bytes), or empty for clients outside a
+    browser. It is shown to the user by the wallet; Guardian does not check
+    it against requests (see Phishing in Edge Cases);
   - `issued_at` and `expires_at`, in Unix **seconds**;
   - `expires`: one canonical UTC rendering of `expires_at`
     (`YYYY-MM-DD HH:MM:SS UTC`), for devices that show raw numbers;
@@ -266,8 +263,7 @@ confirm the SDK raises a dedicated error.
     maximum lifetime; the 300-second floor only keeps a session alive past
     the skew window;
   - the delegated signer public key is a valid 33-byte compressed P-256 point;
-  - `origin` is empty or a serialized web origin (FR-003) and, when the
-    registration request carries an `Origin`, equals it;
+  - `origin` is at most 256 bytes;
   - the wallet signature verifies with the existing key rules: Falcon embeds
     its public key; raw ECDSA recovers the key and falls back to the optional
     supplied public key when recovery fails or yields another key; EIP-712
@@ -302,9 +298,6 @@ confirm the SDK raises a dedicated error.
   - verify the delegated signer's signature over `AuthRequestMessage`;
   - resolve the session for that public key, failing with `session_expired`
     or `session_revoked` (FR-016) when it ended;
-  - require the request's `Origin` (HTTP header, or gRPC-Web `origin`
-    metadata) to equal the grant's `origin`, and to be absent when the grant
-    names none;
   - re-check that the grant's ACK-key commitment and network still match this
     Guardian for the account's scheme, so key rotation ends sessions;
   - require the grant's signer commitment to be a current cosigner of the
@@ -320,11 +313,6 @@ confirm the SDK raises a dedicated error.
     `authentication_replay`; the SDK retries that code with a new timestamp.
     A session floor MUST be deleted once no session can use it: the maximum
     lifetime plus twice the skew window after its last request.
-
-  Browsers send no `Origin` on same-origin `GET` requests, so a session cannot
-  read from a Guardian served on the app's own origin: Guardian MUST be
-  deployed on a different origin than the app (e.g. `guardian.example` for
-  `app.example`), and the SDK guide MUST say so.
 - **FR-008 — Session-eligible routes**: A delegated signer MAY sign exactly:
   - reads: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
     `GET /delta/history`;
@@ -390,7 +378,7 @@ confirm the SDK raises a dedicated error.
   both HTTP 401 / gRPC `UNAUTHENTICATED`, so the SDK can tell revoke-all from
   expiry instead of treating both as `authentication_failed`. An unknown key
   (an expired one whose record was swept, or any key after a restart of a
-  Guardian without persistent sessions), another origin, or a grant naming a
+  Guardian without persistent sessions) or a grant naming a
   rotated key or another network is `authentication_failed`. On any of these
   three codes in answer to a session-signed request the SDK MUST stop using
   the session, sign with the wallet again, forget the stored key and notify
@@ -409,7 +397,7 @@ confirm the SDK raises a dedicated error.
   grant expires the SDK MUST discard the key. The TypeScript SDK keeps the
   key non-extractable and MAY persist it in IndexedDB. The Rust SDK uses the
   same `x-auth-format: session` path with an in-memory key and an empty
-  origin.
+  `origin`.
 - **FR-018 — Observability**: Guardian MUST log grant registration, rejection
   reason category, logout and revoke-all with the signer commitment, and MUST
   NOT log signatures or session public keys in full.
@@ -426,8 +414,7 @@ confirm the SDK raises a dedicated error.
   `RevokeAllSessions`, kept in parity in both proto files and in the OpenAPI
   documents.
 - New `x-auth-format: session` value on the FR-008 routes; existing `raw` and
-  `eip712` values are unchanged. Session requests are checked against the
-  `Origin` header (HTTP) or `origin` metadata (gRPC-Web).
+  `eip712` values are unchanged.
 - New stable error codes `wallet_signature_required`, `session_expired` and
   `session_revoked`, added to the TypeScript error-code list.
 - `GET /status` gains a sessions block.
@@ -489,8 +476,6 @@ confirm the SDK raises a dedicated error.
 - **Guardian restarts without persistent sessions**: every key is unknown;
   the SDK drops the session on the first `authentication_failed` and notifies
   the app (FR-016).
-- **Guardian served on the app's origin**: session reads fail because
-  browsers omit `Origin` on same-origin `GET`; unsupported (FR-007).
 - **Account the signer is added to after the grant**: covered, because the v1
   scope is every account the signer cosigns; the signed message says so.
 - **Compromised page**: injected script can use the delegated signer until the
@@ -503,14 +488,13 @@ confirm the SDK raises a dedicated error.
 - **Phishing page (no audience)**: a page that obtains a grant can, until it
   ends, read the state, balances and proposals of every account the signer
   cosigns and create proposals in the signer's name; it cannot approve,
-  execute or move funds. Mitigation: the grant names its origin and the
-  wallet displays it, and Guardian rejects session requests from any other
-  origin, so a page that names its own domain shows it to the user and one
-  that names the legitimate domain cannot use the session from its own page.
-  Residual risk, accepted for v1: a client outside a browser can set any
-  `Origin`, so an attacker who copies the legitimate origin into the grant and
-  replays requests from a server is not stopped by Guardian; only the wallet
-  display (and the wallet's own site indicator) protects that case.
+  execute or move funds. Mitigation: the grant names the website that asked
+  for it and the wallet displays it, so the user sees who is asking. Guardian
+  does not compare it with the request's `Origin`: the page holds the key and
+  can send its requests from a server with any `Origin`, so the check would
+  only stop a careless page while breaking same-origin deployments. The read
+  exposure to a page the user wrongly approves is accepted for v1; only the
+  wallet display (and the wallet's own site indicator) protects that case.
 - **Hardware wallets without registered display metadata**: devices may need
   a setting such as Ledger's "Verbose EIP-712" to display typed data field by
   field; documented in the SDK guide. Raw wallets show a hash; the SDK shows
@@ -527,13 +511,13 @@ confirm the SDK raises a dedicated error.
   credentials with `wallet_signature_required`, and forged ones with
   `authentication_failed`, on HTTP and gRPC, verified by tests.
 - **SC-003**: Tests demonstrate rejection of: unknown delegated signer,
-  signature over another body, request from another origin, expired grant
-  (`session_expired`), revoked grant (`session_revoked`), re-submitted revoked
-  grant, a second signer's grant for a bound key, grant for another Guardian
-  key or network, stale `issued_at`, lifetime within the skew window or over
-  the maximum, a malformed origin, a non-cosigner registration, a request for
-  an account the signer does not cosign (`authorization_failed`), removed
-  signer, and a rotated ACK key.
+  signature over another body, expired grant (`session_expired`), revoked
+  grant (`session_revoked`), re-submitted revoked grant, a second signer's
+  grant for a bound key, grant for another Guardian key or network, stale
+  `issued_at`, lifetime within the skew window or over the maximum, an origin
+  over 256 bytes, a non-cosigner registration, a request for an account the
+  signer does not cosign (`authorization_failed`), removed signer, and a
+  rotated ACK key.
 - **SC-004**: Rust and TypeScript produce byte-identical grant, logout and
   revoke-all digests and EIP-712 digests for the shared vectors, and the
   EIP-712 digests match an independent implementation.
@@ -580,11 +564,11 @@ confirm the SDK raises a dedicated error.
 - Q: Distinct codes for ended sessions? → A: `session_expired` and `session_revoked`, both 401.
 - Q: May anyone register a grant? → A: No: the signer must cosign at least one account on this Guardian.
 - Q: Delegated-key collision? → A: A key stays bound to its first grant; a different grant for it is rejected; clients use a fresh key per grant.
-- Q: Phishing (no audience)? → A: The grant names its origin, the wallet shows it, and Guardian checks it against the request `Origin`; the residual read exposure from non-browser replay is accepted for v1 (Edge Cases).
+- Q: Phishing (no audience)? → A: The grant names its origin and the wallet shows it; the read exposure is accepted for v1 (Edge Cases). Server enforcement: see 2026-10-08.
 
 ### Session 2026-10-08 (implementation review)
 
-- Q: Can the dApp and Guardian share an origin? → A: No: browsers omit `Origin` on same-origin `GET`, so session reads would fail. Guardian is deployed on a different origin, and the grant origin must be a serialized web origin (FR-003, FR-007).
+- Q: Should Guardian check the request `Origin` against the grant (suggested as optional in the #527 review)? → A: No. A phishing page holds the key and can replay from a server with any `Origin`, so the check only stops a careless page, and it breaks deployments where the dApp and Guardian share an origin (browsers omit `Origin` on same-origin `GET`). The origin stays in the grant and the wallet shows it (FR-003).
 - Q: Can a grant dated into the future outlive revoke-all? → A: No: Guardian records the earlier of `issued_at` and the registration time (FR-005).
 - Q: Should the revoke-all message name the Guardian? → A: No: it can only revoke; the cross-Guardian effect inside the skew window is accepted (FR-013).
 - Q: Which answers end a session in the SDK? → A: `session_expired`, `session_revoked` and `authentication_failed` on a session-signed request. A request for an account the signer does not cosign is `authorization_failed` and keeps the session (FR-007, FR-016).
@@ -593,4 +577,3 @@ confirm the SDK raises a dedicated error.
 ### Open for review
 
 - The per-(account, delegated key) replay floor (FR-007) departs from the "one floor per signer" wording in the review; it is what removes the lock-out raised by Dominik. Confirm.
-- The origin binding (FR-003, FR-007) and its stated residual risk for non-browser clients. Confirm, or prefer accepting the read exposure without the field.
