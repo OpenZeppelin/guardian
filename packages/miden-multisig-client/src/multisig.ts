@@ -20,6 +20,7 @@ import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import {
   assertGuardianMayExecute,
   ExecutionWait,
+  refusingExecutionWith,
   refusingWith,
   startWaitRuntime,
   type ExecutionWaitOptions,
@@ -1214,14 +1215,20 @@ export class Multisig {
    * throws `ProposalNotHeldLocallyError` without contacting Guardian. A proposal that must be
    * executed locally throws `LocalExecutionRequiredError`: a `switch_guardian` proposal always,
    * a private-note P2ID proposal unless `options.allowPrivateNote` says this caller delivers the
-   * note itself.
+   * note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
+   * execution throws the same `LocalExecutionRequiredError`.
    */
   async requestGuardianExecution(
     proposalId: string,
     options: GuardianExecutionRequestOptions = {},
   ): Promise<ProposalExecution> {
     assertGuardianMayExecute(proposalId, this.getLocalProposal(proposalId), options);
-    return refusingWith(this.guardian.executeDeltaProposal(this._accountId, proposalId));
+    return refusingExecutionWith(
+      proposalId,
+      this.guardian.executeDeltaProposal(this._accountId, proposalId, {
+        allowPrivateNote: options.allowPrivateNote === true,
+      }),
+    );
   }
 
   /** The latest Guardian execution of a proposal. */
@@ -1462,7 +1469,11 @@ export class Multisig {
 
   /**
    * Create a "switch GUARDIAN" proposal to change the GUARDIAN provider.
-   * 
+   *
+   * A switch is always executed locally, so it is built with `self_executed` bounds in every
+   * execution mode: no default approval window, no transaction expiration and no stored
+   * transaction request. An explicit `approvalExpirationDelta` still applies.
+   *
    * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
    * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
    * @param options - Optional settings: `nonce`
@@ -1473,35 +1484,32 @@ export class Multisig {
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
     assertProposalOptionsBag('createSwitchGuardianProposal', options);
-    const { summaryBase64, metadata, transactionRequest } = await this.buildSwitchGuardianSummary(
+    const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
       options.approvalExpirationDelta,
-      this.executionMode,
     );
 
     // SwitchGuardian is a regular delta proposal; push it to GUARDIAN so
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
     const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, undefined);
   }
 
   /**
    * Shared build step for both switch-GUARDIAN creation paths: verify the new
    * endpoint's `/pubkey` commitment, then execute the update-guardian request
-   * for its summary and metadata. Kept in one place so the online and offline
-   * proposals for the same operation can never drift apart.
+   * for its summary and metadata with `self_executed` bounds. Kept in one place so the online
+   * and offline proposals for the same operation can never drift apart.
    */
   private async buildSwitchGuardianSummary(
     newGuardianEndpoint: string,
     newGuardianPubkey: string,
     approvalExpirationDelta: number | undefined,
-    mode: ProposalExecutionMode,
   ): Promise<{
     summaryBase64: string;
     metadata: ProposalMetadata;
-    transactionRequest: TransactionRequestEnvelope | undefined;
   }> {
     // What `auth_tx_guarded_multisig` asserts after a guardian rotation, checked
     // before any signature is collected.
@@ -1518,11 +1526,10 @@ export class Multisig {
       {
         accountId: this._accountId,
         signatureScheme: this.signer.scheme,
-        ...this.proposalBounds(mode, approvalExpirationDelta),
+        ...this.proposalBounds('self_executed', approvalExpirationDelta),
       },
     );
 
-    const transactionRequest = await attachmentFor(mode, () => request.serialize());
     const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
     const chainAnchor = chainAnchorToBase64(anchor);
     anchor.free();
@@ -1538,7 +1545,7 @@ export class Multisig {
       description: `Switch GUARDIAN to ${newGuardianEndpoint}`,
     };
 
-    return { summaryBase64, metadata, transactionRequest };
+    return { summaryBase64, metadata };
   }
 
   /**
@@ -1594,7 +1601,6 @@ export class Multisig {
       newGuardianEndpoint,
       newGuardianPubkey,
       options.approvalExpirationDelta,
-      'self_executed',
     );
 
     const exported: ExportedProposal = {

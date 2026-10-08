@@ -145,6 +145,13 @@ export class MultisigClient {
 
   /**
    * Access the internal GUARDIAN client.
+   *
+   * This is the raw base client, without the SDK's local-execution check: its
+   * `executeDeltaProposal` asks GUARDIAN to execute any proposal id without checking the proposal
+   * this client holds, and rejects with a plain `GuardianHttpError` instead of a
+   * `LocalExecutionRequiredError`. GUARDIAN itself still refuses a `switch_guardian` proposal and
+   * a private-note execution not flagged with `allowPrivateNote`. Use
+   * `Multisig.requestGuardianExecution` to get the SDK's check.
    */
   get guardianClient(): GuardianHttpClient {
     return this._guardianClient;

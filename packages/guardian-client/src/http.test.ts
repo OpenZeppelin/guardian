@@ -749,8 +749,31 @@ describe('GuardianHttpClient', () => {
         'http://localhost:3000/delta/proposal/execution',
         expect.objectContaining({
           method: 'POST',
-          body: JSON.stringify({ account_id: account, proposal_id: '0xproposal' }),
+          body: JSON.stringify({
+            account_id: account,
+            proposal_id: '0xproposal',
+            allow_private_note: false,
+          }),
         })
+      );
+    });
+
+    it('sends and signs allow_private_note when the caller opts in', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = vi.mocked(mockSigner.signRequest!);
+      signRequest.mockClear();
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+
+      await client.executeDeltaProposal(account, '0xproposal', { allowPrivateNote: true });
+
+      const body = { account_id: account, proposal_id: '0xproposal', allow_private_note: true };
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/delta/proposal/execution',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify(body) })
+      );
+      const signed = signRequest.mock.calls[0][2];
+      expect(signed.toCanonicalJson()).toBe(
+        '{"account_id":"' + account + '","allow_private_note":true,"proposal_id":"0xproposal"}'
       );
     });
 
@@ -1604,7 +1627,7 @@ describe('GuardianHttpError', () => {
           JSON.stringify({
             code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
             message: 'A guardian switch is executed by the wallet that finishes the handoff.',
-            meta: { retryable: false, proposal_type: 'switch_guardian' },
+            meta: { retryable: false, proposal_type: 'switch_guardian', reason: 'switch_guardian' },
           }),
       });
 
@@ -1619,6 +1642,53 @@ describe('GuardianHttpError', () => {
       expect(e.rawCode).toBe('GUARDIAN_PROPOSAL_EXECUTES_LOCALLY');
       expect(e.isRetryable()).toBe(false);
       expect(e.meta?.proposalType).toBe('switch_guardian');
+      expect(e.meta?.reason).toBe('switch_guardian');
+    });
+
+    it('surfaces a refused private-note execution with meta.reason private_note', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'This transaction creates a private note.',
+            meta: { retryable: false, proposal_type: 'p2id', reason: 'private_note' },
+          }),
+      });
+
+      const e = (await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((error) => error)) as GuardianHttpError;
+
+      expect(e.code).toBe('proposal_executes_locally');
+      expect(e.meta?.proposalType).toBe('p2id');
+      expect(e.meta?.reason).toBe('private_note');
+    });
+
+    it('drops a meta.reason outside the known vocabulary', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'Execute it from your wallet instead.',
+            meta: { retryable: false, proposal_type: 'p2id', reason: 'something_else' },
+          }),
+      });
+
+      const e = (await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((error) => error)) as GuardianHttpError;
+
+      expect(e.meta?.reason).toBeUndefined();
     });
 
     it('omits meta.allowedSchemes rather than exposing a partial list when an element is malformed', async () => {
