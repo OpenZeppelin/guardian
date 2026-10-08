@@ -4,9 +4,12 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
+use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use crate::services::{normalize_payload, resolve_account};
+use crate::storage::{ProposalAdmission, ProposalWrite};
 use guardian_shared::DeltaSignature;
+use serde::Deserialize;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -16,6 +19,25 @@ fn max_pending_proposals_per_account() -> usize {
         .ok()
         .and_then(|v| v.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT)
+}
+
+/// The decoded size of the proposal's stored transaction request, zero when it carries none. A
+/// request that is malformed or over the per-request cap refuses creation.
+fn stored_request_bytes(state: &AppState, delta_payload: &serde_json::Value) -> Result<u64> {
+    let Some(value) = delta_payload.get("transaction_request") else {
+        return Ok(0);
+    };
+    let envelope = TransactionRequestEnvelope::deserialize(value)
+        .map_err(|e| GuardianError::InvalidDelta(format!("Invalid transaction_request: {e}")))?;
+    let bytes = envelope
+        .stored_len()
+        .map_err(|e| GuardianError::InvalidDelta(format!("Invalid transaction_request: {e}")))?
+        as u64;
+    let limit = u64::from(state.execution.config.max_proposal_request_bytes);
+    if bytes > limit {
+        return Err(GuardianError::ProposalRequestTooLarge { bytes, limit });
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +163,7 @@ pub async fn push_delta_proposal(
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
+
     let tail_commitment = chain.tail_commitment(&current_state.commitment).to_string();
 
     let pending_proposals = resolved
@@ -177,19 +200,36 @@ pub async fn push_delta_proposal(
         })
         .count();
 
+    // Pushing a pending proposal again stores nothing and answers with the stored one, so it
+    // takes no capacity: it reaches storage, which reports it already stored.
+    let proposal_id = delta_payload.get("tx_summary").map(|tx_summary| {
+        state
+            .network_client
+            .delta_proposal_id(&account_id, nonce, tx_summary)
+    });
+    let already_pending = proposal_id.as_ref().is_some_and(|id| {
+        id.as_ref().is_ok_and(|id| {
+            pending_proposals
+                .iter()
+                .any(|record| &record.commitment == id)
+        })
+    });
     let max_pending_proposals = max_pending_proposals_per_account();
-    if viable_pending >= max_pending_proposals {
+    if !already_pending && viable_pending >= max_pending_proposals {
         return Err(GuardianError::PendingProposalsLimit {
             limit: max_pending_proposals,
         });
     }
 
+    let request_bytes = stored_request_bytes(state, &delta_payload)?;
+
     let tail = chain.reconstruct_tail(state, &current_state).await?;
     candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
     // Extract tx_summary and signatures from delta_payload
-    let tx_summary = delta_payload
+    let (tx_summary, proposal_id) = delta_payload
         .get("tx_summary")
+        .zip(proposal_id)
         .ok_or_else(|| GuardianError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
 
     let signatures = delta_payload
@@ -199,18 +239,11 @@ pub async fn push_delta_proposal(
         .unwrap_or_default();
 
     // Validate delta using network client (check validity but don't apply)
-    // and compute the delta commitment
-    let commitment = {
-        let client = &state.network_client;
-        client
-            .verify_delta(&tail.commitment, &tail.state_json, tx_summary)
-            .map_err(GuardianError::InvalidDelta)?;
-
-        // Compute the delta proposal ID from the tx_summary
-        client
-            .delta_proposal_id(&account_id, nonce, tx_summary)
-            .map_err(GuardianError::InvalidDelta)?
-    };
+    state
+        .network_client
+        .verify_delta(&tail.commitment, &tail.state_json, tx_summary)
+        .map_err(GuardianError::InvalidDelta)?;
+    let commitment = proposal_id.map_err(GuardianError::InvalidDelta)?;
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
     let proposer_id = resolved.signer_commitment.clone();
@@ -264,24 +297,64 @@ pub async fn push_delta_proposal(
         metadata: None,
     };
 
-    // Store the delta proposal in the proposals directory using the commitment as ID
-    resolved
+    let written = resolved
         .storage
-        .submit_delta_proposal(&commitment, &delta_proposal)
+        .admit_delta_proposal(ProposalAdmission {
+            commitment: commitment.clone(),
+            proposal: delta_proposal.clone(),
+            request_bytes,
+            max_viable_proposals: max_pending_proposals,
+            queue_tail_nonce: tail_nonce,
+            max_account_request_bytes: u64::from(state.execution.config.max_account_request_bytes),
+        })
         .await
         .map_err(GuardianError::StorageError)?;
-    metrics::counter!(
-        crate::metrics::names::PROPOSALS_TOTAL,
-        crate::metrics::names::LABEL_EVENT =>
-            crate::metrics::labels::ProposalEvent::Created.as_str()
-    )
-    .increment(1);
-    tracing::info!("Delta proposal created");
+    let delta = match written {
+        ProposalWrite::Stored => {
+            metrics::counter!(
+                crate::metrics::names::PROPOSALS_TOTAL,
+                crate::metrics::names::LABEL_EVENT =>
+                    crate::metrics::labels::ProposalEvent::Created.as_str()
+            )
+            .increment(1);
+            tracing::info!("Delta proposal created");
+            delta_proposal
+        }
+        ProposalWrite::AlreadyStored => {
+            already_stored(resolved.storage.as_ref(), &commitment, &delta_proposal).await?
+        }
+        ProposalWrite::PendingLimit { limit } => {
+            return Err(GuardianError::PendingProposalsLimit { limit });
+        }
+        ProposalWrite::AccountRequestBytesLimit { limit, used } => {
+            return Err(GuardianError::AccountRequestCapacityExceeded { limit, used });
+        }
+    };
 
-    Ok(PushDeltaProposalResult {
-        delta: delta_proposal.clone(),
-        commitment: commitment.clone(),
-    })
+    Ok(PushDeltaProposalResult { delta, commitment })
+}
+
+/// A proposal is identified by its summary alone, so pushing it again stores nothing: the
+/// answer is the proposal as stored. A push whose transaction request differs from the stored
+/// one is refused, because the request Guardian would execute is the stored one.
+async fn already_stored(
+    storage: &dyn crate::storage::StorageBackend,
+    commitment: &str,
+    pushed: &DeltaObject,
+) -> Result<DeltaObject> {
+    let stored = storage
+        .pull_delta_proposal(&pushed.account_id, commitment)
+        .await
+        .map_err(GuardianError::StorageError)?;
+    if stored.delta_payload.get("transaction_request")
+        != pushed.delta_payload.get("transaction_request")
+    {
+        return Err(GuardianError::InvalidDelta(format!(
+            "proposal {commitment} already exists with a different transaction_request; push \
+             the stored request or delete the proposal first"
+        )));
+    }
+    Ok(stored)
 }
 
 #[cfg(test)]
@@ -631,6 +704,194 @@ mod tests {
         let result = result.unwrap();
         assert_eq!(result.delta.proposal_type(), Some("b2agg"));
         assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+    }
+
+    async fn push_with_request(
+        transaction_request: serde_json::Value,
+    ) -> (Result<PushDeltaProposalResult>, MockStorageBackend) {
+        push_with_request_onto(transaction_request, |storage| storage).await
+    }
+
+    async fn push_with_request_onto(
+        transaction_request: serde_json::Value,
+        prepare: impl FnOnce(MockStorageBackend) -> MockStorageBackend,
+    ) -> (Result<PushDeltaProposalResult>, MockStorageBackend) {
+        let (state, storage, network, metadata) = create_test_state();
+        let storage = prepare(storage);
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let (pubkey, commitment_hex, signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+        ))));
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392".to_string(),
+            account_json,
+        )));
+        let _network = network
+            .with_verify_delta(Ok(()))
+            .with_validate_credential(Ok(()));
+        let result = push_delta_proposal(
+            &state,
+            PushDeltaProposalParams {
+                account_id,
+                nonce: 1,
+                delta_payload: serde_json::json!({
+                    "tx_summary": delta_fixture["delta_payload"].clone(),
+                    "signatures": [],
+                    "metadata": { "proposal_type": "p2id" },
+                    "transaction_request": transaction_request,
+                }),
+                credentials: Credentials::signature(pubkey, signature, timestamp),
+            },
+        )
+        .await;
+        (result, storage)
+    }
+
+    fn envelope(bytes: &[u8]) -> serde_json::Value {
+        serde_json::to_value(TransactionRequestEnvelope::seal(bytes)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_stored_request_is_kept_even_on_a_server_that_offers_no_execution() {
+        let (result, storage) = push_with_request(envelope(&[7u8; 1024])).await;
+        assert!(result.is_ok(), "{result:?}");
+        let calls = storage.get_submit_delta_proposal_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].1.delta_payload["transaction_request"],
+            envelope(&[7u8; 1024]),
+            "creation neither needs nor checks the execution capability"
+        );
+    }
+
+    fn stored_proposal_with(transaction_request: serde_json::Value) -> DeltaObject {
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        DeltaObject {
+            account_id: delta_fixture["account_id"].as_str().unwrap().to_string(),
+            nonce: 1,
+            prev_commitment: "0xbase".to_string(),
+            new_commitment: None,
+            delta_payload: serde_json::json!({
+                "tx_summary": delta_fixture["delta_payload"].clone(),
+                "signatures": [],
+                "metadata": { "proposal_type": "p2id" },
+                "transaction_request": transaction_request,
+            }),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::Pending {
+                timestamp: "2026-10-02T12:00:00Z".to_string(),
+                proposer_id: "the first proposer".to_string(),
+                cosigner_sigs: vec![],
+            },
+            metadata: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn pushing_a_stored_proposal_again_answers_with_the_stored_proposal() {
+        let stored = stored_proposal_with(envelope(&[7u8; 64]));
+        let (result, _) = push_with_request_onto(envelope(&[7u8; 64]), |storage| {
+            storage
+                .with_admit_already_stored()
+                .with_pull_delta_proposal(Ok(stored.clone()))
+        })
+        .await;
+        let delta = result.unwrap().delta;
+        assert_eq!(delta.prev_commitment, stored.prev_commitment);
+        assert!(matches!(
+            delta.status,
+            DeltaStatus::Pending { ref proposer_id, .. } if proposer_id == "the first proposer"
+        ));
+    }
+
+    #[tokio::test]
+    async fn pushing_a_stored_proposal_again_at_full_capacity_answers_with_the_stored_proposal() {
+        let base = "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392";
+        let stored = stored_proposal_with(envelope(&[7u8; 64]));
+        let account_id = stored.account_id.clone();
+        let full: Vec<DeltaObject> = (0..20u64)
+            .map(|i| {
+                let mut proposal = create_pending_proposal(&account_id, 1 + i);
+                proposal.prev_commitment = base.to_string();
+                proposal.new_commitment = Some(if i == 0 {
+                    format!("0x{}", "ab".repeat(32))
+                } else {
+                    format!("0x{i:064x}")
+                });
+                proposal
+            })
+            .collect();
+        let (result, _) = push_with_request_onto(envelope(&[7u8; 64]), |storage| {
+            storage
+                .with_pull_all_delta_proposals(Ok(full))
+                .with_admit_already_stored()
+                .with_pull_delta_proposal(Ok(stored.clone()))
+        })
+        .await;
+        assert_eq!(
+            result.unwrap().delta.prev_commitment,
+            stored.prev_commitment
+        );
+    }
+
+    #[tokio::test]
+    async fn pushing_a_stored_proposal_with_another_request_is_refused() {
+        let stored = stored_proposal_with(envelope(&[7u8; 64]));
+        let (result, _) = push_with_request_onto(envelope(&[8u8; 64]), |storage| {
+            storage
+                .with_admit_already_stored()
+                .with_pull_delta_proposal(Ok(stored.clone()))
+        })
+        .await;
+        assert!(
+            matches!(&result, Err(GuardianError::InvalidDelta(message)) if message.contains("different transaction_request")),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_stored_request_refuses_creation() {
+        let limit = crate::config::execution::ExecutionConfig::default().max_proposal_request_bytes;
+        let (result, storage) = push_with_request(envelope(&vec![7u8; limit as usize + 1])).await;
+        match result {
+            Err(GuardianError::ProposalRequestTooLarge { bytes, limit: cap }) => {
+                assert_eq!((bytes, cap), (u64::from(limit) + 1, u64::from(limit)));
+            }
+            other => panic!("expected a size refusal, got {other:?}"),
+        }
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_or_tampered_stored_request_refuses_creation() {
+        let mut tampered = envelope(&[7u8; 64]);
+        tampered["checksum"] = serde_json::json!(format!("0x{}", "00".repeat(32)));
+        let mut unknown_format = envelope(&[7u8; 64]);
+        unknown_format["format_version"] = serde_json::json!(99);
+        for request in [
+            serde_json::json!({ "bytes": "not an envelope" }),
+            tampered,
+            unknown_format,
+        ] {
+            let (result, storage) = push_with_request(request).await;
+            assert!(
+                matches!(result, Err(GuardianError::InvalidDelta(_))),
+                "{result:?}"
+            );
+            assert!(storage.get_submit_delta_proposal_calls().is_empty());
+        }
     }
 
     #[tokio::test]

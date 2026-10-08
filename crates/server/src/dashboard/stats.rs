@@ -684,11 +684,7 @@ pub async fn refresh_dashboard_stats_as(
     lease: Lease,
 ) -> Result<Arc<StatsSnapshot>, String> {
     let store = state.dashboard.stats_store();
-    let fence = LeaseFence {
-        lease_name: lease.name.clone(),
-        holder_id: lease.holder_id.clone(),
-        fence_token: lease.fence_token,
-    };
+    let fence = LeaseFence::from(&lease);
     if !store
         .mark_refresh_started(&fence, state.clock.now())
         .await
@@ -1328,6 +1324,7 @@ mod tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
+            execution: Default::default(),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -2662,6 +2659,7 @@ mod postgres_tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
+            execution: Default::default(),
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

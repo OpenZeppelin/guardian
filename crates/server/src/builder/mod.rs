@@ -41,6 +41,7 @@ pub struct ServerBuilder {
     auditor: Option<crate::audit::SharedAuditor>,
     ack: Option<AckRegistry>,
     canonicalization: Option<CanonicalizationConfig>,
+    execution: crate::config::execution::ExecutionConfig,
     release_sweep: Option<ReleaseSweepConfig>,
     rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
@@ -66,6 +67,7 @@ impl ServerBuilder {
             auditor: None,
             ack: None,
             canonicalization: Some(CanonicalizationConfig::default()),
+            execution: crate::config::execution::ExecutionConfig::default(),
             release_sweep: Some(ReleaseSweepConfig::default()),
             rpc: None,
             dashboard: None,
@@ -227,6 +229,13 @@ impl ServerBuilder {
     /// let builder = ServerBuilder::new()
     ///     .with_canonicalization(None);
     /// ```
+    /// Configure Guardian execution. The default offers none: no prover is
+    /// configured.
+    pub fn with_execution(mut self, config: crate::config::execution::ExecutionConfig) -> Self {
+        self.execution = config;
+        self
+    }
+
     pub fn with_canonicalization(mut self, config: Option<CanonicalizationConfig>) -> Self {
         self.canonicalization = config;
         self
@@ -457,6 +466,7 @@ impl ServerBuilder {
         let network_type = self
             .network_type
             .ok_or("Network type not set. Use .network(NetworkType::Miden)")?;
+        validate_execution(&self.execution, self.canonicalization.as_ref())?;
 
         let storage = self
             .storage
@@ -508,6 +518,13 @@ impl ServerBuilder {
                     return Err("Postgres storage requires fenceable coordination \
                          (CoordinationHandles::postgres); in-memory handles would run \
                          canonicalization on every replica with unfenced writes"
+                        .to_string());
+                }
+                Some(handles) if !handles.execution_leases.is_shared() => {
+                    return Err("Postgres storage requires execution leases in the shared \
+                         database (CoordinationHandles::postgres); in-memory execution leases \
+                         carry fences the backend cannot validate, so every execution write \
+                         would be refused"
                         .to_string());
                 }
                 Some(_) => {}
@@ -576,6 +593,39 @@ impl ServerBuilder {
 
         let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
         let network_client = rpc_settings.connect().await?;
+        match self.execution.startup_notice() {
+            crate::config::execution::ExecutionNotice::Enabled => {
+                tracing::info!("Guardian execution is offered")
+            }
+            crate::config::execution::ExecutionNotice::Off(reason) => tracing::info!(
+                reason = reason.describe(),
+                "Guardian execution is not offered; execution requests are refused"
+            ),
+            crate::config::execution::ExecutionNotice::OffDespiteProver(reason) => tracing::warn!(
+                reason = reason.describe(),
+                "a prover is configured but Guardian execution is not offered; every execution \
+                 request is refused with GUARDIAN_PROVING_UNAVAILABLE"
+            ),
+        }
+        let execution = crate::services::execute_proposal::ExecutionState {
+            executor: rpc_settings.proposal_executor(&self.execution)?,
+            leases: coordination
+                .as_ref()
+                .map(|handles| handles.execution_leases.clone())
+                .unwrap_or_else(|| {
+                    std::sync::Arc::new(crate::coordination::InMemoryExecutionLeases::new())
+                }),
+            replica_id: {
+                let mut id = [0u8; 6];
+                rand::RngExt::fill(&mut rand::rng(), &mut id);
+                format!("replica-{}", hex::encode(id))
+            },
+            capacity: crate::services::execute_proposal::ExecutionState::capacity_for(
+                &self.execution,
+            ),
+            config: self.execution.clone(),
+            shutdown: tokio_util::sync::CancellationToken::new(),
+        };
 
         let startup_info = startup::StartupInfo::new(
             network_type,
@@ -643,6 +693,7 @@ impl ServerBuilder {
             clock: Arc::new(SystemClock),
             dashboard,
             auditor,
+            execution,
             #[cfg(feature = "evm")]
             evm,
         };
@@ -685,5 +736,55 @@ mod tests {
         let builder = ServerBuilder::new().with_rpc(settings);
         assert!(builder.rpc.is_some());
         assert!(ServerBuilder::new().rpc.is_none());
+    }
+}
+
+/// Guardian execution resolves a submitted transaction only through the
+/// candidate lifecycle, so a server that offers execution without
+/// canonicalization could never tell a caller whether it took effect.
+fn validate_execution(
+    execution: &crate::config::execution::ExecutionConfig,
+    canonicalization: Option<&CanonicalizationConfig>,
+) -> Result<(), String> {
+    if execution.availability().is_ok() && canonicalization.is_none() {
+        return Err(
+            "Guardian execution requires canonicalization: a prover is configured and proving \
+             is enabled, but the server runs in optimistic delta-commit mode. Enable \
+             canonicalization or unset GUARDIAN_TX_PROVER_URL"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod execution_validation_tests {
+    use super::*;
+    use crate::config::execution::{ENV_PROVING_ENABLED, ENV_TX_PROVER_URL, ExecutionConfig};
+
+    fn execution(vars: &[(&str, &str)]) -> ExecutionConfig {
+        let vars: std::collections::HashMap<&str, &str> = vars.iter().copied().collect();
+        ExecutionConfig::from_lookup(|key| Ok(vars.get(key).map(|value| value.to_string())))
+            .unwrap()
+    }
+
+    #[test]
+    fn optimistic_mode_with_execution_enabled_refuses_to_start() {
+        let enabled = execution(&[(ENV_TX_PROVER_URL, "https://prover.example")]);
+        let error = validate_execution(&enabled, None).unwrap_err();
+        assert!(error.contains("requires canonicalization"));
+    }
+
+    #[test]
+    fn execution_off_or_canonicalization_on_starts() {
+        let canonicalization = CanonicalizationConfig::default();
+        let enabled = execution(&[(ENV_TX_PROVER_URL, "https://prover.example")]);
+        let disabled = execution(&[
+            (ENV_TX_PROVER_URL, "https://prover.example"),
+            (ENV_PROVING_ENABLED, "false"),
+        ]);
+        assert!(validate_execution(&enabled, Some(&canonicalization)).is_ok());
+        assert!(validate_execution(&disabled, None).is_ok());
+        assert!(validate_execution(&ExecutionConfig::default(), None).is_ok());
     }
 }
