@@ -605,9 +605,18 @@ Guardian refuses synchronously, creating nothing, when the server offers no exec
 account (`GUARDIAN_EXECUTION_CONFLICT`), the proposal stores no request
 (`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), the proposal is a `switch_guardian`, which
 only the client that registers the account at the new GUARDIAN and switches its endpoint can
-execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`), a client candidate is pending, or the valid,
-distinct cosigner signatures fall short of the effective per-procedure threshold
-(`GUARDIAN_PROPOSAL_NOT_READY`).
+execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `switch_guardian`, whatever the
+request sets), the transaction creates a private output note and the request did not set
+`allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`), a
+client candidate is pending, or the valid, distinct cosigner signatures fall short of the
+effective per-procedure threshold (`GUARDIAN_PROPOSAL_NOT_READY`).
+
+Whether a transaction creates a private note is read from the output notes of the
+`TransactionSummary` the cosigners signed, never from the proposal's metadata label; execution
+reproduces exactly that summary, so the stored request cannot create a note it does not show.
+Only the executing party learns a private note's details, so Guardian executes one only when
+the caller opts in. `allow_private_note` is part of the signed execute payload, which is
+domain-separated from a signed status read (see [Miden Request Signing](api.md#miden-request-signing)).
 
 ### The fourteen steps
 1. Select the valid, distinct, currently registered cosigner signatures; invalid ones are

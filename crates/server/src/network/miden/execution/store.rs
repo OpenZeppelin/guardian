@@ -30,6 +30,7 @@ pub struct ExecutionDataStore {
     rpc: Arc<dyn NodeRpcClient>,
     mast_store: TransactionMastStore,
     note_scripts: BTreeMap<NoteScriptRoot, NoteScript>,
+    node_failure: std::sync::Mutex<Option<String>>,
 }
 
 impl ExecutionDataStore {
@@ -60,6 +61,7 @@ impl ExecutionDataStore {
             rpc,
             mast_store,
             note_scripts,
+            node_failure: std::sync::Mutex::new(None),
         }
     }
 
@@ -77,10 +79,25 @@ impl ExecutionDataStore {
         self.foreign.fetch_time()
     }
 
-    /// Starts a new execution's record of foreign-account failures. The loaded accounts are
-    /// kept: they are pinned to the same reference block.
+    /// The first node read the executor needed and could not get, if execution failed on one.
+    /// The executor reports it only as an opaque data-store error, so the cause is kept here:
+    /// it says nothing about the proposal, and a later attempt may succeed.
+    pub fn node_failure(&self) -> Option<String> {
+        self.node_failure.lock().expect("node failure lock").clone()
+    }
+
+    pub(super) fn record_node_failure(&self, error: String) {
+        self.node_failure
+            .lock()
+            .expect("node failure lock")
+            .get_or_insert(error);
+    }
+
+    /// Starts a new execution's record of foreign-account and node failures. The loaded
+    /// accounts are kept: they are pinned to the same reference block.
     pub fn begin_execution(&self) {
         self.foreign.clear_failure();
+        self.node_failure.lock().expect("node failure lock").take();
     }
 
     fn is_own(&self, account_id: AccountId) -> bool {
@@ -256,6 +273,7 @@ impl DataStore for ExecutionDataStore {
                 .get_note_script_by_root(script_root.into())
                 .await
                 .map_err(|e| {
+                    self.record_node_failure(e.to_string());
                     DataStoreError::other_with_source(
                         format!("failed to fetch note script {script_root}"),
                         e,

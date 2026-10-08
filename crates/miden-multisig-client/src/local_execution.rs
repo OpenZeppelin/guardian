@@ -47,6 +47,15 @@ impl LocalExecutionReason {
         }
     }
 
+    /// The reason a stable identifier names, or `None` for one this version does not know.
+    pub fn parse(identifier: &str) -> Option<Self> {
+        match identifier {
+            "switch_guardian" => Some(Self::SwitchGuardian),
+            "private_note" => Some(Self::PrivateNote),
+            _ => None,
+        }
+    }
+
     /// A human-readable explanation.
     pub fn description(self) -> &'static str {
         match self {

@@ -213,7 +213,9 @@ stored request in `deltaPayload.transactionRequest`.
 ```typescript
 import { isTerminalExecutionState } from '@openzeppelin/guardian-client';
 
-let execution = await client.executeDeltaProposal(accountId, proposalId);
+let execution = await client.executeDeltaProposal(accountId, proposalId, {
+  allowPrivateNote: false,
+});
 while (!isTerminalExecutionState(execution.state)) {
   await new Promise((resolve) => setTimeout(resolve, 2000));
   execution = await client.getDeltaProposalExecution(accountId, proposalId);
@@ -222,6 +224,10 @@ while (!isTerminalExecutionState(execution.state)) {
 // The account's in-flight execution, or null
 const current = await client.getCurrentExecution(accountId);
 ```
+
+Guardian refuses a transaction that creates a private output note with
+`proposal_executes_locally` (`meta.reason` `private_note`) unless `allowPrivateNote` is set;
+the flag is always sent and signed.
 
 A refusal throws a `GuardianHttpError` whose `rawCode` is the wire code (for example
 `GUARDIAN_EXECUTION_CONFLICT`, with `meta.blockingProposalId`). `getStatus()` reports in

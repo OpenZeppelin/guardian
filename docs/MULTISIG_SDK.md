@@ -561,6 +561,7 @@ let execution = client
 if execution.state == ExecutionState::Failed {
     return Err(format!("{:?}", execution.error).into());
 }
+client.sync().await?;
 ```
 
 ```ts
@@ -577,7 +578,12 @@ const execution = await multisig.waitForGuardianExecution(proposal.id);
 if (execution.state === 'failed') {
   throw new Error(`${execution.error?.code}: ${execution.error?.message}`);
 }
+await multisig.syncState();
 ```
+
+Guardian commits the transaction and pushes its delta, so the local account is behind until the
+client syncs: sync once the execution is `committed`, as the snippets do, before reading the
+account or proposing again.
 
 #### Proposals a Guardian-executable client still executes locally
 
@@ -598,7 +604,14 @@ synced, signed, created or imported (`syncProposals`, `signProposal`, the `creat
 methods and `importProposal` in TypeScript; `list_proposals`, `sign_proposal`, the `propose_*`
 methods and `import_proposal` / `import_proposal_from_string` in Rust). A proposal the client does not hold fails closed without
 a request: the client never asks Guardian what a proposal is to decide whether Guardian may run
-it.
+it. Only a proposal that passed verification is held: one a listing reports as `Failed` fails
+closed until a later listing verifies it.
+
+Guardian applies the same rule on its side. The opt-in travels with the request
+(`allow_private_note` on the wire), and Guardian refuses a switch always, and a private-note
+P2ID without the opt-in, with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`
+`switch_guardian` or `private_note`). Both SDKs surface that refusal as the same
+`LocalExecutionRequired` error as the local check.
 
 | Outcome | Rust | TypeScript |
 |---|---|---|
@@ -664,6 +677,10 @@ it, with identical semantics in both SDKs:
 
 What the mode changes, identically in both SDKs:
 
+- **A switch is unchanged.** Guardian never executes a `switch_guardian` proposal, so it is
+  created exactly as in the self-executed mode: no stored request, no transaction expiration and
+  no default approval expiration (an explicit `approval_expiration_delta` /
+  `approvalExpirationDelta` still applies).
 - **Two signed expiration bounds.** The approval expires `GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA`
   (28,800) blocks after the proposal's bound block unless the caller sets
   `approval_expiration_delta` / `approvalExpirationDelta`, and the transaction expires
@@ -700,14 +717,26 @@ client with no Miden connectivity, use the base clients' `execute_delta_proposal
 `get_current_execution` / `getCurrentExecution`. The base clients carry no Miden dependency (a
 test in each enforces it), and the caller brings its own signer, such as a wallet, an HSM or a
 KMS. The base clients have no wait helper, so a thin client polls itself (and handles
-retryable read errors as it sees fit):
+retryable read errors as it sees fit).
+
+The base clients skip the SDKs' local check: they send whatever proposal they are given, and
+Guardian's own rule is the only guard. Guardian refuses a switch always, and a P2ID that creates
+a private note unless the request sets `allow_private_note` (`{ allowPrivateNote: true }` in
+TypeScript), with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. Set the flag only when the caller
+delivers the private note to its recipient itself, since Guardian's execution leaves no note
+record with any client. The same holds for `MultisigClient.guardianClient` in TypeScript: it
+exposes the base client, without the local check. Prefer the SDKs'
+`request_guardian_execution` / `requestGuardianExecution`, which check the proposal locally
+first.
 
 ```ts
 import { GuardianHttpClient, isTerminalExecutionState } from '@openzeppelin/guardian-client';
 
 const guardian = new GuardianHttpClient(guardianUrl);
 guardian.setSigner(cosignerSigner); // any `Signer` for one of the account's cosigners
-let execution = await guardian.executeDeltaProposal(accountId, proposalId);
+let execution = await guardian.executeDeltaProposal(accountId, proposalId, {
+  allowPrivateNote: false,
+});
 while (!isTerminalExecutionState(execution.state)) {
   await new Promise((resolve) => setTimeout(resolve, 2000));
   execution = await guardian.getDeltaProposalExecution(accountId, proposalId);
@@ -717,8 +746,11 @@ while (!isTerminalExecutionState(execution.state)) {
 ```rust
 use guardian_client::GuardianClient;
 
+let allow_private_note = false;
 let mut guardian = GuardianClient::connect(guardian_endpoint).await?.with_signer(cosigner_signer);
-let mut execution = guardian.execute_delta_proposal(&account_id, &proposal_id).await?;
+let mut execution = guardian
+    .execute_delta_proposal(&account_id, &proposal_id, allow_private_note)
+    .await?;
 while !execution.state.is_terminal() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
     execution = guardian.get_delta_proposal_execution(&account_id, &proposal_id).await?;
@@ -1350,7 +1382,7 @@ one implicitly.
 | `create(config, signer)` | Create new multisig account |
 | `load(accountId, signer)` | Load existing account from GUARDIAN |
 | `recoverByKey(signer)` | Discover accounts that authorize the signer's key and fetch each current state |
-| `guardianClient` | Access to underlying GUARDIAN HTTP client |
+| `guardianClient` | Access to underlying GUARDIAN HTTP client. Its `executeDeltaProposal` skips the SDK's local execution check; prefer `Multisig.requestGuardianExecution` |
 
 #### Multisig
 

@@ -90,6 +90,36 @@ export interface GuardianErrorMeta {
    * follow-up work must execute it. Present only when `code === 'proposal_executes_locally'`.
    */
   proposalType?: string;
+  /**
+   * Why GUARDIAN leaves the proposal to local execution. Present only when
+   * `code === 'proposal_executes_locally'`: `switch_guardian` for a guardian switch, and
+   * `private_note` for a transaction that creates a private output note while the request did
+   * not set `allowPrivateNote`.
+   */
+  reason?: LocalExecutionReason;
+}
+
+/** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
+export type LocalExecutionReason = 'switch_guardian' | 'private_note';
+
+/** Options of {@link GuardianHttpClient.executeDeltaProposal}. */
+export interface ExecuteDeltaProposalOptions {
+  /**
+   * Let GUARDIAN execute a transaction that creates a private output note. Without it GUARDIAN
+   * refuses one with `proposal_executes_locally` (`meta.reason` `private_note`). The flag is part
+   * of the signed request.
+   */
+  allowPrivateNote?: boolean;
+}
+
+function localExecutionReason(value: unknown): LocalExecutionReason | undefined {
+  switch (value) {
+    case 'switch_guardian':
+    case 'private_note':
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 interface ParsedGuardianError {
@@ -152,6 +182,8 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
     meta.blockingProposalId = rawMeta.blocking_proposal_id;
   }
   if (typeof rawMeta.proposal_type === 'string') meta.proposalType = rawMeta.proposal_type;
+  const reason = localExecutionReason(rawMeta.reason);
+  if (reason !== undefined) meta.reason = reason;
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }
@@ -389,9 +421,20 @@ export class GuardianHttpClient {
    * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
    * accepted; poll {@link getDeltaProposalExecution} for the outcome. Repeating the request while
    * the execution runs returns it with `newlyAccepted: false`.
+   *
+   * GUARDIAN refuses a transaction that creates a private output note unless
+   * `options.allowPrivateNote` is set; the flag is always sent and signed.
    */
-  async executeDeltaProposal(accountId: string, proposalId: string): Promise<ProposalExecution> {
-    const serverRequest = { account_id: accountId, proposal_id: proposalId };
+  async executeDeltaProposal(
+    accountId: string,
+    proposalId: string,
+    options?: ExecuteDeltaProposalOptions,
+  ): Promise<ProposalExecution> {
+    const serverRequest = {
+      account_id: accountId,
+      proposal_id: proposalId,
+      allow_private_note: options?.allowPrivateNote ?? false,
+    };
     const response = await this.fetchAuthenticated('/delta/proposal/execution', {
       method: 'POST',
       body: JSON.stringify(serverRequest),

@@ -250,7 +250,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_allowed_chain_ids_secret_arn` | `""` | Existing EVM allowed chain IDs secret ARN; takes precedence over the managed value |
 | `guardian_evm_rpc_urls` | `""` | EVM `chain_id=url` entries used to create a stack-scoped RPC URLs secret |
 | `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
-| `guardian_tx_prover_url` | `""` | Remote transaction prover URL; creates a stack-scoped secret (it can carry credentials) and turns Guardian execution on |
+| `guardian_execution_enabled` | `null` | `true` fails the plan without a prover URL or secret ARN; `false` turns execution off on purpose and refuses a prover; unset infers it from the prover but fails the plan rather than delete the stack's existing managed prover secret. Needs `secretsmanager:ListSecrets` at plan time |
+| `guardian_tx_prover_url` | `""` | Remote transaction prover URL; creates a stack-scoped secret (7-day recovery window) and turns Guardian execution on. An `http(s)` URL with a host and no userinfo, query or fragment, or the server refuses to start: a private prover is restricted at the network level, never by credentials in the URL |
 | `guardian_tx_prover_url_secret_arn` | `""` | Existing prover URL secret ARN; takes precedence over the managed value |
 | `guardian_proving_enabled` | `null` | Overrides `GUARDIAN_PROVING_ENABLED`; `false` refuses execution requests while executions in flight still settle |
 | `guardian_tx_prover_timeout_secs` | `null` | Overrides `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (server default 300) |

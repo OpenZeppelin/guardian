@@ -171,6 +171,33 @@ export async function refusingWith<T>(pending: Promise<T>): Promise<T> {
   }
 }
 
+const PROPOSAL_EXECUTES_LOCALLY = 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY';
+
+/**
+ * Resolves with an execution request of `proposalId`, rethrowing GUARDIAN's refusal of a proposal
+ * a client must execute as {@link LocalExecutionRequiredError}, exactly as the local check
+ * reports it, and any other refusal as {@link GuardianExecutionRefusedError}. A local-execution
+ * refusal without a known `meta.reason` stays a refusal. Mirrors the Rust SDK's
+ * `execution_refusal`.
+ */
+export async function refusingExecutionWith<T>(proposalId: string, pending: Promise<T>): Promise<T> {
+  try {
+    return await pending;
+  } catch (error) {
+    const reason = localExecutionRefusal(error);
+    throw reason === null
+      ? GuardianExecutionRefusedError.fromGuardian(error)
+      : new LocalExecutionRequiredError({ proposalId, reason });
+  }
+}
+
+function localExecutionRefusal(error: unknown): LocalExecutionReason | null {
+  if (!(error instanceof GuardianHttpError) || error.rawCode !== PROPOSAL_EXECUTES_LOCALLY) {
+    return null;
+  }
+  return error.meta?.reason ?? null;
+}
+
 /**
  * `waitForGuardianExecution` reached its deadline before the execution finished. The execution
  * itself keeps running. Mirrors the Rust SDK's `MultisigError::GuardianExecutionWaitTimedOut`.
@@ -243,6 +270,21 @@ export function startWaitRuntime(): WaitRuntime {
 
 const TRANSPORT_HTTP_STATUSES = new Set([502, 503, 504]);
 
+const FETCH_NETWORK_FAILURE_MESSAGES = ['failed to fetch', 'fetch failed', 'networkerror', 'load failed'];
+
+/**
+ * A fetch that never got a response: `fetch` rejects with a `TypeError` whose message names the
+ * network failure (Chromium, Node, Firefox and Safari wordings). Any other `TypeError` is a bug,
+ * not a transport failure.
+ */
+function isFetchNetworkFailure(error: unknown): boolean {
+  if (!(error instanceof TypeError)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return FETCH_NETWORK_FAILURE_MESSAGES.some((fragment) => message.includes(fragment));
+}
+
 type ReadRetry = { kind: 'after'; delayMs: number } | { kind: 'backoff' } | { kind: 'never' };
 
 type PollOutcome =
@@ -268,7 +310,7 @@ class StatusReadFailure {
       const hint = this.error.retryAfterSecs();
       return hint === undefined ? { kind: 'backoff' } : { kind: 'after', delayMs: hint * 1_000 };
     }
-    return this.error instanceof TypeError ? { kind: 'backoff' } : { kind: 'never' };
+    return isFetchNetworkFailure(this.error) ? { kind: 'backoff' } : { kind: 'never' };
   }
 
   toError(): unknown {

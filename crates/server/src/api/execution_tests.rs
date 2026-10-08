@@ -3,7 +3,7 @@
 
 use axum::body::Body;
 use axum::http::{Request as HttpRequest, StatusCode};
-use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use tower::ServiceExt;
 
 use crate::api::grpc::GuardianService;
@@ -11,11 +11,13 @@ use crate::api::grpc::guardian::guardian_server::Guardian;
 use crate::api::grpc::guardian::{
     ExecuteDeltaProposalRequest, GetCurrentExecutionRequest, GetDeltaProposalExecutionRequest,
 };
-use crate::api::http::{CurrentExecutionQuery, ExecutionQuery};
+use crate::api::http::{CurrentExecutionQuery, ExecuteProposalRequest, ExecutionQuery};
 use crate::builder::handle::{HttpRouterConfig, build_http_router};
 use crate::middleware::{BodyLimitConfig, RateLimitConfig, RateLimitStore};
 use crate::services::execute_proposal::ExecutionState as ExecutionServices;
-use crate::services::execute_proposal::tests::{ACCOUNT, Fixture, PROPOSAL, Script};
+use crate::services::execute_proposal::tests::{
+    ACCOUNT, Fixture, PROPOSAL, Script, summary_with_output_note,
+};
 use crate::storage::execution::ExpirationBound;
 use crate::storage::{ExecutionFailure, ExecutionFailureCode};
 
@@ -85,6 +87,14 @@ impl Fixture {
 
     fn grpc_request<T: prost::Message>(&self, message: T) -> tonic::Request<T> {
         let signed = AuthRequestPayload::from_protobuf_message(&message);
+        self.signed_grpc_request(message, signed)
+    }
+
+    fn signed_grpc_request<T: prost::Message>(
+        &self,
+        message: T,
+        signed: AuthRequestPayload,
+    ) -> tonic::Request<T> {
         let (pubkey, signature, timestamp) = self.sign_request(&signed);
         let mut request = tonic::Request::new(message);
         let metadata = request.metadata_mut();
@@ -95,13 +105,34 @@ impl Fixture {
     }
 
     async fn grpc_execute(&self, proposal_id: &str) -> GrpcAnswer {
+        self.grpc_execute_allowing(proposal_id, false).await
+    }
+
+    async fn grpc_execute_allowing(
+        &self,
+        proposal_id: &str,
+        allow_private_note: bool,
+    ) -> GrpcAnswer {
+        let message = ExecuteDeltaProposalRequest {
+            account_id: ACCOUNT.to_string(),
+            proposal_id: proposal_id.to_string(),
+            allow_private_note,
+        };
+        let signed = AuthRequestPayload::for_operation(
+            SignedOperation::ExecuteDeltaProposal,
+            &prost::Message::encode_to_vec(&message),
+        );
+        self.grpc_send_execute(self.signed_grpc_request(message, signed))
+            .await
+    }
+
+    async fn grpc_send_execute(
+        &self,
+        request: tonic::Request<ExecuteDeltaProposalRequest>,
+    ) -> GrpcAnswer {
         let service = GuardianService {
             app_state: self.state.clone(),
         };
-        let request = self.grpc_request(ExecuteDeltaProposalRequest {
-            account_id: ACCOUNT.to_string(),
-            proposal_id: proposal_id.to_string(),
-        });
         match service.execute_delta_proposal(request).await {
             Ok(response) => GrpcAnswer {
                 code: tonic::Code::Ok,
@@ -129,12 +160,21 @@ impl Fixture {
     }
 
     async fn http_execute(&self, proposal_id: &str) -> HttpAnswer {
+        self.http_execute_allowing(proposal_id, false).await
+    }
+
+    async fn http_execute_allowing(
+        &self,
+        proposal_id: &str,
+        allow_private_note: bool,
+    ) -> HttpAnswer {
         self.http(
             "POST",
             "/delta/proposal/execution",
-            serde_json::to_value(ExecutionQuery {
+            serde_json::to_value(ExecuteProposalRequest {
                 account_id: ACCOUNT.to_string(),
                 proposal_id: proposal_id.to_string(),
+                allow_private_note,
             })
             .unwrap(),
         )
@@ -261,8 +301,32 @@ async fn refusals_carry_the_same_code_and_status_pair_on_both_transports() {
         switch.grpc_execute(PROPOSAL).await,
     );
     assert_eq!(http.body["meta"]["proposal_type"], "switch_guardian");
+    assert_eq!(http.body["meta"]["reason"], "switch_guardian");
     assert_refused_alike(
         "switch_guardian",
+        http,
+        grpc,
+        "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+        StatusCode::CONFLICT,
+        tonic::Code::FailedPrecondition,
+    );
+
+    let private_note = Fixture::new(Script::default()).await;
+    private_note
+        .store_proposal_with_summary(
+            "p2id",
+            true,
+            summary_with_output_note(miden_protocol::note::NoteType::Private),
+        )
+        .await;
+    let (http, grpc) = (
+        private_note.http_execute(PROPOSAL).await,
+        private_note.grpc_execute(PROPOSAL).await,
+    );
+    assert_eq!(http.body["meta"]["proposal_type"], "p2id");
+    assert_eq!(http.body["meta"]["reason"], "private_note");
+    assert_refused_alike(
+        "private note",
         http,
         grpc,
         "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
@@ -482,5 +546,88 @@ async fn status_reports_execution_exactly_when_the_endpoint_offers_it() {
     assert_eq!(
         f.http_execute(UNKNOWN_PROPOSAL).await.body["code"],
         "GUARDIAN_PROVING_UNAVAILABLE"
+    );
+}
+
+#[tokio::test]
+async fn an_opted_in_private_note_execution_is_accepted_on_both_transports() {
+    let summary = summary_with_output_note(miden_protocol::note::NoteType::Private);
+    let http = Fixture::new(Script::default()).await;
+    http.store_proposal_with_summary("p2id", true, summary.clone())
+        .await;
+    assert_eq!(
+        http.http_execute_allowing(PROPOSAL, true).await.status,
+        StatusCode::ACCEPTED
+    );
+    let grpc = Fixture::new(Script::default()).await;
+    grpc.store_proposal_with_summary("p2id", true, summary)
+        .await;
+    assert_eq!(
+        grpc.grpc_execute_allowing(PROPOSAL, true).await.code,
+        tonic::Code::Ok
+    );
+}
+
+#[tokio::test]
+async fn a_signed_status_read_does_not_authenticate_an_execute() {
+    let f = Fixture::new(Script::default()).await;
+    let read = GetDeltaProposalExecutionRequest {
+        account_id: ACCOUNT.to_string(),
+        proposal_id: PROPOSAL.to_string(),
+    };
+    let execute = ExecuteDeltaProposalRequest {
+        account_id: ACCOUNT.to_string(),
+        proposal_id: PROPOSAL.to_string(),
+        allow_private_note: false,
+    };
+    assert_eq!(
+        prost::Message::encode_to_vec(&read),
+        prost::Message::encode_to_vec(&execute),
+        "the bodies are byte-identical, so only the operation tag separates them"
+    );
+    let replayed = f.signed_grpc_request(execute, AuthRequestPayload::from_protobuf_message(&read));
+    let answer = f.grpc_send_execute(replayed).await;
+    assert_eq!(answer.code, tonic::Code::Unauthenticated, "{}", answer.body);
+
+    let read_query = serde_json::to_value(ExecutionQuery {
+        account_id: ACCOUNT.to_string(),
+        proposal_id: PROPOSAL.to_string(),
+    })
+    .unwrap();
+    let signed = AuthRequestPayload::from_json_value(&read_query).unwrap();
+    let (pubkey, signature, timestamp) = f.sign_request(&signed);
+    let router = build_http_router(
+        f.state.clone(),
+        HttpRouterConfig {
+            cors_layer: None,
+            rate_limit_store: RateLimitStore::new(RateLimitConfig::new(10_000, 10_000)),
+            body_limit_config: Some(BodyLimitConfig {
+                max_bytes: 1024 * 1024,
+            }),
+            metrics_enabled: false,
+        },
+    );
+    let response = router
+        .oneshot(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/delta/proposal/execution")
+                .header("content-type", "application/json")
+                .header("x-pubkey", pubkey)
+                .header("x-signature", signature)
+                .header("x-timestamp", timestamp.to_string())
+                .body(Body::from(read_query.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        f.state
+            .storage
+            .load_latest_execution(ACCOUNT, PROPOSAL)
+            .await
+            .unwrap()
+            .is_none()
     );
 }

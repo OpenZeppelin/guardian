@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isProposalActionable, type Proposal } from './types/proposal.js';
 import { Multisig } from './multisig.js';
-import { LocalExecutionRequiredError, ProposalNotHeldLocallyError } from './multisig/guardianExecution.js';
-import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
+import {
+  GuardianExecutionRefusedError,
+  LocalExecutionRequiredError,
+  ProposalNotHeldLocallyError,
+} from './multisig/guardianExecution.js';
+import {
+  GuardianHttpClient,
+  GuardianHttpError,
+  type ProposalExecution,
+  type Signer,
+} from '@openzeppelin/guardian-client';
 import {
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -4166,6 +4175,71 @@ describe('Multisig', () => {
         { accountId: expect.any(String), signatureScheme: 'ecdsa' },
       );
     });
+
+    it('builds a self_executed switch on a guardian_executable client', async () => {
+      vi.mocked(executeForSummary).mockResolvedValue({
+        summary: { serialize: () => new Uint8Array([1, 2, 3]) },
+        anchor: createMockChainAnchor(),
+      } as any);
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const newGuardianCommitment = '0x' + '1'.repeat(64);
+      const pushed: any[] = [];
+      mockFetch.mockImplementation(async (url: string, init: RequestInit) => {
+        if (new URL(url).pathname === '/pubkey') {
+          return { ok: true, json: async () => ({ commitment: newGuardianCommitment }) };
+        }
+        pushed.push(JSON.parse(String(init.body)));
+        return {
+          ok: true,
+          json: async () => ({
+            delta: {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
+              status: { status: 'pending', timestamp: '2024-01-01T00:00:00Z', proposer_id: '0x', cosigner_sigs: [] },
+            },
+            commitment: '0x' + 'c'.repeat(64),
+          }),
+        };
+      });
+      const multisig = new Multisig(
+        mockAccount,
+        config,
+        guardian,
+        mockSigner,
+        mockWebClient,
+        undefined,
+        MIDEN_RPC_ENDPOINT,
+        undefined,
+        undefined,
+        'guardian_executable',
+      );
+      vi.mocked(buildUpdateGuardianTransactionRequest).mockClear();
+
+      await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianCommitment, { nonce: 1 });
+      await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianCommitment, {
+        nonce: 1,
+        approvalExpirationDelta: 500,
+      });
+      mockFetch.mockReset();
+
+      expect(pushed).toHaveLength(2);
+      for (const body of pushed) {
+        expect(body.delta_payload).not.toHaveProperty('transaction_request');
+      }
+      const bounds = vi
+        .mocked(buildUpdateGuardianTransactionRequest)
+        .mock.calls.map((call) => call[2]);
+      expect(bounds[0].approvalExpirationDelta).toBeUndefined();
+      expect(bounds[0].transactionExpirationDelta).toBeUndefined();
+      expect(bounds[1].approvalExpirationDelta).toBe(500);
+      expect(bounds[1].transactionExpirationDelta).toBeUndefined();
+    });
   });
 
   describe('createSwitchGuardianProposalOffline (issue #433)', () => {
@@ -8327,14 +8401,14 @@ describe('Multisig', () => {
     const accepted = {
       accountId: '0xacc',
       proposalId,
-      state: 'accepted',
+      state: 'pending',
       error: null,
       deltaNonce: null,
       newlyAccepted: true,
       proposalExists: true,
       ignoredSignatures: 0,
       updatedAt: '2026-10-07T00:00:00Z',
-    } as never;
+    } satisfies ProposalExecution;
 
     function holding(metadata: Proposal['metadata'] | null) {
       const multisig = createTestMultisig({
@@ -8390,11 +8464,52 @@ describe('Multisig', () => {
 
       await expect(multisig.requestGuardianExecution(proposalId, { allowPrivateNote: true })).resolves.toBe(accepted);
       expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute).toHaveBeenCalledWith(multisig.accountId, proposalId, { allowPrivateNote: true });
+    });
+
+    it('maps a GUARDIAN local-execution refusal to LocalExecutionRequiredError', async () => {
+      const { multisig, execute } = holding({ ...privateP2id, noteType: 'public' });
+      for (const reason of ['switch_guardian', 'private_note'] as const) {
+        execute.mockRejectedValueOnce(
+          new GuardianHttpError(
+            409,
+            'Conflict',
+            JSON.stringify({
+              code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+              message: 'execute it from your wallet',
+              meta: { retryable: false, proposal_type: 'p2id', reason },
+            }),
+          ),
+        );
+        const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(LocalExecutionRequiredError);
+        expect((error as LocalExecutionRequiredError).proposalId).toBe(proposalId);
+        expect((error as LocalExecutionRequiredError).reason).toBe(reason);
+      }
+    });
+
+    it('keeps a local-execution refusal without a known reason a refusal', async () => {
+      const { multisig, execute } = holding({ ...privateP2id, noteType: 'public' });
+      execute.mockRejectedValueOnce(
+        new GuardianHttpError(
+          409,
+          'Conflict',
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'execute it from your wallet',
+            meta: { retryable: false, reason: 'something_new' },
+          }),
+        ),
+      );
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GuardianExecutionRefusedError);
+      expect((error as GuardianExecutionRefusedError).code).toBe('GUARDIAN_PROPOSAL_EXECUTES_LOCALLY');
     });
 
     it('sends a public-note p2id and other proposal types', async () => {
       const { multisig, execute } = holding({ ...privateP2id, noteType: 'public' });
       await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      expect(execute).toHaveBeenLastCalledWith(multisig.accountId, proposalId, { allowPrivateNote: false });
       (multisig as any).proposals.set(proposalId, {
         ...(multisig as any).proposals.get(proposalId),
         metadata: {
