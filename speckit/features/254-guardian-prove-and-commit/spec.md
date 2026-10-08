@@ -411,9 +411,13 @@ reachable prover and confirm execution succeeds.
 - **Account is paused or released**: refuse synchronously on the same grounds as any
   other mutating operation, before any work.
 - **Proposal is a `switch_guardian`**: refuse synchronously with
-  `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.proposal_type`), before the pending-candidate
-  check and before any lease or reservation; the client executes the switch locally and
-  finishes the handoff (FR-022).
+  `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.proposal_type`, `meta.reason` `switch_guardian`),
+  before the pending-candidate check and before any lease or reservation, whatever
+  `allow_private_note` says; the client executes the switch locally and finishes the handoff
+  (FR-022).
+- **Transaction creates a private output note**: refuse synchronously with
+  `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `private_note`) at the same gate unless
+  the request sets `allow_private_note`, which is part of the signed execute payload (FR-022).
 - **Account's guardian is switched while an execution is queued or proving**: the
   execution is failed rather than submitted; a released account never has transactions
   submitted on its behalf.
@@ -717,8 +721,12 @@ This is an admission/execution policy, not a universal property of signed summar
   `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` even when it stores a request: only the client can
   finish the handoff (register the account at the new GUARDIAN and switch its endpoint), so a
   GUARDIAN-executed switch would leave the account stuck. The proposal stays pending and usable
-  for local execution (decided 2026-10-07). A private-note P2ID gets no server rule; the
-  client keeps it local unless the caller opts in with `allow_private_note`.
+  for local execution (decided 2026-10-07). A transaction whose signed `TransactionSummary`
+  creates a private output note is refused the same way (`meta.reason` `private_note`) unless
+  the execute request sets `allow_private_note`; privacy is read from the signed summary's
+  output notes, not the metadata label, and the flag is part of the signed execute payload,
+  domain-separated from a signed status read (decided 2026-10-08). A switch carries
+  `meta.reason` `switch_guardian` and is refused whatever the flag says.
 - **FR-023**: Guardian MUST hold a **durable per-account execution reservation** for the
   whole span from acceptance through a terminal state. The reservation MUST identify its
   owning worker, carry a renewable lease with an expiry, carry a **monotonic fence token**,
