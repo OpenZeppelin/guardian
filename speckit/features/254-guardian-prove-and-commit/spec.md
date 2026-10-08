@@ -410,6 +410,10 @@ reachable prover and confirm execution succeeds.
   idempotent — it returns the existing execution's handle rather than creating a second.
 - **Account is paused or released**: refuse synchronously on the same grounds as any
   other mutating operation, before any work.
+- **Proposal is a `switch_guardian`**: refuse synchronously with
+  `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.proposal_type`), before the pending-candidate
+  check and before any lease or reservation; the client executes the switch locally and
+  finishes the handoff (FR-022).
 - **Account's guardian is switched while an execution is queued or proving**: the
   execution is failed rather than submitted; a released account never has transactions
   submitted on its behalf.
@@ -705,11 +709,16 @@ This is an admission/execution policy, not a universal property of signed summar
 
 #### Lifecycle, concurrency, and recovery
 
-- **FR-022**: Refusals that are determinable at request time — not Guardian-executable,
-  not ready, not a cosigner, paused, released, pending candidate, conflicting
-  reservation, capability unavailable — MUST be returned **synchronously** and MUST NOT
-  create a reservation or an execution record. All other failures are asynchronous
-  execution states.
+- **FR-022**: Refusals that are determinable at request time (not Guardian-executable,
+  a proposal type the client executes locally, not ready, not a cosigner, paused, released,
+  pending candidate, conflicting reservation, capability unavailable) MUST be returned
+  **synchronously** and MUST NOT create a reservation or an execution record. All other
+  failures are asynchronous execution states. A `switch_guardian` proposal is refused with
+  `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` even when it stores a request: only the client can
+  finish the handoff (register the account at the new GUARDIAN and switch its endpoint), so a
+  GUARDIAN-executed switch would leave the account stuck. The proposal stays pending and usable
+  for local execution (decided 2026-10-07). A private-note P2ID gets no server rule; the
+  client keeps it local unless the caller opts in with `allow_private_note`.
 - **FR-023**: Guardian MUST hold a **durable per-account execution reservation** for the
   whole span from acceptance through a terminal state. The reservation MUST identify its
   owning worker, carry a renewable lease with an expiry, carry a **monotonic fence token**,
