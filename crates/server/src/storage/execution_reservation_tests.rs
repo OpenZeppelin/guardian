@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, TimeZone, Utc};
 
 use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -1233,6 +1233,121 @@ async fn executions_on_two_accounts_proceed_independently(h: &Harness) {
     );
 }
 
+impl Harness {
+    /// Runs one attempt of `proposal` to a failed outcome resolved at `resolved_at`.
+    async fn finish_attempt(&self, proposal: &str, resolved_at: DateTime<Utc>) -> u32 {
+        let owner = self.lease("worker-a", Duration::from_secs(60)).await;
+        let attempt = self.reserve(proposal, &owner).await;
+        let mut resolution = self.resolution(
+            proposal,
+            attempt,
+            &owner,
+            ExecutionFailureCode::ProvingFailed,
+        );
+        resolution.now = resolved_at;
+        assert_eq!(
+            self.storage.fail_execution(resolution).await.unwrap(),
+            ResolveWrite::Resolved
+        );
+        attempt
+    }
+
+    async fn latest_attempt(&self, proposal: &str) -> Option<u32> {
+        self.storage
+            .load_latest_execution(&self.account_id, proposal)
+            .await
+            .unwrap()
+            .map(|record| record.reservation.attempt)
+    }
+}
+
+/// Timestamps decades before any other test's, so a sweep with these cutoffs sees only the
+/// records this test wrote, even in a database other tests share.
+fn retention_day(day: u32) -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(1990, 1, day, 0, 0, 0).unwrap()
+}
+
+async fn retention_prunes_only_finished_attempts_no_reader_needs(h: &Harness) {
+    let (old, cutoff, recent) = (retention_day(1), retention_day(2), retention_day(3));
+    let live = proposal_commitment(1);
+    let gone = proposal_commitment(2);
+    let late = proposal_commitment(3);
+    let active = proposal_commitment(4);
+    for (proposal, resolved_at) in [
+        (&live, old),
+        (&live, old),
+        (&gone, old),
+        (&gone, old),
+        (&late, recent),
+    ] {
+        h.finish_attempt(proposal, resolved_at).await;
+    }
+    for proposal in [&gone, &late] {
+        h.storage
+            .delete_delta_proposal(&h.account_id, proposal)
+            .await
+            .unwrap();
+    }
+    h.ensure_proposal(&active).await;
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let mut reservation = h.new_reservation(&active, &owner);
+    reservation.now = old;
+    assert_eq!(
+        h.storage
+            .create_execution_reservation(reservation)
+            .await
+            .unwrap(),
+        ReservationWrite::Created { attempt: 1 }
+    );
+
+    let prune = |limit| h.storage.prune_execution_records(cutoff, limit);
+    assert_eq!(prune(2).await.unwrap(), 2, "a batch stops at its limit");
+    assert_eq!(prune(2).await.unwrap(), 1);
+    assert_eq!(prune(2).await.unwrap(), 0, "a second sweep deletes nothing");
+
+    assert_eq!(
+        h.latest_attempt(&live).await,
+        Some(2),
+        "the newest attempt of a proposal storage holds survives its superseded one"
+    );
+    assert_eq!(
+        h.latest_attempt(&gone).await,
+        None,
+        "every finished attempt of a deleted proposal goes"
+    );
+    assert_eq!(
+        h.latest_attempt(&late).await,
+        Some(1),
+        "an attempt resolved after the cutoff stays"
+    );
+    let held = h
+        .storage
+        .load_active_execution(&h.account_id)
+        .await
+        .unwrap()
+        .expect("an active attempt survives however old");
+    assert_eq!(held.reservation.proposal_id, active);
+
+    assert_eq!(
+        h.storage
+            .fail_execution(h.resolution(&active, 1, &owner, ExecutionFailureCode::ProvingFailed))
+            .await
+            .unwrap(),
+        ResolveWrite::Resolved
+    );
+    assert_eq!(
+        h.finish_attempt(&live, Utc::now()).await,
+        3,
+        "attempt numbering continues past the pruned attempts"
+    );
+    assert_eq!(
+        prune(10).await.unwrap(),
+        1,
+        "a newer attempt supersedes the one that was the newest"
+    );
+    assert_eq!(h.latest_attempt(&live).await, Some(3));
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Terminal {
     PreBoundaryFailure,
@@ -1346,6 +1461,7 @@ mod filesystem {
         concurrent_admissions_for_the_last_slot_accept_exactly_one,
         promotion_and_resolution_racing_leave_one_terminal_outcome,
         executions_on_two_accounts_proceed_independently,
+        retention_prunes_only_finished_attempts_no_reader_needs,
     );
 
     #[tokio::test]
@@ -1794,6 +1910,7 @@ mod postgres {
         concurrent_admissions_for_the_last_slot_accept_exactly_one,
         promotion_and_resolution_racing_leave_one_terminal_outcome,
         executions_on_two_accounts_proceed_independently,
+        retention_prunes_only_finished_attempts_no_reader_needs,
     );
 
     #[tokio::test]

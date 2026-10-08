@@ -72,6 +72,11 @@ CREATE TABLE execution_outcomes (
     )
 );
 
+-- The retention sweep walks finished attempts oldest first from here; the
+-- attempt-key unique indexes answer its per-attempt lookups.
+CREATE INDEX execution_outcomes_resolved_at
+    ON execution_outcomes (resolved_at);
+
 -- Fail fast rather than queue every delta_proposals query behind this ALTER while a long
 -- transaction on a replica still running the previous version holds the table.
 SET LOCAL lock_timeout = '5s';
