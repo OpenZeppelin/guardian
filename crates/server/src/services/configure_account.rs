@@ -353,6 +353,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            execution: Default::default(),
             storage,
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(network_client),

@@ -16,6 +16,7 @@ services:
     ports:
       - "${QUAL_HTTP_PORT:-3000}:3000"
       - "${QUAL_GRPC_PORT:-50051}:50051"
+      - "127.0.0.1:${QUAL_METRICS_PORT:-9464}:9464"
     volumes:
       - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
       - ${QUAL_OPERATOR_DIR:?set QUAL_OPERATOR_DIR}:/var/guardian/operator:ro
@@ -24,6 +25,7 @@ services:
       - RUST_LOG=${QUAL_RUST_LOG:-info}
       - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
       - GUARDIAN_MIDEN_RPC_ENDPOINT=${QUAL_MIDEN_RPC_ENDPOINT:?set QUAL_MIDEN_RPC_ENDPOINT}
+      - GUARDIAN_TX_PROVER_URL=${QUAL_TX_PROVER_URL:-}
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
       - DATABASE_URL=postgres://guardian:${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}@postgres:5432/guardian
       - GUARDIAN_ACK_SECRET_PROVIDER=file
@@ -38,6 +40,10 @@ services:
       - GUARDIAN_DASHBOARD_COMMITMENT_RATE_BURST_PER_SEC=${QUAL_DASHBOARD_RATE_BURST_PER_SEC:-100}
       - GUARDIAN_DASHBOARD_COMMITMENT_RATE_PER_MIN=${QUAL_DASHBOARD_RATE_PER_MIN:-2000}
       - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/var/guardian/operator/operators.json
+      # Scraped once a run's scenarios finish, so the execution timings of a live run (chain
+      # view and proving) are kept with its results as the recorded baseline.
+      - GUARDIAN_METRICS_ENABLED=true
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
 
   # A second GUARDIAN with its own acknowledgement identity and its own
   # database, so the migration scenario has somewhere real to migrate to. It
@@ -100,7 +106,39 @@ services:
       - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
       - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
 
-  # A fourth GUARDIAN with candidate queueing switched on (issue #17), so the
+  # A fourth GUARDIAN that offers execution, so the execution refusals past the
+  # capability gate are exercised against the shipped image. The prover URL only
+  # has to parse: nothing here is ever proved, because the chain reads that come
+  # first fail against the RPC stub, which is the pre-boundary failure the
+  # scenario asserts. It carries the fixture acknowledgement identity so the
+  # fixture account registers.
+  server-executing:
+    image: ${QUAL_SERVER_IMAGE:?set QUAL_SERVER_IMAGE}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rpc-stub:
+        condition: service_started
+    ports:
+      - "${QUAL_HTTP_PORT_D:-3300}:3000"
+      - "${QUAL_GRPC_PORT_D:-50351}:50051"
+    volumes:
+      - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
+      - guardian-keystore-executing:/var/guardian/keystore
+    environment:
+      - RUST_LOG=${QUAL_RUST_LOG:-info}
+      - GUARDIAN_NETWORK_TYPE=${QUAL_NETWORK_TYPE:?set QUAL_NETWORK_TYPE}
+      - GUARDIAN_MIDEN_RPC_ENDPOINT=${QUAL_MIDEN_RPC_ENDPOINT:?set QUAL_MIDEN_RPC_ENDPOINT}
+      - GUARDIAN_TX_PROVER_URL=http://rpc-stub:80
+      - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
+      - DATABASE_URL=postgres://guardian:${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}@postgres:5432/guardian_executing
+      - GUARDIAN_ACK_SECRET_PROVIDER=file
+      - GUARDIAN_ACK_FALCON_SECRET_PATH=/var/guardian/ack-keys/ack-falcon-secret-key
+      - GUARDIAN_ACK_ECDSA_SECRET_PATH=/var/guardian/ack-keys/ack-ecdsa-secret-key
+      - GUARDIAN_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
+      - GUARDIAN_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
+
+  # A fifth GUARDIAN with candidate queueing switched on (issue #17), so the
   # queue is qualified the way an operator opts into it while the main server
   # keeps the default of one in-flight candidate per account. It carries the
   # main server's acknowledgement identity, so it accepts the same accounts, and
@@ -115,8 +153,8 @@ services:
       rpc-stub:
         condition: service_started
     ports:
-      - "${QUAL_HTTP_PORT_D:-3300}:3000"
-      - "${QUAL_GRPC_PORT_D:-50351}:50051"
+      - "${QUAL_HTTP_PORT_E:-3400}:3000"
+      - "${QUAL_GRPC_PORT_E:-50451}:50051"
     volumes:
       - ${QUAL_ACK_KEYS_DIR:?set QUAL_ACK_KEYS_DIR}:/var/guardian/ack-keys:ro
       - guardian-keystore-queue:/var/guardian/keystore
@@ -161,4 +199,5 @@ volumes:
   guardian-keystore:
   guardian-keystore-migration-target:
   guardian-keystore-scheme-gated:
+  guardian-keystore-executing:
   guardian-keystore-queue:

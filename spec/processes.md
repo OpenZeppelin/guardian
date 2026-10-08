@@ -593,6 +593,112 @@ sequenceDiagram
   remain strictly sequential in nonce order, and every custody write is
   individually lease-fenced, so correctness does not depend on the bound.
 
+## Guardian execution
+
+A cosigner can hand a threshold-met, Guardian-executable proposal to Guardian, which proves,
+submits and commits it. The request returns at once; everything from step 1 on runs in the
+background under a per-account reservation held by a renewed, fenced lease.
+
+### Refusals before anything is reserved
+Guardian refuses synchronously, creating nothing, when the server offers no execution
+(`GUARDIAN_PROVING_UNAVAILABLE`), the account is paused or released, another execution holds the
+account (`GUARDIAN_EXECUTION_CONFLICT`), the proposal stores no request
+(`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), the proposal is a `switch_guardian`, which
+only the client that registers the account at the new GUARDIAN and switches its endpoint can
+execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `switch_guardian`, whatever the
+request sets), the transaction creates a private output note and the request did not set
+`allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`), a
+client candidate is pending, or the valid, distinct cosigner signatures fall short of the
+effective per-procedure threshold (`GUARDIAN_PROPOSAL_NOT_READY`).
+
+Whether a transaction creates a private note is read from the output notes of the
+`TransactionSummary` the cosigners signed, never from the proposal's metadata label; execution
+reproduces exactly that summary, so the stored request cannot create a note it does not show.
+Only the executing party learns a private note's details, so Guardian executes one only when
+the caller opts in. `allow_private_note` is part of the signed execute payload, which is
+domain-separated from a signed status read (see [Miden Request Signing](api.md#miden-request-signing)).
+
+### The fourteen steps
+1. Select the valid, distinct, currently registered cosigner signatures; invalid ones are
+   ignored and counted.
+2. Verify the stored envelope, decode the request, and check it is Guardian-executable: it
+   declares the summary's bound block, carries its auth arguments with their preimage, the
+   summary binds an approval expiration, and every consumed note is pinned. Stop if the chain
+   tip is already at or past the approval expiration.
+3. Take the chain tip as the reference block `R` and build the chain view at `R`, tracking the
+   bound block and every authenticated note's creation block.
+4. Reproduce the transaction unsigned at `R` and confirm it yields the signed summary.
+5. Issue Guardian's acknowledgment through the internal path, which stores no candidate.
+6. Attach the cosigner signatures and the acknowledgment.
+7. Execute the authorized transaction at `R`, loading public foreign accounts at `R`.
+8. Re-check the executed notes against the summary and that the transaction has not expired.
+9. Prove through the remote prover, retrying transient failures with capped backoff until
+   the transaction's expiration.
+10. Seal the transaction inputs to the validator encryption key after verifying its
+    attestations.
+11. Re-check that the account is still at the proposal's base, active, and guarded by this
+    Guardian, and that the proven expiration is within the configured horizon.
+12. **The no-retry boundary.** In one storage write, admit the candidate delta and record the
+    submission evidence (transaction id, expected commitment, expiration block). Nothing after
+    this point is proved or sent again.
+13. Re-validate the fence; a worker that lost ownership sends nothing.
+14. Send the sealed, proven transaction once.
+
+A failure before step 12 records a `failed` outcome with its code and releases the account;
+the proposal stays executable. A definite rejection at step 14 deletes the candidate and the
+proposal; no delta is kept with a `discarded` status. An unknown outcome leaves the execution `submitted`.
+
+```mermaid
+sequenceDiagram
+    participant C as Cosigner
+    participant G as Guardian
+    participant P as Remote prover
+    participant N as Miden node
+    C->>G: POST /delta/proposal/execution
+    G-->>C: 202 pending
+    G->>N: chain tip, chain view at R
+    G->>G: reproduce, acknowledge, execute at R
+    G->>P: prove (retries while transient)
+    G->>N: validator encryption key
+    G->>G: step 12: candidate + submission evidence, atomically
+    G->>N: submit once
+    C->>G: GET /delta/proposal/execution
+    G-->>C: submitted
+    Note over G,N: canonicalization promotes the candidate once the chain agrees
+    G-->>C: committed
+```
+
+### Reconciliation
+Only promotion writes `committed`. When a worker's lease lapses, the reconciler takes the
+reservation over by compare-and-set on its fence. Before the boundary it fails the attempt
+(`GUARDIAN_EXECUTION_LEASE_EXPIRED`, or `GUARDIAN_EXECUTION_ABANDONED` on the first pass after a
+restart). A process that is asked to stop (SIGTERM or Ctrl-C) refuses new executions as busy,
+fails its own attempts short of the boundary with `GUARDIAN_EXECUTION_ABANDONED`, and gives
+attempts past it up to 8 seconds to finish their send before exiting. An attempt still running
+when that grace ends (one past the boundary still sending, or one whose local execution is on the
+CPU and has not reached an await) is left to the lease and reconciliation, as after an
+unplanned stop. After the boundary, reconciliation settles only from the chain:
+
+- the account at the expected commitment: wait for promotion, write nothing;
+- still at the base with the chain strictly past the expiration block: `GUARDIAN_EXECUTION_EXPIRED`;
+- anywhere else: `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`;
+- the chain unobservable: keep the reservation and try again next pass. Elapsed time never
+  settles an execution.
+
+A client `push_delta` is refused with `GUARDIAN_EXECUTION_CONFLICT` while a reservation is
+active, and canonicalization never discards a candidate an execution owns.
+
+### Record retention
+Once a day, starting a few minutes after startup, every replica that runs reconciliation deletes
+the finished attempts (released, with an outcome) resolved more than
+`GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` ago (default 30, `0` keeps them forever) whose proposal
+is gone or that a newer attempt of the same proposal supersedes, with their submission evidence
+and outcome, in bounded batches. An active attempt and the newest attempt of a proposal storage
+still holds are never deleted, so the next attempt of a live proposal is still numbered one past
+its newest and the latest execution of a live proposal stays readable. A status read for a
+proposal whose records were deleted returns `GUARDIAN_EXECUTION_NOT_FOUND`, as for one never
+executed. The sweep is idempotent and needs no lease.
+
 ## Release sweep
 
 A background task (issue #434), independent of the canonicalization

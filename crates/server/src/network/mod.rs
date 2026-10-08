@@ -173,6 +173,13 @@ pub fn reconstructor() -> &'static Reconstructor {
 /// landed yet, or the account advanced past the expected state), not an
 /// error: `Err` from [`NetworkClient::verify_commitment`] is reserved for
 /// failures to make the comparison at all, such as an RPC failure.
+/// An account's on-chain state as of the block the node read it at, both from one response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedState {
+    pub verification: StateVerification,
+    pub block: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateVerification {
     /// The on-chain commitment equals the locally-computed one.
@@ -273,6 +280,16 @@ pub trait NetworkClient: Send + Sync {
         expected_commitment: &str,
         read_mode: RpcReadMode,
     ) -> Result<StateVerification, String>;
+
+    /// [`Self::verify_commitment`] together with the block the node read the account at. The
+    /// two come from one response, so the state is exactly the account's as of that block,
+    /// which a separate tip read, possibly served by another node, cannot promise.
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<ObservedState, String>;
 
     /// Verify delta is valid for given state
     fn verify_delta(
@@ -510,6 +527,27 @@ impl RpcSettings {
                 Ok(Self::Miden(settings))
             }
             None => Self::from_env(network),
+        }
+    }
+
+    /// The executor for Guardian execution on this network, when the configuration offers it.
+    pub(crate) fn proposal_executor(
+        &self,
+        config: &crate::config::execution::ExecutionConfig,
+    ) -> Result<
+        Option<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>>,
+        String,
+    > {
+        let Ok(prover) = config.availability() else {
+            return Ok(None);
+        };
+        match self {
+            Self::Miden(settings) => crate::network::miden::execution::executor_for(
+                settings.endpoint().expose_secret(),
+                settings.timeout(),
+                prover,
+            )
+            .map(Some),
         }
     }
 

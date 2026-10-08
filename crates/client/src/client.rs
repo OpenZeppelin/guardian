@@ -1,12 +1,14 @@
 use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
+use crate::execution::ProposalExecution;
 use crate::keystore::Signer;
 use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
-    ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
-    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetDeltaHistoryRequest,
-    GetDeltaHistoryResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    ConfigureResponse, ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest,
+    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
+    GetCurrentExecutionRequest, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalExecutionRequest, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
     GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
@@ -16,7 +18,7 @@ use crate::proto::{
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use guardian_shared::auth_request_message::AuthRequestMessage;
-use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use guardian_shared::hex::FromHex;
 use guardian_shared::lookup_auth_message::LookupAuthMessage;
 use miden_protocol::Word;
@@ -106,8 +108,8 @@ impl GuardianClient {
         &self,
         request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
+        request_payload: AuthRequestPayload,
     ) -> ClientResult<()> {
-        let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
         let timestamp = self.next_timestamp();
 
         let (pubkey_hex, signature_hex) = if let Some(auth) = &self.auth {
@@ -165,6 +167,27 @@ impl GuardianClient {
         &mut self,
         account_id: &AccountId,
         message: Req,
+        send: F,
+    ) -> ClientResult<Resp>
+    where
+        Req: prost::Message + Clone + std::fmt::Debug,
+        F: AsyncFnMut(
+            &mut GuardianGrpcClient<Channel>,
+            tonic::Request<Req>,
+        ) -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        let payload = AuthRequestPayload::from_protobuf_message(&message);
+        self.send_signed_with_replay_retry(account_id, message, payload, send)
+            .await
+    }
+
+    /// [`Self::send_with_replay_retry`] for a request signed over `payload` rather than its
+    /// plain encoding.
+    async fn send_signed_with_replay_retry<Req, Resp, F>(
+        &mut self,
+        account_id: &AccountId,
+        message: Req,
+        payload: AuthRequestPayload,
         mut send: F,
     ) -> ClientResult<Resp>
     where
@@ -177,7 +200,7 @@ impl GuardianClient {
         let mut retries_left = REPLAY_RETRY_LIMIT;
         loop {
             let mut request = tonic::Request::new(message.clone());
-            self.add_auth_metadata(&mut request, account_id)?;
+            self.add_auth_metadata(&mut request, account_id, payload.clone())?;
             match send(&mut self.client, request).await {
                 Ok(response) => return Ok(response.into_inner()),
                 Err(status) => {
@@ -563,6 +586,73 @@ impl GuardianClient {
         }
 
         Ok(inner)
+    }
+
+    /// Ask Guardian to prove and submit a threshold-met proposal. Returns once the request is
+    /// accepted; poll [`Self::get_delta_proposal_execution`] for the outcome. Repeating the
+    /// request while the execution runs returns it with `newly_accepted: false`.
+    ///
+    /// Guardian refuses a transaction that creates a private output note with
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `private_note`) unless
+    /// `allow_private_note` is set. The flag is part of the signed request.
+    pub async fn execute_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        proposal_id: &str,
+        allow_private_note: bool,
+    ) -> ClientResult<ProposalExecution> {
+        let message = ExecuteDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            allow_private_note,
+        };
+        let payload = AuthRequestPayload::for_operation(
+            SignedOperation::ExecuteDeltaProposal,
+            &prost::Message::encode_to_vec(&message),
+        );
+        let response = self
+            .send_signed_with_replay_retry(account_id, message, payload, async |client, request| {
+                client.execute_delta_proposal(request).await
+            })
+            .await?;
+        crate::execution::required(response.execution)
+    }
+
+    /// The latest execution attempt of a proposal.
+    pub async fn get_delta_proposal_execution(
+        &mut self,
+        account_id: &AccountId,
+        proposal_id: &str,
+    ) -> ClientResult<ProposalExecution> {
+        let message = GetDeltaProposalExecutionRequest {
+            account_id: account_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+        };
+        let response = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.get_delta_proposal_execution(request).await
+            })
+            .await?;
+        crate::execution::required(response.execution)
+    }
+
+    /// The account's in-flight execution, if any. A finished execution is not in flight.
+    pub async fn get_current_execution(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<Option<ProposalExecution>> {
+        let message = GetCurrentExecutionRequest {
+            account_id: account_id.to_string(),
+        };
+        let response = self
+            .send_with_replay_retry(account_id, message, async |client, request| {
+                client.get_current_execution(request).await
+            })
+            .await?;
+        response
+            .execution
+            .map(ProposalExecution::try_from)
+            .transpose()
     }
 }
 

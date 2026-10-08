@@ -323,7 +323,8 @@ the block the proposal binds by which the transaction must be included. Past
 that block the approvers' signatures no longer authorize it, the SDK refuses to
 execute it, and the node rejects it as expired. The summary binds the value, so
 the executing party cannot change it. Omitted, the approval never expires,
-which is the Miden default.
+which is the Miden default, except on a `guardian_executable` client (see
+[Execute Through Guardian](#execute-through-guardian)).
 
 > **Breaking change (issue #387):** these methods previously took `nonce` (and
 > `newThreshold`) as positional parameters. Passing the old positional form
@@ -495,6 +496,59 @@ GUARDIAN the account is rotating away from cannot block the rotation. After
 the switch the delta is pushed back to it best-effort, naming the state the
 switch executed on, as the Rust SDK does.
 
+### Execute Through Guardian
+
+A client created with `executionMode: 'guardian_executable'` stores each proposal's
+transaction request with it, except a `switch_guardian` proposal (see below), so once the
+proposal has enough signatures any cosigner can ask Guardian to prove, submit and commit it. Its
+proposals also bind two expiration bounds: an approval window of 28,800 blocks unless
+`approvalExpirationDelta` sets one, and a transaction expiration of 256 blocks:
+
+```typescript
+await multisig.requestGuardianExecution(proposal.id);
+const execution = await multisig.waitForGuardianExecution(proposal.id);
+if (execution.state === 'failed') {
+  console.error(execution.error?.code, execution.error?.message);
+}
+```
+
+`executionStatus(proposalId)` reads the latest execution once and `currentExecution()` the
+account's in-flight one. `waitForGuardianExecution(proposalId, options)` only reads: it polls
+until the execution is `committed` or `failed`, backing off from 1 s to 10 s
+(`initialBackoffMs`, `maxBackoffMs`), retries reads that fail with a retryable or transport
+error (honouring the server's retry-after hint), throws any other error, and gives up after 15
+minutes (`deadlineMs`) with a `GuardianExecutionWaitTimeoutError` whose `lastObserved` is the
+last execution it read. A refusal throws a `GuardianExecutionRefusedError` with `code` (the wire
+string, for example `GUARDIAN_EXECUTION_CONFLICT`), `userMessage`, `retryable`,
+`retryAfterSecs` and `blockingProposalId`. See
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
+
+Two proposals still execute locally on a `guardian_executable` client, because local execution
+does work Guardian skips. A `switch_guardian` proposal always does: the executing client verifies
+the new Guardian, registers the account there and repoints itself. It is therefore created exactly
+as on a `self_executed` client, with no stored request and no default expiration bounds. A P2ID proposal with a private
+note does too, because only the client that executes it holds the note to export to the
+recipient, unless the caller opts in for that one request and delivers the note itself:
+
+```typescript
+await multisig.requestGuardianExecution(proposal.id, { allowPrivateNote: true });
+```
+
+`requestGuardianExecution` checks the proposal this client holds before contacting Guardian. It
+throws a `LocalExecutionRequiredError` whose `reason` is `'switch_guardian'` or `'private_note'`
+for these two (execute them with `executeProposal`), and a `ProposalNotHeldLocallyError` for a
+proposal the client does not hold (sync proposals first). It sends `allowPrivateNote` with the
+request, and Guardian enforces the same rule: it refuses a switch, and a private-note execution
+without the flag, with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, which the SDK throws as the same
+`LocalExecutionRequiredError`. `localExecutionReason(proposal)` returns the same
+`LocalExecutionReason`, or `null` when Guardian can execute the proposal, and
+`describeLocalExecutionReason(reason)` explains it, so an app can route a proposal before asking.
+
+`client.guardianClient` is the raw base client and skips the SDK's check: its
+`executeDeltaProposal` sends any proposal id and rejects with a plain `GuardianHttpError`. Guardian
+still refuses a switch and an unflagged private-note execution there, so prefer
+`requestGuardianExecution`.
+
 ### Export Proposal for Offline Signing
 
 ```typescript
@@ -614,7 +668,9 @@ integration asks for one through `approvalExpirationDelta`, which the
 
 The integration keeps its own recipe (build inputs + salt) and reads the bound
 block from the proposal's chain anchor, so it can reproduce the exact
-transaction at execute time — the SDK does not store the serialized request.
+transaction at execute time. A `self_executed` client does not store the
+serialized request; a `guardian_executable` client stores the bytes passed to
+`createCustomProposal` so Guardian can execute them.
 The binding check guarantees the rebuilt transaction matches the commitment the
 cosigners signed. A request built at one sync height and anchored at another is
 refused by `executeForSummary` with `SummaryAnchorMismatchError`; rebuild and

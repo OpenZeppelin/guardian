@@ -33,4 +33,21 @@ describe('package entry point', () => {
   it('exports the tip-execution helper a multisig proposal is reproduced with', () => {
     expect(typeof api.executeForSummaryAtTip).toBe('function');
   });
+
+  it('exports the Guardian execution errors, wait defaults and terminal-state helper', () => {
+    expect(typeof api.GuardianExecutionRefusedError).toBe('function');
+    expect(typeof api.GuardianExecutionWaitTimeoutError).toBe('function');
+    expect(api.DEFAULT_EXECUTION_WAIT_OPTIONS.deadlineMs).toBe(900_000);
+    expect(api.isTerminalExecutionState('committed')).toBe(true);
+  });
+
+  it('exports the local-execution rule, its reasons and its errors', () => {
+    const reasons: api.LocalExecutionReason[] = ['switch_guardian', 'private_note'];
+    expect(reasons.map(api.describeLocalExecutionReason)).toHaveLength(2);
+    expect(typeof api.localExecutionReason).toBe('function');
+    expect(new api.LocalExecutionRequiredError({ proposalId: '0xaaaa', reason: 'private_note' }).reason).toBe(
+      'private_note',
+    );
+    expect(new api.ProposalNotHeldLocallyError('0xaaaa').proposalId).toBe('0xaaaa');
+  });
 });

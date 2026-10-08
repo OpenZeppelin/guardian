@@ -1,5 +1,6 @@
 //! Builder pattern for constructing MultisigClient instances.
 
+use crate::transaction::ProposalExecutionMode;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -167,6 +168,7 @@ pub struct MultisigClientBuilder {
     key_manager: Option<Arc<dyn KeyManager>>,
     prover_config: ProverConfig,
     rpc_config: RpcConfig,
+    execution_mode: ProposalExecutionMode,
 }
 
 impl Default for MultisigClientBuilder {
@@ -186,7 +188,15 @@ impl MultisigClientBuilder {
             key_manager: None,
             prover_config: ProverConfig::new(),
             rpc_config: RpcConfig::new(),
+            execution_mode: ProposalExecutionMode::SelfExecuted,
         }
+    }
+
+    /// Whether proposals the client creates can be executed by Guardian. Defaults to
+    /// [`ProposalExecutionMode::SelfExecuted`]; the client never asks the server which it offers.
+    pub fn execution_mode(mut self, mode: ProposalExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
     }
 
     /// Sets the Miden node RPC endpoint.
@@ -305,7 +315,7 @@ impl MultisigClientBuilder {
         )
         .await?;
 
-        Ok(MultisigClient::new(
+        let mut client = MultisigClient::new(
             miden_client,
             key_manager,
             guardian_endpoint,
@@ -314,7 +324,9 @@ impl MultisigClientBuilder {
             note_transport_endpoint,
             self.prover_config,
             self.rpc_config,
-        ))
+        );
+        client.execution_mode = self.execution_mode;
+        Ok(client)
     }
 }
 

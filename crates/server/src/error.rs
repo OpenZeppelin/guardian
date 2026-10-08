@@ -5,6 +5,27 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fmt;
 
+use guardian_shared::execution::refusal_codes;
+
+/// Why Guardian refuses to execute a proposal and leaves it to local execution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalExecutionReason {
+    /// Only the client that finishes the GUARDIAN handoff can execute a guardian switch.
+    SwitchGuardian,
+    /// The transaction creates a private output note and the request did not opt in.
+    PrivateNote,
+}
+
+impl LocalExecutionReason {
+    /// Stable lower-snake-case `meta.reason` label.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LocalExecutionReason::SwitchGuardian => "switch_guardian",
+            LocalExecutionReason::PrivateNote => "private_note",
+        }
+    }
+}
+
 /// Primary error type for GUARDIAN operations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuardianError {
@@ -143,6 +164,61 @@ pub enum GuardianError {
         account_id: String,
         nonce: u64,
     },
+    /// This server does not offer Guardian execution: no prover is
+    /// configured, the capability is disabled, or canonicalization is off. Stable code `GUARDIAN_PROVING_UNAVAILABLE`,
+    /// HTTP 503, gRPC `UNAVAILABLE`.
+    ProvingUnavailable,
+    /// The proposal was created without a stored transaction request, so
+    /// only a transaction-capable party can execute it. Stable code
+    /// `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, HTTP 409, gRPC
+    /// `FAILED_PRECONDITION`.
+    ProposalMissingTransactionRequest,
+    /// Guardian leaves the proposal to local execution, for the reason `meta.reason` names: a
+    /// `switch_guardian` proposal, which only the client can finish (register the account at
+    /// the new GUARDIAN and switch its endpoint), or a transaction that creates a private
+    /// output note while the request did not set `allow_private_note`. Stable code
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, HTTP 409, gRPC `FAILED_PRECONDITION`.
+    ProposalExecutesLocally {
+        proposal_type: String,
+        reason: LocalExecutionReason,
+    },
+    /// The proposal's valid cosigner signatures are below its effective
+    /// threshold. Stable code `GUARDIAN_PROPOSAL_NOT_READY`, HTTP 409, gRPC
+    /// `FAILED_PRECONDITION`.
+    ProposalNotReady {
+        required: usize,
+        valid: usize,
+    },
+    /// A proposal's stored transaction request exceeds the per-request size cap. Stable code
+    /// `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`, HTTP 413, gRPC `INVALID_ARGUMENT`.
+    ProposalRequestTooLarge {
+        bytes: u64,
+        limit: u64,
+    },
+    /// The account's viable proposals already hold as many request bytes as it may store.
+    /// Stable code `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`, HTTP 409, gRPC
+    /// `FAILED_PRECONDITION`.
+    AccountRequestCapacityExceeded {
+        limit: u64,
+        used: u64,
+    },
+    /// Another Guardian execution holds the account's reservation. Stable
+    /// code `GUARDIAN_EXECUTION_CONFLICT`, HTTP 409, gRPC `ABORTED`;
+    /// `meta.blocking_proposal_id` names the blocker.
+    ExecutionConflict {
+        blocking_proposal_id: String,
+    },
+    /// Another request holds the account's execution lease but has not reserved the account
+    /// yet, so there is no proposal to name, or the process already admits as many executions as
+    /// `GUARDIAN_EXECUTION_MAX_CONCURRENT` allows. Stable code `GUARDIAN_EXECUTION_BUSY`, HTTP
+    /// 409, gRPC `ABORTED`, `meta.retryable: true`.
+    ExecutionBusy,
+    /// The proposal exists but was never executed by Guardian. Stable code
+    /// `GUARDIAN_EXECUTION_NOT_FOUND`, HTTP 404, gRPC `NOT_FOUND`.
+    ExecutionNotFound {
+        account_id: String,
+        proposal_id: String,
+    },
 }
 
 /// Signing-specific error type for Miden Falcon RPO operations
@@ -203,6 +279,15 @@ impl GuardianError {
             GuardianError::SignatureSchemeNotAllowed { .. } => StatusCode::FORBIDDEN,
             GuardianError::AccountReleased { .. } => StatusCode::CONFLICT,
             GuardianError::CandidateLanded { .. } => StatusCode::CONFLICT,
+            GuardianError::ProvingUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            GuardianError::ProposalMissingTransactionRequest => StatusCode::CONFLICT,
+            GuardianError::ProposalExecutesLocally { .. } => StatusCode::CONFLICT,
+            GuardianError::ProposalNotReady { .. } => StatusCode::CONFLICT,
+            GuardianError::ProposalRequestTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+            GuardianError::AccountRequestCapacityExceeded { .. } => StatusCode::CONFLICT,
+            GuardianError::ExecutionConflict { .. } => StatusCode::CONFLICT,
+            GuardianError::ExecutionBusy => StatusCode::CONFLICT,
+            GuardianError::ExecutionNotFound { .. } => StatusCode::NOT_FOUND,
         }
     }
 
@@ -253,6 +338,15 @@ impl GuardianError {
             GuardianError::SignatureSchemeNotAllowed { .. } => tonic::Code::PermissionDenied,
             GuardianError::AccountReleased { .. } => tonic::Code::FailedPrecondition,
             GuardianError::CandidateLanded { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::ProvingUnavailable => tonic::Code::Unavailable,
+            GuardianError::ProposalMissingTransactionRequest => tonic::Code::FailedPrecondition,
+            GuardianError::ProposalExecutesLocally { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::ProposalNotReady { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::ProposalRequestTooLarge { .. } => tonic::Code::InvalidArgument,
+            GuardianError::AccountRequestCapacityExceeded { .. } => tonic::Code::FailedPrecondition,
+            GuardianError::ExecutionConflict { .. } => tonic::Code::Aborted,
+            GuardianError::ExecutionBusy => tonic::Code::Aborted,
+            GuardianError::ExecutionNotFound { .. } => tonic::Code::NotFound,
         }
     }
 
@@ -302,6 +396,23 @@ impl GuardianError {
             GuardianError::SignatureSchemeNotAllowed { .. } => "signature_scheme_not_allowed",
             GuardianError::AccountReleased { .. } => "GUARDIAN_ACCOUNT_RELEASED",
             GuardianError::CandidateLanded { .. } => "GUARDIAN_CANDIDATE_LANDED",
+            GuardianError::ProvingUnavailable => refusal_codes::PROVING_UNAVAILABLE,
+            GuardianError::ProposalMissingTransactionRequest => {
+                refusal_codes::PROPOSAL_MISSING_TRANSACTION_REQUEST
+            }
+            GuardianError::ProposalExecutesLocally { .. } => {
+                refusal_codes::PROPOSAL_EXECUTES_LOCALLY
+            }
+            GuardianError::ProposalNotReady { .. } => refusal_codes::PROPOSAL_NOT_READY,
+            GuardianError::ProposalRequestTooLarge { .. } => {
+                refusal_codes::PROPOSAL_REQUEST_TOO_LARGE
+            }
+            GuardianError::AccountRequestCapacityExceeded { .. } => {
+                refusal_codes::ACCOUNT_REQUEST_CAPACITY_EXCEEDED
+            }
+            GuardianError::ExecutionConflict { .. } => refusal_codes::EXECUTION_CONFLICT,
+            GuardianError::ExecutionBusy => refusal_codes::EXECUTION_BUSY,
+            GuardianError::ExecutionNotFound { .. } => refusal_codes::EXECUTION_NOT_FOUND,
         }
     }
 
@@ -386,6 +497,42 @@ impl GuardianError {
             GuardianError::CandidateLanded { .. } => {
                 "This transaction already went through, so it can't be abandoned."
             }
+            GuardianError::ProvingUnavailable => {
+                "This Guardian doesn't execute transactions. Execute it from your wallet instead."
+            }
+            GuardianError::ProposalMissingTransactionRequest => {
+                "This transaction wasn't created for Guardian to execute. Execute it from your wallet instead."
+            }
+            GuardianError::ProposalExecutesLocally {
+                reason: LocalExecutionReason::SwitchGuardian,
+                ..
+            } => {
+                "A guardian switch is executed by the wallet that finishes the handoff. Execute it from your wallet instead."
+            }
+            GuardianError::ProposalExecutesLocally {
+                reason: LocalExecutionReason::PrivateNote,
+                ..
+            } => {
+                "This transaction creates a private note. Execute it from your wallet, or allow Guardian to execute private notes."
+            }
+            GuardianError::ProposalNotReady { .. } => {
+                "This transaction still needs more signatures."
+            }
+            GuardianError::ProposalRequestTooLarge { .. } => {
+                "This transaction is too large for Guardian to store."
+            }
+            GuardianError::AccountRequestCapacityExceeded { .. } => {
+                "This account has too many large pending transactions. Finish or cancel one first."
+            }
+            GuardianError::ExecutionConflict { .. } => {
+                "Guardian is already executing another transaction for this account."
+            }
+            GuardianError::ExecutionBusy => {
+                "Guardian can't start this execution right now. Try again shortly."
+            }
+            GuardianError::ExecutionNotFound { .. } => {
+                "Guardian hasn't been asked to execute this transaction."
+            }
             GuardianError::AccountDataUnavailable(_) => {
                 "This account's data is temporarily unavailable. Please try again."
             }
@@ -423,6 +570,7 @@ impl GuardianError {
                 | GuardianError::RpcValidationFailed(_)
                 | GuardianError::RateLimitExceeded { .. }
                 | GuardianError::DataUnavailable(_)
+                | GuardianError::ExecutionBusy
         )
     }
 }
@@ -550,6 +698,59 @@ impl fmt::Display for GuardianError {
                 "Candidate at nonce {nonce} for account '{account_id}' already \
                  landed on-chain; cannot abandon"
             ),
+            GuardianError::ProvingUnavailable => {
+                write!(f, "Guardian execution is not available on this server")
+            }
+            GuardianError::ProposalMissingTransactionRequest => write!(
+                f,
+                "Proposal carries no stored transaction request and cannot be executed by Guardian"
+            ),
+            GuardianError::ProposalExecutesLocally {
+                proposal_type,
+                reason: LocalExecutionReason::SwitchGuardian,
+            } => write!(
+                f,
+                "A {proposal_type} proposal is executed by the client that finishes the GUARDIAN \
+                 handoff; execute it locally"
+            ),
+            GuardianError::ProposalExecutesLocally {
+                proposal_type,
+                reason: LocalExecutionReason::PrivateNote,
+            } => write!(
+                f,
+                "A {proposal_type} proposal creates a private output note and the request did not \
+                 set allow_private_note; execute it locally"
+            ),
+            GuardianError::ProposalNotReady { required, valid } => write!(
+                f,
+                "Proposal is not ready: {valid} valid cosigner signatures, {required} required"
+            ),
+            GuardianError::ProposalRequestTooLarge { bytes, limit } => write!(
+                f,
+                "The stored transaction request is {bytes} bytes; the limit is {limit}"
+            ),
+            GuardianError::AccountRequestCapacityExceeded { limit, used } => write!(
+                f,
+                "The account's pending proposals already store {used} of {limit} request bytes"
+            ),
+            GuardianError::ExecutionConflict {
+                blocking_proposal_id,
+            } => write!(
+                f,
+                "Account is reserved by the execution of proposal '{blocking_proposal_id}'"
+            ),
+            GuardianError::ExecutionBusy => write!(
+                f,
+                "Another request holds the account's execution lease and has not reserved it yet, or \
+                 the server runs its maximum number of executions"
+            ),
+            GuardianError::ExecutionNotFound {
+                account_id,
+                proposal_id,
+            } => write!(
+                f,
+                "No execution of proposal '{proposal_id}' for account '{account_id}'"
+            ),
         }
     }
 }
@@ -616,6 +817,18 @@ struct ErrorMeta {
     /// only for `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     released_at: Option<String>,
+    /// Proposal whose execution holds the account's reservation. Populated
+    /// only for `GUARDIAN_EXECUTION_CONFLICT`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    blocking_proposal_id: Option<String>,
+    /// Proposal type Guardian refuses to execute. Populated only for
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposal_type: Option<String>,
+    /// Why Guardian leaves the proposal to local execution: `switch_guardian` or
+    /// `private_note`. Populated only for `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
 }
 
 /// The single error object on the wire: `{ code, message, meta }`. Identical
@@ -675,6 +888,19 @@ impl GuardianError {
             } => (Some(scheme.clone()), Some(allowed_schemes.clone())),
             _ => (None, None),
         };
+        let blocking_proposal_id = match self {
+            GuardianError::ExecutionConflict {
+                blocking_proposal_id,
+            } => Some(blocking_proposal_id.clone()),
+            _ => None,
+        };
+        let (proposal_type, reason) = match self {
+            GuardianError::ProposalExecutesLocally {
+                proposal_type,
+                reason,
+            } => (Some(proposal_type.clone()), Some(reason.as_str())),
+            _ => (None, None),
+        };
         ErrorMeta {
             retryable: self.retryable(),
             retry_after_secs,
@@ -684,6 +910,9 @@ impl GuardianError {
             scheme,
             allowed_schemes,
             released_at,
+            blocking_proposal_id,
+            proposal_type,
+            reason,
         }
     }
 

@@ -2,6 +2,7 @@
 
 use std::num::NonZeroU32;
 
+use guardian_shared::request_envelope::TransactionRequestEnvelope;
 use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
@@ -96,6 +97,10 @@ pub struct ProposalPayload {
     pub signatures: Vec<DeltaSignature>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ProposalMetadataPayload>,
+    /// The request a Guardian-executable proposal stores. Absent on a self-executed proposal, so
+    /// its wire shape is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_request: Option<TransactionRequestEnvelope>,
 }
 
 impl ProposalPayload {
@@ -104,7 +109,14 @@ impl ProposalPayload {
             tx_summary: tx_summary.to_json(),
             signatures: Vec::new(),
             metadata: None,
+            transaction_request: None,
         }
+    }
+
+    /// Stores `request` with the proposal, when there is one to store.
+    pub fn with_transaction_request(mut self, request: Option<TransactionRequestEnvelope>) -> Self {
+        self.transaction_request = request;
+        self
     }
 
     /// Adds the proposer's signature.
@@ -324,6 +336,7 @@ mod tests {
                 salt: Some("0x456".to_string()),
                 ..Default::default()
             }),
+            transaction_request: None,
         };
 
         let json = payload.to_json();
@@ -346,6 +359,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_add_signer_metadata(
             3,
@@ -366,6 +380,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_remove_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string());
 
@@ -380,6 +395,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -407,6 +423,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -427,6 +444,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -450,6 +468,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -471,6 +490,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -516,6 +536,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_note_consumption_metadata(&note_ids, "0xsalt".to_string());
 
@@ -532,6 +553,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_guardian_update_metadata(
             "0xpubkey".to_string(),
@@ -555,6 +577,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         };
 
         let json = payload.to_json();
@@ -567,6 +590,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         };
 
         let json = payload.to_json();
@@ -606,6 +630,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_add_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string())
         .with_chain_anchor("bW9jay1jaGFpbi1hbmNob3I=".to_string());
@@ -700,6 +725,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_note_consumption_metadata_v2(
             vec!["0xabc".to_string()],

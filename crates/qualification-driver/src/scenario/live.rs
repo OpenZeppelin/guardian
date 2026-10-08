@@ -1,6 +1,7 @@
 use anyhow::anyhow;
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{AbandonStatus, MultisigClient, ProposalStatus};
+use miden_multisig_client::{ExecutionState, GuardianExecutionRequest, ProposalExecutionMode};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
@@ -84,6 +85,7 @@ async fn build_cosigners(
     guardian_endpoint: &str,
     signers: &RunSigners,
     run_tag: &str,
+    mode: ProposalExecutionMode,
 ) -> anyhow::Result<Vec<MultisigClient>> {
     let mut clients = Vec::with_capacity(signers.signers.len());
     for (index, signer) in signers.signers.iter().enumerate() {
@@ -96,7 +98,8 @@ async fn build_cosigners(
         let builder = MultisigClient::builder()
             .miden_endpoint(endpoint(context.network))
             .guardian_endpoint(guardian_endpoint.to_string())
-            .account_dir(&dir);
+            .account_dir(&dir)
+            .execution_mode(mode);
 
         let builder = match signer {
             RunSigner::Falcon(key) => builder.with_secret_key(key.clone()),
@@ -125,7 +128,13 @@ fn commitments(clients: &[MultisigClient]) -> Vec<Word> {
 
 /// Builds the multisig account locally. Nothing reaches the chain here: the
 /// account exists on chain only once it transacts.
-pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str) -> ActionOutcome {
+pub async fn create(
+    runner: &Runner,
+    shape: Shape,
+    scheme: Scheme,
+    run_tag: &str,
+    mode: ProposalExecutionMode,
+) -> ActionOutcome {
     let Some(context) = runner.live.as_ref() else {
         return ActionOutcome::failed_setup("the live context is not configured");
     };
@@ -135,6 +144,7 @@ pub async fn create(runner: &Runner, shape: Shape, scheme: Scheme, run_tag: &str
         shape,
         scheme,
         run_tag,
+        mode,
     )
     .await
 }
@@ -146,6 +156,7 @@ pub async fn create_queued(
     shape: Shape,
     scheme: Scheme,
     run_tag: &str,
+    mode: ProposalExecutionMode,
 ) -> ActionOutcome {
     let Some(context) = runner.live.as_ref() else {
         return ActionOutcome::failed_setup("the live context is not configured");
@@ -157,7 +168,7 @@ pub async fn create_queued(
                 .to_string(),
         };
     };
-    create_on(runner, endpoint, shape, scheme, run_tag).await
+    create_on(runner, endpoint, shape, scheme, run_tag, mode).await
 }
 
 async fn create_on(
@@ -166,6 +177,7 @@ async fn create_on(
     shape: Shape,
     scheme: Scheme,
     run_tag: &str,
+    mode: ProposalExecutionMode,
 ) -> ActionOutcome {
     let Some(context) = runner.live.as_ref() else {
         return ActionOutcome::failed_setup("the live context is not configured");
@@ -179,10 +191,11 @@ async fn create_on(
         ));
     };
 
-    let mut clients = match build_cosigners(context, &guardian_endpoint, &signers, run_tag).await {
-        Ok(clients) => clients,
-        Err(error) => return ActionOutcome::failed_setup(error.to_string()),
-    };
+    let mut clients =
+        match build_cosigners(context, &guardian_endpoint, &signers, run_tag, mode).await {
+            Ok(clients) => clients,
+            Err(error) => return ActionOutcome::failed_setup(error.to_string()),
+        };
 
     let signer_commitments = commitments(&clients);
     if let Err(error) = clients[0]
@@ -728,7 +741,359 @@ pub async fn recover_by_cosigner(runner: &Runner) -> ActionOutcome {
 /// How long an executed proposal may take to leave the pending set.
 const CANONICALIZATION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// What the chain and GUARDIAN say about an executed proposal.
+/// How far past the block a proposal's summary binds the chain must move before a late execution:
+/// beyond the fifty or so blocks devnet serves historical account state for, so the execution
+/// cannot lean on state at the bound block.
+const LATE_EXECUTION_BLOCKS: u32 = 60;
+const LATE_EXECUTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Waits until the chain tip is [`LATE_EXECUTION_BLOCKS`] past the block the scenario's proposal
+/// binds, read from the node directly rather than through a client's synced store.
+pub async fn advance_past_bound(runner: &Runner) -> ActionOutcome {
+    use miden_client::rpc::{GrpcClient, NodeRpcClient};
+    use miden_protocol::block::BlockNumber;
+
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let bound = match session.clients[0].list_proposals().await {
+        Ok(proposals) => match proposals.into_iter().find(|entry| entry.id == proposal_id) {
+            Some(proposal) => proposal.tx_summary.block_number().as_u32(),
+            None => {
+                return ActionOutcome::failed_setup(format!(
+                    "proposal {proposal_id} is not listed"
+                ));
+            }
+        },
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!("listing proposals failed: {error}"));
+        }
+    };
+    let target = bound + LATE_EXECUTION_BLOCKS;
+
+    let rpc = GrpcClient::new(&endpoint(context.network), 10_000);
+    match rpc
+        .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
+        .await
+    {
+        Ok((genesis, _)) => {
+            if let Err(error) = rpc.set_genesis_commitment(genesis.commitment()).await {
+                return ActionOutcome::EnvironmentBlocked {
+                    reason: format!("cannot pin the node's genesis: {error}"),
+                };
+            }
+        }
+        Err(error) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("cannot read the node's genesis header: {error}"),
+            };
+        }
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match rpc.get_block_header_by_number(None, false).await {
+            Ok((tip, _)) if tip.block_num().as_u32() >= target => return ActionOutcome::Passed,
+            Ok(_) | Err(_) if started.elapsed() > LATE_EXECUTION_DEADLINE => {
+                return ActionOutcome::EnvironmentBlocked {
+                    reason: format!(
+                        "the chain did not reach block {target} within {LATE_EXECUTION_DEADLINE:?}"
+                    ),
+                };
+            }
+            Ok(_) | Err(_) => tokio::time::sleep(std::time::Duration::from_secs(5)).await,
+        }
+    }
+}
+
+/// How long GUARDIAN may take to report an execution committed.
+const GUARDIAN_EXECUTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Refusals a repeated request may meet once the accepted execution has moved past the point
+/// where GUARDIAN answers with it: the lease changing hands as it finishes, the proposal turned
+/// into a candidate, or the proposal removed once the candidate settled. None starts anything.
+const REPEAT_AFTER_PROGRESS: [&str; 3] = [
+    "GUARDIAN_EXECUTION_BUSY",
+    "conflict_pending_delta",
+    "proposal_not_found",
+];
+
+/// The answer to a second execution request for the proposal GUARDIAN has just accepted, sent
+/// at once so the first is still in flight, or has only just finished.
+enum RepeatAnswer {
+    Execution(guardian_client::ProposalExecution),
+    Refused { code: Option<String>, error: String },
+}
+
+impl RepeatAnswer {
+    fn from_sdk(
+        answer: Result<guardian_client::ProposalExecution, miden_multisig_client::MultisigError>,
+    ) -> Self {
+        match answer {
+            Ok(execution) => Self::Execution(execution),
+            Err(error) => Self::Refused {
+                code: match &error {
+                    miden_multisig_client::MultisigError::GuardianExecutionRefused {
+                        code, ..
+                    } => Some(code.clone()),
+                    _ => None,
+                },
+                error: error.to_string(),
+            },
+        }
+    }
+
+    fn from_base(
+        answer: Result<guardian_client::ProposalExecution, guardian_client::ClientError>,
+    ) -> Self {
+        match answer {
+            Ok(execution) => Self::Execution(execution),
+            Err(error) => Self::Refused {
+                code: error.guardian_code(),
+                error: error.to_string(),
+            },
+        }
+    }
+
+    /// Exactly once: the repeat is answered with the same execution and starts nothing, or is
+    /// refused only because that execution already moved on. A repeat that GUARDIAN newly
+    /// accepted means a second attempt, which is also how a first attempt that already failed
+    /// reads.
+    fn verdict(self, proposal_id: &str) -> Option<ActionOutcome> {
+        match self {
+            Self::Execution(execution)
+                if !execution.newly_accepted
+                    && execution.proposal_id.eq_ignore_ascii_case(proposal_id) =>
+            {
+                None
+            }
+            Self::Execution(execution) => Some(ActionOutcome::failed_product(format!(
+                "a repeated request for the execution in flight started another or answered for \
+                 another proposal: {execution:?}"
+            ))),
+            Self::Refused {
+                code: Some(code), ..
+            } if REPEAT_AFTER_PROGRESS.contains(&code.as_str()) => None,
+            Self::Refused { error, .. } => Some(ActionOutcome::failed_product(format!(
+                "a repeated request for the execution in flight was refused: {error}"
+            ))),
+        }
+    }
+}
+
+/// Hands the threshold-met proposal to GUARDIAN and waits for GUARDIAN to report it committed,
+/// then for the chain and GUARDIAN's history to agree, exactly as a self-execution is judged.
+/// No cosigner proves or submits anything.
+pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let client = &mut session.clients[0];
+    if client.execution_mode() != ProposalExecutionMode::GuardianExecutable {
+        return ActionOutcome::failed_setup(
+            "the proposal was created by a self-executed client, so GUARDIAN holds no request",
+        );
+    }
+    let binding = match proposal_nonce(client, &proposal_id).await {
+        Ok(nonce) => Binding::Nonce(nonce),
+        Err(reason) => return unbindable(reason),
+    };
+
+    match client
+        .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
+        .await
+    {
+        Ok(execution) if execution.newly_accepted => {}
+        Ok(execution) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN reported an execution it did not start: {execution:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN refused to execute the proposal: {error}"
+            ));
+        }
+    }
+    let repeat = RepeatAnswer::from_sdk(
+        client
+            .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
+            .await,
+    );
+    if let Some(outcome) = repeat.verdict(&proposal_id) {
+        return outcome;
+    }
+
+    let started = std::time::Instant::now();
+    let mut observed = Vec::new();
+    loop {
+        match client.execution_status(&proposal_id).await {
+            Ok(execution) => {
+                if observed.last() != Some(&execution.state) {
+                    observed.push(execution.state);
+                }
+                match execution.state {
+                    ExecutionState::Committed => break,
+                    ExecutionState::Failed => {
+                        let failure = execution.error.map_or_else(
+                            || "no cause".to_string(),
+                            |failure| format!("{:?}: {}", failure.code, failure.message),
+                        );
+                        return ActionOutcome::ExecutionFailed {
+                            reason: format!(
+                                "GUARDIAN execution failed after {observed:?}: {failure}"
+                            ),
+                        };
+                    }
+                    ExecutionState::Pending
+                    | ExecutionState::Proving
+                    | ExecutionState::Submitted => {}
+                }
+            }
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "reading the execution failed after {observed:?}: {error}"
+                ));
+            }
+        }
+        if started.elapsed() > GUARDIAN_EXECUTION_DEADLINE {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN execution did not commit within {GUARDIAN_EXECUTION_DEADLINE:?}; states seen {observed:?}"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+
+    confirm_guardian_commit(client, &proposal_id, binding).await
+}
+
+/// Once GUARDIAN reports `committed`, the chain and GUARDIAN's history must agree, exactly as a
+/// self-execution is judged.
+async fn confirm_guardian_commit(
+    client: &mut MultisigClient,
+    proposal_id: &str,
+    binding: Binding,
+) -> ActionOutcome {
+    if let Err(error) = client.sync().await {
+        return ActionOutcome::failed_product(format!("syncing after execution failed: {error}"));
+    }
+    match wait_for_execution(client, proposal_id, binding).await {
+        Completion::Confirmed => ActionOutcome::Passed,
+        Completion::Discarded(reason) => ActionOutcome::failed_product(format!(
+            "GUARDIAN reported committed but the delta was discarded: {reason}"
+        )),
+        Completion::Pending(reason) => ActionOutcome::failed_product(format!(
+            "GUARDIAN reported committed but the account never agreed: {reason}"
+        )),
+    }
+}
+
+/// Takes the threshold-met proposal to its outcome with the base client alone: authenticated
+/// GUARDIAN requests signed as one cosigner, with no multisig SDK and no node involved in the
+/// request or the polling. The multisig client only reads the chain afterwards, to judge the
+/// outcome.
+pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
+    use guardian_client::{EcdsaKeyStore, FalconKeyStore, GuardianClient, Signer};
+    use std::sync::Arc;
+
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    if session.clients[0].execution_mode() != ProposalExecutionMode::GuardianExecutable {
+        return ActionOutcome::failed_setup(
+            "the proposal was created by a self-executed client, so GUARDIAN holds no request",
+        );
+    }
+    let binding = match proposal_nonce(&mut session.clients[0], &proposal_id).await {
+        Ok(nonce) => Binding::Nonce(nonce),
+        Err(reason) => return unbindable(reason),
+    };
+
+    let signer: Arc<dyn Signer> = match &session.signers.signers[0] {
+        RunSigner::Falcon(key) => Arc::new(FalconKeyStore::new(key.clone())),
+        RunSigner::Ecdsa(key) => Arc::new(EcdsaKeyStore::new(key.clone())),
+    };
+    let mut base = match GuardianClient::connect(session.guardian_endpoint.clone()).await {
+        Ok(client) => client.with_signer(signer),
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "cannot reach {}: {error}",
+                session.guardian_endpoint
+            ));
+        }
+    };
+    let account_id = session.account_id;
+    match base
+        .execute_delta_proposal(&account_id, &proposal_id, false)
+        .await
+    {
+        Ok(execution) if execution.newly_accepted => {}
+        Ok(execution) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN reported an execution it did not start: {execution:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN refused the base client's execution request: {error}"
+            ));
+        }
+    }
+    let repeat = RepeatAnswer::from_base(
+        base.execute_delta_proposal(&account_id, &proposal_id, false)
+            .await,
+    );
+    if let Some(outcome) = repeat.verdict(&proposal_id) {
+        return outcome;
+    }
+    let started = std::time::Instant::now();
+    loop {
+        match base
+            .get_delta_proposal_execution(&account_id, &proposal_id)
+            .await
+        {
+            Ok(execution) => match execution.state {
+                ExecutionState::Committed => break,
+                ExecutionState::Failed => {
+                    return ActionOutcome::ExecutionFailed {
+                        reason: format!(
+                            "the base client saw the execution fail: {:?}",
+                            execution.error
+                        ),
+                    };
+                }
+                ExecutionState::Pending | ExecutionState::Proving | ExecutionState::Submitted => {}
+            },
+            Err(error) => {
+                return ActionOutcome::failed_product(format!(
+                    "the base client could not read the execution: {error}"
+                ));
+            }
+        }
+        if started.elapsed() > GUARDIAN_EXECUTION_DEADLINE {
+            return ActionOutcome::failed_product(format!(
+                "GUARDIAN execution did not commit within {GUARDIAN_EXECUTION_DEADLINE:?}"
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    confirm_guardian_commit(&mut session.clients[0], &proposal_id, binding).await
+}
+
 enum Completion {
     /// Confirmed on chain, agreed with GUARDIAN, and canonical in history.
     Confirmed,
@@ -2060,6 +2425,7 @@ pub async fn add_signer(runner: &Runner, run_tag: &str) -> ActionOutcome {
         &session.guardian_endpoint,
         &incoming_signers,
         &format!("{run_tag}-incoming"),
+        session.clients[0].execution_mode(),
     )
     .await
     {

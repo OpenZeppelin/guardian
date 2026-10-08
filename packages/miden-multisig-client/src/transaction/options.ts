@@ -20,6 +20,12 @@ export interface SignatureOptions {
    * approval never expires, which is the upstream default.
    */
   approvalExpirationDelta?: number;
+  /**
+   * Blocks after the block the transaction executes against by which it must be included. The
+   * summary binds it, so a rebuild must pass the value the summary carries. Omitted, the request
+   * sets none.
+   */
+  transactionExpirationDelta?: number;
 }
 
 /**

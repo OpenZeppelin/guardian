@@ -16,12 +16,15 @@ import {
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
+  type ExecutionFailure,
   type Multisig,
   type MultisigClient,
   type MultisigConfig,
   type ProcedureName,
   type ProcedureThreshold,
   type Proposal,
+  type ProposalExecution,
+  type ProposalExecutionMode,
   type SignatureScheme,
   type WalletSigningContext,
 } from '@openzeppelin/miden-multisig-client';
@@ -152,12 +155,14 @@ export async function initMultisigClient(
   midenRpcEndpoint: string,
   prover?: import('@openzeppelin/miden-multisig-client').ProverConfig,
   rpc?: import('@openzeppelin/miden-multisig-client').RpcConfig,
+  executionMode: ProposalExecutionMode = 'self_executed',
 ): Promise<{ client: MultisigClient; guardianPubkey: string }> {
   const client = new MultisigClientClass(midenClient, {
     guardianEndpoint,
     midenRpcEndpoint,
     prover,
     rpc,
+    executionMode,
   });
   const response = await client.guardianClient.getPubkey();
   const guardianPubkey = typeof response === 'string' ? response : response.commitment;
@@ -346,6 +351,87 @@ export async function executeProposal(
   proposalId: string,
 ): Promise<void> {
   await multisig.executeProposal(proposalId);
+}
+
+/**
+ * Hands a threshold-met proposal to GUARDIAN, which proves and submits it, and waits until the
+ * execution is `committed` or `failed`. The proposal must have been created by a client in
+ * `guardian_executable` mode.
+ */
+export async function executeThroughGuardian(
+  multisig: Multisig,
+  proposalId: string,
+): Promise<ProposalExecution> {
+  await multisig.requestGuardianExecution(proposalId);
+  return multisig.waitForGuardianExecution(proposalId);
+}
+
+/** The account's in-flight GUARDIAN execution and, when asked, one proposal's latest. */
+export async function guardianExecutionStatus(
+  multisig: Multisig,
+  proposalId?: string,
+): Promise<{ current: ProposalExecution | null; proposal: ProposalExecution | null }> {
+  const current = await multisig.currentExecution();
+  const proposal = proposalId ? await multisig.executionStatus(proposalId) : null;
+  return { current, proposal };
+}
+
+/**
+ * What the caller can do after a failed execution. Follows the failure code: `proposalExists`
+ * says whether the proposal is still stored, not whether executing it again can succeed.
+ */
+function failedExecutionAdvice(error: ExecutionFailure): string {
+  switch (error.code) {
+    case 'GUARDIAN_EXECUTION_CHAIN_BEHIND':
+    case 'GUARDIAN_EXECUTION_NODE_UNAVAILABLE':
+    case 'GUARDIAN_EXECUTION_CHAIN_INCONSISTENT':
+    case 'GUARDIAN_EXECUTION_PROVING_FAILED':
+    case 'GUARDIAN_EXECUTION_SEALING_FAILED':
+    case 'GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED':
+    case 'GUARDIAN_EXECUTION_LEASE_EXPIRED':
+    case 'GUARDIAN_EXECUTION_ABANDONED':
+      return 'Execute it again.';
+    case 'GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES':
+      return 'Collect more signatures, then execute it again.';
+    case 'GUARDIAN_EXECUTION_EXPIRATION_REACHED':
+      return error.bound === 'transaction'
+        ? 'Execute it again: a new attempt gets a fresh transaction window.'
+        : 'Its approval window has passed: create and sign a new proposal.';
+    case 'GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE':
+      return error.reason === 'unavailable'
+        ? 'Execute it again once the node serves the foreign account.'
+        : 'GUARDIAN cannot read a private foreign account: execute it from a client that holds it.';
+    case 'GUARDIAN_EXECUTION_BINDING_MISMATCH':
+    case 'GUARDIAN_EXECUTION_STATE_MISMATCH':
+    case 'GUARDIAN_EXECUTION_REQUEST_CODEC':
+    case 'GUARDIAN_EXECUTION_PROTOCOL_MISMATCH':
+    case 'GUARDIAN_EXECUTION_INSUFFICIENT_FEE':
+    case 'GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON':
+    case 'GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE':
+      return 'Fix the cause before executing it again.';
+    case 'GUARDIAN_EXECUTION_REQUEST_INVALID':
+      return 'GUARDIAN cannot execute this request: execute it from this client instead.';
+    case 'GUARDIAN_EXECUTION_SUBMISSION_REJECTED':
+    case 'GUARDIAN_EXECUTION_CANDIDATE_DISCARDED':
+    case 'GUARDIAN_EXECUTION_EXPIRED':
+      return 'The transaction was sent and did not land: create and sign a new proposal.';
+    default: {
+      const unreachable: never = error;
+      throw new Error(`Unknown execution failure: ${JSON.stringify(unreachable)}`);
+    }
+  }
+}
+
+/** One line naming why GUARDIAN did not commit an execution and what the caller can do next. */
+export function describeFailedExecution(execution: ProposalExecution): string {
+  if (!execution.error) {
+    return 'GUARDIAN could not execute the proposal and reported no cause.';
+  }
+  const stored = execution.proposalExists ? 'still stored' : 'removed';
+  return (
+    `GUARDIAN could not execute the proposal: ${execution.error.message} (${execution.error.code}). ` +
+    `The proposal is ${stored}. ${failedExecutionAdvice(execution.error)}`
+  );
 }
 
 export function exportProposalToJson(

@@ -113,6 +113,18 @@ output "guardian_evm_rpc_urls_secret_name" {
   sensitive   = true
 }
 
+output "guardian_tx_prover_url_secret_arn" {
+  description = "Secrets Manager ARN the server reads its remote prover URL from; empty when Guardian execution is not configured"
+  value       = local.tx_prover_url_secret_arn
+  sensitive   = true
+}
+
+output "guardian_tx_prover_url_secret_name" {
+  description = "Managed Secrets Manager name for the remote prover URL when Terraform creates it"
+  value       = local.managed_tx_prover_url_secret_enabled ? local.tx_prover_url_secret_name : ""
+  sensitive   = true
+}
+
 output "guardian_evm_entrypoint_address" {
   description = "Shared EVM EntryPoint address configured for the server"
   value       = var.guardian_evm_entrypoint_address

@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod abandon_candidate;
 pub mod account_status;
+pub(crate) mod ack_delta_internal;
 pub mod candidate_chain;
 mod configure_account;
 mod dashboard_account_delta_detail;
@@ -22,6 +23,9 @@ mod dashboard_info;
 mod dashboard_pagination;
 mod dashboard_stats;
 mod delta_commit;
+pub mod execute_proposal;
+pub mod execution_codec;
+pub mod execution_status;
 mod get_canonical_nonce;
 mod get_delta;
 mod get_delta_history;
@@ -31,7 +35,7 @@ mod get_delta_since;
 mod get_state;
 mod lookup_account;
 pub mod pause_account;
-mod proposal_signature;
+pub(crate) mod proposal_signature;
 mod push_delta;
 mod push_delta_proposal;
 pub mod release_on_switch;
@@ -102,7 +106,7 @@ pub use push_delta_proposal::{
 pub use sign_delta_proposal::{
     SignDeltaProposalParams, SignDeltaProposalResult, sign_delta_proposal,
 };
-pub use status::{StatusResponse, build_status};
+pub use status::{ExecutionStatus, StatusResponse, build_status};
 
 #[derive(Clone)]
 pub struct ResolvedAccount {
@@ -466,6 +470,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            execution: Default::default(),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(network),
