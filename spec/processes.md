@@ -603,7 +603,9 @@ background under a per-account reservation held by a renewed, fenced lease.
 Guardian refuses synchronously, creating nothing, when the server offers no execution
 (`GUARDIAN_PROVING_UNAVAILABLE`), the account is paused or released, another execution holds the
 account (`GUARDIAN_EXECUTION_CONFLICT`), the proposal stores no request
-(`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), a client candidate is pending, or the valid,
+(`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), the proposal is a `switch_guardian`, which
+only the client that registers the account at the new GUARDIAN and switches its endpoint can
+execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`), a client candidate is pending, or the valid,
 distinct cosigner signatures fall short of the effective per-procedure threshold
 (`GUARDIAN_PROPOSAL_NOT_READY`).
 
