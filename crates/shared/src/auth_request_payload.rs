@@ -3,6 +3,22 @@ use miden_protocol::{Felt, Word};
 use serde::Serialize;
 use serde_json::Value;
 
+/// A request whose signed payload is domain-separated from every other request's, so a
+/// signature over one operation never authenticates another with the same body. A Protocol
+/// Buffers message never begins with the tag, because its first byte is not a valid field key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignedOperation {
+    ExecuteDeltaProposal,
+}
+
+impl SignedOperation {
+    pub fn tag(&self) -> &'static [u8] {
+        match self {
+            SignedOperation::ExecuteDeltaProposal => b"guardian.ExecuteDeltaProposal\0",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthRequestPayload {
     digest: Word,
@@ -32,6 +48,13 @@ impl AuthRequestPayload {
         Self {
             digest: Rpo256::hash_elements(&payload_elements),
         }
+    }
+
+    /// The payload of `bytes` signed as `operation`: the operation's tag followed by the bytes.
+    pub fn for_operation(operation: SignedOperation, bytes: &[u8]) -> Self {
+        let mut tagged = operation.tag().to_vec();
+        tagged.extend_from_slice(bytes);
+        Self::from_bytes(&tagged)
     }
 
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, String> {
@@ -89,7 +112,22 @@ fn canonicalize_json(value: &Value) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::AuthRequestPayload;
+    use super::{AuthRequestPayload, SignedOperation};
+
+    #[test]
+    fn an_operation_payload_differs_from_the_same_bytes_untagged() {
+        let bytes = b"\x0a\x02ab\x12\x02cd";
+        assert_ne!(
+            AuthRequestPayload::for_operation(SignedOperation::ExecuteDeltaProposal, bytes),
+            AuthRequestPayload::from_bytes(bytes)
+        );
+    }
+
+    #[test]
+    fn the_execute_tag_is_not_a_protobuf_field_key() {
+        let first = SignedOperation::ExecuteDeltaProposal.tag()[0];
+        assert!(matches!(first & 0x07, 6 | 7));
+    }
 
     #[test]
     fn json_payload_hash_is_order_insensitive() {
