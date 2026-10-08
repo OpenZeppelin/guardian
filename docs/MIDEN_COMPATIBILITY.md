@@ -246,8 +246,8 @@ Source-level changes in the TypeScript packages:
 - `GuardianErrorCode` (`@openzeppelin/guardian-client`) has new members, so an exhaustive
   `switch` over it stops compiling until it handles them: `account_request_capacity_exceeded`,
   `execution_busy`, `execution_conflict`, `execution_not_found`,
-  `proposal_missing_transaction_request`, `proposal_not_ready`, `proposal_request_too_large`
-  and `proving_unavailable`.
+  `proposal_executes_locally`, `proposal_missing_transaction_request`, `proposal_not_ready`,
+  `proposal_request_too_large` and `proving_unavailable`.
 - `StatusResponse.execution` is a new required field (`{ enabled: true }` or
   `{ enabled: false, reason }`), so code that builds a `StatusResponse` (a mock, for example)
   must set it.

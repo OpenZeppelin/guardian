@@ -8,14 +8,15 @@ CREATE TABLE execution_reservations (
     id                  BIGSERIAL   PRIMARY KEY,
     account_id          TEXT        NOT NULL,
     proposal_id         TEXT        NOT NULL,
-    attempt             INTEGER     NOT NULL,
+    attempt             INTEGER     NOT NULL CHECK (attempt >= 1),
     holder_id           TEXT        NOT NULL,
     lease_name          TEXT        NOT NULL,
     fence_token         BIGINT      NOT NULL,
     lease_expires_at    TIMESTAMPTZ NOT NULL,
-    phase               TEXT        NOT NULL,
-    candidate_nonce     BIGINT,
-    ignored_signatures  INTEGER     NOT NULL DEFAULT 0,
+    phase               TEXT        NOT NULL CHECK (phase IN (
+                            'accepted', 'verified', 'acknowledged', 'executed', 'proving',
+                            'proved', 'submission_committed', 'sent', 'reconciling')),
+    ignored_signatures  INTEGER     NOT NULL DEFAULT 0 CHECK (ignored_signatures >= 0),
     released_at         TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -33,14 +34,16 @@ CREATE TABLE execution_submissions (
     account_id           TEXT        NOT NULL,
     proposal_id          TEXT        NOT NULL,
     attempt              INTEGER     NOT NULL,
-    candidate_nonce      BIGINT      NOT NULL,
+    candidate_nonce      BIGINT      NOT NULL CHECK (candidate_nonce >= 0),
     transaction_id       TEXT        NOT NULL,
     expected_commitment  TEXT        NOT NULL,
     reference_block      BIGINT      NOT NULL,
     expiration_block     BIGINT      NOT NULL,
     base_commitment      TEXT        NOT NULL,
     committed_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (account_id, proposal_id, attempt)
+    UNIQUE (account_id, proposal_id, attempt),
+    FOREIGN KEY (account_id, proposal_id, attempt)
+        REFERENCES execution_reservations (account_id, proposal_id, attempt)
 );
 
 -- Canonicalization looks up whether a candidate belongs to a live execution
@@ -59,7 +62,14 @@ CREATE TABLE execution_outcomes (
     error_message  TEXT,
     error_meta     JSONB,
     resolved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (account_id, proposal_id, attempt)
+    UNIQUE (account_id, proposal_id, attempt),
+    FOREIGN KEY (account_id, proposal_id, attempt)
+        REFERENCES execution_reservations (account_id, proposal_id, attempt),
+    CHECK (
+        (state = 'committed'
+            AND error_code IS NULL AND error_message IS NULL AND error_meta IS NULL)
+        OR (state = 'failed' AND error_code IS NOT NULL AND error_message IS NOT NULL)
+    )
 );
 
 -- Fail fast rather than queue every delta_proposals query behind this ALTER while a long

@@ -79,6 +79,12 @@ pub async fn build_chain_view(
     rpc: &dyn NodeRpcClient,
     tracked: &BTreeSet<BlockNumber>,
 ) -> Result<ChainView, ChainViewError> {
+    let genesis = fetch_genesis(rpc).await?;
+    build_chain_view_from(rpc, &genesis, tracked).await
+}
+
+/// Reads the node's genesis header, which every chain view is seeded from.
+pub(super) async fn fetch_genesis(rpc: &dyn NodeRpcClient) -> Result<BlockHeader, ChainViewError> {
     let (genesis, _) = rpc
         .get_block_header_by_number(Some(BlockNumber::GENESIS), false)
         .await?;
@@ -88,8 +94,16 @@ pub async fn build_chain_view(
             genesis.block_num()
         )));
     }
+    Ok(genesis)
+}
 
-    let mut partial_mmr = seeded_at_genesis(&genesis)?;
+/// Builds the chain view at the node's committed tip from an already read `genesis` header.
+pub(super) async fn build_chain_view_from(
+    rpc: &dyn NodeRpcClient,
+    genesis: &BlockHeader,
+    tracked: &BTreeSet<BlockNumber>,
+) -> Result<ChainView, ChainViewError> {
+    let mut partial_mmr = seeded_at_genesis(genesis)?;
     let sync = rpc
         .sync_chain_mmr(BlockNumber::GENESIS, SyncTarget::CommittedChainTip)
         .await?;

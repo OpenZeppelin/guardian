@@ -203,6 +203,7 @@ record created:
 |---|---|---|
 | `GUARDIAN_PROVING_UNAVAILABLE` | 503 | No prover configured, capability disabled (FR-021), or the server runs in optimistic delta-commit mode (FR-043) |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 | Proposal was created by a self-executed client, so it carries no stored transaction request (FR-010). Names the cause, so the caller learns to create the proposal with a Guardian-executable client |
+| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 | The proposal is a `switch_guardian`, which only the client that finishes the GUARDIAN handoff (registering the account at the new GUARDIAN and switching its endpoint) can execute; a GUARDIAN-executed switch would leave the account stuck. `meta.proposal_type` names the type. Checked after the stored-request check and before the pending-candidate check; the proposal stays usable for local execution (FR-022). Decided 2026-10-07 |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 | Below the effective threshold (FR-005) |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 | Active reservation for a different proposal (FR-008). `meta.blocking_proposal_id` MUST name the blocker (FR-036) |
 | `GUARDIAN_EXECUTION_BUSY` | 409 | Guardian cannot start the execution now and reserved nothing: another request holds the account's execution lease but has not yet reserved the account, so there is no proposal to name, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions. `meta.retryable` is `true`; retry shortly. Decided 2026-10-01; capacity cause added 2026-10-06 |
@@ -272,6 +273,7 @@ string on both sides: the transport status is a hint, the code is the contract.
 |---|---|---|
 | `GUARDIAN_PROVING_UNAVAILABLE` | 503 | `UNAVAILABLE` |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 | `FAILED_PRECONDITION` |
+| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 | `FAILED_PRECONDITION` |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 | `FAILED_PRECONDITION` |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 | `ABORTED` |
 | `GUARDIAN_EXECUTION_BUSY` | 409 | `ABORTED` |
