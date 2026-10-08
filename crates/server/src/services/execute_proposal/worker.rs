@@ -12,7 +12,7 @@ use super::executor::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
     ProvenTransactionInfo, SubmissionOutcome,
 };
-use crate::coordination::{LeaderElector, Lease, lease_deadline, release_quietly};
+use crate::coordination::{LeaderElector, Lease, Renewal, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::error::GuardianError;
 use crate::services::account_status::ensure_account_active_metadata;
@@ -21,7 +21,7 @@ use crate::state::AppState;
 use crate::storage::execution::ExpirationBound;
 use crate::storage::{
     AdmissionWrite, CandidateAdmission, ExecutionFailure, ExecutionFailureCode, ExecutionPhase,
-    ExecutionResolution, LeaseFence, ReservationUpdate, ResolveWrite, SubmissionEvidence,
+    ExecutionResolution, LeaseFence, ResolveWrite, SubmissionEvidence,
 };
 
 pub(super) struct ExecutionJob {
@@ -31,13 +31,28 @@ pub(super) struct ExecutionJob {
     pub nonce: u64,
     pub base_commitment: String,
     pub scheme: SignatureScheme,
-    pub input: ExecutionInput,
     pub fence: LeaseFence,
     pub lease: Lease,
     pub elector: Arc<dyn LeaderElector>,
     pub executor: Arc<dyn ProposalExecutor>,
     /// Counts this execution towards the server's cap until the worker returns.
     pub permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl ExecutionJob {
+    /// Renews this attempt's lease, then its reservation, recording `phase`.
+    async fn renew(&self, state: &AppState, phase: ExecutionPhase) -> Renewal {
+        Renewal::attempt(
+            self.elector.as_ref(),
+            &self.lease,
+            &self.fence,
+            state.storage.as_ref(),
+            &self.account_id,
+            state.execution.config.lease,
+            phase,
+        )
+        .await
+    }
 }
 
 /// Why the worker stopped before the boundary.
@@ -82,33 +97,42 @@ impl Heartbeat {
             loop {
                 tokio::time::sleep(wait).await;
                 let phase = current.lock().await;
-                let renewing_until = lease_deadline(ttl);
-                match elector.renew(&lease, ttl).await {
-                    Ok(true) => held_until = renewing_until,
-                    Ok(false) => {
+                match Renewal::attempt(
+                    elector.as_ref(),
+                    &lease,
+                    &fence,
+                    storage.as_ref(),
+                    &account_id,
+                    ttl,
+                    *phase,
+                )
+                .await
+                {
+                    Renewal::Held(renewed_until) => {
+                        held_until = renewed_until;
+                        wait = interval;
+                    }
+                    Renewal::LeaseLost => {
                         tracing::warn!(%account_id, "execution lease lost; the attempt will stop before its next write");
                         return;
                     }
-                    Err(error) if Utc::now() < held_until => {
+                    Renewal::LeaseUnavailable(error) if Utc::now() < held_until => {
                         tracing::warn!(%account_id, %error, "could not renew the execution lease; retrying while it is still held");
                         wait = HEARTBEAT_RETRY.min(interval);
-                        continue;
                     }
-                    Err(error) => {
+                    Renewal::LeaseUnavailable(error) => {
                         tracing::warn!(%account_id, %error, "the execution lease lapsed while it could not be renewed");
                         return;
                     }
-                }
-                match storage
-                    .renew_execution_reservation(&account_id, &fence, renewing_until, *phase)
-                    .await
-                {
-                    Ok(ReservationUpdate::Applied) => wait = interval,
-                    Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+                    Renewal::ReservationLost => {
                         tracing::warn!(%account_id, "the execution reservation is no longer this attempt's; the attempt will stop before its next write");
                         return;
                     }
-                    Err(error) => {
+                    Renewal::ReservationUnavailable {
+                        renewed_until,
+                        error,
+                    } => {
+                        held_until = renewed_until;
                         tracing::warn!(%account_id, %error, "failed to renew the execution reservation; retrying while the lease is held");
                         wait = HEARTBEAT_RETRY.min(interval);
                     }
@@ -118,9 +142,7 @@ impl Heartbeat {
         Self { phase, task }
     }
 
-    /// Records the phase under a renewed lease. The reservation's deadline only ever moves to
-    /// one the lease itself was renewed past, so storage never authorizes a lease the elector
-    /// has already lost.
+    /// Records the phase under a renewed lease.
     async fn advance(
         &self,
         state: &AppState,
@@ -129,26 +151,14 @@ impl Heartbeat {
     ) -> Result<(), Stop> {
         let mut recorded = self.phase.lock().await;
         *recorded = phase;
-        let ttl = state.execution.config.lease;
-        let renewing_until = lease_deadline(ttl);
-        match job.elector.renew(&job.lease, ttl).await {
-            Ok(true) => {}
-            Ok(false) => return Err(Stop::OwnershipLost),
-            Err(error) => {
+        match job.renew(state, phase).await {
+            Renewal::Held(_) => Ok(()),
+            Renewal::LeaseLost | Renewal::ReservationLost => Err(Stop::OwnershipLost),
+            Renewal::LeaseUnavailable(error) => {
                 tracing::warn!(account_id = %job.account_id, %error, "could not renew the execution lease to record the phase; the heartbeat keeps retrying");
-                return Ok(());
+                Ok(())
             }
-        }
-        match state
-            .storage
-            .renew_execution_reservation(&job.account_id, &job.fence, renewing_until, phase)
-            .await
-        {
-            Ok(ReservationUpdate::Applied) => Ok(()),
-            Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
-                Err(Stop::OwnershipLost)
-            }
-            Err(error) => {
+            Renewal::ReservationUnavailable { error, .. } => {
                 tracing::warn!(account_id = %job.account_id, %error, "failed to record the execution phase");
                 Ok(())
             }
@@ -216,10 +226,10 @@ impl std::fmt::Display for PhaseTimings {
 /// The worker gives its lease up on every exit. After the send the reservation stays held under
 /// the worker's fence and reconciliation claims it, so a request arriving meanwhile reads the
 /// execution in flight instead of being turned away as busy.
-pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
+pub(super) async fn run_execution(state: &AppState, job: ExecutionJob, input: ExecutionInput) {
     let mut timings = PhaseTimings::start();
     let heartbeat = Heartbeat::start(state, &job);
-    let reached = run_to_boundary(state, &job, &heartbeat, &mut timings).await;
+    let reached = run_to_boundary(state, &job, input, &heartbeat, &mut timings).await;
     heartbeat.stop().await;
     match reached {
         Ok(mut attempt) => {
@@ -256,6 +266,7 @@ pub(super) async fn run_execution(state: &AppState, job: ExecutionJob) {
 async fn run_to_boundary(
     state: &AppState,
     job: &ExecutionJob,
+    input: ExecutionInput,
     heartbeat: &Heartbeat,
     timings: &mut PhaseTimings,
 ) -> Result<Box<dyn ExecutionAttempt>, Stop> {
@@ -269,7 +280,7 @@ async fn run_to_boundary(
             )
             .into());
         }
-        reached = approach_boundary(state, job, heartbeat, timings) => reached?,
+        reached = approach_boundary(state, job, input, heartbeat, timings) => reached?,
     };
     cross_boundary(state, job, acknowledged, &proven).await?;
     timings.mark("boundary");
@@ -279,6 +290,7 @@ async fn run_to_boundary(
 async fn approach_boundary(
     state: &AppState,
     job: &ExecutionJob,
+    input: ExecutionInput,
     heartbeat: &Heartbeat,
     timings: &mut PhaseTimings,
 ) -> Result<
@@ -302,7 +314,7 @@ async fn approach_boundary(
         .into());
     }
 
-    let mut attempt = job.executor.prepare(job.input.clone()).await?;
+    let mut attempt = job.executor.prepare(input).await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Verified)
         .await?;
@@ -332,9 +344,6 @@ async fn approach_boundary(
         .into());
     }
     ensure_within_horizon(state, &executed)?;
-    heartbeat
-        .advance(state, job, ExecutionPhase::Executed)
-        .await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Proving)
         .await?;
@@ -533,24 +542,10 @@ async fn cross_boundary(
 /// only a worker whose fence still matches the persisted reservation sends. A storage error
 /// leaves ownership unknown, and an unsent transaction is safe where a second owner's is not.
 async fn claim_send(state: &AppState, job: &ExecutionJob) -> bool {
-    let ttl = state.execution.config.lease;
-    let renewing_until = lease_deadline(ttl);
-    if !job.elector.renew(&job.lease, ttl).await.unwrap_or(false) {
-        return false;
-    }
-    match state
-        .storage
-        .renew_execution_reservation(
-            &job.account_id,
-            &job.fence,
-            renewing_until,
-            ExecutionPhase::Sent,
-        )
-        .await
-    {
-        Ok(ReservationUpdate::Applied) => true,
-        Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => false,
-        Err(error) => {
+    match job.renew(state, ExecutionPhase::Sent).await {
+        Renewal::Held(_) => true,
+        Renewal::LeaseLost | Renewal::LeaseUnavailable(_) | Renewal::ReservationLost => false,
+        Renewal::ReservationUnavailable { error, .. } => {
             tracing::warn!(account_id = %job.account_id, %error, "could not record the send; not sending");
             false
         }

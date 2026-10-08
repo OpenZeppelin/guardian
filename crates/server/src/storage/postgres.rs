@@ -1999,7 +1999,7 @@ impl StorageBackend for PostgresService {
                             .await?;
                     }
 
-                    execution::commit_promoted_execution(
+                    let settled_execution = execution::commit_promoted_execution(
                         conn,
                         &state.account_id,
                         delta.nonce,
@@ -2008,7 +2008,7 @@ impl StorageBackend for PostgresService {
                     .await?;
                     clear_pending_flag_if_none(conn, &state.account_id, metadata_updated_at)
                         .await?;
-                    Ok(PromoteWrite::Applied)
+                    Ok(PromoteWrite::Applied { settled_execution })
                 }
                 .scope_boxed()
             })
@@ -3468,7 +3468,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert_eq!(
             service.pull_state_head(&account_id).await.unwrap(),
             head("0xpromoted", Some(4))
@@ -3946,7 +3951,12 @@ mod tests {
             )
             .await
             .expect("retained-source promotion resolves");
-        assert_eq!(promoted, PromoteWrite::Applied);
+        assert_eq!(
+            promoted,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             service
                 .pull_delta(&account_id, 10)
@@ -4488,7 +4498,12 @@ mod tests {
             .promote_candidate(&metadata_store, promotion.clone())
             .await
             .expect("current owner promotes");
-        assert_eq!(promoted, PromoteWrite::Applied);
+        assert_eq!(
+            promoted,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             service
                 .pull_delta(&account_id, 1)

@@ -52,6 +52,22 @@ struct StateFile {
     nonce: Option<u64>,
 }
 
+/// The candidate an execution admission is about to write. Recorded before the candidate, it
+/// names what a crash short of the evidence commit may have left behind. It outlives the
+/// commit harmlessly: only a failing attempt without evidence that it names consults it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InterruptedAdmission {
+    proposal_id: String,
+    attempt: u32,
+    nonce: u64,
+}
+
+impl InterruptedAdmission {
+    fn belongs_to(&self, reservation: &crate::storage::ExecutionReservation) -> bool {
+        self.proposal_id == reservation.proposal_id && self.attempt == reservation.attempt
+    }
+}
+
 impl FilesystemService {
     /// Create a new FilesystemService
     pub async fn new(app_path: PathBuf) -> Result<Self, String> {
@@ -1067,13 +1083,14 @@ impl StorageBackend for FilesystemService {
             &promotion.now,
         )
         .await?;
-        self.commit_promoted_execution(
-            &promotion.state.account_id,
-            promotion.delta.nonce,
-            promoted_at,
-        )
-        .await?;
-        Ok(crate::storage::PromoteWrite::Applied)
+        let settled_execution = self
+            .commit_promoted_execution(
+                &promotion.state.account_id,
+                promotion.delta.nonce,
+                promoted_at,
+            )
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied { settled_execution })
     }
 
     async fn discard_candidate(
@@ -1219,7 +1236,6 @@ impl StorageBackend for FilesystemService {
                 fence: reservation.fence,
                 lease_expires_at: reservation.lease_expires_at,
                 phase: crate::storage::ExecutionPhase::Accepted,
-                candidate_nonce: None,
                 ignored_signatures: reservation.ignored_signatures,
                 released_at: None,
                 created_at: reservation.now,
@@ -1250,7 +1266,7 @@ impl StorageBackend for FilesystemService {
         else {
             return Ok(ReservationUpdate::NotActive);
         };
-        if !owns_live_reservation(&active.reservation, fence, now) {
+        if !active.reservation.owns_live(fence, now) {
             return Ok(ReservationUpdate::StaleLease);
         }
         active.reservation.lease_expires_at = lease_expires_at;
@@ -1330,8 +1346,7 @@ impl StorageBackend for FilesystemService {
         else {
             return Ok(AdmissionWrite::NotAuthorized);
         };
-        if !authorizes(
-            &active.reservation,
+        if !active.reservation.authorizes(
             &admission.fence,
             &admission.evidence.proposal_id,
             admission.evidence.attempt,
@@ -1339,7 +1354,10 @@ impl StorageBackend for FilesystemService {
         {
             return Ok(AdmissionWrite::NotAuthorized);
         }
-        if !owns_live_reservation(&active.reservation, &admission.fence, admission.now) {
+        if !active
+            .reservation
+            .owns_live(&admission.fence, admission.now)
+        {
             return Ok(AdmissionWrite::StaleLease);
         }
         let current_state = self.pull_state(&account_id).await?;
@@ -1369,16 +1387,17 @@ impl StorageBackend for FilesystemService {
         }
 
         // The filesystem cannot commit several files atomically, so the evidence, written last in
-        // one file, is the commit point. The nonce is recorded first, so a crash before the
+        // one file, is the commit point. The admission is recorded first, so a crash before the
         // evidence leaves a pre-boundary attempt that was never sent and whose failure removes
         // exactly the candidate it wrote; a crash after it has everything a boundary-crossed
         // attempt needs.
-        active.reservation.candidate_nonce = Some(admission.delta.nonce);
-        self.write_executions(&account_id, &records).await?;
-        let active = records
-            .iter_mut()
-            .find(|record| record.reservation.is_active())
-            .expect("the reservation found above is still active");
+        let interrupted = InterruptedAdmission {
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            nonce: admission.delta.nonce,
+        };
+        self.write_admission_marker(&account_id, &interrupted)
+            .await?;
         self.write_delta_holding_lock(&admission.delta).await?;
         metadata
             .set_has_pending_candidate(&account_id, true, &admission.now.to_rfc3339())
@@ -1449,12 +1468,21 @@ impl StorageBackend for FilesystemService {
         record.outcome = Some(failed_outcome(&resolution));
         record.reservation.released_at = Some(resolution.now);
         record.reservation.updated_at = resolution.now;
-        // A nonce without evidence is an admission interrupted short of its commit point, which
-        // may have written its candidate. Canonicalization clears the flag it set.
-        if let Some(nonce) = record.reservation.candidate_nonce {
-            match self.pull_delta(&resolution.account_id, nonce).await {
+        // A marker for this attempt without evidence is an admission interrupted short of its
+        // commit point, which may have written its candidate. Canonicalization clears the flag
+        // it set.
+        if let Some(interrupted) = self
+            .read_admission_marker(&resolution.account_id)
+            .await?
+            .filter(|marker| marker.belongs_to(&record.reservation))
+        {
+            match self
+                .pull_delta(&resolution.account_id, interrupted.nonce)
+                .await
+            {
                 Ok(delta) if delta.status.is_candidate() => {
-                    self.delete_delta(&resolution.account_id, nonce).await?;
+                    self.delete_delta(&resolution.account_id, interrupted.nonce)
+                        .await?;
                 }
                 Ok(_) => {}
                 Err(e) if crate::storage::is_storage_not_found(&e) => {}
@@ -1481,7 +1509,7 @@ impl StorageBackend for FilesystemService {
         else {
             return Ok(SettleWrite::NotActive);
         };
-        if !owns_live_reservation(&active.reservation, fence, now) {
+        if !active.reservation.owns_live(fence, now) {
             return Ok(SettleWrite::StaleLease);
         }
         let Some(evidence) = active.evidence.clone() else {
@@ -1911,6 +1939,38 @@ impl FilesystemService {
         self.app_path.join(account_id).join("executions.json")
     }
 
+    fn get_admission_marker_path(&self, account_id: &str) -> PathBuf {
+        self.app_path
+            .join(account_id)
+            .join("execution_admission.json")
+    }
+
+    async fn read_admission_marker(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<InterruptedAdmission>, String> {
+        match fs::read_to_string(self.get_admission_marker_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|e| format!("Failed to deserialize the execution admission marker: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to read the execution admission marker: {e}"
+            )),
+        }
+    }
+
+    async fn write_admission_marker(
+        &self,
+        account_id: &str,
+        marker: &InterruptedAdmission,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string(marker)
+            .map_err(|e| format!("Failed to serialize the execution admission marker: {e}"))?;
+        self.write(&self.get_admission_marker_path(account_id), &content)
+            .await
+    }
+
     async fn read_executions(
         &self,
         account_id: &str,
@@ -1941,32 +2001,24 @@ impl FilesystemService {
             .read_executions(account_id)
             .await?
             .iter()
-            .any(|record| {
-                record.reservation.is_active()
-                    && record
-                        .evidence
-                        .as_ref()
-                        .is_some_and(|evidence| evidence.candidate_nonce == nonce)
-            }))
+            .any(|record| record.owns_candidate(nonce)))
     }
 
     /// Persist `committed` and release the reservation whose candidate was
-    /// just promoted. Callers must hold `delta_write_lock`.
+    /// just promoted, reporting whether one did. Callers must hold
+    /// `delta_write_lock`.
     async fn commit_promoted_execution(
         &self,
         account_id: &str,
         nonce: u64,
         now: DateTime<Utc>,
-    ) -> Result<(), String> {
+    ) -> Result<bool, String> {
         let mut records = self.read_executions(account_id).await?;
-        let Some(record) = records.iter_mut().find(|record| {
-            record.reservation.is_active()
-                && record
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.candidate_nonce == nonce)
-        }) else {
-            return Ok(());
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.owns_candidate(nonce))
+        else {
+            return Ok(false);
         };
         record.outcome = Some(crate::storage::ExecutionOutcome {
             account_id: account_id.to_string(),
@@ -1977,27 +2029,9 @@ impl FilesystemService {
         });
         record.reservation.released_at = Some(now);
         record.reservation.updated_at = now;
-        self.write_executions(account_id, &records).await
+        self.write_executions(account_id, &records).await?;
+        Ok(true)
     }
-}
-
-fn owns_live_reservation(
-    reservation: &crate::storage::ExecutionReservation,
-    fence: &crate::storage::LeaseFence,
-    now: DateTime<Utc>,
-) -> bool {
-    reservation.is_owned_by(fence) && now < reservation.lease_expires_at
-}
-
-fn authorizes(
-    reservation: &crate::storage::ExecutionReservation,
-    fence: &crate::storage::LeaseFence,
-    proposal_id: &str,
-    attempt: u32,
-) -> bool {
-    reservation.fence.holder_id == fence.holder_id
-        && reservation.proposal_id == proposal_id
-        && reservation.attempt == attempt
 }
 
 fn resolvable<'a>(
@@ -2015,15 +2049,17 @@ fn resolvable<'a>(
     if record.outcome.is_some() {
         return Err(ResolveWrite::AlreadyResolved);
     }
-    if !authorizes(
-        &record.reservation,
+    if !record.reservation.authorizes(
         &resolution.fence,
         &resolution.proposal_id,
         resolution.attempt,
     ) {
         return Err(ResolveWrite::NotAuthorized);
     }
-    if !owns_live_reservation(&record.reservation, &resolution.fence, resolution.now) {
+    if !record
+        .reservation
+        .owns_live(&resolution.fence, resolution.now)
+    {
         return Err(ResolveWrite::StaleLease);
     }
     Ok(record)
@@ -2683,7 +2719,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, crate::storage::PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            crate::storage::PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             flag().await,
             "the queued successor keeps the account flagged"

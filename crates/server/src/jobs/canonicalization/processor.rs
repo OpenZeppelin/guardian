@@ -201,11 +201,10 @@ impl DeltasProcessorBase {
     /// intentionally unfenced but not blind: proposal deletion is idempotent
     /// and only follows a committed transition.
     fn fence(&self) -> Option<LeaseFence> {
-        self.pass.leader.supports_fencing().then(|| LeaseFence {
-            lease_name: self.pass.lease.name.clone(),
-            holder_id: self.pass.lease.holder_id.clone(),
-            fence_token: self.pass.lease.fence_token,
-        })
+        self.pass
+            .leader
+            .supports_fencing()
+            .then(|| LeaseFence::from(&self.pass.lease))
     }
 
     /// Map a superseded-lease outcome to the error the pass surfaces; the
@@ -219,8 +218,6 @@ impl DeltasProcessorBase {
         GuardianError::StorageError("canonicalization lease lost; write refused".to_string())
     }
 
-    /// Log a stale-candidate outcome: another owner already promoted or
-    /// discarded this delta, so the write was a no-op by design.
     fn log_protected_by_execution(delta: &DeltaObject, operation: &str) {
         tracing::info!(
             account_id = %delta.account_id,
@@ -230,6 +227,8 @@ impl DeltasProcessorBase {
         );
     }
 
+    /// Log a stale-candidate outcome: another owner already promoted or
+    /// discarded this delta, so the write was a no-op by design.
     fn log_not_candidate(delta: &DeltaObject, operation: &str) {
         tracing::warn!(
             account_id = %delta.account_id,
@@ -1240,12 +1239,7 @@ impl DeltasProcessorBase {
             .load_active_execution(&delta.account_id)
             .await
         {
-            Ok(Some(record))
-                if record
-                    .evidence
-                    .as_ref()
-                    .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce) =>
-            {
+            Ok(Some(record)) if record.owns_candidate(delta.nonce) => {
                 Self::log_protected_by_execution(&delta, "abandon_finalize");
                 return Ok(());
             }
@@ -1809,9 +1803,6 @@ impl DeltasProcessorBase {
         Ok(CanonicalWrite::Applied)
     }
 
-    /// Promote `delta` to canonical with the state `applied` carries: the
-    /// state its reconstruction produced, whose commitment the caller just
-    /// verified against the chain.
     /// A filesystem promotion is several file writes, so one interrupted after its state write
     /// leaves the stored state at the candidate's own target with the candidate still queued.
     /// That candidate is not orphaned: its promotion is finished once the chain confirms the
@@ -1856,6 +1847,9 @@ impl DeltasProcessorBase {
         Ok(Some(CandidateStep::Processed))
     }
 
+    /// Promote `delta` to canonical with the state `applied` carries: the
+    /// state its reconstruction produced, whose commitment the caller just
+    /// verified against the chain.
     async fn canonicalize_verified_delta(
         &self,
         delta: DeltaObject,
@@ -1924,13 +1918,6 @@ impl DeltasProcessorBase {
         // State, auth, delta status, and the pending-candidate flag commit
         // as one fenced storage write: a crash, outage, or lease loss can
         // never advance the state while the delta stays a candidate.
-        let executed_by_guardian = matches!(
-            storage_backend.load_active_execution(&delta.account_id).await,
-            Ok(Some(record)) if record
-                .evidence
-                .as_ref()
-                .is_some_and(|evidence| evidence.candidate_nonce == delta.nonce)
-        );
         let outcome = storage_backend
             .promote_candidate(
                 self.state.metadata.as_ref(),
@@ -1951,8 +1938,8 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to canonicalize delta: {e}"))
             })?;
         match outcome {
-            PromoteWrite::Applied => {
-                if executed_by_guardian {
+            PromoteWrite::Applied { settled_execution } => {
+                if settled_execution {
                     crate::metrics::execution::record_outcome(None);
                 }
             }
@@ -2297,7 +2284,9 @@ mod tests {
                 .with_pull_recent_candidate_deltas(Ok(vec![candidate]))
                 .with_pull_state(Ok(create_test_state(account_id)))
                 .with_pull_state(Ok(create_test_state(account_id)))
-                .with_promote_candidate(Ok(PromoteWrite::Applied)),
+                .with_promote_candidate(Ok(PromoteWrite::Applied {
+                    settled_execution: false,
+                })),
         );
         let network = Arc::new(
             MockNetworkClient::new()
@@ -3336,7 +3325,6 @@ mod tests {
                 },
                 lease_expires_at: now,
                 phase: crate::storage::ExecutionPhase::Sent,
-                candidate_nonce: Some(1),
                 ignored_signatures: 0,
                 released_at: None,
                 created_at: now,
@@ -4131,7 +4119,9 @@ mod tests {
                 .with_pull_candidate_deltas(Ok(vec![head]))
                 .with_pull_state(Ok(state_at(account_id, "0xc1")))
                 .with_pull_state(Ok(state_at(account_id, "0xc1")))
-                .with_promote_candidate(Ok(crate::storage::PromoteWrite::Applied)),
+                .with_promote_candidate(Ok(crate::storage::PromoteWrite::Applied {
+                    settled_execution: false,
+                })),
         );
         let network =
             Arc::new(MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Match)));
@@ -4514,8 +4504,12 @@ mod tests {
                 .with_pull_state(Ok(state_at(account_id, "0xc1")))
                 .with_pull_state(Ok(create_test_state(account_id)))
                 .with_pull_state(Ok(create_test_state(account_id)))
-                .with_promote_candidate(Ok(PromoteWrite::Applied))
-                .with_promote_candidate(Ok(PromoteWrite::Applied)),
+                .with_promote_candidate(Ok(PromoteWrite::Applied {
+                    settled_execution: false,
+                }))
+                .with_promote_candidate(Ok(PromoteWrite::Applied {
+                    settled_execution: false,
+                })),
         );
         let network = Arc::new(
             MockNetworkClient::new()

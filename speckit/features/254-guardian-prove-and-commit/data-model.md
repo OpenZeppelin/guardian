@@ -79,10 +79,18 @@ terminal state (FR-023).
 | `lease_name` | string | yes | **`execution:{account_id}`**: account-scoped, never the cluster-wide canonicalization lease (FR-038) |
 | `fence_token` | i64 | yes | Monotonic; from `LeaseFence.fence_token` |
 | `lease_expires_at` | timestamptz | yes | Renewable (FR-023, FR-028) |
-| `phase` | enum | yes | Internal phase; never on the wire (FR-025) |
-| `candidate_nonce` | i64 | no | Set at step 12 when the candidate is admitted |
+| `phase` | enum | yes | Internal phase; never on the wire (FR-025). A `CHECK` admits only the known phase names |
 | `ignored_signatures` | i32 | yes | Count excluded as invalid / duplicate / non-cosigner (FR-006) |
 | `created_at` / `updated_at` | timestamptz | yes | |
+
+The reservation does not carry the candidate's nonce: the submission evidence does, written in
+the same commit. The filesystem backend, which cannot commit several files atomically, records
+the admission it is about to write in a private marker file instead, so a crash before the
+evidence leaves the orphaned candidate identifiable.
+
+The evidence and the outcome reference their reservation by the attempt key
+(`account_id`, `proposal_id`, `attempt`) with a foreign key, and an outcome's error columns are
+constrained to its state: none for `committed`, a code and a message for `failed`.
 
 **Why not the existing pending-candidate flag**: that flag only exists *after* a
 candidate is persisted, which is after proving. The whole span this feature must
@@ -297,7 +305,7 @@ into check-then-act (FR-037).
 | Unit | Contents | Returns |
 |---|---|---|
 | **Create reservation** | Acquire the `execution:{account_id}` lease, then insert the reservation iff no candidate exists and no active reservation | `ReservationWrite` |
-| **Admit candidate + record evidence** (step 12) | Persist candidate, set `has_pending_candidate`, set `candidate_nonce`, insert evidence, **as one commit** | `AdmissionWrite` |
+| **Admit candidate + record evidence** (step 12) | Persist candidate, set `has_pending_candidate`, insert evidence, **as one commit** | `AdmissionWrite` |
 | **Promote candidate + resolve** | Existing fenced promotion, **extended** to upsert `ExecutionOutcome { committed }` and release the reservation in the same transaction. Owns `committed` (FR-053, FR-054) | `PromoteWrite` |
 | **`resolve_execution`** | Post-boundary failure: validate execution ownership + fence, discard the candidate, **delete its matching proposal**, upsert `ExecutionOutcome`, release the reservation, **one transaction** | `ResolveWrite` |
 | **`fail_execution`** | Pre-boundary failure: upsert `ExecutionOutcome` and release the reservation as **one commit**. No candidate exists, so nothing to discard | `ResolveWrite` |

@@ -202,15 +202,17 @@ pub async fn push_delta_proposal(
 
     // Pushing a pending proposal again stores nothing and answers with the stored one, so it
     // takes no capacity: it reaches storage, which reports it already stored.
-    let already_pending = delta_payload.get("tx_summary").is_some_and(|tx_summary| {
+    let proposal_id = delta_payload.get("tx_summary").map(|tx_summary| {
         state
             .network_client
             .delta_proposal_id(&account_id, nonce, tx_summary)
-            .is_ok_and(|id| {
-                pending_proposals
-                    .iter()
-                    .any(|record| record.commitment == id)
-            })
+    });
+    let already_pending = proposal_id.as_ref().is_some_and(|id| {
+        id.as_ref().is_ok_and(|id| {
+            pending_proposals
+                .iter()
+                .any(|record| &record.commitment == id)
+        })
     });
     let max_pending_proposals = max_pending_proposals_per_account();
     if !already_pending && viable_pending >= max_pending_proposals {
@@ -225,8 +227,9 @@ pub async fn push_delta_proposal(
     candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
     // Extract tx_summary and signatures from delta_payload
-    let tx_summary = delta_payload
+    let (tx_summary, proposal_id) = delta_payload
         .get("tx_summary")
+        .zip(proposal_id)
         .ok_or_else(|| GuardianError::InvalidDelta("Missing 'tx_summary' field".to_string()))?;
 
     let signatures = delta_payload
@@ -236,18 +239,11 @@ pub async fn push_delta_proposal(
         .unwrap_or_default();
 
     // Validate delta using network client (check validity but don't apply)
-    // and compute the delta commitment
-    let commitment = {
-        let client = &state.network_client;
-        client
-            .verify_delta(&tail.commitment, &tail.state_json, tx_summary)
-            .map_err(GuardianError::InvalidDelta)?;
-
-        // Compute the delta proposal ID from the tx_summary
-        client
-            .delta_proposal_id(&account_id, nonce, tx_summary)
-            .map_err(GuardianError::InvalidDelta)?
-    };
+    state
+        .network_client
+        .verify_delta(&tail.commitment, &tail.state_json, tx_summary)
+        .map_err(GuardianError::InvalidDelta)?;
+    let commitment = proposal_id.map_err(GuardianError::InvalidDelta)?;
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
     let proposer_id = resolved.signer_commitment.clone();

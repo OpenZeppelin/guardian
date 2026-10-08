@@ -5,7 +5,7 @@
 
 use chrono::Utc;
 
-use crate::coordination::{LeaderElector, Lease, release_quietly};
+use crate::coordination::{LeaderElector, Lease, Renewal, release_quietly};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::state::AppState;
 use crate::storage::{
@@ -107,11 +107,7 @@ impl Reconciler {
         );
         for record in records {
             let outcome = self.reconcile(state, &record, kind).await;
-            metrics::counter!(
-                crate::metrics::names::EXECUTION_RECONCILE_OUTCOMES_TOTAL,
-                crate::metrics::names::LABEL_OUTCOME => outcome.label()
-            )
-            .increment(1);
+            crate::metrics::execution::record_reconcile_outcome(outcome.label());
             report.push((record, outcome));
         }
         self.record_outage(&report);
@@ -359,37 +355,36 @@ impl Reconciler {
         mut lease: Lease,
     ) -> Option<Lease> {
         let account_id = &record.reservation.account_id;
-        let ttl = state.execution.config.lease;
-        let renewing_until = crate::coordination::lease_deadline(ttl);
-        match elector.renew(&lease, ttl).await {
-            Ok(true) => lease.expires_at = renewing_until,
-            Ok(false) => {
-                tracing::warn!(%account_id, "lost the execution lease while observing the chain");
-                return None;
+        match Renewal::attempt(
+            elector,
+            &lease,
+            &LeaseFence::from(&lease),
+            state.storage.as_ref(),
+            account_id,
+            state.execution.config.lease,
+            ExecutionPhase::Reconciling,
+        )
+        .await
+        {
+            Renewal::Held(renewed_until) => {
+                lease.expires_at = renewed_until;
+                Some(lease)
             }
-            Err(error) => {
+            Renewal::LeaseLost => {
+                tracing::warn!(%account_id, "lost the execution lease while observing the chain");
+                None
+            }
+            Renewal::LeaseUnavailable(error) => {
                 tracing::warn!(%account_id, %error, "could not renew the execution lease after observing the chain");
                 release_quietly(elector, lease).await;
-                return None;
+                None
             }
-        }
-        match state
-            .storage
-            .renew_execution_reservation(
-                account_id,
-                &LeaseFence::from(&lease),
-                renewing_until,
-                ExecutionPhase::Reconciling,
-            )
-            .await
-        {
-            Ok(ReservationUpdate::Applied) => Some(lease),
-            Ok(ReservationUpdate::StaleLease | ReservationUpdate::NotActive) => {
+            Renewal::ReservationLost => {
                 tracing::warn!(%account_id, "the reconciled reservation is no longer this reconciler's");
                 release_quietly(elector, lease).await;
                 None
             }
-            Err(error) => {
+            Renewal::ReservationUnavailable { error, .. } => {
                 tracing::warn!(%account_id, %error, "failed to renew a reconciled reservation after observing the chain");
                 release_quietly(elector, lease).await;
                 None

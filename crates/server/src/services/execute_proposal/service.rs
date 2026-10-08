@@ -156,6 +156,14 @@ pub async fn request_execution(
     if proposal.delta_payload.get("transaction_request").is_none() {
         return Err(GuardianError::ProposalMissingTransactionRequest);
     }
+    if let Some(proposal_type) = proposal
+        .proposal_type()
+        .filter(|proposal_type| *proposal_type == "switch_guardian")
+    {
+        return Err(GuardianError::ProposalExecutesLocally {
+            proposal_type: proposal_type.to_string(),
+        });
+    }
     if state
         .storage
         .has_pending_candidate(&account_id)
@@ -278,7 +286,6 @@ pub async fn request_execution(
         nonce: proposal.nonce,
         base_commitment: proposal.prev_commitment,
         scheme: resolved.metadata.auth.scheme(),
-        input,
         fence,
         lease,
         elector,
@@ -286,7 +293,7 @@ pub async fn request_execution(
         permit,
     };
     let worker_state = state.clone();
-    tokio::spawn(async move { run_execution(&worker_state, job).await });
+    tokio::spawn(async move { run_execution(&worker_state, job, input).await });
 
     let record = state
         .storage
