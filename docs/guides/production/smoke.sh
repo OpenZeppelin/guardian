@@ -13,13 +13,13 @@
 # Requires: docker (Compose v2), jq, curl, openssl. The ACK identity comes from
 # the image's own ack-keygen, so no Rust toolchain is needed.
 # Usage:    ./smoke.sh                                    # tag from ./.env, else .env.example
-#           GUARDIAN_VERSION=<release later than v0.17.0> ./smoke.sh
+#           GUARDIAN_VERSION=<release v0.18.0 or later> ./smoke.sh
 #           SMOKE_PULL_POLICY=missing GUARDIAN_VERSION=<tag> ./smoke.sh
 #             # image built locally as ghcr.io/openzeppelin/guardian:<tag>
 #             # (docker build -t ghcr.io/openzeppelin/guardian:<tag> .); the
 #             # committed compose file pins pull_policy: always, which a CI
 #             # job testing a branch image must relax to missing or never.
-# A tag is required: the stack depends on server features v0.17.0 lacks, and
+# A tag is required: the stack depends on server features v0.17.x lacks, and
 # this script's first step (ack-keygen from the image) fails on older tags.
 set -euo pipefail
 
@@ -32,7 +32,7 @@ done
 version_from() { [ -f "$1" ] && grep -E '^GUARDIAN_VERSION=' "$1" | cut -d= -f2- || true; }
 GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env)}"
 GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env.example)}"
-[ -n "$GUARDIAN_VERSION" ] || { echo "set GUARDIAN_VERSION to a Guardian release later than v0.17.0 (this stack needs ack-keygen in the image)" >&2; exit 1; }
+[ -n "$GUARDIAN_VERSION" ] || { echo "set GUARDIAN_VERSION to a Guardian release v0.18.0 or later (this stack needs ack-keygen in the image)" >&2; exit 1; }
 PULL_POLICY="${SMOKE_PULL_POLICY:-always}"
 case "$PULL_POLICY" in
   always|missing|never) ;;
