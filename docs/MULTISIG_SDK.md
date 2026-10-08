@@ -541,7 +541,8 @@ server's public `GET /status` (`getStatus()` in the TypeScript base client).
 
 ```rust
 use miden_multisig_client::{
-    ExecutionState, ExecutionWaitOptions, MultisigClient, ProposalExecutionMode, TransactionType,
+    ExecutionState, ExecutionWaitOptions, GuardianExecutionRequest, MultisigClient,
+    ProposalExecutionMode, TransactionType,
 };
 
 let mut client = MultisigClient::builder()
@@ -551,7 +552,9 @@ let mut client = MultisigClient::builder()
     .await?;
 let proposal = client.propose_transaction(TransactionType::consume_notes(note_ids)).await?;
 // ...cosigners sign to threshold...
-client.request_guardian_execution(&proposal.id).await?;
+client
+    .request_guardian_execution(&proposal.id, GuardianExecutionRequest::default())
+    .await?;
 let execution = client
     .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
     .await?;
@@ -573,6 +576,66 @@ await multisig.requestGuardianExecution(proposal.id);
 const execution = await multisig.waitForGuardianExecution(proposal.id);
 if (execution.state === 'failed') {
   throw new Error(`${execution.error?.code}: ${execution.error?.message}`);
+}
+```
+
+#### Proposals a Guardian-executable client still executes locally
+
+Two proposal types do client-side work when executed that Guardian execution skips, so both
+SDKs refuse to send them to Guardian, identically:
+
+| Reason (`LocalExecutionReason`) | Proposal | Refused |
+|---|---|---|
+| `switch_guardian` | `switch_guardian` | Always; no opt-in. The executing client verifies the new endpoint, registers the account there and repoints itself. |
+| `private_note` | `p2id` with a private note | Unless this request opts in. Only the executing client holds the output note it must export to the recipient. |
+
+Every other proposal type, a public P2ID included, is sent. A caller that delivers the private
+note itself opts in per request: `GuardianExecutionRequest { allow_private_note: true }` in Rust,
+`{ allowPrivateNote: true }` in TypeScript. The opt-in never waives a switch.
+
+The check runs on the proposal the client already holds, before Guardian is contacted: one it
+synced, signed, created or imported (`syncProposals`, `signProposal`, the `create*Proposal`
+methods and `importProposal` in TypeScript; `list_proposals`, `sign_proposal`, the `propose_*`
+methods and `import_proposal` / `import_proposal_from_string` in Rust). A proposal the client does not hold fails closed without
+a request: the client never asks Guardian what a proposal is to decide whether Guardian may run
+it.
+
+| Outcome | Rust | TypeScript |
+|---|---|---|
+| Must execute locally | `MultisigError::LocalExecutionRequired { proposal_id, reason }` | `LocalExecutionRequiredError` (`proposalId`, `reason`) |
+| Not held by this client | `MultisigError::ProposalNotHeldLocally { proposal_id }` | `ProposalNotHeldLocallyError` (`proposalId`) |
+
+The message reads `proposal <id> must be executed locally, not by GUARDIAN: <description>`.
+Execute such a proposal with `execute_proposal` / `executeProposal`. To route a proposal before
+requesting, call the exported rule: `LocalExecutionReason::of(&proposal.transaction_type)`
+(with `as_str()` for the stable string and `description()` for the sentence) in Rust,
+`localExecutionReason(proposal)` and `describeLocalExecutionReason(reason)` in TypeScript.
+
+```rust
+use miden_multisig_client::{GuardianExecutionRequest, LocalExecutionReason};
+
+match LocalExecutionReason::of(&proposal.transaction_type) {
+    Some(reason) => {
+        println!("executing locally: {}", reason.description());
+        client.execute_proposal(&proposal.id).await?;
+    }
+    None => {
+        client
+            .request_guardian_execution(&proposal.id, GuardianExecutionRequest::default())
+            .await?;
+    }
+}
+```
+
+```ts
+import { describeLocalExecutionReason, localExecutionReason } from '@openzeppelin/miden-multisig-client';
+
+const reason = localExecutionReason(proposal);
+if (reason) {
+  console.log(`executing locally: ${describeLocalExecutionReason(reason)}`);
+  await multisig.executeProposal(proposal.id);
+} else {
+  await multisig.requestGuardianExecution(proposal.id);
 }
 ```
 

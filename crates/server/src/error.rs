@@ -154,6 +154,13 @@ pub enum GuardianError {
     /// `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, HTTP 409, gRPC
     /// `FAILED_PRECONDITION`.
     ProposalMissingTransactionRequest,
+    /// The proposal's type is executed by the client that finishes its follow-up work, so
+    /// Guardian never executes it. A `switch_guardian` proposal is the one such type: only
+    /// the client can register the account at the new GUARDIAN and switch its endpoint.
+    /// Stable code `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, HTTP 409, gRPC `FAILED_PRECONDITION`.
+    ProposalExecutesLocally {
+        proposal_type: String,
+    },
     /// The proposal's valid cosigner signatures are below its effective
     /// threshold. Stable code `GUARDIAN_PROPOSAL_NOT_READY`, HTTP 409, gRPC
     /// `FAILED_PRECONDITION`.
@@ -253,6 +260,7 @@ impl GuardianError {
             GuardianError::CandidateLanded { .. } => StatusCode::CONFLICT,
             GuardianError::ProvingUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::ProposalMissingTransactionRequest => StatusCode::CONFLICT,
+            GuardianError::ProposalExecutesLocally { .. } => StatusCode::CONFLICT,
             GuardianError::ProposalNotReady { .. } => StatusCode::CONFLICT,
             GuardianError::ProposalRequestTooLarge { .. } => StatusCode::PAYLOAD_TOO_LARGE,
             GuardianError::AccountRequestCapacityExceeded { .. } => StatusCode::CONFLICT,
@@ -311,6 +319,7 @@ impl GuardianError {
             GuardianError::CandidateLanded { .. } => tonic::Code::FailedPrecondition,
             GuardianError::ProvingUnavailable => tonic::Code::Unavailable,
             GuardianError::ProposalMissingTransactionRequest => tonic::Code::FailedPrecondition,
+            GuardianError::ProposalExecutesLocally { .. } => tonic::Code::FailedPrecondition,
             GuardianError::ProposalNotReady { .. } => tonic::Code::FailedPrecondition,
             GuardianError::ProposalRequestTooLarge { .. } => tonic::Code::InvalidArgument,
             GuardianError::AccountRequestCapacityExceeded { .. } => tonic::Code::FailedPrecondition,
@@ -369,6 +378,9 @@ impl GuardianError {
             GuardianError::ProvingUnavailable => refusal_codes::PROVING_UNAVAILABLE,
             GuardianError::ProposalMissingTransactionRequest => {
                 refusal_codes::PROPOSAL_MISSING_TRANSACTION_REQUEST
+            }
+            GuardianError::ProposalExecutesLocally { .. } => {
+                refusal_codes::PROPOSAL_EXECUTES_LOCALLY
             }
             GuardianError::ProposalNotReady { .. } => refusal_codes::PROPOSAL_NOT_READY,
             GuardianError::ProposalRequestTooLarge { .. } => {
@@ -469,6 +481,9 @@ impl GuardianError {
             }
             GuardianError::ProposalMissingTransactionRequest => {
                 "This transaction wasn't created for Guardian to execute. Execute it from your wallet instead."
+            }
+            GuardianError::ProposalExecutesLocally { .. } => {
+                "A guardian switch is executed by the wallet that finishes the handoff. Execute it from your wallet instead."
             }
             GuardianError::ProposalNotReady { .. } => {
                 "This transaction still needs more signatures."
@@ -660,6 +675,11 @@ impl fmt::Display for GuardianError {
                 f,
                 "Proposal carries no stored transaction request and cannot be executed by Guardian"
             ),
+            GuardianError::ProposalExecutesLocally { proposal_type } => write!(
+                f,
+                "A {proposal_type} proposal is executed by the client that finishes the GUARDIAN \
+                 handoff; execute it locally"
+            ),
             GuardianError::ProposalNotReady { required, valid } => write!(
                 f,
                 "Proposal is not ready: {valid} valid cosigner signatures, {required} required"
@@ -760,6 +780,10 @@ struct ErrorMeta {
     /// only for `GUARDIAN_EXECUTION_CONFLICT`.
     #[serde(skip_serializing_if = "Option::is_none")]
     blocking_proposal_id: Option<String>,
+    /// Proposal type Guardian refuses to execute. Populated only for
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proposal_type: Option<String>,
 }
 
 /// The single error object on the wire: `{ code, message, meta }`. Identical
@@ -825,6 +849,10 @@ impl GuardianError {
             } => Some(blocking_proposal_id.clone()),
             _ => None,
         };
+        let proposal_type = match self {
+            GuardianError::ProposalExecutesLocally { proposal_type } => Some(proposal_type.clone()),
+            _ => None,
+        };
         ErrorMeta {
             retryable: self.retryable(),
             retry_after_secs,
@@ -835,6 +863,7 @@ impl GuardianError {
             allowed_schemes,
             released_at,
             blocking_proposal_id,
+            proposal_type,
         }
     }
 

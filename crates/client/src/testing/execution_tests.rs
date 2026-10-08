@@ -147,3 +147,31 @@ async fn a_refusal_arrives_as_a_status_with_its_code() {
         Some("GUARDIAN_PROPOSAL_NOT_READY")
     );
 }
+
+#[tokio::test]
+async fn a_switch_guardian_refusal_names_the_proposal_type() {
+    let details = serde_json::json!({
+        "code": guardian_shared::execution::refusal_codes::PROPOSAL_EXECUTES_LOCALLY,
+        "message": "A guardian switch is executed by the wallet that finishes the handoff. Execute it from your wallet instead.",
+        "meta": { "retryable": false, "proposal_type": "switch_guardian" }
+    });
+    let status = Status::with_details(
+        tonic::Code::FailedPrecondition,
+        "executes locally",
+        serde_json::to_vec(&details).unwrap().into(),
+    );
+    let mut client = client(MockGuardianService::default().with_execution(Err(status))).await;
+    let error = client
+        .execute_delta_proposal(&account(), PROPOSAL)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.guardian_code().as_deref(),
+        Some("GUARDIAN_PROPOSAL_EXECUTES_LOCALLY")
+    );
+    assert_eq!(
+        error.guardian_meta().unwrap()["proposal_type"],
+        "switch_guardian"
+    );
+    assert!(!error.is_retryable());
+}

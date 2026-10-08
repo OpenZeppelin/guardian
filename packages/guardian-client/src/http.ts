@@ -85,6 +85,11 @@ export interface GuardianErrorMeta {
    * `code === 'execution_conflict'`.
    */
   blockingProposalId?: string;
+  /**
+   * The proposal type GUARDIAN refuses to execute because the client that finishes its
+   * follow-up work must execute it. Present only when `code === 'proposal_executes_locally'`.
+   */
+  proposalType?: string;
 }
 
 interface ParsedGuardianError {
@@ -146,6 +151,7 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   if (typeof rawMeta.blocking_proposal_id === 'string') {
     meta.blockingProposalId = rawMeta.blocking_proposal_id;
   }
+  if (typeof rawMeta.proposal_type === 'string') meta.proposalType = rawMeta.proposal_type;
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }

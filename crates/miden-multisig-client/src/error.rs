@@ -42,6 +42,25 @@ pub enum MultisigError {
         blocking_proposal_id: Option<String>,
     },
 
+    /// The proposal must be executed by a client, not by GUARDIAN; `reason` says why. Execute it
+    /// with [`execute_proposal`](crate::MultisigClient::execute_proposal).
+    #[error(
+        "proposal {proposal_id} must be executed locally, not by GUARDIAN: {}",
+        reason.description()
+    )]
+    LocalExecutionRequired {
+        proposal_id: String,
+        reason: crate::local_execution::LocalExecutionReason,
+    },
+
+    /// A GUARDIAN execution was requested for a proposal this client has not listed, fetched,
+    /// signed or created, so it cannot tell whether GUARDIAN may execute it.
+    #[error(
+        "proposal {proposal_id} is not held by this client, so it cannot be checked before \
+         GUARDIAN executes it: list proposals and request again"
+    )]
+    ProposalNotHeldLocally { proposal_id: String },
+
     /// [`wait_for_guardian_execution`](crate::MultisigClient::wait_for_guardian_execution)
     /// reached its deadline before the execution finished. `last_observed` is the last execution
     /// it read, if any read succeeded; the execution itself keeps running.

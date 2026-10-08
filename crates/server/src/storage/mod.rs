@@ -236,8 +236,10 @@ pub enum AbandonIntent {
 /// base commitment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromoteWrite {
-    /// The promotion committed.
-    Applied,
+    /// The promotion committed. `settled_execution` reports whether the
+    /// same commit settled the unresolved Guardian execution that owned the
+    /// candidate.
+    Applied { settled_execution: bool },
     /// The caller's lease is no longer current; nothing was written.
     StaleLease,
     /// The target delta is no longer in candidate status (another owner
@@ -577,7 +579,9 @@ pub(crate) async fn promote_candidate_sequential(
     metadata
         .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
         .await?;
-    Ok(PromoteWrite::Applied)
+    Ok(PromoteWrite::Applied {
+        settled_execution: false,
+    })
 }
 
 /// Single-process fallback for [`StorageBackend::discard_candidate`].

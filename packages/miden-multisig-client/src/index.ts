@@ -122,7 +122,13 @@ export {
   DEFAULT_EXECUTION_WAIT_OPTIONS,
   GuardianExecutionRefusedError,
   GuardianExecutionWaitTimeoutError,
+  LocalExecutionRequiredError,
+  ProposalNotHeldLocallyError,
+  describeLocalExecutionReason,
+  localExecutionReason,
   type ExecutionWaitOptions,
+  type GuardianExecutionRequestOptions,
+  type LocalExecutionReason,
 } from './multisig/guardianExecution.js';
 export type {
   ExecutionFailure,

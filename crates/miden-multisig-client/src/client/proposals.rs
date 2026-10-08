@@ -75,6 +75,7 @@ impl MultisigClient {
         Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
         let mut proposal = Proposal::from(&raw_proposal)?;
         self.verify_proposal_summary_binding(&mut proposal).await?;
+        self.known_proposals.record(*account_id, &proposal);
         Ok(proposal)
     }
 
@@ -127,6 +128,7 @@ impl MultisigClient {
             // The outcome lands on the proposal either way; a failure is
             // reported there rather than failing the listing.
             let _ = self.verify_proposal_summary_binding(proposal).await;
+            self.known_proposals.record(account_id, proposal);
         }
 
         Ok(proposals)
@@ -207,6 +209,7 @@ impl MultisigClient {
                 ));
                 continue;
             }
+            self.known_proposals.record(account_id, &proposal);
             proposals.push(proposal);
         }
 
@@ -264,6 +267,7 @@ impl MultisigClient {
         // actionable once the threshold is met) rather than `Unchecked`.
         let mut updated = Proposal::from(updated_raw)?;
         self.verify_proposal_summary_binding(&mut updated).await?;
+        self.known_proposals.record(account_id, &updated);
         Ok(updated)
     }
 
@@ -527,6 +531,7 @@ impl MultisigClient {
             )));
         }
 
+        self.known_proposals.record(account_id, &proposal);
         Ok(proposal)
     }
 
@@ -698,7 +703,7 @@ impl MultisigClient {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         let node_rpc = self.node_rpc_client();
-        ProposalBuilder::new(transaction_type)
+        let proposal = ProposalBuilder::new(transaction_type)
             .with_options(options)
             .with_execution_mode(self.execution_mode)
             .build(
@@ -708,7 +713,9 @@ impl MultisigClient {
                 &account,
                 self.key_manager.as_ref(),
             )
-            .await
+            .await?;
+        self.known_proposals.record(account.id(), &proposal);
+        Ok(proposal)
     }
 
     /// Proposes a transaction with automatic fallback to offline mode.

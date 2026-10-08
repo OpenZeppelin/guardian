@@ -254,6 +254,22 @@ async fn refusals_carry_the_same_code_and_status_pair_on_both_transports() {
         tonic::Code::FailedPrecondition,
     );
 
+    let switch = Fixture::new(Script::default()).await;
+    switch.store_typed_proposal("switch_guardian", true).await;
+    let (http, grpc) = (
+        switch.http_execute(PROPOSAL).await,
+        switch.grpc_execute(PROPOSAL).await,
+    );
+    assert_eq!(http.body["meta"]["proposal_type"], "switch_guardian");
+    assert_refused_alike(
+        "switch_guardian",
+        http,
+        grpc,
+        "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+        StatusCode::CONFLICT,
+        tonic::Code::FailedPrecondition,
+    );
+
     let absent = Fixture::new(Script::default()).await;
     assert_refused_alike(
         "unknown proposal",

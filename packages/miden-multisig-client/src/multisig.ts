@@ -18,10 +18,12 @@ import type {
 } from './types.js';
 import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import {
+  assertGuardianMayExecute,
   ExecutionWait,
   refusingWith,
   startWaitRuntime,
   type ExecutionWaitOptions,
+  type GuardianExecutionRequestOptions,
 } from './multisig/guardianExecution.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
@@ -1208,9 +1210,17 @@ export class Multisig {
   /**
    * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
    * accepted; {@link executionStatus} reports the outcome. The proposal must have been created
-   * by a `guardian_executable` client.
+   * by a `guardian_executable` client and be held by this one: a proposal it does not hold
+   * throws `ProposalNotHeldLocallyError` without contacting Guardian. A proposal that must be
+   * executed locally throws `LocalExecutionRequiredError`: a `switch_guardian` proposal always,
+   * a private-note P2ID proposal unless `options.allowPrivateNote` says this caller delivers the
+   * note itself.
    */
-  async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
+  async requestGuardianExecution(
+    proposalId: string,
+    options: GuardianExecutionRequestOptions = {},
+  ): Promise<ProposalExecution> {
+    assertGuardianMayExecute(proposalId, this.getLocalProposal(proposalId), options);
     return refusingWith(this.guardian.executeDeltaProposal(this._accountId, proposalId));
   }
 
