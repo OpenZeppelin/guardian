@@ -51,6 +51,7 @@ mod execution;
 mod export;
 mod guardian_endpoint;
 mod keystore;
+mod local_execution;
 mod payload;
 mod procedures;
 mod proposal;
@@ -116,6 +117,9 @@ pub use transaction::{
 
 // Export/Import
 pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
+
+// Local execution
+pub use local_execution::{GuardianExecutionRequest, LocalExecutionReason};
 
 // Errors
 pub use error::{MultisigError, Result};

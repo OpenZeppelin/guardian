@@ -9,9 +9,9 @@ use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
     word_from_hex, Asset, ExecutionFailureCode, ExecutionState, ExecutionWaitOptions,
-    ExpirationBound, ExportedProposal, ForeignAccountUnavailableReason, MultisigError, NoteId,
-    P2ideHeights, ProcedureName, Proposal, ProposalExecution, ProposalVerification,
-    TransactionType,
+    ExpirationBound, ExportedProposal, ForeignAccountUnavailableReason, GuardianExecutionRequest,
+    LocalExecutionReason, MultisigError, NoteId, P2ideHeights, ProcedureName, Proposal,
+    ProposalExecution, ProposalVerification, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -537,10 +537,11 @@ async fn action_execute_proposal(
     };
 
     if state.guardian_executes() {
-        match local_execution_reason(&proposal.transaction_type) {
+        match LocalExecutionReason::of(&proposal.transaction_type) {
             None => return execute_through_guardian(state, &proposal_id).await,
             Some(reason) => print_info(&format!(
-                "Executing this proposal here rather than through GUARDIAN: {reason}."
+                "Executing this proposal here rather than through GUARDIAN: {}.",
+                reason.description()
             )),
         }
     }
@@ -593,23 +594,6 @@ async fn action_execute_proposal(
             }
             Err(e)
         }
-    }
-}
-
-/// Why this client must execute a proposal itself even when GUARDIAN executes its proposals, or
-/// `None` when GUARDIAN can. A GUARDIAN switch is finished by the executing client, which repoints
-/// itself and registers the account on the new GUARDIAN; a private note can only be exported from
-/// the output-note record the client's own execution creates.
-fn local_execution_reason(transaction_type: &TransactionType) -> Option<&'static str> {
-    match transaction_type {
-        TransactionType::SwitchGuardian { .. } => {
-            Some("a GUARDIAN switch is finished by the client that executes it")
-        }
-        TransactionType::P2ID {
-            note_type: NoteType::Private,
-            ..
-        } => Some("a private note can only be exported by the client that executed it"),
-        _ => None,
     }
 }
 
@@ -672,7 +656,7 @@ async fn execute_through_guardian(
         Box::pin(async move {
             let client = state.get_client_mut()?;
             client
-                .request_guardian_execution(&proposal_id)
+                .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
                 .await
                 .map_err(describe_execution_error)
         })

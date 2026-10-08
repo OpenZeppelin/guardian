@@ -68,6 +68,7 @@ use crate::builder::MultisigClientBuilder;
 use crate::error::{MultisigError, Result};
 use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
+use crate::local_execution::KnownProposals;
 use crate::proposal::Proposal;
 use crate::prover::ProverConfig;
 use crate::rpc::RpcConfig;
@@ -143,6 +144,8 @@ pub struct MultisigClient {
     pub(crate) rpc_config: RpcConfig,
     /// Whether proposals this client creates can be executed by Guardian.
     pub(crate) execution_mode: ProposalExecutionMode,
+    /// The proposals this client has seen, consulted before asking GUARDIAN to execute one.
+    pub(crate) known_proposals: KnownProposals,
 }
 
 impl MultisigClient {
@@ -177,6 +180,7 @@ impl MultisigClient {
             prover_config,
             rpc_config,
             execution_mode: ProposalExecutionMode::SelfExecuted,
+            known_proposals: KnownProposals::default(),
         }
     }
 

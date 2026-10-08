@@ -324,9 +324,11 @@ proposal's transaction request with it, so once the proposal has enough signatur
 can ask Guardian to prove, submit and commit it:
 
 ```rust
-use miden_multisig_client::{ExecutionState, ExecutionWaitOptions};
+use miden_multisig_client::{ExecutionState, ExecutionWaitOptions, GuardianExecutionRequest};
 
-client.request_guardian_execution(&proposal.id).await?;
+client
+    .request_guardian_execution(&proposal.id, GuardianExecutionRequest::default())
+    .await?;
 let execution = client
     .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
     .await?;
@@ -342,7 +344,18 @@ retryable or transport error (honouring the server's retry-after hint), returns 
 and gives up after 15 minutes with `MultisigError::GuardianExecutionWaitTimedOut`, which carries
 the last execution it read. A refusal surfaces as `MultisigError::GuardianExecutionRefused {
 code, message, retryable, retry_after, blocking_proposal_id }`, where `code` is the wire string
-(for example `GUARDIAN_EXECUTION_CONFLICT`). See
+(for example `GUARDIAN_EXECUTION_CONFLICT`).
+
+A Guardian-executable client still executes two proposal types itself, and
+`request_guardian_execution` refuses them before contacting Guardian with
+`MultisigError::LocalExecutionRequired { proposal_id, reason }`: a `SwitchGuardian` always
+(`LocalExecutionReason::SwitchGuardian`, the executing client finishes the switch), and a P2ID
+with a private note (`LocalExecutionReason::PrivateNote`, only the executor can export the note)
+unless the request opts in with `GuardianExecutionRequest { allow_private_note: true }` because
+the caller delivers the note itself. Execute those with `execute_proposal`. The check uses the
+proposal this client already holds (listed, fetched, signed, created or imported); any other proposal
+fails closed with `MultisigError::ProposalNotHeldLocally { proposal_id }`. Call
+`LocalExecutionReason::of(&proposal.transaction_type)` to route a proposal up front. See
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
 ### Fallback to Offline (if GUARDIAN unavailable)

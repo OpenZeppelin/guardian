@@ -12,7 +12,7 @@ pub use challenge_store::{
 #[cfg(feature = "postgres")]
 pub use execution_leases::PgExecutionLeases;
 pub use execution_leases::{
-    ExecutionLeases, InMemoryExecutionLeases, lease_deadline, release_quietly,
+    ExecutionLeases, InMemoryExecutionLeases, Renewal, lease_deadline, release_quietly,
 };
 pub use leader::{AlwaysLeader, LeaderElector, Lease};
 pub use session_store::{
