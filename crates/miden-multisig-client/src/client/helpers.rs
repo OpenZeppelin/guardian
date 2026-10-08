@@ -326,6 +326,7 @@ impl MultisigClient {
             proposal.metadata.new_threshold,
             Some(signer_commitments.as_slice()),
             self.key_manager.scheme(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 

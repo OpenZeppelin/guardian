@@ -17,13 +17,15 @@ use crate::error::{MultisigError, Result};
 use crate::execution::build_transfer_asset;
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
+use crate::local_execution::LocalExecutionReason;
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{P2ideHeights, Proposal, ProposalMetadata, TransactionType};
 use crate::utils::hex_body_eq;
 
 use super::{
-    build_p2id_transaction_request, build_update_guardian_transaction_request,
+    ProposalExecutionMode, build_p2id_transaction_request_with_expiration,
+    build_update_guardian_transaction_request,
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
     chain_anchor_to_base64, execute_for_summary, generate_salt, proposer_auth_args, word_to_hex,
 };
@@ -42,6 +44,7 @@ use super::{
 pub struct ProposalBuilder {
     transaction_type: TransactionType,
     approval_expiration_delta: Option<NonZeroU32>,
+    execution_mode: ProposalExecutionMode,
 }
 
 /// Per-proposal settings a caller may set when proposing a transaction.
@@ -132,7 +135,21 @@ impl ProposalBuilder {
         Self {
             transaction_type,
             approval_expiration_delta: None,
+            execution_mode: ProposalExecutionMode::SelfExecuted,
         }
+    }
+
+    /// Creates the proposal under `mode`: a Guardian-executable proposal stores its request,
+    /// bounded by both expirations. A GUARDIAN switch is always created self-executed, since
+    /// GUARDIAN never executes one ([`LocalExecutionReason::SwitchGuardian`]): it stores no
+    /// request and takes no default approval expiration, while an explicit
+    /// [`ProposalOptions::approval_expiration_delta`] still applies.
+    pub fn with_execution_mode(mut self, mode: ProposalExecutionMode) -> Self {
+        self.execution_mode = match LocalExecutionReason::of(&self.transaction_type) {
+            Some(LocalExecutionReason::SwitchGuardian) => ProposalExecutionMode::SelfExecuted,
+            Some(LocalExecutionReason::PrivateNote) | None => mode,
+        };
+        self
     }
 
     /// Applies `options` to this builder.
@@ -266,7 +283,8 @@ impl ProposalBuilder {
         proposer_auth_args(
             miden_client,
             generate_salt(),
-            self.approval_expiration_delta,
+            self.execution_mode
+                .approval_expiration_delta(self.approval_expiration_delta),
         )
         .await
     }
@@ -302,9 +320,11 @@ impl ProposalBuilder {
             &auth_args,
             std::iter::empty(),
             key_manager.scheme(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
 
@@ -339,6 +359,7 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_add_signer_metadata(
                 new_threshold,
@@ -409,7 +430,10 @@ impl ProposalBuilder {
             &auth_args,
             std::iter::empty(),
             key_manager.scheme(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
+
+        let attachment = self.execution_mode.attachment(&tx_request);
 
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
@@ -445,6 +469,7 @@ impl ProposalBuilder {
         };
 
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_threshold_metadata(
                 new_threshold,
@@ -522,9 +547,11 @@ impl ProposalBuilder {
             &auth_args,
             std::iter::empty(),
             key_manager.scheme(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
 
@@ -559,6 +586,7 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_remove_signer_metadata(
                 new_threshold,
@@ -614,7 +642,7 @@ impl ProposalBuilder {
         let salt = auth_args.salt();
 
         // Build the P2ID transaction request (no signature advice needed for proposal)
-        let tx_request = build_p2id_transaction_request(
+        let tx_request = build_p2id_transaction_request_with_expiration(
             account.inner(),
             recipient,
             vec![asset.into()],
@@ -622,9 +650,11 @@ impl ProposalBuilder {
             heights,
             &auth_args,
             std::iter::empty(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
 
@@ -657,6 +687,7 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_payment_metadata(
                 recipient.to_string(),
@@ -725,11 +756,27 @@ impl ProposalBuilder {
             .map(crate::proposal::SerializedNote::from_note)
             .collect();
 
-        let tx_request = crate::transaction::build_consume_notes_transaction_request_from_notes(
-            fetched_notes,
-            &auth_args,
-            std::iter::empty(),
-        )?;
+        let tx_request = match self.execution_mode {
+            ProposalExecutionMode::SelfExecuted => {
+                crate::transaction::build_consume_notes_transaction_request_from_notes(
+                    fetched_notes,
+                    &auth_args,
+                    std::iter::empty(),
+                    None,
+                )?
+            }
+            ProposalExecutionMode::GuardianExecutable => {
+                crate::transaction::build_pinned_consume_notes_transaction_request(
+                    miden_client,
+                    &fetched_notes,
+                    &auth_args,
+                    self.execution_mode.transaction_expiration_delta(),
+                )
+                .await?
+            }
+        };
+
+        let attachment = self.execution_mode.attachment(&tx_request);
 
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
@@ -767,6 +814,7 @@ impl ProposalBuilder {
             .collect();
 
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
             .with_required_signatures(required_signatures)
@@ -842,9 +890,11 @@ impl ProposalBuilder {
             key_manager.scheme(),
             &auth_args,
             std::iter::empty(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
 
@@ -877,6 +927,7 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_guardian_update_metadata(
                 word_to_hex(&new_guardian_pubkey),
@@ -931,7 +982,9 @@ impl ProposalBuilder {
             new_threshold,
             &auth_args,
             std::iter::empty(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
+        let attachment = self.execution_mode.attachment(&tx_request);
         let (tx_summary, chain_anchor) =
             execute_for_summary(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
@@ -960,6 +1013,7 @@ impl ProposalBuilder {
         };
 
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
             .with_required_signatures(required_signatures)
@@ -991,6 +1045,7 @@ impl ProposalBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transaction::build_p2id_transaction_request;
     use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
@@ -1153,6 +1208,7 @@ mod tests {
                 &auth_args(),
                 std::iter::empty(),
                 SignatureScheme::Falcon,
+                None,
             )
             .expect("the signer-update request builds");
 
@@ -1186,6 +1242,7 @@ mod tests {
                 vec![note],
                 &auth_args(),
                 std::iter::empty(),
+                None,
             )
             .expect("the consume-notes request builds");
 
@@ -1199,6 +1256,7 @@ mod tests {
                 SignatureScheme::Falcon,
                 &auth_args(),
                 std::iter::empty(),
+                None,
             )
             .expect("the switch-guardian request builds");
 
@@ -1212,6 +1270,7 @@ mod tests {
                 2,
                 &auth_args(),
                 std::iter::empty(),
+                None,
             )
             .expect("the procedure-threshold request builds");
 

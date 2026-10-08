@@ -75,6 +75,7 @@ impl MultisigClient {
         Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
         let mut proposal = Proposal::from(&raw_proposal)?;
         self.verify_proposal_summary_binding(&mut proposal).await?;
+        self.known_proposals.record(*account_id, &proposal);
         Ok(proposal)
     }
 
@@ -90,7 +91,10 @@ impl MultisigClient {
     /// hide the others (issue #462). `Failed { retryable: true }`
     /// means a transient node error, worth listing again; `retryable: false`
     /// means the proposal cannot be reproduced and must be re-proposed.
-    /// Signing and executing re-verify and refuse a failed proposal.
+    /// Signing and executing re-verify and refuse a failed proposal. Only a
+    /// verified proposal is held for
+    /// [`request_guardian_execution`](Self::request_guardian_execution); a
+    /// failed one is refused there as not held until a listing verifies it.
     ///
     /// # Errors
     ///
@@ -124,9 +128,9 @@ impl MultisigClient {
 
         self.sync_chain_before_verifying(&proposals).await;
         for proposal in &mut proposals {
-            // The outcome lands on the proposal either way; a failure is
-            // reported there rather than failing the listing.
-            let _ = self.verify_proposal_summary_binding(proposal).await;
+            if self.verify_proposal_summary_binding(proposal).await.is_ok() {
+                self.known_proposals.record(account_id, proposal);
+            }
         }
 
         Ok(proposals)
@@ -207,6 +211,7 @@ impl MultisigClient {
                 ));
                 continue;
             }
+            self.known_proposals.record(account_id, &proposal);
             proposals.push(proposal);
         }
 
@@ -264,6 +269,7 @@ impl MultisigClient {
         // actionable once the threshold is met) rather than `Unchecked`.
         let mut updated = Proposal::from(updated_raw)?;
         self.verify_proposal_summary_binding(&mut updated).await?;
+        self.known_proposals.record(account_id, &updated);
         Ok(updated)
     }
 
@@ -431,6 +437,7 @@ impl MultisigClient {
             proposal.metadata.new_threshold,
             signer_commitments.as_deref(),
             self.key_manager.scheme(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 
@@ -495,6 +502,10 @@ impl MultisigClient {
         };
 
         let payload = crate::payload::ProposalPayload::new(&tx_summary)
+            .with_transaction_request(
+                self.execution_mode
+                    .attachment_of_bytes(transaction_request_bytes),
+            )
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures)
@@ -522,6 +533,7 @@ impl MultisigClient {
             )));
         }
 
+        self.known_proposals.record(account_id, &proposal);
         Ok(proposal)
     }
 
@@ -693,8 +705,9 @@ impl MultisigClient {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         let node_rpc = self.node_rpc_client();
-        ProposalBuilder::new(transaction_type)
+        let proposal = ProposalBuilder::new(transaction_type)
             .with_options(options)
+            .with_execution_mode(self.execution_mode)
             .build(
                 &mut self.miden_client,
                 &node_rpc,
@@ -702,7 +715,9 @@ impl MultisigClient {
                 &account,
                 self.key_manager.as_ref(),
             )
-            .await
+            .await?;
+        self.known_proposals.record(account.id(), &proposal);
+        Ok(proposal)
     }
 
     /// Proposes a transaction with automatic fallback to offline mode.
