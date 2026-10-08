@@ -286,8 +286,10 @@ confirm the SDK raises a dedicated error.
   earlier of `issued_at` and the registration time, so a grant dated into the
   skew window's future cannot outlive a revoke-all (FR-013).
 - **FR-006 — Grant lifecycle**: Re-submitting the same grant while its session
-  is live MUST succeed and return the same expiry, also when the wallet
-  re-signed it with another `issued_at` inside the skew window. The record is
+  is live and its `issued_at` is still inside the skew window (the retry after
+  a lost response) MUST succeed and return the same expiry, also when the
+  wallet re-signed it with another `issued_at`; later the grant fails the
+  `issued_at` check of FR-005. The record is
   left unchanged, so the recorded `issued_at` (FR-005) never moves: a
   re-submission cannot lift a session above a revoke-all T (FR-013). A grant for a
   key that is already bound to a different grant (another signer commitment,
@@ -388,7 +390,9 @@ confirm the SDK raises a dedicated error.
   It is idempotent. The SDK sets T to the current time. The message names no
   Guardian, so within the skew window the same signature also ends the
   signer's older sessions on any other Guardian it is sent to; it can only
-  revoke, so this is accepted.
+  revoke, so this is accepted. Revoke-all ends only sessions already
+  registered (accepted limits in Edge Cases), so the SDK guide MUST advise
+  running it again 10 minutes later when a key may be compromised.
 - **FR-014 — Signer removal**: Removing a signer from an account MUST end
   delegated access to that account on the next request, with
   `authorization_failed` (FR-007). Adding the
@@ -531,6 +535,15 @@ confirm the SDK raises a dedicated error.
   the granting device's (capped at server time). A replay of a revoke-all
   inside the skew window can end a session started just after it on a device
   whose clock runs behind. It can only revoke; the user starts a new session.
+- **Grant signed but not yet registered at revoke-all**: accepted for v1.
+  Revoke-all ends only sessions already registered. A page that got a grant
+  signed can register it afterwards while its `issued_at` is within the skew
+  window of server time, and it chooses `issued_at` up to 5 minutes ahead, so
+  up to about 10 minutes after signing; the session then lives until its
+  expiry. Running revoke-all again 10 minutes later ends it.
+- **Revoking device clock behind Guardian**: accepted for v1. T is the
+  revoking device's clock, so sessions registered in the gap between T and
+  server time are not revoked. Running revoke-all again later ends them.
 - **Hardware wallets without registered display metadata**: devices may need
   a setting such as Ledger's "Verbose EIP-712" to display typed data field by
   field; documented in the SDK guide. Raw wallets show a hash; the SDK shows
@@ -616,6 +629,11 @@ confirm the SDK raises a dedicated error.
 - Q: `authorization_failed` (403) for an account the signer does not cosign; origin shown, not enforced; raw-wallet confirmation? → A: Confirmed, with the origin stated as unverified and raw-wallet blind signing as an accepted v1 risk (FR-003, FR-004, Edge Cases).
 - Q: Check order for a session request? → A: Signature, session, route allow-list, ACK key and network, cosigner, replay CAS (FR-007).
 - Q: Units of the logout and revoke-all timestamps? → A: Milliseconds, like every request `x-timestamp` (FR-012, FR-013).
+
+### Session 2026-10-08 (implementation review, after approval)
+
+- Q: Revoke-all and grants signed but not yet registered, or a revoking device whose clock runs behind? → A: Accepted v1 limits, documented in Edge Cases; the SDK guide advises running revoke-all again 10 minutes later. A stored per-signer revoke mark would close both at the cost of a cool-down on new sessions; not in v1.
+- Q: Re-submitting a live grant after its `issued_at` left the skew window? → A: Fails the FR-005 `issued_at` check; re-submission is the retry after a lost response (FR-006).
 
 ### Open for review
 
