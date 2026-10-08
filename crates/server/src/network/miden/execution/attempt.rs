@@ -215,12 +215,21 @@ fn invoked_procedure(payload: &serde_json::Value) -> InvokedProcedure {
 /// unavailable; one whose chain data does not authenticate against itself is inconsistent.
 /// None of them says anything about the proposal, so none is a binding mismatch.
 fn chain_view_failure(error: ChainViewError) -> ExecutionFailure {
-    let code = match &error {
-        ChainViewError::ChainBehind { .. } => ExecutionFailureCode::ChainBehind,
-        ChainViewError::Rpc(_) => ExecutionFailureCode::NodeUnavailable,
-        ChainViewError::Inconsistent(_) => ExecutionFailureCode::ChainInconsistent,
-    };
-    ExecutionFailure::new(code, error.to_string())
+    match &error {
+        ChainViewError::ChainBehind { .. } => {
+            ExecutionFailure::new(ExecutionFailureCode::ChainBehind, error.to_string())
+        }
+        ChainViewError::Rpc(_) => ExecutionFailure::with_logged_cause(
+            ExecutionFailureCode::NodeUnavailable,
+            "Guardian could not read the chain from the node",
+            &error,
+        ),
+        ChainViewError::Inconsistent(_) => ExecutionFailure::with_logged_cause(
+            ExecutionFailureCode::ChainInconsistent,
+            "the node served chain data that does not authenticate",
+            &error,
+        ),
+    }
 }
 
 async fn chain_tip(rpc: &dyn NodeRpcClient) -> Result<BlockNumber, ExecutionFailure> {
@@ -228,9 +237,10 @@ async fn chain_tip(rpc: &dyn NodeRpcClient) -> Result<BlockNumber, ExecutionFail
         .await
         .map(|(header, _)| header.block_num())
         .map_err(|e| {
-            ExecutionFailure::new(
+            ExecutionFailure::with_logged_cause(
                 ExecutionFailureCode::NodeUnavailable,
-                format!("reading the chain tip failed: {e}"),
+                "Guardian could not read the chain tip from the node",
+                &e,
             )
         })
 }
@@ -277,33 +287,42 @@ impl ProposalExecutor for MidenExecutor {
         input: ExecutionInput,
     ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
         let started = std::time::Instant::now();
-        let codec =
-            |message: String| ExecutionFailure::new(ExecutionFailureCode::RequestCodec, message);
+        let codec = |message: &'static str, cause: &dyn std::fmt::Display| {
+            ExecutionFailure::with_logged_cause(ExecutionFailureCode::RequestCodec, message, cause)
+        };
         let envelope = input
             .proposal_payload
             .get("transaction_request")
-            .ok_or_else(|| codec("proposal carries no transaction request".to_string()))
+            .ok_or_else(|| {
+                ExecutionFailure::new(
+                    ExecutionFailureCode::RequestCodec,
+                    "proposal carries no transaction request",
+                )
+            })
             .and_then(|value| {
-                TransactionRequestEnvelope::deserialize(value).map_err(|e| codec(e.to_string()))
+                TransactionRequestEnvelope::deserialize(value)
+                    .map_err(|e| codec("the stored request envelope is malformed", &e))
             })?;
         let bytes = envelope.verified_bytes().map_err(|rejection| {
             ExecutionFailure::new(rejection.failure_code(), rejection.to_string())
         })?;
         let request = StoredRequest::decode(&bytes).map_err(|e| {
-            codec(format!(
+            codec(
                 "stored request does not decode with this server's miden-client, which may not \
-                 be the version that serialized it: {e}"
-            ))
+                 be the version that serialized it",
+                &e,
+            )
         })?;
-        let summary =
-            proposal_tx_summary(&input.proposal_payload).map_err(|e| codec(e.to_string()))?;
+        let summary = proposal_tx_summary(&input.proposal_payload)
+            .map_err(|e| codec("the signed transaction summary does not decode", &e))?;
         request.check_against(&summary).map_err(|reason| {
             ExecutionFailure::new(
                 ExecutionFailureCode::RequestInvalid(reason),
                 format!("stored request is not Guardian-executable: {reason:?}"),
             )
         })?;
-        let account = Account::from_json(&input.state_json).map_err(codec)?;
+        let account = Account::from_json(&input.state_json)
+            .map_err(|e| codec("the account state does not decode", &e))?;
         let selected = select(&input, &account, &summary);
         let decoded = started.elapsed();
 
@@ -326,7 +345,9 @@ impl ProposalExecutor for MidenExecutor {
                     ExecutionFailureCode::RequestInvalid(reason),
                     format!("{reason:?}"),
                 ),
-                super::request::RequestInputsError::Malformed(message) => codec(message),
+                super::request::RequestInputsError::Malformed(message) => {
+                    codec("the stored request's inputs are malformed", &message)
+                }
             })?;
         let bound = summary.block_number();
         let mut tracked = BTreeSet::from([bound]);
@@ -438,15 +459,35 @@ fn execution_failure(
     error: &TransactionExecutorError,
 ) -> ExecutionFailure {
     if let Some(unavailable) = store.foreign_failure() {
-        let reason = match unavailable {
-            ForeignAccountUnavailable::Private { .. } => ForeignAccountUnavailableReason::Private,
-            ForeignAccountUnavailable::Unavailable { .. } => {
-                ForeignAccountUnavailableReason::Unavailable
+        return match unavailable {
+            ForeignAccountUnavailable::Private { account_id } => ExecutionFailure::new(
+                ExecutionFailureCode::ForeignAccountUnavailable(
+                    ForeignAccountUnavailableReason::Private,
+                ),
+                format!(
+                    "foreign account {} is private, so the node cannot serve it",
+                    account_id.to_hex()
+                ),
+            ),
+            ForeignAccountUnavailable::Unavailable { account_id, reason } => {
+                tracing::warn!(account_id = %account_id.to_hex(), %reason, "foreign account unavailable");
+                ExecutionFailure::new(
+                    ExecutionFailureCode::ForeignAccountUnavailable(
+                        ForeignAccountUnavailableReason::Unavailable,
+                    ),
+                    format!(
+                        "Guardian could not read foreign account {} from the node",
+                        account_id.to_hex()
+                    ),
+                )
             }
         };
-        return ExecutionFailure::new(
-            ExecutionFailureCode::ForeignAccountUnavailable(reason),
-            format!("{unavailable:?}"),
+    }
+    if let Some(node_failure) = store.node_failure() {
+        return ExecutionFailure::with_logged_cause(
+            ExecutionFailureCode::NodeUnavailable,
+            "Guardian could not read data the transaction needs from the node",
+            &node_failure,
         );
     }
     match Abort::of(error) {
@@ -458,9 +499,10 @@ fn execution_failure(
             ExecutionFailureCode::InsufficientFee,
             "the account cannot pay the transaction fee at the reference block",
         ),
-        None => ExecutionFailure::new(
+        None => ExecutionFailure::with_logged_cause(
             ExecutionFailureCode::BindingMismatch,
-            format!("the stored request does not execute: {error}"),
+            "the stored request does not execute",
+            error,
         ),
     }
 }
@@ -539,8 +581,20 @@ impl MidenAttempt {
                 .map(|_deferred_precompiles_settle_in_the_batch| proven)
         })
         .await
-        .map_err(|error| refused(format!("the proof verification task failed: {error}")))?
-        .map_err(|error| refused(format!("the returned proof does not verify: {error}")))
+        .map_err(|error| {
+            ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::ProvingFailed,
+                "Guardian could not verify the returned proof",
+                &error,
+            )
+        })?
+        .map_err(|error| {
+            ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::ProvingFailed,
+                "the returned proof does not verify",
+                &error,
+            )
+        })
     }
 
     fn executed(&self) -> &ExecutedTransaction {
@@ -580,7 +634,13 @@ impl ExecutionAttempt for MidenAttempt {
             let signature = ack
                 .scheme
                 .parse_signature_hex(&ack.signature_hex)
-                .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::BindingMismatch, e))?;
+                .map_err(|e| {
+                    ExecutionFailure::with_logged_cause(
+                        ExecutionFailureCode::BindingMismatch,
+                        "Guardian's acknowledgment signature does not parse",
+                        &e,
+                    )
+                })?;
             let entry = ack
                 .scheme
                 .build_signature_advice_entry(
@@ -589,14 +649,24 @@ impl ExecutionAttempt for MidenAttempt {
                     &signature,
                     Some(ack.public_key_hex.as_str()),
                 )
-                .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::BindingMismatch, e))?;
+                .map_err(|e| {
+                    ExecutionFailure::with_logged_cause(
+                        ExecutionFailureCode::BindingMismatch,
+                        "Guardian's acknowledgment does not form signature advice",
+                        &e,
+                    )
+                })?;
             advice.push(entry);
         }
         let inputs = self
             .request
             .execution_inputs(&self.account, advice)
             .map_err(|e| {
-                ExecutionFailure::new(ExecutionFailureCode::RequestCodec, e.to_string())
+                ExecutionFailure::with_logged_cause(
+                    ExecutionFailureCode::RequestCodec,
+                    "the stored request's inputs are malformed",
+                    &e,
+                )
             })?;
         let reference = self.store.chain().reference_block();
         self.store.begin_execution();
@@ -667,25 +737,28 @@ impl ExecutionAttempt for MidenAttempt {
                         .await
                         .inspect_err(|_| record_duration())
                         .map_err(|stop| match stop.code {
-                            ExecutionFailureCode::ExpirationReached(_) => ExecutionFailure {
-                                message: format!(
-                                    "{}; the prover stayed unreachable until then, last error: {}",
-                                    stop.message,
-                                    with_sources(&error)
-                                ),
-                                code: stop.code,
-                            },
+                            ExecutionFailureCode::ExpirationReached(_) => {
+                                tracing::warn!(
+                                    error = %with_sources(&error),
+                                    "the prover stayed unreachable until the transaction expired"
+                                );
+                                ExecutionFailure {
+                                    message: format!(
+                                        "{}; the prover stayed unreachable until then",
+                                        stop.message
+                                    ),
+                                    code: stop.code,
+                                }
+                            }
                             _ => stop,
                         })?;
                 }
                 Err(error) => {
                     record_duration();
-                    return Err(ExecutionFailure::new(
+                    return Err(ExecutionFailure::with_logged_cause(
                         ExecutionFailureCode::ProvingFailed,
-                        format!(
-                            "the prover refused the transaction: {}",
-                            with_sources(&error)
-                        ),
+                        "the prover refused the transaction",
+                        &with_sources(&error),
                     ));
                 }
             }
@@ -712,7 +785,13 @@ impl ExecutionAttempt for MidenAttempt {
             self.executed().tx_inputs(),
         )
         .await
-        .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::SealingFailed, e.to_string()))?;
+        .map_err(|e| {
+            ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::SealingFailed,
+                "Guardian could not seal the transaction inputs for submission",
+                &e,
+            )
+        })?;
         self.sealed = Some(sealed);
         Ok(())
     }
@@ -833,8 +912,59 @@ mod chain_failure_tests {
             ),
         ];
         for (error, code) in cases {
-            assert_eq!(chain_view_failure(error).code, code);
+            let failure = chain_view_failure(error);
+            assert_eq!(failure.code, code);
+            assert!(
+                !failure.message.contains("header") && !failure.message.contains("MMR"),
+                "{}",
+                failure.message
+            );
         }
+    }
+}
+
+#[cfg(all(test, feature = "e2e"))]
+mod execution_failure_tests {
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    use miden_client::testing::mock::MockRpcApi;
+    use miden_testing::{Auth, MockChainBuilder};
+    use miden_tx::TransactionExecutorError;
+
+    use super::super::chain::build_chain_view;
+    use super::{ExecutionDataStore, ExecutionFailureCode, execution_failure};
+
+    async fn store() -> ExecutionDataStore {
+        let mut builder = MockChainBuilder::new();
+        let wallet = builder.add_existing_wallet(Auth::IncrNonce).unwrap();
+        let rpc = Arc::new(MockRpcApi::new(builder.build().unwrap()));
+        rpc.advance_blocks(2);
+        let view = build_chain_view(rpc.as_ref(), &BTreeSet::new())
+            .await
+            .unwrap();
+        ExecutionDataStore::new(wallet, view, rpc, &[])
+    }
+
+    #[tokio::test]
+    async fn an_execution_stopped_by_a_node_read_is_node_unavailable() {
+        let store = store().await;
+        let error = TransactionExecutorError::MissingAuthenticator;
+        assert_eq!(
+            execution_failure(&store, &error).code,
+            ExecutionFailureCode::BindingMismatch
+        );
+
+        store.record_node_failure("transport error: connection refused".to_string());
+        let failure = execution_failure(&store, &error);
+        assert_eq!(failure.code, ExecutionFailureCode::NodeUnavailable);
+        assert!(!failure.message.contains("connection refused"));
+
+        store.begin_execution();
+        assert_eq!(
+            execution_failure(&store, &error).code,
+            ExecutionFailureCode::BindingMismatch
+        );
     }
 }
 
