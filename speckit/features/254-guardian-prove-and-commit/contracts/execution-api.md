@@ -57,6 +57,13 @@ committed specs with `cargo run --features evm --bin gen-openapi -- docs` (AGENT
 |---|---|---|---|
 | `account_id` | string | yes | Hex account id |
 | `proposal_id` | string | yes | The proposal's commitment |
+| `allow_private_note` | boolean | no, default `false` | Lets Guardian execute a transaction that creates a private output note. Part of the signed payload: the server signs-checks the body with the field present, as `false` when omitted. Decided 2026-10-08 |
+
+gRPC `ExecuteDeltaProposalRequest` carries `bool allow_private_note = 3`. Its body can encode
+to the same bytes as a `GetDeltaProposalExecutionRequest` (protobuf omits a `false` bool), so
+its signed payload digest is RPO256 over the ASCII tag `guardian.ExecuteDeltaProposal`, one zero
+byte, and the encoded request: a signed status read never authenticates an execute. Over HTTP
+the always-present `allow_private_note` field gives the same separation.
 
 `GET /delta/proposal/execution`: query parameters `account_id`, `proposal_id`, both
 required.
@@ -203,10 +210,10 @@ record created:
 |---|---|---|
 | `GUARDIAN_PROVING_UNAVAILABLE` | 503 | No prover configured, capability disabled (FR-021), or the server runs in optimistic delta-commit mode (FR-043) |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 | Proposal was created by a self-executed client, so it carries no stored transaction request (FR-010). Names the cause, so the caller learns to create the proposal with a Guardian-executable client |
-| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 | The proposal is a `switch_guardian`, which only the client that finishes the GUARDIAN handoff (registering the account at the new GUARDIAN and switching its endpoint) can execute; a GUARDIAN-executed switch would leave the account stuck. `meta.proposal_type` names the type. Checked after the stored-request check and before the pending-candidate check; the proposal stays usable for local execution (FR-022). Decided 2026-10-07 |
+| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 | `meta.reason` names why. `switch_guardian`: only the client that finishes the GUARDIAN handoff (registering the account at the new GUARDIAN and switching its endpoint) can execute a switch; a GUARDIAN-executed switch would leave the account stuck. Refused whatever `allow_private_note` says (decided 2026-10-07). `private_note`: the signed `TransactionSummary`'s output notes include a private note and the request did not set `allow_private_note`; privacy is read from the signed summary, never from the metadata label (decided 2026-10-08). `meta.proposal_type` names the type. Checked after the stored-request check and before the pending-candidate check; nothing is reserved and the proposal stays usable for local execution (FR-022) |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 | Below the effective threshold (FR-005) |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 | Active reservation for a different proposal (FR-008). `meta.blocking_proposal_id` MUST name the blocker (FR-036) |
-| `GUARDIAN_EXECUTION_BUSY` | 409 | Guardian cannot start the execution now and reserved nothing: another request holds the account's execution lease but has not yet reserved the account, so there is no proposal to name, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions. `meta.retryable` is `true`; retry shortly. Decided 2026-10-01; capacity cause added 2026-10-06 |
+| `GUARDIAN_EXECUTION_BUSY` | 409 | Guardian cannot start the execution now and reserved nothing: another request holds the account's execution lease but has not yet reserved the account, so there is no proposal to name, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions, or the process is shutting down and its drain refuses new executions. `meta.retryable` is `true`; retry shortly. Decided 2026-10-01; capacity cause added 2026-10-06; shutdown cause documented 2026-10-08 |
 | `conflict_pending_delta` | 409 | Existing; account holds a pending candidate |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 | Existing |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 | Existing |

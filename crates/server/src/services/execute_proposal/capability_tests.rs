@@ -14,6 +14,7 @@ async fn request_on(
             account_id: ACCOUNT.to_string(),
             proposal_id: PROPOSAL.to_string(),
             credentials: f.credentials(),
+            allow_private_note: false,
         },
     )
     .await
