@@ -114,6 +114,40 @@
     },
     {
       "actions": [
+        "account-register",
+        "proposal-create",
+        "guardian-execution-unavailable"
+      ],
+      "core": false,
+      "id": "det-guardian-execution-unavailable",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "both",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "A GUARDIAN with no prover refuses execution and records nothing"
+    },
+    {
+      "actions": [
+        "guardian-execution-refusals"
+      ],
+      "core": false,
+      "id": "det-guardian-execution-refusals",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT3M",
+      "title": "A GUARDIAN that offers execution refuses what it must and fails cleanly before the boundary"
+    },
+    {
+      "actions": [
         "error-envelope"
       ],
       "core": false,
@@ -879,6 +913,137 @@
       "shape": "2-of-3",
       "step_budget": "PT8M",
       "title": "One procedure requires every signer while the account threshold stays put"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "guardian-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-guardian-execute-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "GUARDIAN proves, submits and commits a threshold-met 2-of-3 Falcon proposal"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "guardian-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-guardian-execute-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "GUARDIAN proves, submits and commits a threshold-met 2-of-3 ECDSA proposal"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "signer-add",
+        "proposal-sign",
+        "guardian-execute",
+        "signer-set-assert"
+      ],
+      "core": false,
+      "id": "live-guardian-execute-add-signer-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "GUARDIAN executes an add-signer proposal and then authorizes the new signer"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "asset-send",
+        "proposal-sign",
+        "chain-advance-past-bound",
+        "guardian-execute",
+        "asset-send-assert"
+      ],
+      "core": false,
+      "id": "live-guardian-execute-p2id-late-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "typescript",
+      "shape": "2-of-3",
+      "step_budget": "PT12M",
+      "title": "GUARDIAN executes a P2ID send long after it was proposed and the vault reflects it"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "chain-advance-past-bound",
+        "guardian-execute",
+        "commitment-verify"
+      ],
+      "core": false,
+      "id": "live-guardian-execute-consume-late-2of3-falcon",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "falcon",
+      "sdk": "typescript",
+      "shape": "2-of-3",
+      "step_budget": "PT12M",
+      "title": "GUARDIAN executes a consume-notes proposal long after it was proposed"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "proposal-create",
+        "proposal-sign",
+        "guardian-execute-base-client"
+      ],
+      "core": false,
+      "id": "live-guardian-execute-base-client-2of3-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "2-of-3",
+      "step_budget": "PT10M",
+      "title": "A base client with no Miden capability takes a threshold-met proposal to committed"
     },
     {
       "actions": [

@@ -212,11 +212,17 @@ qual_reap_orphans ""
 if [[ "${PROFILE}" == "deterministic" ]]; then
   NETWORK_TYPE="MidenLocal"
   RPC_ENDPOINT="http://rpc-stub:57291"
+  # A prover inherited from the caller's environment would make the main server
+  # offer execution, and the no-prover refusal this profile asserts would fail.
+  unset QUAL_TX_PROVER_URL
 else
   case "${NETWORK}" in
     devnet) NETWORK_TYPE="MidenDevnet"; RPC_ENDPOINT="https://rpc.devnet.miden.io" ;;
     testnet) NETWORK_TYPE="MidenTestnet"; RPC_ENDPOINT="https://rpc.testnet.miden.io" ;;
   esac
+  # The network's public prover, so the live server offers Guardian execution. The
+  # deterministic stack has no prover and must refuse it.
+  export QUAL_TX_PROVER_URL="${QUAL_TX_PROVER_URL:-https://tx-prover.${NETWORK}.miden.io}"
 fi
 
 IMAGE_REVISION=""
@@ -359,12 +365,20 @@ QUAL_GUARDIAN_SCHEME_GATED_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_C}"
 QUAL_GUARDIAN_SCHEME_GATED_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_C}"
 export QUAL_GUARDIAN_SCHEME_GATED_GRPC QUAL_GUARDIAN_SCHEME_GATED_HTTP
 
-echo "==> waiting for the queue server on ports ${QUAL_HTTP_PORT_D} and ${QUAL_GRPC_PORT_D}"
+echo "==> waiting for the executing server on ports ${QUAL_HTTP_PORT_D} and ${QUAL_GRPC_PORT_D}"
 if ! qual_wait_ready "${QUAL_HTTP_PORT_D}" "${QUAL_GRPC_PORT_D}" 180; then
   stack_setup_failed
 fi
-QUAL_GUARDIAN_QUEUE_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_D}"
-QUAL_GUARDIAN_QUEUE_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_D}"
+QUAL_GUARDIAN_EXECUTING_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_D}"
+QUAL_GUARDIAN_EXECUTING_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_D}"
+export QUAL_GUARDIAN_EXECUTING_GRPC QUAL_GUARDIAN_EXECUTING_HTTP
+
+echo "==> waiting for the queue server on ports ${QUAL_HTTP_PORT_E} and ${QUAL_GRPC_PORT_E}"
+if ! qual_wait_ready "${QUAL_HTTP_PORT_E}" "${QUAL_GRPC_PORT_E}" 180; then
+  stack_setup_failed
+fi
+QUAL_GUARDIAN_QUEUE_GRPC="http://127.0.0.1:${QUAL_GRPC_PORT_E}"
+QUAL_GUARDIAN_QUEUE_HTTP="http://127.0.0.1:${QUAL_HTTP_PORT_E}"
 export QUAL_GUARDIAN_QUEUE_GRPC QUAL_GUARDIAN_QUEUE_HTTP
 
 mkdir -p "${OUT_DIR}"
@@ -500,14 +514,15 @@ if [[ -n "${UPGRADE_FROM}" ]]; then
   fi
 
   echo "==> upgrading from ${UPGRADE_FROM} to the image under test"
-  # All four are recreated on the new image, so all four are waited for: a
-  # migration target, scheme-gated or queue server still booting would fail its
-  # scenario as though the image under test had refused it.
+  # Every server is recreated on the new image, so every one is waited for: a
+  # migration target, scheme-gated, executing or queue server still booting
+  # would fail its scenario as though the image under test had refused it.
   if ! qual_swap_server_image "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" "${SERVER_IMAGE}" \
      || ! qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180 \
      || ! qual_wait_ready "${QUAL_HTTP_PORT_B}" "${QUAL_GRPC_PORT_B}" 180 \
      || ! qual_wait_ready "${QUAL_HTTP_PORT_C}" "${QUAL_GRPC_PORT_C}" 180 \
-     || ! qual_wait_ready "${QUAL_HTTP_PORT_D}" "${QUAL_GRPC_PORT_D}" 180; then
+     || ! qual_wait_ready "${QUAL_HTTP_PORT_D}" "${QUAL_GRPC_PORT_D}" 180 \
+     || ! qual_wait_ready "${QUAL_HTTP_PORT_E}" "${QUAL_GRPC_PORT_E}" 180; then
     # Refusing to boot on an older release's data is the defect this looks
     # for, so it is a product failure rather than a setup problem.
     echo "error: the image under test did not become ready on the upgraded database" >&2
@@ -523,9 +538,14 @@ if [[ -n "${UPGRADE_FROM}" ]]; then
     # against an empty database. An upgrade check that cannot tell a migrated
     # database from a fresh one proves nothing, and it is also what makes a
     # silently empty seed phase visible here.
+    #
+    # `--upgrade-target` because the older release cannot write everything a
+    # second pass reads back: it has no Guardian execution, so the refusals
+    # scenario runs its own first pass here and the restart pass below reads
+    # what that left.
     qual_run_phase "${QUAL_RUN_ID}" "${OUT_DIR}" \
       "${SERVER_DIGEST}" "${IMAGE_REVISION}" selected \
-      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart
+      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart --upgrade-target
     DRIVER_EXIT=${PHASE_EXIT}
   fi
 else
@@ -540,7 +560,8 @@ fi
 if [[ "${PROFILE}" == "deterministic" && ( "${SDK}" == "both" || "${SDK}" == "rust" ) ]]; then
   echo "==> restarting Guardian and re-checking durability"
   if qual_restart_server "${QUAL_PROJECT}" "${COMPOSE_FILE}" "${ENV_FILE}" \
-     && qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180; then
+     && qual_wait_ready "${QUAL_HTTP_PORT}" "${QUAL_GRPC_PORT}" 180 \
+     && qual_wait_ready "${QUAL_HTTP_PORT_D}" "${QUAL_GRPC_PORT_D}" 180; then
     # Rust alone: `--post-restart` is a Rust argument, and the durability
     # assertion is a Rust action, so re-running the TypeScript leg here would
     # cost a second pass to assert nothing new.
@@ -559,6 +580,8 @@ if [[ "${PROFILE}" == "deterministic" && ( "${SDK}" == "both" || "${SDK}" == "ru
     DRIVER_EXIT=2
   fi
 fi
+
+qual_capture_execution_metrics "${QUAL_METRICS_PORT}" "${OUT_DIR}/execution-metrics.prom"
 
 # Both legs have written their results, so the run can be restated over the
 # combined set. Until this runs, the Rust file carries a claim derived from
