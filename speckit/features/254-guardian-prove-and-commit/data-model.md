@@ -143,6 +143,28 @@ post-boundary failure deletes the proposal, so a second post-boundary attempt ca
 arise), but the schema still could not express a retry, and the contract never said which
 attempt a read reports.
 
+### Retention
+
+Execution-owned rows are not kept forever. A daily sweep on every replica deletes an attempt
+(its reservation, evidence and outcome, in foreign-key order: outcome, evidence, reservation)
+only when all of these hold:
+
+- the reservation is released (`released_at` set) and its outcome's `resolved_at` is older
+  than `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` (default 30; `0` disables the sweep, any
+  other value below 2 refuses startup so records outlive the approval window);
+- its proposal no longer exists for the account, **or** a newer attempt of the same proposal
+  exists.
+
+So an active attempt is never deleted, and the newest attempt of a proposal that still exists
+always survives: `max(attempt) + 1` stays correct for a live handle, and the "most recent
+attempt" a status read reports for a live proposal is never removed. Once every attempt of a
+deleted proposal is gone, a status read returns `GUARDIAN_EXECUTION_NOT_FOUND`, as for a
+proposal never executed. The sweep deletes in bounded batches
+(`StorageBackend::prune_execution_records(cutoff, limit)`), each one transaction in Postgres
+(oldest outcomes first through `execution_outcomes (resolved_at)`, locked rows skipped) and one
+per-account rewrite of `executions.json` under the write lock on the filesystem backend. It is
+idempotent, so replicas need no lease to run it.
+
 ## `SubmissionEvidence`
 
 Written **before** the network send, inside the step-12 commit (FR-039).
@@ -485,6 +507,10 @@ CREATE TABLE execution_outcomes (
     resolved_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (account_id, proposal_id, attempt)
 );
+
+-- The retention sweep walks finished attempts oldest first (§ Retention).
+CREATE INDEX execution_outcomes_resolved_at
+    ON execution_outcomes (resolved_at);
 
 ALTER TABLE delta_proposals ADD COLUMN request_bytes BIGINT NOT NULL DEFAULT 0;
 ```

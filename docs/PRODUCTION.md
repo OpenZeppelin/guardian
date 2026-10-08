@@ -265,6 +265,22 @@ database's guarantees:
   reservation-age alarm (default 1800 s) is set above this window, so it
   fires only if the reservation outlives it. See
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution-fails-or-never-starts).
+- **Guardian execution record retention.** Every execution attempt leaves a
+  reservation, possibly submission evidence, and an outcome. Once a day,
+  starting a few minutes after startup, each replica deletes the finished
+  attempts resolved more than `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`
+  (default 30) ago whose proposal is gone or that a newer attempt of the same
+  proposal supersedes, in batches of 1,000 until a batch comes back short.
+  Active attempts and the newest attempt of a proposal that still exists are
+  never deleted, so attempt numbering continues and a client waiting on a
+  live proposal still reads its outcome; a status read for a proposal whose
+  records were deleted gets `GUARDIAN_EXECUTION_NOT_FOUND`. The sweep is
+  idempotent, so replicas need no coordination; each logs a summary at
+  `info` and adds what it deleted to `guardian_execution_records_pruned_total`.
+  Sizing: retained rows grow with executions per day times the retention
+  (three small rows per attempt in Postgres, a few hundred bytes each), plus
+  the newest attempt of every proposal still stored. `0` keeps records
+  forever, the earlier behavior; budget storage for it accordingly.
 
 What is deliberately **not** provided: cross-region replicas, automated
 disaster-recovery drills, or backup-failure alarms (see

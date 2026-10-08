@@ -14,6 +14,7 @@ pub const ENV_EXECUTION_RECONCILE_INTERVAL_SECS: &str =
 pub const ENV_EXECUTION_EXPIRATION_HORIZON_BLOCKS: &str =
     "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS";
 pub const ENV_EXECUTION_MAX_CONCURRENT: &str = "GUARDIAN_EXECUTION_MAX_CONCURRENT";
+pub const ENV_EXECUTION_RECORD_RETENTION_DAYS: &str = "GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS";
 
 /// The upstream remote-prover client defaults to 10 s, below observed proving
 /// times, so Guardian always sets its own.
@@ -27,10 +28,16 @@ pub const DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 512;
 /// reservation, its chain view and its proving inputs, and the ones beyond the prover cap wait in
 /// memory for a proof permit rather than reaching the prover.
 pub const DEFAULT_EXECUTION_MAX_CONCURRENT: u32 = 64;
+pub const DEFAULT_EXECUTION_RECORD_RETENTION_DAYS: u32 = 30;
 
 /// Every built-in Guardian-executable proposal signs this relative
 /// transaction expiration, so a horizon below it would refuse all of them.
 pub const MIN_EXECUTION_EXPIRATION_HORIZON_BLOCKS: u32 = 256;
+
+/// The shortest record retention accepted. A finished attempt must outlive the approval window
+/// its proposal can still be executed in, 28,800 blocks or about one day by default, so a client
+/// waiting on it still reads its outcome.
+pub const MIN_EXECUTION_RECORD_RETENTION_DAYS: u32 = 2;
 
 /// The longest execution lease accepted. A worker that stops renewing holds the account until
 /// its lease lapses, so a very long lease turns one crash into a long outage for the account.
@@ -44,6 +51,30 @@ pub struct ProverConfig {
     /// Proofs this process has at the prover at once; `None` leaves them bounded only by the
     /// executions it holds. Set for a shared or small prover, which times out when overloaded.
     pub max_concurrent: Option<u32>,
+}
+
+/// How long finished execution attempts are kept before the retention sweep removes them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordRetention {
+    KeepForever,
+    Days(u32),
+}
+
+impl RecordRetention {
+    fn parse(raw: &str) -> Result<Self, String> {
+        match raw.trim().parse::<u32>() {
+            Ok(0) => Ok(RecordRetention::KeepForever),
+            Ok(days) if days < MIN_EXECUTION_RECORD_RETENTION_DAYS => Err(format!(
+                "{ENV_EXECUTION_RECORD_RETENTION_DAYS} must be 0 (keep forever) or at least \
+                 {MIN_EXECUTION_RECORD_RETENTION_DAYS} days, so finished attempts outlive the \
+                 approval window of about one day, got {days}"
+            )),
+            Ok(days) => Ok(RecordRetention::Days(days)),
+            Err(_) => Err(format!(
+                "{ENV_EXECUTION_RECORD_RETENTION_DAYS} must be a whole number of days, got {raw:?}"
+            )),
+        }
+    }
 }
 
 /// Why this server does not offer Guardian execution.
@@ -104,6 +135,7 @@ pub struct ExecutionConfig {
     pub reconcile_interval: Duration,
     pub expiration_horizon_blocks: u32,
     pub max_concurrent_executions: u32,
+    pub record_retention: RecordRetention,
 }
 
 impl Default for ExecutionConfig {
@@ -119,6 +151,7 @@ impl Default for ExecutionConfig {
             )),
             expiration_horizon_blocks: DEFAULT_EXECUTION_EXPIRATION_HORIZON_BLOCKS,
             max_concurrent_executions: DEFAULT_EXECUTION_MAX_CONCURRENT,
+            record_retention: RecordRetention::Days(DEFAULT_EXECUTION_RECORD_RETENTION_DAYS),
         }
     }
 }
@@ -220,6 +253,10 @@ impl ExecutionConfig {
                 ENV_EXECUTION_MAX_CONCURRENT,
                 DEFAULT_EXECUTION_MAX_CONCURRENT,
             )?,
+            record_retention: match non_blank(lookup(ENV_EXECUTION_RECORD_RETENTION_DAYS)?) {
+                Some(raw) => RecordRetention::parse(&raw)?,
+                None => RecordRetention::Days(DEFAULT_EXECUTION_RECORD_RETENTION_DAYS),
+            },
         })
     }
 
@@ -358,6 +395,32 @@ mod tests {
         assert_eq!(config.lease, Duration::from_secs(120));
         assert_eq!(config.reconcile_interval, Duration::from_secs(30));
         assert_eq!(config.max_concurrent_executions, 64);
+        assert_eq!(config.record_retention, RecordRetention::Days(30));
+    }
+
+    #[test]
+    fn record_retention_is_zero_for_forever_or_outlasts_the_approval_window() {
+        let retention = |raw: &str| config_from(&[(ENV_EXECUTION_RECORD_RETENTION_DAYS, raw)]);
+        assert_eq!(
+            retention("0").unwrap().record_retention,
+            RecordRetention::KeepForever
+        );
+        assert_eq!(
+            retention(" 2 ").unwrap().record_retention,
+            RecordRetention::Days(2)
+        );
+        assert_eq!(
+            retention("").unwrap().record_retention,
+            RecordRetention::Days(DEFAULT_EXECUTION_RECORD_RETENTION_DAYS)
+        );
+        for refused in ["1", "-1", "thirty", "1.5"] {
+            let error = retention(refused).unwrap_err();
+            assert!(
+                error.contains(ENV_EXECUTION_RECORD_RETENTION_DAYS),
+                "{error}"
+            );
+        }
+        assert!(retention("1").unwrap_err().contains("approval window"));
     }
 
     #[test]
