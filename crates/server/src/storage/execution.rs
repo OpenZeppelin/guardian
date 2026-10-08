@@ -156,6 +156,17 @@ impl ExecutionFailure {
             message: message.into(),
         }
     }
+
+    /// A failure whose cause is an internal error: the persisted message, served to cosigners,
+    /// is the fixed `message`, and the cause is logged for operators only.
+    pub fn with_logged_cause(
+        code: ExecutionFailureCode,
+        message: &'static str,
+        cause: &dyn std::fmt::Display,
+    ) -> Self {
+        tracing::warn!(code = code.as_str(), %cause, "{message}");
+        Self::new(code, message)
+    }
 }
 
 impl Serialize for ExecutionFailure {
@@ -431,7 +442,15 @@ mod tests {
             ExecutionFailureCode::from_parts("GUARDIAN_EXECUTION_REQUEST_INVALID", None).is_err()
         );
         assert!(
-            ExecutionFailureCode::from_parts("GUARDIAN_EXECUTION_ANCHOR_EXPIRED", None).is_err()
+            ExecutionFailureCode::from_parts("GUARDIAN_EXECUTION_EXPIRATION_REACHED", None)
+                .is_err()
+        );
+        assert!(
+            ExecutionFailureCode::from_parts(
+                "GUARDIAN_EXECUTION_EXPIRATION_REACHED",
+                Some(&serde_json::json!({ "bound": "approval" }))
+            )
+            .is_ok()
         );
     }
 

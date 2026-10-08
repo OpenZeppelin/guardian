@@ -2590,7 +2590,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/ExecutionQuery"
+                "$ref": "#/components/schemas/ExecuteProposalRequest"
               }
             }
           },
@@ -2638,7 +2638,7 @@
             }
           },
           "409": {
-            "description": "Not ready, not Guardian-executable, or the account is busy",
+            "description": "Not ready, not Guardian-executable, left to local execution, or the account is busy",
             "content": {
               "application/json": {
                 "schema": {
@@ -6361,6 +6361,26 @@
           }
         }
       },
+      "ExecuteProposalRequest": {
+        "type": "object",
+        "description": "The body of an execution request. Every field is part of the signed payload, so the\npayload never equals a signed read of the same proposal.",
+        "required": [
+          "account_id",
+          "proposal_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "allow_private_note": {
+            "type": "boolean",
+            "description": "Let Guardian execute a transaction that creates a private output note. Without it the\nrequest is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`\n`private_note`). Signed as `false` when omitted."
+          },
+          "proposal_id": {
+            "type": "string"
+          }
+        }
+      },
       "ExecutionEnvelope": {
         "type": "object",
         "description": "The execution envelope every execution operation returns.",
@@ -6436,21 +6456,6 @@
               "object",
               "null"
             ]
-          }
-        }
-      },
-      "ExecutionQuery": {
-        "type": "object",
-        "required": [
-          "account_id",
-          "proposal_id"
-        ],
-        "properties": {
-          "account_id": {
-            "type": "string"
-          },
-          "proposal_id": {
-            "type": "string"
           }
         }
       },

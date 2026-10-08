@@ -34,6 +34,9 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// Every `execute_delta_proposal` request with the auth metadata it carried, in arrival
+    /// order.
+    execute_requests: Arc<StdMutex<Vec<SignedExecuteRequest>>>,
     /// The `scheme` field of every `get_pubkey` request, in arrival order.
     get_pubkey_schemes: Arc<StdMutex<Vec<Option<String>>>>,
     persistent_get_pubkey: Arc<StdMutex<Option<String>>>,
@@ -52,6 +55,11 @@ impl MockGuardianHandle {
     /// Every `push_delta_proposal` request received so far.
     pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
         self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// Every `execute_delta_proposal` request received so far.
+    pub fn execute_requests(&self) -> Vec<SignedExecuteRequest> {
+        self.execute_requests.lock().unwrap().clone()
     }
 
     /// The signature scheme each `get_pubkey` call asked for, in arrival
@@ -88,6 +96,14 @@ impl MockGuardianHandle {
     pub fn set_persistent_get_delta_proposals(&self, response: GetDeltaProposalsResponse) {
         *self.persistent_get_delta_proposals.lock().unwrap() = Some(response);
     }
+}
+
+/// An `execute_delta_proposal` request as the mock received it.
+#[derive(Clone, Debug)]
+pub struct SignedExecuteRequest {
+    pub request: ExecuteDeltaProposalRequest,
+    pub signature_hex: String,
+    pub timestamp: i64,
 }
 
 type CurrentExecutionResult = Result<Option<ExecutionEnvelope>, Status>;
@@ -428,8 +444,22 @@ impl Guardian for MockGuardianService {
 
     async fn execute_delta_proposal(
         &self,
-        _request: Request<ExecuteDeltaProposalRequest>,
+        request: Request<ExecuteDeltaProposalRequest>,
     ) -> Result<Response<ExecuteDeltaProposalResponse>, Status> {
+        let metadata = |key: &str| {
+            request
+                .metadata()
+                .get(key)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let signed = SignedExecuteRequest {
+            signature_hex: metadata("x-signature"),
+            timestamp: metadata("x-timestamp").parse().unwrap_or_default(),
+            request: request.get_ref().clone(),
+        };
+        self.handle.execute_requests.lock().unwrap().push(signed);
         self.next_execution("execute_delta_proposal")
             .map(|envelope| {
                 Response::new(ExecuteDeltaProposalResponse {

@@ -3,7 +3,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use std::sync::Arc;
 
-use super::{ActionOutcome, Runner};
+use super::{ActionOutcome, Runner, StackServer};
 use crate::fixtures::Fixtures;
 
 async fn connect(runner: &Runner, fixtures: &Fixtures) -> Result<GuardianClient, ActionOutcome> {
@@ -367,12 +367,9 @@ pub async fn assert_scheme_gate(runner: &Runner) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
-    let Ok(endpoint) = std::env::var("QUAL_GUARDIAN_SCHEME_GATED_GRPC") else {
-        return ActionOutcome::EnvironmentBlocked {
-            reason: "QUAL_GUARDIAN_SCHEME_GATED_GRPC is unset, so no scheme-gated GUARDIAN is \
-                     running to exercise the gate against"
-                .to_string(),
-        };
+    let endpoint = match StackServer::SchemeGated.grpc_endpoint() {
+        Ok(endpoint) => endpoint,
+        Err(outcome) => return outcome,
     };
     let id = match account_id(fixtures) {
         Ok(id) => id,
@@ -658,7 +655,10 @@ pub async fn assert_execution_unavailable(runner: &Runner) -> ActionOutcome {
         Err(outcome) => return outcome,
     };
 
-    match client.execute_delta_proposal(&id, &proposal_id).await {
+    match client
+        .execute_delta_proposal(&id, &proposal_id, false)
+        .await
+    {
         Err(error) if error.guardian_code().as_deref() == Some("GUARDIAN_PROVING_UNAVAILABLE") => {}
         Err(error) => {
             return ActionOutcome::failed_product(format!(
@@ -716,12 +716,9 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
-    let Ok(endpoint) = std::env::var("QUAL_GUARDIAN_EXECUTING_GRPC") else {
-        return ActionOutcome::EnvironmentBlocked {
-            reason: "QUAL_GUARDIAN_EXECUTING_GRPC is unset, so no GUARDIAN that offers \
-                     execution is running"
-                .to_string(),
-        };
+    let endpoint = match StackServer::Executing.grpc_endpoint() {
+        Ok(endpoint) => endpoint,
+        Err(outcome) => return outcome,
     };
     let id = match account_id(fixtures) {
         Ok(id) => id,
@@ -802,14 +799,16 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
             ))),
         };
     if let Some(outcome) = refused(
-        client.execute_delta_proposal(&id, &second_id).await,
+        client.execute_delta_proposal(&id, &second_id, false).await,
         "GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST",
         "a proposal created without a stored request",
     ) {
         return outcome;
     }
     if let Some(outcome) = refused(
-        client.execute_delta_proposal(&id, &proposal_id).await,
+        client
+            .execute_delta_proposal(&id, &proposal_id, false)
+            .await,
         "GUARDIAN_PROPOSAL_NOT_READY",
         "a proposal with no cosigner signatures",
     ) {
@@ -843,7 +842,10 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
     }
 
     for attempt in 1..=2 {
-        match client.execute_delta_proposal(&id, &proposal_id).await {
+        match client
+            .execute_delta_proposal(&id, &proposal_id, false)
+            .await
+        {
             Ok(execution) if execution.newly_accepted => {}
             Ok(execution) => {
                 return ActionOutcome::failed_product(format!(

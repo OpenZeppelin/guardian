@@ -209,6 +209,29 @@ describe('ExecutionWait', () => {
     expect(reads.count).toBe(1);
   });
 
+  it('retries every fetch network failure wording', async () => {
+    const runtime = new FakeRuntime();
+    const reads = new ScriptedReads([
+      new TypeError('Failed to fetch'),
+      new TypeError('NetworkError when attempting to fetch resource.'),
+      new TypeError('Load failed'),
+      execution('committed'),
+    ]);
+    const result = await new ExecutionWait('0xprop', options(1, 10, 900)).run(reads.read, runtime);
+    expect(result.state).toBe('committed');
+    expect(reads.count).toBe(4);
+  });
+
+  it('throws a TypeError that is not a fetch network failure unchanged', async () => {
+    const bug = new TypeError("Cannot read properties of undefined (reading 'state')");
+    const reads = new ScriptedReads([bug]);
+    const error = await new ExecutionWait('0xprop', options(1, 10, 900))
+      .run(reads.read, new FakeRuntime())
+      .catch((e: unknown) => e);
+    expect(error).toBe(bug);
+    expect(reads.count).toBe(1);
+  });
+
   it('throws an unclassified error unchanged', async () => {
     const decodeFailure = new Error('Guardian returned an unknown execution state: "paused"');
     const reads = new ScriptedReads([decodeFailure]);

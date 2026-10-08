@@ -123,9 +123,9 @@
       "mode": "n/a",
       "profile": "deterministic",
       "required": true,
-      "runtime": null,
+      "runtime": "server-side",
       "scheme": "n/a",
-      "sdk": "rust",
+      "sdk": "both",
       "shape": "n/a",
       "step_budget": "PT1M",
       "title": "A GUARDIAN with no prover refuses execution and records nothing"

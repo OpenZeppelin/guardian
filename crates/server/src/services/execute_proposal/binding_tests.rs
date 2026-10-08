@@ -227,6 +227,7 @@ async fn a_second_proposal_is_refused_while_another_holds_the_account() {
             account_id: ACCOUNT.to_string(),
             proposal_id: OTHER_PROPOSAL.to_string(),
             credentials: f.credentials(),
+            allow_private_note: false,
         },
     )
     .await;
