@@ -1602,8 +1602,76 @@ mod tests {
         assert_not_committed(&storage);
     }
 
+    fn update_signers_root() -> miden_protocol::Word {
+        use miden_standards::account::auth::AuthGuardedMultisig;
+        let code = AuthGuardedMultisig::code();
+        let export = code
+            .exports()
+            .find(|export| {
+                export.path.to_string().rsplit("::").next() == Some("update_signers_and_threshold")
+            })
+            .expect("update_signers_and_threshold export");
+        code.get_procedure_root_by_path(&*export.path)
+            .map(miden_protocol::Word::from)
+            .expect("update_signers_and_threshold root")
+    }
+
+    /// A per-procedure override applies when the summary shows that
+    /// procedure was invoked, and only then: the same claim on a summary
+    /// that invokes nothing is held to the account default.
     #[tokio::test]
     async fn multisig_push_uses_the_procedure_threshold_override() {
+        use crate::testing::helpers::TestSigner;
+        use guardian_shared::FromJson;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let approver = TestSigner::new();
+        let overrides = [(update_signers_root(), 1)];
+
+        let payload = update_signers_shaped_summary(account_id);
+        let summary =
+            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
+        let (admitted, _) = push_payload_on_multisig(
+            payload,
+            std::slice::from_ref(&approver.commitment_hex),
+            2,
+            &overrides,
+            "add_signer",
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
+        )
+        .await;
+        assert!(admitted.is_ok(), "{admitted:?}");
+
+        let empty_summary = miden_protocol::transaction::TransactionSummary::from_json(
+            &crate::testing::helpers::create_test_delta_payload(account_id),
+        )
+        .expect("empty summary");
+        let (refused, storage) = push_on_multisig(
+            std::slice::from_ref(&approver.commitment_hex),
+            2,
+            &overrides,
+            "add_signer",
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &empty_summary)]),
+        )
+        .await;
+        assert!(
+            matches!(
+                refused,
+                Err(GuardianError::InsufficientSignatures {
+                    required: 2,
+                    got: 1
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_not_committed(&storage);
+    }
+
+    /// A summary that invokes no procedure (a bare nonce bump: no notes,
+    /// no storage changes) is held to the account default on chain, so a
+    /// cheap label cannot lower what Guardian requires for it.
+    #[tokio::test]
+    async fn multisig_push_holds_an_empty_summary_to_the_account_default() {
         use crate::testing::helpers::TestSigner;
         use guardian_shared::FromJson;
         use miden_standards::account::wallets::BasicWallet;
@@ -1614,21 +1682,11 @@ mod tests {
         )
         .expect("summary");
         let receive = BasicWallet::receive_asset_root().into();
-        let (admitted, _) = push_on_multisig(
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(receive, 1)],
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(admitted.is_ok(), "{admitted:?}");
-
         let (refused, storage) = push_on_multisig(
             std::slice::from_ref(&approver.commitment_hex),
             2,
             &[(receive, 1)],
-            "p2id",
+            "consume_notes",
             ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
         )
         .await;

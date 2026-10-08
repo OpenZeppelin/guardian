@@ -178,20 +178,22 @@ impl MultisigAccount {
 
     /// The signature count the pushed transaction needs: the maximum
     /// threshold over the procedures its summary shows were invoked and
-    /// the procedure its proposal claims to invoke. The claim is not
-    /// trusted on its own — it can raise the requirement but never
-    /// lower it below what the summary shows — so labelling a proposal
-    /// with a cheaper procedure's type does not buy a lower threshold.
+    /// the procedure its proposal claims to invoke. A summary that shows
+    /// no invoked procedure is held to the account default first, the
+    /// on-chain fallback for a transaction that calls no non-auth
+    /// procedure, so the claim is never trusted on its own: it can raise
+    /// the requirement but never lower it, neither below what the
+    /// summary shows nor below the default.
     fn required_threshold(
         &self,
         pushed: &TransactionSummary,
         claimed: Option<InvokedProcedure>,
     ) -> Result<usize> {
         let mut invoked = InvokedProcedure::of_summary(pushed);
-        invoked.extend(claimed);
         if invoked.is_empty() {
             invoked.insert(InvokedProcedure::AccountDefault);
         }
+        invoked.extend(claimed);
         invoked
             .into_iter()
             .map(|procedure| self.threshold(procedure))
