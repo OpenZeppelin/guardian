@@ -1,4 +1,119 @@
 import { GuardianHttpError, isTerminalExecutionState, type ProposalExecution } from '@openzeppelin/guardian-client';
+import type { Proposal } from '../types/proposal.js';
+
+/**
+ * Why a proposal must be executed by a client rather than by GUARDIAN, even on a
+ * `guardian_executable` client: local execution does work GUARDIAN skips. A `switch_guardian`
+ * proposal is finished by the executing client, which verifies the new GUARDIAN, registers the
+ * account there and repoints itself; a P2ID proposal with a private note leaves the note with the
+ * executor, the only one that can export it to the recipient. Mirrors the Rust SDK's
+ * `LocalExecutionReason`.
+ */
+export type LocalExecutionReason = 'switch_guardian' | 'private_note';
+
+/** Why `proposal` must be executed locally, or `null` when GUARDIAN can execute it. */
+export function localExecutionReason(proposal: Pick<Proposal, 'metadata'>): LocalExecutionReason | null {
+  const metadata = proposal.metadata;
+  if (metadata.proposalType === 'switch_guardian') {
+    return 'switch_guardian';
+  }
+  if (metadata.proposalType === 'p2id' && metadata.noteType === 'private') {
+    return 'private_note';
+  }
+  return null;
+}
+
+/** A human-readable explanation of a {@link LocalExecutionReason}. */
+export function describeLocalExecutionReason(reason: LocalExecutionReason): string {
+  switch (reason) {
+    case 'switch_guardian':
+      return 'a GUARDIAN switch is finished by the client that executes it';
+    case 'private_note':
+      return 'a private note can only be exported by the client that executed it';
+    default: {
+      const unreachable: never = reason;
+      throw new Error(`Unknown local execution reason: ${JSON.stringify(unreachable)}`);
+    }
+  }
+}
+
+/**
+ * The SDK refused to ask GUARDIAN to execute a proposal that must be executed locally: a
+ * `switch_guardian` proposal always, a private-note P2ID proposal unless the request passed
+ * `allowPrivateNote`. Execute it with `executeProposal` instead. Mirrors the Rust SDK's
+ * `MultisigError::LocalExecutionRequired`.
+ */
+export class LocalExecutionRequiredError extends Error {
+  readonly proposalId: string;
+  readonly reason: LocalExecutionReason;
+
+  constructor(details: { proposalId: string; reason: LocalExecutionReason }) {
+    super(
+      `proposal ${details.proposalId} must be executed locally, not by GUARDIAN: ` +
+        describeLocalExecutionReason(details.reason),
+    );
+    this.name = 'LocalExecutionRequiredError';
+    this.proposalId = details.proposalId;
+    this.reason = details.reason;
+  }
+}
+
+/**
+ * The SDK refused to ask GUARDIAN to execute a proposal this client does not hold, because it
+ * cannot tell whether the proposal must be executed locally. Sync proposals and request again.
+ */
+export class ProposalNotHeldLocallyError extends Error {
+  readonly proposalId: string;
+
+  constructor(proposalId: string) {
+    super(
+      `proposal ${proposalId} is not held by this client, so it cannot be checked before GUARDIAN ` +
+        'executes it: sync proposals and request again',
+    );
+    this.name = 'ProposalNotHeldLocallyError';
+    this.proposalId = proposalId;
+  }
+}
+
+/**
+ * Options for one `requestGuardianExecution` call. `allowPrivateNote` sends a private-note P2ID
+ * proposal to GUARDIAN anyway: the caller takes on delivering the note to its recipient itself.
+ * It never lets a `switch_guardian` proposal through.
+ */
+export interface GuardianExecutionRequestOptions {
+  allowPrivateNote?: boolean;
+}
+
+/**
+ * Throws unless GUARDIAN may execute the proposal this client holds under `proposalId`: a
+ * proposal the client does not hold fails closed, a `switch_guardian` proposal always needs local
+ * execution, and a private-note P2ID proposal needs it unless the request allows it.
+ */
+export function assertGuardianMayExecute(
+  proposalId: string,
+  proposal: Pick<Proposal, 'metadata'> | undefined,
+  options: GuardianExecutionRequestOptions,
+): void {
+  if (proposal === undefined) {
+    throw new ProposalNotHeldLocallyError(proposalId);
+  }
+  const reason = localExecutionReason(proposal);
+  switch (reason) {
+    case null:
+      return;
+    case 'switch_guardian':
+      throw new LocalExecutionRequiredError({ proposalId, reason });
+    case 'private_note':
+      if (options.allowPrivateNote === true) {
+        return;
+      }
+      throw new LocalExecutionRequiredError({ proposalId, reason });
+    default: {
+      const unreachable: never = reason;
+      throw new Error(`Unknown local execution reason: ${JSON.stringify(unreachable)}`);
+    }
+  }
+}
 
 /**
  * Guardian refused an execution request or an execution read with a stable code, such as

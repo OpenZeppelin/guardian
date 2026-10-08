@@ -252,10 +252,18 @@ impl Fixture {
     }
 
     pub(crate) async fn store_proposal(&self, guardian_executable: bool) {
+        self.store_typed_proposal("p2id", guardian_executable).await;
+    }
+
+    pub(crate) async fn store_typed_proposal(
+        &self,
+        proposal_type: &str,
+        guardian_executable: bool,
+    ) {
         let mut payload = serde_json::json!({
             "tx_summary": fixture_summary(),
             "signatures": [],
-            "metadata": { "proposal_type": "p2id" },
+            "metadata": { "proposal_type": proposal_type },
         });
         if guardian_executable {
             payload["transaction_request"] = serde_json::json!({
@@ -540,6 +548,45 @@ async fn a_proposal_without_a_stored_request_is_not_guardian_executable() {
         f.request().await,
         Err(GuardianError::ProposalMissingTransactionRequest)
     ));
+}
+
+#[tokio::test]
+async fn a_switch_guardian_proposal_executes_locally_and_reserves_nothing() {
+    let f = Fixture::new(Script::default()).await;
+    f.store_typed_proposal("switch_guardian", true).await;
+    let result = f.request().await;
+    assert!(
+        matches!(
+            &result,
+            Err(GuardianError::ProposalExecutesLocally { proposal_type })
+                if proposal_type == "switch_guardian"
+        ),
+        "{result:?}"
+    );
+    assert!(
+        f.state
+            .storage
+            .load_active_execution(ACCOUNT)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.state
+            .storage
+            .load_latest_execution(ACCOUNT, PROPOSAL)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        f.state
+            .storage
+            .pull_delta_proposal(ACCOUNT, PROPOSAL)
+            .await
+            .is_ok(),
+        "the proposal stays usable for local execution"
+    );
 }
 
 #[tokio::test]

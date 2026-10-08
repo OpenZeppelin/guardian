@@ -4,6 +4,8 @@ import { NoteType } from '@miden-sdk/miden-sdk';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
 import {
   AccountInspector,
+  describeLocalExecutionReason,
+  localExecutionReason,
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
@@ -36,7 +38,6 @@ import {
   describeFailedExecution,
   executeProposal as executeOnlineProposal,
   executeThroughGuardian,
-  localExecutionReason,
   guardianExecutionStatus as readGuardianExecutionStatus,
   exportProposalToJson,
   fetchAccountState,
@@ -1298,9 +1299,14 @@ export function useSmokeHarness(): {
         }
 
         const proposal = currentMultisig.listProposals().find(({ id }) => id === proposalId);
+        const localReason = proposal === undefined ? null : localExecutionReason(proposal);
         const guardianExecutes =
-          currentMultisig.executionMode === 'guardian_executable' &&
-          (proposal === undefined || localExecutionReason(proposal) === null);
+          currentMultisig.executionMode === 'guardian_executable' && localReason === null;
+        if (localReason !== null && currentMultisig.executionMode === 'guardian_executable') {
+          console.info(
+            `Executing proposal ${proposalId} locally: ${describeLocalExecutionReason(localReason)}`,
+          );
+        }
         if (guardianExecutes) {
           const execution = await executeThroughGuardian(currentMultisig, proposalId);
           if (execution.state === 'failed') {

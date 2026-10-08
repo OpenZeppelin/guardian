@@ -156,6 +156,14 @@ pub async fn request_execution(
     if proposal.delta_payload.get("transaction_request").is_none() {
         return Err(GuardianError::ProposalMissingTransactionRequest);
     }
+    if let Some(proposal_type) = proposal
+        .proposal_type()
+        .filter(|proposal_type| *proposal_type == "switch_guardian")
+    {
+        return Err(GuardianError::ProposalExecutesLocally {
+            proposal_type: proposal_type.to_string(),
+        });
+    }
     if state
         .storage
         .has_pending_candidate(&account_id)

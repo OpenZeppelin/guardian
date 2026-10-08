@@ -1593,6 +1593,34 @@ describe('GuardianHttpError', () => {
       expect(e.meta?.blockingProposalId).toBe(blocking);
     });
 
+    it('surfaces a refused switch_guardian execution as proposal_executes_locally with meta.proposalType', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'A guardian switch is executed by the wallet that finishes the handoff.',
+            meta: { retryable: false, proposal_type: 'switch_guardian' },
+          }),
+      });
+
+      const error = await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.status).toBe(409);
+      expect(e.code).toBe('proposal_executes_locally');
+      expect(e.rawCode).toBe('GUARDIAN_PROPOSAL_EXECUTES_LOCALLY');
+      expect(e.isRetryable()).toBe(false);
+      expect(e.meta?.proposalType).toBe('switch_guardian');
+    });
+
     it('omits meta.allowedSchemes rather than exposing a partial list when an element is malformed', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({

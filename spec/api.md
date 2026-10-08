@@ -557,7 +557,9 @@ Stable error codes include:
 - `rpc_unavailable`
 - `rpc_validation_failed`
 - Guardian execution: `GUARDIAN_PROVING_UNAVAILABLE`, `GUARDIAN_PROPOSAL_NOT_READY`,
-  `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, `GUARDIAN_EXECUTION_CONFLICT`
+  `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`
+  (`meta.proposal_type`: a `switch_guardian` proposal, which only the client that finishes the
+  GUARDIAN handoff executes), `GUARDIAN_EXECUTION_CONFLICT`
   (`meta.blocking_proposal_id`), `GUARDIAN_EXECUTION_BUSY` (retryable: another request is
   starting an execution for the account, or the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT`
   executions; nothing is reserved),

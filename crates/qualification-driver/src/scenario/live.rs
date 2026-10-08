@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{AbandonStatus, MultisigClient, ProposalStatus};
-use miden_multisig_client::{ExecutionState, ProposalExecutionMode};
+use miden_multisig_client::{ExecutionState, GuardianExecutionRequest, ProposalExecutionMode};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
@@ -837,7 +837,10 @@ pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
         Err(reason) => return unbindable(reason),
     };
 
-    match client.request_guardian_execution(&proposal_id).await {
+    match client
+        .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
+        .await
+    {
         Ok(execution) if execution.newly_accepted => {}
         Ok(execution) => {
             return ActionOutcome::failed_product(format!(

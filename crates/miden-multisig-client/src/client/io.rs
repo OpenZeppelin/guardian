@@ -157,6 +157,8 @@ impl MultisigClient {
 
         let mut proposal = exported.to_proposal()?;
         self.verify_proposal_summary_binding(&mut proposal).await?;
+        self.known_proposals
+            .record(exported.account_id()?, &proposal);
 
         Ok(exported)
     }

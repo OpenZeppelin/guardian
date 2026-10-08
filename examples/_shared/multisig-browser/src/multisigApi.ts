@@ -377,23 +377,6 @@ export async function guardianExecutionStatus(
 }
 
 /**
- * Why this client must execute a proposal itself even when GUARDIAN executes its proposals, or
- * `null` when GUARDIAN can. A GUARDIAN switch is finished by the executing client, which repoints
- * itself and registers the account on the new GUARDIAN; a private note can only be exported from
- * the record the client's own execution creates.
- */
-export function localExecutionReason(proposal: Pick<Proposal, 'metadata'>): string | null {
-  const metadata = proposal.metadata;
-  if (metadata.proposalType === 'switch_guardian') {
-    return 'a GUARDIAN switch is finished by the client that executes it';
-  }
-  if (metadata.proposalType === 'p2id' && metadata.noteType === 'private') {
-    return 'a private note can only be exported by the client that executed it';
-  }
-  return null;
-}
-
-/**
  * What the caller can do after a failed execution. Follows the failure code: `proposalExists`
  * says whether the proposal is still stored, not whether executing it again can succeed.
  */
