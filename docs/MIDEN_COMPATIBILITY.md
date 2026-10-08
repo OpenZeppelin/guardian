@@ -236,6 +236,11 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
   retry_after, blocking_proposal_id }` and `GuardianExecutionWaitTimedOut { proposal_id,
   deadline, last_observed }` (from `wait_for_guardian_execution`), so an exhaustive `match` on
   the error needs an arm for each.
+- `guardian_client::GuardianClient::execute_delta_proposal` takes a third argument,
+  `allow_private_note: bool`. Guardian refuses a transaction that creates a private output note
+  (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`) unless it is `true`. The
+  flag is signed, and the gRPC execute payload is tagged `guardian.ExecuteDeltaProposal`, so a
+  client that signs the plain request bytes is refused with `authentication_failed`.
 - `guardian_shared::execution::ExecutionFailureCode` includes
   `AcknowledgementFailed` (`GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`): Guardian could not sign
   or record its acknowledgement, a failure on Guardian's side that leaves the proposal
@@ -248,6 +253,11 @@ Source-level changes in the TypeScript packages:
   `execution_busy`, `execution_conflict`, `execution_not_found`,
   `proposal_executes_locally`, `proposal_missing_transaction_request`, `proposal_not_ready`,
   `proposal_request_too_large` and `proving_unavailable`.
+- `GuardianHttpClient.executeDeltaProposal` takes an optional third argument,
+  `{ allowPrivateNote?: boolean }`, and always sends and signs `allow_private_note` in the body.
+  A direct HTTP caller must sign the body with that field present (`false` when it does not opt
+  in); `GuardianErrorMeta.reason` (`switch_guardian` or `private_note`) says why a
+  `proposal_executes_locally` refusal left the proposal to local execution.
 - `StatusResponse.execution` is a new required field (`{ enabled: true }` or
   `{ enabled: false, reason }`), so code that builds a `StatusResponse` (a mock, for example)
   must set it.

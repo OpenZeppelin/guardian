@@ -633,6 +633,19 @@ pub struct ExecutionQuery {
     pub proposal_id: String,
 }
 
+/// The body of an execution request. Every field is part of the signed payload, so the
+/// payload never equals a signed read of the same proposal.
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct ExecuteProposalRequest {
+    pub account_id: String,
+    pub proposal_id: String,
+    /// Let Guardian execute a transaction that creates a private output note. Without it the
+    /// request is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`
+    /// `private_note`). Signed as `false` when omitted.
+    #[serde(default)]
+    pub allow_private_note: bool,
+}
+
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct CurrentExecutionQuery {
@@ -655,20 +668,20 @@ pub struct CurrentExecutionResponse {
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
-    request_body = ExecutionQuery,
+    request_body = ExecuteProposalRequest,
     responses(
         (status = 202, description = "Execution accepted", body = crate::services::execution_status::ExecutionEnvelope),
         (status = 200, description = "Execution already active", body = crate::services::execution_status::ExecutionEnvelope),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Not ready, not Guardian-executable, or the account is busy", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Not ready, not Guardian-executable, left to local execution, or the account is busy", body = crate::openapi::ApiErrorResponse),
         (status = 503, description = "This server does not offer Guardian execution", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn execute_delta_proposal(
     State(state): State<AppState>,
     AuthHeader(credentials): AuthHeader,
-    Json(payload): Json<ExecutionQuery>,
+    Json(payload): Json<ExecuteProposalRequest>,
 ) -> Result<
     (
         StatusCode,
@@ -682,6 +695,7 @@ pub async fn execute_delta_proposal(
         account_id: payload.account_id,
         proposal_id: payload.proposal_id,
         credentials: request_payload.apply_to(credentials),
+        allow_private_note: payload.allow_private_note,
     };
     let envelope = crate::services::execute_proposal::request_execution(&state, params).await?;
     let status = if envelope.newly_accepted {

@@ -43,6 +43,23 @@ resource "aws_ecs_task_definition" "server" {
     operating_system_family = "LINUX"
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.guardian_execution_enabled != true || local.tx_prover_configured
+      error_message = "guardian_execution_enabled = true needs a prover: set GUARDIAN_TX_PROVER_URL (guardian_tx_prover_url) or GUARDIAN_TX_PROVER_URL_SECRET_ARN (guardian_tx_prover_url_secret_arn)."
+    }
+
+    precondition {
+      condition     = var.guardian_execution_enabled != false || !local.tx_prover_configured
+      error_message = "guardian_execution_enabled = false contradicts the configured prover: unset guardian_tx_prover_url and guardian_tx_prover_url_secret_arn, or drop guardian_execution_enabled = false."
+    }
+
+    precondition {
+      condition     = var.guardian_execution_enabled != null || local.tx_prover_configured || !local.managed_tx_prover_url_secret_exists
+      error_message = "This plan would delete the stack's managed prover URL secret and turn Guardian execution off, usually because GUARDIAN_TX_PROVER_URL is missing from this shell. Pass the prover URL again, or set guardian_execution_enabled = false to turn execution off on purpose."
+    }
+  }
+
   dynamic "volume" {
     for_each = local.ca_bundle_enabled ? [1] : []
     content {

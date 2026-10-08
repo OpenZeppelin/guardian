@@ -35,7 +35,11 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
 
 # Optional: Guardian execution. Setting a prover turns it on; the URL is stored in
-# a Secrets Manager secret because it can carry credentials.
+# a Secrets Manager secret because a private prover's hostname can be sensitive.
+# The server refuses a URL carrying userinfo (user:pass@), a query or a fragment,
+# so restrict a private prover at the network level. Keeping both lines here, not
+# only in the deploying shell, makes a deploy that lost the URL fail its plan.
+# guardian_execution_enabled = true
 # guardian_tx_prover_url = "https://tx-prover.testnet.miden.io"
 # guardian_proving_enabled = false
 # Signature schemes NEW accounts may register with (falcon, ecdsa). The

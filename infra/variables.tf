@@ -942,8 +942,14 @@ variable "github_deploy_stack_names" {
   default     = ["guardian", "guardian-prod"]
 }
 
+variable "guardian_execution_enabled" {
+  description = "Whether Guardian execution is on. true fails the plan unless guardian_tx_prover_url or guardian_tx_prover_url_secret_arn is set, so a deploy that lost the prover URL cannot quietly ship execution off. false turns execution off on purpose and refuses a configured prover. Unset infers it from whether a prover is configured, but fails the plan rather than delete the stack's existing managed prover URL secret."
+  type        = bool
+  default     = null
+}
+
 variable "guardian_tx_prover_url" {
-  description = "Remote transaction prover URL (GUARDIAN_TX_PROVER_URL). When set, Terraform creates a Secrets Manager secret holding it, since a private prover's URL can be sensitive. Setting a prover is what turns Guardian execution on. Empty leaves execution off unless guardian_tx_prover_url_secret_arn is set."
+  description = "Remote transaction prover URL (GUARDIAN_TX_PROVER_URL): an http or https URL with a host and no userinfo, query or fragment, which the server refuses at startup. When set, Terraform creates a Secrets Manager secret holding it, since a private prover's hostname can be sensitive. Setting a prover is what turns Guardian execution on. Empty leaves execution off unless guardian_tx_prover_url_secret_arn is set."
   type        = string
   default     = ""
   sensitive   = true
