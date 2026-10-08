@@ -70,6 +70,7 @@ pub const EXECUTION_OLDEST_RESERVATION_AGE_SECONDS: &str =
     "guardian_execution_oldest_reservation_age_seconds";
 pub const EXECUTION_OBSERVATION_OUTAGE_SECONDS: &str =
     "guardian_execution_observation_outage_seconds";
+pub const EXECUTION_RECORDS_PRUNED_TOTAL: &str = "guardian_execution_records_pruned_total";
 pub const CANONICALIZATION_RECONCILE_RUNS_TOTAL: &str =
     "guardian_canonicalization_reconcile_runs_total";
 pub const CANONICALIZATION_RECONCILE_RUN_DURATION_SECONDS: &str =
@@ -370,6 +371,12 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
         help: "Guardian executions visited by reconciliation, by outcome (owned, released, awaiting_promotion, committed, waiting, observation_unavailable, resolved).",
+    },
+    MetricDef {
+        name: EXECUTION_RECORDS_PRUNED_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[],
+        help: "Finished execution attempts the retention sweep deleted, with their evidence and outcome.",
     },
     MetricDef {
         name: CANONICALIZATION_RECONCILE_RUNS_TOTAL,

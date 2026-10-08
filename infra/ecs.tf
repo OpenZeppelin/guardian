@@ -315,6 +315,12 @@ resource "aws_ecs_task_definition" "server" {
               value = tostring(var.guardian_execution_max_concurrent)
             }
           ] : [],
+          var.guardian_execution_record_retention_days != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS"
+              value = tostring(var.guardian_execution_record_retention_days)
+            }
+          ] : [],
           var.guardian_tx_prover_max_concurrent != null ? [
             {
               name  = "GUARDIAN_TX_PROVER_MAX_CONCURRENT"

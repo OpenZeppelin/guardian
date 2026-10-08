@@ -257,6 +257,7 @@ locals {
               "^guardian_execution_capacity_refusals_total$",
               "^guardian_execution_oldest_reservation_age_seconds$",
               "^guardian_execution_observation_outage_seconds$",
+              "^guardian_execution_records_pruned_total$",
             ]
             dimensions = [[]]
           },

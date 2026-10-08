@@ -390,7 +390,7 @@ component schemas.
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
 | client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
 | client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id, allow_private_note}`; `allow_private_note` defaults to `false` and is signed |
-| client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when never executed) |
+| client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when never executed, or when retention deleted its records: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
 | dashboard | `GET /auth/challenge` | public | Operator login challenge |
 | dashboard | `POST /auth/verify` | public | Verify challenge, establish session |
@@ -683,6 +683,7 @@ behavior.
 | `guardian_execution_capacity_refusals_total` | counter | none |
 | `guardian_execution_oldest_reservation_age_seconds` | gauge | — |
 | `guardian_execution_observation_outage_seconds` | gauge | — |
+| `guardian_execution_records_pruned_total` | counter | none |
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
