@@ -14,9 +14,11 @@ pub mod auth;
 pub mod auth_request_eip712;
 pub mod auth_request_message;
 pub mod auth_request_payload;
+pub mod execution;
 pub mod felt;
 pub mod hex;
 pub mod lookup_auth_message;
+pub mod request_envelope;
 pub mod retry;
 
 use crate::hex::FromHex;
@@ -141,7 +143,8 @@ fn signature_advice_key(pubkey_commitment: Word, message: Word) -> Word {
     Hasher::hash_elements(&elements)
 }
 
-fn parse_ecdsa_public_key_hex(
+/// Decodes an optionally `0x`-prefixed hex ECDSA public key.
+pub fn parse_ecdsa_public_key_hex(
     public_key_hex: &str,
 ) -> Result<ecdsa_k256_keccak::PublicKey, String> {
     let public_key_bytes = ::hex::decode(public_key_hex.trim_start_matches("0x"))
