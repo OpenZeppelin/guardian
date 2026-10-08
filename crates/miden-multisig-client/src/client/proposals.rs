@@ -91,7 +91,10 @@ impl MultisigClient {
     /// hide the others (issue #462). `Failed { retryable: true }`
     /// means a transient node error, worth listing again; `retryable: false`
     /// means the proposal cannot be reproduced and must be re-proposed.
-    /// Signing and executing re-verify and refuse a failed proposal.
+    /// Signing and executing re-verify and refuse a failed proposal. Only a
+    /// verified proposal is held for
+    /// [`request_guardian_execution`](Self::request_guardian_execution); a
+    /// failed one is refused there as not held until a listing verifies it.
     ///
     /// # Errors
     ///
@@ -125,10 +128,9 @@ impl MultisigClient {
 
         self.sync_chain_before_verifying(&proposals).await;
         for proposal in &mut proposals {
-            // The outcome lands on the proposal either way; a failure is
-            // reported there rather than failing the listing.
-            let _ = self.verify_proposal_summary_binding(proposal).await;
-            self.known_proposals.record(account_id, proposal);
+            if self.verify_proposal_summary_binding(proposal).await.is_ok() {
+                self.known_proposals.record(account_id, proposal);
+            }
         }
 
         Ok(proposals)

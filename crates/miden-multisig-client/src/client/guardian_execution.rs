@@ -3,15 +3,37 @@
 use std::time::Duration;
 
 use guardian_client::{ClientError, ProposalExecution};
+use guardian_shared::execution::refusal_codes;
 use miden_protocol::account::AccountId;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
-use crate::local_execution::GuardianExecutionRequest;
+use crate::local_execution::{GuardianExecutionRequest, LocalExecutionReason};
 
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(10);
 const DEFAULT_WAIT_DEADLINE: Duration = Duration::from_secs(15 * 60);
+
+/// [`refusal`] for an execution request of `proposal_id`: GUARDIAN refusing a proposal that a
+/// client must execute surfaces as
+/// [`LocalExecutionRequired`](MultisigError::LocalExecutionRequired), exactly as the local check
+/// reports it.
+fn execution_refusal(error: ClientError, proposal_id: &str) -> MultisigError {
+    match local_execution_refusal(&error) {
+        Some(reason) => MultisigError::LocalExecutionRequired {
+            proposal_id: proposal_id.to_string(),
+            reason,
+        },
+        None => refusal(error),
+    }
+}
+
+fn local_execution_refusal(error: &ClientError) -> Option<LocalExecutionReason> {
+    if error.guardian_code()? != refusal_codes::PROPOSAL_EXECUTES_LOCALLY {
+        return None;
+    }
+    LocalExecutionReason::parse(error.guardian_meta()?.get("reason")?.as_str()?)
+}
 
 fn refusal(error: ClientError) -> MultisigError {
     match error.guardian_code() {
@@ -242,7 +264,9 @@ impl MultisigClient {
     /// [`LocalExecutionRequired`](MultisigError::LocalExecutionRequired) and must be executed with
     /// [`execute_proposal`](Self::execute_proposal): a GUARDIAN switch always, and a P2ID that
     /// creates a private note unless `request.allow_private_note` is set. See
-    /// [`LocalExecutionReason`](crate::LocalExecutionReason).
+    /// [`LocalExecutionReason`](crate::LocalExecutionReason). The opt-in is sent with the
+    /// request, and GUARDIAN applies the same rule: its refusal surfaces as the same
+    /// [`LocalExecutionRequired`](MultisigError::LocalExecutionRequired).
     pub async fn request_guardian_execution(
         &mut self,
         proposal_id: &str,
@@ -253,9 +277,9 @@ impl MultisigClient {
             .admit(account_id, proposal_id, request)?;
         let mut guardian = self.create_authenticated_guardian_client().await?;
         guardian
-            .execute_delta_proposal(&account_id, proposal_id)
+            .execute_delta_proposal(&account_id, proposal_id, request.allow_private_note)
             .await
-            .map_err(refusal)
+            .map_err(|error| execution_refusal(error, proposal_id))
     }
 
     /// The latest Guardian execution of a proposal.
@@ -368,6 +392,58 @@ mod tests {
         assert!(retryable);
         assert_eq!(retry_after, Some(Duration::from_secs(3)));
         assert_eq!(blocking_proposal_id, None);
+    }
+
+    #[test]
+    fn a_local_execution_refusal_names_the_proposal_and_the_reason() {
+        for (wire, expected) in [
+            ("switch_guardian", LocalExecutionReason::SwitchGuardian),
+            ("private_note", LocalExecutionReason::PrivateNote),
+        ] {
+            let error = execution_refusal(
+                guardian_status(
+                    tonic::Code::FailedPrecondition,
+                    serde_json::json!({
+                        "code": "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+                        "message": "execute it from your wallet",
+                        "meta": { "retryable": false, "reason": wire }
+                    }),
+                ),
+                "0xabc",
+            );
+            let MultisigError::LocalExecutionRequired {
+                proposal_id,
+                reason,
+            } = error
+            else {
+                panic!("expected LocalExecutionRequired, got {error:?}");
+            };
+            assert_eq!(proposal_id, "0xabc");
+            assert_eq!(reason, expected);
+        }
+    }
+
+    #[test]
+    fn a_local_execution_refusal_without_a_known_reason_stays_a_refusal() {
+        let error = execution_refusal(
+            guardian_status(
+                tonic::Code::FailedPrecondition,
+                serde_json::json!({
+                    "code": "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+                    "message": "execute it from your wallet",
+                    "meta": { "retryable": false, "reason": "something_new" }
+                }),
+            ),
+            "0xabc",
+        );
+        assert!(
+            matches!(
+                &error,
+                MultisigError::GuardianExecutionRefused { code, .. }
+                    if code == "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY"
+            ),
+            "{error:?}"
+        );
     }
 
     #[test]

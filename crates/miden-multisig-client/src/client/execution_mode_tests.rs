@@ -19,8 +19,8 @@ use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
 use crate::transaction::{
     GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
-    ProposalExecutionMode, deserialize_transaction_request, execute_for_summary_at_tip,
-    summary_approval_expiration_block_num,
+    ProposalExecutionMode, ProposalOptions, deserialize_transaction_request,
+    execute_for_summary_at_tip, summary_approval_expiration_block_num,
 };
 
 struct Proposed {
@@ -114,6 +114,24 @@ async fn propose_on(
     shape: AccountShape,
     transaction_type: impl FnOnce(Vec<Word>) -> TransactionType,
 ) -> Proposed {
+    propose_on_with(
+        dir,
+        mode,
+        ProposalOptions::default(),
+        shape,
+        transaction_type,
+    )
+    .await
+}
+
+/// [`propose_on`] with per-proposal `options`.
+async fn propose_on_with(
+    dir: &std::path::Path,
+    mode: ProposalExecutionMode,
+    options: ProposalOptions,
+    shape: AccountShape,
+    transaction_type: impl FnOnce(Vec<Word>) -> TransactionType,
+) -> Proposed {
     let keystore: Arc<dyn KeyManager> = Arc::new(GuardianKeyStore::generate());
     let (account, signers) = shape.build(keystore.commitment());
     let transaction_type = transaction_type(signers);
@@ -135,7 +153,9 @@ async fn propose_on(
         .await
         .unwrap();
 
-    let _ = client.propose_transaction(transaction_type).await;
+    let _ = client
+        .propose_transaction_with_options(transaction_type, options)
+        .await;
     let pushed = handle.pushed_proposals();
     assert_eq!(pushed.len(), 1, "the proposal was pushed once");
     let payload: serde_json::Value = serde_json::from_str(&pushed[0].delta_payload).unwrap();
@@ -217,7 +237,6 @@ async fn switch_target(commitment: Word) -> String {
 
 #[tokio::test]
 async fn every_family_a_one_signer_account_can_propose_carries_both_bounds_and_reproduces() {
-    let new_guardian = Word::from([11u32, 12, 13, 14]);
     let families = [
         (
             "update_procedure_threshold",
@@ -231,10 +250,6 @@ async fn every_family_a_one_signer_account_can_propose_carries_both_bounds_and_r
             TransactionType::AddCosigner {
                 new_commitment: GuardianKeyStore::generate().commitment(),
             },
-        ),
-        (
-            "switch_guardian",
-            TransactionType::switch_guardian(switch_target(new_guardian).await, new_guardian),
         ),
     ];
     for (family, transaction_type) in families {
@@ -275,6 +290,48 @@ async fn every_family_a_one_signer_account_can_propose_carries_both_bounds_and_r
             reproduced.to_commitment(),
             summary.to_commitment(),
             "{family}: the stored request reproduces the signed summary"
+        );
+    }
+}
+
+/// GUARDIAN never executes a switch, so a Guardian-executable client creates one exactly as a
+/// self-executed client would: no stored request, no transaction expiration and no default
+/// approval expiration. An approval expiration the caller sets still applies.
+#[tokio::test]
+async fn a_guardian_executable_client_creates_a_switch_self_executed() {
+    let new_guardian = Word::from([11u32, 12, 13, 14]);
+    let explicit = std::num::NonZeroU32::new(500).unwrap();
+    for (options, expected_delta) in [
+        (ProposalOptions::default(), None),
+        (
+            ProposalOptions {
+                approval_expiration_delta: Some(explicit),
+            },
+            Some(explicit.get()),
+        ),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = switch_target(new_guardian).await;
+        let proposed = propose_on_with(
+            dir.path(),
+            ProposalExecutionMode::GuardianExecutable,
+            options,
+            AccountShape::OneSigner,
+            |_| TransactionType::switch_guardian(endpoint, new_guardian),
+        )
+        .await;
+        let keys: Vec<&str> = proposed
+            .payload
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(keys, ["metadata", "signatures", "tx_summary"]);
+        assert_eq!(proposed.summary.expiration_delta(), 0);
+        assert_eq!(
+            summary_approval_expiration_block_num(&proposed.summary).map(|block| block.as_u32()),
+            expected_delta.map(|delta| proposed.summary.block_number().as_u32() + delta),
         );
     }
 }
@@ -496,22 +553,24 @@ async fn a_pinned_consume_request_reproduces_on_a_store_that_never_saw_the_notes
     assert_eq!(reproduced.to_commitment(), proposed.summary.to_commitment());
 }
 
-/// A self-executed cosigner lists, verifies and exports a Guardian-executable proposal exactly as
-/// it would any other: its rebuild takes the transaction expiration from the signed summary.
-#[tokio::test]
-async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executable_proposal() {
-    let dir = tempfile::tempdir().unwrap();
-    let proposed = pinned_consume_proposal(dir.path()).await;
-    let proposal_id = proposed.summary.to_commitment().to_hex();
+/// A fresh self-executed cosigner of `proposed`'s account, talking to a mock GUARDIAN that
+/// serves `payload` as the account's one pending proposal.
+async fn cosigner_served(
+    proposed: &PinnedProposal,
+    payload: &serde_json::Value,
+) -> (
+    MultisigClient,
+    tempfile::TempDir,
+    Arc<miden_client_sqlite_store::SqliteStore>,
+) {
     let served = || {
         super::test_support::pending_proto_delta(
             &proposed.account,
             1,
-            proposed.payload.to_string(),
+            payload.to_string(),
             &crate::transaction::word_to_hex(&proposed.signer_commitment),
         )
     };
-
     let guardian = MockGuardianService::default().with_sign_delta_proposal(Ok(
         guardian_client::SignDeltaProposalResponse {
             success: true,
@@ -527,7 +586,6 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
         message: String::new(),
         proposals: vec![served()],
     });
-
     handle.set_persistent_get_delta_proposal(guardian_client::GetDeltaProposalResponse {
         success: true,
         message: String::new(),
@@ -536,7 +594,7 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
 
     proposed.api.advance_blocks(5);
     let cosigner_dir = tempfile::tempdir().unwrap();
-    let (mut cosigner, _store) = offline_client_parts_with_keystore(
+    let (mut cosigner, store) = offline_client_parts_with_keystore(
         cosigner_dir.path(),
         proposed.api.clone(),
         None,
@@ -554,6 +612,17 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
         .unwrap();
     cosigner.account = Some(MultisigAccount::new(proposed.account.clone()));
     cosigner.miden_client.sync_state().await.unwrap();
+    (cosigner, cosigner_dir, store)
+}
+
+/// A self-executed cosigner lists, verifies and exports a Guardian-executable proposal exactly as
+/// it would any other: its rebuild takes the transaction expiration from the signed summary.
+#[tokio::test]
+async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executable_proposal() {
+    let dir = tempfile::tempdir().unwrap();
+    let proposed = pinned_consume_proposal(dir.path()).await;
+    let proposal_id = proposed.summary.to_commitment().to_hex();
+    let (mut cosigner, _cosigner_dir, _store) = cosigner_served(&proposed, &proposed.payload).await;
     assert_eq!(
         cosigner.execution_mode(),
         ProposalExecutionMode::SelfExecuted
@@ -617,6 +686,49 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
     assert!(
         admit(&cosigner).is_ok(),
         "an imported proposal is held for a GUARDIAN execution request"
+    );
+}
+
+/// A listed proposal whose metadata does not reproduce its signed summary is listed with the
+/// failure but not held, so a GUARDIAN execution request for it fails closed.
+#[tokio::test]
+async fn a_listed_proposal_that_fails_verification_is_not_held() {
+    let dir = tempfile::tempdir().unwrap();
+    let proposed = pinned_consume_proposal(dir.path()).await;
+    let mut tampered = proposed.payload.clone();
+    tampered["metadata"]["salt"] =
+        serde_json::Value::String(crate::transaction::word_to_hex(&Word::from([
+            1u32, 2, 3, 4,
+        ])));
+    let (mut cosigner, _cosigner_dir, _store) = cosigner_served(&proposed, &tampered).await;
+    cosigner.execution_mode = ProposalExecutionMode::GuardianExecutable;
+
+    let proposals = cosigner
+        .list_proposals()
+        .await
+        .expect("a failed verification is reported on the proposal, not by the listing");
+    assert_eq!(proposals.len(), 1);
+    assert!(
+        matches!(
+            proposals[0].verification,
+            crate::proposal::ProposalVerification::Failed { .. }
+        ),
+        "{:?}",
+        proposals[0].verification
+    );
+
+    let requested = cosigner
+        .request_guardian_execution(
+            &proposals[0].id,
+            crate::local_execution::GuardianExecutionRequest::default(),
+        )
+        .await;
+    assert!(
+        matches!(
+            requested,
+            Err(crate::error::MultisigError::ProposalNotHeldLocally { .. })
+        ),
+        "{requested:?}"
     );
 }
 
