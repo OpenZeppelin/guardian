@@ -6,10 +6,16 @@ import {
   ExecutionWait,
   GuardianExecutionRefusedError,
   GuardianExecutionWaitTimeoutError,
+  LocalExecutionRequiredError,
+  ProposalNotHeldLocallyError,
+  assertGuardianMayExecute,
+  describeLocalExecutionReason,
+  localExecutionReason,
   refusingWith,
   type BoundedRead,
   type WaitRuntime,
 } from './guardianExecution.js';
+import type { ProposalMetadata } from '../types/proposal.js';
 
 class FakeRuntime implements WaitRuntime {
   nowMs = 0;
@@ -263,5 +269,61 @@ describe('ExecutionWait', () => {
     expect((error as GuardianExecutionWaitTimeoutError).lastObserved?.state).toBe('submitted');
     expect(reads.count).toBe(2);
     expect(runtime.nowMs).toBe(5_000);
+  });
+});
+
+describe('localExecutionReason', () => {
+  const p2id = (noteType: 'public' | 'private' | undefined): { metadata: ProposalMetadata } => ({
+    metadata: { proposalType: 'p2id', description: '', recipientId: '0xr', faucetId: '0xf', amount: '1', noteType },
+  });
+  const switchGuardian: { metadata: ProposalMetadata } = {
+    metadata: { proposalType: 'switch_guardian', description: '', newGuardianPubkey: '0xpk' },
+  };
+  const addSigner: { metadata: ProposalMetadata } = {
+    metadata: { proposalType: 'add_signer', description: '', targetThreshold: 1, targetSignerCommitments: ['0xa'] },
+  };
+
+  it('names the two proposals GUARDIAN must not execute and nothing else', () => {
+    expect(localExecutionReason(switchGuardian)).toBe('switch_guardian');
+    expect(localExecutionReason(p2id('private'))).toBe('private_note');
+    expect(localExecutionReason(p2id('public'))).toBeNull();
+    expect(localExecutionReason(p2id(undefined))).toBeNull();
+    expect(localExecutionReason(addSigner)).toBeNull();
+  });
+
+  it('refuses a switch even when the request allows a private note', () => {
+    const error = (() => {
+      try {
+        assertGuardianMayExecute('0xprop', switchGuardian, { allowPrivateNote: true });
+      } catch (e) {
+        return e;
+      }
+      return null;
+    })();
+    expect(error).toBeInstanceOf(LocalExecutionRequiredError);
+    expect((error as LocalExecutionRequiredError).reason).toBe('switch_guardian');
+    expect((error as LocalExecutionRequiredError).message).toContain('executed locally');
+    expect((error as LocalExecutionRequiredError).message).toContain(
+      describeLocalExecutionReason('switch_guardian'),
+    );
+  });
+
+  it('refuses a private note unless the request allows it', () => {
+    expect(() => assertGuardianMayExecute('0xprop', p2id('private'), {})).toThrow(LocalExecutionRequiredError);
+    expect(() => assertGuardianMayExecute('0xprop', p2id('private'), { allowPrivateNote: false })).toThrow(
+      LocalExecutionRequiredError,
+    );
+    expect(() => assertGuardianMayExecute('0xprop', p2id('private'), { allowPrivateNote: true })).not.toThrow();
+  });
+
+  it('lets public notes and other proposals through', () => {
+    expect(() => assertGuardianMayExecute('0xprop', p2id('public'), {})).not.toThrow();
+    expect(() => assertGuardianMayExecute('0xprop', addSigner, {})).not.toThrow();
+  });
+
+  it('fails closed on a proposal the client does not hold', () => {
+    expect(() => assertGuardianMayExecute('0xprop', undefined, { allowPrivateNote: true })).toThrow(
+      ProposalNotHeldLocallyError,
+    );
   });
 });

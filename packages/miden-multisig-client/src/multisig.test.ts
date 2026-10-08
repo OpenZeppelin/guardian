@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isProposalActionable, type Proposal } from './types/proposal.js';
 import { Multisig } from './multisig.js';
+import { LocalExecutionRequiredError, ProposalNotHeldLocallyError } from './multisig/guardianExecution.js';
 import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
 import {
   buildUpdateProcedureThresholdTransactionRequest,
@@ -8318,6 +8319,102 @@ describe('Multisig', () => {
         expect(proposals[0].metadata.newGuardianPubkey).toBe('0xnewpubkey');
         expect(proposals[0].metadata.newGuardianEndpoint).toBe('http://new-guardian.com');
       }
+    });
+  });
+
+  describe('requestGuardianExecution local-execution rule', () => {
+    const proposalId = '0x' + 'e'.repeat(64);
+    const accepted = {
+      accountId: '0xacc',
+      proposalId,
+      state: 'accepted',
+      error: null,
+      deltaNonce: null,
+      newlyAccepted: true,
+      proposalExists: true,
+      ignoredSignatures: 0,
+      updatedAt: '2026-10-07T00:00:00Z',
+    } as never;
+
+    function holding(metadata: Proposal['metadata'] | null) {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      if (metadata !== null) {
+        (multisig as any).proposals.set(proposalId, {
+          id: proposalId,
+          accountId: multisig.accountId,
+          nonce: 1,
+          status: 'ready',
+          txSummary: '',
+          signatures: [],
+          metadata,
+          verification: { status: 'verified' },
+        } satisfies Proposal);
+      }
+      const execute = vi.spyOn(guardian, 'executeDeltaProposal').mockResolvedValue(accepted);
+      return { multisig, execute };
+    }
+
+    const privateP2id: Proposal['metadata'] = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xr',
+      faucetId: '0xf',
+      amount: '1',
+      noteType: 'private',
+    };
+
+    it('refuses a switch_guardian proposal even with allowPrivateNote, without calling GUARDIAN', async () => {
+      const { multisig, execute } = holding({
+        proposalType: 'switch_guardian',
+        description: '',
+        newGuardianPubkey: '0xpk',
+      });
+      const error = await multisig
+        .requestGuardianExecution(proposalId, { allowPrivateNote: true })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(LocalExecutionRequiredError);
+      expect((error as LocalExecutionRequiredError).reason).toBe('switch_guardian');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('refuses a private-note p2id without the opt-in and sends it with the opt-in', async () => {
+      const { multisig, execute } = holding(privateP2id);
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(LocalExecutionRequiredError);
+      expect((error as LocalExecutionRequiredError).reason).toBe('private_note');
+      expect(execute).not.toHaveBeenCalled();
+
+      await expect(multisig.requestGuardianExecution(proposalId, { allowPrivateNote: true })).resolves.toBe(accepted);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a public-note p2id and other proposal types', async () => {
+      const { multisig, execute } = holding({ ...privateP2id, noteType: 'public' });
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      (multisig as any).proposals.set(proposalId, {
+        ...(multisig as any).proposals.get(proposalId),
+        metadata: {
+          proposalType: 'change_threshold',
+          description: '',
+          targetThreshold: 1,
+          targetSignerCommitments: ['0x' + 'a'.repeat(64)],
+        },
+      });
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      expect(execute).toHaveBeenCalledTimes(2);
+    });
+
+    it('fails closed on a proposal it does not hold, without calling GUARDIAN', async () => {
+      const { multisig, execute } = holding(null);
+      const error = await multisig
+        .requestGuardianExecution(proposalId, { allowPrivateNote: true })
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
+      expect(execute).not.toHaveBeenCalled();
     });
   });
 });

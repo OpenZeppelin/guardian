@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { normalizeError } from '@multisig-browser/errors';
-import { localExecutionReason } from '@multisig-browser/multisigApi';
+import {
+  describeLocalExecutionReason,
+  localExecutionReason,
+} from '@openzeppelin/miden-multisig-client';
 import {
   type CreateProposalInput,
   type InitSessionInput,
@@ -45,6 +48,40 @@ function bootBadge(snapshot: ReturnType<typeof useSmokeHarness>['snapshot']): {
     case 'idle':
       return { className: 'neutral', label: 'Idle' };
   }
+}
+
+function ExecuteButton({
+  disabled,
+  guardianExecutable,
+  proposal,
+  onExecute,
+}: {
+  disabled: boolean;
+  guardianExecutable: boolean;
+  proposal: Parameters<typeof localExecutionReason>[0];
+  onExecute: () => void;
+}) {
+  const localReason = localExecutionReason(proposal);
+  if (!guardianExecutable) {
+    return (
+      <button disabled={disabled} onClick={onExecute}>
+        Execute
+      </button>
+    );
+  }
+  if (localReason === null) {
+    return (
+      <button disabled={disabled} onClick={onExecute}>
+        Execute via GUARDIAN
+      </button>
+    );
+  }
+  const description = describeLocalExecutionReason(localReason);
+  return (
+    <button disabled={disabled} title={`Executes locally: ${description}`} onClick={onExecute}>
+      Execute locally ({description})
+    </button>
+  );
 }
 
 export default function App() {
@@ -627,17 +664,14 @@ export default function App() {
                         : 'Execute (custom) — no recipe'}
                     </button>
                   ) : (
-                    <button
+                    <ExecuteButton
                       disabled={!sessionReady}
-                      onClick={() =>
+                      guardianExecutable={snapshot.executionMode === 'guardian_executable'}
+                      proposal={proposal}
+                      onExecute={() =>
                         runAction(async () => api.executeProposal({ proposalId: proposal.id }))
                       }
-                    >
-                      {snapshot.executionMode === 'guardian_executable' &&
-                      localExecutionReason(proposal) === null
-                        ? 'Execute via GUARDIAN'
-                        : 'Execute'}
-                    </button>
+                    />
                   )}
                   {snapshot.executionMode === 'guardian_executable' ? (
                     <button

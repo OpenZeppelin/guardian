@@ -520,6 +520,23 @@ string, for example `GUARDIAN_EXECUTION_CONFLICT`), `userMessage`, `retryable`,
 `retryAfterSecs` and `blockingProposalId`. See
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
+Two proposals still execute locally on a `guardian_executable` client, because local execution
+does work Guardian skips. A `switch_guardian` proposal always does: the executing client verifies
+the new Guardian, registers the account there and repoints itself. A P2ID proposal with a private
+note does too, because only the client that executes it holds the note to export to the
+recipient, unless the caller opts in for that one request and delivers the note itself:
+
+```typescript
+await multisig.requestGuardianExecution(proposal.id, { allowPrivateNote: true });
+```
+
+`requestGuardianExecution` checks the proposal this client holds before contacting Guardian. It
+throws a `LocalExecutionRequiredError` whose `reason` is `'switch_guardian'` or `'private_note'`
+for these two (execute them with `executeProposal`), and a `ProposalNotHeldLocallyError` for a
+proposal the client does not hold (sync proposals first). `localExecutionReason(proposal)` returns
+the same `LocalExecutionReason`, or `null` when Guardian can execute the proposal, and
+`describeLocalExecutionReason(reason)` explains it, so an app can route a proposal before asking.
+
 ### Export Proposal for Offline Signing
 
 ```typescript
