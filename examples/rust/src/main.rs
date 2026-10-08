@@ -360,9 +360,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         println!();
 
-        println!("Step 6: Push transaction summary to GUARDIAN...");
+        // A multisig delta is acknowledged only when a matching proposal
+        // on GUARDIAN carries a threshold of verified cosigner signatures
+        // (issue #524), so the summary is registered as a proposal and
+        // approved by both cosigners before the push.
+        println!("Step 6: Register proposal and collect cosigner approvals...");
 
         let tx_summary_json = tx_summary.to_json();
+        let proposal_payload = serde_json::json!({
+            "tx_summary": tx_summary_json,
+            "signatures": [],
+            "metadata": { "proposal_type": "add_signer" }
+        });
+        let proposal_id = match guardian_client2
+            .push_delta_proposal(
+                &account_id,
+                account.nonce().as_canonical_u64(),
+                proposal_payload,
+            )
+            .await
+        {
+            Ok(response) => {
+                println!("  ✓ Proposal registered: {}...", &response.commitment[..18]);
+                response.commitment
+            }
+            Err(e) => {
+                println!("  ✗ Failed to register proposal: {}", e);
+                return Ok(());
+            }
+        };
+
+        let tx_message = tx_summary.to_commitment();
+        let approve =
+            async |name: &str,
+                   client: &mut GuardianClient,
+                   secret_key: &miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey|
+                   -> bool {
+                let signature = guardian_shared::ProposalSignature::Falcon {
+                    signature: format!("0x{}", hex::encode(secret_key.sign(tx_message).to_bytes())),
+                };
+                match client
+                    .sign_delta_proposal(&account_id, &proposal_id, signature)
+                    .await
+                {
+                    Ok(response) => {
+                        println!("  ✓ {name} approved: {}", response.message);
+                        true
+                    }
+                    Err(e) => {
+                        println!("  ✗ {name} approval failed: {}", e);
+                        false
+                    }
+                }
+            };
+        if !approve("Client 1", &mut guardian_client1, &client1_secret_key).await
+            || !approve("Client 2", &mut guardian_client2, &client2_secret_key).await
+        {
+            return Ok(());
+        }
+        println!();
+
+        println!("Step 7: Push transaction summary to GUARDIAN...");
+
         let prev_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
 
         let (_new_commitment, ack_sig) = match guardian_client2
@@ -400,7 +459,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         println!();
 
-        println!("Step 7: Execute transaction with signatures...");
+        println!("Step 8: Execute transaction with signatures...");
 
         let tx_summary_commitment_hex =
             format!("0x{}", hex::encode(tx_summary.to_commitment().to_bytes()));
