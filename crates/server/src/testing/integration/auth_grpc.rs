@@ -11,7 +11,7 @@ use crate::api::grpc::guardian::{ConfigureRequest, GetDeltaRequest, PushDeltaReq
 #[tokio::test]
 async fn test_grpc_configure_and_push_delta_with_auth() {
     let state = create_test_app_state().await;
-    let service = create_grpc_service(state);
+    let service = create_grpc_service(state.clone());
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
@@ -36,8 +36,11 @@ async fn test_grpc_configure_and_push_delta_with_auth() {
     assert!(configure_response.is_ok(), "Configure should succeed");
     assert!(configure_response.unwrap().into_inner().success);
 
-    // Step 2: Push a delta with authentication metadata
+    // Step 2: Push a delta with authentication metadata. The fixture
+    // account is a multisig, so the push gate needs the matching
+    // threshold-satisfying proposal stored first.
     let delta_1 = load_fixture_delta(1);
+    crate::testing::helpers::store_fixture_authorizing_proposal(&state, &delta_1).await;
     let push_req = PushDeltaRequest {
         account_id: delta_1["account_id"].as_str().unwrap().to_string(),
         nonce: delta_1["nonce"].as_u64().unwrap(),
@@ -177,7 +180,7 @@ async fn test_grpc_push_delta_missing_auth_metadata() {
 #[tokio::test]
 async fn test_grpc_get_delta_with_auth() {
     let state = create_test_app_state().await;
-    let service = create_grpc_service(state);
+    let service = create_grpc_service(state.clone());
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
@@ -201,8 +204,10 @@ async fn test_grpc_get_delta_with_auth() {
         .await
         .unwrap();
 
-    // Push a delta (nonce 1) - need fresh signature with new timestamp
+    // Push a delta (nonce 1) - need fresh signature with new timestamp.
+    // The multisig push gate needs the matching proposal stored first.
     let delta_1 = load_fixture_delta(1);
+    crate::testing::helpers::store_fixture_authorizing_proposal(&state, &delta_1).await;
     let push_req = PushDeltaRequest {
         account_id: delta_1["account_id"].as_str().unwrap().to_string(),
         nonce: delta_1["nonce"].as_u64().unwrap(),

@@ -317,7 +317,7 @@ component schemas.
 | Surface | Method & path | Auth | Summary |
 | --- | --- | --- | --- |
 | client | `POST /configure` | signed headers | Register an account with its auth set and initial state |
-| client | `POST /delta` | signed headers | Push a signed single-key delta |
+| client | `POST /delta` | signed headers | Push a delta; a multisig account must meet its cosigner threshold |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
 | client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
@@ -652,7 +652,7 @@ scrape_configs:
 ## Idempotency and Ordering
 
 - `push_delta` MAY be retried by clients; identical Miden deltas SHOULD be treated as idempotent when possible.
-- Miden `push_delta` enforces `prev_commitment` match.
+- Miden `push_delta` enforces `prev_commitment` match. A multisig push is also rejected with `insufficient_signatures` until the matching proposal's verified cosigner signatures meet the effective threshold of the procedures the pushed transaction invokes.
 - EVM proposal create is idempotent for duplicate active proposals with the same deterministic proposal ID.
 - EVM proposals remain active/pending-only in the EVM proposal store; expired or finalized proposals are lazily deleted.
 

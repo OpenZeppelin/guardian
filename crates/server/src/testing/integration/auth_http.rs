@@ -52,7 +52,7 @@ async fn test_configure_replay_uses_standard_error_envelope() {
 #[tokio::test]
 async fn test_configure_and_push_delta_with_auth() {
     let state = create_test_app_state().await;
-    let app = create_router(state);
+    let app = create_router(state.clone());
 
     let (_account_id, account_id_hex, initial_state) = load_fixture_account();
     let signer = TestSigner::new();
@@ -88,7 +88,10 @@ async fn test_configure_and_push_delta_with_auth() {
         "Configure should succeed"
     );
 
+    // The fixture account is a multisig, so the push gate needs the
+    // matching threshold-satisfying proposal stored first.
     let delta_1 = load_fixture_delta(1);
+    crate::testing::helpers::store_fixture_authorizing_proposal(&state, &delta_1).await;
     let delta_body = json!({
         "account_id": delta_1["account_id"],
         "nonce": delta_1["nonce"],

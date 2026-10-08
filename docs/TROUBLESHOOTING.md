@@ -701,7 +701,7 @@ come from
 | `unsupported_for_network` | 400 | Endpoint not available for the account's network. |
 | `unsupported_evm_chain` | 400 | EVM chain ID not in the configured allowlist. |
 | `invalid_evm_proposal` | 400 | EVM proposal payload validation failed. |
-| `insufficient_signatures` | 400 | Threshold not met for a multi-sig execute. |
+| `insufficient_signatures` | 400 | Multisig threshold not met: an EVM execute, or a Miden `push_delta` whose matching proposal lacks enough verified cosigner signatures for the procedures the delta invokes. |
 
 ### Network and infrastructure
 

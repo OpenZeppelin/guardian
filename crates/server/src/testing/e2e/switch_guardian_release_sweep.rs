@@ -144,6 +144,7 @@ struct UnannouncedSwitch {
     new_guardian_commitment_hex: String,
     ack_commitment_hex: String,
     cosigner_key: SecretKey,
+    cosigner_keys: Vec<SecretKey>,
     api_pubkey_hex: String,
     all_commitments_hex: Vec<String>,
     next_timestamp: i64,
@@ -252,22 +253,30 @@ impl UnannouncedSwitch {
         self.state.canonicalization =
             Some(CanonicalizationConfig::default().with_max_pending_candidates_per_account(4));
         let nonce = self.executed_account.nonce().as_canonical_u64();
+        let delta = DeltaObject {
+            account_id: self.account_id_hex.clone(),
+            nonce,
+            prev_commitment: self.pre_switch_commitment.clone(),
+            delta_payload: nonce_bump_summary(&self.pre_switch_account),
+            ..Default::default()
+        };
+        let authorization = crate::testing::helpers::store_authorizing_proposal(
+            &self.state,
+            &delta,
+            &self.cosigner_keys,
+        )
+        .await;
         let creds = self.credentials();
         let pushed = push_delta(
             &self.state,
             PushDeltaParams {
-                delta: DeltaObject {
-                    account_id: self.account_id_hex.clone(),
-                    nonce,
-                    prev_commitment: self.pre_switch_commitment.clone(),
-                    delta_payload: nonce_bump_summary(&self.pre_switch_account),
-                    ..Default::default()
-                },
+                delta,
                 credentials: creds,
             },
         )
         .await
         .expect("the candidate is admitted on the stored base");
+        authorization.restore(&self.state).await;
         assert!(pushed.delta.status.is_candidate());
         (
             nonce,
@@ -572,6 +581,7 @@ async fn unannounced_switch_for(account_type: AccountType) -> UnannouncedSwitch 
         new_guardian_commitment_hex,
         ack_commitment_hex,
         cosigner_key: cosigner_keys[0].clone(),
+        cosigner_keys,
         api_pubkey_hex,
         all_commitments_hex,
         next_timestamp: chrono::Utc::now().timestamp_millis(),
