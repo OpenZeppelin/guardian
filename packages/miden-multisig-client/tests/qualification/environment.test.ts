@@ -67,6 +67,15 @@ describe('reportAs', () => {
     expect(outcome.kind === 'failed' && outcome.classification).toBe('environment');
   });
 
+  it('keeps a failure GUARDIAN reported for its own execution a product failure', () => {
+    const reason = 'GUARDIAN execution failed after pending > proving: GUARDIAN_EXECUTION_NODE_UNAVAILABLE: connection error';
+    expect(reportAs({ kind: 'execution_failed', reason }, true)).toEqual({
+      kind: 'failed',
+      classification: 'product',
+      reason,
+    });
+  });
+
   it('still fails a live scenario that failed on its own terms', () => {
     const outcome = {
       kind: 'failed',

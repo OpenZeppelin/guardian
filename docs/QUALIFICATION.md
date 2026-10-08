@@ -215,10 +215,11 @@ also run this by itself whenever a change touches `crates/server/migrations/`.
 
 Eight scenarios cover Guardian executing a proposal instead of a cosigner:
 
-- `det-guardian-execution-unavailable` (deterministic, Rust): the stack's server has no
+- `det-guardian-execution-unavailable` (deterministic, both SDKs): the stack's server has no
   prover, so an execution request is refused with `GUARDIAN_PROVING_UNAVAILABLE`, nothing is
   reported in flight, and the never-executed fixture proposal reads as
-  `GUARDIAN_EXECUTION_NOT_FOUND`.
+  `GUARDIAN_EXECUTION_NOT_FOUND`. The Rust leg asks over gRPC and the TypeScript leg over HTTP,
+  so this is the deterministic coverage of the HTTP execution routes.
 - `det-guardian-execution-refusals` (deterministic, Rust): runs against the stack's fourth
   server, `server-executing`, which configures a prover so requests get past the capability
   gate. A proposal without a stored request is refused with
@@ -254,6 +255,13 @@ Eight scenarios cover Guardian executing a proposal instead of a cosigner:
   SDK and no node on the caller's side. The SDK clients only create and sign the proposal, and
   read the chain afterwards to judge the outcome. With the base clients' dependency guards, this
   is the evidence that executing needs no Miden capability.
+
+Every live scenario that requests Guardian execution requests it a second time straight after
+GUARDIAN accepts the first. Exactly once means the repeat is answered with the same execution
+and `newly_accepted` false, whatever state it has reached, or, when the execution has already
+moved on, refused with `GUARDIAN_EXECUTION_BUSY`, `conflict_pending_delta` or
+`proposal_not_found`. A repeat that GUARDIAN newly accepts fails the scenario as `product`,
+which is also how a first attempt that already failed reads.
 
 Every run saves the main server's `guardian_execution_*` metrics to
 `execution-metrics.prom` in its results directory once the scenarios finish. A live run's
@@ -331,7 +339,11 @@ hard.
 
 The reclassification reads evidence, not profile: a live scenario that failed on
 its own terms, such as a quorum refusing an under-signed proposal, still fails as
-`product`. Beyond that, the classification is never softened to present a
+`product`. An execution that GUARDIAN itself reports `failed` is never
+reclassified either, whatever its cause says: in a Guardian-execution scenario the
+node and the prover GUARDIAN reaches are part of the product under test, so
+`GUARDIAN_EXECUTION_NODE_UNAVAILABLE` over a dropped connection is GUARDIAN's
+verdict rather than the suite's own link failing. Beyond that, the classification is never softened to present a
 cleaner result.
 
 ## Scenario manifest
@@ -796,6 +808,22 @@ submission was sent exactly once. Results record `embedded_retry` accordingly.
 fifty blocks, so multi-step flows cannot be required there. They run
 opportunistically and report environment-blocked when the anchor is pruned.
 
+**No claim attests live Guardian execution yet.** Every `live-guardian-execute-*`
+scenario is excluded from both devnet pairs in `matrix.toml`, so a devnet run
+executes them but its claim never rests on them. They are required on both
+testnet pairs, and testnet runs Miden 0.16 until its 0.17 upgrade, so no testnet
+run of this line can pass them. Until testnet runs node 0.17, live Guardian
+execution is evidenced by devnet runs read scenario by scenario, never by a
+`full` claim.
+
+**Neither expiration bound is crossed.** A Guardian-executable proposal carries an
+approval expiration of 28,800 blocks (about a day) and a transaction expiration of
+256 blocks. No profile waits past either: the late scenarios advance the chain 60
+blocks past the bound block, and the deterministic stack never reaches the chain.
+`GUARDIAN_EXECUTION_EXPIRATION_REACHED` (either `bound`, including the in-kernel
+approval-expired abort) is therefore covered only by the server's unit and
+integration tests.
+
 ### Operating the suite
 
 **GUARDIAN migration needs a second deployment.** The stack starts one
@@ -805,6 +833,15 @@ passes its address as `QUAL_GUARDIAN_MIGRATION_GRPC` for the Rust driver and
 a hand-started server leaves them unset, and the rotation scenarios report
 environment-blocked rather than rotating an account to the GUARDIAN it already
 uses, which changes nothing on chain.
+
+**The deterministic profile needs every server the stack starts.** The
+scheme-gated, executing and queue scenarios read `QUAL_GUARDIAN_SCHEME_GATED_GRPC`,
+`QUAL_GUARDIAN_EXECUTING_GRPC` and `QUAL_GUARDIAN_QUEUE_GRPC`, which `run.sh`
+always exports. A missing one fails the scenario as `setup`, not
+environment-blocked: those scenarios are required, and an environment-blocked
+result exits 0, so a change to `run.sh` that stopped exporting one would
+otherwise drop them silently. Against a hand-started server, expect them to fail
+as `setup`.
 
 **Any change under `crates/` rebuilds the server image.** The build context
 copies the workspace, so a one-line driver edit costs a full release build before

@@ -88,11 +88,14 @@ step_budget = "60s"
 required = true
 core = false
 
+# Both SDKs: the Rust leg reaches the refusal over gRPC and the TypeScript leg over HTTP, and
+# this is the only deterministic coverage of the HTTP execution routes.
 [[scenario]]
 id = "det-guardian-execution-unavailable"
 title = "A GUARDIAN with no prover refuses execution and records nothing"
 profile = "deterministic"
-sdk = "rust"
+sdk = "both"
+runtime = "server-side"
 scheme = "n/a"
 shape = "n/a"
 mode = "n/a"

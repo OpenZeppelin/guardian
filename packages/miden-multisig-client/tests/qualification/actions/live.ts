@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { GuardianHttpClient } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, type ProposalExecution } from '@openzeppelin/guardian-client';
 import type { ProposalExecutionMode } from '../../../src/transaction/expiration.js';
 
 import { AccountInspector } from '../../../src/inspector.js';
@@ -570,6 +570,48 @@ export async function advancePastBound(_context: ActionContext, scenarioId: stri
 const GUARDIAN_EXECUTION_DEADLINE_MS = 600_000;
 
 /**
+ * Refusals a repeated request may meet once the accepted execution has moved past the point
+ * where GUARDIAN answers with it: the lease changing hands as it finishes, the proposal turned
+ * into a candidate, or the proposal removed once the candidate settled. None starts anything.
+ * Mirrors `REPEAT_AFTER_PROGRESS` in the Rust driver.
+ */
+const REPEAT_AFTER_PROGRESS: readonly string[] = [
+  'GUARDIAN_EXECUTION_BUSY',
+  'conflict_pending_delta',
+  'proposal_not_found',
+];
+
+/**
+ * Exactly once: a second request for the proposal GUARDIAN has just accepted, sent at once, is
+ * answered with the same execution and starts nothing, or is refused only because that execution
+ * already moved on. A repeat GUARDIAN newly accepted means a second attempt, which is also how a
+ * first attempt that already failed reads. Mirrors `RepeatAnswer::verdict` in the Rust driver.
+ */
+async function assertRepeatStartsNothing(
+  proposalId: string,
+  repeat: () => Promise<ProposalExecution>,
+): Promise<ActionOutcome | null> {
+  try {
+    const again = await repeat();
+    if (!again.newlyAccepted && again.proposalId.toLowerCase() === proposalId.toLowerCase()) return null;
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a repeated request for the execution in flight started another or answered for another proposal: ${JSON.stringify(again)}`,
+    };
+  } catch (error) {
+    const failure = error as { rawCode?: string | null; code?: string | null };
+    const code = failure.rawCode ?? failure.code ?? null;
+    if (code !== null && REPEAT_AFTER_PROGRESS.includes(code)) return null;
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a repeated request for the execution in flight was refused: ${String(error)}`,
+    };
+  }
+}
+
+/**
  * Hands the threshold-met proposal to GUARDIAN and waits for GUARDIAN to report it committed,
  * then for the chain and GUARDIAN's history to agree, exactly as a self-execution is judged.
  * No cosigner proves or submits anything. Mirrors `guardian_execute` in the Rust driver.
@@ -601,6 +643,10 @@ export async function guardianExecute(_context: ActionContext, scenarioId: strin
   } catch (error) {
     return { kind: 'failed', classification: 'product', reason: `GUARDIAN refused to execute the proposal: ${String(error)}` };
   }
+  const multisig = session.multisig;
+  const proposalId = session.proposalId;
+  const repeated = await assertRepeatStartsNothing(proposalId, () => multisig.requestGuardianExecution(proposalId));
+  if (repeated) return repeated;
 
   const started = Date.now();
   const observed: string[] = [];
@@ -615,7 +661,7 @@ export async function guardianExecute(_context: ActionContext, scenarioId: strin
     if (execution.state === 'committed') break;
     if (execution.state === 'failed') {
       const cause = execution.error ? `${execution.error.code}: ${execution.error.message}` : 'no cause';
-      return { kind: 'failed', classification: 'product', reason: `GUARDIAN execution failed after ${observed.join(' > ')}: ${cause}` };
+      return { kind: 'execution_failed', reason: `GUARDIAN execution failed after ${observed.join(' > ')}: ${cause}` };
     }
     if (Date.now() - started > GUARDIAN_EXECUTION_DEADLINE_MS) {
       return {
@@ -690,6 +736,9 @@ export async function guardianExecuteBaseClient(context: ActionContext, scenario
   } catch (error) {
     return { kind: 'failed', classification: 'product', reason: `GUARDIAN refused the base client's execution request: ${String(error)}` };
   }
+  const proposalId = session.proposalId;
+  const repeated = await assertRepeatStartsNothing(proposalId, () => base.executeDeltaProposal(accountId, proposalId));
+  if (repeated) return repeated;
   const started = Date.now();
   for (;;) {
     let execution;
@@ -701,7 +750,7 @@ export async function guardianExecuteBaseClient(context: ActionContext, scenario
     if (execution.state === 'committed') break;
     if (execution.state === 'failed') {
       const cause = execution.error ? `${execution.error.code}: ${execution.error.message}` : 'no cause';
-      return { kind: 'failed', classification: 'product', reason: `the base client saw the execution fail: ${cause}` };
+      return { kind: 'execution_failed', reason: `the base client saw the execution fail: ${cause}` };
     }
     if (Date.now() - started > GUARDIAN_EXECUTION_DEADLINE_MS) {
       return { kind: 'failed', classification: 'product', reason: 'GUARDIAN execution did not commit in time' };

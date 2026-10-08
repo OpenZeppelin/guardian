@@ -1,4 +1,4 @@
-import { register, verifyCommitment, assertExecutionUnavailable } from './actions/account.js';
+import { register, verifyCommitment, createProposal, assertExecutionUnavailable } from './actions/account.js';
 import * as live from './actions/live.js';
 import { assertIdentity } from './actions/identity.js';
 import {
@@ -37,7 +37,17 @@ export type ActionOutcome =
   | { kind: 'passed' }
   | { kind: 'failed'; classification: Classification; reason: string }
   | { kind: 'skipped'; reason: string }
-  | { kind: 'environment_blocked'; reason: string };
+  | { kind: 'environment_blocked'; reason: string }
+  /**
+   * GUARDIAN reported, as the outcome of an execution it ran, that the execution failed. The node
+   * and prover it reached are part of the product under test, so link wording in the cause is
+   * GUARDIAN's verdict and is never reclassified. Mirrors `ActionOutcome::ExecutionFailed` in the
+   * Rust driver.
+   */
+  | { kind: 'execution_failed'; reason: string };
+
+/** An outcome as the report carries it, once `reportAs` has classified it. */
+export type ReportedOutcome = Exclude<ActionOutcome, { kind: 'execution_failed' }>;
 
 export type ActionHandler = (context: ActionContext) => Promise<ActionOutcome>;
 
@@ -45,6 +55,7 @@ export const HANDLERS: Readonly<Record<string, ActionHandler>> = {
   'status-identity': assertIdentity,
   'error-envelope': assertHttpEnvelope,
   'account-register': register,
+  'proposal-create': createProposal,
   'guardian-execution-unavailable': assertExecutionUnavailable,
   'commitment-verify': verifyCommitment,
   'operator-session': assertSession,
@@ -192,9 +203,13 @@ async function runLiveAction(
  * The deterministic profile is deliberately exempt: it gates pull requests
  * against a stack the suite brings up itself, so a failure there is the
  * product's whatever its wording, and softening it would cost the one gate that
- * has to stay hard. Mirrors `report_as` in the Rust driver.
+ * has to stay hard. An `execution_failed` outcome is a product failure on either profile.
+ * Mirrors `report_as` in the Rust driver.
  */
-export function reportAs(outcome: ActionOutcome, isLive: boolean): ActionOutcome {
+export function reportAs(outcome: ActionOutcome, isLive: boolean): ReportedOutcome {
+  if (outcome.kind === 'execution_failed') {
+    return { kind: 'failed', classification: 'product', reason: outcome.reason };
+  }
   if (outcome.kind === 'failed' && isLive && isEnvironmental(outcome.reason)) {
     return { ...outcome, classification: 'environment' };
   }
@@ -240,8 +255,8 @@ export async function runScenario(
   }
 
   const durationMs = Date.now() - startedAt;
-  outcome = reportAs(outcome, isLive);
-  switch (outcome.kind) {
+  const reported = reportAs(outcome, isLive);
+  switch (reported.kind) {
     case 'passed':
       return buildResult({ scenarioId: scenario.id, runtime, outcome: 'passed', durationMs });
     case 'failed':
@@ -249,8 +264,8 @@ export async function runScenario(
         scenarioId: scenario.id,
         runtime,
         outcome: 'failed',
-        reason: outcome.reason,
-        classification: outcome.classification,
+        reason: reported.reason,
+        classification: reported.classification,
         durationMs,
       });
     case 'skipped':
@@ -258,7 +273,7 @@ export async function runScenario(
         scenarioId: scenario.id,
         runtime,
         outcome: 'skipped',
-        reason: outcome.reason,
+        reason: reported.reason,
         durationMs,
       });
     case 'environment_blocked':
@@ -266,7 +281,7 @@ export async function runScenario(
         scenarioId: scenario.id,
         runtime,
         outcome: 'environment_blocked',
-        reason: outcome.reason,
+        reason: reported.reason,
         durationMs,
       });
   }

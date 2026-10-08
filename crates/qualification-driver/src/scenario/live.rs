@@ -815,6 +815,78 @@ pub async fn advance_past_bound(runner: &Runner) -> ActionOutcome {
 /// How long GUARDIAN may take to report an execution committed.
 const GUARDIAN_EXECUTION_DEADLINE: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Refusals a repeated request may meet once the accepted execution has moved past the point
+/// where GUARDIAN answers with it: the lease changing hands as it finishes, the proposal turned
+/// into a candidate, or the proposal removed once the candidate settled. None starts anything.
+const REPEAT_AFTER_PROGRESS: [&str; 3] = [
+    "GUARDIAN_EXECUTION_BUSY",
+    "conflict_pending_delta",
+    "proposal_not_found",
+];
+
+/// The answer to a second execution request for the proposal GUARDIAN has just accepted, sent
+/// at once so the first is still in flight, or has only just finished.
+enum RepeatAnswer {
+    Execution(guardian_client::ProposalExecution),
+    Refused { code: Option<String>, error: String },
+}
+
+impl RepeatAnswer {
+    fn from_sdk(
+        answer: Result<guardian_client::ProposalExecution, miden_multisig_client::MultisigError>,
+    ) -> Self {
+        match answer {
+            Ok(execution) => Self::Execution(execution),
+            Err(error) => Self::Refused {
+                code: match &error {
+                    miden_multisig_client::MultisigError::GuardianExecutionRefused {
+                        code, ..
+                    } => Some(code.clone()),
+                    _ => None,
+                },
+                error: error.to_string(),
+            },
+        }
+    }
+
+    fn from_base(
+        answer: Result<guardian_client::ProposalExecution, guardian_client::ClientError>,
+    ) -> Self {
+        match answer {
+            Ok(execution) => Self::Execution(execution),
+            Err(error) => Self::Refused {
+                code: error.guardian_code(),
+                error: error.to_string(),
+            },
+        }
+    }
+
+    /// Exactly once: the repeat is answered with the same execution and starts nothing, or is
+    /// refused only because that execution already moved on. A repeat that GUARDIAN newly
+    /// accepted means a second attempt, which is also how a first attempt that already failed
+    /// reads.
+    fn verdict(self, proposal_id: &str) -> Option<ActionOutcome> {
+        match self {
+            Self::Execution(execution)
+                if !execution.newly_accepted
+                    && execution.proposal_id.eq_ignore_ascii_case(proposal_id) =>
+            {
+                None
+            }
+            Self::Execution(execution) => Some(ActionOutcome::failed_product(format!(
+                "a repeated request for the execution in flight started another or answered for \
+                 another proposal: {execution:?}"
+            ))),
+            Self::Refused {
+                code: Some(code), ..
+            } if REPEAT_AFTER_PROGRESS.contains(&code.as_str()) => None,
+            Self::Refused { error, .. } => Some(ActionOutcome::failed_product(format!(
+                "a repeated request for the execution in flight was refused: {error}"
+            ))),
+        }
+    }
+}
+
 /// Hands the threshold-met proposal to GUARDIAN and waits for GUARDIAN to report it committed,
 /// then for the chain and GUARDIAN's history to agree, exactly as a self-execution is judged.
 /// No cosigner proves or submits anything.
@@ -853,6 +925,14 @@ pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
             ));
         }
     }
+    let repeat = RepeatAnswer::from_sdk(
+        client
+            .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
+            .await,
+    );
+    if let Some(outcome) = repeat.verdict(&proposal_id) {
+        return outcome;
+    }
 
     let started = std::time::Instant::now();
     let mut observed = Vec::new();
@@ -869,9 +949,11 @@ pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
                             || "no cause".to_string(),
                             |failure| format!("{:?}: {}", failure.code, failure.message),
                         );
-                        return ActionOutcome::failed_product(format!(
-                            "GUARDIAN execution failed after {observed:?}: {failure}"
-                        ));
+                        return ActionOutcome::ExecutionFailed {
+                            reason: format!(
+                                "GUARDIAN execution failed after {observed:?}: {failure}"
+                            ),
+                        };
                     }
                     ExecutionState::Pending
                     | ExecutionState::Proving
@@ -955,7 +1037,10 @@ pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
         }
     };
     let account_id = session.account_id;
-    match base.execute_delta_proposal(&account_id, &proposal_id).await {
+    match base
+        .execute_delta_proposal(&account_id, &proposal_id, false)
+        .await
+    {
         Ok(execution) if execution.newly_accepted => {}
         Ok(execution) => {
             return ActionOutcome::failed_product(format!(
@@ -968,6 +1053,13 @@ pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
             ));
         }
     }
+    let repeat = RepeatAnswer::from_base(
+        base.execute_delta_proposal(&account_id, &proposal_id, false)
+            .await,
+    );
+    if let Some(outcome) = repeat.verdict(&proposal_id) {
+        return outcome;
+    }
     let started = std::time::Instant::now();
     loop {
         match base
@@ -977,10 +1069,12 @@ pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
             Ok(execution) => match execution.state {
                 ExecutionState::Committed => break,
                 ExecutionState::Failed => {
-                    return ActionOutcome::failed_product(format!(
-                        "the base client saw the execution fail: {:?}",
-                        execution.error
-                    ));
+                    return ActionOutcome::ExecutionFailed {
+                        reason: format!(
+                            "the base client saw the execution fail: {:?}",
+                            execution.error
+                        ),
+                    };
                 }
                 ExecutionState::Pending | ExecutionState::Proving | ExecutionState::Submitted => {}
             },
