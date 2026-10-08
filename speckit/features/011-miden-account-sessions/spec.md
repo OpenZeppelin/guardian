@@ -229,8 +229,11 @@ confirm the SDK raises a dedicated error.
   - the delegated signer's public key (FR-002);
   - `origin`: the website that asked for the grant (e.g.
     `https://app.example`, at most 256 bytes), or empty for clients outside a
-    browser. It is shown to the user by the wallet; Guardian does not check
-    it against requests (see Phishing in Edge Cases);
+    browser. The page writes it, so it is **unverified**: a phishing page can
+    write the legitimate site. Wallets display it; the verified signal is the
+    wallet's own indicator of the requesting site (e.g. MetaMask's), and
+    hardware-wallet users have no verified origin in v1. Guardian does not
+    check it against requests (see Phishing in Edge Cases);
   - `issued_at` and `expires_at`, in Unix **seconds**;
   - `expires`: one canonical UTC rendering of `expires_at`
     (`YYYY-MM-DD HH:MM:SS UTC`), for devices that show raw numbers;
@@ -238,7 +241,9 @@ confirm the SDK raises a dedicated error.
   - the scope, a protocol constant: *Every account this signer cosigns on
     this Guardian, now or later, until this grant expires*;
   - the Guardian ACK-key commitment for the wallet's signature scheme;
-  - the Miden network.
+  - the Miden network, exactly one of `local`, `devnet` or `testnet` (the
+    `environment` of `GET /status`). Not a bech32 HRP: local and devnet share
+    `mdev`.
 
   `expires` and the scope are derived by Guardian, never taken from the
   client: Guardian computes the signed digest from `expires_at` and the
@@ -252,7 +257,9 @@ confirm the SDK raises a dedicated error.
   wallets MUST sign a domain-separated RPO digest of the same fields,
   distinct from `AuthRequestMessage` and `LookupAuthMessage` digests; because
   those devices show a hash, the SDK MUST show the grant fields before
-  invoking them. Shared test vectors MUST pin both encodings, and the EIP-712
+  invoking them. That step is UX, not phishing protection: a phishing page
+  does not run the SDK (or fakes its display), so for these wallets the grant
+  is blind-signed against a malicious page, an accepted v1 risk (Edge Cases). Shared test vectors MUST pin both encodings, and the EIP-712
   digest MUST match an independent implementation.
 - **FR-005 — Grant registration**: `POST /session` (gRPC `CreateSession`) MUST
   register a grant only if:
@@ -280,7 +287,9 @@ confirm the SDK raises a dedicated error.
   skew window's future cannot outlive a revoke-all (FR-013).
 - **FR-006 — Grant lifecycle**: Re-submitting the same grant while its session
   is live MUST succeed and return the same expiry, also when the wallet
-  re-signed it with another `issued_at` inside the skew window. A grant for a
+  re-signed it with another `issued_at` inside the skew window. The record is
+  left unchanged, so the recorded `issued_at` (FR-005) never moves: a
+  re-submission cannot lift a session above a revoke-all T (FR-013). A grant for a
   key that is already bound to a different grant (another signer commitment,
   origin or expiry) MUST be rejected, so another cosigner who learns a session key
   from `x-pubkey` cannot re-bind it to their identity; clients MUST use a
@@ -294,10 +303,15 @@ confirm the SDK raises a dedicated error.
   maximum, which MUST be longer than the 300-second skew window.
 - **FR-007 — Request authentication**: For a request with
   `x-auth-format: session`, `resolve_account` MUST, before and instead of
-  `Auth::verify`:
-  - verify the delegated signer's signature over `AuthRequestMessage`;
+  `Auth::verify`, in this order:
+  - verify the delegated signer's signature over `AuthRequestMessage`
+    (`authentication_failed`);
   - resolve the session for that public key, failing with `session_expired`
-    or `session_revoked` (FR-016) when it ended;
+    or `session_revoked` (FR-016) when it ended and `authentication_failed`
+    when it is unknown;
+  - apply the route allow-list: outside FR-008, `wallet_signature_required`
+    (FR-009). An ended session on a wallet-only route therefore gets its
+    FR-016 code, and the SDK drops it;
   - re-check that the grant's ACK-key commitment and network still match this
     Guardian for the account's scheme, so key rotation ends sessions;
   - require the grant's signer commitment to be a current cosigner of the
@@ -311,8 +325,16 @@ confirm the SDK raises a dedicated error.
     wallet-only routes. Requests on one floor that race (parallel reads of
     the same account through one session) can lose with
     `authentication_replay`; the SDK retries that code with a new timestamp.
-    A session floor MUST be deleted once no session can use it: the maximum
-    lifetime plus twice the skew window after its last request.
+    Session floors live in the existing account auth state, in the column
+    that holds signer commitments, keyed `session-<hex SHA-256 of the
+    delegated key>`: never a commitment (`0x…`) or the legacy sentinel row,
+    and selectable by prefix without a schema change (a `-`, not `:`, because
+    the filesystem store separates account and signer with `:`). A session
+    floor MUST be deleted once no session can use it: the maximum lifetime
+    plus twice the skew window after its last request.
+
+  Logout (FR-012) is not a per-account route and sits outside this order: it
+  verifies its own message and never returns `wallet_signature_required`.
 - **FR-008 — Session-eligible routes**: A delegated signer MAY sign exactly:
   - reads: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
     `GET /delta/history`;
@@ -329,8 +351,9 @@ confirm the SDK raises a dedicated error.
 - **FR-009 — Wallet-only routes (default deny)**: Every route not in FR-008
   MUST reject delegated-signer credentials with the stable code
   `wallet_signature_required` (HTTP 403, gRPC `PERMISSION_DENIED`), before any
-  state change and only after the delegated signature verifies; an
-  unverifiable delegated signature is `authentication_failed`. This includes
+  state change and only after the delegated signature verifies and the
+  session resolves (FR-007 order); an unverifiable delegated signature is
+  `authentication_failed`. This includes
   `POST /delta`, `POST /delta/proposal/execution` (#254),
   `POST /delta/candidate/abandon`, `POST /configure`, `GET /state/lookup` and
   `POST /session/revoke-all`. HTTP and gRPC MUST apply the same rule.
@@ -349,12 +372,14 @@ confirm the SDK raises a dedicated error.
   on it and keeps SC-006 as a regression check.
 - **FR-012 — Logout**: `POST /session/logout` (gRPC `RevokeSession`), signed by
   the delegated signer over a domain-separated logout message with a
-  timestamp in the skew window, MUST revoke that session. It is idempotent,
+  timestamp in the skew window (Unix **milliseconds**, the request's
+  `x-timestamp`), MUST revoke that session. It is idempotent,
   but only after the delegated signature verifies.
 - **FR-013 — Revoke all**: `POST /session/revoke-all` (gRPC
   `RevokeAllSessions`), signed by the wallet over a domain-separated,
   account-less message carrying the signer commitment and a timestamp T in the
-  skew window (raw RPO digest, or
+  skew window (Unix **milliseconds**, the request's `x-timestamp`, compared
+  with the recorded `issued_at` at the same precision; raw RPO digest, or
   `GuardianSessionRevokeAll(bytes32 signer,uint64 timestamp)` typed data),
   MUST revoke every session of that signer on this Guardian whose recorded
   `issued_at` (FR-005) is at or before T, and return how many. A replay of the request therefore
@@ -493,12 +518,23 @@ confirm the SDK raises a dedicated error.
   does not compare it with the request's `Origin`: the page holds the key and
   can send its requests from a server with any `Origin`, so the check would
   only stop a careless page while breaking same-origin deployments. The read
-  exposure to a page the user wrongly approves is accepted for v1; only the
-  wallet display (and the wallet's own site indicator) protects that case.
+  exposure to a page the user wrongly approves is accepted for v1. The
+  grant's `origin` is written by the page and unverified (FR-003): the real
+  signal is the wallet's own indicator of the requesting site, and
+  hardware-wallet users have no verified origin in v1.
+- **Blind-signed grants on raw wallets**: Falcon and raw ECDSA devices show a
+  hash, and the SDK's confirmation step is shown by the page, so against a
+  phishing page the grant is blind-signed. Accepted for v1. Follow-up: the
+  Miden Wallet (or any raw wallet) recognizes the grant's domain tag
+  (`guardian.session.v1`) and renders its fields itself.
+- **Device clock behind**: T is the revoking device's clock and `issued_at`
+  the granting device's (capped at server time). A replay of a revoke-all
+  inside the skew window can end a session started just after it on a device
+  whose clock runs behind. It can only revoke; the user starts a new session.
 - **Hardware wallets without registered display metadata**: devices may need
   a setting such as Ledger's "Verbose EIP-712" to display typed data field by
   field; documented in the SDK guide. Raw wallets show a hash; the SDK shows
-  the fields first (FR-004).
+  the fields first (FR-004), which is UX, not phishing protection.
 
 ## Success Criteria *(mandatory)*
 
@@ -574,6 +610,13 @@ confirm the SDK raises a dedicated error.
 - Q: Which answers end a session in the SDK? → A: `session_expired`, `session_revoked` and `authentication_failed` on a session-signed request. A request for an account the signer does not cosign is `authorization_failed` and keeps the session (FR-007, FR-016).
 - Q: Do session replay floors accumulate? → A: No: the sweep deletes a floor once no session can use it (FR-007).
 
+### Session 2026-10-08 (#527 round 2)
+
+- Q: Per-(account, delegated key) replay floor? → A: Confirmed (zeljkoX): a session signature can never be replayed as a wallet signature, so separate floors cost nothing.
+- Q: `authorization_failed` (403) for an account the signer does not cosign; origin shown, not enforced; raw-wallet confirmation? → A: Confirmed, with the origin stated as unverified and raw-wallet blind signing as an accepted v1 risk (FR-003, FR-004, Edge Cases).
+- Q: Check order for a session request? → A: Signature, session, route allow-list, ACK key and network, cosigner, replay CAS (FR-007).
+- Q: Units of the logout and revoke-all timestamps? → A: Milliseconds, like every request `x-timestamp` (FR-012, FR-013).
+
 ### Open for review
 
-- The per-(account, delegated key) replay floor (FR-007) departs from the "one floor per signer" wording in the review; it is what removes the lock-out raised by Dominik. Confirm.
+None: the last item, the per-(account, delegated key) replay floor, was confirmed in round 2.
