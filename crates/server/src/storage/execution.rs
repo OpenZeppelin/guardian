@@ -231,6 +231,15 @@ impl ExecutionRecord {
         self.evidence.is_some()
     }
 
+    /// Whether this attempt was released with an outcome resolved before `cutoff`.
+    pub fn finished_before(&self, cutoff: DateTime<Utc>) -> bool {
+        !self.reservation.is_active()
+            && self
+                .outcome
+                .as_ref()
+                .is_some_and(|outcome| outcome.resolved_at < cutoff)
+    }
+
     /// Whether this unresolved, boundary-crossed execution owns the candidate at `nonce`.
     pub fn owns_candidate(&self, nonce: u64) -> bool {
         self.reservation.is_active()

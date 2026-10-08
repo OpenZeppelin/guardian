@@ -2252,6 +2252,14 @@ impl StorageBackend for PostgresService {
         self.list_active_executions_tx().await
     }
 
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.prune_execution_records_tx(cutoff, limit).await
+    }
+
     // ----------------------------------------------------------------------
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     //
