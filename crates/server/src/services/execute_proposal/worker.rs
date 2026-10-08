@@ -305,7 +305,13 @@ async fn approach_boundary(
         .storage
         .pull_state(&job.account_id)
         .await
-        .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::StateMismatch, e))?;
+        .map_err(|e| {
+            ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::StateMismatch,
+                "Guardian could not read the account state",
+                &e,
+            )
+        })?;
     if current_state.commitment != job.base_commitment {
         return Err(ExecutionFailure::new(
             ExecutionFailureCode::StateMismatch,
@@ -389,52 +395,62 @@ async fn acknowledge(
     )
     .await
     .map_err(|error| {
-        let code = match error {
+        let failure = match error {
             GuardianError::SigningError(_)
             | GuardianError::StorageError(_)
-            | GuardianError::ConfigurationError(_) => ExecutionFailureCode::AcknowledgementFailed,
-            _ => ExecutionFailureCode::BindingMismatch,
+            | GuardianError::ConfigurationError(_) => ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::AcknowledgementFailed,
+                "Guardian could not sign or record its acknowledgement of the reproduced delta",
+                &error,
+            ),
+            _ => ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::BindingMismatch,
+                "the reproduced delta does not apply to the account state",
+                &error,
+            ),
         };
-        ExecutionFailure::new(
-            code,
-            format!("Guardian could not acknowledge the reproduced delta: {error}"),
-        )
-        .into()
+        failure.into()
     })
 }
 
 async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), Stop> {
-    let inadmissible = |message: String| {
+    let inadmissible = |message: &'static str| {
         Stop::Failed(ExecutionFailure::new(
             ExecutionFailureCode::AccountInadmissible,
             message,
+        ))
+    };
+    let unreadable = |message: &'static str, cause: &dyn std::fmt::Display| {
+        Stop::Failed(ExecutionFailure::with_logged_cause(
+            ExecutionFailureCode::AccountInadmissible,
+            message,
+            cause,
         ))
     };
     let current_state = state
         .storage
         .pull_state(&job.account_id)
         .await
-        .map_err(inadmissible)?;
+        .map_err(|e| unreadable("Guardian could not read the account state", &e))?;
     if current_state.commitment != job.base_commitment {
-        return Err(inadmissible(
-            "the account moved during the attempt".to_string(),
-        ));
+        return Err(inadmissible("the account moved during the attempt"));
     }
     let metadata = state
         .metadata
         .get(&job.account_id)
         .await
-        .map_err(inadmissible)?
-        .ok_or_else(|| inadmissible("the account metadata disappeared".to_string()))?;
-    ensure_account_active_metadata(&metadata).map_err(|e| inadmissible(e.to_string()))?;
+        .map_err(|e| unreadable("Guardian could not read the account metadata", &e))?
+        .ok_or_else(|| inadmissible("the account metadata disappeared"))?;
+    ensure_account_active_metadata(&metadata)
+        .map_err(|e| unreadable("the account was paused or released during the attempt", &e))?;
     if let Some(guardian) = state
         .network_client
         .extract_guardian_commitment(&current_state.state_json)
-        .map_err(inadmissible)?
+        .map_err(|e| unreadable("Guardian could not read the account's guardian", &e))?
         && !guardian.eq_ignore_ascii_case(&state.ack.commitment(&job.scheme))
     {
         return Err(inadmissible(
-            "the account is no longer guarded by this Guardian".to_string(),
+            "the account is no longer guarded by this Guardian",
         ));
     }
     Ok(())
@@ -464,10 +480,13 @@ fn ensure_within_horizon(state: &AppState, executed: &ExecutedTransactionInfo) -
 /// that can no longer be included is refused while its proposal can still be retried, rather
 /// than sent and settled as expired with its proposal gone.
 async fn ensure_unexpired(job: &ExecutionJob, proven: &ProvenTransactionInfo) -> Result<(), Stop> {
-    let tip =
-        job.executor.chain_tip().await.map_err(|message| {
-            ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, message)
-        })?;
+    let tip = job.executor.chain_tip().await.map_err(|error| {
+        ExecutionFailure::with_logged_cause(
+            ExecutionFailureCode::NodeUnavailable,
+            "Guardian could not read the chain tip from the node",
+            &error,
+        )
+    })?;
     if proven.expiration_block <= tip {
         return Err(ExecutionFailure::new(
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction),
@@ -512,7 +531,13 @@ async fn cross_boundary(
         .storage
         .admit_execution_candidate(state.metadata.as_ref(), admission)
         .await
-        .map_err(|e| ExecutionFailure::new(ExecutionFailureCode::StateMismatch, e))?;
+        .map_err(|e| {
+            ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::StateMismatch,
+                "Guardian could not record the boundary commit",
+                &e,
+            )
+        })?;
     match outcome {
         AdmissionWrite::Admitted => Ok(()),
         AdmissionWrite::NotAuthorized | AdmissionWrite::StaleLease => Err(Stop::OwnershipLost),
@@ -591,7 +616,10 @@ async fn submit(
             );
             let resolution = resolution(
                 job,
-                ExecutionFailure::new(ExecutionFailureCode::SubmissionRejected, reason),
+                ExecutionFailure::new(
+                    ExecutionFailureCode::SubmissionRejected,
+                    "the node rejected the transaction",
+                ),
             );
             match state
                 .storage

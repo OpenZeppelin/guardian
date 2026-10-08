@@ -142,7 +142,7 @@ Mapping AWS resources to the Terraform files that own them:
 | Operator public keys secret | [`operator_secrets.tf`](../../infra/operator_secrets.tf) | Optional dashboard operator Falcon pubkey list. |
 | ACK Falcon/ECDSA secrets (existing) | [`data.tf`](../../infra/data.tf) | Looked up via `data` in `prod`; created out-of-band by `aws-deploy.sh bootstrap-ack-keys`. |
 | EVM allowed chains + RPC URLs secrets | [`data.tf`](../../infra/data.tf) | Optional; populated by deploy script from `config/evm/chains.json`. |
-| Remote prover URL secret | [`operator_secrets.tf`](../../infra/operator_secrets.tf) | Optional; Terraform-managed from `guardian_tx_prover_url` (deleted immediately on destroy) or an existing ARN. Enables Guardian execution. |
+| Remote prover URL secret | [`operator_secrets.tf`](../../infra/operator_secrets.tf) | Optional; Terraform-managed from `guardian_tx_prover_url` (7-day recovery window, and a plan that would delete it without `guardian_execution_enabled = false` fails) or an existing ARN. Enables Guardian execution. The URL carries no credentials: the server refuses userinfo, a query or a fragment. |
 | ALB SG | [`security_groups.tf:2`](../../infra/security_groups.tf#L2) | Ingress `80/443` from `alb_ingress_cidrs`. |
 | Server SG | [`security_groups.tf:35`](../../infra/security_groups.tf#L35) | Ingress `3000`/`50051` only from ALB SG; egress all. |
 | RDS Proxy SG | [`security_groups.tf:67`](../../infra/security_groups.tf#L67) | Prod-only; ingress `5432` from server SG. |
@@ -220,10 +220,13 @@ Six categories of secret participate in a deploy:
    `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` and `GUARDIAN_EVM_RPC_URLS`
    ([`ecs.tf:125`](../../infra/ecs.tf#L125)).
 6. **Remote prover URL** (optional) - the prover Guardian execution sends
-   proofs to. Terraform-managed from `guardian_tx_prover_url` (no recovery
-   window, so it is deleted immediately on destroy) or an existing ARN;
-   exposed to the task as `GUARDIAN_TX_PROVER_URL`
-   ([`ecs.tf:327`](../../infra/ecs.tf#L327)).
+   proofs to. Terraform-managed from `guardian_tx_prover_url` (7-day recovery
+   window; the plan refuses to delete it unless `guardian_execution_enabled =
+   false`) or an existing ARN; exposed to the task as `GUARDIAN_TX_PROVER_URL`
+   ([`ecs.tf:344`](../../infra/ecs.tf#L344)). Stored as a secret because a
+   private prover's hostname can be sensitive, not because it holds
+   credentials: the server refuses a URL with userinfo, a query or a fragment,
+   so a private prover is restricted at the network level.
 
 The IAM split is deliberate:
 - The **execution role** only reads secrets the AWS-ECS agent needs *before*
