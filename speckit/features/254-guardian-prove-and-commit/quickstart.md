@@ -217,6 +217,7 @@ Synchronous, none creating a reservation (FR-022):
 |---|---|
 | `GUARDIAN_PROVING_UNAVAILABLE` | No prover configured, capability off, or optimistic mode |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | Proposal was created without execution mode, see step 1 |
+| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | A `switch_guardian` proposal; execute it locally so the client finishes the GUARDIAN handoff |
 | `GUARDIAN_PROPOSAL_NOT_READY` | Below the effective threshold of **valid** signatures |
 | `GUARDIAN_EXECUTION_CONFLICT` | Another execution holds the account; `meta.blocking_proposal_id` names it |
 | `GUARDIAN_EXECUTION_BUSY` | Another request is starting an execution for the account, or the server already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions; nothing was reserved, retry shortly |
