@@ -305,7 +305,12 @@ async fn an_account_at_the_submitted_state_waits_for_promotion_which_alone_commi
         ExecutionState::Submitted,
         "reconciliation never writes committed"
     );
-    assert_eq!(faults.f.promote().await, PromoteWrite::Applied);
+    assert_eq!(
+        faults.f.promote().await,
+        PromoteWrite::Applied {
+            settled_execution: true
+        }
+    );
     assert_eq!(faults.state().await, ExecutionState::Committed);
     assert!(!faults.reservation_held().await);
 }
