@@ -495,6 +495,18 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        timed(
+            "prune_execution_records",
+            self.inner.prune_execution_records(cutoff, limit),
+        )
+        .await
+    }
+
     async fn list_account_deltas_paged(
         &self,
         account_id: &str,

@@ -4,8 +4,8 @@ use crate::metrics::names::{
     EXECUTION_CAPACITY_REFUSALS_TOTAL, EXECUTION_CHAIN_VIEW_DURATION_SECONDS,
     EXECUTION_OBSERVATION_OUTAGE_SECONDS, EXECUTION_OLDEST_RESERVATION_AGE_SECONDS,
     EXECUTION_OUTCOMES_TOTAL, EXECUTION_PHASE_DURATION_SECONDS, EXECUTION_PROVER_RETRIES_TOTAL,
-    EXECUTION_PROVING_DURATION_SECONDS, EXECUTION_RECONCILE_OUTCOMES_TOTAL, LABEL_CODE,
-    LABEL_OUTCOME, LABEL_PHASE,
+    EXECUTION_PROVING_DURATION_SECONDS, EXECUTION_RECONCILE_OUTCOMES_TOTAL,
+    EXECUTION_RECORDS_PRUNED_TOTAL, LABEL_CODE, LABEL_OUTCOME, LABEL_PHASE,
 };
 use crate::storage::ExecutionFailureCode;
 
@@ -56,4 +56,9 @@ pub fn record_oldest_reservation_age(seconds: f64) {
 
 pub fn record_observation_outage(seconds: f64) {
     metrics::gauge!(EXECUTION_OBSERVATION_OUTAGE_SECONDS).set(seconds);
+}
+
+/// Counts the attempts one retention batch deleted.
+pub fn record_records_pruned(attempts: usize) {
+    metrics::counter!(EXECUTION_RECORDS_PRUNED_TOTAL).increment(attempts as u64);
 }

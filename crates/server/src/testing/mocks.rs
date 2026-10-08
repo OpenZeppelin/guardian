@@ -515,6 +515,8 @@ pub struct MockStorageBackend {
     pub execution_resolution_calls: Arc<StdMutex<Vec<crate::storage::ExecutionResolution>>>,
     pub list_active_executions_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ExecutionRecord>, String>>>>,
+    pub prune_execution_records_responses: Arc<StdMutex<Vec<StdResult<usize, String>>>>,
+    pub prune_execution_records_calls: Arc<StdMutex<Vec<(chrono::DateTime<chrono::Utc>, usize)>>>,
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     // Each queue is consumed LIFO via `Vec::pop`, mirroring the
     // existing helpers — callers either push N identical responses or
@@ -892,6 +894,14 @@ impl MockStorageBackend {
         response: StdResult<Vec<crate::storage::ExecutionRecord>, String>,
     ) -> Self {
         self.list_active_executions_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_prune_execution_records(self, response: StdResult<usize, String>) -> Self {
+        self.prune_execution_records_responses
             .lock()
             .unwrap()
             .push(response);
@@ -1491,6 +1501,22 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or(Ok(Vec::new()))
+    }
+
+    async fn prune_execution_records(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.prune_execution_records_calls
+            .lock()
+            .unwrap()
+            .push((cutoff, limit));
+        self.prune_execution_records_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(0))
     }
 
     async fn discard_candidate(
