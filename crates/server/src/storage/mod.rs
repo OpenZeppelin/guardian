@@ -1074,6 +1074,17 @@ pub trait StorageBackend: Send + Sync {
     /// Every unreleased reservation with its evidence, for reconciliation.
     async fn list_active_executions(&self) -> Result<Vec<ExecutionRecord>, String>;
 
+    /// Delete up to `limit` finished attempts resolved before `cutoff` whose proposal is gone or
+    /// that a newer attempt of the same proposal supersedes, with their evidence and outcome,
+    /// and report how many attempts were deleted. An active attempt and the newest attempt of a
+    /// proposal storage still holds are never deleted, so the attempt numbering of a live
+    /// proposal and every status read a client can still act on survive.
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String>;
+
     // ----------------------------------------------------------------------
     // Dashboard read APIs — feature `005-operator-dashboard-metrics`,
     // Decision 1 (revised). These methods exist so the dashboard can

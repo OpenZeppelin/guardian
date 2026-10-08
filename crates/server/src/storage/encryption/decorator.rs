@@ -510,6 +510,14 @@ impl StorageBackend for EncryptedStorage {
         self.inner.list_active_executions().await
     }
 
+    async fn prune_execution_records(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.inner.prune_execution_records(cutoff, limit).await
+    }
+
     async fn list_account_deltas_paged(
         &self,
         account_id: &str,
