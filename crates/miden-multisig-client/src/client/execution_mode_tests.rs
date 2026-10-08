@@ -570,6 +570,17 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
         proposals[0].id
     );
     assert!(proposals[0].is_verified(), "{:?}", proposals[0]);
+    assert!(
+        cosigner
+            .known_proposals
+            .admit(
+                proposed.account.id(),
+                &proposals[0].id,
+                crate::local_execution::GuardianExecutionRequest::default(),
+            )
+            .is_ok(),
+        "a listed proposal is held for a GUARDIAN execution request"
+    );
 
     let signed = cosigner
         .sign_proposal(&proposals[0].id)
@@ -583,4 +594,305 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
         .await
         .unwrap();
     assert!(exported.contains(&proposals[0].id));
+
+    cosigner.known_proposals = crate::local_execution::KnownProposals::default();
+    let admit = |cosigner: &MultisigClient| {
+        cosigner.known_proposals.admit(
+            proposed.account.id(),
+            &proposals[0].id,
+            crate::local_execution::GuardianExecutionRequest::default(),
+        )
+    };
+    assert!(
+        matches!(
+            admit(&cosigner),
+            Err(crate::error::MultisigError::ProposalNotHeldLocally { .. })
+        ),
+        "a client that never saw the proposal fails closed"
+    );
+    cosigner
+        .import_proposal_from_string(&exported)
+        .await
+        .expect("the exported proposal imports");
+    assert!(
+        admit(&cosigner).is_ok(),
+        "an imported proposal is held for a GUARDIAN execution request"
+    );
+}
+
+mod local_execution {
+    use guardian_client::ExecutionEnvelope;
+    use guardian_client::testing::mocks::MockGuardianHandle;
+    use miden_protocol::account::AccountId;
+    use miden_protocol::note::NoteType;
+
+    use super::*;
+    use crate::error::MultisigError;
+    use crate::local_execution::{GuardianExecutionRequest, LocalExecutionReason};
+    use crate::proposal::P2ideHeights;
+
+    const PROPOSAL_ID: &str = "0xabc123";
+
+    struct Requester {
+        client: MultisigClient,
+        handle: MockGuardianHandle,
+        account_id: AccountId,
+        _dir: tempfile::TempDir,
+    }
+
+    impl Requester {
+        async fn start() -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let keystore: Arc<dyn KeyManager> = Arc::new(GuardianKeyStore::generate());
+            let account = multisig_account(keystore.commitment(), Word::from([9u32, 9, 9, 9]), 71);
+            let (mut client, _store) = offline_client_parts_with_keystore(
+                dir.path(),
+                chain_with_notes(vec![]),
+                None,
+                keystore,
+            )
+            .await;
+            client.account = Some(MultisigAccount::new(account.clone()));
+            client.execution_mode = ProposalExecutionMode::GuardianExecutable;
+
+            let accepted = ExecutionEnvelope {
+                account_id: account.id().to_string(),
+                proposal_id: PROPOSAL_ID.to_string(),
+                state: "pending".to_string(),
+                error: None,
+                delta_nonce: None,
+                newly_accepted: true,
+                proposal_exists: true,
+                ignored_signatures: 0,
+                updated_at: "2026-10-07T12:00:00Z".to_string(),
+            };
+            let guardian = MockGuardianService::default().with_execution(Ok(accepted));
+            let handle = guardian.handle();
+            let endpoint = start_mock_server(guardian).await.unwrap();
+            client
+                .set_guardian_endpoint(&endpoint, false)
+                .await
+                .unwrap();
+            Self {
+                client,
+                handle,
+                account_id: account.id(),
+                _dir: dir,
+            }
+        }
+
+        fn holding(mut self, transaction_type: TransactionType) -> Self {
+            self.client
+                .known_proposals
+                .insert(self.account_id, PROPOSAL_ID, &transaction_type);
+            self
+        }
+
+        async fn request(
+            &mut self,
+            request: GuardianExecutionRequest,
+        ) -> crate::error::Result<guardian_client::ProposalExecution> {
+            self.client
+                .request_guardian_execution(PROPOSAL_ID, request)
+                .await
+        }
+
+        fn guardian_was_asked(&self) -> bool {
+            self.handle
+                .calls()
+                .iter()
+                .any(|call| call == "execute_delta_proposal")
+        }
+    }
+
+    fn p2id(note_type: NoteType) -> TransactionType {
+        let faucet = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        TransactionType::P2ID {
+            recipient: faucet,
+            faucet_id: faucet,
+            amount: 1,
+            note_type,
+            heights: P2ideHeights::default(),
+        }
+    }
+
+    fn switch_guardian() -> TransactionType {
+        TransactionType::SwitchGuardian {
+            new_endpoint: "http://new-guardian.example".to_string(),
+            new_commitment: Word::from([1u32, 2, 3, 4]),
+        }
+    }
+
+    fn opted_in() -> GuardianExecutionRequest {
+        GuardianExecutionRequest {
+            allow_private_note: true,
+        }
+    }
+
+    fn assert_local(
+        outcome: crate::error::Result<guardian_client::ProposalExecution>,
+        expected: LocalExecutionReason,
+    ) {
+        match outcome {
+            Err(MultisigError::LocalExecutionRequired {
+                proposal_id,
+                reason,
+            }) => {
+                assert_eq!(proposal_id, PROPOSAL_ID);
+                assert_eq!(reason, expected);
+            }
+            other => panic!("expected LocalExecutionRequired({expected}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_reasons_cover_exactly_a_switch_and_a_private_p2id() {
+        assert_eq!(
+            LocalExecutionReason::of(&switch_guardian()),
+            Some(LocalExecutionReason::SwitchGuardian)
+        );
+        assert_eq!(
+            LocalExecutionReason::of(&p2id(NoteType::Private)),
+            Some(LocalExecutionReason::PrivateNote)
+        );
+        assert_eq!(LocalExecutionReason::of(&p2id(NoteType::Public)), None);
+        assert_eq!(
+            LocalExecutionReason::of(&TransactionType::AddCosigner {
+                new_commitment: Word::from([1u32, 1, 1, 1]),
+            }),
+            None
+        );
+        assert_eq!(LocalExecutionReason::of(&TransactionType::Custom), None);
+        assert_eq!(
+            LocalExecutionReason::SwitchGuardian.as_str(),
+            "switch_guardian"
+        );
+        assert_eq!(LocalExecutionReason::PrivateNote.as_str(), "private_note");
+        assert_eq!(
+            GuardianExecutionRequest {
+                allow_private_note: true,
+            }
+            .local_execution_reason(&switch_guardian()),
+            Some(LocalExecutionReason::SwitchGuardian)
+        );
+        assert_eq!(
+            GuardianExecutionRequest {
+                allow_private_note: true,
+            }
+            .local_execution_reason(&p2id(NoteType::Private)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_error_says_to_execute_locally_and_names_the_reason() {
+        let message = MultisigError::LocalExecutionRequired {
+            proposal_id: PROPOSAL_ID.to_string(),
+            reason: LocalExecutionReason::PrivateNote,
+        }
+        .to_string();
+        assert_eq!(
+            message,
+            format!(
+                "proposal {PROPOSAL_ID} must be executed locally, not by GUARDIAN: {}",
+                LocalExecutionReason::PrivateNote.description()
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_switch_is_refused_even_with_the_private_note_opt_in() {
+        let mut requester = Requester::start().await.holding(switch_guardian());
+        assert_local(
+            requester.request(GuardianExecutionRequest::default()).await,
+            LocalExecutionReason::SwitchGuardian,
+        );
+        assert_local(
+            requester.request(opted_in()).await,
+            LocalExecutionReason::SwitchGuardian,
+        );
+        assert!(!requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn a_private_p2id_is_refused_without_the_opt_in() {
+        let mut requester = Requester::start().await.holding(p2id(NoteType::Private));
+        assert_local(
+            requester.request(GuardianExecutionRequest::default()).await,
+            LocalExecutionReason::PrivateNote,
+        );
+        assert!(!requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn a_private_p2id_is_sent_with_the_opt_in() {
+        let mut requester = Requester::start().await.holding(p2id(NoteType::Private));
+        let execution = requester.request(opted_in()).await.unwrap();
+        assert!(execution.newly_accepted);
+        assert!(requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn a_public_p2id_is_sent() {
+        let mut requester = Requester::start().await.holding(p2id(NoteType::Public));
+        requester
+            .request(GuardianExecutionRequest::default())
+            .await
+            .unwrap();
+        assert!(requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn other_types_are_sent() {
+        let mut requester =
+            Requester::start()
+                .await
+                .holding(TransactionType::UpdateProcedureThreshold {
+                    procedure: ProcedureName::ReceiveAsset,
+                    new_threshold: 1,
+                });
+        requester
+            .request(GuardianExecutionRequest::default())
+            .await
+            .unwrap();
+        assert!(requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn the_proposal_id_matches_without_its_prefix_or_case() {
+        let mut requester = Requester::start().await.holding(p2id(NoteType::Public));
+        requester
+            .client
+            .request_guardian_execution("ABC123", GuardianExecutionRequest::default())
+            .await
+            .unwrap();
+        assert!(requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn a_proposal_this_client_does_not_hold_fails_closed_without_asking_guardian() {
+        let mut requester = Requester::start().await;
+        match requester.request(opted_in()).await {
+            Err(MultisigError::ProposalNotHeldLocally { proposal_id }) => {
+                assert_eq!(proposal_id, PROPOSAL_ID)
+            }
+            other => panic!("expected ProposalNotHeldLocally, got {other:?}"),
+        }
+        assert!(!requester.guardian_was_asked());
+    }
+
+    #[tokio::test]
+    async fn a_proposal_held_for_another_account_fails_closed() {
+        let mut requester = Requester::start().await;
+        let other = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        requester
+            .client
+            .known_proposals
+            .insert(other, PROPOSAL_ID, &p2id(NoteType::Public));
+        assert!(matches!(
+            requester.request(GuardianExecutionRequest::default()).await,
+            Err(MultisigError::ProposalNotHeldLocally { .. })
+        ));
+        assert!(!requester.guardian_was_asked());
+    }
 }
