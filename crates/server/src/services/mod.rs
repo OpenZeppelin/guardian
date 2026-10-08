@@ -30,6 +30,7 @@ mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
 mod lookup_account;
+mod multisig_admission;
 pub mod pause_account;
 mod proposal_signature;
 mod push_delta;

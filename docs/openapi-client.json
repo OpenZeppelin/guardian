@@ -256,7 +256,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Push a signed state delta for a single-key account. The request\nbody is the JSON-encoded [`DeltaObject`] to commit.",
+        "summary": "Push a state delta. The request body is the JSON-encoded\n[`DeltaObject`] to commit. A multisig account is accepted only when\na matching proposal meets the cosigner threshold of the procedures\nthe delta invokes.",
         "operationId": "push_delta",
         "parameters": [
           {
@@ -294,7 +294,7 @@
             }
           },
           "400": {
-            "description": "Invalid delta payload",
+            "description": "Invalid delta payload, or a multisig push below the cosigner threshold",
             "content": {
               "application/json": {
                 "schema": {
