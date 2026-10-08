@@ -7,7 +7,7 @@ use super::worker::{ExecutionJob, run_execution};
 use crate::config::execution::{ExecutionConfig, ExecutionUnavailable};
 use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases, release_quietly};
 use crate::delta_object::DeltaStatus;
-use crate::error::{GuardianError, Result};
+use crate::error::{GuardianError, LocalExecutionReason, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::execution_status::ExecutionEnvelope;
@@ -105,6 +105,9 @@ pub struct RequestExecutionParams {
     pub account_id: String,
     pub proposal_id: String,
     pub credentials: Credentials,
+    /// Whether the caller lets Guardian execute a transaction that creates a private output
+    /// note, which is otherwise left to local execution.
+    pub allow_private_note: bool,
 }
 
 /// Requests Guardian execution of a threshold-met proposal. Refusals that can be decided now
@@ -123,6 +126,7 @@ pub async fn request_execution(
         account_id,
         proposal_id,
         credentials,
+        allow_private_note,
     } = params;
     let resolved = resolve_account(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
@@ -134,9 +138,15 @@ pub async fn request_execution(
         .storage
         .pull_delta_proposal(&account_id, &proposal_id)
         .await
-        .map_err(|_| GuardianError::ProposalNotFound {
-            account_id: account_id.clone(),
-            commitment: proposal_id.clone(),
+        .map_err(|error| {
+            if crate::storage::is_storage_not_found(&error) {
+                GuardianError::ProposalNotFound {
+                    account_id: account_id.clone(),
+                    commitment: proposal_id.clone(),
+                }
+            } else {
+                GuardianError::StorageError(error)
+            }
         })?;
     let DeltaStatus::Pending { cosigner_sigs, .. } = &proposal.status else {
         return Err(GuardianError::ProposalNotFound {
@@ -156,12 +166,17 @@ pub async fn request_execution(
     if proposal.delta_payload.get("transaction_request").is_none() {
         return Err(GuardianError::ProposalMissingTransactionRequest);
     }
-    if let Some(proposal_type) = proposal
-        .proposal_type()
-        .filter(|proposal_type| *proposal_type == "switch_guardian")
-    {
+    let proposal_type = proposal.proposal_type().unwrap_or("custom").to_string();
+    if proposal_type == "switch_guardian" {
         return Err(GuardianError::ProposalExecutesLocally {
-            proposal_type: proposal_type.to_string(),
+            proposal_type,
+            reason: LocalExecutionReason::SwitchGuardian,
+        });
+    }
+    if !allow_private_note && creates_private_note(&proposal.delta_payload)? {
+        return Err(GuardianError::ProposalExecutesLocally {
+            proposal_type,
+            reason: LocalExecutionReason::PrivateNote,
         });
     }
     if state
@@ -177,7 +192,13 @@ pub async fn request_execution(
         .storage
         .pull_state(&account_id)
         .await
-        .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
+        .map_err(|error| {
+            if crate::storage::is_storage_not_found(&error) {
+                GuardianError::StateNotFound(account_id.clone())
+            } else {
+                GuardianError::StorageError(error)
+            }
+        })?;
     let input = ExecutionInput {
         account_id: account_id.clone(),
         state_json: current_state.state_json,
@@ -307,6 +328,17 @@ pub async fn request_execution(
         crate::services::execution_status::proposal_exists(state, &account_id, &proposal_id)
             .await?;
     Ok(ExecutionEnvelope::from_record(&record, exists, true))
+}
+
+/// Whether the transaction the cosigners signed creates a private output note, read from the
+/// signed summary rather than the proposal's metadata label. Execution reproduces exactly this
+/// summary, so the stored request cannot create a note the summary does not show.
+fn creates_private_note(delta_payload: &serde_json::Value) -> Result<bool> {
+    let summary = crate::services::proposal_signature::proposal_tx_summary(delta_payload)?;
+    Ok(summary
+        .output_notes()
+        .iter()
+        .any(|note| note.metadata().is_private()))
 }
 
 /// The answer for a request that lost the race for the account's lease: the winner's execution
