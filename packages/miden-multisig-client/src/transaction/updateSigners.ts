@@ -13,44 +13,48 @@ import { normalizeHexWord } from '../utils/encoding.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
 import type { MultisigRequestOptions } from './options.js';
-import type { SignatureScheme } from '../types.js';
+import type { SignatureScheme, SignerInput, SignerSpec } from '../types.js';
+import { resolveSignerSpecs } from '../account/signers.js';
 
-function buildMultisigConfigFelts(
-  threshold: number,
-  signerCommitments: string[],
-  signatureScheme: SignatureScheme,
-): Felt[] {
-  const numApprovers = signerCommitments.length;
-  const schemeId = authSchemeId(signatureScheme);
+/**
+ * The `update_signers_and_threshold` advice payload:
+ * `[CONFIG, PUB_KEY_N, SCHEME_ID_N, ..., PUB_KEY_0, SCHEME_ID_0]`, one scheme per approver.
+ */
+function buildMultisigConfigFelts(threshold: number, signers: readonly SignerSpec[]): Felt[] {
   const felts: Felt[] = [
     new Felt(BigInt(threshold)),
-    new Felt(BigInt(numApprovers)),
+    new Felt(BigInt(signers.length)),
     new Felt(0n),
     new Felt(0n),
   ];
-  // Interleave [PUB_KEY, SCHEME_ID] per approver, in reverse index order.
-  for (const commitment of [...signerCommitments].reverse()) {
+  for (const { commitment, scheme } of [...signers].reverse()) {
     const word = WordType.fromHex(normalizeHexWord(commitment));
     felts.push(...word.toFelts());
-    felts.push(new Felt(BigInt(schemeId)), new Felt(0n), new Felt(0n), new Felt(0n));
+    felts.push(new Felt(BigInt(authSchemeId(scheme))), new Felt(0n), new Felt(0n), new Felt(0n));
   }
   return felts;
 }
 
+/**
+ * Builds the new-config advice for `update_signers_and_threshold`.
+ *
+ * @param signers - The new approver set in storage order; a bare commitment takes
+ *   `signatureScheme`, a {@link SignerSpec} keeps its own scheme
+ * @param signatureScheme - Scheme for approvers given as bare commitments
+ */
 export function buildMultisigConfigAdvice(
   threshold: number,
-  signerCommitments: string[],
+  signers: readonly SignerInput[],
   signatureScheme: SignatureScheme,
 ): { configHash: Word; payload: FeltArray } {
+  const specs = resolveSignerSpecs({ signerCommitments: [...signers], signatureScheme });
   // `Poseidon2.hashElements` consumes (frees) its `FeltArray` by value, so the advice payload
   // must be a separately built array — reusing the hashed array surfaces as "null pointer
   // passed to rust" at the later `advice.insert`.
   const configHash = Poseidon2.hashElements(
-    new FeltArray(buildMultisigConfigFelts(threshold, signerCommitments, signatureScheme)),
+    new FeltArray(buildMultisigConfigFelts(threshold, specs)),
   );
-  const payload = new FeltArray(
-    buildMultisigConfigFelts(threshold, signerCommitments, signatureScheme),
-  );
+  const payload = new FeltArray(buildMultisigConfigFelts(threshold, specs));
   return { configHash, payload };
 }
 
@@ -70,7 +74,7 @@ end
 export async function buildUpdateSignersTransactionRequest(
   client: MidenClient,
   threshold: number,
-  signerCommitments: string[],
+  signerCommitments: readonly SignerInput[],
   options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word; configHash: Word }> {
   const signatureScheme = options.signatureScheme ?? 'falcon';

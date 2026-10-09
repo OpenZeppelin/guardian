@@ -206,6 +206,45 @@ const multisig = await client.create(config, signer);
 console.log('Account ID:', multisig.accountId);
 ```
 
+### Mixed Signature Schemes Per Approver
+
+Each approver of the guarded multisig carries its own signature scheme on
+chain (`approver_schemes` in `miden-standards`), so an ECDSA wallet or
+hardware signer and a locally held Falcon key can share one account. Give an
+approver its scheme with a `SignerSpec`; a bare commitment keeps using
+`signatureScheme` (default `'falcon'`), which also remains the GUARDIAN's
+scheme:
+
+```typescript
+import { createMultisigAccount, type MultisigConfig } from '@openzeppelin/miden-multisig-client';
+
+const config: MultisigConfig = {
+  threshold: 2,
+  signerCommitments: [
+    { commitment: walletSigner.commitment, scheme: 'ecdsa' },
+    { commitment: falconSigner.commitment, scheme: 'falcon' },
+  ],
+  guardianCommitment,
+  signatureScheme: 'ecdsa', // GUARDIAN's scheme and the default for bare commitments
+};
+
+const { account } = await createMultisigAccount(midenClient, config);
+```
+
+`buildUpdateSignersTransactionRequest` and the `updateSigners` transaction type
+accept the same `string | SignerSpec` entries, and
+`AccountInspector.fromAccount` returns each approver's stored scheme in
+`signers` (and the guardian's in `guardianScheme`) next to the unchanged
+`signerCommitments`. `Multisig.signers` holds the same list.
+
+GUARDIAN currently binds one scheme to each account, so a mixed-scheme account
+cannot yet be registered or operated through it:
+`Multisig.registerOnGuardian()` and the add-signer, remove-signer and
+change-threshold proposals throw `SignerSchemeMismatchError`
+(`code: 'signer_scheme_mismatch'`) whenever an approver's registered scheme
+differs from the acting signer's, instead of rewriting the other approvers'
+schemes.
+
 ### Register on GUARDIAN
 
 After creating the account, register it on the GUARDIAN server:

@@ -87,4 +87,68 @@ describe('buildMultisigStorageSlots', () => {
     expect(signersMap.entries).toHaveLength(2);
     expect(signerSchemesMap.entries).toHaveLength(2);
   });
+
+  it('writes each approver scheme id at its signer index for a mixed set', async () => {
+    const { buildMultisigStorageSlots } = await import('./storage.js');
+
+    buildMultisigStorageSlots({
+      threshold: 2,
+      signerCommitments: [
+        '0x' + '1'.repeat(64),
+        { commitment: '0x' + '3'.repeat(64), scheme: 'ecdsa' },
+        { commitment: '0x' + '4'.repeat(64), scheme: 'falcon' },
+      ],
+      guardianCommitment: '0x' + '2'.repeat(64),
+      signatureScheme: 'ecdsa',
+    });
+
+    const signersMap = storageMaps[0];
+    const signerSchemesMap = storageMaps[1];
+
+    expect(signersMap.entries.map((entry) => (entry.value as { data: string }).data)).toEqual([
+      '0x' + '1'.repeat(64),
+      '0x' + '3'.repeat(64),
+      '0x' + '4'.repeat(64),
+    ]);
+    expect(signerSchemesMap.entries).toEqual([
+      {
+        key: { data: new BigUint64Array([0n, 0n, 0n, 0n]) },
+        value: { data: new BigUint64Array([1n, 0n, 0n, 0n]) },
+      },
+      {
+        key: { data: new BigUint64Array([1n, 0n, 0n, 0n]) },
+        value: { data: new BigUint64Array([1n, 0n, 0n, 0n]) },
+      },
+      {
+        key: { data: new BigUint64Array([2n, 0n, 0n, 0n]) },
+        value: { data: new BigUint64Array([2n, 0n, 0n, 0n]) },
+      },
+    ]);
+  });
 });
+
+describe('buildGuardianStorageSlots', () => {
+  beforeEach(() => {
+    storageMaps.length = 0;
+  });
+
+  it('writes the configured signatureScheme for the guardian, independent of approver specs', async () => {
+    const { buildGuardianStorageSlots } = await import('./storage.js');
+
+    buildGuardianStorageSlots({
+      threshold: 1,
+      signerCommitments: [{ commitment: '0x' + '1'.repeat(64), scheme: 'falcon' }],
+      guardianCommitment: '0x' + '2'.repeat(64),
+      signatureScheme: 'ecdsa',
+    });
+
+    const guardianSchemeMap = storageMaps[1];
+    expect(guardianSchemeMap.entries).toEqual([
+      {
+        key: { data: new BigUint64Array([0n, 0n, 0n, 0n]) },
+        value: { data: new BigUint64Array([1n, 0n, 0n, 0n]) },
+      },
+    ]);
+  });
+});
+

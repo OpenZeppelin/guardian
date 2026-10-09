@@ -7,6 +7,8 @@ import { base64ToUint8Array } from './utils/encoding.js';
 import { isEmptyWord, wordElementToBigInt, wordToHex } from './utils/word.js';
 import { getProcedureRoot, getProcedureNames, type ProcedureName } from './procedures.js';
 import { MULTISIG_SLOT_NAMES, GUARDIAN_SLOT_NAMES, MAX_SIGNERS } from './account/layout.js';
+import { signatureSchemeFromAuthSchemeId } from './utils/signature.js';
+import type { SignatureScheme, SignerSpec } from './types.js';
 
 type AccountStorageLike = ReturnType<Account['storage']>;
 
@@ -19,7 +21,15 @@ export interface DetectedMultisigConfig {
   threshold: number;
   numSigners: number;
   signerCommitments: string[];
+  /**
+   * Approvers with the scheme stored for each in `approver_schemes`, in
+   * signer-index order. An approver whose scheme entry is missing or unknown
+   * is left out, so this can be shorter than `signerCommitments`.
+   */
+  signers: SignerSpec[];
   guardianCommitment: string | null;
+  /** The scheme stored for the guardian, or `null` when it cannot be read. */
+  guardianScheme: SignatureScheme | null;
   vaultBalances: VaultBalance[];
   procedureThresholds: Map<ProcedureName, number>;
 }
@@ -38,6 +48,11 @@ export function assertCompleteDetectedConfig(
   if (detected.numSigners === 0 || detected.signerCommitments.length !== detected.numSigners) {
     throw new Error(
       `incomplete signer set: storage reports ${detected.numSigners} signers, read ${detected.signerCommitments.length}`,
+    );
+  }
+  if (detected.signers.length !== detected.numSigners) {
+    throw new Error(
+      `incomplete signer schemes: storage reports ${detected.numSigners} signers, read ${detected.signers.length} schemes`,
     );
   }
   if (!detected.guardianCommitment) {
@@ -66,6 +81,15 @@ function assertPinnedContractVersion(account: Account): void {
 
 function indexMapKey(index: number): Word {
   return new Word(new BigUint64Array([BigInt(index), 0n, 0n, 0n]));
+}
+
+function readScheme(
+  storage: AccountStorageLike,
+  slotName: string,
+  index: number,
+): SignatureScheme | undefined {
+  const value = readMapWord(storage, slotName, indexMapKey(index));
+  return value ? signatureSchemeFromAuthSchemeId(Number(wordElementToBigInt(value, 0))) : undefined;
 }
 
 /**
@@ -249,11 +273,16 @@ export class AccountInspector {
     const numSigners = slot0 ? Number(wordElementToBigInt(slot0, 1)) : 0;
 
     const signerCommitments: string[] = [];
+    const signers: SignerSpec[] = [];
     for (let i = 0; i < Math.min(numSigners, MAX_SIGNERS); i++) {
       try {
         const commitment = readMapWord(storage, MULTISIG_SLOT_NAMES.SIGNER_PUBLIC_KEYS, indexMapKey(i));
         if (commitment) {
           signerCommitments.push(wordToHex(commitment));
+          const scheme = readScheme(storage, MULTISIG_SLOT_NAMES.SIGNER_SCHEME_IDS, i);
+          if (scheme) {
+            signers.push({ commitment: wordToHex(commitment), scheme });
+          }
         }
       } catch (error) {
         console.warn(error);
@@ -263,12 +292,14 @@ export class AccountInspector {
     // The guarded-multisig has no enable/disable selector; the guardian is always present.
     // Read its public key directly from the guardian pub_key slot.
     let guardianCommitment: string | null = null;
+    let guardianScheme: SignatureScheme | null = null;
 
     try {
       const guardianKey = readMapWord(storage, GUARDIAN_SLOT_NAMES.PUBLIC_KEY, indexMapKey(0));
       if (guardianKey) {
         guardianCommitment = wordToHex(guardianKey);
       }
+      guardianScheme = readScheme(storage, GUARDIAN_SLOT_NAMES.SCHEME_ID, 0) ?? null;
     } catch (error) {
       console.warn(error);
     }
@@ -310,7 +341,9 @@ export class AccountInspector {
       threshold,
       numSigners,
       signerCommitments,
+      signers,
       guardianCommitment,
+      guardianScheme,
       vaultBalances,
       procedureThresholds,
     };

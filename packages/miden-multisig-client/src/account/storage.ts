@@ -1,17 +1,23 @@
-import type { MultisigConfig } from '../types.js';
+import type { MultisigConfig, SignatureScheme } from '../types.js';
 import { StorageSlot, StorageMap, Word } from '@miden-sdk/miden-sdk';
 import { ensureHexPrefix } from '../utils/encoding.js';
 import { getProcedureRoot } from '../procedures.js';
+import { authSchemeId } from '../utils/signature.js';
 import { MULTISIG_SLOT_NAMES, GUARDIAN_SLOT_NAMES } from './layout.js';
+import { DEFAULT_SIGNATURE_SCHEME, resolveSignerSpecs } from './signers.js';
 
 function signerMapKey(index: bigint): Word {
   return new Word(new BigUint64Array([index, 0n, 0n, 0n]));
 }
 
+function schemeIdWord(scheme: SignatureScheme): Word {
+  return new Word(new BigUint64Array([BigInt(authSchemeId(scheme)), 0n, 0n, 0n]));
+}
+
 export class StorageLayoutBuilder {
   buildMultisigSlots(config: MultisigConfig): StorageSlot[] {
-    const numSigners = config.signerCommitments.length;
-    const schemeId = config.signatureScheme === 'ecdsa' ? 1n : 2n;
+    const signers = resolveSignerSpecs(config);
+    const numSigners = signers.length;
     const slot0Word = new Word(
       new BigUint64Array([
         BigInt(config.threshold),
@@ -23,7 +29,7 @@ export class StorageLayoutBuilder {
     const slot0 = StorageSlot.fromValue(MULTISIG_SLOT_NAMES.THRESHOLD_CONFIG, slot0Word);
 
     const signersMap = new StorageMap();
-    config.signerCommitments.forEach((commitment, index) => {
+    signers.forEach(({ commitment }, index) => {
       const key = signerMapKey(BigInt(index));
       const value = Word.fromHex(ensureHexPrefix(commitment));
       signersMap.insert(key, value);
@@ -31,10 +37,8 @@ export class StorageLayoutBuilder {
     const slot1 = StorageSlot.map(MULTISIG_SLOT_NAMES.SIGNER_PUBLIC_KEYS, signersMap);
 
     const signerSchemesMap = new StorageMap();
-    config.signerCommitments.forEach((_, index) => {
-      const key = signerMapKey(BigInt(index));
-      const value = new Word(new BigUint64Array([schemeId, 0n, 0n, 0n]));
-      signerSchemesMap.insert(key, value);
+    signers.forEach(({ scheme }, index) => {
+      signerSchemesMap.insert(signerMapKey(BigInt(index)), schemeIdWord(scheme));
     });
     const slot2 = StorageSlot.map(MULTISIG_SLOT_NAMES.SIGNER_SCHEME_IDS, signerSchemesMap);
 
@@ -61,7 +65,6 @@ export class StorageLayoutBuilder {
    * returns just two slots: the guardian public-key map and its scheme map.
    */
   buildGuardianSlots(config: MultisigConfig): StorageSlot[] {
-    const schemeId = config.signatureScheme === 'ecdsa' ? 1n : 2n;
     const zeroKey = signerMapKey(0n);
 
     const guardianKeyMap = new StorageMap();
@@ -70,8 +73,10 @@ export class StorageLayoutBuilder {
     const slot0 = StorageSlot.map(GUARDIAN_SLOT_NAMES.PUBLIC_KEY, guardianKeyMap);
 
     const guardianSchemeMap = new StorageMap();
-    const guardianScheme = new Word(new BigUint64Array([schemeId, 0n, 0n, 0n]));
-    guardianSchemeMap.insert(zeroKey, guardianScheme);
+    guardianSchemeMap.insert(
+      zeroKey,
+      schemeIdWord(config.signatureScheme ?? DEFAULT_SIGNATURE_SCHEME),
+    );
     const slot1 = StorageSlot.map(GUARDIAN_SLOT_NAMES.SCHEME_ID, guardianSchemeMap);
 
     return [slot0, slot1];

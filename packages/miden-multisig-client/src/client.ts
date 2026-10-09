@@ -226,8 +226,9 @@ export class MultisigClient {
     assertCompleteDetectedConfig(detected);
     const config: MultisigConfig = {
       threshold: detected.threshold,
-      signerCommitments: detected.signerCommitments,
+      signerCommitments: detected.signers,
       guardianCommitment: detected.guardianCommitment,
+      signatureScheme: detected.guardianScheme ?? undefined,
       procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
         ([procedure, threshold]) => ({ procedure, threshold })
       ),

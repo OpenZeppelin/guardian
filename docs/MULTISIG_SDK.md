@@ -638,6 +638,15 @@ console.log('Threshold:', multisig.threshold);
 console.log('Signers:', multisig.signerCommitments);
 ```
 
+An approver may use its own signature scheme: pass `{ commitment, scheme }`
+(a `SignerSpec`) instead of a bare commitment, which keeps using
+`signatureScheme` (default `'falcon'`, also the GUARDIAN's scheme). The account
+then stores one scheme per approver in `approver_schemes`, as
+`miden-standards` does. GUARDIAN binds one scheme to each account, so
+`registerOnGuardian()` and the signer-update proposals refuse such an account
+with `SignerSchemeMismatchError` until the server supports per-signer schemes
+(issue #539). The Rust SDK still builds single-scheme accounts.
+
 ### Loading Existing Accounts
 
 ```typescript
@@ -1204,7 +1213,9 @@ one implicitly.
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
+- `signers`: { commitment, scheme }[] (each approver's stored scheme, signer-index order)
 - `guardianCommitment`: string | null
+- `guardianScheme`: 'falcon' | 'ecdsa' | null
 - `vaultBalances`: { faucetId, amount }[]
 
 > **Reading an account's keys:** since the account uses the upstream
