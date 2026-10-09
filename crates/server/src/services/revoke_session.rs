@@ -34,7 +34,10 @@ pub async fn revoke_session(
     let message = SessionLogoutMessage::new(&session_public_key, timestamp).to_word();
     crate::session::verify_signature(&session_public_key, signature_hex, message)?;
 
-    let signer_commitment = state.miden_sessions.revoke(&session_public_key).await?;
+    let signer_commitment = state
+        .miden_sessions
+        .revoke(&session_public_key, state.clock.now())
+        .await?;
     tracing::info!(
         revoked = signer_commitment.is_some(),
         signer_commitment = signer_commitment.as_deref().unwrap_or_default(),

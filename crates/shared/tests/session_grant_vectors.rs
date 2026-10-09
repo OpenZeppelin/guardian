@@ -223,7 +223,10 @@ fn build_fixture() -> Fixture {
             signer_commitment_hex: word_to_hex(signer),
             timestamp_ms,
             expected_digest_hex: word_to_hex(message.to_word()),
-            expected_eip712_digest_hex: format!("0x{}", hex::encode(revoke_all_digest(&message))),
+            expected_eip712_digest_hex: format!(
+                "0x{}",
+                hex::encode(revoke_all_digest(&message).unwrap())
+            ),
         }
     })
     .collect();

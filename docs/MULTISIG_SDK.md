@@ -1743,6 +1743,30 @@ An empty list means the key is valid but this Guardian has no account metadata
 that authorizes its commitment. Authentication failures, malformed lookup
 responses, and per-account `get_state` failures are returned as errors.
 
+### Signing Requests With a Session
+
+`start_session` has the key manager sign one session grant; a delegated P-256
+key then signs the state and delta reads and the proposal list, get, create
+and sign requests of every later operation until the session ends.
+Registration, delta pushes, candidate abandons, lookup and transaction
+approvals keep using the key manager.
+
+```rust
+let info = client
+    .start_session(StartSessionOptions {
+        network: "devnet".to_string(),
+        ttl: Duration::from_secs(3600),
+    })
+    .await?;
+client.sync().await?;
+client.end_session().await?;
+```
+
+A session Guardian ends or no longer accepts is dropped, after which
+`session()` returns `None`; there is no callback. `revoke_all_sessions` is
+wallet-signed; run it again 10 minutes later when a key may be compromised
+(see the TypeScript guide above).
+
 ### API Reference
 
 #### MultisigClient
@@ -1759,6 +1783,10 @@ responses, and per-account `get_state` failures are returned as errors.
 | `user_commitment()` | Get user's key commitment |
 | `user_commitment_hex()` | Get commitment as hex |
 | `recover_by_key()` | Discover accounts that authorize the configured signer and fetch each current state |
+| `start_session(options)` | Sign one session grant; later reads and proposal requests are signed by the session key. Logs out a session it replaces |
+| `session()` | The active session (`SessionInfo`), or `None` |
+| `end_session()` | Log out the current session |
+| `revoke_all_sessions()` | Key-manager-signed: revoke every session of this key on the Guardian |
 | `propose_transaction(tx)` | Create and submit proposal |
 | `propose_with_fallback(tx)` | Online or offline proposal |
 | `list_proposals()` | List pending proposals |

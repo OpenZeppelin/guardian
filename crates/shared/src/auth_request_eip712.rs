@@ -63,14 +63,16 @@ pub fn session_digest(grant: &SessionGrant) -> [u8; 32] {
 /// GuardianSessionRevokeAll(bytes32 signer,uint64 timestamp)
 /// ```
 ///
-/// `timestamp` is `timestamp_ms`; negative values are not representable and
-/// are rejected by the server before verification.
-pub fn revoke_all_digest(message: &SessionRevokeAllMessage) -> [u8; 32] {
+/// `timestamp` is `timestamp_ms`. A negative timestamp has no `uint64`
+/// encoding and is an error, as in the TypeScript SDK.
+pub fn revoke_all_digest(message: &SessionRevokeAllMessage) -> Result<[u8; 32], String> {
+    let timestamp = u64::try_from(message.timestamp_ms())
+        .map_err(|_| "Revoke-all timestamp must not be negative".to_string())?;
     let mut encoded = [0u8; 96];
     encoded[..32].copy_from_slice(&keccak(REVOKE_ALL_TYPE.as_bytes()));
     encoded[32..64].copy_from_slice(&message.signer_commitment().as_bytes());
-    encoded[64..].copy_from_slice(&uint64_word(message.timestamp_ms().max(0) as u64));
-    finalize(SESSION_DOMAIN_NAME, keccak(&encoded))
+    encoded[64..].copy_from_slice(&uint64_word(timestamp));
+    Ok(finalize(SESSION_DOMAIN_NAME, keccak(&encoded)))
 }
 
 fn typed_digest(domain_name: &str, message_type: &str, message_hash: Word) -> [u8; 32] {
@@ -134,9 +136,15 @@ mod tests {
             1_791_280_800_000,
         );
         assert_eq!(
-            hex::encode(revoke_all_digest(&message)),
+            hex::encode(revoke_all_digest(&message).unwrap()),
             "f635fa26e9080362ef8d9fba703c8060d8482f5b840327b206ef83f566467f9b"
         );
+    }
+
+    #[test]
+    fn rejects_a_negative_revoke_all_timestamp() {
+        let message = SessionRevokeAllMessage::new(Word::default(), -1);
+        assert!(revoke_all_digest(&message).is_err());
     }
 
     #[test]

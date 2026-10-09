@@ -79,8 +79,9 @@ export interface SessionGrantFields {
 
 /**
  * Why a client stopped using a session:
- * - `logout`: the app ended it (`revokeSession`, `revokeAllSessions`, or a
- *   replacement session); do not start a new one in response;
+ * - `logout`: the app ended it with `revokeSession` or `revokeAllSessions`
+ *   (the multisig SDK also logs out a session it replaces); do not start a
+ *   new one in response;
  * - `expired`: it reached its expiry;
  * - `revoked`: Guardian answered `session_revoked` (logout or revoke-all
  *   elsewhere);

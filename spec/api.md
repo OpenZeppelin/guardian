@@ -129,9 +129,10 @@ approval prompts: the wallet still signs every transaction summary.
   that the grant names this Guardian's current ACK key for the account's
   scheme and its network (key rotation ends sessions), requires the grant's
   signer to be a current cosigner of the account, and finally applies the
-  replay check. A signer that does not cosign the account
-  gets `authorization_failed` (HTTP 403, gRPC `PERMISSION_DENIED`) and keeps
-  its session for its other accounts; removing a signer ends its delegated
+  replay check. A signer that does not cosign the account, or a grant for
+  this Guardian's key of the other signature scheme, gets
+  `authorization_failed` (HTTP 403, gRPC `PERMISSION_DENIED`) and keeps its
+  session for its other accounts; removing a signer ends its delegated
   access to that account, adding it back restores an unexpired grant.
 - **Origin is informational.** Guardian never compares the grant's `origin`
   with a request's `Origin`. A page that obtains a grant holds the key and can
@@ -174,7 +175,8 @@ approval prompts: the wallet still signs every transaction summary.
   `guardian.session.logout.v1`, timestamp, session public key). The timestamp
   is Unix milliseconds, the request's `x-timestamp`. Idempotent once the
   delegated signature verifies; never answered with
-  `wallet_signature_required`.
+  `wallet_signature_required`. Logging out an expired session leaves it
+  reported as `session_expired`.
 - **Revoke all.** `POST /session/revoke-all` (gRPC `RevokeAllSessions`) is
   signed by the wallet over `SessionRevokeAllMessage` (domain tag
   `guardian.session.revoke_all.v1`, timestamp, signer commitment), raw or as

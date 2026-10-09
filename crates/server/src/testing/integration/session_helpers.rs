@@ -44,6 +44,7 @@ pub async fn seed_cosigner(state: &AppState, commitment: &str, scheme: Signature
 }
 
 /// Grant values as a client sends them; tests override one field at a time.
+#[derive(Clone)]
 pub struct GrantInput {
     pub signer_commitment: String,
     pub origin: String,
@@ -124,5 +125,8 @@ pub fn revoke_all_eip712_signature(signer: &TestEcdsaSigner) -> (String, i64) {
     let timestamp = chrono::Utc::now().timestamp_millis();
     let signer_commitment = Word::from_hex(&signer.commitment_hex).unwrap();
     let message = SessionRevokeAllMessage::new(signer_commitment, timestamp);
-    (signer.sign_prehash(revoke_all_digest(&message)), timestamp)
+    (
+        signer.sign_prehash(revoke_all_digest(&message).unwrap()),
+        timestamp,
+    )
 }

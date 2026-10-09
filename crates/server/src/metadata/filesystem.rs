@@ -178,8 +178,11 @@ fn signer_scoped_auth_state_key<'a>(
 /// upgrade instead of re-accepting requests seen just before it), and the
 /// account-scoped entry is dropped. A legacy account-level floor is retained so
 /// a signer absent during migration cannot regain a replay window when added
-/// later. Entries whose accounts are missing abort startup: they indicate an
-/// incomplete restore, and dropping them would silently reset replay state.
+/// later. A delegated signer's floor never seeds that legacy floor: a stolen
+/// session stamping ahead in the skew window would then block every
+/// cosigner's wallet requests after a restart. Entries whose accounts are
+/// missing abort startup: they indicate an incomplete restore, and dropping
+/// them would silently reset replay state.
 fn expand_account_scoped_auth_state(
     accounts: &HashMap<String, AccountMetadata>,
     state: HashMap<String, i64>,
@@ -197,9 +200,6 @@ fn expand_account_scoped_auth_state(
                      accounts.json and auth_state.json from the same backup"
                 ));
             }
-            // A delegated signer's floor must not seed the account's legacy
-            // floor: a stolen session stamping ahead in the skew window would
-            // then block every cosigner's wallet requests after a restart.
             if signer != LEGACY_ACCOUNT_AUTH_FLOOR && !crate::session::is_replay_floor_key(signer) {
                 let floor = signer_floors
                     .entry(account_id.to_string())

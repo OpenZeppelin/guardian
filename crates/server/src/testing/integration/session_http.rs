@@ -7,6 +7,7 @@ use super::session_helpers::{
     GrantInput, MAX_TTL_SECONDS, logout_signature, revoke_all_eip712_signature,
     revoke_all_signature, revoke_all_word, seed_cosigner, with_max_ttl,
 };
+use crate::builder::clock::test::MockClock;
 use crate::metadata::auth::Auth;
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
@@ -34,7 +35,13 @@ use tower::Service;
 
 /// The fixture account configured by its first cosigner.
 async fn configured_account() -> (axum::Router, AppState, TestSigner, String) {
-    let mut state = with_max_ttl(create_test_app_state().await);
+    configured_account_with(with_max_ttl(create_test_app_state().await)).await
+}
+
+/// [`configured_account`] on `state`, e.g. with a frozen clock.
+async fn configured_account_with(
+    mut state: AppState,
+) -> (axum::Router, AppState, TestSigner, String) {
     state.network_client = Arc::new(IntegrationMockNetworkClient::new(
         MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal),
     ));
@@ -1106,6 +1113,116 @@ async fn test_resubmitted_grant_is_idempotent_until_revoked() {
     );
 }
 
+/// FR-006: a grant the wallet re-signed with a later `issued_at` is the same
+/// session and keeps the recorded issue time, so a revoke-all signed between
+/// the two still ends it.
+#[tokio::test]
+async fn test_a_re_signed_grant_cannot_escape_revoke_all() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let now = state.clock.now().timestamp() as u64;
+    let first = GrantInput {
+        issued_at: now - 60,
+        ..GrantInput::for_state(&state, &signer.commitment_hex, SignatureScheme::Falcon)
+    };
+    let session_key = SessionKey::generate();
+    for input in [
+        &first,
+        &GrantInput {
+            issued_at: now,
+            ..first.clone()
+        },
+    ] {
+        let signature = signer.sign_word(input.grant(&session_key).to_word());
+        let (status, body) =
+            post_session(&app, &input.body(&session_key, "falcon", &signature)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "issued_at {}: {body}",
+            input.issued_at
+        );
+    }
+
+    let between = ((now - 30) * 1000) as i64;
+    let signature = signer.sign_word(revoke_all_word(&signer.commitment_hex, between));
+    let (status, body) = send(
+        &app,
+        revoke_all_request(
+            &signer.commitment_hex,
+            &signer.pubkey_hex,
+            &signature,
+            between,
+            None,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked"], 1);
+    let response = session_get(&app, &session_key, &account_id_hex).await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "session_revoked",
+        "re-signed grant",
+    );
+}
+
+/// SC-003: an origin over 256 bytes is refused before any signature check.
+#[tokio::test]
+async fn test_create_session_rejects_an_origin_over_256_bytes() {
+    let state = with_max_ttl(create_test_app_state().await);
+    let app = create_router(state.clone());
+    let input = GrantInput {
+        origin: format!("https://{}", "a".repeat(250)),
+        ..GrantInput::for_state(
+            &state,
+            &TestSigner::new().commitment_hex,
+            SignatureScheme::Falcon,
+        )
+    };
+    let response = post_session(&app, &input.body(&SessionKey::generate(), "falcon", "0x00")).await;
+    assert_error(
+        &response,
+        StatusCode::BAD_REQUEST,
+        "invalid_input",
+        "long origin",
+    );
+}
+
+/// A grant for this Guardian's key of the other scheme cannot reach a Falcon
+/// account, but the session stays valid for the signer's own accounts.
+#[tokio::test]
+async fn test_a_grant_for_the_other_scheme_keeps_the_session() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let now = state.clock.now();
+    let secs = now.timestamp() as u64;
+    let session_key = SessionKey::generate();
+    state
+        .miden_sessions
+        .register(
+            &session_key.public_key(),
+            MidenSession {
+                signer_commitment: signer.commitment_hex.clone(),
+                origin: String::new(),
+                guardian_commitment: state.ack.commitment(&SignatureScheme::Ecdsa),
+                network: state.dashboard.environment().to_string(),
+            },
+            secs,
+            secs + 600,
+            now,
+        )
+        .await
+        .unwrap();
+
+    let response = session_get(&app, &session_key, &account_id_hex).await;
+    assert_error(
+        &response,
+        StatusCode::FORBIDDEN,
+        "authorization_failed",
+        "grant for the other scheme",
+    );
+}
+
 #[tokio::test]
 async fn test_another_signer_cannot_take_over_a_session_key() {
     let (app, state, signer, account_id_hex) = configured_account().await;
@@ -1358,19 +1475,21 @@ async fn test_a_grant_dated_in_the_future_cannot_outlive_revoke_all() {
 
 #[tokio::test]
 async fn test_session_cannot_lock_the_wallet_out() {
-    let (app, state, signer, account_id_hex) = configured_account().await;
+    let mut state = with_max_ttl(create_test_app_state().await);
+    state.clock = Arc::new(MockClock::new(chrono::Utc::now()));
+    let (app, state, signer, account_id_hex) = configured_account_with(state).await;
     let session_key = falcon_session(&app, &state, &signer).await;
 
-    // A stolen session pushes its timestamps ahead inside the skew window
-    // (with a minute of headroom before the window's edge).
-    let now = now_ms();
-    let ahead = now + 240_000;
+    // A stolen session stamps its requests at the edge of the skew window;
+    // the frozen clock keeps that edge exact.
+    let now = state.clock.now().timestamp_millis();
+    let ahead = now + 299_000;
     let (status, body) =
         session_get_with(&app, &session_key, "/state", &account_id_hex, ahead).await;
     assert_eq!(status, StatusCode::OK, "{body}");
 
     // The wallet's floor is its own: a request stamped with the real time works.
-    let (status, body) = wallet_get_state(&app, &signer, &account_id_hex, now + 1).await;
+    let (status, body) = wallet_get_state(&app, &signer, &account_id_hex, now_ms()).await;
     assert_eq!(
         status,
         StatusCode::OK,

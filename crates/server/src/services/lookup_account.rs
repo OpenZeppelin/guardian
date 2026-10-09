@@ -96,8 +96,6 @@ pub async fn lookup_account(
             request_timestamp,
             key_commitment_word,
         ),
-        // Account recovery proves possession of the wallet key itself:
-        // wallet-only (#219).
         RequestAuthFormat::Session => {
             let message = LookupAuthMessage::new(request_timestamp, key_commitment_word).to_word();
             return Err(

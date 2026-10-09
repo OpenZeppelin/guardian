@@ -9,10 +9,6 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{MAX_TIMESTAMP_SKEW_SECS, RequestAuthFormat, verify_session_grant};
 use crate::session::MidenSession;
 
-/// Longest wallet signature a grant can carry: a Falcon signature with its
-/// embedded public key.
-const MAX_GRANT_SIGNATURE_BYTES: usize = 1524;
-
 /// A wallet-signed session grant (`POST /session`).
 #[derive(Debug, Clone)]
 pub struct CreateSessionParams {
@@ -48,7 +44,10 @@ pub struct CreateSessionResult {
 ///
 /// The endpoint is unauthenticated until the signature is verified, so every
 /// check that needs no cryptography runs first and malformed grants are
-/// rejected before any signature verification.
+/// rejected before any signature verification. Grant times are Unix seconds,
+/// so the skew window is compared in seconds. Only a cosigner of some account
+/// may hold sessions, so arbitrary keys cannot fill the store; that check
+/// uses the lookup index and runs after the signature verifies.
 #[tracing::instrument(
     level = "info",
     skip(state, params),
@@ -63,19 +62,7 @@ pub async fn create_session(
         error
     };
 
-    // The signature comes from an unauthenticated body: reject anything that
-    // is not a plausible signature before the verifiers parse (and log) it.
-    let signature_hex = params.signature.trim_start_matches("0x");
-    if signature_hex.len() > 2 * MAX_GRANT_SIGNATURE_BYTES
-        || !signature_hex.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Err(rejected(
-            "signature",
-            GuardianError::InvalidInput(format!(
-                "Session grant signature must be hex of at most {MAX_GRANT_SIGNATURE_BYTES} bytes"
-            )),
-        ));
-    }
+    super::check_wallet_signature_hex(&params.signature).map_err(|e| rejected("signature", e))?;
     let network = state.dashboard.environment();
     if params.network != network {
         return Err(rejected(
@@ -99,7 +86,6 @@ pub async fn create_session(
         ));
     }
 
-    // Grant times are Unix seconds, so the skew window is compared in seconds.
     let now = state.clock.now();
     let now_secs = now.timestamp().max(0) as u64;
     if params.issued_at.abs_diff(now_secs) > MAX_TIMESTAMP_SKEW_SECS {
@@ -134,8 +120,6 @@ pub async fn create_session(
     let signer_word = parse_word(&params.signer_commitment, "signer commitment")
         .map_err(|e| rejected("grant", e))?;
     let guardian_word = parse_word(&guardian_commitment, "Guardian commitment")?;
-    // The remaining checks of `SessionGrant::new` (lifetime, range) already
-    // passed above, so a failure here is the origin.
     let grant = SessionGrant::new(
         signer_word,
         &session_public_key,
@@ -164,8 +148,6 @@ pub async fn create_session(
         ));
     }
 
-    // Only a cosigner of some account may hold sessions, so arbitrary keys
-    // cannot fill the store; the lookup index answers this.
     let cosigned = state
         .metadata
         .find_by_cosigner_commitment(&signer_commitment.to_ascii_lowercase())

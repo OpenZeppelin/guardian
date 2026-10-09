@@ -11,6 +11,7 @@ pub enum MenuAction {
     ListNotes,
     DeltaHistory,
     ProposalManagement,
+    GuardianSession,
     RecoverByKey,
     RecoverNotes,
     ShowAccount,
@@ -26,6 +27,11 @@ pub fn print_menu(state: &SessionState) {
     print_menu_option("3", "List consumable notes", state.has_account());
     print_menu_option("h", "Delta history", state.has_account());
     print_menu_option("4", "Proposal management", state.has_account());
+    print_menu_option(
+        "g",
+        "Guardian session (fewer signer prompts)",
+        state.has_client(),
+    );
     print_menu_option("s", "Show account details", state.has_account());
     print_menu_option("c", "Show connection status", true);
     print_menu_option("r", "Recover by key", true);
@@ -56,6 +62,7 @@ pub fn parse_menu_choice(choice: &str, state: &SessionState) -> Option<MenuActio
         "3" if state.has_account() => Some(MenuAction::ListNotes),
         "h" if state.has_account() => Some(MenuAction::DeltaHistory),
         "4" if state.has_account() => Some(MenuAction::ProposalManagement),
+        "g" if state.has_client() => Some(MenuAction::GuardianSession),
         "s" if state.has_account() => Some(MenuAction::ShowAccount),
         "c" => Some(MenuAction::ShowStatus),
         "r" => Some(MenuAction::RecoverByKey),

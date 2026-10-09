@@ -237,10 +237,11 @@ pub(crate) async fn reject_session_credentials(
     }
 }
 
-/// Verifies a delegated signer's signature over `message` and returns its
-/// session public key and live session. The grant's origin is shown to the
-/// user by the wallet and is not checked against the request: a page that
-/// holds the key can send its requests from anywhere.
+/// Verifies a delegated signer's signature over `message`, then returns its
+/// session public key and live session, so a signature that does not verify
+/// never reaches the session store. The grant's origin is shown to the user
+/// by the wallet and is not checked against the request: a page that holds
+/// the key can send its requests from anywhere.
 async fn authenticate_delegated_signer(
     state: &AppState,
     creds: &Credentials,
@@ -252,8 +253,6 @@ async fn authenticate_delegated_signer(
     let (pubkey_hex, signature_hex, _) = creds.as_signature().ok_or_else(|| {
         GuardianError::AuthenticationFailed("Session requests require signature credentials".into())
     })?;
-    // Signature first: a signature that does not verify never reaches the
-    // session store.
     let session_public_key = crate::session::credential_public_key(pubkey_hex)?;
     crate::session::verify_signature(&session_public_key, signature_hex, message)?;
     let session = state
@@ -267,9 +266,17 @@ async fn authenticate_delegated_signer(
 /// spec fixes (FR-007): verifies the P-256 signature over the same
 /// `AuthRequestMessage` a wallet would sign, resolves the session to its
 /// grant, rejects a wallet-only route, re-checks that the grant still names
-/// this Guardian's ACK key and network, and that its signer is still a
-/// cosigner. Returns the signer commitment and the session public key, whose
-/// own replay floor the request advances.
+/// this Guardian and its network, and that its signer cosigns the account.
+/// Returns the signer commitment and the session public key, whose own replay
+/// floor the request advances.
+///
+/// The route is rejected only after the session resolves, so an
+/// unauthenticated caller cannot probe which routes accept sessions and an
+/// ended session is reported as ended. A rotated ACK key or another network
+/// ends every session granted before it (`authentication_failed`). A grant
+/// for this Guardian's key of the other scheme, or a signer that does not
+/// cosign the account, is `authorization_failed`: the session stays valid
+/// for the signer's other accounts, and clients keep it.
 async fn verify_session_request(
     state: &AppState,
     account_id: &str,
@@ -283,18 +290,21 @@ async fn verify_session_request(
     let message = auth_request_word(account_id, creds)?;
     let (session_public_key, session) =
         authenticate_delegated_signer(state, creds, message).await?;
-    // Only after the delegated signature verified and the session resolved,
-    // so an unauthenticated caller cannot probe which routes accept
-    // sessions, and an ended session is reported as ended.
     if !session_eligible {
         return Err(GuardianError::WalletSignatureRequired);
     }
-    // Key rotation or a network change ends every session granted before it.
-    if !session
-        .guardian_commitment
-        .eq_ignore_ascii_case(&state.ack.commitment(&metadata.auth.scheme()))
-        || session.network != state.dashboard.environment()
-    {
+    let names_ack_key = |scheme: &guardian_shared::SignatureScheme| {
+        session
+            .guardian_commitment
+            .eq_ignore_ascii_case(&state.ack.commitment(scheme))
+    };
+    let names_this_guardian = [
+        guardian_shared::SignatureScheme::Falcon,
+        guardian_shared::SignatureScheme::Ecdsa,
+    ]
+    .iter()
+    .any(names_ack_key);
+    if !names_this_guardian || session.network != state.dashboard.environment() {
         tracing::warn!(
             account_id = %account_id,
             signer_commitment = %session.signer_commitment,
@@ -304,25 +314,44 @@ async fn verify_session_request(
             "Session grant names another Guardian key or network".to_string(),
         ));
     }
+    let same_scheme = names_ack_key(&metadata.auth.scheme());
     let signer_commitment = session.signer_commitment;
-    if !metadata
-        .auth
-        .cosigner_commitments()
-        .contains(&signer_commitment)
+    if !same_scheme
+        || !metadata
+            .auth
+            .cosigner_commitments()
+            .contains(&signer_commitment)
     {
         tracing::warn!(
             account_id = %account_id,
             signer_commitment = %signer_commitment,
             "Session signer is not an authorized cosigner"
         );
-        // The session itself is valid (and stays usable for the signer's
-        // other accounts): this is an authorization failure, which clients
-        // do not treat as the session ending.
         return Err(GuardianError::AuthorizationFailed(
             "Session signer is not an authorized cosigner of this account".to_string(),
         ));
     }
     Ok((signer_commitment, session_public_key))
+}
+
+/// Longest wallet signature a session route accepts: a Falcon signature with
+/// its embedded public key.
+const MAX_WALLET_SIGNATURE_BYTES: usize = 1524;
+
+/// Rejects a wallet signature on an unauthenticated session route
+/// (`POST /session`, `POST /session/revoke-all`) unless it is even-length hex
+/// of at most [`MAX_WALLET_SIGNATURE_BYTES`], before a verifier parses it.
+pub(crate) fn check_wallet_signature_hex(signature: &str) -> Result<()> {
+    let hex = signature.trim_start_matches("0x");
+    if !hex.len().is_multiple_of(2)
+        || hex.len() > 2 * MAX_WALLET_SIGNATURE_BYTES
+        || !hex.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Err(GuardianError::InvalidInput(format!(
+            "Signature must be hex of at most {MAX_WALLET_SIGNATURE_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 /// The `AuthRequestMessage` word a request's credentials sign.

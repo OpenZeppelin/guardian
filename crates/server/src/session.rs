@@ -199,14 +199,20 @@ impl MidenSessions {
     }
 
     /// Revokes the session for a key. Returns the signer commitment of the
-    /// session that was active, or `None` when there was none.
+    /// session that was active, or `None` when there was none. An expired
+    /// session is left as it is, so it keeps reporting `session_expired`.
     pub(crate) async fn revoke(
         &self,
         session_public_key: &[u8; SESSION_PUBLIC_KEY_LEN],
+        now: DateTime<Utc>,
     ) -> Result<Option<String>> {
+        let key = store_key(session_public_key);
+        if self.store.get(&key, now).await?.is_none() {
+            return Ok(None);
+        }
         Ok(self
             .store
-            .revoke(&store_key(session_public_key))
+            .revoke(&key)
             .await?
             .and_then(|session| match session.subject {
                 SessionSubject::Miden {
@@ -384,7 +390,7 @@ mod tests {
         assert_eq!(sessions.find(&key(1), now).await.unwrap(), session("0xabc"));
 
         assert_eq!(
-            sessions.revoke(&key(1)).await.unwrap().as_deref(),
+            sessions.revoke(&key(1), now).await.unwrap().as_deref(),
             Some("0xabc"),
             "logout reports the signer it ended"
         );
@@ -392,7 +398,7 @@ mod tests {
             sessions.find(&key(1), now).await,
             Err(GuardianError::SessionRevoked)
         ));
-        assert_eq!(sessions.revoke(&key(1)).await.unwrap(), None);
+        assert_eq!(sessions.revoke(&key(1), now).await.unwrap(), None);
         assert!(matches!(
             sessions.find(&key(9), now).await,
             Err(GuardianError::AuthenticationFailed(_))
@@ -471,6 +477,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn logout_of_an_expired_session_keeps_it_expired() {
+        let sessions = MidenSessions::default();
+        let (now, secs) = now_and_secs();
+        sessions
+            .register(&key(5), session("0xabc"), secs, secs + 600, now)
+            .await
+            .unwrap();
+
+        let later = now + chrono::Duration::seconds(601);
+        assert_eq!(sessions.revoke(&key(5), later).await.unwrap(), None);
+        assert!(matches!(
+            sessions.find(&key(5), later).await,
+            Err(GuardianError::SessionExpired)
+        ));
+    }
+
+    #[tokio::test]
     async fn a_revoked_session_key_cannot_be_registered_again() {
         let sessions = MidenSessions::default();
         let (now, secs) = now_and_secs();
@@ -479,7 +502,7 @@ mod tests {
             .register(&key(3), session("0xabc"), secs, secs + 600, now)
             .await
             .unwrap();
-        sessions.revoke(&key(3)).await.unwrap();
+        sessions.revoke(&key(3), now).await.unwrap();
         assert!(
             sessions
                 .register(&key(3), session("0xabc"), secs, secs + 600, now)

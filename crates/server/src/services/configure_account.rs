@@ -35,7 +35,6 @@ pub async fn configure_account(
 ) -> Result<ConfigureAccountResult> {
     tracing::debug!("Configuring account");
 
-    // Configuration changes who the account trusts: wallet-only (#219).
     if params.credential.auth_format() == crate::metadata::auth::RequestAuthFormat::Session {
         validate_request_timestamp(state, &params.account_id, &params.credential)?;
         let message = super::auth_request_word(&params.account_id, &params.credential)?;

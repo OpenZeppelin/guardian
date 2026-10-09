@@ -191,6 +191,36 @@ describe('startGuardianSession', () => {
     expect(declined.signSessionGrant).not.toHaveBeenCalled();
   });
 
+  it('switches the client signer only once the session starts', async () => {
+    const declinedGuardian = fakeGuardian();
+    await expect(
+      startGuardianSession(declinedGuardian as unknown as GuardianHttpClient, fakeSigner(), {
+        confirm: () => false,
+      }),
+    ).rejects.toBeInstanceOf(SessionGrantDeclinedError);
+    expect(declinedGuardian.setSigner).not.toHaveBeenCalled();
+
+    const olderGuardian = fakeGuardian();
+    olderGuardian.getStatus.mockResolvedValue({ status: 'ok', environment: 'devnet' });
+    await expect(
+      startGuardianSession(olderGuardian as unknown as GuardianHttpClient, fakeSigner(), approve),
+    ).rejects.toBeInstanceOf(GuardianSessionsUnsupportedError);
+    expect(olderGuardian.setSigner).not.toHaveBeenCalled();
+
+    const guardian = fakeGuardian();
+    const signer = fakeSigner();
+    const session = await startGuardianSession(
+      guardian as unknown as GuardianHttpClient,
+      signer,
+      approve,
+    );
+    expect(guardian.setSigner).toHaveBeenCalledWith(signer);
+    expect(guardian.setSigner.mock.invocationCallOrder[0]).toBeLessThan(
+      guardian.setSession.mock.invocationCallOrder[0],
+    );
+    expect(guardian.setSession).toHaveBeenCalledWith(session);
+  });
+
   it('requires a confirmation step for wallets that sign a hash', async () => {
     const raw = fakeSigner();
     const guardian = fakeGuardian();

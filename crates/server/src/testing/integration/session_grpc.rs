@@ -538,3 +538,35 @@ async fn test_grpc_wallet_only_rpcs_answer_before_the_grant_checks() {
         );
     }
 }
+
+/// SC-003 on gRPC: an origin over 256 bytes is refused.
+#[tokio::test]
+async fn test_grpc_create_session_rejects_an_origin_over_256_bytes() {
+    let (service, state, signer, _account_id_hex) = configured_account().await;
+    let key = SessionKey::generate();
+    let input = GrantInput::for_state(&state, &signer.commitment_hex, SignatureScheme::Falcon);
+    let status = service
+        .create_session(Request::new(CreateSessionRequest {
+            scheme: "falcon".to_string(),
+            auth_format: None,
+            public_key: None,
+            signature: "0x00".to_string(),
+            grant: Some(SessionGrantFields {
+                signer_commitment: input.signer_commitment.clone(),
+                session_public_key: key.public_key_hex(),
+                origin: format!("https://{}", "a".repeat(250)),
+                issued_at: input.issued_at,
+                expires_at: input.expires_at,
+                guardian_commitment: input.guardian_commitment.clone(),
+                network: input.network.clone(),
+            }),
+        }))
+        .await
+        .expect_err("long origin");
+    assert_error(
+        &status,
+        Code::InvalidArgument,
+        "invalid_input",
+        "long origin",
+    );
+}

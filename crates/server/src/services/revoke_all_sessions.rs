@@ -31,6 +31,13 @@ pub struct RevokeAllSessionsResult {
     pub revoked: u64,
 }
 
+/// Account-less: it never touches a replay floor, so no session request can
+/// block it. A replay inside the clock-skew window only ends sessions issued
+/// at or before the signed timestamp, which were already ended. A raw
+/// signature recovers its key (Falcon embeds it); an ECDSA signature that
+/// does not recover to the signer's key falls back to the supplied key, the
+/// rule grant registration and request auth use. Session credentials are
+/// refused: revocation is the recovery path for a stolen session key.
 #[tracing::instrument(
     level = "info",
     skip(state, params),
@@ -43,9 +50,6 @@ pub async fn revoke_all_sessions(
     let signer_commitment = Word::from_hex(&params.signer_commitment)
         .map_err(|e| GuardianError::InvalidInput(format!("invalid signer_commitment: {e}")))?;
 
-    // Account-less: it never touches a replay floor, so no session request
-    // can block it. A replay inside the clock-skew window only ends sessions
-    // issued at or before the signed timestamp, which were already ended.
     let timestamp = params.credentials.timestamp();
     super::validate_timestamp_skew(state, timestamp)?;
     let message = SessionRevokeAllMessage::new(signer_commitment, timestamp);
@@ -53,11 +57,9 @@ pub async fn revoke_all_sessions(
     let (pubkey_hex, signature_hex, _) = params.credentials.as_signature().ok_or_else(|| {
         GuardianError::AuthenticationFailed("missing signature credentials".into())
     })?;
+    super::check_wallet_signature_hex(signature_hex)?;
 
     let verified_key = match params.credentials.auth_format() {
-        // Recover the key (Falcon embeds it). An ECDSA signature that does
-        // not recover to the signer's key falls back to the supplied key, the
-        // same rule grant registration and request auth use.
         RequestAuthFormat::Raw => {
             match derive_pubkey_from_raw_signature(signature_hex, message.to_word()) {
                 Ok(key) if commitment_of(&key).eq_ignore_ascii_case(&params.signer_commitment) => {
@@ -72,14 +74,9 @@ pub async fn revoke_all_sessions(
                 derived => derived,
             }
         }
-        RequestAuthFormat::Eip712 => verify_eip712_signature(
-            "revoke-all",
-            signature_hex,
-            pubkey_hex,
-            revoke_all_digest(&message),
-        ),
-        // Revocation is the recovery path for a stolen session key:
-        // wallet-only (#219).
+        RequestAuthFormat::Eip712 => revoke_all_digest(&message).and_then(|digest| {
+            verify_eip712_signature("revoke-all", signature_hex, pubkey_hex, digest)
+        }),
         RequestAuthFormat::Session => {
             return Err(super::reject_session_credentials(
                 state,

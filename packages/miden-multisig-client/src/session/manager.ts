@@ -80,8 +80,9 @@ function nowSeconds(): number {
 }
 
 /**
- * Start a Guardian session: `signer` becomes `guardian`'s signer and signs one
- * grant, then a non-extractable P-256 delegated signer signs the
+ * Start a Guardian session: `signer` signs one grant and, once the session is
+ * registered, becomes `guardian`'s signer; a non-extractable P-256 delegated
+ * signer then signs the
  * session-eligible requests on `guardian` (reads, proposal list/get, proposal
  * create/sign). Every other route, including `configure`, `pushDelta`,
  * `abandonCandidate`, account lookup and `revokeAllSessions`, keeps using the
@@ -100,7 +101,6 @@ export async function startGuardianSession(
   if (!signer.signSessionGrant) {
     throw new Error('This signer cannot sign Guardian session grants');
   }
-  guardian.setSigner(signer);
   if (signer.requestAuthFormat !== 'eip712' && !options.confirm) {
     throw new Error(
       'This wallet signs a session grant as a hash: pass `confirm` and show ' +
@@ -178,13 +178,15 @@ export async function startGuardianSession(
       throw error;
     }
   }
+  guardian.setSigner(signer);
   guardian.setSession(session);
   return session;
 }
 
 /**
  * Reuse a session key persisted by `startGuardianSession` without asking the
- * wallet again; `signer` becomes `guardian`'s signer. Returns `null` when none
+ * wallet again; `signer` becomes `guardian`'s signer when a session resumes.
+ * Returns `null` when none
  * is stored or it expires within 30 seconds. A session revoked elsewhere
  * fails its next request with `session_revoked` and ends then (`onEnded`);
  * start a new one.
@@ -195,7 +197,6 @@ export async function resumeGuardianSession(
   store: SessionKeyStore,
   options: Pick<GuardianSessionOptions, 'onEnded'> = {},
 ): Promise<GuardianSession | null> {
-  guardian.setSigner(signer);
   const { commitment: guardianCommitment } = await guardian.getPubkey(signer.scheme);
   const id = storeId(guardianCommitment, signer.commitment);
   const record = await store.load(id);
@@ -213,6 +214,7 @@ export async function resumeGuardianSession(
     id,
     { store, onEnded: options.onEnded },
   );
+  guardian.setSigner(signer);
   guardian.setSession(session);
   return session;
 }

@@ -100,8 +100,6 @@ impl SessionStore for PgSessionStore {
     async fn insert_new(&self, key: SessionKey, session: StoredSession) -> Result<bool> {
         let mut conn = super::checkout(&self.pool, "session").await?;
         let row = self.new_row(key, &session)?;
-        // Unlike `insert`, never overwrite: a revoked row stays revoked until
-        // the sweep removes it after its natural expiry.
         let inserted = diesel::insert_into(auth_sessions::table)
             .values(&row)
             .on_conflict((auth_sessions::realm, auth_sessions::token_digest))

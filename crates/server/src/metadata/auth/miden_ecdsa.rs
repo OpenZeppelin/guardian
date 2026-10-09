@@ -130,7 +130,6 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     let hex_str = hex_str.trim_start_matches("0x");
     let bytes = hex::decode(hex_str).map_err(|e| {
         tracing::error!(
-            signature = %hex_str,
             error = %e,
             "Invalid ECDSA signature hex"
         );
