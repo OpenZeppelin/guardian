@@ -284,8 +284,7 @@ any later tip. An execution runs at the Miden client's sync height, so
 offline paths sync the client first. Foreign accounts, the fee faucet among
 them, load at the tip, so a proposal stays verifiable however long it waits
 for signatures, even after the node has pruned the bound block's account
-state (devnet keeps about 50 blocks). The proposal's `chain_anchor` still
-names the bound block, and 0.18.0-rc.1 clients still re-execute at it.
+state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`; this SDK and the TypeScript one read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees.
 
 ### Recovering From a Dead Transaction (Abandon)
 
@@ -397,10 +396,9 @@ use miden_protocol::note::NoteType;
 // Producer: build a transaction and propose it under a custom label. The account's
 // auth procedure reads three words out of the request's auth argument since Miden
 // 0.17 (bound block and approval expiration, salt, fee conversion info); the client
-// builds them, bound to its sync height, and the builder attaches them. Sync first:
-// `propose_custom_transaction` anchors the proposal at that same height and does
-// not sync again, because a sync between build and propose would move the anchor
-// past the block the request binds.
+// builds them, bound to its sync height, and the builder attaches them.
+// `propose_custom_transaction` derives the summary at the chain tip, syncing up to
+// the bound block first if the client is behind it.
 client.sync().await?;
 let salt = generate_salt();
 let auth_args = client.multisig_auth_args(salt, None, None).await?;
@@ -414,12 +412,12 @@ let mut request = build_p2id_transaction_request(
     std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
-let bound_block_num = proposal.metadata.chain_anchor()?.block_num();
+let bound_block_num = proposal.tx_summary.block_number();
 
 // Cosigners review and sign through the usual list/sign flow.
 
 // Producer (once threshold is met): rebuild the request from the recipe, bound to
-// the proposal's anchor block, bind-check it, fetch the validated advice, inject
+// the block the proposal binds, bind-check it, fetch the validated advice, inject
 // it, and submit. `prepare_custom_execution` verifies the request against the
 // signed commitment *before* the GUARDIAN ack, re-executing at the chain tip;
 // `submit_transaction` executes at the tip too. Both work because the request
@@ -435,8 +433,8 @@ request.advice_map_mut().extend(advice);
 client.submit_transaction(&proposal.id, request).await?;
 ```
 
-The integration keeps its own recipe (build inputs + salt + the proposal's anchor
-block) so it can reproduce the exact transaction at execute time — the SDK does
+The integration keeps its own recipe (build inputs + salt + the proposal's bound
+block) so it can reproduce the exact transaction at execute time - the SDK does
 not store the serialized request. The binding check guarantees the rebuilt
 transaction matches the commitment the cosigners signed.
 
@@ -599,7 +597,7 @@ is the `consume_notes_metadata_version` field on the wire.
   the local store as committed (with one sync if the store is behind the
   note's block). Verification therefore reads and writes the local store
   and contacts the node. Proposal creation does the same before the
-  summary and its chain anchor are captured, and refuses a note that is
+  summary is derived, and refuses a note that is
   not yet committed on chain.
 
 Proposal creation always emits v2 starting with this release; the

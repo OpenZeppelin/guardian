@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { ProposalMetadata as GuardianProposalMetadata } from '@openzeppelin/guardian-client';
 import { ProposalMetadataCodec } from './metadata.js';
@@ -231,5 +232,35 @@ describe('ProposalMetadataCodec p2id P2IDE heights (issue #366)', () => {
     expect(() =>
       ProposalMetadataCodec.toGuardian({ ...base, timelockHeight: 1.5 } as P2IdProposalMetadata),
     ).toThrow(/unsupported timelockHeight/);
+  });
+});
+
+interface WireSample {
+  wire: Record<string, unknown>;
+  guardian: GuardianProposalMetadata;
+}
+
+const wireFixture = JSON.parse(
+  readFileSync(
+    new URL('../../../../fixtures/miden-multisig-client/proposal-metadata-wire.json', import.meta.url),
+    'utf-8',
+  ),
+) as { boundBlockNum: number; current: WireSample; legacy: WireSample };
+
+const onTheWire = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+describe('ProposalMetadataCodec bound block (issue #538)', () => {
+  it('round-trips the shared wire sample with boundBlockNum', () => {
+    const metadata = ProposalMetadataCodec.fromGuardian(wireFixture.current.guardian);
+
+    expect(metadata.boundBlockNum).toBe(wireFixture.boundBlockNum);
+    expect(onTheWire(ProposalMetadataCodec.toGuardian(metadata))).toEqual(wireFixture.current.guardian);
+  });
+
+  it('passes a legacy chainAnchor through unchanged', () => {
+    const metadata = ProposalMetadataCodec.fromGuardian(wireFixture.legacy.guardian);
+
+    expect(metadata.boundBlockNum).toBeUndefined();
+    expect(onTheWire(ProposalMetadataCodec.toGuardian(metadata))).toEqual(wireFixture.legacy.guardian);
   });
 });

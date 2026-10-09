@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const {
-  mockCaptureAnchor,
   mockPreview,
   mockGetSyncHeight,
   mockSyncChain,
   mockRequestBoundBlockNum,
 } = vi.hoisted(() => ({
-  mockCaptureAnchor: vi.fn(),
   mockPreview: vi.fn(),
   mockGetSyncHeight: vi.fn(),
   mockSyncChain: vi.fn(),
@@ -15,7 +13,6 @@ const {
 }));
 
 vi.mock('@miden-sdk/miden-sdk', () => ({
-  ChainAnchor: { deserialize: vi.fn() },
   Word: {
     newFromFelts: vi.fn((felts: unknown[]) => ({ felts })),
   },
@@ -27,16 +24,16 @@ vi.mock('./authArgs.js', () => ({
 
 const {
   ChainBehindBoundBlockError,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
   isStaleChainError,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
-  SummaryAnchorMismatchError,
   syncToBoundBlock,
 } = await import('./summary.js');
-const { BoundBlockNotDeclaredError } = await import('../multisig/authArgErrors.js');
+const { BoundBlockNotDeclaredError, TransactionSummaryLayoutError } = await import(
+  '../multisig/authArgErrors.js'
+);
 
 /** A request whose multisig auth args bind `bound` and declare `declared`. */
 const requestBinding = (bound: number | undefined, declared: number[] = []) => {
@@ -47,7 +44,7 @@ const requestBinding = (bound: number | undefined, declared: number[] = []) => {
 /** The slice of `MidenClient` the summary helpers reach. */
 const midenClient = () =>
   ({
-    transactions: { captureAnchor: mockCaptureAnchor, preview: mockPreview },
+    transactions: { preview: mockPreview },
     getSyncHeight: mockGetSyncHeight,
     syncChain: mockSyncChain,
   }) as never;
@@ -85,97 +82,6 @@ describe('summaryApprovalExpirationBlockNum', () => {
     const summary = { userParams: () => [felt(1234n), felt(0n), 1, 2, 3, 4] } as never;
 
     expect(summaryApprovalExpirationBlockNum(summary)).toBe(1234);
-  });
-});
-
-describe('executeForSummary', () => {
-  const anchorWith = (commitmentHex: string) => ({
-    commitment: () => ({ toHex: () => commitmentHex }),
-    free: vi.fn(),
-  });
-  const summaryBinding = (commitmentHex: string) => ({
-    blockCommitment: () => ({ toHex: () => commitmentHex }),
-  });
-
-  it('derives the summary at the tip and returns the anchor naming the bound block', async () => {
-    const anchor = anchorWith('0x' + 'ab'.repeat(32));
-    mockCaptureAnchor.mockResolvedValue(anchor);
-    mockGetSyncHeight.mockResolvedValue(40);
-    mockPreview.mockResolvedValue(summaryBinding('0x' + 'AB'.repeat(32)));
-    const request = requestBinding(40, [40]);
-
-    const result = await executeForSummary(midenClient(), ACCOUNT_ID, request);
-
-    expect(result.anchor).toBe(anchor);
-    expect(anchor.free).not.toHaveBeenCalled();
-    expect(mockCaptureAnchor).toHaveBeenCalledWith(request);
-    // A multisig proposal is never re-executed at an anchor.
-    expect(mockPreview).toHaveBeenCalledTimes(1);
-    expect(mockPreview.mock.calls[0]?.[0]).toStrictEqual({
-      operation: 'custom',
-      account: ACCOUNT_ID,
-      request,
-    });
-  });
-
-  it('frees the anchor and fails when the summary binds another block', async () => {
-    const anchor = anchorWith('0x' + 'ab'.repeat(32));
-    mockCaptureAnchor.mockResolvedValue(anchor);
-    mockGetSyncHeight.mockResolvedValue(41);
-    mockPreview.mockResolvedValue(summaryBinding('0x' + 'cd'.repeat(32)));
-
-    const attempt = executeForSummary(midenClient(), ACCOUNT_ID, requestBinding(40, [40]));
-
-    await expect(attempt).rejects.toBeInstanceOf(SummaryAnchorMismatchError);
-    await expect(attempt).rejects.toMatchObject({ retryable: true });
-    expect(anchor.free).toHaveBeenCalledTimes(1);
-  });
-
-  it('frees the anchor when execution itself fails', async () => {
-    const anchor = anchorWith('0x' + 'ab'.repeat(32));
-    mockCaptureAnchor.mockResolvedValue(anchor);
-    mockGetSyncHeight.mockResolvedValue(40);
-    mockPreview.mockRejectedValue(new Error('boom'));
-
-    await expect(
-      executeForSummary(midenClient(), ACCOUNT_ID, requestBinding(40, [40])),
-    ).rejects.toThrow('boom');
-    expect(anchor.free).toHaveBeenCalledTimes(1);
-  });
-
-  it('fails without executing when the anchor cannot be captured', async () => {
-    mockCaptureAnchor.mockRejectedValue(new Error('INVALID_CHAIN_ANCHOR'));
-
-    await expect(
-      executeForSummary(midenClient(), ACCOUNT_ID, requestBinding(40, [40])),
-    ).rejects.toThrow('INVALID_CHAIN_ANCHOR');
-    expect(mockPreview).not.toHaveBeenCalled();
-  });
-});
-
-describe('executeForSummaryAt', () => {
-  it('previews the request at the anchor it is given', async () => {
-    const anchor = { marker: 'anchor' };
-    const summary = { marker: 'summary' };
-    const request = requestBinding(undefined);
-    mockPreview.mockResolvedValue(summary);
-
-    await expect(
-      executeForSummaryAt(midenClient(), ACCOUNT_ID, request, anchor as never),
-    ).resolves.toBe(summary);
-    expect(mockPreview).toHaveBeenCalledWith({
-      operation: 'custom',
-      account: ACCOUNT_ID,
-      request,
-      anchor,
-    });
-    expect(mockSyncChain).not.toHaveBeenCalled();
-  });
-
-  it('reports a client it cannot use as a rejection, like the other helpers', async () => {
-    const attempt = executeForSummaryAt({} as never, ACCOUNT_ID, requestBinding(undefined), {} as never);
-
-    await expect(attempt).rejects.toBeInstanceOf(TypeError);
   });
 });
 
@@ -276,5 +182,80 @@ describe('isStaleChainError', () => {
 
   it('does not excuse a proposal that cannot be reproduced', () => {
     expect(isStaleChainError(new Error('Invalid proposal: metadata does not match tx_summary'))).toBe(false);
+  });
+});
+
+describe('summaryBoundBlockNum', () => {
+  /** Block number, block commitment, expiration delta and six user-param felts. */
+  const TAIL_BYTES = 4 + 32 + 2 + 48;
+  const BLOCK_COMMITMENT = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
+
+  function serializedSummary(blockNum: number, version = 1): Uint8Array {
+    const bytes = new Uint8Array(1 + 10 + TAIL_BYTES).fill(0xee);
+    const tail = bytes.length - TAIL_BYTES;
+    bytes[0] = version;
+    new DataView(bytes.buffer).setUint32(tail, blockNum, true);
+    bytes.set(BLOCK_COMMITMENT, tail + 4);
+    return bytes;
+  }
+
+  function summaryOf(bytes: Uint8Array, blockCommitment: Uint8Array = BLOCK_COMMITMENT) {
+    const free = vi.fn();
+    const summary = {
+      serialize: () => bytes,
+      blockCommitment: () => ({ serialize: () => blockCommitment, free }),
+    } as never;
+    return { summary, free };
+  }
+
+  function thrownBy(read: () => unknown): unknown {
+    try {
+      read();
+    } catch (error) {
+      return error;
+    }
+    throw new Error('expected the read to throw');
+  }
+
+  it('reads the little-endian block number at the start of the tail', () => {
+    const { summary, free } = summaryOf(serializedSummary(0x01020304));
+
+    expect(summaryBoundBlockNum(summary)).toBe(0x01020304);
+    expect(free).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a tail whose block commitment is not the summary's", () => {
+    const { summary, free } = summaryOf(
+      serializedSummary(42),
+      BLOCK_COMMITMENT.map((byte) => byte ^ 0xff),
+    );
+
+    const error = thrownBy(() => summaryBoundBlockNum(summary));
+
+    expect(error).toBeInstanceOf(TransactionSummaryLayoutError);
+    expect(error).toMatchObject({ code: 'transaction_summary_layout_unsupported' });
+    expect(free).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a buffer shorter than the version byte and the tail', () => {
+    // Read as if it had a version byte, this tail alone passes both other checks.
+    const bytes = new Uint8Array(TAIL_BYTES);
+    bytes[0] = 1;
+    bytes.set(BLOCK_COMMITMENT, 4);
+    const { summary, free } = summaryOf(bytes);
+
+    expect(thrownBy(() => summaryBoundBlockNum(summary))).toBeInstanceOf(
+      TransactionSummaryLayoutError,
+    );
+    expect(free).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a summary version other than 1', () => {
+    const { summary, free } = summaryOf(serializedSummary(42, 2));
+
+    expect(thrownBy(() => summaryBoundBlockNum(summary))).toBeInstanceOf(
+      TransactionSummaryLayoutError,
+    );
+    expect(free).toHaveBeenCalledTimes(1);
   });
 });

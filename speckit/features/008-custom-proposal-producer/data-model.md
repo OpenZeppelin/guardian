@@ -47,7 +47,7 @@ The pending multisig proposal as already modeled by the SDK after #266.
 ### ProposalBinding *(invariant, not stored)*
 The relationship that keeps collected signatures valid at execution.
 
-- **Rule**: `commitment(execute_for_summary(deserialize(transaction_request_bytes)))` **==** `proposal.id`.
+- **Rule**: `commitment(execute_for_summary_at_tip(deserialize(transaction_request_bytes)))` **==** `proposal.id`.
 - Enforced in `prepare_custom_execution` **before** any ack request (FR-007/FR-020/FR-023). On violation → binding-mismatch error, no side effects.
 
 ### Advice (cosigner signatures + GuardianAck) *(SDK output)*

@@ -8,8 +8,8 @@ export interface SignatureOptions {
   /**
    * The block the transaction summary binds. Omitted, the store's sync height,
    * which is right for the party creating a proposal. A cosigner or executor
-   * rebuilding a proposal pins it to the proposal's anchor block, or the rebuilt
-   * summary can never match the signed one.
+   * rebuilding a proposal pins it to the block the proposal's summary binds, or
+   * the rebuilt summary can never match the signed one.
    */
   boundBlockNum?: number;
   /**

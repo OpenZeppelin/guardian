@@ -36,8 +36,8 @@ export interface MultisigRequestDraft {
  * The salt is `options.salt` or a fresh one. `approvalExpirationDelta` left
  * out means the approval never expires, the upstream default. `boundBlockNum`
  * left out binds the store's sync height, which is what a proposer wants; a
- * rebuild pins the proposal's anchor block and the expiration the summary
- * already binds.
+ * rebuild pins the block the proposal's summary binds and the expiration the
+ * summary already binds.
  *
  * The salt is moved across the WASM boundary, so a handle is built here from
  * the hex rather than taken from the caller, and nothing frees it afterwards.
