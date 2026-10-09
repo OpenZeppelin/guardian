@@ -7225,6 +7225,46 @@ describe('Multisig', () => {
       expect(prepareTipExecution).toHaveBeenCalledTimes(1);
       expect(mockWebClient.transactions.executeRequest.mock.calls[0]).toHaveLength(2);
     });
+
+    it('refuses a proposal whose id is not its summary commitment before executing anything', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      // The served 'AQID' summary commits to 0xcc..., not the requested id.
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+            metadata: {
+              proposal_type: 'b2agg',
+              bound_block_num: MOCK_BOUND_BLOCK_NUM,
+              salt: MOCK_SALT_HEX,
+              description: '',
+            },
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
+      await expect(
+        multisig.submitTransaction('0x' + 'd'.repeat(64), {} as never),
+      ).rejects.toThrow(/does not match tx_summary/);
+      expect(prepareTipExecution).not.toHaveBeenCalled();
+      expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
+      expect(mockWebClient.proveTransaction).not.toHaveBeenCalled();
+    });
   });
 
   describe('prepareCustomExecution', () => {
