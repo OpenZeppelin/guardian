@@ -214,7 +214,28 @@ impl MultisigClient {
         &mut self,
         proposal: &mut Proposal,
     ) -> Result<()> {
-        let outcome = self.check_proposal_summary_binding(proposal).await;
+        self.record_proposal_summary_binding(proposal, true).await
+    }
+
+    /// [`Self::verify_proposal_summary_binding`] for a listing, which synced
+    /// the chain once before verifying its proposals: a proposal bound to a
+    /// block above that height fails as retryable at once rather than costing
+    /// another sync per proposal.
+    pub(crate) async fn verify_listed_proposal_summary_binding(
+        &mut self,
+        proposal: &mut Proposal,
+    ) -> Result<()> {
+        self.record_proposal_summary_binding(proposal, false).await
+    }
+
+    async fn record_proposal_summary_binding(
+        &mut self,
+        proposal: &mut Proposal,
+        sync_to_bound_block: bool,
+    ) -> Result<()> {
+        let outcome = self
+            .check_proposal_summary_binding(proposal, sync_to_bound_block)
+            .await;
         proposal.verification = match &outcome {
             Ok(()) => ProposalVerification::Verified,
             Err(e) => ProposalVerification::Failed {
@@ -226,7 +247,11 @@ impl MultisigClient {
         outcome
     }
 
-    async fn check_proposal_summary_binding(&mut self, proposal: &Proposal) -> Result<()> {
+    async fn check_proposal_summary_binding(
+        &mut self,
+        proposal: &Proposal,
+        sync_to_bound_block: bool,
+    ) -> Result<()> {
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         let proposal_id_commitment = word_to_hex(&tx_summary_commitment);
@@ -287,7 +312,19 @@ impl MultisigClient {
         // configuration and executes at the tip, so the store has to have
         // synced to the block the summary binds; a cosigner that has only
         // just pulled the account has not.
-        crate::transaction::sync_to_block(&mut self.miden_client, bound_block).await?;
+        if sync_to_bound_block {
+            crate::transaction::sync_to_block(&mut self.miden_client, bound_block).await?;
+        } else {
+            let synced = self.miden_client.get_sync_height().await.map_err(|e| {
+                MultisigError::miden_client_with_context("failed to read the sync height", e)
+            })?;
+            if synced < bound_block {
+                return Err(MultisigError::ChainBehindBoundBlock {
+                    synced,
+                    bound_block_num: bound_block,
+                });
+            }
+        }
         let auth_args = proposal_auth_args(&self.miden_client, &proposal.tx_summary).await?;
 
         // A consume-notes summary commits to *authenticated* consumption

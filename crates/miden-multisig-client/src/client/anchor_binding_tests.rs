@@ -1262,6 +1262,7 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
 struct ClientWithSummary {
     client: super::MultisigClient,
     _dir: tempfile::TempDir,
+    api: Arc<miden_client::testing::mock::MockRpcApi>,
     guardian: guardian_client::testing::mocks::MockGuardianHandle,
     account: miden_protocol::account::Account,
     signer_commitment: Word,
@@ -1275,8 +1276,9 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
     let keystore = Arc::new(GuardianKeyStore::generate());
     let signer_commitment = keystore.commitment();
     let account = multisig_account(signer_commitment, Word::from([9u32, 9, 9, 9]), seed);
+    let api = chain_with_notes(Vec::new());
     let (mut client, dir, guardian, _) =
-        client_on_mock_guardian(chain_with_notes(Vec::new()), &account, keystore).await;
+        client_on_mock_guardian(api.clone(), &account, keystore).await;
 
     let salt = Word::from([5u32, 6, 7, 8]);
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
@@ -1302,6 +1304,7 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
     ClientWithSummary {
         client,
         _dir: dir,
+        api,
         guardian,
         account,
         signer_commitment,
@@ -1393,6 +1396,105 @@ async fn proposal_made_by_a_0_18_client_still_verifies() {
         "a legacy proposal must still verify: {:?}",
         proposals[0].verification
     );
+}
+
+/// A listing syncs the chain once before verifying, so a proposal bound to a
+/// block the node has not produced yet fails as retryable at once instead of
+/// costing another sync per proposal.
+#[tokio::test]
+async fn listing_syncs_the_chain_once_however_many_proposals_bind_blocks_above_the_tip() {
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::transaction::TransactionSummary;
+
+    use crate::procedures::ProcedureName;
+
+    let mut setup = client_with_summary(59).await;
+    let tip = setup.api.get_chain_tip_block_num().as_u32();
+    let summary = &setup.tx_summary;
+    let proposals = [100u32, 200]
+        .into_iter()
+        .zip(1u64..)
+        .map(|(ahead, nonce)| {
+            let bound_ahead = TransactionSummary::new(
+                summary.account_delta().clone(),
+                summary.input_notes().clone(),
+                summary.output_notes().clone(),
+                BlockNumber::from(tip + ahead),
+                summary.block_commitment(),
+                summary.expiration_delta(),
+                summary.user_params(),
+            );
+            let payload = ProposalPayload::new(&bound_ahead)
+                .with_procedure_threshold_metadata(
+                    ProcedureName::SendAsset,
+                    1,
+                    word_to_hex(&setup.salt),
+                )
+                .with_required_signatures(1)
+                .to_json()
+                .to_string();
+            pending_proto_delta(
+                &setup.account,
+                nonce,
+                payload,
+                &word_to_hex(&setup.signer_commitment),
+            )
+        })
+        .collect();
+    setup
+        .guardian
+        .set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
+            success: true,
+            message: String::new(),
+            proposals,
+        });
+    // The mock node never caches the genesis commitment, so every chain sync
+    // asks it for the genesis header again; one sync's requests are the unit.
+    let api = setup.api.clone();
+    let genesis_requests = || api.block_header_requests(BlockNumber::GENESIS).len();
+    let before = genesis_requests();
+    setup.client.miden_client.sync_state().await.unwrap();
+    let per_sync = genesis_requests() - before;
+    assert!(per_sync > 0, "a chain sync must reach the mock node");
+    let syncs_since = |before: usize| (genesis_requests() - before) / per_sync;
+
+    let before = genesis_requests();
+    let listed = setup
+        .client
+        .list_proposals()
+        .await
+        .expect("the listing reports both proposals");
+    assert_eq!(syncs_since(before), 1, "chain syncs for one listing");
+    assert_eq!(listed.len(), 2, "proposals: {listed:?}");
+    for proposal in &listed {
+        match &proposal.verification {
+            crate::proposal::ProposalVerification::Failed { retryable, message } => {
+                assert!(
+                    retryable,
+                    "a node behind the bound block clears on a later listing: {message}"
+                );
+                assert!(
+                    message.contains("has not reached that block yet"),
+                    "message: {message}"
+                );
+            }
+            other => panic!("expected a failed verification, got {other:?}"),
+        }
+    }
+
+    let before = genesis_requests();
+    let (verified, skipped) = setup
+        .client
+        .list_proposals_isolating_failures()
+        .await
+        .expect("the recovery listing isolates both proposals");
+    assert_eq!(
+        syncs_since(before),
+        1,
+        "chain syncs for one recovery listing"
+    );
+    assert!(verified.is_empty(), "verified: {verified:?}");
+    assert_eq!(skipped.len(), 2, "skipped: {skipped:?}");
 }
 
 /// A client holding `account` on `api`, synced and pointed at a fresh mock

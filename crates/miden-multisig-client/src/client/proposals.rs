@@ -126,7 +126,7 @@ impl MultisigClient {
         for proposal in &mut proposals {
             // The outcome lands on the proposal either way; a failure is
             // reported there rather than failing the listing.
-            let _ = self.verify_proposal_summary_binding(proposal).await;
+            let _ = self.verify_listed_proposal_summary_binding(proposal).await;
         }
 
         Ok(proposals)
@@ -200,7 +200,10 @@ impl MultisigClient {
         self.sync_chain_before_verifying(&parsed).await;
         let mut proposals = Vec::with_capacity(parsed.len());
         for mut proposal in parsed {
-            if let Err(e) = self.verify_proposal_summary_binding(&mut proposal).await {
+            if let Err(e) = self
+                .verify_listed_proposal_summary_binding(&mut proposal)
+                .await
+            {
                 skipped.push((
                     format!("proposal {}", proposal.id),
                     format!("summary binding failed verification: {}", e),
