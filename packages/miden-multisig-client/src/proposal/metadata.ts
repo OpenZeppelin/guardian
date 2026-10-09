@@ -11,6 +11,7 @@ export class ProposalMetadataCodec {
       salt: metadata.saltHex,
       requiredSignatures: metadata.requiredSignatures,
       chainAnchor: metadata.chainAnchor,
+      boundBlockNum: metadata.boundBlockNum,
     };
 
     switch (metadata.proposalType) {
@@ -75,6 +76,7 @@ export class ProposalMetadataCodec {
       saltHex: guardian.salt,
       requiredSignatures: guardian.requiredSignatures,
       chainAnchor: guardian.chainAnchor,
+      boundBlockNum: guardian.boundBlockNum,
     };
 
     switch (guardian.proposalType) {

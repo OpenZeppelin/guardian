@@ -1,7 +1,7 @@
 import type { MidenClient, TransactionRequest, TransactionSummary } from '@miden-sdk/miden-sdk';
 import { ChainAnchor, Word } from '@miden-sdk/miden-sdk';
 import { BoundBlockNotDeclaredError } from '../multisig/authArgErrors.js';
-import { base64ToUint8Array, normalizeHexWord, uint8ArrayToBase64 } from '../utils/encoding.js';
+import { base64ToUint8Array } from '../utils/encoding.js';
 import { requestBoundBlockNum } from './authArgs.js';
 
 /**
@@ -11,26 +11,6 @@ import { requestBoundBlockNum } from './authArgs.js';
  */
 const APPROVAL_EXPIRATION_USER_PARAM_INDEX = 0;
 const SALT_USER_PARAM_OFFSET = 2;
-
-/**
- * The summary binds the block the request's auth args name, and the anchor
- * the store's sync height at capture. A sync landing between the build and the
- * capture leaves them one block apart, and every cosigner's anchor check would
- * then fail on a proposal nothing else is wrong with. Caught here, before the
- * proposal is pushed, so the proposer rebuilds instead.
- */
-export class SummaryAnchorMismatchError extends Error {
-  readonly retryable = true;
-
-  constructor(details: { anchorCommitmentHex: string; summaryBlockCommitmentHex: string }) {
-    super(
-      `the transaction summary binds block commitment ${details.summaryBlockCommitmentHex} but ` +
-        `the captured chain anchor is ${details.anchorCommitmentHex}; a sync landed between ` +
-        'building the request and capturing its anchor, so rebuild the request and retry',
-    );
-    this.name = 'SummaryAnchorMismatchError';
-  }
-}
 
 /**
  * The Miden client synced and its node still has not produced the block a
@@ -68,56 +48,17 @@ export function isStaleChainError(error: unknown): boolean {
 }
 
 /**
- * Derives the summary awaiting authorization for a proposal the caller is
- * creating now, and captures a `ChainAnchor` at the current sync height to ship
- * with it.
- *
- * The summary is derived at the chain tip, like every other execution of a
- * multisig proposal (see {@link executeForSummaryAtTip}). The anchor still
- * travels in the proposal: it names the block the request's auth args bind,
- * which is how a rebuild learns that block, and 0.18.0-rc.1 clients re-execute
- * at it. A proposer builds at the sync height the anchor is captured at, and
- * the check below is what makes that hold.
- */
-export async function executeForSummary(
-  client: MidenClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-): Promise<{ summary: TransactionSummary; anchor: ChainAnchor }> {
-  const anchor = await client.transactions.captureAnchor(txRequest);
-  let summary: TransactionSummary;
-  try {
-    summary = await executeForSummaryAtTip(client, accountId, txRequest);
-  } catch (error) {
-    anchor.free();
-    throw error;
-  }
-
-  const anchorCommitment = anchor.commitment();
-  const summaryBlockCommitment = summary.blockCommitment();
-  const anchorCommitmentHex = normalizeHexWord(anchorCommitment.toHex());
-  const summaryBlockCommitmentHex = normalizeHexWord(summaryBlockCommitment.toHex());
-  anchorCommitment.free?.();
-  summaryBlockCommitment.free?.();
-  if (anchorCommitmentHex !== summaryBlockCommitmentHex) {
-    anchor.free();
-    throw new SummaryAnchorMismatchError({ anchorCommitmentHex, summaryBlockCommitmentHex });
-  }
-  return { summary, anchor };
-}
-
-/**
  * Executes a multisig request at the chain tip to obtain the summary awaiting
- * authorization. This is how cosigners and the executor reproduce a proposal's
- * summary, whatever block they have synced to.
+ * authorization. Proposers derive a new proposal's summary with it, and
+ * cosigners and the executor reproduce it, whatever block they have synced to.
  *
  * Since protocol 0.17 a multisig summary binds the block its auth args name
  * (the bound block), not the block the transaction executes against, so it
  * reproduces at any later tip once the bound block is in the transaction's
  * partial blockchain. The request declares it through `withBlockNumbers`, and
- * foreign accounts, the fee faucet among them, load at the tip. Re-executing at
- * the proposal's anchor instead loads them at the bound block, which a node
- * prunes about 50 blocks later (issue #462).
+ * foreign accounts, the fee faucet among them, load at the tip. Executing at
+ * the bound block instead would load them there, which a node prunes about 50
+ * blocks later (issue #462).
  *
  * The client has to have synced to at least the bound block. When it has not,
  * this syncs once before executing.
@@ -203,53 +144,12 @@ export async function syncToBoundBlock(
 }
 
 /**
- * Executes a transaction at the given `ChainAnchor`'s reference block to
- * obtain the summary awaiting authorization.
- *
- * For a summary that binds the reference block, such as a single-signature
- * one. A multisig proposal's summary binds its bound block instead and is
- * reproduced with {@link executeForSummaryAtTip}: re-executing it at an anchor
- * fails once the node prunes the anchor block's account state.
+ * The block a legacy `chainAnchor` names, for a proposal a 0.18 client made
+ * before `boundBlockNum` existed. Decodes the anchor for the one number and
+ * frees it.
  */
-export async function executeForSummaryAt(
-  client: MidenClient,
-  accountId: string,
-  txRequest: TransactionRequest,
-  anchor: ChainAnchor,
-): Promise<TransactionSummary> {
-  return client.transactions.preview({
-    operation: 'custom',
-    account: accountId,
-    request: txRequest,
-    anchor,
-  });
-}
-
-/**
- * Serializes a `ChainAnchor` to base64 for the proposal wire payload.
- */
-export function chainAnchorToBase64(anchor: ChainAnchor): string {
-  return uint8ArrayToBase64(anchor.serialize());
-}
-
-/**
- * Deserializes a `ChainAnchor` from its base64 wire form. `ChainAnchor`
- * deserialization validates the header/chain consistency internally, so a
- * decoded anchor only needs its block commitment checked against the signed
- * transaction summary before the block it names is taken as the one the
- * summary binds.
- */
-export function chainAnchorFromBase64(anchorBase64: string): ChainAnchor {
-  return ChainAnchor.deserialize(base64ToUint8Array(anchorBase64));
-}
-
-/**
- * The block a proposal's `chainAnchor` names, which is the block its summary
- * binds: a custom producer rebuilds its request at this block. Decodes the
- * anchor for the one number and frees it.
- */
-export function chainAnchorBlockNum(anchorBase64: string): number {
-  const anchor = chainAnchorFromBase64(anchorBase64);
+export function legacyChainAnchorBlockNum(anchorBase64: string): number {
+  const anchor = ChainAnchor.deserialize(base64ToUint8Array(anchorBase64));
   try {
     return anchor.blockNum();
   } finally {

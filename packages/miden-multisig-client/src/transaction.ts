@@ -11,19 +11,14 @@ export {
 } from './transaction/consumeNotes.js';
 export {
   ChainBehindBoundBlockError,
-  chainAnchorBlockNum,
-  chainAnchorFromBase64,
-  chainAnchorToBase64,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
+  legacyChainAnchorBlockNum,
   prepareTipExecution,
   isStaleChainError,
   requireDeclaredBoundBlock,
   syncToBoundBlock,
   summaryApprovalExpirationBlockNum,
   summarySalt,
-  SummaryAnchorMismatchError,
 } from './transaction/summary.js';
 export {
   buildP2idNoteFromMetadata,

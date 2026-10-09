@@ -38,11 +38,18 @@ interface BaseProposalMetadata {
   saltHex?: string;
   requiredSignatures?: number;
   /**
-   * Base64-serialized Miden `ChainAnchor` at the block the proposal's
-   * transaction summary binds, the proposer's sync height when it built the
-   * request. Required, and checked against the summary's block commitment: a
-   * rebuild binds the block it names. The proposal executes at the chain tip,
-   * not at the anchor; 0.18.0-rc.1 clients still re-execute at it.
+   * The block the proposal's transaction summary binds: the proposer's sync
+   * height when it built the request, or the block a custom producer's request
+   * names. Not signed: a rebuild pins it, so a wrong value fails verification
+   * (a `switch_guardian` proposal, which is not rebuilt, fails at execution).
+   * Every proposal this SDK creates writes it.
+   */
+  boundBlockNum?: number;
+  /**
+   * Legacy and read only: the base64 Miden `ChainAnchor` 0.18 clients wrote
+   * instead of `boundBlockNum`. This SDK never sets it; it reads the block it
+   * names when `boundBlockNum` is absent, and the codec passes it through so
+   * an old proposal exports and imports unchanged.
    */
   chainAnchor?: string;
 }

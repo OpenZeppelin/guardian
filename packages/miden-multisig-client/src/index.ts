@@ -67,15 +67,9 @@ export {
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
   ChainBehindBoundBlockError,
-  chainAnchorFromBase64,
-  chainAnchorToBase64,
-  chainAnchorBlockNum,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
   summaryApprovalExpirationBlockNum,
   summarySalt,
-  SummaryAnchorMismatchError,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,

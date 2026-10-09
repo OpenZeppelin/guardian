@@ -1,13 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 const {
-  mockCaptureAnchor,
   mockPreview,
   mockGetSyncHeight,
   mockSyncChain,
   mockRequestBoundBlockNum,
 } = vi.hoisted(() => ({
-  mockCaptureAnchor: vi.fn(),
   mockPreview: vi.fn(),
   mockGetSyncHeight: vi.fn(),
   mockSyncChain: vi.fn(),
@@ -27,13 +25,11 @@ vi.mock('./authArgs.js', () => ({
 
 const {
   ChainBehindBoundBlockError,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
   isStaleChainError,
+  legacyChainAnchorBlockNum,
   summaryApprovalExpirationBlockNum,
   summarySalt,
-  SummaryAnchorMismatchError,
   syncToBoundBlock,
 } = await import('./summary.js');
 const { BoundBlockNotDeclaredError } = await import('../multisig/authArgErrors.js');
@@ -47,7 +43,7 @@ const requestBinding = (bound: number | undefined, declared: number[] = []) => {
 /** The slice of `MidenClient` the summary helpers reach. */
 const midenClient = () =>
   ({
-    transactions: { captureAnchor: mockCaptureAnchor, preview: mockPreview },
+    transactions: { preview: mockPreview },
     getSyncHeight: mockGetSyncHeight,
     syncChain: mockSyncChain,
   }) as never;
@@ -85,97 +81,6 @@ describe('summaryApprovalExpirationBlockNum', () => {
     const summary = { userParams: () => [felt(1234n), felt(0n), 1, 2, 3, 4] } as never;
 
     expect(summaryApprovalExpirationBlockNum(summary)).toBe(1234);
-  });
-});
-
-describe('executeForSummary', () => {
-  const anchorWith = (commitmentHex: string) => ({
-    commitment: () => ({ toHex: () => commitmentHex }),
-    free: vi.fn(),
-  });
-  const summaryBinding = (commitmentHex: string) => ({
-    blockCommitment: () => ({ toHex: () => commitmentHex }),
-  });
-
-  it('derives the summary at the tip and returns the anchor naming the bound block', async () => {
-    const anchor = anchorWith('0x' + 'ab'.repeat(32));
-    mockCaptureAnchor.mockResolvedValue(anchor);
-    mockGetSyncHeight.mockResolvedValue(40);
-    mockPreview.mockResolvedValue(summaryBinding('0x' + 'AB'.repeat(32)));
-    const request = requestBinding(40, [40]);
-
-    const result = await executeForSummary(midenClient(), ACCOUNT_ID, request);
-
-    expect(result.anchor).toBe(anchor);
-    expect(anchor.free).not.toHaveBeenCalled();
-    expect(mockCaptureAnchor).toHaveBeenCalledWith(request);
-    // A multisig proposal is never re-executed at an anchor.
-    expect(mockPreview).toHaveBeenCalledTimes(1);
-    expect(mockPreview.mock.calls[0]?.[0]).toStrictEqual({
-      operation: 'custom',
-      account: ACCOUNT_ID,
-      request,
-    });
-  });
-
-  it('frees the anchor and fails when the summary binds another block', async () => {
-    const anchor = anchorWith('0x' + 'ab'.repeat(32));
-    mockCaptureAnchor.mockResolvedValue(anchor);
-    mockGetSyncHeight.mockResolvedValue(41);
-    mockPreview.mockResolvedValue(summaryBinding('0x' + 'cd'.repeat(32)));
-
-    const attempt = executeForSummary(midenClient(), ACCOUNT_ID, requestBinding(40, [40]));
-
-    await expect(attempt).rejects.toBeInstanceOf(SummaryAnchorMismatchError);
-    await expect(attempt).rejects.toMatchObject({ retryable: true });
-    expect(anchor.free).toHaveBeenCalledTimes(1);
-  });
-
-  it('frees the anchor when execution itself fails', async () => {
-    const anchor = anchorWith('0x' + 'ab'.repeat(32));
-    mockCaptureAnchor.mockResolvedValue(anchor);
-    mockGetSyncHeight.mockResolvedValue(40);
-    mockPreview.mockRejectedValue(new Error('boom'));
-
-    await expect(
-      executeForSummary(midenClient(), ACCOUNT_ID, requestBinding(40, [40])),
-    ).rejects.toThrow('boom');
-    expect(anchor.free).toHaveBeenCalledTimes(1);
-  });
-
-  it('fails without executing when the anchor cannot be captured', async () => {
-    mockCaptureAnchor.mockRejectedValue(new Error('INVALID_CHAIN_ANCHOR'));
-
-    await expect(
-      executeForSummary(midenClient(), ACCOUNT_ID, requestBinding(40, [40])),
-    ).rejects.toThrow('INVALID_CHAIN_ANCHOR');
-    expect(mockPreview).not.toHaveBeenCalled();
-  });
-});
-
-describe('executeForSummaryAt', () => {
-  it('previews the request at the anchor it is given', async () => {
-    const anchor = { marker: 'anchor' };
-    const summary = { marker: 'summary' };
-    const request = requestBinding(undefined);
-    mockPreview.mockResolvedValue(summary);
-
-    await expect(
-      executeForSummaryAt(midenClient(), ACCOUNT_ID, request, anchor as never),
-    ).resolves.toBe(summary);
-    expect(mockPreview).toHaveBeenCalledWith({
-      operation: 'custom',
-      account: ACCOUNT_ID,
-      request,
-      anchor,
-    });
-    expect(mockSyncChain).not.toHaveBeenCalled();
-  });
-
-  it('reports a client it cannot use as a rejection, like the other helpers', async () => {
-    const attempt = executeForSummaryAt({} as never, ACCOUNT_ID, requestBinding(undefined), {} as never);
-
-    await expect(attempt).rejects.toBeInstanceOf(TypeError);
   });
 });
 
@@ -276,5 +181,16 @@ describe('isStaleChainError', () => {
 
   it('does not excuse a proposal that cannot be reproduced', () => {
     expect(isStaleChainError(new Error('Invalid proposal: metadata does not match tx_summary'))).toBe(false);
+  });
+});
+
+describe('legacyChainAnchorBlockNum', () => {
+  it('reads the block a legacy anchor names and frees the anchor', async () => {
+    const { ChainAnchor } = await import('@miden-sdk/miden-sdk');
+    const free = vi.fn();
+    vi.mocked(ChainAnchor.deserialize).mockReturnValueOnce({ blockNum: () => 77, free } as never);
+
+    expect(legacyChainAnchorBlockNum('AQID')).toBe(77);
+    expect(free).toHaveBeenCalledTimes(1);
   });
 });
