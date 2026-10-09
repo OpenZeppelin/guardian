@@ -2746,6 +2746,67 @@ describe('Multisig', () => {
       expect(mockWebClient.syncChain).toHaveBeenCalledTimes(1);
     });
 
+    it('syncs the chain at most once per listing, however many proposals bind blocks above the sync height', async () => {
+      const actual = await vi.importActual<typeof import('./transaction/summary.js')>(
+        './transaction/summary.js',
+      );
+      vi.mocked(syncToBoundBlock).mockImplementation(actual.syncToBoundBlock);
+      vi.mocked(isStaleChainError).mockImplementation(actual.isStaleChainError);
+
+      const multisig = createTestMultisig({
+        threshold: 2,
+        signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      // 3- and 4-byte summaries commit differently, so the two do not alias.
+      const boundFarAhead = (nonce: number, summary: string) => ({
+        account_id: '0x' + 'a'.repeat(30),
+        nonce,
+        prev_commitment: '0x' + 'b'.repeat(64),
+        delta_payload: {
+          tx_summary: { data: summary },
+          signatures: [],
+          metadata: {
+            proposal_type: 'add_signer',
+            bound_block_num: 1_000_000,
+            salt: MOCK_SALT_HEX,
+            target_threshold: 1,
+            signer_commitments: ['0x' + 'a'.repeat(64)],
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [],
+        },
+      });
+      const listing = () => ({
+        ok: true,
+        json: async () => ({ proposals: [boundFarAhead(1, 'AQID'), boundFarAhead(2, 'AQIDBA==')] }),
+      });
+      mockFetch.mockResolvedValueOnce(listing()).mockResolvedValueOnce(listing());
+      mockWebClient.syncChain.mockClear();
+
+      const proposals = await multisig.syncProposals();
+      expect(mockWebClient.syncChain).toHaveBeenCalledTimes(1);
+      expect(proposals).toHaveLength(2);
+      for (const proposal of proposals) {
+        expect(proposal.verification).toMatchObject({ status: 'failed', retryable: true });
+      }
+
+      mockWebClient.syncChain.mockClear();
+      mockImportNotesFromProposals.mockResolvedValue([]);
+      const result = await multisig.recoverNotes({
+        transportDrain: false,
+        publicBackfill: false,
+        syncAfter: false,
+      });
+      expect(mockWebClient.syncChain).toHaveBeenCalledTimes(1);
+      expect(result.proposalImport?.map((outcome) => outcome.status)).toEqual(['invalid', 'invalid']);
+    });
+
     /// Issue #409, second cause: miden-client consumes a note as authenticated
     /// or unauthenticated depending on the local store, and the two commit
     /// differently. Verification must put the store in the canonical

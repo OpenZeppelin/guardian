@@ -985,8 +985,12 @@ export class Multisig {
         existingProposal?.signatures ?? [],
       );
       // The outcome lands on the proposal either way; a failure is reported
-      // there rather than failing the sync.
-      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
+      // there rather than failing the sync. The chain was synced once above,
+      // so a bound block past that height stays a retryable failure until the
+      // next listing instead of costing a sync per proposal.
+      await this.verifyProposalMetadataBinding(proposal, async () => undefined).catch(
+        () => undefined,
+      );
       reported.set(proposal.id, { delta, verified: proposal });
     }
 
@@ -1070,6 +1074,11 @@ export class Multisig {
       currentNonce = undefined;
     }
 
+    // At most one chain sync for the whole listing, however many proposals
+    // bind a block above the store's sync height.
+    let listingSync: Promise<void> | undefined;
+    const syncOnce = () => (listingSync ??= this.syncChain());
+
     const proposals: Proposal[] = [];
     const skipped: Array<{ identifier: string; reason: string }> = [];
     for (let position = 0; position < deltas.length; position += 1) {
@@ -1093,7 +1102,7 @@ export class Multisig {
         if (currentNonce !== undefined && BigInt(proposal.nonce) <= currentNonce) {
           continue;
         }
-        await this.verifyProposalMetadataBinding(proposal);
+        await this.verifyProposalMetadataBinding(proposal, syncOnce);
         proposals.push(proposal);
       } catch (error) {
         skipped.push({
@@ -2226,9 +2235,15 @@ export class Multisig {
     await retryRpcRead(() => this.midenClient.syncChain(), this.rpcConfig);
   }
 
-  /** {@link syncToBoundBlock} with this client's RPC retry policy. */
-  private async syncToBoundBlock(boundBlockNum: number): Promise<void> {
-    await syncToBoundBlock(this.midenClient, boundBlockNum, () => this.syncChain());
+  /**
+   * {@link syncToBoundBlock} with this client's RPC retry policy. A listing
+   * passes its own `syncChain` so it syncs at most once for all its proposals.
+   */
+  private async syncToBoundBlock(
+    boundBlockNum: number,
+    syncChain: () => Promise<void> = () => this.syncChain(),
+  ): Promise<void> {
+    await syncToBoundBlock(this.midenClient, boundBlockNum, syncChain);
   }
 
   /**
@@ -2865,9 +2880,12 @@ export class Multisig {
    * transient. Rethrows the failure so strict callers keep failing closed
    * while `syncProposals` keeps going with the outcome recorded.
    */
-  private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
+  private async verifyProposalMetadataBinding(
+    proposal: Proposal,
+    syncChain?: () => Promise<void>,
+  ): Promise<string> {
     try {
-      const commitment = await this.checkProposalMetadataBinding(proposal);
+      const commitment = await this.checkProposalMetadataBinding(proposal, syncChain);
       proposal.verification = { status: 'verified' };
       return commitment;
     } catch (error) {
@@ -2880,7 +2898,10 @@ export class Multisig {
     }
   }
 
-  private async checkProposalMetadataBinding(proposal: Proposal): Promise<string> {
+  private async checkProposalMetadataBinding(
+    proposal: Proposal,
+    syncChain?: () => Promise<void>,
+  ): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
 
     if (proposal.metadata.proposalType === 'custom') {
@@ -2919,7 +2940,7 @@ export class Multisig {
     // configuration and executes at the tip, so the store has to have synced
     // to the block the summary binds; a cosigner that has only just loaded
     // the account has not.
-    await this.syncToBoundBlock(binding.boundBlockNum);
+    await this.syncToBoundBlock(binding.boundBlockNum, syncChain);
 
     // A consume-notes summary commits to *authenticated* consumption (see
     // ensureNotesAuthenticated), which miden-client decides from this store
