@@ -125,8 +125,9 @@ pub struct NoteCounts {
 }
 
 /// Operator-stated intent lifted from a matching proposal.
-/// `chain_anchor` remains only in the proposal payload to avoid duplicating it
-/// in delta metadata and dashboard listings.
+/// The fields that bind a proposal to a block (`bound_block_num`, and the
+/// legacy `chain_anchor`) remain only in the proposal payload, to avoid
+/// duplicating them in delta metadata and dashboard listings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct ProposalMetadata {
     /// One of the validated multisig proposal types (`add_signer`,

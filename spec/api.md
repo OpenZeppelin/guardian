@@ -187,6 +187,8 @@ Miden delta proposals use:
 
 `p2id` metadata may additionally carry `reclaim_height` and/or `timelock_height` (issue #366): absolute `u32` block heights that make the proposal create a P2IDE note instead of a plain P2ID note (`reclaim_height` lets the sender reclaim an unconsumed note from that block on; `timelock_height` blocks consumption before that block). Presence of either field selects P2IDE; both absent means plain P2ID, which keeps pre-existing proposals valid. `0` is rejected because it is the on-chain encoding for "no constraint". Like `note_type`, the heights are part of the signed metadata and a tampered value fails the tx_summary commitment check.
 
+Every proposal the multisig SDKs create also carries `bound_block_num`, the `u32` block its transaction summary binds. It is not signed and the server does not read it: a cosigner rebuilds the proposal's request at it, so a wrong value fails verification (a `switch_guardian` proposal, which is not rebuilt, fails at execution): it can deny a proposal, never get a wrong one accepted. Proposals created by 0.18.0 clients carry `chain_anchor` (a base64 Miden `ChainAnchor`) instead; current clients read its block number when `bound_block_num` is absent and never write it.
+
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
 EVM proposal creation request:

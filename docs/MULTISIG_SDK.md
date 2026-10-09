@@ -376,13 +376,19 @@ proposal stays verifiable and executable however long it waits for signatures
 (issue #462). A client whose node has not reached the bound block yet fails with
 a retryable error.
 
-Proposals still carry a **chain anchor** (`chain_anchor` in the proposal
-metadata): a serialized Miden `ChainAnchor` at the bound block. Nothing
-executes against it. It names the bound block for a rebuild, and it keeps
-proposals readable by 0.18.0-rc.1 clients, which re-execute at it. The anchor
-is validated on receipt: its internal consistency at deserialization, and its
-block commitment against the one signed into the summary. A proposal without
-an anchor cannot be verified or executed.
+Proposals record the bound block in their metadata as `bound_block_num`
+(`boundBlockNum` in TypeScript). It is not signed and needs no check of its own:
+the summary commitment covers the bound block's number and commitment, and the
+transaction kernel authenticates that block under the tip, so a rebuild at any
+other block cannot reproduce the signed summary (a `switch_guardian` proposal,
+which is not rebuilt at verification, fails at execution instead). The
+TypeScript SDK rebuilds at it, because the JavaScript `TransactionSummary` does not expose the block
+number; the Rust SDK reads the number from the summary and refuses a proposal
+whose `bound_block_num` disagrees. Proposals made by 0.18.0 clients carry a
+`chain_anchor` instead, whose block number the TypeScript SDK reads when
+`bound_block_num` is absent. Proposal creation syncs up to the bound block when
+the client is behind it and derives the summary at the tip, so a request may
+bind any block up to the client's sync height.
 
 #### Authenticated note consumption
 
@@ -397,7 +403,7 @@ different commitments (issue #409).
 
 Authenticated is the canonical mode. `createConsumeNotesProposal` /
 `TransactionType::consume_notes` authenticates the notes in the proposer's
-store before the summary and its anchor are captured, and every verifier
+store before the summary is derived, and every verifier
 (`syncProposals`, `signProposal`, `executeProposal`, and their Rust
 counterparts) authenticates the proposal's embedded notes before it
 rebuilds: notes already authenticated locally are left alone, the rest get
@@ -407,16 +413,12 @@ consume-notes proposal can only be created for notes already committed on
 chain; a note that cannot be authenticated fails with
 `ConsumeNoteNotAuthenticatedError` (`consume_notes_note_not_authenticated`)
 naming the note, rather than with a summary mismatch.
-> **Mixed versions.** A 0.18.0-rc.1 client still re-executes at the anchor,
-> which loads every foreign account the transaction touches at the bound block,
-> and every fee-paying transaction touches the fee faucet (the kernel's asset
-> callbacks load a faucet whose account ID enables them, as devnet's does).
-> Nodes serve historical account state only for a limited window, about 50
-> blocks (roughly 2.5 minutes) on devnet, so such a client reports
-> `block N has been pruned` for an older proposal. Upgrade every party that
-> signs or executes. A listing keeps working either way: a proposal that
-> cannot be verified is returned with `verification` set to `failed` rather
-> than failing the whole sync.
+> **Mixed versions.** A 0.18.0 client refuses a proposal without a
+> `chain_anchor`, so it cannot sign or execute a proposal a later client made,
+> and a signer set that mixes versions stalls. Later clients accept proposals
+> 0.18.0 clients made. Upgrade every party that signs or executes. A listing
+> keeps working either way: a proposal that cannot be verified is returned with
+> `verification` set to `failed` rather than failing the whole sync.
 
 #### Proposal verification status
 
@@ -474,12 +476,13 @@ Rust and TypeScript**:
   and attach them with `builder.multisig_auth_args(&auth_args)` from
   `TransactionRequestBuilderExt`; do not
   declare `fee_conversion_salt`, which would let miden-client commit its own
-  auth arg over them. The typed proposal builders do this for you. A custom producer syncs before
-  building: `propose_custom_transaction` / `createCustomProposal` anchor the
-  proposal at the store's sync height without syncing again, and a request
-  bound to an older block is refused. It must retain the original salt and
-  rebuild at the proposal's anchor block (`ChainAnchor::blockNum` /
-  `ChainAnchor::block_num`) with the expiration the summary binds;
+  auth arg over them. The typed proposal builders do this for you. A custom producer may build its request at any block up to its sync height:
+  `propose_custom_transaction` / `createCustomProposal` sync up to the block the
+  request binds when the client is behind it and derive the summary at the tip.
+  It must retain the original salt and rebuild at the block the proposal binds
+  (`proposal.metadata.bound_block_num` / `proposal.metadata.boundBlockNum`, or
+  `requestBoundBlockNum(request)` on the request it built) with the expiration
+  the summary binds;
   `summarySalt(summary)` / `summary_salt(&summary)` read the salt the cosigners
   signed over for a cross-check. The request has to declare its bound block,
   since proposals execute at the tip: both builders above do, and a request

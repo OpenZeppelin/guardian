@@ -213,6 +213,42 @@ Nothing stored under Miden 0.16 survives:
   height, timelock height). The script roots moved with the layouts.
 - **Execution proofs come from VM 0.35** (Plonky3 0.8). A 0.16 proof is rejected.
 
+### Proposals name their bound block (after 0.18.0)
+
+The release after 0.18.0 changes the proposal metadata both SDKs write. It is a
+breaking SDK change and needs no server change.
+
+- **Proposals no longer carry `chain_anchor`.** Proposal creation captured an
+  anchor at the proposer's sync height and refused any request bound to another
+  block, so a dApp request built at block N and proposed after the proposer
+  synced past N always failed with `SummaryAnchorMismatchError` (issue #538).
+  Creation now syncs up to the bound block when it is behind and derives the
+  summary at the tip.
+- **Proposals carry `bound_block_num`**, the block the signed summary binds, as
+  an unsigned `u32` metadata field. A wrong value can deny a proposal but never
+  get a wrong one accepted: the summary commitment covers the bound block, and
+  the kernel authenticates that block under the tip, so no rebuild at another
+  block reproduces it. A `switch_guardian` proposal is not rebuilt at
+  verification, so a wrong value there is caught at execution, after signatures
+  were collected.
+- **0.18.0 clients cannot sign or execute new proposals.** They refuse a
+  proposal without a `chain_anchor`. Upgrade every party that signs or executes
+  an account's proposals together.
+- **New clients accept proposals 0.18.0 clients made.** The TypeScript SDK reads
+  the legacy `chain_anchor`'s block number when `bound_block_num` is absent; the
+  Rust SDK reads the block from the signed summary.
+- **Servers need no redeploy.** The server stores proposal metadata as sent, so
+  `bound_block_num` passes through like any other client field.
+- **Removed APIs.** TypeScript: `executeForSummary` (use
+  `executeForSummaryAtTip`), `executeForSummaryAt`, `SummaryAnchorMismatchError`,
+  `chainAnchorToBase64`, `chainAnchorFromBase64`, `chainAnchorBlockNum`. Rust: the
+  `chain_anchor` fields of `ProposalMetadataPayload` and `ExportedMetadata`,
+  `ProposalMetadata::chain_anchor_b64` and `ProposalMetadata::chain_anchor()`,
+  `ProposalPayload::with_chain_anchor`, and `MultisigError::SummaryAnchorMismatch`.
+  New: `bound_block_num` / `boundBlockNum` on the metadata types,
+  `ProposalPayload::with_bound_block_num`, and
+  `MultisigError::BoundBlockMismatch`.
+
 ### Open upstream items
 
 The facts below change independently of this repository. This list is the one

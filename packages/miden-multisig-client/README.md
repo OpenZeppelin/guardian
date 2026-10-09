@@ -463,8 +463,7 @@ sync height, so `syncProposals`, `signProposal`, `executeProposal`,
 client first. Foreign accounts, the fee faucet among them, load at the tip, so
 a proposal stays verifiable however long it waits for signatures, even after
 the node has pruned the bound block's account state (devnet keeps about 50
-blocks). The proposal's `chainAnchor` still names the bound block, and
-0.18.0-rc.1 clients still re-execute at it.
+blocks). The proposal's `boundBlockNum` records the bound block, which a rebuild pins.
 
 `createTransactionProposalRequest(proposalId)` returns the final, fully
 signed request for an integration that proves and submits with its own
@@ -560,7 +559,7 @@ exported/imported through the normal flow, but the SDK cannot build its on-chain
 transaction — the integration owns that recipe and submits it itself.
 
 ```typescript
-import { buildP2idTransactionRequest, chainAnchorBlockNum } from '@openzeppelin/miden-multisig-client';
+import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client';
 
 // Producer: build a transaction and propose it under a custom label.
 // The options object accepts `noteType` (`NoteType.Public` (default) or
@@ -589,7 +588,7 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
 // (inputs + salt + bound block) with the advice, then submit. `submitTransaction`
 // executes at the chain tip: the rebuilt request declares the block it binds.
-const boundBlockNum = chainAnchorBlockNum(proposal.metadata.chainAnchor);
+const boundBlockNum = proposal.metadata.boundBlockNum;
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
   { salt, boundBlockNum, signatureAdviceMap: advice },
@@ -613,12 +612,12 @@ integration asks for one through `approvalExpirationDelta`, which the
 `create*Proposal` methods forward from their options.
 
 The integration keeps its own recipe (build inputs + salt) and reads the bound
-block from the proposal's chain anchor, so it can reproduce the exact
-transaction at execute time — the SDK does not store the serialized request.
+block from `proposal.metadata.boundBlockNum`, so it can reproduce the exact
+transaction at execute time - the SDK does not store the serialized request.
 The binding check guarantees the rebuilt transaction matches the commitment the
-cosigners signed. A request built at one sync height and anchored at another is
-refused by `executeForSummary` with `SummaryAnchorMismatchError`; rebuild and
-retry.
+cosigners signed. The request may bind any block up to the client's sync
+height: `createCustomProposal` syncs up to that block when the client is behind
+it and derives the summary at the chain tip.
 
 The summary binds the salt itself, so the value the cosigners signed over is
 readable back out of it:
@@ -814,8 +813,7 @@ discriminator.
   trip and are imported into the local store as committed (with one
   `syncState` if the store is behind the note's block). Verification
   therefore reads and writes the local store and contacts the node.
-  `createConsumeNotesProposal` does the same before the summary and its
-  chain anchor are captured, and refuses a note that is not yet
+  `createConsumeNotesProposal` does the same before the summary is derived, and refuses a note that is not yet
   committed on chain.
 
 `createConsumeNotesProposal` always emits v2 starting with this

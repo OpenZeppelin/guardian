@@ -3618,7 +3618,7 @@
       },
       "ProposalMetadata": {
         "type": "object",
-        "description": "Operator-stated intent lifted from a matching proposal.\n`chain_anchor` remains only in the proposal payload to avoid duplicating it\nin delta metadata and dashboard listings.",
+        "description": "Operator-stated intent lifted from a matching proposal.\nThe fields that bind a proposal to a block (`bound_block_num`, and the\nlegacy `chain_anchor`) remain only in the proposal payload, to avoid\nduplicating them in delta metadata and dashboard listings.",
         "required": [
           "proposal_type"
         ],

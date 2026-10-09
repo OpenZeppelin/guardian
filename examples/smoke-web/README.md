@@ -109,7 +109,7 @@ request, proposes it via `createCustomProposal`, and after threshold calls
 `prepareCustomExecution` to get the validated advice, which the harness injects
 into a rebuilt request before submitting on-chain. The `recipe` returned by
 `createCustomProposal` is what the producer keeps to reproduce the exact
-transaction at execute time (request inputs, the original salt, and the anchor
+transaction at execute time (request inputs, the original salt, and the bound
 block). Both builds pass that salt and block into
 `feeAwareTransactionRequestBuilder`; the Miden client derives the native fee
 conversion info and leaves the three-word multisig auth args in place.
