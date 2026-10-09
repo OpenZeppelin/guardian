@@ -505,7 +505,9 @@ describe('assertCompleteDetectedConfig', () => {
     threshold: 2,
     numSigners: 2,
     signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+    signers: [{ commitment: '0x' + 'a'.repeat(64), scheme: 'falcon' as const }, { commitment: '0x' + 'b'.repeat(64), scheme: 'falcon' as const }],
     guardianCommitment: '0x' + 'c'.repeat(64),
+    guardianScheme: 'falcon' as const,
     vaultBalances: [],
     procedureThresholds: new Map(),
   };
@@ -531,6 +533,15 @@ describe('assertCompleteDetectedConfig', () => {
         signerCommitments: [],
       }),
     ).toThrow(/incomplete signer set/);
+  });
+
+  it('rejects a signer whose scheme could not be read', () => {
+    expect(() =>
+      assertCompleteDetectedConfig({
+        ...complete,
+        signers: complete.signers.slice(0, 1),
+      }),
+    ).toThrow(/incomplete signer schemes: storage reports 2 signers, read 1 schemes/);
   });
 
   it('rejects a missing guardian commitment', () => {

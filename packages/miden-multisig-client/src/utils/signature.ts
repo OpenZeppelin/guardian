@@ -14,6 +14,18 @@ export function authSchemeId(scheme: SignatureScheme): number {
   return scheme === 'ecdsa' ? ECDSA_AUTH_SCHEME_ID : FALCON_AUTH_SCHEME_ID;
 }
 
+/** The scheme an on-chain auth scheme id stands for, or `undefined` for an unknown id. */
+export function signatureSchemeFromAuthSchemeId(id: number): SignatureScheme | undefined {
+  switch (id) {
+    case ECDSA_AUTH_SCHEME_ID:
+      return 'ecdsa';
+    case FALCON_AUTH_SCHEME_ID:
+      return 'falcon';
+    default:
+      return undefined;
+  }
+}
+
 export function signatureHexToBytes(
   hex: string,
   scheme: SignatureScheme = 'falcon',
