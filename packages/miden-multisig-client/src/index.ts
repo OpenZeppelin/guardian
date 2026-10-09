@@ -69,6 +69,7 @@ export {
   ChainBehindBoundBlockError,
   executeForSummaryAtTip,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
@@ -190,9 +191,11 @@ export {
 
 export {
   type AuthArgErrorCode,
+  BoundBlockMismatchError,
   BoundBlockNotDeclaredError,
   MultisigAuthArgsMissingError,
   ProposalSaltMalformedError,
+  TransactionSummaryLayoutError,
 } from './multisig/authArgErrors.js';
 
 export {

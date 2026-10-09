@@ -1,7 +1,9 @@
 import type { MidenClient, TransactionRequest, TransactionSummary } from '@miden-sdk/miden-sdk';
-import { ChainAnchor, Word } from '@miden-sdk/miden-sdk';
-import { BoundBlockNotDeclaredError } from '../multisig/authArgErrors.js';
-import { base64ToUint8Array } from '../utils/encoding.js';
+import { Word } from '@miden-sdk/miden-sdk';
+import {
+  BoundBlockNotDeclaredError,
+  TransactionSummaryLayoutError,
+} from '../multisig/authArgErrors.js';
 import { requestBoundBlockNum } from './authArgs.js';
 
 /**
@@ -11,6 +13,18 @@ import { requestBoundBlockNum } from './authArgs.js';
  */
 const APPROVAL_EXPIRATION_USER_PARAM_INDEX = 0;
 const SALT_USER_PARAM_OFFSET = 2;
+
+/**
+ * The serialized summary layout {@link summaryBoundBlockNum} reads, from
+ * `TransactionSummary::write_into` at miden-protocol 0.17.0: the version byte
+ * first, then variable-length fields, then a fixed tail of the block number
+ * (u32, little endian), the block commitment (four 8-byte felts), the
+ * expiration delta (u16) and the six user-param felts, with no length prefix.
+ */
+const SUPPORTED_SUMMARY_VERSION = 1;
+const BLOCK_NUMBER_BYTES = 4;
+const BLOCK_COMMITMENT_BYTES = 32;
+const SUMMARY_TAIL_BYTES = BLOCK_NUMBER_BYTES + BLOCK_COMMITMENT_BYTES + 2 + 6 * 8;
 
 /**
  * The Miden client synced and its node still has not produced the block a
@@ -144,17 +158,55 @@ export async function syncToBoundBlock(
 }
 
 /**
- * The block a legacy `chainAnchor` names, for a proposal a 0.18 client made
- * before `boundBlockNum` existed. Decodes the anchor for the one number and
- * frees it.
+ * Reads the block a multisig transaction summary binds, the counterpart of the
+ * Rust `TransactionSummary::block_number`. Since protocol 0.17 that is the block
+ * the request's multisig auth args name, so it is the proposal's bound block.
+ *
+ * The web SDK exposes no accessor for it, so this reads the serialized summary
+ * (layout above) and checks the block commitment next to it against
+ * `blockCommitment()`, so a layout this client does not know is refused rather
+ * than read at the wrong offset.
+ *
+ * @throws TransactionSummaryLayoutError when the summary is not version 1, is
+ *   too short to hold the tail, or its tail does not hold its block commitment.
  */
-export function legacyChainAnchorBlockNum(anchorBase64: string): number {
-  const anchor = ChainAnchor.deserialize(base64ToUint8Array(anchorBase64));
+export function summaryBoundBlockNum(summary: TransactionSummary): number {
+  const bytes = summary.serialize();
+  const blockCommitment = summary.blockCommitment();
   try {
-    return anchor.blockNum();
+    return readBoundBlockNum(bytes, blockCommitment.serialize());
   } finally {
-    anchor.free();
+    blockCommitment.free();
   }
+}
+
+function readBoundBlockNum(bytes: Uint8Array, blockCommitment: Uint8Array): number {
+  if (bytes.length < 1 + SUMMARY_TAIL_BYTES) {
+    throw new TransactionSummaryLayoutError(
+      `${bytes.length} bytes is shorter than the version byte and the ${SUMMARY_TAIL_BYTES}-byte tail`,
+    );
+  }
+  if (bytes[0] !== SUPPORTED_SUMMARY_VERSION) {
+    throw new TransactionSummaryLayoutError(
+      `version ${bytes[0]}, but only version ${SUPPORTED_SUMMARY_VERSION} is supported`,
+    );
+  }
+  const blockNumberOffset = bytes.length - SUMMARY_TAIL_BYTES;
+  const commitmentOffset = blockNumberOffset + BLOCK_NUMBER_BYTES;
+  const tailCommitment = bytes.subarray(commitmentOffset, commitmentOffset + BLOCK_COMMITMENT_BYTES);
+  if (!bytesEqual(tailCommitment, blockCommitment)) {
+    throw new TransactionSummaryLayoutError(
+      'the bytes after the block number are not the summary block commitment',
+    );
+  }
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(
+    blockNumberOffset,
+    true,
+  );
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  return a.length === b.length && a.every((byte, index) => byte === b[index]);
 }
 
 /**

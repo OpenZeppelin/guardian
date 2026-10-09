@@ -2,16 +2,18 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { isProposalActionable, type Proposal } from './types/proposal.js';
 import { Multisig } from './multisig.js';
 import { GuardianHttpClient, type Signer } from '@openzeppelin/guardian-client';
+import { BoundBlockMismatchError } from './multisig/authArgErrors.js';
 import {
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
   executeForSummaryAtTip,
   isStaleChainError,
-  legacyChainAnchorBlockNum,
   prepareTipExecution,
+  requestBoundBlockNum,
   syncToBoundBlock,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
 } from './transaction.js';
 
@@ -65,7 +67,6 @@ const {
   MOCK_CHAIN_ANCHOR_B64,
   MOCK_SALT_HEX,
   MOCK_BOUND_BLOCK_NUM,
-  MOCK_LEGACY_ANCHOR_BLOCK_NUM,
 } = vi.hoisted(() => {
   const MOCK_CHAIN_ANCHOR_B64 = 'bW9jay1jaGFpbi1hbmNob3I=';
   // A rebuildable proposal carries its salt as well as its bound block: the request declares
@@ -74,12 +75,10 @@ const {
   // returns, so pinning it here changes no expectation downstream.
   const MOCK_SALT_HEX = '0x' + 'd'.repeat(64);
   const MOCK_BOUND_BLOCK_NUM = 4242;
-  const MOCK_LEGACY_ANCHOR_BLOCK_NUM = 4141;
   return {
     MOCK_CHAIN_ANCHOR_B64,
     MOCK_SALT_HEX,
     MOCK_BOUND_BLOCK_NUM,
-    MOCK_LEGACY_ANCHOR_BLOCK_NUM,
   };
 });
 
@@ -178,7 +177,7 @@ vi.mock('./transaction.js', () => ({
   syncToBoundBlock: vi.fn(),
   isStaleChainError: vi.fn(() => false),
   requestBoundBlockNum: vi.fn(() => MOCK_BOUND_BLOCK_NUM),
-  legacyChainAnchorBlockNum: vi.fn(() => MOCK_LEGACY_ANCHOR_BLOCK_NUM),
+  summaryBoundBlockNum: vi.fn(() => MOCK_BOUND_BLOCK_NUM),
   summarySalt: vi.fn(() => ({
     toHex: () => MOCK_SALT_HEX,
   })),
@@ -392,6 +391,8 @@ describe('Multisig', () => {
 
     guardian.setSigner(mockSigner);
     vi.mocked(summarySalt).mockReturnValue({ toHex: () => MOCK_SALT_HEX } as never);
+    vi.mocked(summaryBoundBlockNum).mockReturnValue(MOCK_BOUND_BLOCK_NUM);
+    vi.mocked(requestBoundBlockNum).mockReturnValue(MOCK_BOUND_BLOCK_NUM);
 
     mockAccount = {
       id: () => ({
@@ -2486,9 +2487,8 @@ describe('Multisig', () => {
       });
     });
 
-    /// A built-in proposal that names no bound block cannot be rebuilt, so it
-    /// is refused before anything executes.
-    it('should refuse a built-in proposal that names no bound block, before re-executing', async () => {
+    /// A proposal a 0.18.0 client made names no bound block; the summary does.
+    it('rebuilds a built-in proposal that names no bound block at the block its summary binds', async () => {
       const config = {
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -2527,14 +2527,13 @@ describe('Multisig', () => {
         }),
       });
 
-      const reExecutionsBefore = vi.mocked(executeForSummaryAtTip).mock.calls.length;
+      vi.mocked(summaryBoundBlockNum).mockReturnValue(4300);
+
       const [listed] = await multisig.syncProposals();
-      expect(listed.verification).toMatchObject({
-        status: 'failed',
-        retryable: false,
-        message: expect.stringContaining('has no boundBlockNum'),
+      expect(listed.verification).toEqual({ status: 'verified' });
+      expect(vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0][3]).toMatchObject({
+        boundBlockNum: 4300,
       });
-      expect(vi.mocked(executeForSummaryAtTip).mock.calls.length).toBe(reExecutionsBefore);
     });
 
     /// Issue #462: one proposal whose binding fails (here: a served salt that
@@ -2752,6 +2751,7 @@ describe('Multisig', () => {
       );
       vi.mocked(syncToBoundBlock).mockImplementation(actual.syncToBoundBlock);
       vi.mocked(isStaleChainError).mockImplementation(actual.isStaleChainError);
+      vi.mocked(summaryBoundBlockNum).mockReturnValue(1_000_000);
 
       const multisig = createTestMultisig({
         threshold: 2,
@@ -8138,6 +8138,24 @@ describe('Multisig', () => {
       expect(pushed.delta_payload.metadata.bound_block_num).toBe(MOCK_BOUND_BLOCK_NUM);
       expect(pushed.delta_payload.metadata).not.toHaveProperty('chain_anchor');
     });
+
+    it('records the block the derived summary binds, not the one the request names', async () => {
+      echoProposalPushes();
+      const derived = {
+        toCommitment: () => ({ toHex: () => '0x' + 'c'.repeat(64) }),
+        serialize: () => new Uint8Array([1, 2, 3]),
+      };
+      vi.mocked(executeForSummaryAtTip).mockResolvedValueOnce(derived as never);
+      vi.mocked(requestBoundBlockNum).mockReturnValue(5000);
+      vi.mocked(summaryBoundBlockNum).mockReturnValue(5001);
+      vi.mocked(summaryApprovalExpirationBlockNum).mockReturnValue(undefined);
+
+      await createTestMultisig(config).createAddSignerProposal('0x' + 'e'.repeat(64), { nonce: 1 });
+
+      const [pushed] = pushesTo('/delta/proposal');
+      expect(pushed.delta_payload.metadata.bound_block_num).toBe(5001);
+      expect(summaryBoundBlockNum).toHaveBeenCalledWith(derived);
+    });
   });
 
   /** Issue #538: which block a rebuild binds, and when a proposal names none. */
@@ -8180,20 +8198,20 @@ describe('Multisig', () => {
       });
     }
 
-    it("rebuilds at the legacy chain anchor's block for a proposal a 0.18 client made", async () => {
+    it("rebuilds at the summary's block a proposal a 0.18.0 client made, which carries only a chain anchor", async () => {
       servePending({ ...addSigner, chain_anchor: LEGACY_ANCHOR_B64 });
       vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
 
       const [listed] = await createTestMultisig(config).syncProposals();
 
       expect(listed.verification).toEqual({ status: 'verified' });
-      expect(legacyChainAnchorBlockNum).toHaveBeenCalledWith(LEGACY_ANCHOR_B64);
       expect(vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0][3]).toMatchObject({
-        boundBlockNum: MOCK_LEGACY_ANCHOR_BLOCK_NUM,
+        boundBlockNum: MOCK_BOUND_BLOCK_NUM,
       });
     });
 
     it('accepts block 0 as a bound block', async () => {
+      vi.mocked(summaryBoundBlockNum).mockReturnValue(0);
       servePending({ ...addSigner, bound_block_num: 0 });
       vi.mocked(buildUpdateSignersTransactionRequest).mockClear();
 
@@ -8215,20 +8233,139 @@ describe('Multisig', () => {
       });
     });
 
-    it('refuses a switch_guardian proposal that names no bound block', async () => {
-      servePending({
-        proposal_type: 'switch_guardian',
-        new_guardian_pubkey: '0x' + 'e'.repeat(64),
-        new_guardian_endpoint: 'https://new.guardian.test',
-      });
+    const switchGuardian = {
+      proposal_type: 'switch_guardian',
+      new_guardian_pubkey: '0x' + 'e'.repeat(64),
+      new_guardian_endpoint: 'https://new.guardian.test',
+    };
+    const PROPOSAL_ID = '0x' + 'c'.repeat(64);
+    const mismatchMessage = () =>
+      new BoundBlockMismatchError({
+        proposalId: PROPOSAL_ID,
+        declaredBoundBlockNum: MOCK_BOUND_BLOCK_NUM + 1,
+        boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+      }).message;
+
+    it('verifies a switch_guardian proposal that names no bound block from its summary', async () => {
+      servePending(switchGuardian);
 
       const [listed] = await createTestMultisig(config).syncProposals();
 
-      expect(listed.verification).toMatchObject({
+      expect(listed.verification).toEqual({ status: 'verified' });
+      expect(summaryBoundBlockNum).toHaveBeenCalled();
+    });
+
+    it("lists a switch_guardian proposal whose bound block is not its summary's as failed", async () => {
+      servePending({ ...switchGuardian, bound_block_num: MOCK_BOUND_BLOCK_NUM + 1 });
+
+      const [listed] = await createTestMultisig(config).syncProposals();
+
+      expect(listed.verification.status).toBe('failed');
+      expect(listed.verification).toEqual({
         status: 'failed',
         retryable: false,
-        message: expect.stringContaining('has no boundBlockNum'),
+        message: mismatchMessage(),
       });
+    });
+
+    it("refuses to sign a switch_guardian proposal whose bound block is not its summary's", async () => {
+      servePending({ ...switchGuardian, bound_block_num: MOCK_BOUND_BLOCK_NUM + 1 });
+
+      const outcome = await createTestMultisig(config)
+        .signProposal(PROPOSAL_ID)
+        .catch((error: unknown) => error);
+
+      expect(mockSigner.signCommitment).not.toHaveBeenCalled();
+      expect(pushesTo('/delta/proposal')).toEqual([]);
+      expect(outcome).toBeInstanceOf(BoundBlockMismatchError);
+      expect(outcome).toMatchObject({
+        code: 'bound_block_mismatch',
+        proposalId: PROPOSAL_ID,
+        declaredBoundBlockNum: MOCK_BOUND_BLOCK_NUM + 1,
+        boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+      });
+    });
+
+    it("lists a custom proposal whose bound block is not its summary's as failed", async () => {
+      servePending({ proposal_type: 'b2agg', bound_block_num: MOCK_BOUND_BLOCK_NUM + 1 });
+
+      const [listed] = await createTestMultisig(config).syncProposals();
+
+      expect(listed.metadata.proposalType).toBe('custom');
+      expect(listed.verification.status).toBe('failed');
+      expect(listed.verification).toEqual({
+        status: 'failed',
+        retryable: false,
+        message: mismatchMessage(),
+      });
+    });
+
+    it("refuses to import a custom proposal whose bound block is not its summary's", async () => {
+      const multisig = createTestMultisig(config);
+
+      await expect(
+        multisig.importProposal(
+          JSON.stringify({
+            accountId: multisig.accountId,
+            nonce: 1,
+            commitment: PROPOSAL_ID,
+            txSummaryBase64: 'AQID',
+            signatures: [],
+            metadata: {
+              proposalType: 'custom',
+              rawProposalType: 'b2agg',
+              boundBlockNum: MOCK_BOUND_BLOCK_NUM + 1,
+              description: '',
+            },
+          }),
+        ),
+      ).rejects.toBeInstanceOf(BoundBlockMismatchError);
+    });
+
+    it("refuses custom execution advice for a proposal whose bound block is not its summary's", async () => {
+      const multisig = createTestMultisig(config);
+      const ready = {
+        account_id: '0x' + 'a'.repeat(30),
+        nonce: 1,
+        prev_commitment: LOCAL_ACCOUNT_COMMITMENT,
+        delta_payload: {
+          tx_summary: { data: 'AQID' },
+          signatures: [],
+          metadata: {
+            proposal_type: 'b2agg',
+            bound_block_num: MOCK_BOUND_BLOCK_NUM + 1,
+            salt: MOCK_SALT_HEX,
+            description: '',
+          },
+        },
+        status: {
+          status: 'pending',
+          timestamp: '2024-01-01T00:00:00Z',
+          proposer_id: '0x' + 'c'.repeat(64),
+          cosigner_sigs: [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+        },
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ready });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: ready.account_id,
+          nonce: 1,
+          ack_sig: '0x' + 'f'.repeat(128),
+          ack_scheme: 'falcon',
+        }),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution(PROPOSAL_ID, new Uint8Array([9, 8, 7])),
+      ).rejects.toBeInstanceOf(BoundBlockMismatchError);
+      expect(executionPushes()).toEqual([]);
     });
   });
 });

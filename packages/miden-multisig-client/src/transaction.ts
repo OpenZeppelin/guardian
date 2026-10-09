@@ -12,12 +12,12 @@ export {
 export {
   ChainBehindBoundBlockError,
   executeForSummaryAtTip,
-  legacyChainAnchorBlockNum,
   prepareTipExecution,
   isStaleChainError,
   requireDeclaredBoundBlock,
   syncToBoundBlock,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
 } from './transaction/summary.js';
 export {

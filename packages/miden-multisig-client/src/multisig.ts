@@ -16,7 +16,7 @@ import type {
   ProposalSignatureEntry,
   ProposalType,
 } from './types.js';
-import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
+import { BoundBlockMismatchError, ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
 import {
@@ -39,11 +39,10 @@ import {
 import {
   executeForSummaryAtTip,
   isStaleChainError,
-  legacyChainAnchorBlockNum,
   prepareTipExecution,
-  requestBoundBlockNum,
   syncToBoundBlock,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
@@ -625,10 +624,12 @@ export class Multisig {
    */
   private async deriveProposalSummary(
     request: TransactionRequest,
-  ): Promise<{ summaryBase64: string; boundBlockNum: number | undefined }> {
-    const boundBlockNum = requestBoundBlockNum(request);
+  ): Promise<{ summaryBase64: string; boundBlockNum: number }> {
     const summary = await executeForSummaryAtTip(this.midenClient, this._accountId, request);
-    return { summaryBase64: uint8ArrayToBase64(summary.serialize()), boundBlockNum };
+    return {
+      summaryBase64: uint8ArrayToBase64(summary.serialize()),
+      boundBlockNum: summaryBoundBlockNum(summary),
+    };
   }
 
   private warnOnOverrideDilution(newNumSigners: number): void {
@@ -2337,6 +2338,7 @@ export class Multisig {
     const txSummary = TransactionSummary.deserialize(
       base64ToUint8Array(delta.deltaPayload.txSummary.data),
     );
+    this.requireProposalBoundBlockNum(proposal.id, proposal.metadata, txSummary);
     const signedCommitmentHex = normalizeHexWord(txSummary.toCommitment().toHex());
 
     const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
@@ -2653,7 +2655,7 @@ export class Multisig {
 
     const binding = proposalRequestBinding(
       txSummary,
-      this.requireProposalBoundBlockNum(proposalId, metadata),
+      this.requireProposalBoundBlockNum(proposalId, metadata, txSummary),
       saltHex,
     );
     // A switch_guardian proposal is verified without a rebuild, so this may be
@@ -2903,24 +2905,21 @@ export class Multisig {
     syncChain?: () => Promise<void>,
   ): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
+    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
+    const boundBlockNum = this.requireProposalBoundBlockNum(proposal.id, proposal.metadata, summary);
 
     if (proposal.metadata.proposalType === 'custom') {
-      // Custom proposals have no per-type reconstruction recipe;
-      // the id ↔ tx_summary commitment match above is the only available
-      // integrity guarantee for an opaque proposal.
+      // Custom proposals have no per-type reconstruction recipe; the id and
+      // bound-block checks above are the only available integrity guarantee
+      // for an opaque proposal.
       return txSummaryCommitment;
     }
 
-    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
-
-    // The bound block needs no check of its own: the summary commitment covers
-    // its number and commitment, and the kernel authenticates that block under
-    // the tip, so only a rebuild at it reproduces the signed summary. The salt
-    // check needs no re-execution, so it runs for every built-in type,
-    // switch_guardian included (as in the Rust SDK).
+    // The salt check needs no re-execution, so it runs for every built-in
+    // type, switch_guardian included (as in the Rust SDK).
     const binding = proposalRequestBinding(
       summary,
-      this.requireProposalBoundBlockNum(proposal.id, proposal.metadata),
+      boundBlockNum,
       this.requireProposalSaltHex(proposal.id, proposal.metadata),
     );
     if (summarySaltHex(summary) !== binding.saltHex) {
@@ -3013,31 +3012,39 @@ export class Multisig {
   }
 
   /**
-   * The block a proposal's signed summary binds: `boundBlockNum`, or the block
-   * a legacy `chainAnchor` names for a proposal a 0.18 client made. Throws when
-   * a built-in proposal names neither, because its request cannot be rebuilt.
+   * The block a proposal's signed summary binds, read from the summary as the
+   * Rust SDK does.
    *
-   * GUARDIAN serves this field unsigned and the response is cast, not parsed.
-   * It needs no check against the summary: a rebuild at any other block cannot
-   * reproduce the signed commitment, and a `switch_guardian` proposal, which is
-   * not rebuilt here, fails in the VM at execution. A wrong value can deny a
-   * proposal, never get a wrong one accepted.
+   * GUARDIAN serves `boundBlockNum` unsigned and the response is cast, not
+   * parsed. An absent value, from a proposal a 0.18.0 client made, is accepted;
+   * a legacy `chainAnchor` is not read. A present value has to be a block
+   * number equal to the summary's, for every proposal type, so a wrong one is
+   * refused by name before anything executes or is signed.
+   *
+   * @throws BoundBlockMismatchError when the served value names another block.
    */
-  private requireProposalBoundBlockNum(proposalId: string, metadata: ProposalMetadata): number {
+  private requireProposalBoundBlockNum(
+    proposalId: string,
+    metadata: ProposalMetadata,
+    summary: TransactionSummary,
+  ): number {
+    const declared = this.servedBoundBlockNum(proposalId, metadata);
+    const boundBlockNum = summaryBoundBlockNum(summary);
+    if (declared !== undefined && declared !== boundBlockNum) {
+      throw new BoundBlockMismatchError({
+        proposalId,
+        declaredBoundBlockNum: declared,
+        boundBlockNum,
+      });
+    }
+    return boundBlockNum;
+  }
+
+  /** The served `boundBlockNum`, `undefined` when absent; throws when malformed. */
+  private servedBoundBlockNum(proposalId: string, metadata: ProposalMetadata): number | undefined {
     const boundBlockNum: unknown = metadata.boundBlockNum;
     if (boundBlockNum === undefined || boundBlockNum === null) {
-      if (metadata.chainAnchor) {
-        try {
-          return legacyChainAnchorBlockNum(metadata.chainAnchor);
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          throw new Error(`Proposal ${proposalId} has a malformed legacy chainAnchor: ${detail}`);
-        }
-      }
-      throw new Error(
-        `Proposal ${proposalId} has no boundBlockNum, which names the block its signed ` +
-          'summary binds; its request cannot be rebuilt without it',
-      );
+      return undefined;
     }
     if (
       typeof boundBlockNum !== 'number' ||

@@ -13,7 +13,6 @@ const {
 }));
 
 vi.mock('@miden-sdk/miden-sdk', () => ({
-  ChainAnchor: { deserialize: vi.fn() },
   Word: {
     newFromFelts: vi.fn((felts: unknown[]) => ({ felts })),
   },
@@ -27,12 +26,14 @@ const {
   ChainBehindBoundBlockError,
   executeForSummaryAtTip,
   isStaleChainError,
-  legacyChainAnchorBlockNum,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
   syncToBoundBlock,
 } = await import('./summary.js');
-const { BoundBlockNotDeclaredError } = await import('../multisig/authArgErrors.js');
+const { BoundBlockNotDeclaredError, TransactionSummaryLayoutError } = await import(
+  '../multisig/authArgErrors.js'
+);
 
 /** A request whose multisig auth args bind `bound` and declare `declared`. */
 const requestBinding = (bound: number | undefined, declared: number[] = []) => {
@@ -184,13 +185,77 @@ describe('isStaleChainError', () => {
   });
 });
 
-describe('legacyChainAnchorBlockNum', () => {
-  it('reads the block a legacy anchor names and frees the anchor', async () => {
-    const { ChainAnchor } = await import('@miden-sdk/miden-sdk');
-    const free = vi.fn();
-    vi.mocked(ChainAnchor.deserialize).mockReturnValueOnce({ blockNum: () => 77, free } as never);
+describe('summaryBoundBlockNum', () => {
+  /** Block number, block commitment, expiration delta and six user-param felts. */
+  const TAIL_BYTES = 4 + 32 + 2 + 48;
+  const BLOCK_COMMITMENT = Uint8Array.from({ length: 32 }, (_, i) => i + 1);
 
-    expect(legacyChainAnchorBlockNum('AQID')).toBe(77);
+  function serializedSummary(blockNum: number, version = 1): Uint8Array {
+    const bytes = new Uint8Array(1 + 10 + TAIL_BYTES).fill(0xee);
+    const tail = bytes.length - TAIL_BYTES;
+    bytes[0] = version;
+    new DataView(bytes.buffer).setUint32(tail, blockNum, true);
+    bytes.set(BLOCK_COMMITMENT, tail + 4);
+    return bytes;
+  }
+
+  function summaryOf(bytes: Uint8Array, blockCommitment: Uint8Array = BLOCK_COMMITMENT) {
+    const free = vi.fn();
+    const summary = {
+      serialize: () => bytes,
+      blockCommitment: () => ({ serialize: () => blockCommitment, free }),
+    } as never;
+    return { summary, free };
+  }
+
+  function thrownBy(read: () => unknown): unknown {
+    try {
+      read();
+    } catch (error) {
+      return error;
+    }
+    throw new Error('expected the read to throw');
+  }
+
+  it('reads the little-endian block number at the start of the tail', () => {
+    const { summary, free } = summaryOf(serializedSummary(0x01020304));
+
+    expect(summaryBoundBlockNum(summary)).toBe(0x01020304);
+    expect(free).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a tail whose block commitment is not the summary's", () => {
+    const { summary, free } = summaryOf(
+      serializedSummary(42),
+      BLOCK_COMMITMENT.map((byte) => byte ^ 0xff),
+    );
+
+    const error = thrownBy(() => summaryBoundBlockNum(summary));
+
+    expect(error).toBeInstanceOf(TransactionSummaryLayoutError);
+    expect(error).toMatchObject({ code: 'transaction_summary_layout_unsupported' });
+    expect(free).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a buffer shorter than the version byte and the tail', () => {
+    // Read as if it had a version byte, this tail alone passes both other checks.
+    const bytes = new Uint8Array(TAIL_BYTES);
+    bytes[0] = 1;
+    bytes.set(BLOCK_COMMITMENT, 4);
+    const { summary, free } = summaryOf(bytes);
+
+    expect(thrownBy(() => summaryBoundBlockNum(summary))).toBeInstanceOf(
+      TransactionSummaryLayoutError,
+    );
+    expect(free).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a summary version other than 1', () => {
+    const { summary, free } = summaryOf(serializedSummary(42, 2));
+
+    expect(thrownBy(() => summaryBoundBlockNum(summary))).toBeInstanceOf(
+      TransactionSummaryLayoutError,
+    );
     expect(free).toHaveBeenCalledTimes(1);
   });
 });

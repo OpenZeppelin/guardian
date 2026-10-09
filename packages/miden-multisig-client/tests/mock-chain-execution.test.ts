@@ -15,17 +15,18 @@ import type {
   GuardianHttpClient,
   Signer,
 } from '@openzeppelin/guardian-client';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createMultisigAccount } from '../src/account/builder.js';
 import { Multisig } from '../src/multisig.js';
-import { BoundBlockNotDeclaredError } from '../src/multisig/authArgErrors.js';
+import { BoundBlockMismatchError, BoundBlockNotDeclaredError } from '../src/multisig/authArgErrors.js';
 import { computeCommitmentFromTxSummary } from '../src/multisig/helpers.js';
 import {
   buildUpdateSignersTransactionRequest,
   executeForSummaryAtTip,
   requestBoundBlockNum,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
 } from '../src/transaction.js';
 import type { ExportedProposal } from '../src/types.js';
@@ -190,6 +191,22 @@ describe('guarded multisig auth procedure on the mock chain', () => {
     const reproduced = await executeForSummaryAtTip(client, accountId, rebuilt.request);
 
     expect(reproduced.toCommitment().toHex()).toBe(summary.toCommitment().toHex());
+  });
+
+  it('reads back from the summary the earlier block a request binds', async () => {
+    await client.proveBlock();
+    await client.syncChain();
+    const boundBlockNum = await client.getSyncHeight();
+    await client.proveBlock();
+    await client.proveBlock();
+    await client.syncChain();
+    expect(boundBlockNum).toBeGreaterThan(0);
+    expect(await client.getSyncHeight()).toBeGreaterThan(boundBlockNum);
+
+    const { request } = await buildRequest({ boundBlockNum });
+    const summary = await executeForSummaryAtTip(client, accountId, request);
+
+    expect(summaryBoundBlockNum(summary)).toBe(boundBlockNum);
   });
 
   it('refuses at the tip a request that binds a block without declaring it', async () => {
@@ -360,18 +377,17 @@ describe('proposals name the block their summary binds', () => {
     expect(imported.verification).toEqual({ status: 'verified' });
   });
 
-  it("falls back to a legacy chainAnchor's block when boundBlockNum is absent", async () => {
-    await chain.syncChain();
+  it("verifies a proposal carrying only a legacy chainAnchor from its summary's block", async () => {
+    const { boundBlockNum, exported } = await exportedAddSigner();
+    await advanceAndSync(2);
     const { request } = await signerUpdateRequest();
     const anchor = await chain.transactions.captureAnchor(request);
     const legacyAnchor = uint8ArrayToBase64(anchor.serialize());
     const anchorBlockNum = anchor.blockNum();
     anchor.free();
-    const { boundBlockNum, exported } = await exportedAddSigner();
-    expect(anchorBlockNum).toBe(boundBlockNum);
+    expect(anchorBlockNum).not.toBe(boundBlockNum);
     delete exported.metadata.boundBlockNum;
     exported.metadata.chainAnchor = legacyAnchor;
-    await advanceAndSync(2);
 
     const imported = await importOnAnotherClient(exported);
 
@@ -379,19 +395,30 @@ describe('proposals name the block their summary binds', () => {
     expect(imported.metadata.chainAnchor).toBe(legacyAnchor);
   });
 
-  it('refuses a built-in proposal that names no bound block', async () => {
+  it('verifies a built-in proposal that names no bound block', async () => {
     const { exported } = await exportedAddSigner();
     delete exported.metadata.boundBlockNum;
     delete exported.metadata.chainAnchor;
+    await advanceAndSync(2);
 
-    await expect(importOnAnotherClient(exported)).rejects.toThrow(/has no boundBlockNum/);
+    const imported = await importOnAnotherClient(exported);
+
+    expect(imported.verification).toEqual({ status: 'verified' });
   });
 
-  it('refuses a built-in proposal whose boundBlockNum names another block', async () => {
+  it('refuses a built-in proposal whose boundBlockNum names another block, before re-executing', async () => {
     const { boundBlockNum, exported } = await exportedAddSigner();
     await advanceAndSync(2);
     exported.metadata.boundBlockNum = boundBlockNum + 1;
+    const preview = vi.spyOn(chain.transactions, 'preview');
 
-    await expect(importOnAnotherClient(exported)).rejects.toThrow(/metadata does not match tx_summary/);
+    try {
+      const outcome = await importOnAnotherClient(exported).catch((error: unknown) => error);
+
+      expect(preview).not.toHaveBeenCalled();
+      expect(outcome).toBeInstanceOf(BoundBlockMismatchError);
+    } finally {
+      preview.mockRestore();
+    }
   });
 });
