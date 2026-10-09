@@ -53,7 +53,7 @@ use crate::execution::{
 use crate::keystore::proposal_public_key_hex;
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
 use crate::transaction::{
-    ProposalBuilder, ProposalOptions, deserialize_transaction_request, execute_for_summary,
+    ProposalBuilder, ProposalOptions, deserialize_transaction_request, execute_for_summary_at_tip,
     proposal_auth_args, word_to_hex,
 };
 
@@ -470,27 +470,22 @@ impl MultisigClient {
             )));
         }
 
-        // No sync here: the producer bound the request's auth args to the store's
-        // sync height when it built them, and the anchor captured below has to
-        // name that same block. A sync in between would move the anchor past the
-        // block the summary binds and `execute_for_summary` would refuse the pair.
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
         let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(&mut self.miden_client, account_id, tx_request).await?;
+        let tx_summary =
+            execute_for_summary_at_tip(&mut self.miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let required_signatures = account.threshold()? as usize;
-        let chain_anchor_b64 = crate::transaction::chain_anchor_to_base64(&chain_anchor);
 
         let metadata = crate::proposal::ProposalMetadata {
             tx_summary_json: Some(tx_summary.to_json()),
             proposal_type: Some(proposal_type.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![self.key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_b64.clone()),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
             ..Default::default()
         };
 
@@ -498,7 +493,7 @@ impl MultisigClient {
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_b64);
+            .with_bound_block_num(tx_summary.block_number());
 
         let nonce = account.nonce() + 1;
         let mut guardian_client = self.create_authenticated_guardian_client().await?;

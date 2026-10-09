@@ -237,19 +237,20 @@ impl MultisigClient {
             )));
         }
 
-        // The anchor arrives from an untrusted party via GUARDIAN. Nothing here
-        // executes against it, since the rebuild below runs at the tip, but it
-        // has to name the block the signed summary binds: the TypeScript SDK
-        // rebuilds at the block it names, and 0.18.0-rc.1 clients re-execute
-        // at it. ChainAnchor deserialization already enforced internal
-        // header/chain consistency.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
-        if chain_anchor.block_commitment() != proposal.tx_summary.block_commitment() {
-            return Err(MultisigError::InvalidConfig(format!(
-                "proposal {} chain_anchor does not match the block commitment bound \
-                 into its tx_summary",
-                proposal.id
-            )));
+        // The bound block needs no check of its own: the summary commitment
+        // covers its number and commitment, and the kernel authenticates that
+        // block under the tip, so only a rebuild at it reproduces the signed
+        // summary. `bound_block_num` is unsigned and TypeScript cosigners
+        // rebuild with it, so one that disagrees is refused by name.
+        let bound_block = proposal.tx_summary.block_number();
+        if let Some(declared) = proposal.metadata.bound_block_num
+            && declared != bound_block.as_u32()
+        {
+            return Err(MultisigError::BoundBlockMismatch {
+                proposal_id: proposal.id.clone(),
+                declared,
+                bound: bound_block,
+            });
         }
 
         // Custom proposal types (issue #266) have no per-type reconstruction
@@ -286,11 +287,7 @@ impl MultisigClient {
         // configuration and executes at the tip, so the store has to have
         // synced to the block the summary binds; a cosigner that has only
         // just pulled the account has not.
-        crate::transaction::sync_to_block(
-            &mut self.miden_client,
-            proposal.tx_summary.block_number(),
-        )
-        .await?;
+        crate::transaction::sync_to_block(&mut self.miden_client, bound_block).await?;
         let auth_args = proposal_auth_args(&self.miden_client, &proposal.tx_summary).await?;
 
         // A consume-notes summary commits to *authenticated* consumption

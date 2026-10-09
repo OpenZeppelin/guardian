@@ -25,7 +25,7 @@ use crate::utils::hex_body_eq;
 use super::{
     build_p2id_transaction_request, build_update_guardian_transaction_request,
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
-    chain_anchor_to_base64, execute_for_summary, generate_salt, proposer_auth_args, word_to_hex,
+    execute_for_summary_at_tip, generate_salt, proposer_auth_args, word_to_hex,
 };
 
 /// Builder for creating multisig transaction proposals.
@@ -305,8 +305,7 @@ impl ProposalBuilder {
         )?;
 
         // Execute to get the TransactionSummary
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -334,7 +333,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         // Build the payload using ProposalPayload
@@ -346,7 +345,7 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             )
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -411,8 +410,7 @@ impl ProposalBuilder {
             key_manager.scheme(),
         )?;
 
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let signer_commitments_hex: Vec<String> = current_signers.iter().map(word_to_hex).collect();
@@ -441,7 +439,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         let payload = ProposalPayload::new(&tx_summary)
@@ -452,7 +450,7 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             )
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         let nonce = account.nonce() + 1;
         let response = guardian_client
@@ -525,8 +523,7 @@ impl ProposalBuilder {
         )?;
 
         // Execute to get the TransactionSummary
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -554,7 +551,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         // Build the payload using ProposalPayload
@@ -566,7 +563,7 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             )
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -625,8 +622,7 @@ impl ProposalBuilder {
         )?;
 
         // Execute to get the TransactionSummary
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -652,7 +648,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         // Build the payload using ProposalPayload
@@ -667,7 +663,7 @@ impl ProposalBuilder {
                 heights,
             )
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -731,8 +727,7 @@ impl ProposalBuilder {
             std::iter::empty(),
         )?;
 
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let note_ids_hex: Vec<String> = note_ids.iter().map(|id| id.to_hex()).collect();
@@ -758,7 +753,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         let notes_base64: Vec<String> = serialized_notes
@@ -770,7 +765,7 @@ impl ProposalBuilder {
             .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         // FR-011: cap covers only the metadata fragment, not the full payload.
         if let Some(meta) = payload.metadata.as_ref() {
@@ -845,8 +840,7 @@ impl ProposalBuilder {
         )?;
 
         // Execute to get the TransactionSummary
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
         let tx_commitment = tx_summary.to_commitment();
@@ -872,7 +866,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         // Build the payload using ProposalPayload
@@ -884,7 +878,7 @@ impl ProposalBuilder {
                 word_to_hex(&salt),
             )
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -932,8 +926,7 @@ impl ProposalBuilder {
             &auth_args,
             std::iter::empty(),
         )?;
-        let (tx_summary, chain_anchor) =
-            execute_for_summary(miden_client, account_id, tx_request).await?;
+        let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
         let metadata = ProposalMetadata {
@@ -956,14 +949,14 @@ impl ProposalBuilder {
             target_procedure: Some(procedure.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            chain_anchor_b64: Some(chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
         };
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
             .with_required_signatures(required_signatures)
-            .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+            .with_bound_block_num(tx_summary.block_number());
 
         let nonce = account.nonce() + 1;
         let response = guardian_client

@@ -3,6 +3,7 @@
 use std::num::NonZeroU32;
 
 use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
+use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
 use serde::{Deserialize, Serialize};
@@ -79,13 +80,11 @@ pub struct ProposalMetadataPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` at the block the proposal's
-    /// transaction summary binds. Cosigners and the executor reproduce the
-    /// summary at the chain tip, not at this anchor; it names the bound block
-    /// for a rebuild in the TypeScript SDK and for 0.18.0-rc.1 clients, which
-    /// re-execute at it.
+    /// The block the proposal's transaction summary binds. Not signed: the
+    /// TypeScript SDK rebuilds the proposal's request at it. A wrong value can
+    /// deny a proposal, never get a wrong one accepted. Omitted when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub chain_anchor: Option<String>,
+    pub bound_block_num: Option<u32>,
 }
 
 /// Complete payload for a multisig transaction proposal.
@@ -287,13 +286,12 @@ impl ProposalPayload {
         self
     }
 
-    /// Sets the base64-serialized chain anchor at the block the proposal's
-    /// summary binds.
-    pub fn with_chain_anchor(mut self, chain_anchor_b64: String) -> Self {
+    /// Records the block the proposal's summary binds.
+    pub fn with_bound_block_num(mut self, bound_block_num: BlockNumber) -> Self {
         let metadata = self
             .metadata
             .get_or_insert_with(ProposalMetadataPayload::default);
-        metadata.chain_anchor = Some(chain_anchor_b64);
+        metadata.bound_block_num = Some(bound_block_num.as_u32());
         self
     }
 
@@ -598,36 +596,74 @@ mod tests {
         assert!(meta.salt.is_none());
     }
 
-    /// The chain anchor rides the wire as `chain_anchor` and is omitted when
-    /// unset, so pre-anchor payload shapes stay byte-identical.
+    /// The bound block rides the wire as `bound_block_num` and is omitted when
+    /// unset, so payloads without it keep their shape.
     #[test]
-    fn with_chain_anchor_round_trips_and_is_omitted_when_unset() {
+    fn with_bound_block_num_round_trips_and_is_omitted_when_unset() {
         let payload = ProposalPayload {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
         }
         .with_add_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string())
-        .with_chain_anchor("bW9jay1jaGFpbi1hbmNob3I=".to_string());
+        .with_bound_block_num(BlockNumber::from(42u32));
 
         let json = serde_json::to_value(payload.metadata.as_ref().unwrap()).unwrap();
         assert_eq!(
-            json.get("chain_anchor").and_then(|v| v.as_str()),
-            Some("bW9jay1jaGFpbi1hbmNob3I=")
+            json.get("bound_block_num").and_then(|v| v.as_u64()),
+            Some(42)
         );
 
         let parsed: ProposalMetadataPayload = serde_json::from_value(json).unwrap();
-        assert_eq!(
-            parsed.chain_anchor.as_deref(),
-            Some("bW9jay1jaGFpbi1hbmNob3I=")
-        );
+        assert_eq!(parsed.bound_block_num, Some(42));
 
-        let without_anchor = ProposalMetadataPayload {
+        let without = ProposalMetadataPayload {
             proposal_type: "add_signer".to_string(),
             ..Default::default()
         };
-        let json = serde_json::to_value(&without_anchor).unwrap();
-        assert!(json.get("chain_anchor").is_none());
+        let json = serde_json::to_value(&without).unwrap();
+        assert!(json.get("bound_block_num").is_none());
+    }
+
+    /// The shared wire sample parses into this type and serializes back
+    /// unchanged, so this SDK and the TypeScript one agree on
+    /// `bound_block_num`. A payload a 0.18.0 client wrote keeps parsing, and
+    /// its `chain_anchor` is dropped.
+    #[test]
+    fn proposal_metadata_wire_fixture_round_trips() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/miden-multisig-client/proposal-metadata-wire.json"
+        ))
+        .expect("fixture parses");
+
+        let current = fixture["current"]["wire"].clone();
+        let parsed: ProposalMetadataPayload =
+            serde_json::from_value(current.clone()).expect("current wire parses");
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), current);
+
+        let legacy = fixture["legacy"]["wire"].clone();
+        let parsed: ProposalMetadataPayload =
+            serde_json::from_value(legacy.clone()).expect("legacy wire parses");
+        let mut without_anchor = legacy;
+        without_anchor
+            .as_object_mut()
+            .expect("legacy wire is an object")
+            .remove("chain_anchor");
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), without_anchor);
+
+        let written = ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: None,
+        }
+        .with_custom_metadata("p2id".to_string())
+        .with_bound_block_num(BlockNumber::from(
+            u32::try_from(fixture["boundBlockNum"].as_u64().unwrap()).unwrap(),
+        ));
+        assert_eq!(
+            serde_json::to_value(written.metadata.unwrap()).unwrap()["bound_block_num"],
+            fixture["current"]["wire"]["bound_block_num"]
+        );
     }
 
     // ---------- consume_notes metadata v1/v2 round-trip (issue #229) ----------

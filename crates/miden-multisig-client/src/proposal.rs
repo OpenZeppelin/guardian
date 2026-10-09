@@ -382,13 +382,9 @@ pub struct ProposalMetadata {
     pub required_signatures: Option<usize>,
     pub signers: Vec<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` at the block the tx_summary binds,
-    /// the proposer's sync height when it built the request. Required, and
-    /// checked against the summary's block commitment. The proposal executes
-    /// at the chain tip rather than at the anchor; the anchor names the bound
-    /// block for a rebuild in the TypeScript SDK and for 0.18.0-rc.1 clients,
-    /// which re-execute at it.
-    pub chain_anchor_b64: Option<String>,
+    /// The block the signed summary binds, as the proposer wrote it. Unsigned,
+    /// so verification checks it against the summary.
+    pub bound_block_num: Option<u32>,
 }
 
 impl ProposalMetadata {
@@ -400,25 +396,11 @@ impl ProposalMetadata {
         self.consume_notes_metadata_version == Some(CONSUME_NOTES_METADATA_VERSION_V2)
     }
 
-    /// Decodes the proposal's chain anchor. Errors when absent: every proposal
-    /// names the block its summary binds with one, so a proposal without it is
-    /// malformed and is neither verified nor executed.
-    pub fn chain_anchor(&self) -> Result<miden_client::transaction::ChainAnchor> {
-        let anchor_b64 = self.chain_anchor_b64.as_deref().ok_or_else(|| {
-            MultisigError::InvalidConfig(
-                "proposal metadata has no chain_anchor, which names the block its signed \
-                 summary binds; the proposal cannot be verified or executed"
-                    .to_string(),
-            )
-        })?;
-        crate::transaction::chain_anchor_from_base64(anchor_b64)
-    }
-
     /// Converts salt hex to Word.
     ///
-    /// Errors when absent, for the same reason [`Self::chain_anchor`] does: the salt
-    /// is bound into the auth args and the signed summary, so a substituted zero
-    /// would rebuild a request whose summary no cosigner signed.
+    /// Errors when absent: the salt is bound into the auth args and the signed
+    /// summary, so a substituted zero would rebuild a request whose summary no
+    /// cosigner signed.
     pub fn salt(&self) -> Result<Word> {
         let value = self.salt_hex.as_deref().ok_or_else(|| {
             MultisigError::InvalidConfig(
@@ -824,7 +806,7 @@ impl Proposal {
             target_procedure: target_procedure.clone(),
             required_signatures: Some(required_signatures),
             signers: Vec::new(),
-            chain_anchor_b64: metadata_payload.chain_anchor,
+            bound_block_num: metadata_payload.bound_block_num,
         };
         let transaction_type = metadata.to_transaction_type(&proposal_type)?;
 
@@ -1072,37 +1054,6 @@ mod tests {
         let invalid = format!("0x{}{}", "ff".repeat(8), "00".repeat(24));
         let err = word_from_hex(&invalid).expect_err("non-canonical field element should fail");
         assert!(err.contains("invalid field element"));
-    }
-
-    /// A proposal without an anchor cannot be verified or executed, and a
-    /// present anchor must decode as a structurally valid `ChainAnchor` —
-    /// garbage base64 or well-formed base64 of non-anchor bytes are both
-    /// rejected before anything executes against them.
-    #[test]
-    fn chain_anchor_is_required_and_validated() {
-        let missing = ProposalMetadata::default();
-        let err = missing
-            .chain_anchor()
-            .expect_err("missing anchor must fail");
-        assert!(err.to_string().contains("no chain_anchor"));
-
-        let garbage = ProposalMetadata {
-            chain_anchor_b64: Some("!!!not-base64!!!".to_string()),
-            ..Default::default()
-        };
-        let err = garbage
-            .chain_anchor()
-            .expect_err("garbage base64 must fail");
-        assert!(err.to_string().contains("invalid chain_anchor base64"));
-
-        let non_anchor = ProposalMetadata {
-            chain_anchor_b64: Some(BASE64.encode([0xAAu8; 16])),
-            ..Default::default()
-        };
-        let err = non_anchor
-            .chain_anchor()
-            .expect_err("non-anchor bytes must fail");
-        assert!(err.to_string().contains("invalid chain_anchor"));
     }
 
     #[test]
