@@ -1256,31 +1256,27 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
     );
 }
 
-/// A listing client and an update-procedure-threshold summary bound to its
-/// sync height, for the tests below that serve a hand-shaped payload.
-async fn client_with_summary(
-    seed: u8,
-) -> (
-    super::MultisigClient,
-    tempfile::TempDir,
-    miden_protocol::account::Account,
-    Word,
-    miden_protocol::transaction::TransactionSummary,
-    Word,
-) {
+/// A listing client on a mock GUARDIAN and an update-procedure-threshold
+/// summary bound to its sync height, for the tests below that serve a
+/// hand-shaped payload.
+struct ClientWithSummary {
+    client: super::MultisigClient,
+    _dir: tempfile::TempDir,
+    guardian: guardian_client::testing::mocks::MockGuardianHandle,
+    account: miden_protocol::account::Account,
+    signer_commitment: Word,
+    tx_summary: miden_protocol::transaction::TransactionSummary,
+    salt: Word,
+}
+
+async fn client_with_summary(seed: u8) -> ClientWithSummary {
     use crate::procedures::ProcedureName;
 
     let keystore = Arc::new(GuardianKeyStore::generate());
     let signer_commitment = keystore.commitment();
     let account = multisig_account(signer_commitment, Word::from([9u32, 9, 9, 9]), seed);
-    let api = chain_with_notes(Vec::new());
-    let dir = tempfile::tempdir().unwrap();
-    let (mut client, _store) =
-        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore.clone()).await;
-    client.set_node_rpc_client(api.clone());
-    client.add_or_update_account(&account, true).await.unwrap();
-    client.account = Some(MultisigAccount::new(account.clone()));
-    client.miden_client.sync_state().await.unwrap();
+    let (mut client, dir, guardian, _) =
+        client_on_mock_guardian(chain_with_notes(Vec::new()), &account, keystore).await;
 
     let salt = Word::from([5u32, 6, 7, 8]);
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
@@ -1303,35 +1299,36 @@ async fn client_with_summary(
     let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
         .await
         .unwrap();
-    (client, dir, account, signer_commitment, tx_summary, salt)
+    ClientWithSummary {
+        client,
+        _dir: dir,
+        guardian,
+        account,
+        signer_commitment,
+        tx_summary,
+        salt,
+    }
 }
 
 /// Serves `payload` as the account's one pending proposal and lists it.
 async fn list_served(
-    client: &mut super::MultisigClient,
-    account: &miden_protocol::account::Account,
-    signer_commitment: Word,
+    setup: &mut ClientWithSummary,
     payload: serde_json::Value,
 ) -> Vec<crate::proposal::Proposal> {
-    let service = MockGuardianService::default();
-    let handle = service.handle();
-    let endpoint = start_mock_server(service).await.unwrap();
-    handle.set_persistent_get_state(registered_state(account));
-    handle.set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
-        success: true,
-        message: String::new(),
-        proposals: vec![pending_proto_delta(
-            account,
-            1,
-            payload.to_string(),
-            &word_to_hex(&signer_commitment),
-        )],
-    });
-    client
-        .set_guardian_endpoint(&endpoint, false)
-        .await
-        .unwrap();
-    client
+    setup
+        .guardian
+        .set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
+            success: true,
+            message: String::new(),
+            proposals: vec![pending_proto_delta(
+                &setup.account,
+                1,
+                payload.to_string(),
+                &word_to_hex(&setup.signer_commitment),
+            )],
+        });
+    setup
+        .client
         .list_proposals()
         .await
         .expect("the listing reports the proposal")
@@ -1344,15 +1341,15 @@ async fn list_served(
 async fn proposal_whose_bound_block_num_disagrees_with_its_summary_is_refused() {
     use crate::procedures::ProcedureName;
 
-    let (mut client, _dir, account, signer, tx_summary, salt) = client_with_summary(55).await;
-    let bound_block = tx_summary.block_number().as_u32();
-    let mut payload = ProposalPayload::new(&tx_summary)
-        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&salt))
+    let mut setup = client_with_summary(55).await;
+    let bound_block = setup.tx_summary.block_number().as_u32();
+    let mut payload = ProposalPayload::new(&setup.tx_summary)
+        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&setup.salt))
         .with_required_signatures(1)
         .to_json();
     payload["metadata"]["bound_block_num"] = serde_json::json!(bound_block + 1);
 
-    let proposals = list_served(&mut client, &account, signer, payload).await;
+    let proposals = list_served(&mut setup, payload).await;
     assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
     match &proposals[0].verification {
         crate::proposal::ProposalVerification::Failed { retryable, message } => {
@@ -1377,9 +1374,9 @@ async fn proposal_whose_bound_block_num_disagrees_with_its_summary_is_refused() 
 async fn proposal_made_by_a_0_18_client_still_verifies() {
     use crate::procedures::ProcedureName;
 
-    let (mut client, _dir, account, signer, tx_summary, salt) = client_with_summary(57).await;
-    let mut payload = ProposalPayload::new(&tx_summary)
-        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&salt))
+    let mut setup = client_with_summary(57).await;
+    let mut payload = ProposalPayload::new(&setup.tx_summary)
+        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&setup.salt))
         .with_required_signatures(1)
         .to_json();
     let metadata = payload["metadata"].as_object_mut().unwrap();
@@ -1389,7 +1386,7 @@ async fn proposal_made_by_a_0_18_client_still_verifies() {
         serde_json::json!("bW9jay1jaGFpbi1hbmNob3I="),
     );
 
-    let proposals = list_served(&mut client, &account, signer, payload).await;
+    let proposals = list_served(&mut setup, payload).await;
     assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
     assert!(
         proposals[0].is_verified(),
