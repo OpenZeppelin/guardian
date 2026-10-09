@@ -333,7 +333,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         // Build the payload using ProposalPayload
@@ -438,7 +438,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         let payload = ProposalPayload::new(&tx_summary)
@@ -549,7 +549,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         // Build the payload using ProposalPayload
@@ -645,7 +645,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         // Build the payload using ProposalPayload
@@ -749,7 +749,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         let notes_base64: Vec<String> = serialized_notes
@@ -861,7 +861,7 @@ impl ProposalBuilder {
             target_procedure: None,
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         // Build the payload using ProposalPayload
@@ -943,7 +943,7 @@ impl ProposalBuilder {
             target_procedure: Some(procedure.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
+            ..Default::default()
         };
 
         let payload = ProposalPayload::new(&tx_summary)

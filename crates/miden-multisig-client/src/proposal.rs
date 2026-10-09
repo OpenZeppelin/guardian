@@ -870,7 +870,9 @@ impl Proposal {
         Ok(proposal)
     }
 
-    /// Creates a new Proposal
+    /// Creates a new Proposal. Its `bound_block_num` is the block `tx_summary`
+    /// binds, whatever `metadata` carries, so a created proposal cannot
+    /// disagree with its own summary.
     pub fn new(
         tx_summary: TransactionSummary,
         nonce: u64,
@@ -879,6 +881,7 @@ impl Proposal {
     ) -> Self {
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));
+        metadata.bound_block_num = Some(tx_summary.block_number().as_u32());
 
         let signatures_required = metadata
             .required_signatures
@@ -1018,6 +1021,10 @@ mod tests {
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
 
     fn create_test_tx_summary() -> TransactionSummary {
+        tx_summary_binding(0)
+    }
+
+    fn tx_summary_binding(block_num: u32) -> TransactionSummary {
         // Use a minimal valid account ID
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
@@ -1033,11 +1040,35 @@ mod tests {
             delta,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
-            miden_protocol::block::BlockNumber::from(0),
+            miden_protocol::block::BlockNumber::from(block_num),
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         )
+    }
+
+    /// A created proposal records the block its own summary binds, whatever
+    /// its creator wrote, and an export carries that value to the TypeScript
+    /// cosigners that rebuild at it.
+    #[test]
+    fn new_proposal_records_the_block_its_summary_binds() {
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        for written in [None, Some(7)] {
+            let proposal = Proposal::new(
+                tx_summary_binding(42),
+                1,
+                TransactionType::add_cosigner(Word::default()),
+                ProposalMetadata {
+                    bound_block_num: written,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(proposal.metadata.bound_block_num, Some(42));
+
+            let exported =
+                crate::export::ExportedProposal::from_proposal(&proposal, account_id).unwrap();
+            assert_eq!(exported.metadata.bound_block_num, Some(42));
+        }
     }
 
     #[test]

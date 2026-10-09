@@ -488,7 +488,6 @@ impl MultisigClient {
             proposal_type: Some(proposal_type.to_string()),
             required_signatures: Some(required_signatures),
             signers: vec![self.key_manager.commitment_hex()],
-            bound_block_num: Some(tx_summary.block_number().as_u32()),
             ..Default::default()
         };
 
