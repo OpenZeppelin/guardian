@@ -118,9 +118,10 @@ export interface ProposalMetadata {
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   noteType?: string;
   /**
-   * The block the proposal's transaction summary binds. Not signed: cosigners
-   * rebuild the proposal's request at it, so a wrong value can deny a
-   * proposal but never get a wrong one accepted.
+   * The block the proposal's transaction summary binds. Not signed: the
+   * multisig SDKs read the block from the summary and refuse a proposal whose
+   * value disagrees, so a wrong value can deny a proposal but never get a
+   * wrong one accepted.
    */
   boundBlockNum?: number;
   /** Legacy: the base64 Miden `ChainAnchor` 0.18 clients wrote instead of `boundBlockNum`. */

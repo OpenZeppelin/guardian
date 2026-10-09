@@ -463,7 +463,10 @@ sync height, so `syncProposals`, `signProposal`, `executeProposal`,
 client first. Foreign accounts, the fee faucet among them, load at the tip, so
 a proposal stays verifiable however long it waits for signatures, even after
 the node has pruned the bound block's account state (devnet keeps about 50
-blocks). The proposal's `boundBlockNum` records the bound block, which a rebuild pins.
+blocks). The proposal's `boundBlockNum` records the bound block. The SDK reads
+that block from the signed summary when it creates a proposal and when it
+verifies one, and refuses a proposal whose `boundBlockNum` disagrees
+(`BoundBlockMismatchError`), as the Rust SDK does.
 
 `createTransactionProposalRequest(proposalId)` returns the final, fully
 signed request for an integration that proves and submits with its own
@@ -588,6 +591,7 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
 // (inputs + salt + bound block) with the advice, then submit. `submitTransaction`
 // executes at the chain tip: the rebuilt request declares the block it binds.
+// `prepareCustomExecution` has checked `boundBlockNum` against the signed summary.
 const boundBlockNum = proposal.metadata.boundBlockNum;
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
@@ -614,21 +618,30 @@ integration asks for one through `approvalExpirationDelta`, which the
 The integration keeps its own recipe (build inputs + salt) and reads the bound
 block from `proposal.metadata.boundBlockNum`, so it can reproduce the exact
 transaction at execute time - the SDK does not store the serialized request.
+Verification and `prepareCustomExecution` refuse a custom proposal whose
+`boundBlockNum` disagrees with its signed summary, as for every other type. A
+proposal a 0.18.0 client made has none; `summaryBoundBlockNum` reads its block
+from the summary.
 The binding check guarantees the rebuilt transaction matches the commitment the
 cosigners signed. The request may bind any block up to the client's sync
 height: `createCustomProposal` syncs up to that block when the client is behind
 it and derives the summary at the chain tip.
 
 The summary binds the salt itself, so the value the cosigners signed over is
-readable back out of it:
+readable back out of it, as is the block it binds:
 
 ```typescript
-import { summarySalt, summaryApprovalExpirationBlockNum } from '@openzeppelin/miden-multisig-client';
+import {
+  summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
+  summarySalt,
+} from '@openzeppelin/miden-multisig-client';
 import { TransactionSummary } from '@miden-sdk/miden-sdk';
 
 const summary = TransactionSummary.deserialize(bytes);
 const salt = summarySalt(summary);
 const expiresAt = summaryApprovalExpirationBlockNum(summary); // undefined: never
+const boundBlockNum = summaryBoundBlockNum(summary);
 ```
 
 The SDK's own verification path compares `summarySalt(summary)` with the

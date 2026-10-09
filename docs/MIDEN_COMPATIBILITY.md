@@ -225,18 +225,15 @@ breaking SDK change and needs no server change.
   Creation now syncs up to the bound block when it is behind and derives the
   summary at the tip.
 - **Proposals carry `bound_block_num`**, the block the signed summary binds, as
-  an unsigned `u32` metadata field. A wrong value can deny a proposal but never
-  get a wrong one accepted: the summary commitment covers the bound block, and
-  the kernel authenticates that block under the tip, so no rebuild at another
-  block reproduces it. A `switch_guardian` proposal is not rebuilt at
-  verification, so a wrong value there is caught at execution, after signatures
-  were collected.
+  an unsigned `u32` metadata field. Both SDKs read the block from the summary
+  and refuse a proposal whose `bound_block_num` disagrees, whatever its type,
+  before it is signed or executed, so a wrong value can deny a proposal but
+  never get a wrong one accepted.
 - **0.18.0 clients cannot sign or execute new proposals.** They refuse a
   proposal without a `chain_anchor`. Upgrade every party that signs or executes
   an account's proposals together.
-- **New clients accept proposals 0.18.0 clients made.** The TypeScript SDK reads
-  the legacy `chain_anchor`'s block number when `bound_block_num` is absent; the
-  Rust SDK reads the block from the signed summary.
+- **New clients accept proposals 0.18.0 clients made.** Both SDKs read their
+  block from the signed summary; neither reads the legacy `chain_anchor`.
 - **Servers need no redeploy.** The server stores proposal metadata as sent, so
   `bound_block_num` passes through like any other client field.
 - **Removed APIs.** TypeScript: `executeForSummary` (use
@@ -247,7 +244,10 @@ breaking SDK change and needs no server change.
   `ProposalPayload::with_chain_anchor`, and `MultisigError::SummaryAnchorMismatch`.
   New: `bound_block_num` / `boundBlockNum` on the metadata types, which
   `ProposalPayload::new` fills from the summary it is given, and
-  `MultisigError::BoundBlockMismatch`.
+  `MultisigError::BoundBlockMismatch`. TypeScript: `summaryBoundBlockNum`,
+  `BoundBlockMismatchError` and `TransactionSummaryLayoutError`, with the
+  `AuthArgErrorCode` values `bound_block_mismatch` and
+  `transaction_summary_layout_unsupported`.
 
 ### Open upstream items
 

@@ -33,8 +33,8 @@ pub enum MultisigError {
     MidenClient(String),
 
     /// A proposal's `bound_block_num` names a block other than the one its
-    /// signed summary binds. TypeScript cosigners rebuild at that number, so a
-    /// wrong one would fail there without saying why.
+    /// signed summary binds. TypeScript custom producers rebuild at that
+    /// number, so both SDKs refuse a wrong one by name.
     #[error(
         "proposal {proposal_id} declares bound_block_num {declared}, but its signed \
          transaction summary binds block {bound}"

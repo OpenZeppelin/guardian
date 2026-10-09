@@ -377,18 +377,16 @@ proposal stays verifiable and executable however long it waits for signatures
 a retryable error.
 
 Proposals record the bound block in their metadata as `bound_block_num`
-(`boundBlockNum` in TypeScript). It is not signed and needs no check of its own:
-the summary commitment covers the bound block's number and commitment, and the
-transaction kernel authenticates that block under the tip, so a rebuild at any
-other block cannot reproduce the signed summary (a `switch_guardian` proposal,
-which is not rebuilt at verification, fails at execution instead). The
-TypeScript SDK rebuilds at it, because the JavaScript `TransactionSummary` does not expose the block
-number; the Rust SDK reads the number from the summary and refuses a proposal
-whose `bound_block_num` disagrees. Proposals made by 0.18.0 clients carry a
-`chain_anchor` instead, whose block number the TypeScript SDK reads when
-`bound_block_num` is absent. Proposal creation syncs up to the bound block when
-the client is behind it and derives the summary at the tip, so a request may
-bind any block up to the client's sync height.
+(`boundBlockNum` in TypeScript). It is not signed, so both SDKs read the block
+from the signed summary, when they create a proposal and when they verify one,
+and refuse a proposal whose `bound_block_num` disagrees, whatever its type,
+before it is signed or executed. The TypeScript SDK reads it from the
+serialized summary (`summaryBoundBlockNum`), because the JavaScript
+`TransactionSummary` exposes no block number. Proposals made by 0.18.0 clients
+carry a `chain_anchor` instead and no `bound_block_num`; both SDKs take their
+block from the summary and never read the anchor. Proposal creation syncs up to
+the bound block when the client is behind it and derives the summary at the
+tip, so a request may bind any block up to the client's sync height.
 
 #### Authenticated note consumption
 

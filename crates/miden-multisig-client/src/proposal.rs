@@ -1048,8 +1048,8 @@ mod tests {
     }
 
     /// A created proposal records the block its own summary binds, whatever
-    /// its creator wrote, and an export carries that value to the TypeScript
-    /// cosigners that rebuild at it.
+    /// its creator wrote, so an export carries the value TypeScript cosigners
+    /// check against the summary.
     #[test]
     fn new_proposal_records_the_block_its_summary_binds() {
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();

@@ -265,8 +265,8 @@ impl MultisigClient {
         // The bound block needs no check of its own: the summary commitment
         // covers its number and commitment, and the kernel authenticates that
         // block under the tip, so only a rebuild at it reproduces the signed
-        // summary. `bound_block_num` is unsigned and TypeScript cosigners
-        // rebuild with it, so one that disagrees is refused by name.
+        // summary. `bound_block_num` is unsigned and TypeScript custom
+        // producers rebuild with it, so both SDKs refuse one that disagrees.
         let bound_block = proposal.tx_summary.block_number();
         if let Some(declared) = proposal.metadata.bound_block_num
             && declared != bound_block.as_u32()

@@ -79,9 +79,10 @@ pub struct ProposalMetadataPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_procedure: Option<String>,
 
-    /// The block the proposal's transaction summary binds. Not signed: the
-    /// TypeScript SDK rebuilds the proposal's request at it. A wrong value can
-    /// deny a proposal, never get a wrong one accepted. Omitted when unset.
+    /// The block the proposal's transaction summary binds. Not signed: both
+    /// SDKs read the block from the summary and refuse a value that disagrees,
+    /// so a wrong one can deny a proposal, never get it accepted. Omitted when
+    /// unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_block_num: Option<u32>,
 }

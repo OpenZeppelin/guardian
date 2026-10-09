@@ -1338,8 +1338,8 @@ async fn list_served(
 }
 
 /// A `bound_block_num` that disagrees with the block the signed summary binds
-/// is refused by name. TypeScript cosigners rebuild at that number, so a wrong
-/// one must not pass the Rust check silently.
+/// is refused by name, as the TypeScript SDK refuses it. TypeScript custom
+/// producers rebuild at that number, so a wrong one must not pass silently.
 #[tokio::test]
 async fn proposal_whose_bound_block_num_disagrees_with_its_summary_is_refused() {
     use crate::procedures::ProcedureName;
@@ -1529,10 +1529,9 @@ async fn client_on_mock_guardian(
 }
 
 /// Every built-in proposal records the block its summary binds as
-/// `bound_block_num`, so a TypeScript cosigner can rebuild it. Rust readers
-/// accept a missing value, so only this test pins the seven Rust writers. The
-/// mock's canned push response carries no matching commitment, so creation
-/// fails after the push under test.
+/// `bound_block_num`. Rust readers accept a missing value, so only this test
+/// pins the seven Rust writers. The mock's canned push response carries no
+/// matching commitment, so creation fails after the push under test.
 #[tokio::test]
 async fn built_in_proposals_write_the_bound_block_num() {
     use guardian_shared::FromJson;

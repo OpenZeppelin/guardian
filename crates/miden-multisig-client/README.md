@@ -284,7 +284,7 @@ any later tip. An execution runs at the Miden client's sync height, so
 offline paths sync the client first. Foreign accounts, the fee faucet among
 them, load at the tip, so a proposal stays verifiable however long it waits
 for signatures, even after the node has pruned the bound block's account
-state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`, which TypeScript cosigners rebuild with; this SDK reads it from the signed summary and refuses a proposal whose `bound_block_num` disagrees.
+state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`; this SDK and the TypeScript one read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees.
 
 ### Recovering From a Dead Transaction (Abandon)
 
