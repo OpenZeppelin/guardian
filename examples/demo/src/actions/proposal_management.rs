@@ -13,7 +13,6 @@ use miden_multisig_client::{
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
-use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteType;
 use rustyline::DefaultEditor;
 
@@ -1082,11 +1081,7 @@ async fn action_create_custom_proposal(
         .await
         .map_err(|e| format!("propose_custom_transaction failed: {}", e))?;
     let proposal_id = proposal.id.clone();
-    let bound_block_num = proposal
-        .metadata
-        .bound_block_num
-        .map(BlockNumber::from)
-        .ok_or_else(|| "proposal carries no bound_block_num".to_string())?;
+    let bound_block_num = proposal.tx_summary.block_number();
 
     // The integration owns its recipe (build inputs + salt + bound block), not the
     // serialized transaction; [8] rebuilds the request deterministically from these.

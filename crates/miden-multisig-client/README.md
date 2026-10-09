@@ -391,7 +391,6 @@ use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, generate_salt, P2ideHeights,
 };
-use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteType;
 
 // Producer: build a transaction and propose it under a custom label. The account's
@@ -413,7 +412,7 @@ let mut request = build_p2id_transaction_request(
     std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
-let bound_block_num = proposal.metadata.bound_block_num.map(BlockNumber::from).expect("every proposal this SDK creates records its bound block");
+let bound_block_num = proposal.tx_summary.block_number();
 
 // Cosigners review and sign through the usual list/sign flow.
 

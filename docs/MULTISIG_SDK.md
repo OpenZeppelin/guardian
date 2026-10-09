@@ -480,7 +480,7 @@ Rust and TypeScript**:
   `propose_custom_transaction` / `createCustomProposal` sync up to the block the
   request binds when the client is behind it and derive the summary at the tip.
   It must retain the original salt and rebuild at the block the proposal binds
-  (`proposal.metadata.bound_block_num` / `proposal.metadata.boundBlockNum`, or
+  (`proposal.tx_summary.block_number()` / `proposal.metadata.boundBlockNum`, or
   `requestBoundBlockNum(request)` on the request it built) with the expiration
   the summary binds;
   `summarySalt(summary)` / `summary_salt(&summary)` read the salt the cosigners
