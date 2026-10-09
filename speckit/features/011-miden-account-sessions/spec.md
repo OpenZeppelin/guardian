@@ -314,12 +314,13 @@ confirm the SDK raises a dedicated error.
   - apply the route allow-list: outside FR-008, `wallet_signature_required`
     (FR-009). An ended session on a wallet-only route therefore gets its
     FR-016 code, and the SDK drops it;
-  - re-check that the grant's ACK-key commitment and network still match this
-    Guardian for the account's scheme, so key rotation ends sessions;
-  - require the grant's signer commitment to be a current cosigner of the
-    account, failing with `authorization_failed` (HTTP 403, gRPC
-    `PERMISSION_DENIED`) otherwise: the session stays valid for the signer's
-    other accounts;
+  - re-check that the grant names one of this Guardian's current ACK-key
+    commitments and its network, so key rotation ends sessions
+    (`authentication_failed`);
+  - require the grant to name the ACK key of the account's scheme and its
+    signer commitment to be a current cosigner of the account, failing with
+    `authorization_failed` (HTTP 403, gRPC `PERMISSION_DENIED`) otherwise:
+    the session stays valid for the signer's other accounts;
   - apply the replay CAS keyed by **(account, delegated key)**. Wallet
     requests keep their CAS keyed by (account, signer commitment). A session
     therefore cannot advance the wallet's floor: a stolen session that stamps
@@ -376,7 +377,8 @@ confirm the SDK raises a dedicated error.
   the delegated signer over a domain-separated logout message with a
   timestamp in the skew window (Unix **milliseconds**, the request's
   `x-timestamp`), MUST revoke that session. It is idempotent,
-  but only after the delegated signature verifies.
+  but only after the delegated signature verifies. Logging out an expired
+  session leaves it expired, so it keeps reporting `session_expired`.
 - **FR-013 — Revoke all**: `POST /session/revoke-all` (gRPC
   `RevokeAllSessions`), signed by the wallet over a domain-separated,
   account-less message carrying the signer commitment and a timestamp T in the
@@ -424,9 +426,12 @@ confirm the SDK raises a dedicated error.
   session only while the wallet that granted it is the client's signer, and
   clears local session state only after logout or revoke-all succeed. When a
   grant expires the SDK MUST discard the key. The TypeScript SDK keeps the
-  key non-extractable and MAY persist it in IndexedDB. The Rust SDK uses the
-  same `x-auth-format: session` path with an in-memory key and an empty
-  `origin`.
+  key non-extractable and MAY persist it in IndexedDB. The Rust SDKs (the
+  low-level client and the multisig SDK) use the same `x-auth-format:
+  session` path with an in-memory key and an empty `origin`; they sign with
+  in-process keys, so they have no confirmation step, and they report a
+  dropped session through `session()` returning nothing rather than a
+  callback.
 - **FR-018 — Observability**: Guardian MUST log grant registration, rejection
   reason category, logout and revoke-all with the signer commitment, and MUST
   NOT log signatures or session public keys in full.
@@ -447,9 +452,9 @@ confirm the SDK raises a dedicated error.
 - New stable error codes `wallet_signature_required`, `session_expired` and
   `session_revoked`, added to the TypeScript error-code list.
 - `GET /status` gains a sessions block.
-- Rust client and TypeScript clients (`guardian-client`,
-  `miden-multisig-client`) gain `SessionSigner`; at least one example
-  exercises the flow end to end.
+- The Rust client, the Rust multisig SDK and the TypeScript clients
+  (`guardian-client`, `miden-multisig-client`) gain session support;
+  `examples/smoke-web` and `examples/demo` expose start, end and revoke-all.
 
 ### Data / Lifecycle Impact
 
@@ -634,6 +639,12 @@ confirm the SDK raises a dedicated error.
 
 - Q: Revoke-all and grants signed but not yet registered, or a revoking device whose clock runs behind? → A: Accepted v1 limits, documented in Edge Cases; the SDK guide advises running revoke-all again 10 minutes later. A stored per-signer revoke mark would close both at the cost of a cool-down on new sessions; not in v1.
 - Q: Re-submitting a live grant after its `issued_at` left the skew window? → A: Fails the FR-005 `issued_at` check; re-submission is the retry after a lost response (FR-006).
+
+### Session 2026-10-09 (review of the implementation PR)
+
+- Q: A session used on an account of the other signature scheme? → A: `authorization_failed`: the grant still names this Guardian, so the session stays valid; a rotated key or another network stays `authentication_failed` (FR-007).
+- Q: Rust multisig SDK? → A: In v1: `start_session`, `end_session`, `revoke_all_sessions` and `session()`, shared by every operation of the client; the Rust SDKs report a dropped session through `session()` (FR-017).
+- Q: Logout of an expired session not yet swept? → A: Leaves it expired (FR-012).
 
 ### Open for review
 
