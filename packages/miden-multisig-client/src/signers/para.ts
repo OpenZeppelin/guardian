@@ -1,9 +1,10 @@
-import type { RequestAuthPayload } from '@openzeppelin/guardian-client';
+import type { RequestAuthPayload, SessionGrantFields } from '@openzeppelin/guardian-client';
 import type { Signer, SignatureScheme } from '../types.js';
 import { AuthDigest } from '../utils/digest.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
 import { hexToBytes, uint8ArrayToBase64 } from '../utils/encoding.js';
 import { lookupAuthDigest } from '../lookupAuth.js';
+import { sessionGrantDigest, sessionRevokeAllDigest } from '../session/grant.js';
 import { wordToBytes } from '../utils/word.js';
 
 export interface ParaSigningContext {
@@ -67,6 +68,16 @@ export class ParaSigner implements Signer {
   async signLookupMessage(keyCommitmentHex: string, timestampMs: number): Promise<string> {
     const digest = lookupAuthDigest(timestampMs, keyCommitmentHex);
     return this.signWord(digest);
+  }
+
+  /** Sign a session grant as its raw RPO digest. */
+  async signSessionGrant(grant: SessionGrantFields): Promise<string> {
+    return this.signWord(sessionGrantDigest(grant));
+  }
+
+  /** Sign a session revoke-all as its raw RPO digest. */
+  async signSessionRevokeAll(signerCommitment: string, timestampMs: number): Promise<string> {
+    return this.signWord(sessionRevokeAllDigest(signerCommitment, timestampMs));
   }
 
   private async signWord(word: { toHex: () => string; toFelts: () => Array<{ asInt: () => bigint }> }): Promise<string> {

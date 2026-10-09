@@ -235,8 +235,9 @@ pub trait MetadataStore: Send + Sync {
     /// than the stored value (a missing record accepts any timestamp and creates
     /// one). Returns `Ok(true)` when recorded, `Ok(false)` when not greater — the
     /// replay signal, which must never surface as `Err`; `Err` is reserved for
-    /// storage failure. Replay state is owned exclusively by this method: no other
-    /// store operation may read or write it, and it must not affect `updated_at`.
+    /// storage failure. Replay state is owned by this method and
+    /// [`Self::purge_session_floors`]: no other store operation may read or
+    /// write it, and it must not affect `updated_at`.
     ///
     /// Scope is per `(account_id, signer_commitment)` (issue #367): independent
     /// authorized cosigners never contend on one timestamp, while a replay of a
@@ -250,6 +251,12 @@ pub trait MetadataStore: Send + Sync {
         signer_commitment: &str,
         new_timestamp: i64,
     ) -> Result<bool, String>;
+
+    /// Delete delegated-signer replay floors (issue #219) last advanced
+    /// before `before_ms`. Every session key gets its own floor per account
+    /// it touches, and an ended session can no longer authenticate, so its
+    /// floors can go. Returns how many were deleted.
+    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String>;
 
     /// Find every account whose Miden cosigner-commitment authorization set
     /// contains the given commitment. Used by the `/state/lookup` endpoint.

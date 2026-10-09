@@ -1555,6 +1555,10 @@ impl MetadataStore for MockMetadataStore {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
+    async fn purge_session_floors(&self, _before_ms: i64) -> StdResult<u64, String> {
+        Ok(0)
+    }
+
     async fn update_last_auth_timestamp_cas(
         &self,
         account_id: &str,

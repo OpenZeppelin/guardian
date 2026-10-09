@@ -3635,9 +3635,11 @@ version = "0.18.0"
 dependencies = [
  "async-trait",
  "base64",
+ "chrono",
  "hex",
  "miden-protocol",
  "miden-standards",
+ "p256",
  "prost",
  "rand 0.10.2",
  "rstest",
@@ -4396,7 +4398,7 @@ dependencies = [
  "cpubits",
  "ecdsa 0.17.0",
  "elliptic-curve 0.14.1",
- "primeorder",
+ "primeorder 0.14.0",
  "sha2 0.11.0",
  "wnaf",
 ]
@@ -6033,6 +6035,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
 
 [[package]]
+name = "p256"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
+dependencies = [
+ "ecdsa 0.16.9",
+ "elliptic-curve 0.13.8",
+ "primeorder 0.13.6",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "p3-air"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6565,6 +6579,15 @@ dependencies = [
  "rand_core 0.10.1",
  "subtle",
  "zeroize",
+]
+
+[[package]]
+name = "primeorder"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
+dependencies = [
+ "elliptic-curve 0.13.8",
 ]
 
 [[package]]

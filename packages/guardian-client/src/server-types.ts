@@ -183,6 +183,42 @@ export interface ServerStatusResponse {
   environment: string;
   started_at: string;
   uptime_seconds: number;
+  sessions?: {
+    max_ttl_seconds: number;
+  };
+}
+
+export interface ServerCreateSessionRequest {
+  scheme: string;
+  auth_format?: string;
+  public_key?: string;
+  signature: string;
+  grant: {
+    signer_commitment: string;
+    session_public_key: string;
+    origin: string;
+    issued_at: number;
+    expires_at: number;
+    guardian_commitment: string;
+    network: string;
+  };
+}
+
+export interface ServerCreateSessionResponse {
+  signer_commitment: string;
+  expires_at: string;
+}
+
+export interface ServerRevokeSessionResponse {
+  revoked: boolean;
+}
+
+export interface ServerRevokeAllSessionsRequest {
+  signer_commitment: string;
+}
+
+export interface ServerRevokeAllSessionsResponse {
+  revoked: number;
 }
 
 export interface ServerLookupAccount {

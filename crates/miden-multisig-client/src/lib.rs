@@ -117,6 +117,7 @@ pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSig
 
 // Errors
 pub use error::{MultisigError, Result};
+pub use guardian_client::{MAX_SESSION_TTL, MIN_SESSION_TTL, SessionInfo, StartSessionOptions};
 
 // Re-exports for convenience
 pub use guardian_shared::SignatureScheme;

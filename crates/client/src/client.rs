@@ -10,19 +10,21 @@ use crate::proto::{
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
     GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
-    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, SignDeltaProposalRequest,
-    SignDeltaProposalResponse,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest,
+    RevokeSessionRequest, SessionGrantFields, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
-use guardian_shared::hex::FromHex;
+use guardian_shared::hex::{FromHex, IntoHex};
 use guardian_shared::lookup_auth_message::LookupAuthMessage;
+use guardian_shared::session_grant::{SessionGrant, SessionLogoutMessage, SessionRevokeAllMessage};
+use guardian_shared::session_key::SessionKey;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tonic::metadata::MetadataValue;
 use tonic::transport::Channel;
@@ -47,7 +49,88 @@ pub struct GuardianClient {
     client: GuardianGrpcClient<Channel>,
     auth: Option<Auth>,
     signer: Option<Arc<dyn Signer>>,
+    session: SessionSlot,
     last_timestamp: AtomicI64,
+}
+
+/// Parameters of a session grant the wallet signs.
+#[derive(Debug, Clone)]
+pub struct StartSessionOptions {
+    /// The Guardian's Miden network label: `local`, `devnet` or `testnet`.
+    pub network: String,
+    /// Session lifetime: more than [`MIN_SESSION_TTL`] and at most the
+    /// Guardian's configured maximum (8 hours by default).
+    pub ttl: Duration,
+}
+
+/// Shortest lifetime Guardian accepts: longer than its 5-minute request
+/// clock-skew window.
+pub const MIN_SESSION_TTL: Duration = Duration::from_secs(300);
+/// Longest lifetime any Guardian accepts.
+pub const MAX_SESSION_TTL: Duration = Duration::from_secs(8 * 60 * 60);
+
+/// A registered session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    pub signer_commitment: String,
+    pub session_public_key: String,
+    /// Unix seconds.
+    pub expires_at: u64,
+}
+
+struct ActiveSession {
+    key: SessionKey,
+    info: SessionInfo,
+}
+
+/// Holds a client's session. Clones share it: clients created per operation
+/// with [`GuardianClient::with_session_slot`] use one session, and a session
+/// that one of them starts, ends or drops is gone for all of them.
+#[derive(Clone, Default)]
+pub struct SessionSlot(Arc<Mutex<Option<ActiveSession>>>);
+
+impl SessionSlot {
+    /// The session, if one is registered and not about to expire.
+    pub fn info(&self) -> Option<SessionInfo> {
+        let now = Utc::now().timestamp().max(0) as u64;
+        self.lock()
+            .as_ref()
+            .filter(|session| now + SESSION_EXPIRY_MARGIN_SECS < session.info.expires_at)
+            .map(|session| session.info.clone())
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Option<ActiveSession>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Forgets the session if `ended` says so.
+    fn clear_if(&self, ended: impl FnOnce(&ActiveSession) -> bool) {
+        let mut session = self.lock();
+        if session.as_ref().is_some_and(ended) {
+            *session = None;
+        }
+    }
+
+    /// Forgets the session if it is still the one with `session_public_key`,
+    /// so a newer session started meanwhile stays in use.
+    fn clear_key(&self, session_public_key: &str) {
+        self.clear_if(|session| session.info.session_public_key == session_public_key);
+    }
+}
+
+/// Sessions are dropped this many seconds before expiry so an in-flight
+/// request never arrives at the server already expired.
+const SESSION_EXPIRY_MARGIN_SECS: u64 = 30;
+
+/// Which key signs a per-account request. Mirrors the server: requests are
+/// wallet-signed unless the route is session-eligible.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AuthMode {
+    /// The delegated signer when a session is active, the wallet otherwise:
+    /// reads, proposal list/get and proposal create/sign (issue #219).
+    Session,
+    /// Always the wallet.
+    Wallet,
 }
 
 impl GuardianClient {
@@ -62,6 +145,7 @@ impl GuardianClient {
             client,
             auth: None,
             signer: None,
+            session: SessionSlot::default(),
             last_timestamp: AtomicI64::new(0),
         })
     }
@@ -102,13 +186,33 @@ impl GuardianClient {
         self.auth_pubkey_hex()
     }
 
+    /// Signs `request` and returns the session public key when the delegated
+    /// signer signed it.
     fn add_auth_metadata(
         &self,
         request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
-    ) -> ClientResult<()> {
+        mode: AuthMode,
+    ) -> ClientResult<Option<String>> {
         let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
         let timestamp = self.next_timestamp();
+
+        if mode == AuthMode::Session {
+            let digest =
+                AuthRequestMessage::new(*account_id, timestamp, request_payload.clone()).to_word();
+            if let Some((session_public_key, signature_hex)) = self.with_active_session(|session| {
+                (
+                    session.info.session_public_key.clone(),
+                    session.key.sign_hex(digest),
+                )
+            }) {
+                attach_auth_headers(request, &session_public_key, &signature_hex, timestamp)?;
+                request
+                    .metadata_mut()
+                    .insert("x-auth-format", MetadataValue::from_static("session"));
+                return Ok(Some(session_public_key));
+            }
+        }
 
         let (pubkey_hex, signature_hex) = if let Some(auth) = &self.auth {
             let pubkey_hex = auth.public_key_hex();
@@ -120,10 +224,11 @@ impl GuardianClient {
             let signature_hex = signer.sign_word_hex(digest);
             (pubkey_hex, signature_hex)
         } else {
-            return Ok(());
+            return Ok(None);
         };
 
-        attach_auth_headers(request, &pubkey_hex, &signature_hex, timestamp)
+        attach_auth_headers(request, &pubkey_hex, &signature_hex, timestamp)?;
+        Ok(None)
     }
 
     /// Attach lookup-bound auth metadata to a `GetAccountByKeyCommitment`
@@ -160,11 +265,53 @@ impl GuardianClient {
     /// times. Every attempt rebuilds the request from the identical message
     /// with a fresh monotonic timestamp, recomputed digest, and fresh
     /// signature. Terminal failures (invalid signature, unauthorized signer,
-    /// clock outside the skew window) propagate immediately.
+    /// clock outside the skew window) propagate immediately. Signed by the
+    /// wallet; session-eligible routes use [`Self::send_allowing_session`].
     async fn send_with_replay_retry<Req, Resp, F>(
         &mut self,
         account_id: &AccountId,
         message: Req,
+        send: F,
+    ) -> ClientResult<Resp>
+    where
+        Req: prost::Message + Clone + std::fmt::Debug,
+        F: AsyncFnMut(
+            &mut GuardianGrpcClient<Channel>,
+            tonic::Request<Req>,
+        ) -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        self.send_with_replay_retry_as(account_id, message, AuthMode::Wallet, send)
+            .await
+    }
+
+    /// [`Self::send_with_replay_retry`] for a session-eligible route: signed
+    /// by the delegated signer while a session is active.
+    async fn send_allowing_session<Req, Resp, F>(
+        &mut self,
+        account_id: &AccountId,
+        message: Req,
+        send: F,
+    ) -> ClientResult<Resp>
+    where
+        Req: prost::Message + Clone + std::fmt::Debug,
+        F: AsyncFnMut(
+            &mut GuardianGrpcClient<Channel>,
+            tonic::Request<Req>,
+        ) -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        self.send_with_replay_retry_as(account_id, message, AuthMode::Session, send)
+            .await
+    }
+
+    /// Sends with `mode`, retrying `authentication_replay`. A session Guardian
+    /// ended or no longer accepts (unknown key after a restart, rotated
+    /// Guardian key or network) is dead for good, so it is dropped and the
+    /// wallet signs from then on; the caller can start a new one.
+    async fn send_with_replay_retry_as<Req, Resp, F>(
+        &mut self,
+        account_id: &AccountId,
+        message: Req,
+        mode: AuthMode,
         mut send: F,
     ) -> ClientResult<Resp>
     where
@@ -174,14 +321,20 @@ impl GuardianClient {
             tonic::Request<Req>,
         ) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
+        self.discard_expired_session();
         let mut retries_left = REPLAY_RETRY_LIMIT;
         loop {
             let mut request = tonic::Request::new(message.clone());
-            self.add_auth_metadata(&mut request, account_id)?;
+            let session_key = self.add_auth_metadata(&mut request, account_id, mode)?;
             match send(&mut self.client, request).await {
                 Ok(response) => return Ok(response.into_inner()),
                 Err(status) => {
                     let error = ClientError::from(status);
+                    if let Some(session_public_key) = &session_key
+                        && error.is_rejected_session()
+                    {
+                        self.session.clear_key(session_public_key);
+                    }
                     if retries_left == 0 || !error.is_replay_rejection() {
                         return Err(error);
                     }
@@ -190,6 +343,195 @@ impl GuardianClient {
                 }
             }
         }
+    }
+
+    /// Generates a delegated signer, has the configured wallet sign its grant,
+    /// and registers it. Afterwards per-account reads and proposal requests
+    /// are signed by the session key; `configure`, `push_delta`,
+    /// `abandon_candidate`, account lookup and `revoke_all_sessions` keep
+    /// using the wallet. A session already active is replaced, not revoked.
+    /// The lifetime counts in whole seconds, and the grant names no website:
+    /// a native client is not a browser page.
+    pub async fn start_session(
+        &mut self,
+        options: StartSessionOptions,
+    ) -> ClientResult<SessionInfo> {
+        let ttl_secs = options.ttl.as_secs();
+        if ttl_secs <= MIN_SESSION_TTL.as_secs() || ttl_secs > MAX_SESSION_TTL.as_secs() {
+            return Err(ClientError::InvalidResponse(format!(
+                "Session lifetime must be more than {}s and at most {}s",
+                MIN_SESSION_TTL.as_secs(),
+                MAX_SESSION_TTL.as_secs()
+            )));
+        }
+        let scheme = self.wallet()?.scheme();
+        let guardian_commitment = self.get_pubkey(Some(scheme.as_str())).await?.0;
+
+        let issued_at = Utc::now().timestamp().max(0) as u64;
+        let expires_at = issued_at + ttl_secs;
+        let key = SessionKey::generate();
+        let wallet = self.wallet()?;
+        let commitment = wallet.commitment();
+        let grant = SessionGrant::new(
+            commitment,
+            &key.public_key(),
+            "",
+            issued_at,
+            expires_at,
+            Word::from_hex(&guardian_commitment).map_err(|e| {
+                ClientError::InvalidResponse(format!("Invalid Guardian commitment: {e}"))
+            })?,
+            options.network.as_str(),
+        )
+        .map_err(ClientError::InvalidResponse)?;
+        let request = crate::proto::CreateSessionRequest {
+            scheme: scheme.as_str().to_string(),
+            auth_format: None,
+            public_key: matches!(scheme, guardian_shared::SignatureScheme::Ecdsa)
+                .then(|| wallet.public_key_hex()),
+            signature: wallet.sign_word_hex(grant.to_word()),
+            grant: Some(SessionGrantFields {
+                signer_commitment: commitment.into_hex(),
+                session_public_key: key.public_key_hex(),
+                issued_at,
+                expires_at,
+                guardian_commitment,
+                network: options.network,
+                origin: String::new(),
+            }),
+        };
+        let response = self
+            .client
+            .create_session(tonic::Request::new(request))
+            .await?
+            .into_inner();
+
+        let info = SessionInfo {
+            signer_commitment: response.signer_commitment,
+            session_public_key: key.public_key_hex(),
+            expires_at,
+        };
+        *self.session.lock() = Some(ActiveSession {
+            key,
+            info: info.clone(),
+        });
+        Ok(info)
+    }
+
+    /// The active session, if one is registered and not about to expire.
+    pub fn session(&self) -> Option<SessionInfo> {
+        self.with_active_session(|session| session.info.clone())
+    }
+
+    /// Shares `slot` as this client's session, so clients created for each
+    /// operation use one session (see [`SessionSlot`]).
+    pub fn with_session_slot(mut self, slot: SessionSlot) -> Self {
+        self.session = slot;
+        self
+    }
+
+    /// The session holder, to share with other clients.
+    pub fn session_slot(&self) -> SessionSlot {
+        self.session.clone()
+    }
+
+    /// Revokes the active session on the server and stops using it. Returns
+    /// whether the server still had it active. On error the session stays in
+    /// use, so the call can be retried.
+    pub async fn revoke_session(&mut self) -> ClientResult<bool> {
+        let timestamp = self.next_timestamp();
+        let Some((session_public_key, signature_hex)) =
+            self.session.lock().as_ref().map(|session| {
+                let digest =
+                    SessionLogoutMessage::new(&session.key.public_key(), timestamp).to_word();
+                (
+                    session.info.session_public_key.clone(),
+                    session.key.sign_hex(digest),
+                )
+            })
+        else {
+            return Ok(false);
+        };
+        let mut request = tonic::Request::new(RevokeSessionRequest {});
+        attach_auth_headers(&mut request, &session_public_key, &signature_hex, timestamp)?;
+        let revoked = self
+            .client
+            .revoke_session(request)
+            .await?
+            .into_inner()
+            .revoked;
+        self.session.clear_key(&session_public_key);
+        Ok(revoked)
+    }
+
+    /// Revokes every session of the configured wallet on this Guardian,
+    /// including sessions started elsewhere, and stops using the active one
+    /// if that wallet granted it. Signed by the wallet. Returns how many
+    /// sessions the server revoked.
+    pub async fn revoke_all_sessions(&mut self) -> ClientResult<u64> {
+        let timestamp = self.next_timestamp();
+        let (commitment, pubkey_hex, signature_hex) = {
+            let wallet = self.wallet()?;
+            let commitment = wallet.commitment();
+            let digest = SessionRevokeAllMessage::new(commitment, timestamp).to_word();
+            (
+                commitment,
+                wallet.public_key_hex(),
+                wallet.sign_word_hex(digest),
+            )
+        };
+        let mut request = tonic::Request::new(RevokeAllSessionsRequest {
+            signer_commitment: commitment.into_hex(),
+        });
+        attach_auth_headers(&mut request, &pubkey_hex, &signature_hex, timestamp)?;
+        let revoked = self
+            .client
+            .revoke_all_sessions(request)
+            .await?
+            .into_inner()
+            .revoked;
+        let commitment = commitment.into_hex();
+        self.session.clear_if(|session| {
+            session
+                .info
+                .signer_commitment
+                .eq_ignore_ascii_case(&commitment)
+        });
+        Ok(revoked)
+    }
+
+    /// Forgets the session key once its grant is about to expire.
+    fn discard_expired_session(&mut self) {
+        let now = Utc::now().timestamp().max(0) as u64;
+        self.session
+            .clear_if(|session| now + SESSION_EXPIRY_MARGIN_SECS >= session.info.expires_at);
+    }
+
+    /// Runs `f` on the active session: registered, not about to expire, and
+    /// granted by the wallet currently configured (a session never signs for
+    /// another).
+    fn with_active_session<T>(&self, f: impl FnOnce(&ActiveSession) -> T) -> Option<T> {
+        let now = Utc::now().timestamp().max(0) as u64;
+        let wallet = self.wallet().ok()?.commitment_hex();
+        self.session
+            .lock()
+            .as_ref()
+            .filter(|session| {
+                now + SESSION_EXPIRY_MARGIN_SECS < session.info.expires_at
+                    && session.info.signer_commitment.eq_ignore_ascii_case(&wallet)
+            })
+            .map(f)
+    }
+
+    /// The wallet: the configured auth, else the configured signer.
+    fn wallet(&self) -> ClientResult<&dyn Signer> {
+        self.auth
+            .as_ref()
+            .map(|auth| auth as &dyn Signer)
+            .or(self.signer.as_deref())
+            .ok_or_else(|| {
+                ClientError::InvalidResponse("GUARDIAN client has no signer configured".to_string())
+            })
     }
 
     /// Configure a new account
@@ -266,7 +608,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_delta(request).await
             })
             .await?;
@@ -290,7 +632,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_delta_since(request).await
             })
             .await?;
@@ -323,7 +665,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_delta_history(request).await
             })
             .await?;
@@ -342,7 +684,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_state(request).await
             })
             .await?;
@@ -370,7 +712,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_canonical_nonce(request).await
             })
             .await?;
@@ -441,7 +783,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.push_delta_proposal(request).await
             })
             .await?;
@@ -463,7 +805,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_delta_proposals(request).await
             })
             .await?;
@@ -487,7 +829,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_delta_proposal(request).await
             })
             .await?;
@@ -515,7 +857,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.sign_delta_proposal(request).await
             })
             .await?;

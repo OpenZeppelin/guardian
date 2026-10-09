@@ -6,10 +6,12 @@ use crate::{
     AccountRef, AccountState, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
     GetAccountByKeyCommitmentResponse, GetCanonicalNonceResponse, GetDeltaHistoryResponse,
     GetDeltaProposalResponse, GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse,
-    GetStateResponse, GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset,
-    PushDeltaProposalResponse, PushDeltaResponse, SignDeltaProposalResponse, Signer,
+    GetStateResponse, GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset, MAX_SESSION_TTL,
+    MIN_SESSION_TTL, MidenFalconRpoAuth, PushDeltaProposalResponse, PushDeltaResponse,
+    SignDeltaProposalResponse, Signer, StartSessionOptions,
 };
 use guardian_shared::ProposalSignature as JsonProposalSignature;
+use guardian_shared::hex::FromHex;
 use miden_protocol::account::AccountId;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use std::sync::Arc;
@@ -895,4 +897,309 @@ async fn test_lookup_account_by_key_commitment_rejects_invalid_commitment_hex() 
         }
         other => panic!("expected InvalidResponse, got {other:?}"),
     }
+}
+
+const TEST_GUARDIAN_COMMITMENT: &str =
+    "0x0500000000000000060000000000000007000000000000000800000000000000";
+
+fn session_options() -> StartSessionOptions {
+    StartSessionOptions {
+        network: "devnet".to_string(),
+        ttl: std::time::Duration::from_secs(3600),
+    }
+}
+
+#[tokio::test]
+async fn test_start_session_signs_grant_with_wallet_and_signs_requests_with_session_key() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let grants = service.create_session_requests_handle();
+    let request_auth = service.get_state_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let signer = create_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer.clone());
+
+    let info = client.start_session(session_options()).await.unwrap();
+
+    let request = grants.lock().unwrap()[0].clone();
+    let fields = request.grant.clone().expect("grant fields");
+    assert_eq!(request.scheme, "falcon");
+    assert_eq!(
+        request.public_key, None,
+        "Falcon embeds the key in the signature"
+    );
+    assert_eq!(fields.network, "devnet");
+    assert_eq!(fields.guardian_commitment, TEST_GUARDIAN_COMMITMENT);
+    assert_eq!(fields.signer_commitment, signer.commitment_hex());
+    assert_eq!(fields.session_public_key, info.session_public_key);
+    assert_eq!(fields.expires_at - fields.issued_at, 3600);
+
+    // The wallet signature verifies over the grant digest.
+    let session_key = guardian_shared::session_grant::parse_session_public_key(
+        &hex::decode(fields.session_public_key.trim_start_matches("0x")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(fields.origin, "", "a native client names no origin");
+    let grant = guardian_shared::session_grant::SessionGrant::new(
+        signer.commitment(),
+        &session_key,
+        "",
+        fields.issued_at,
+        fields.expires_at,
+        miden_protocol::Word::from_hex(TEST_GUARDIAN_COMMITMENT).unwrap(),
+        "devnet",
+    )
+    .unwrap();
+    let signature =
+        miden_protocol::crypto::dsa::falcon512_poseidon2::Signature::from_hex(&request.signature)
+            .unwrap();
+    assert!(signature.public_key().verify(grant.to_word(), &signature));
+
+    client.get_state(&create_test_account_id()).await.unwrap();
+    assert_eq!(
+        request_auth.lock().unwrap().last().unwrap(),
+        &("session".to_string(), info.session_public_key.clone())
+    );
+}
+
+#[tokio::test]
+async fn test_configure_keeps_using_the_wallet_while_a_session_is_active() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let configure_auth = service.configure_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    let auth = AuthConfig {
+        auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+            cosigner_commitments: vec![],
+        })),
+    };
+    client
+        .configure(&create_test_account_id(), auth, serde_json::json!({}))
+        .await
+        .unwrap();
+
+    assert_eq!(configure_auth.lock().unwrap().as_slice(), [String::new()]);
+}
+
+#[tokio::test]
+async fn test_push_delta_and_abandon_keep_using_the_wallet_while_a_session_is_active() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let formats = service.wallet_route_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    let account_id = create_test_account_id();
+    client
+        .push_delta(&account_id, 1, "0x00", serde_json::json!({}))
+        .await
+        .unwrap();
+    client.abandon_candidate(&account_id, 1).await.unwrap();
+
+    assert_eq!(
+        formats.lock().unwrap().as_slice(),
+        [
+            ("push_delta".to_string(), String::new()),
+            ("abandon_delta_candidate".to_string(), String::new()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_revoke_all_sessions_is_wallet_signed_and_drops_the_active_session() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let calls = service.revoke_all_sessions_calls_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let signer = create_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer.clone());
+    client.start_session(session_options()).await.unwrap();
+
+    assert_eq!(client.revoke_all_sessions().await.unwrap(), 2);
+    assert!(client.session().is_none());
+
+    let (request, pubkey, signature, timestamp) = calls.lock().unwrap()[0].clone();
+    assert_eq!(request.signer_commitment, signer.commitment_hex());
+    assert_eq!(pubkey, signer.public_key_hex());
+    let digest = guardian_shared::session_grant::SessionRevokeAllMessage::new(
+        signer.commitment(),
+        timestamp,
+    )
+    .to_word();
+    let signature =
+        miden_protocol::crypto::dsa::falcon512_poseidon2::Signature::from_hex(&signature).unwrap();
+    assert!(signature.public_key().verify(digest, &signature));
+}
+
+#[tokio::test]
+async fn test_an_ended_session_is_dropped_and_the_wallet_takes_over() {
+    for code in ["session_revoked", "session_expired"] {
+        let service = MockGuardianService::default()
+            .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+            .with_get_state(Err(guardian_auth_status(code, false)));
+        let request_auth = service.get_state_auth_formats_handle();
+        let endpoint = start_mock_server(service).await.unwrap();
+        let signer = create_test_signer();
+        let mut client = GuardianClient::connect(endpoint)
+            .await
+            .unwrap()
+            .with_signer(signer.clone());
+        client.start_session(session_options()).await.unwrap();
+
+        let error = client
+            .get_state(&create_test_account_id())
+            .await
+            .expect_err("the server ended the session");
+        assert!(error.is_ended_session(), "{code}");
+        assert!(client.session().is_none(), "{code}: session dropped");
+
+        client.get_state(&create_test_account_id()).await.unwrap();
+        assert_eq!(
+            request_auth.lock().unwrap().last().unwrap(),
+            &(String::new(), signer.public_key_hex()),
+            "{code}: the wallet signs the next request"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_a_session_not_accepted_by_guardian_is_dropped() {
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_get_state(Err(guardian_auth_status("authentication_failed", false)));
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    client
+        .get_state(&create_test_account_id())
+        .await
+        .expect_err("Guardian no longer knows the session key");
+    assert!(client.session().is_none());
+}
+
+#[tokio::test]
+async fn test_a_session_survives_an_account_its_wallet_does_not_cosign() {
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_get_state(Err(guardian_auth_status("authorization_failed", false)));
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    client
+        .get_state(&create_test_account_id())
+        .await
+        .expect_err("the wallet does not cosign this account");
+    assert!(
+        client.session().is_some(),
+        "the session still works for the wallet's other accounts"
+    );
+}
+
+#[tokio::test]
+async fn test_a_session_only_signs_for_the_wallet_that_granted_it() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let request_auth = service.get_state_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    let other = create_test_signer();
+    let mut client = client.with_signer(other.clone());
+    assert!(
+        client.session().is_none(),
+        "the session belongs to the first wallet"
+    );
+    client.get_state(&create_test_account_id()).await.unwrap();
+    assert_eq!(
+        request_auth.lock().unwrap().last().unwrap(),
+        &(String::new(), other.public_key_hex())
+    );
+}
+
+#[tokio::test]
+async fn test_start_session_rejects_a_lifetime_guardian_never_accepts() {
+    let mut client = GuardianClient::connect(
+        start_mock_server(MockGuardianService::default())
+            .await
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .with_signer(create_test_signer());
+    for ttl in [
+        MIN_SESSION_TTL,
+        MIN_SESSION_TTL + std::time::Duration::from_millis(500),
+        MAX_SESSION_TTL + std::time::Duration::from_secs(1),
+    ] {
+        let options = StartSessionOptions {
+            ttl,
+            ..session_options()
+        };
+        assert!(client.start_session(options).await.is_err(), "{ttl:?}");
+    }
+}
+
+#[tokio::test]
+async fn test_revoke_session_signs_logout_with_session_key_then_falls_back_to_wallet() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let logouts = service.revoke_session_auth_handle();
+    let request_auth = service.get_state_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let signer = create_test_signer();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(signer.clone());
+    let info = client.start_session(session_options()).await.unwrap();
+
+    assert!(client.revoke_session().await.unwrap());
+    assert!(client.session().is_none());
+
+    let (pubkey, signature, timestamp) = logouts.lock().unwrap()[0].clone();
+    assert_eq!(pubkey, info.session_public_key);
+    let key = hex::decode(pubkey.trim_start_matches("0x")).unwrap();
+    let key = guardian_shared::session_grant::parse_session_public_key(&key).unwrap();
+    let digest =
+        guardian_shared::session_grant::SessionLogoutMessage::new(&key, timestamp).to_word();
+    let signature = hex::decode(signature.trim_start_matches("0x")).unwrap();
+    guardian_shared::session_key::verify(&key, digest, &signature).unwrap();
+
+    client.get_state(&create_test_account_id()).await.unwrap();
+    assert_eq!(
+        request_auth.lock().unwrap().last().unwrap(),
+        &(String::new(), signer.public_key_hex())
+    );
+    assert!(
+        !client.revoke_session().await.unwrap(),
+        "no session left to revoke"
+    );
 }

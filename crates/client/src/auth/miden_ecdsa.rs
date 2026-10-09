@@ -31,6 +31,11 @@ impl EcdsaSigner {
         self.public_key_hex.clone()
     }
 
+    /// Returns the public key commitment.
+    pub fn commitment(&self) -> Word {
+        self.secret_key.lock().unwrap().public_key().to_commitment()
+    }
+
     /// Signs an account ID with a timestamp and returns the hex-encoded signature.
     pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
         let message = account_id_timestamp_to_word(*account_id, timestamp);

@@ -54,6 +54,23 @@ service Guardian {
   // nonce, or equal to it with the commitment matching its local commitment.
   // An equal nonce at a different commitment is divergence: fetch the state.
   rpc GetCanonicalNonce(GetCanonicalNonceRequest) returns (GetCanonicalNonceResponse);
+
+  // Register a wallet-authorized P-256 session key (issue #219). The wallet
+  // signs a session grant once; afterwards the session key signs per-account
+  // requests with `x-auth-format: session` metadata. Mirror of HTTP
+  // POST /session.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+
+  // Revoke the session whose key signs this call: `x-pubkey` is the session
+  // public key and `x-signature` signs SessionLogoutMessage(x-pubkey,
+  // x-timestamp). Mirror of HTTP POST /session/logout.
+  rpc RevokeSession(RevokeSessionRequest) returns (RevokeSessionResponse);
+
+  // Revoke every session of the wallet key signing this call: `x-signature`
+  // is the wallet's signature over SessionRevokeAllMessage(signer_commitment,
+  // x-timestamp), raw or as EIP-712 typed data (`x-auth-format: eip712`).
+  // Wallet-only. Mirror of HTTP POST /session/revoke-all.
+  rpc RevokeAllSessions(RevokeAllSessionsRequest) returns (RevokeAllSessionsResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -429,4 +446,52 @@ message GetDeltaHistoryResponse {
   // Opaque resume token; absent when no further pages exist.
   optional string next_cursor = 4;
   string error_code = 5;
+}
+
+// Session grant fields. The readable expiry and the scope are not sent:
+// Guardian derives both, so a wallet that displayed other values signed a
+// different digest.
+message SessionGrantFields {
+  string signer_commitment = 1;
+  // Hex SEC1-compressed P-256 delegated-signer public key (33 bytes).
+  string session_public_key = 2;
+  // Unix seconds.
+  uint64 issued_at = 3;
+  // Unix seconds.
+  uint64 expires_at = 4;
+  // This Guardian's ACK key commitment for `scheme` (GetPubkey).
+  string guardian_commitment = 5;
+  string network = 6;
+  // The website that asked for the grant, shown to the user by the wallet;
+  // empty outside a browser. Guardian does not check it against requests.
+  string origin = 7;
+}
+
+message CreateSessionRequest {
+  string scheme = 1; // "falcon" or "ecdsa"
+  optional string auth_format = 2; // "raw" (default) or "eip712"
+  optional string public_key = 3; // required for ECDSA
+  string signature = 4;
+  SessionGrantFields grant = 5;
+}
+
+message CreateSessionResponse {
+  string signer_commitment = 1;
+  string expires_at = 2; // RFC 3339 UTC
+}
+
+message RevokeSessionRequest {}
+
+message RevokeSessionResponse {
+  bool revoked = 1;
+}
+
+message RevokeAllSessionsRequest {
+  // Hex commitment of the wallet key whose sessions end; must be the signing key.
+  string signer_commitment = 1;
+}
+
+message RevokeAllSessionsResponse {
+  // How many active sessions were revoked.
+  uint64 revoked = 1;
 }

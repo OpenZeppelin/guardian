@@ -15,6 +15,14 @@ import { requireConfigValue, requireMidenRpcEndpoint } from './config.js';
 import type { MultisigConfig, Signer } from './types.js';
 import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 import { normalizeHexWord } from './utils/encoding.js';
+import type { GuardianSession, SessionKeyStore } from './session/key.js';
+import {
+  type StartSessionOptions,
+  endGuardianSession,
+  resumeGuardianSession,
+  revokeAllGuardianSessions,
+  startGuardianSession,
+} from './session/manager.js';
 import {
   resolveProverConfig,
   type ProverConfig,
@@ -113,6 +121,7 @@ export class MultisigClient {
   private readonly proverConfig: ResolvedProverConfig;
   private readonly rpcConfig: ResolvedRpcConfig;
   private _guardianClient: GuardianHttpClient;
+  private guardianSession: GuardianSession | null = null;
 
   constructor(midenClient: MidenClient, config: MultisigClientConfig) {
     this.midenClient = midenClient;
@@ -133,6 +142,7 @@ export class MultisigClient {
     this._guardianClient = new GuardianHttpClient(
       requireConfigValue('guardianEndpoint', endpoint),
     );
+    this.guardianSession = null;
   }
 
   /**
@@ -140,6 +150,91 @@ export class MultisigClient {
    */
   get guardianClient(): GuardianHttpClient {
     return this._guardianClient;
+  }
+
+  /**
+   * Start a Guardian session: `signer` signs one grant, then a non-extractable
+   * browser key (the delegated signer) signs this client's session-eligible
+   * Guardian requests (state and delta reads, proposal list/get/create/sign)
+   * until the session ends. Account configuration, lookup, delta pushes,
+   * candidate abandons and transaction approvals keep using `signer`. Pass
+   * `options.store` to survive page reloads via `resumeSession`, and
+   * `options.onEnded` to learn when requests fall back to the wallet.
+   *
+   * A session this client already holds is logged out once the new one is
+   * registered. A Guardian endpoint change (`setGuardianEndpoint`) drops the
+   * session.
+   */
+  async startSession(signer: Signer, options: StartSessionOptions = {}): Promise<GuardianSession> {
+    const previous = this.guardianSession;
+    const session = await startGuardianSession(this._guardianClient, signer, {
+      ...options,
+      onEnded: this.trackSessionEnd(options.onEnded),
+    });
+    this.guardianSession = session;
+    if (previous) {
+      await endGuardianSession(this._guardianClient, previous, options.store).catch(() => false);
+    }
+    return session;
+  }
+
+  /**
+   * Reuse a session key stored by `startSession` without a wallet prompt.
+   * Returns `null` when there is none or it is about to expire.
+   */
+  async resumeSession(
+    signer: Signer,
+    store: SessionKeyStore,
+    options: Pick<StartSessionOptions, 'onEnded'> = {},
+  ): Promise<GuardianSession | null> {
+    const session = await resumeGuardianSession(this._guardianClient, signer, store, {
+      onEnded: this.trackSessionEnd(options.onEnded),
+    });
+    if (session) {
+      this.guardianSession = session;
+    }
+    return session;
+  }
+
+  /**
+   * Revoke the current session, fall back to wallet signatures, and forget its
+   * stored key. Returns whether Guardian still had the session active. On
+   * error the session stays in use.
+   */
+  async endSession(store?: SessionKeyStore): Promise<boolean> {
+    const session = this.guardianSession;
+    if (!session) {
+      return false;
+    }
+    const revoked = await endGuardianSession(this._guardianClient, session, store);
+    if (this.guardianSession === session) {
+      this.guardianSession = null;
+    }
+    return revoked;
+  }
+
+  /**
+   * Revoke every session of `signer` on the Guardian with a wallet signature,
+   * including sessions started in other tabs or devices; stop using the
+   * current one and forget its stored key. Use it when a session key may be
+   * compromised, and run it again 10 minutes later: it ends only sessions
+   * already registered, and a page can register a grant it got signed for up
+   * to about 10 minutes. Returns how many sessions Guardian revoked.
+   */
+  async revokeAllSessions(signer: Signer, store?: SessionKeyStore): Promise<number> {
+    return revokeAllGuardianSessions(this._guardianClient, signer, store);
+  }
+
+  /** Forgets the session this client holds once Guardian stops using it. */
+  private trackSessionEnd(
+    onEnded: StartSessionOptions['onEnded'],
+  ): NonNullable<StartSessionOptions['onEnded']> {
+    return (reason, session) => {
+      if (this.guardianSession === session) {
+        this.guardianSession = null;
+      }
+      onEnded?.(reason, session);
+    };
   }
 
   /**

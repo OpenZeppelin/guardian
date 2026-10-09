@@ -35,6 +35,12 @@ pub async fn configure_account(
 ) -> Result<ConfigureAccountResult> {
     tracing::debug!("Configuring account");
 
+    if params.credential.auth_format() == crate::metadata::auth::RequestAuthFormat::Session {
+        validate_request_timestamp(state, &params.account_id, &params.credential)?;
+        let message = super::auth_request_word(&params.account_id, &params.credential)?;
+        return Err(super::reject_session_credentials(state, &params.credential, message).await);
+    }
+
     let network_config = params
         .network_config
         .validate_for_account(&params.account_id)
@@ -353,6 +359,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage,
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(network_client),

@@ -249,6 +249,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
 
         AppState {
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -354,6 +355,7 @@ mod tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         let state = AppState {
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

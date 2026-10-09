@@ -356,6 +356,14 @@ Two distinct auth domains:
    credentials from the metadata store and dispatches to the right scheme
    ([`miden_falcon_rpo.rs`](../../crates/server/src/metadata/auth/miden_falcon_rpo.rs),
    [`miden_ecdsa.rs`](../../crates/server/src/metadata/auth/miden_ecdsa.rs)).
+   Session-eligible reads and proposal requests may instead be signed by a
+   delegated P-256 key the wallet authorized with a session grant
+   (`x-auth-format: session`, issue #219). Services opt in through
+   `resolve_account_allowing_session`; every other route uses
+   `resolve_account`, which rejects session credentials. Grants live in
+   [`session.rs`](../../crates/server/src/session.rs) (`MidenSessions`, swept
+   with the other sessions); the wire format is in
+   [`crates/shared/src/session_grant.rs`](../../crates/shared/src/session_grant.rs).
 2. **Operator auth** — dashboard endpoints use Falcon-signed challenges
    against an allowlist of operator public keys, producing session cookies.
    Lives entirely in

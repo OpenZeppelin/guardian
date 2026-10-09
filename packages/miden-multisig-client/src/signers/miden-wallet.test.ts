@@ -74,6 +74,27 @@ describe('MidenWalletSigner', () => {
     // miden-wallet.ecdsa-recovery.test.ts, which runs the WASM SDK.
   });
 
+  describe('requestAuthFormat', () => {
+    it('follows the localAuthSigner, which signs request auth', () => {
+      const delegate = (requestAuthFormat?: 'eip712'): Signer => ({
+        commitment: '0xlocal',
+        publicKey: '0xlocal',
+        scheme: 'falcon',
+        requestAuthFormat,
+        signAccountIdWithTimestamp: vi.fn(),
+        signCommitment: vi.fn(),
+      });
+
+      expect(new MidenWalletSigner(mockWallet, '0xc', 'falcon').requestAuthFormat).toBeUndefined();
+      expect(
+        new MidenWalletSigner(mockWallet, '0xc', 'falcon', delegate()).requestAuthFormat,
+      ).toBeUndefined();
+      expect(
+        new MidenWalletSigner(mockWallet, '0xc', 'falcon', delegate('eip712')).requestAuthFormat,
+      ).toBe('eip712');
+    });
+  });
+
   describe('signAccountIdWithTimestamp', () => {
     it('should delegate to localAuthSigner when present', async () => {
       const localSigner: Signer = {

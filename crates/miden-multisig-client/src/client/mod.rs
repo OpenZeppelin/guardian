@@ -9,6 +9,7 @@
 //! - `notes` - Note filtering and listing
 //! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
+//! - `session` - Guardian sessions (delegated signer)
 //! - `proposal_note_import` - Recovery primitive: proposal-embedded note import
 //! - `public_note_backfill` - Recovery primitive: historical public-note backfill by tag
 //! - `helpers` - Internal GUARDIAN client helpers
@@ -30,6 +31,9 @@ mod proposal_note_import;
 mod proposals;
 mod public_note_backfill;
 mod recovery;
+mod session;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod switch_recovery_tests;
 #[cfg(test)]
@@ -50,7 +54,7 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use guardian_client::GetStateResponse;
+use guardian_client::{GetStateResponse, SessionSlot};
 use miden_client::rpc::Endpoint;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -136,6 +140,8 @@ pub struct MultisigClient {
     pub(crate) prover_config: ProverConfig,
     /// Node RPC timeout and read-retry configuration (for recovery).
     pub(crate) rpc_config: RpcConfig,
+    /// The Guardian session every per-operation client shares.
+    pub(crate) guardian_session: SessionSlot,
 }
 
 impl MultisigClient {
@@ -169,6 +175,7 @@ impl MultisigClient {
             node_rpc_client,
             prover_config,
             rpc_config,
+            guardian_session: SessionSlot::default(),
         }
     }
 

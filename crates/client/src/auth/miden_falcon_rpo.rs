@@ -30,6 +30,11 @@ impl FalconRpoSigner {
         (&self.public_key).into_hex()
     }
 
+    /// Returns the public key commitment.
+    pub fn commitment(&self) -> Word {
+        self.public_key.to_commitment()
+    }
+
     /// Signs the legacy account ID + timestamp digest.
     pub fn sign_account_id_with_timestamp(&self, account_id: &AccountId, timestamp: i64) -> String {
         let message = account_id_timestamp_to_word(*account_id, timestamp);

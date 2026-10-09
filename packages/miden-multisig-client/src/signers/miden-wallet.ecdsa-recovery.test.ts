@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 
@@ -197,5 +198,30 @@ describe('MidenWalletSigner ECDSA public-key resolution', () => {
     expect(resolvedKey).toBe(COMPRESSED_PUBKEY_HEX);
     expect(resolvedKey).not.toBe(accountCommitment);
     expect(tryComputeEcdsaCommitmentHex(resolvedKey)).toBe(accountCommitment);
+  });
+});
+
+describe('MidenWalletSigner request auth format', () => {
+  it('sends a plain request in the EIP-712 format of its delegate', async () => {
+    const accountCommitment = expectPresent(tryComputeEcdsaCommitmentHex(COMPRESSED_PUBKEY_HEX));
+    const delegate: Signer = {
+      ...ecdsaDelegate(accountCommitment, COMPRESSED_PUBKEY_HEX),
+      requestAuthFormat: 'eip712',
+      signRequest: async () => '0x' + 'ab'.repeat(65),
+    };
+    const signer = new MidenWalletSigner(ecdsaWallet(PRIVATE_KEY), accountCommitment, 'ecdsa', delegate);
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const client = new GuardianHttpClient('http://guardian.test');
+      client.setSigner(signer);
+      await client.getState('0x' + 'a'.repeat(30)).catch(() => undefined);
+
+      const headers = fetchMock.mock.calls[0][1].headers as Record<string, string>;
+      expect(headers['x-auth-format']).toBe('eip712');
+      expect(headers['x-pubkey']).toBe(COMPRESSED_PUBKEY_HEX);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
