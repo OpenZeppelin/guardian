@@ -492,8 +492,7 @@ impl MultisigClient {
         let payload = crate::payload::ProposalPayload::new(&tx_summary)
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
         let mut guardian_client = self.create_authenticated_guardian_client().await?;

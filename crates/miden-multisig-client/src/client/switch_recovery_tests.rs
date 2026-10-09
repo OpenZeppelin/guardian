@@ -106,7 +106,6 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
             word_to_hex(&salt),
         )
         .with_required_signatures(1)
-        .with_bound_block_num(tx_summary.block_number())
         .to_json()
         .to_string();
 
@@ -267,8 +266,7 @@ async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
             endpoint_b.clone(),
             exported.metadata.salt_hex.clone().expect("salt exported"),
         )
-        .with_required_signatures(1)
-        .with_bound_block_num(switch_summary.block_number());
+        .with_required_signatures(1);
     assert_eq!(
         exported.metadata.bound_block_num,
         Some(switch_summary.block_number().as_u32()),

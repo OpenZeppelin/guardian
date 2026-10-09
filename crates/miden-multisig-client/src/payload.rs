@@ -3,7 +3,6 @@
 use std::num::NonZeroU32;
 
 use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
-use miden_protocol::block::BlockNumber;
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
 use serde::{Deserialize, Serialize};
@@ -98,12 +97,26 @@ pub struct ProposalPayload {
 }
 
 impl ProposalPayload {
+    /// Starts a payload for `tx_summary`, recording the block it binds as
+    /// `bound_block_num`. Every metadata setter keeps that value.
     pub fn new(tx_summary: &TransactionSummary) -> Self {
         Self {
             tx_summary: tx_summary.to_json(),
             signatures: Vec::new(),
-            metadata: None,
+            metadata: Some(ProposalMetadataPayload {
+                bound_block_num: Some(tx_summary.block_number().as_u32()),
+                ..Default::default()
+            }),
         }
+    }
+
+    fn replace_metadata(mut self, metadata: ProposalMetadataPayload) -> Self {
+        let bound_block_num = self.metadata.take().and_then(|m| m.bound_block_num);
+        self.metadata = Some(ProposalMetadataPayload {
+            bound_block_num,
+            ..metadata
+        });
+        self
     }
 
     /// Adds the proposer's signature.
@@ -126,53 +139,50 @@ impl ProposalPayload {
 
     /// Sets the metadata for adding a signer.
     pub fn with_add_signer_metadata(
-        mut self,
+        self,
         new_threshold: u64,
         signer_commitments: Vec<String>,
         salt: String,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "add_signer".to_string(),
             target_threshold: Some(new_threshold),
             signer_commitments,
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Sets the metadata for removing a signer.
     pub fn with_remove_signer_metadata(
-        mut self,
+        self,
         new_threshold: u64,
         signer_commitments: Vec<String>,
         salt: String,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "remove_signer".to_string(),
             target_threshold: Some(new_threshold),
             signer_commitments,
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Sets the metadata for changing threshold.
     pub fn with_threshold_metadata(
-        mut self,
+        self,
         new_threshold: u64,
         signer_commitments: Vec<String>,
         salt: String,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "change_threshold".to_string(),
             target_threshold: Some(new_threshold),
             signer_commitments,
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Sets the metadata for P2ID payment transfers. `note_type` is written to
@@ -180,7 +190,7 @@ impl ProposalPayload {
     /// shape (issue #322). The P2IDE heights are written only when set, so
     /// plain-P2ID payloads keep the pre-#366 wire shape (issue #366).
     pub fn with_payment_metadata(
-        mut self,
+        self,
         recipient_id: String,
         faucet_id: String,
         amount: u64,
@@ -188,7 +198,7 @@ impl ProposalPayload {
         note_type: NoteType,
         heights: P2ideHeights,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "p2id".to_string(),
             recipient_id: Some(recipient_id),
             faucet_id: Some(faucet_id),
@@ -198,84 +208,78 @@ impl ProposalPayload {
             timelock_height: heights.timelock,
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Legacy (v1) note consumption metadata. Prefer
     /// `with_note_consumption_metadata_v2` for new proposals (issue #229).
-    pub fn with_note_consumption_metadata(mut self, note_ids: &[String], salt: String) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+    pub fn with_note_consumption_metadata(self, note_ids: &[String], salt: String) -> Self {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "consume_notes".to_string(),
             note_ids: note_ids.to_vec(),
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// v2 (self-contained) note consumption metadata. `notes_base64[i]`
     /// MUST correspond to `note_ids[i]`; the binding is reasserted at
     /// verify time (FR-007). Takes both vecs by value to skip a clone.
     pub fn with_note_consumption_metadata_v2(
-        mut self,
+        self,
         note_ids: Vec<String>,
         notes_base64: Vec<String>,
         salt: String,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "consume_notes".to_string(),
             note_ids,
             consume_notes_metadata_version: Some(2),
             consume_notes_notes: notes_base64,
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Sets the metadata for GUARDIAN update transactions.
     pub fn with_guardian_update_metadata(
-        mut self,
+        self,
         new_guardian_pubkey: String,
         new_guardian_endpoint: String,
         salt: String,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "switch_guardian".to_string(),
             new_guardian_pubkey: Some(new_guardian_pubkey),
             new_guardian_endpoint: Some(new_guardian_endpoint),
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Sets the metadata for procedure-threshold override updates.
     pub fn with_procedure_threshold_metadata(
-        mut self,
+        self,
         procedure: ProcedureName,
         new_threshold: u64,
         salt: String,
     ) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type: "update_procedure_threshold".to_string(),
             target_threshold: Some(new_threshold),
             target_procedure: Some(procedure.to_string()),
             salt: Some(salt),
             ..Default::default()
-        });
-        self
+        })
     }
 
     /// Sets metadata for a custom (producer-supplied) proposal type whose
     /// transaction the SDK does not model (issue #266).
-    pub fn with_custom_metadata(mut self, proposal_type: String) -> Self {
-        self.metadata = Some(ProposalMetadataPayload {
+    pub fn with_custom_metadata(self, proposal_type: String) -> Self {
+        self.replace_metadata(ProposalMetadataPayload {
             proposal_type,
             ..Default::default()
-        });
-        self
+        })
     }
 
     pub fn with_required_signatures(mut self, required_signatures: usize) -> Self {
@@ -283,15 +287,6 @@ impl ProposalPayload {
             .metadata
             .get_or_insert_with(ProposalMetadataPayload::default);
         metadata.required_signatures = Some(required_signatures as u64);
-        self
-    }
-
-    /// Records the block the proposal's summary binds.
-    pub fn with_bound_block_num(mut self, bound_block_num: BlockNumber) -> Self {
-        let metadata = self
-            .metadata
-            .get_or_insert_with(ProposalMetadataPayload::default);
-        metadata.bound_block_num = Some(bound_block_num.as_u32());
         self
     }
 
@@ -303,7 +298,34 @@ impl ProposalPayload {
 
 #[cfg(test)]
 mod tests {
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::account::{AccountCodePatch, AccountId, AccountStoragePatch};
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
+    use miden_protocol::{Felt, Word};
+
     use super::*;
+
+    fn summary_binding(block_num: u32) -> TransactionSummary {
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStoragePatch::default(),
+            AccountVaultDelta::default(),
+            AccountCodePatch::default(),
+            Felt::ZERO,
+        )
+        .unwrap();
+        TransactionSummary::new(
+            delta,
+            InputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
+            BlockNumber::from(block_num),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+        )
+    }
 
     #[test]
     fn proposal_payload_serialization_includes_all_fields() {
@@ -599,14 +621,12 @@ mod tests {
     /// The bound block rides the wire as `bound_block_num` and is omitted when
     /// unset, so payloads without it keep their shape.
     #[test]
-    fn with_bound_block_num_round_trips_and_is_omitted_when_unset() {
-        let payload = ProposalPayload {
-            tx_summary: serde_json::json!({}),
-            signatures: vec![],
-            metadata: None,
-        }
-        .with_add_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string())
-        .with_bound_block_num(BlockNumber::from(42u32));
+    fn bound_block_num_round_trips_and_is_omitted_when_unset() {
+        let payload = ProposalPayload::new(&summary_binding(42)).with_add_signer_metadata(
+            2,
+            vec!["0xabc".to_string()],
+            "0xsalt".to_string(),
+        );
 
         let json = serde_json::to_value(payload.metadata.as_ref().unwrap()).unwrap();
         assert_eq!(
@@ -623,6 +643,55 @@ mod tests {
         };
         let json = serde_json::to_value(&without).unwrap();
         assert!(json.get("bound_block_num").is_none());
+    }
+
+    /// `new` records the bound block before any metadata setter runs, so a
+    /// setter that replaced the metadata wholesale would drop it.
+    #[test]
+    fn every_metadata_setter_keeps_the_bound_block_num() {
+        let bound = || ProposalPayload {
+            tx_summary: serde_json::json!({}),
+            signatures: vec![],
+            metadata: Some(ProposalMetadataPayload {
+                bound_block_num: Some(42),
+                ..Default::default()
+            }),
+        };
+        let salt = || "0xsalt".to_string();
+        let built = [
+            bound().with_add_signer_metadata(2, vec![], salt()),
+            bound().with_remove_signer_metadata(1, vec![], salt()),
+            bound().with_threshold_metadata(1, vec![], salt()),
+            bound().with_payment_metadata(
+                "0xrecipient".to_string(),
+                "0xfaucet".to_string(),
+                1000,
+                salt(),
+                NoteType::Public,
+                P2ideHeights::default(),
+            ),
+            bound().with_note_consumption_metadata(&["0xnote".to_string()], salt()),
+            bound().with_note_consumption_metadata_v2(
+                vec!["0xnote".to_string()],
+                vec!["YmFzZTY0Tm90ZQ==".to_string()],
+                salt(),
+            ),
+            bound().with_guardian_update_metadata(
+                "0xpubkey".to_string(),
+                "http://new-guardian:50051".to_string(),
+                salt(),
+            ),
+            bound().with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, salt()),
+            bound().with_custom_metadata("b2agg".to_string()),
+        ];
+        for payload in built {
+            let metadata = payload.metadata.expect("metadata");
+            assert_eq!(
+                metadata.bound_block_num,
+                Some(42),
+                "the setter dropped bound_block_num: {metadata:?}"
+            );
+        }
     }
 
     /// The shared wire sample parses into this type and serializes back
@@ -651,15 +720,10 @@ mod tests {
             .remove("chain_anchor");
         assert_eq!(serde_json::to_value(&parsed).unwrap(), without_anchor);
 
-        let written = ProposalPayload {
-            tx_summary: serde_json::json!({}),
-            signatures: vec![],
-            metadata: None,
-        }
-        .with_custom_metadata("p2id".to_string())
-        .with_bound_block_num(BlockNumber::from(
+        let written = ProposalPayload::new(&summary_binding(
             u32::try_from(fixture["boundBlockNum"].as_u64().unwrap()).unwrap(),
-        ));
+        ))
+        .with_custom_metadata("p2id".to_string());
         assert_eq!(
             serde_json::to_value(written.metadata.unwrap()).unwrap()["bound_block_num"],
             fixture["current"]["wire"]["bound_block_num"]

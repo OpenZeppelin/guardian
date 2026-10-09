@@ -344,8 +344,7 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -449,8 +448,7 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
         let response = guardian_client
@@ -562,8 +560,7 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -662,8 +659,7 @@ impl ProposalBuilder {
                 note_type,
                 heights,
             )
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -764,8 +760,7 @@ impl ProposalBuilder {
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         // FR-011: cap covers only the metadata fragment, not the full payload.
         if let Some(meta) = payload.metadata.as_ref() {
@@ -877,8 +872,7 @@ impl ProposalBuilder {
                 new_guardian_endpoint.clone(),
                 word_to_hex(&salt),
             )
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
@@ -955,8 +949,7 @@ impl ProposalBuilder {
         let payload = ProposalPayload::new(&tx_summary)
             .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
-            .with_required_signatures(required_signatures)
-            .with_bound_block_num(tx_summary.block_number());
+            .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
         let response = guardian_client

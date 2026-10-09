@@ -245,8 +245,8 @@ breaking SDK change and needs no server change.
   `chain_anchor` fields of `ProposalMetadataPayload` and `ExportedMetadata`,
   `ProposalMetadata::chain_anchor_b64` and `ProposalMetadata::chain_anchor()`,
   `ProposalPayload::with_chain_anchor`, and `MultisigError::SummaryAnchorMismatch`.
-  New: `bound_block_num` / `boundBlockNum` on the metadata types,
-  `ProposalPayload::with_bound_block_num`, and
+  New: `bound_block_num` / `boundBlockNum` on the metadata types, which
+  `ProposalPayload::new` fills from the summary it is given, and
   `MultisigError::BoundBlockMismatch`.
 
 ### Open upstream items

@@ -101,7 +101,6 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
             word_to_hex(&salt),
         )
         .with_required_signatures(1)
-        .with_bound_block_num(tx_summary.block_number())
         .to_json()
         .to_string();
 
@@ -281,7 +280,6 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
             word_to_hex(&salt),
         )
         .with_required_signatures(1)
-        .with_bound_block_num(tx_summary.block_number())
         .to_json()
         .to_string();
 
@@ -472,7 +470,6 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
         ProposalPayload::new(&tx_summary)
             .with_add_signer_metadata(1, signers_hex.clone(), salt_hex)
             .with_required_signatures(1)
-            .with_bound_block_num(tx_summary.block_number())
             .to_json()
             .to_string()
     };
@@ -578,8 +575,7 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
     let proposal_id = word_to_hex(&tx_summary.to_commitment());
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex.clone(), word_to_hex(&salt))
-        .with_required_signatures(1)
-        .with_bound_block_num(tx_summary.block_number());
+        .with_required_signatures(1);
     let unsigned = pending_proto_delta(&account, 1, payload.to_json().to_string(), &signer_hex);
 
     // What GUARDIAN hands back after accepting the signature: the same
@@ -1001,7 +997,6 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
         .with_required_signatures(1)
-        .with_bound_block_num(bound_block)
         .to_json()
         .to_string();
     let service = MockGuardianService::default();
@@ -1135,7 +1130,6 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
         .with_required_signatures(1)
-        .with_bound_block_num(tx_summary.block_number())
         .to_json()
         .to_string();
     let service = MockGuardianService::default();
@@ -1219,7 +1213,6 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
         .with_required_signatures(1)
-        .with_bound_block_num(tx_summary.block_number())
         .to_json()
         .to_string();
     let service = MockGuardianService::default();
@@ -1389,7 +1382,12 @@ async fn proposal_made_by_a_0_18_client_still_verifies() {
         .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&salt))
         .with_required_signatures(1)
         .to_json();
-    payload["metadata"]["chain_anchor"] = serde_json::json!("bW9jay1jaGFpbi1hbmNob3I=");
+    let metadata = payload["metadata"].as_object_mut().unwrap();
+    metadata.remove("bound_block_num");
+    metadata.insert(
+        "chain_anchor".to_string(),
+        serde_json::json!("bW9jay1jaGFpbi1hbmNob3I="),
+    );
 
     let proposals = list_served(&mut client, &account, signer, payload).await;
     assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
