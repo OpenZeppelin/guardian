@@ -382,13 +382,9 @@ pub struct ProposalMetadata {
     pub required_signatures: Option<usize>,
     pub signers: Vec<String>,
 
-    /// Base64-serialized Miden `ChainAnchor` at the block the tx_summary binds,
-    /// the proposer's sync height when it built the request. Required, and
-    /// checked against the summary's block commitment. The proposal executes
-    /// at the chain tip rather than at the anchor; the anchor names the bound
-    /// block for a rebuild in the TypeScript SDK and for 0.18.0-rc.1 clients,
-    /// which re-execute at it.
-    pub chain_anchor_b64: Option<String>,
+    /// The block the signed summary binds, as the proposer wrote it. Unsigned,
+    /// so verification checks it against the summary.
+    pub bound_block_num: Option<u32>,
 }
 
 impl ProposalMetadata {
@@ -400,25 +396,11 @@ impl ProposalMetadata {
         self.consume_notes_metadata_version == Some(CONSUME_NOTES_METADATA_VERSION_V2)
     }
 
-    /// Decodes the proposal's chain anchor. Errors when absent: every proposal
-    /// names the block its summary binds with one, so a proposal without it is
-    /// malformed and is neither verified nor executed.
-    pub fn chain_anchor(&self) -> Result<miden_client::transaction::ChainAnchor> {
-        let anchor_b64 = self.chain_anchor_b64.as_deref().ok_or_else(|| {
-            MultisigError::InvalidConfig(
-                "proposal metadata has no chain_anchor, which names the block its signed \
-                 summary binds; the proposal cannot be verified or executed"
-                    .to_string(),
-            )
-        })?;
-        crate::transaction::chain_anchor_from_base64(anchor_b64)
-    }
-
     /// Converts salt hex to Word.
     ///
-    /// Errors when absent, for the same reason [`Self::chain_anchor`] does: the salt
-    /// is bound into the auth args and the signed summary, so a substituted zero
-    /// would rebuild a request whose summary no cosigner signed.
+    /// Errors when absent: the salt is bound into the auth args and the signed
+    /// summary, so a substituted zero would rebuild a request whose summary no
+    /// cosigner signed.
     pub fn salt(&self) -> Result<Word> {
         let value = self.salt_hex.as_deref().ok_or_else(|| {
             MultisigError::InvalidConfig(
@@ -824,7 +806,7 @@ impl Proposal {
             target_procedure: target_procedure.clone(),
             required_signatures: Some(required_signatures),
             signers: Vec::new(),
-            chain_anchor_b64: metadata_payload.chain_anchor,
+            bound_block_num: metadata_payload.bound_block_num,
         };
         let transaction_type = metadata.to_transaction_type(&proposal_type)?;
 
@@ -888,7 +870,9 @@ impl Proposal {
         Ok(proposal)
     }
 
-    /// Creates a new Proposal
+    /// Creates a new Proposal. Its `bound_block_num` is the block `tx_summary`
+    /// binds, whatever `metadata` carries, so a created proposal cannot
+    /// disagree with its own summary.
     pub fn new(
         tx_summary: TransactionSummary,
         nonce: u64,
@@ -897,6 +881,7 @@ impl Proposal {
     ) -> Self {
         let commitment = tx_summary.to_commitment();
         let id = format!("0x{}", hex::encode(word_to_bytes(&commitment)));
+        metadata.bound_block_num = Some(tx_summary.block_number().as_u32());
 
         let signatures_required = metadata
             .required_signatures
@@ -1036,6 +1021,10 @@ mod tests {
     use miden_protocol::transaction::{InputNotes, RawOutputNotes, TransactionSummaryUserParams};
 
     fn create_test_tx_summary() -> TransactionSummary {
+        tx_summary_binding(0)
+    }
+
+    fn tx_summary_binding(block_num: u32) -> TransactionSummary {
         // Use a minimal valid account ID
         let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
         let delta = AccountDelta::new(
@@ -1051,11 +1040,35 @@ mod tests {
             delta,
             InputNotes::new(Vec::new()).unwrap(),
             RawOutputNotes::new(Vec::new()).unwrap(),
-            miden_protocol::block::BlockNumber::from(0),
+            miden_protocol::block::BlockNumber::from(block_num),
             Word::default(),
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         )
+    }
+
+    /// A created proposal records the block its own summary binds, whatever
+    /// its creator wrote, so an export carries the value TypeScript cosigners
+    /// check against the summary.
+    #[test]
+    fn new_proposal_records_the_block_its_summary_binds() {
+        let account_id = AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap();
+        for written in [None, Some(7)] {
+            let proposal = Proposal::new(
+                tx_summary_binding(42),
+                1,
+                TransactionType::add_cosigner(Word::default()),
+                ProposalMetadata {
+                    bound_block_num: written,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(proposal.metadata.bound_block_num, Some(42));
+
+            let exported =
+                crate::export::ExportedProposal::from_proposal(&proposal, account_id).unwrap();
+            assert_eq!(exported.metadata.bound_block_num, Some(42));
+        }
     }
 
     #[test]
@@ -1072,37 +1085,6 @@ mod tests {
         let invalid = format!("0x{}{}", "ff".repeat(8), "00".repeat(24));
         let err = word_from_hex(&invalid).expect_err("non-canonical field element should fail");
         assert!(err.contains("invalid field element"));
-    }
-
-    /// A proposal without an anchor cannot be verified or executed, and a
-    /// present anchor must decode as a structurally valid `ChainAnchor` —
-    /// garbage base64 or well-formed base64 of non-anchor bytes are both
-    /// rejected before anything executes against them.
-    #[test]
-    fn chain_anchor_is_required_and_validated() {
-        let missing = ProposalMetadata::default();
-        let err = missing
-            .chain_anchor()
-            .expect_err("missing anchor must fail");
-        assert!(err.to_string().contains("no chain_anchor"));
-
-        let garbage = ProposalMetadata {
-            chain_anchor_b64: Some("!!!not-base64!!!".to_string()),
-            ..Default::default()
-        };
-        let err = garbage
-            .chain_anchor()
-            .expect_err("garbage base64 must fail");
-        assert!(err.to_string().contains("invalid chain_anchor base64"));
-
-        let non_anchor = ProposalMetadata {
-            chain_anchor_b64: Some(BASE64.encode([0xAAu8; 16])),
-            ..Default::default()
-        };
-        let err = non_anchor
-            .chain_anchor()
-            .expect_err("non-anchor bytes must fail");
-        assert!(err.to_string().contains("invalid chain_anchor"));
     }
 
     #[test]

@@ -6,7 +6,9 @@
 export type AuthArgErrorCode =
   | 'proposal_salt_malformed'
   | 'multisig_auth_args_missing'
-  | 'bound_block_not_declared';
+  | 'bound_block_not_declared'
+  | 'transaction_summary_layout_unsupported'
+  | 'bound_block_mismatch';
 
 /** How much of an untrusted value an error message will quote. */
 const MAX_QUOTED_CHARS = 80;
@@ -128,5 +130,44 @@ export class BoundBlockNotDeclaredError extends Error {
     );
     this.name = 'BoundBlockNotDeclaredError';
     this.boundBlockNum = boundBlockNum;
+  }
+}
+
+/**
+ * A serialized transaction summary does not have the layout this client reads
+ * its bound block from: the version 1 encoding of protocol 0.17. Raised instead
+ * of reading a number from the wrong offset, so a protocol upgrade that moves
+ * the field fails loudly.
+ */
+export class TransactionSummaryLayoutError extends Error {
+  readonly code: AuthArgErrorCode = 'transaction_summary_layout_unsupported';
+
+  constructor(reason: string) {
+    super(`The transaction summary does not have the layout this client reads: ${reason}`);
+    this.name = 'TransactionSummaryLayoutError';
+  }
+}
+
+/**
+ * A proposal's `boundBlockNum` names a block other than the one its signed
+ * summary binds. The value is served unsigned, so one that disagrees is refused
+ * by name for every proposal type, as the Rust SDK does.
+ */
+export class BoundBlockMismatchError extends Error {
+  readonly code: AuthArgErrorCode = 'bound_block_mismatch';
+  readonly proposalId: string;
+  readonly declaredBoundBlockNum: number;
+  readonly boundBlockNum: number;
+
+  constructor(details: { proposalId: string; declaredBoundBlockNum: number; boundBlockNum: number }) {
+    super(
+      `Proposal ${quoteUntrusted(details.proposalId)} declares boundBlockNum ` +
+        `${details.declaredBoundBlockNum}, but its signed transaction summary binds block ` +
+        `${details.boundBlockNum}`,
+    );
+    this.name = 'BoundBlockMismatchError';
+    this.proposalId = details.proposalId;
+    this.declaredBoundBlockNum = details.declaredBoundBlockNum;
+    this.boundBlockNum = details.boundBlockNum;
   }
 }

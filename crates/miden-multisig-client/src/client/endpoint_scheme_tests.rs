@@ -24,7 +24,7 @@ use crate::client::MultisigClient;
 use crate::execution::build_final_transaction_request;
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
 use crate::proposal::TransactionType;
-use crate::transaction::{execute_for_summary, generate_salt, word_to_hex};
+use crate::transaction::{execute_for_summary_at_tip, generate_salt, word_to_hex};
 
 /// The commitment the switch target serves, and the one the proposal names,
 /// so the check passes for either scheme: what these tests observe is which
@@ -156,7 +156,7 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
     )
     .await
     .expect("switch request builds");
-    execute_for_summary(&mut client.miden_client, account.id(), tx_request.clone())
+    execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request.clone())
         .await
         .expect("switch request executes for a summary");
 
