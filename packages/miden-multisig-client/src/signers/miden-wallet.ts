@@ -4,7 +4,11 @@ import { AuthDigest } from '../utils/digest.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
 import { bytesToHex, normalizeHexWord } from '../utils/encoding.js';
 import { lookupAuthDigest } from '../lookupAuth.js';
-import { tryComputeEcdsaCommitmentHex } from '../utils/signature.js';
+import {
+  ECDSA_AUTH_SCHEME_ID,
+  FALCON_AUTH_SCHEME_ID,
+  tryComputeEcdsaCommitmentHex,
+} from '../utils/signature.js';
 import { wordToBytes } from '../utils/word.js';
 
 export interface WalletSigningContext {
@@ -167,6 +171,7 @@ export class MidenWalletSigner implements Signer {
   private async signWord(word: { toFelts: () => Array<{ asInt: () => bigint }> }): Promise<string> {
     const bytes = wordToBytes(word);
     const signatureBytes = await this.wallet.signBytes(bytes, 'word');
+    assertSchemeTag(this.scheme, signatureBytes);
     const rawSignature = signatureBytes.slice(1);
     if (
       this.scheme === 'ecdsa' &&
@@ -177,6 +182,25 @@ export class MidenWalletSigner implements Signer {
       this.lastSignature = rawSignature;
     }
     return bytesToHex(rawSignature);
+  }
+}
+
+/**
+ * Reject a wallet signature whose scheme tag names the other scheme.
+ *
+ * A wallet that exposes only a key commitment gives no scheme, so the signer's
+ * scheme can be wrong. Failing here names the mismatch instead of letting
+ * Guardian reject an undecodable signature.
+ */
+function assertSchemeTag(scheme: SignatureScheme, signatureBytes: Uint8Array): void {
+  const tag = signatureBytes[0];
+  const walletScheme: SignatureScheme | null =
+    tag === ECDSA_AUTH_SCHEME_ID ? 'ecdsa' : tag === FALCON_AUTH_SCHEME_ID ? 'falcon' : null;
+  if (walletScheme !== null && walletScheme !== scheme) {
+    throw new Error(
+      `MidenWalletSigner: the wallet signed with ${walletScheme} (${signatureBytes.length} bytes) ` +
+        `but this signer is configured for ${scheme}; select ${walletScheme}.`,
+    );
   }
 }
 

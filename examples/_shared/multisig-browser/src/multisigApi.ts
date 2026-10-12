@@ -29,7 +29,7 @@ import type { SignerInfo, ResolvedSigner } from './types';
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
   commitment: string;
-  publicKey: string;
+  publicKey?: string;
   scheme: SignatureScheme;
 }
 
