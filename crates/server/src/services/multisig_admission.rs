@@ -48,14 +48,19 @@ impl InvokedProcedure {
     /// on-chain derivation (`multisig.masm`: every called non-auth
     /// procedure contributes its threshold, combined by max). Input
     /// notes imply the wallet's receive procedure. Output notes imply
-    /// its send procedure, except the fee note, which the auth
+    /// its send procedures, except the fee note, which the auth
     /// procedure itself creates on every transaction. Patches to the
     /// auth component's configuration slots imply its update
     /// procedures, and a patch to any other slot is a procedure
     /// Guardian does not model, held to the account default. The
     /// executed-transactions slot is bookkeeping the auth procedure
-    /// writes on every transaction and implies nothing.
-    fn of_summary(summary: &TransactionSummary) -> BTreeSet<Self> {
+    /// writes on every transaction and implies nothing. The
+    /// account-creating transaction (`account_is_new`) writes the
+    /// whole initial storage into its delta without calling any update
+    /// procedure, so its slot patches imply nothing either; its notes
+    /// still count, and a creating transaction whose summary shows no
+    /// procedure falls to the account default like any other.
+    fn of_summary(summary: &TransactionSummary, account_is_new: bool) -> BTreeSet<Self> {
         let mut invoked = BTreeSet::new();
         if summary.input_notes().num_notes() > 0 {
             invoked.insert(Self::ReceiveAsset);
@@ -63,13 +68,15 @@ impl InvokedProcedure {
         if summary.output_notes().iter().any(is_non_fee_output_note) {
             invoked.insert(Self::SendAsset);
         }
-        invoked.extend(
-            summary
-                .account_delta()
-                .storage()
-                .slots()
-                .filter_map(|(slot, _)| Self::of_patched_slot(slot)),
-        );
+        if !account_is_new {
+            invoked.extend(
+                summary
+                    .account_delta()
+                    .storage()
+                    .slots()
+                    .filter_map(|(slot, _)| Self::of_patched_slot(slot)),
+            );
+        }
         invoked
     }
 
@@ -92,7 +99,13 @@ impl InvokedProcedure {
         }
     }
 
-    fn root(self) -> Option<Word> {
+    /// The account procedure roots a modeled procedure stands for. A
+    /// standard send calls both wallet send procedures (`create_note`
+    /// and `move_asset_to_note`, see the send-notes transaction
+    /// script), and on chain each called procedure contributes its
+    /// override or the default, combined by max, so an override on one
+    /// of them cannot lower a send below the other's contribution.
+    fn roots(self) -> Vec<Word> {
         let auth_root = |name: &str| {
             let code = AuthGuardedMultisig::code();
             let export = code
@@ -102,12 +115,21 @@ impl InvokedProcedure {
                 .map(Word::from)
         };
         match self {
-            Self::UpdateSigners => auth_root("update_signers_and_threshold"),
-            Self::SetProcedureThreshold => auth_root("set_procedure_threshold"),
-            Self::UpdateGuardian => auth_root("update_guardian_public_key"),
-            Self::SendAsset => Some(BasicWallet::move_asset_to_note_root().into()),
-            Self::ReceiveAsset => Some(BasicWallet::receive_asset_root().into()),
-            Self::AccountDefault => None,
+            Self::UpdateSigners => auth_root("update_signers_and_threshold")
+                .into_iter()
+                .collect(),
+            Self::SetProcedureThreshold => {
+                auth_root("set_procedure_threshold").into_iter().collect()
+            }
+            Self::UpdateGuardian => auth_root("update_guardian_public_key")
+                .into_iter()
+                .collect(),
+            Self::SendAsset => vec![
+                BasicWallet::create_note_root().into(),
+                BasicWallet::move_asset_to_note_root().into(),
+            ],
+            Self::ReceiveAsset => vec![BasicWallet::receive_asset_root().into()],
+            Self::AccountDefault => Vec::new(),
         }
     }
 }
@@ -189,7 +211,7 @@ impl MultisigAccount {
         pushed: &TransactionSummary,
         claimed: Option<InvokedProcedure>,
     ) -> Result<usize> {
-        let mut invoked = InvokedProcedure::of_summary(pushed);
+        let mut invoked = InvokedProcedure::of_summary(pushed, self.account.is_new());
         if invoked.is_empty() {
             invoked.insert(InvokedProcedure::AccountDefault);
         }
@@ -237,19 +259,22 @@ fn effective_threshold(account: &Account, procedure: InvokedProcedure) -> Option
         .get_item(AuthGuardedMultisig::threshold_config_slot())
         .ok()?[0]
         .as_canonical_u64() as usize;
-    let override_threshold = procedure
-        .root()
-        .and_then(|root| {
-            storage
-                .get_map_item(
-                    AuthGuardedMultisig::procedure_thresholds_slot(),
-                    StorageMapKey::new(root),
-                )
-                .ok()
-        })
-        .map(|word| word[0].as_canonical_u64() as usize)
-        .filter(|threshold| *threshold != 0);
-    Some(override_threshold.unwrap_or(default))
+    let per_root = |root: Word| {
+        storage
+            .get_map_item(
+                AuthGuardedMultisig::procedure_thresholds_slot(),
+                StorageMapKey::new(root),
+            )
+            .ok()
+            .map(|word| word[0].as_canonical_u64() as usize)
+            .filter(|threshold| *threshold != 0)
+            .unwrap_or(default)
+    };
+    let roots = procedure.roots();
+    if roots.is_empty() {
+        return Some(default);
+    }
+    Some(roots.into_iter().map(per_root).fold(0, usize::max))
 }
 
 fn pending_signatures(proposal: &DeltaObject) -> &[CosignerSignature] {
