@@ -28,6 +28,49 @@ pub enum MultisigError {
     #[error("GUARDIAN server error: {0}")]
     GuardianServer(String),
 
+    /// GUARDIAN refused a Guardian-execution request with a stable code, such as
+    /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. `retryable` is the
+    /// server's `meta.retryable`; `retry_after` is the server's backoff hint, when it sent one;
+    /// `blocking_proposal_id` names the proposal whose execution holds the account, on a
+    /// conflict.
+    #[error("GUARDIAN refused execution ({code}): {message}")]
+    GuardianExecutionRefused {
+        code: String,
+        message: String,
+        retryable: bool,
+        retry_after: Option<std::time::Duration>,
+        blocking_proposal_id: Option<String>,
+    },
+
+    /// The proposal must be executed by a client, not by GUARDIAN; `reason` says why. Execute it
+    /// with [`execute_proposal`](crate::MultisigClient::execute_proposal).
+    #[error(
+        "proposal {proposal_id} must be executed locally, not by GUARDIAN: {}",
+        reason.description()
+    )]
+    LocalExecutionRequired {
+        proposal_id: String,
+        reason: crate::local_execution::LocalExecutionReason,
+    },
+
+    /// A GUARDIAN execution was requested for a proposal this client has not listed, fetched,
+    /// signed or created, so it cannot tell whether GUARDIAN may execute it.
+    #[error(
+        "proposal {proposal_id} is not held by this client, so it cannot be checked before \
+         GUARDIAN executes it: list proposals and request again"
+    )]
+    ProposalNotHeldLocally { proposal_id: String },
+
+    /// [`wait_for_guardian_execution`](crate::MultisigClient::wait_for_guardian_execution)
+    /// reached its deadline before the execution finished. `last_observed` is the last execution
+    /// it read, if any read succeeded; the execution itself keeps running.
+    #[error("GUARDIAN execution of proposal {proposal_id} did not finish within {deadline:?}")]
+    GuardianExecutionWaitTimedOut {
+        proposal_id: String,
+        deadline: std::time::Duration,
+        last_observed: Option<Box<guardian_client::ProposalExecution>>,
+    },
+
     /// Miden client error.
     #[error("miden client error: {0}")]
     MidenClient(String),

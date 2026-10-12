@@ -51,6 +51,7 @@ mod execution;
 mod export;
 mod guardian_endpoint;
 mod keystore;
+mod local_execution;
 mod payload;
 mod procedures;
 mod proposal;
@@ -65,11 +66,11 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 pub use builder::MultisigClientBuilder;
 pub use client::{AbandonRequestState, AbandonStatus};
 pub use client::{
-    BlockRange, ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning,
-    HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag,
-    HistoryNoteVisibility, HistoryPage, MultisigClient, NoteFilter, NoteImportOutcome,
-    NoteImportSource, NoteImportStatus, NoteRecoveryOptions, NoteRecoveryReport, ProposalResult,
-    PublicBackfillOptions, PublicBackfillReport, RecoveredAccount, RecoveryStep,
+    BlockRange, ConsumableNote, ExecutionWaitOptions, HistoryAssetKind, HistoryDecodeSection,
+    HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset,
+    HistoryNoteTag, HistoryNoteVisibility, HistoryPage, MultisigClient, NoteFilter,
+    NoteImportOutcome, NoteImportSource, NoteImportStatus, NoteRecoveryOptions, NoteRecoveryReport,
+    ProposalResult, PublicBackfillOptions, PublicBackfillReport, RecoveredAccount, RecoveryStep,
     RecoveryStepProblem, StateVerificationResult, TransportRecoveryReport, TransportRecoveryStatus,
 };
 
@@ -106,17 +107,28 @@ pub use proposal::{
 pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
-    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalOptions, TransactionRequestBuilderExt,
-    build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
-    multisig_auth_args, proposal_auth_args, proposer_auth_args,
-    summary_approval_expiration_block_num, summary_salt, synced_fee_faucet_id,
+    GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
+    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalExecutionMode, ProposalOptions,
+    TransactionRequestBuilderExt, build_p2id_transaction_request, deserialize_transaction_request,
+    generate_salt, multisig_auth_args, proposal_auth_args, proposer_auth_args,
+    summary_approval_expiration_block_num, summary_expiration_delta, summary_salt,
+    synced_fee_faucet_id,
 };
 
 // Export/Import
 pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
 
+// Local execution
+pub use local_execution::{GuardianExecutionRequest, LocalExecutionReason};
+
 // Errors
 pub use error::{MultisigError, Result};
+
+// Guardian execution
+pub use guardian_client::execution::{
+    ExecutionFailure, ExecutionFailureCode, ExecutionState, ExpirationBound,
+    ForeignAccountUnavailableReason, ProposalExecution, RequestInvalidReason,
+};
 
 // Re-exports for convenience
 pub use guardian_shared::SignatureScheme;

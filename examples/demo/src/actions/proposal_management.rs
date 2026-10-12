@@ -8,8 +8,10 @@ use std::pin::Pin;
 use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
-    word_from_hex, Asset, ExportedProposal, NoteId, P2ideHeights, ProcedureName, Proposal,
-    ProposalVerification, TransactionType,
+    word_from_hex, Asset, ExecutionFailureCode, ExecutionState, ExecutionWaitOptions,
+    ExpirationBound, ExportedProposal, ForeignAccountUnavailableReason, GuardianExecutionRequest,
+    LocalExecutionReason, MultisigError, NoteId, P2ideHeights, ProcedureName, Proposal,
+    ProposalExecution, ProposalVerification, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -76,6 +78,11 @@ pub async fn action_proposal_management(
                     print_error(&e);
                 }
             }
+            "9" => {
+                if let Err(e) = action_guardian_execution_status(state, editor).await {
+                    print_error(&e);
+                }
+            }
             "b" | "back" => return Ok(()),
             _ => print_error("Invalid choice"),
         }
@@ -99,6 +106,9 @@ fn print_proposal_menu() {
     println!("  Custom (producer) Operations:");
     println!("  [7] Create custom proposal (raw)");
     println!("  [8] Execute custom proposal (raw)");
+    println!();
+    println!("  GUARDIAN Execution:");
+    println!("  [9] Show GUARDIAN execution status");
     println!();
     println!("  [b] Back to main menu");
     println!();
@@ -526,6 +536,16 @@ async fn action_execute_proposal(
         _ => None,
     };
 
+    if state.guardian_executes() {
+        match LocalExecutionReason::of(&proposal.transaction_type) {
+            None => return execute_through_guardian(state, &proposal_id).await,
+            Some(reason) => print_info(&format!(
+                "Executing this proposal here rather than through GUARDIAN: {}.",
+                reason.description()
+            )),
+        }
+    }
+
     print_waiting("Executing proposal");
 
     let execute_result = retry_on_recency_condition(state, |state| {
@@ -574,6 +594,206 @@ async fn action_execute_proposal(
             }
             Err(e)
         }
+    }
+}
+
+/// What the caller can do after a failed execution. Follows the failure code: whether the
+/// proposal is still stored does not say whether executing it again can succeed.
+fn failed_execution_advice(code: ExecutionFailureCode) -> &'static str {
+    match code {
+        ExecutionFailureCode::ChainBehind
+        | ExecutionFailureCode::NodeUnavailable
+        | ExecutionFailureCode::ChainInconsistent
+        | ExecutionFailureCode::ProvingFailed
+        | ExecutionFailureCode::SealingFailed
+        | ExecutionFailureCode::AcknowledgementFailed
+        | ExecutionFailureCode::LeaseExpired
+        | ExecutionFailureCode::Abandoned => "Execute it again.",
+        ExecutionFailureCode::InsufficientSignatures => {
+            "Collect more signatures, then execute it again."
+        }
+        ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction) => {
+            "Execute it again: a new attempt gets a fresh transaction window."
+        }
+        ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval) => {
+            "Its approval window has passed: create and sign a new proposal."
+        }
+        ExecutionFailureCode::ForeignAccountUnavailable(
+            ForeignAccountUnavailableReason::Unavailable,
+        ) => "Execute it again once the node serves the foreign account.",
+        ExecutionFailureCode::ForeignAccountUnavailable(
+            ForeignAccountUnavailableReason::Private,
+        ) => {
+            "GUARDIAN cannot read a private foreign account: execute it from a client that holds it."
+        }
+        ExecutionFailureCode::BindingMismatch
+        | ExecutionFailureCode::StateMismatch
+        | ExecutionFailureCode::RequestCodec
+        | ExecutionFailureCode::ProtocolMismatch
+        | ExecutionFailureCode::InsufficientFee
+        | ExecutionFailureCode::ExpirationBeyondHorizon
+        | ExecutionFailureCode::AccountInadmissible => "Fix the cause before executing it again.",
+        ExecutionFailureCode::RequestInvalid(_) => {
+            "GUARDIAN cannot execute this request: execute it from this client instead."
+        }
+        ExecutionFailureCode::SubmissionRejected
+        | ExecutionFailureCode::CandidateDiscarded
+        | ExecutionFailureCode::Expired => {
+            "The transaction was sent and did not land: create and sign a new proposal."
+        }
+    }
+}
+
+/// Hands a threshold-met proposal to GUARDIAN, which proves and submits it, and waits for the
+/// outcome. The proposal must have been created by a client in GUARDIAN-executes mode.
+async fn execute_through_guardian(
+    state: &mut SessionState,
+    proposal_id: &str,
+) -> Result<(), String> {
+    print_waiting("Asking GUARDIAN to execute the proposal");
+    let requested = retry_on_recency_condition(state, |state| {
+        let proposal_id = proposal_id.to_string();
+        Box::pin(async move {
+            let client = state.get_client_mut()?;
+            client
+                .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
+                .await
+                .map_err(describe_execution_error)
+        })
+    })
+    .await?;
+    if requested.newly_accepted {
+        print_success("GUARDIAN accepted the execution");
+    } else {
+        print_info(&format!(
+            "GUARDIAN is already executing this proposal ({})",
+            requested.state.as_str()
+        ));
+    }
+
+    print_waiting("GUARDIAN is proving and submitting the transaction");
+    let finished = state
+        .get_client_mut()?
+        .wait_for_guardian_execution(proposal_id, ExecutionWaitOptions::default())
+        .await
+        .map_err(describe_execution_error)?;
+    print_execution(&finished);
+
+    match finished.state {
+        ExecutionState::Committed => {
+            print_success("GUARDIAN executed the proposal");
+            print_waiting("Syncing state after execution");
+            if let Err(sync_err) = crate::actions::sync_with_retry(state).await {
+                print_info(&format!(
+                    "  Note: Post-execution sync had issues ({}). State should still be correct.",
+                    sync_err
+                ));
+            } else {
+                print_success("State synced successfully");
+            }
+            Ok(())
+        }
+        ExecutionState::Failed => {
+            if let Some(error) = &finished.error {
+                print_info(failed_execution_advice(error.code));
+            }
+            Err("GUARDIAN could not execute the proposal".to_string())
+        }
+        ExecutionState::Pending | ExecutionState::Proving | ExecutionState::Submitted => {
+            Err(format!(
+                "GUARDIAN reported a non-final state: {}",
+                finished.state.as_str()
+            ))
+        }
+    }
+}
+
+/// Shows the account's in-flight GUARDIAN execution and, on request, one proposal's latest.
+async fn action_guardian_execution_status(
+    state: &mut SessionState,
+    editor: &mut DefaultEditor,
+) -> Result<(), String> {
+    print_section("GUARDIAN Execution Status");
+
+    let current = state
+        .get_client_mut()?
+        .current_execution()
+        .await
+        .map_err(describe_execution_error)?;
+    match &current {
+        Some(execution) => {
+            println!("\nIn flight on this account:");
+            print_execution(execution);
+        }
+        None => print_info("No GUARDIAN execution is in flight on this account"),
+    }
+
+    let proposal_id = prompt_input(editor, "\nProposal ID to check (Enter to skip): ")?;
+    let proposal_id = proposal_id.trim();
+    if proposal_id.is_empty() {
+        return Ok(());
+    }
+    let execution = state
+        .get_client_mut()?
+        .execution_status(proposal_id)
+        .await
+        .map_err(describe_execution_error)?;
+    print_execution(&execution);
+    Ok(())
+}
+
+fn print_execution(execution: &ProposalExecution) {
+    println!("  Proposal: {}", shorten_hex(&execution.proposal_id));
+    println!("  State: {}", execution.state.as_str());
+    if let Some(nonce) = execution.delta_nonce {
+        println!("  Delta nonce: {}", nonce);
+    }
+    if execution.ignored_signatures > 0 {
+        println!(
+            "  Signatures GUARDIAN ignored: {}",
+            execution.ignored_signatures
+        );
+    }
+    if let Some(error) = &execution.error {
+        println!("  Error: {} ({})", error.message, error.code.as_str());
+    }
+    println!("  Proposal still stored: {}", execution.proposal_exists);
+    println!("  Updated: {}", execution.updated_at);
+}
+
+fn describe_execution_error(error: MultisigError) -> String {
+    match error {
+        MultisigError::GuardianExecutionRefused {
+            code,
+            message,
+            retryable,
+            ..
+        } => {
+            let hint = match code.as_str() {
+                "GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST" => {
+                    " The proposal was created by a client that executes itself: create it again \
+                     from a session where GUARDIAN executes proposals."
+                }
+                "GUARDIAN_PROVING_UNAVAILABLE" => {
+                    " The server offers no execution: set GUARDIAN_TX_PROVER_URL on it."
+                }
+                _ if retryable => " Retryable: try again shortly.",
+                _ => "",
+            };
+            format!("{message} ({code}).{hint}")
+        }
+        MultisigError::GuardianExecutionWaitTimedOut {
+            deadline,
+            last_observed,
+            ..
+        } => format!(
+            "GUARDIAN did not finish within {}s (last state: {}); check again with option 9",
+            deadline.as_secs(),
+            last_observed
+                .map(|execution| execution.state.as_str())
+                .unwrap_or("unknown")
+        ),
+        other => other.to_string(),
     }
 }
 

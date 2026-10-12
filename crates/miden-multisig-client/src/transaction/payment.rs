@@ -13,6 +13,7 @@ use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::MultisigAuthArgs;
 use miden_standards::note::{P2idNote, P2ideNote};
 use miden_standards::tx_script::SendNotesTransactionScript;
+use std::num::NonZeroU16;
 
 use super::TransactionRequestBuilderExt;
 use crate::error::{MultisigError, Result};
@@ -33,6 +34,36 @@ pub fn build_p2id_transaction_request<I>(
     heights: P2ideHeights,
     auth_args: &MultisigAuthArgs,
     signature_advice: I,
+) -> Result<TransactionRequest>
+where
+    I: IntoIterator<Item = (Word, Vec<Felt>)>,
+{
+    build_p2id_transaction_request_with_expiration(
+        sender_account,
+        recipient,
+        assets,
+        note_type,
+        heights,
+        auth_args,
+        signature_advice,
+        None,
+    )
+}
+
+/// [`build_p2id_transaction_request`] with the transaction expiration its send script applies.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the note, its constraints and the proposal's binding are each part of the request"
+)]
+pub fn build_p2id_transaction_request_with_expiration<I>(
+    sender_account: &Account,
+    recipient: AccountId,
+    assets: Vec<Asset>,
+    note_type: NoteType,
+    heights: P2ideHeights,
+    auth_args: &MultisigAuthArgs,
+    signature_advice: I,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -75,10 +106,16 @@ where
         MultisigError::TransactionExecution(format!("failed to build account interface: {}", e))
     })?;
 
-    let send_notes_script = SendNotesTransactionScript::new(&interface, &[note.clone().into()])
-        .map_err(|e| {
-            MultisigError::TransactionExecution(format!("failed to build P2ID send script: {}", e))
-        })?;
+    let output_notes = [note.clone().into()];
+    let send_notes_script = match expiration_delta {
+        Some(delta) => {
+            SendNotesTransactionScript::with_expiration_delta(&interface, &output_notes, delta)
+        }
+        None => SendNotesTransactionScript::new(&interface, &output_notes),
+    }
+    .map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to build P2ID send script: {}", e))
+    })?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(send_notes_script.tx_script().clone())
@@ -312,5 +349,95 @@ mod tests {
         // Deterministic in (salt, heights): a cosigner rebuilding from the
         // same metadata produces the identical output note.
         assert_eq!(recipient_digests(&build(Some(12345), None)), with_reclaim);
+    }
+
+    /// The send-notes template a TypeScript cosigner builds (`withOwnOutputNotes` plus
+    /// `withExpirationDelta`) resolves, at execution, to the same send script and script argument
+    /// this builder embeds as a custom script, so either form of the same payment executes to the
+    /// same summary and proposal id.
+    #[tokio::test]
+    async fn the_custom_send_script_and_the_send_notes_template_reproduce_one_summary() {
+        use crate::client::test_support::{chain_with_notes, offline_client_parts, test_wallet};
+        use crate::transaction::{
+            GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA, execute_for_summary_at_tip, proposer_auth_args,
+        };
+        use miden_protocol::asset::{AssetVault, FungibleAsset};
+
+        let existing = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
+            1,
+            vec![SecretKey::new().public_key().to_commitment()],
+            Word::from([9u32, 9, 9, 9]),
+        ))
+        .with_seed([64; 32])
+        .build_existing()
+        .unwrap();
+        let (id, _vault, storage, code, nonce, _seed) = existing.into_parts();
+        let vault = AssetVault::new(&[FungibleAsset::mock(1_000)]).unwrap();
+        let account = Account::new_unchecked(id, vault, storage, code, nonce, None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut client, _store) =
+            offline_client_parts(dir.path(), chain_with_notes(vec![]), None).await;
+        let miden_client = &mut client.miden_client;
+        miden_client.add_account(&account, false).await.unwrap();
+        miden_client.sync_state().await.unwrap();
+
+        let delta = GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA;
+        let auth_args = proposer_auth_args(miden_client, Word::from([1u32, 2, 3, 4]), None)
+            .await
+            .unwrap();
+        let recipient = test_wallet(201).id();
+        let asset = FungibleAsset::mock(1);
+
+        let custom = build_p2id_transaction_request_with_expiration(
+            &account,
+            recipient,
+            vec![asset],
+            NoteType::Public,
+            P2ideHeights::default(),
+            &auth_args,
+            std::iter::empty::<(Word, Vec<Felt>)>(),
+            Some(delta),
+        )
+        .unwrap();
+        let note: miden_protocol::note::Note = P2idNote::builder()
+            .sender(account.id())
+            .target(recipient)
+            .assets(vec![asset])
+            .note_type(NoteType::Public)
+            .generate_serial_number(&mut RandomCoin::new(auth_args.salt()))
+            .build()
+            .unwrap()
+            .into();
+        let template = TransactionRequestBuilder::new()
+            .own_output_notes([note])
+            .expiration_delta(delta.get())
+            .multisig_auth_args(&auth_args)
+            .build()
+            .unwrap();
+        assert!(matches!(
+            template.script_template(),
+            Some(TransactionScriptTemplate::SendNotes(_))
+        ));
+        assert_eq!(
+            custom
+                .expected_output_recipients()
+                .map(|r| r.digest())
+                .collect::<Vec<_>>(),
+            template
+                .expected_output_recipients()
+                .map(|r| r.digest())
+                .collect::<Vec<_>>(),
+        );
+
+        let from_custom = execute_for_summary_at_tip(miden_client, account.id(), custom)
+            .await
+            .unwrap();
+        let from_template = execute_for_summary_at_tip(miden_client, account.id(), template)
+            .await
+            .unwrap();
+        assert_eq!(from_custom.expiration_delta(), delta.get());
+        assert_eq!(from_template.expiration_delta(), delta.get());
+        assert_eq!(from_custom.to_commitment(), from_template.to_commitment());
     }
 }

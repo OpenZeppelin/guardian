@@ -1,6 +1,7 @@
 //! Note consumption transaction utilities.
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use miden_client::note::NoteFile;
@@ -8,6 +9,7 @@ use miden_client::rpc::NodeRpcClient;
 use miden_client::store::{InputNoteRecord, NoteFilter as StoreNoteFilter};
 use miden_client::transaction::{NoteArgs, TransactionRequest, TransactionRequestBuilder};
 use miden_protocol::note::{Note, NoteId, NoteInclusionProof};
+use miden_protocol::transaction::InputNote;
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::MultisigAuthArgs;
 
@@ -40,19 +42,14 @@ pub(crate) async fn fetch_notes_from_store(
     Ok(notes)
 }
 
-/// Builds a consume-notes transaction request directly from a slice of
-/// already-loaded `Note` objects. No local-store read is performed.
-///
-/// This is the v2 (issue #229) rebuild path: cosigners use it to verify
-/// and execute a `consume_notes` proposal whose metadata carries the
-/// serialized notes inline, eliminating the per-device IndexedDB
-/// dependency of the legacy path.
-///
-/// Spec FR-005 / FR-013 / FR-014.
+/// Builds a consume-notes transaction request directly from already-loaded notes, applying
+/// `expiration_delta`. No local-store read is performed; cosigners rebuild a v2 `consume_notes`
+/// proposal this way from the notes its metadata carries.
 pub fn build_consume_notes_transaction_request_from_notes<I>(
     notes: Vec<Note>,
     auth_args: &MultisigAuthArgs,
     signature_advice: I,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
@@ -71,38 +68,49 @@ where
     for (key, values) in signature_advice {
         builder = builder.extend_advice_map([(key, values)]);
     }
+    if let Some(delta) = expiration_delta {
+        builder = builder.expiration_delta(delta.get());
+    }
 
     builder.multisig_auth_args(auth_args).build().map_err(|e| {
         MultisigError::TransactionExecution(format!("failed to build transaction request: {}", e))
     })
 }
 
-/// Builds a consume-notes transaction request by fetching notes from
-/// the client's local store. This is the legacy (v1) path used during
-/// proposal creation (where the proposer is expected to hold the notes
-/// locally — spec FR-012) and during v1 verification on transitional
-/// builds.
-///
-/// On v2 proposals, callers should use
-/// `build_consume_notes_transaction_request_from_notes` instead with
-/// notes decoded from the signed metadata.
-pub async fn build_consume_notes_transaction_request<I>(
+/// A consume-notes request whose notes are pinned as authenticated, with their inclusion proofs,
+/// so any party executes it in the same mode without consulting its own store. This is the
+/// request a Guardian-executable proposal stores; call [`ensure_notes_authenticated`] first.
+pub(crate) async fn build_pinned_consume_notes_transaction_request(
     client: &MidenSdkClient,
-    note_ids: Vec<NoteId>,
+    notes: &[Note],
     auth_args: &MultisigAuthArgs,
-    signature_advice: I,
-) -> Result<TransactionRequest>
-where
-    I: IntoIterator<Item = (Word, Vec<Felt>)>,
-{
-    if note_ids.is_empty() {
-        return Err(MultisigError::InvalidConfig(
-            "no notes specified for consumption".to_string(),
-        ));
+    expiration_delta: Option<NonZeroU16>,
+) -> Result<TransactionRequest> {
+    let records: BTreeMap<NoteId, InputNoteRecord> = client
+        .get_input_notes(StoreNoteFilter::List(notes.iter().map(Note::id).collect()))
+        .await
+        .map_err(|e| MultisigError::miden_client_with_context("failed to read input notes", e))?
+        .into_iter()
+        .filter_map(|record| record.id().map(|id| (id, record)))
+        .collect();
+    let mut pinned = Vec::with_capacity(notes.len());
+    for note in notes {
+        let proof = records
+            .get(&note.id())
+            .and_then(InputNoteRecord::inclusion_proof)
+            .ok_or_else(|| MultisigError::ConsumeNoteNotAuthenticated {
+                note_id: note.id(),
+                reason: "the local store holds no inclusion proof to pin it with".to_string(),
+            })?;
+        pinned.push((InputNote::authenticated(note.clone(), proof.clone()), None));
     }
-
-    let notes = fetch_notes_from_store(client, &note_ids).await?;
-    build_consume_notes_transaction_request_from_notes(notes, auth_args, signature_advice)
+    let mut builder = TransactionRequestBuilder::new().explicit_input_notes(pinned);
+    if let Some(delta) = expiration_delta {
+        builder = builder.expiration_delta(delta.get());
+    }
+    builder.multisig_auth_args(auth_args).build().map_err(|e| {
+        MultisigError::TransactionExecution(format!("failed to build transaction request: {}", e))
+    })
 }
 
 /// Makes every note in `notes` an *authenticated* input note in the client's
