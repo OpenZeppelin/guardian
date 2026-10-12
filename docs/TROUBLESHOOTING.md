@@ -626,7 +626,10 @@ once come back synchronously and create nothing.
 - **An execution stays `submitted`.** The send's outcome is unknown and reconciliation waits for
   the chain: it resolves `committed` through promotion, `EXPIRED` once the chain reaches the
   transaction's expiration block with the account unchanged, or `CANDIDATE_DISCARDED` when the account
-  moved elsewhere. It never settles by elapsed time. `guardian_execution_observation_outage_seconds`
+  moved elsewhere and its transaction history shows the transaction never landed. An account that
+  moved on after the transaction landed (a guardian switch, for example) still commits, and a
+  history that cannot be searched yet keeps the execution `submitted`. It never settles by elapsed
+  time. `guardian_execution_observation_outage_seconds`
   above zero means the chain cannot be read.
 - **An execution stays `submitted` after a restart.** If the Guardian process died after the
   boundary commit (the state reads `submitted` from then on) but before the send had a definite
