@@ -299,7 +299,8 @@ impl Reconciler {
     /// expiring at block `X` can be included in block `X` and no later, so an account still at
     /// its base as of `X` was not included and can no longer be. The base was on chain at the
     /// block the transaction executed against, so a read from before that block is a lagging
-    /// node, not evidence the account moved.
+    /// node, not evidence the account moved. An account that moved elsewhere is settled from its
+    /// transaction history (see [`Self::moved_on`]).
     async fn observe(
         &self,
         state: &AppState,
@@ -324,13 +325,7 @@ impl Reconciler {
             if observed.block < evidence.reference_block {
                 return Ok(Observed::Pending);
             }
-            return Ok(Observed::Settles(
-                ExecutionFailureCode::CandidateDiscarded,
-                format!(
-                    "as of block {}, the account is at a state that is neither the base nor the submitted one",
-                    observed.block
-                ),
-            ));
+            return self.moved_on(state, evidence, observed.block).await;
         }
         if observed.block >= evidence.expiration_block {
             return Ok(Observed::Settles(
@@ -342,6 +337,51 @@ impl Reconciler {
             ));
         }
         Ok(Observed::Pending)
+    }
+
+    /// The account is at a state that is neither the base nor the submitted one. The submitted
+    /// transaction spends the base, so it either landed before the account moved on (a guardian
+    /// switch needs no acknowledgment from this server) or can never land. The account's
+    /// transaction history tells the two apart, private accounts included: a landed transaction
+    /// is left to promotion, which commits it; a history that reaches the read block without it
+    /// settles the submission discarded.
+    async fn moved_on(
+        &self,
+        state: &AppState,
+        evidence: &SubmissionEvidence,
+        block: u32,
+    ) -> Result<Observed, String> {
+        let search = state
+            .network_client
+            .find_transaction_ending_at(
+                &evidence.account_id,
+                &evidence.expected_commitment,
+                evidence.reference_block,
+                RpcReadMode::SingleAttempt,
+            )
+            .await?;
+        if let Some(landed) = search.found_in_block {
+            tracing::info!(
+                account_id = %evidence.account_id,
+                proposal_id = %evidence.proposal_id,
+                landed_in_block = landed,
+                observed_block = block,
+                "the submitted transaction landed before the account moved on; promotion settles it"
+            );
+            return Ok(Observed::AtExpected);
+        }
+        if search.resume_from_block <= block {
+            return Ok(Observed::Pending);
+        }
+        Ok(Observed::Settles(
+            ExecutionFailureCode::CandidateDiscarded,
+            format!(
+                "as of block {block}, the account is at a state that is neither the base nor the \
+                 submitted one, and its history from block {} holds no transaction reaching the \
+                 submitted state",
+                evidence.reference_block
+            ),
+        ))
     }
 
     /// The observation may have taken a large part of the lease, so the lease and the

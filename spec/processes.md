@@ -681,7 +681,12 @@ unplanned stop. After the boundary, reconciliation settles only from the chain:
 
 - the account at the expected commitment: wait for promotion, write nothing;
 - still at the base with the chain strictly past the expiration block: `GUARDIAN_EXECUTION_EXPIRED`;
-- anywhere else: `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`;
+- anywhere else, the account's transaction history from the reference block decides: a
+  transaction reaching the expected commitment means it landed and the account moved on (a
+  guardian switch needs no acknowledgment from this Guardian), so canonicalization promotes the
+  candidate and the execution commits; a history covering the observed block without one is
+  `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`; a history not yet covering it, or one that cannot be
+  searched, waits;
 - the chain unobservable: keep the reservation and try again next pass. Elapsed time never
   settles an execution.
 
