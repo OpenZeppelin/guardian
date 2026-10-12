@@ -1,3 +1,4 @@
+import type { Account } from '@miden-sdk/miden-sdk';
 import {
   AdviceMap,
   FeltArray,
@@ -8,21 +9,29 @@ import {
 } from '@miden-sdk/miden-sdk';
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type {
+  DeltaProposalRequest,
+  DeltaProposalResponse,
+  GuardianHttpClient,
+  Signer,
+} from '@openzeppelin/guardian-client';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { createMultisigAccount } from '../src/account/builder.js';
-import { BoundBlockNotDeclaredError } from '../src/multisig/authArgErrors.js';
+import { Multisig } from '../src/multisig.js';
+import { BoundBlockMismatchError, BoundBlockNotDeclaredError } from '../src/multisig/authArgErrors.js';
+import { computeCommitmentFromTxSummary } from '../src/multisig/helpers.js';
 import {
   buildUpdateSignersTransactionRequest,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
   requestBoundBlockNum,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
 } from '../src/transaction.js';
+import type { ExportedProposal } from '../src/types.js';
 import { midenTransactionTypedData, typedDataDigest } from '../src/utils/eip712.js';
-import { bytesToHex } from '../src/utils/encoding.js';
+import { bytesToHex, uint8ArrayToBase64 } from '../src/utils/encoding.js';
 import {
   buildEip712SignatureAdviceEntry,
   buildSignatureAdviceEntry,
@@ -102,49 +111,46 @@ describe('guarded multisig auth procedure on the mock chain', () => {
       const unsigned = await buildUpdateSignersTransactionRequest(
         mockClient, 1, [rawCommitment, eip712Commitment], requestOptions,
       );
-      const { summary, anchor } = await executeForSummary(mockClient, id, unsigned.request);
-      try {
-        const commitment = summary.toCommitment();
-        const commitmentHex = commitment.toHex();
-        const rawDigest = keccak_256(wordToBytes(Word.fromHex(commitmentHex)));
-        const rawSignature = secp256k1.sign(rawDigest, rawKey);
-        const guardianSignature = secp256k1.sign(rawDigest, guardianKey);
-        const eip712Signature = secp256k1.sign(
-          typedDataDigest(midenTransactionTypedData(wordToBytes(Word.fromHex(commitmentHex)))), eip712Key,
-        );
-        const rawEntry = buildSignatureAdviceEntry(
-          Word.fromHex(rawCommitment), Word.fromHex(commitmentHex),
-          Signature.deserialize(signatureHexToBytes(bytesToHex(new Uint8Array([
-            ...rawSignature.toCompactRawBytes(), rawSignature.recovery,
-          ])), 'ecdsa')),
-        );
-        const eip712Entry = buildEip712SignatureAdviceEntry(
-          Word.fromHex(eip712Commitment), Word.fromHex(commitmentHex),
-          bytesToHex(new Uint8Array([...eip712Signature.toCompactRawBytes(), eip712Signature.recovery])),
-          publicKeys[1],
-        );
-        const guardianEntry = buildSignatureAdviceEntry(
-          Word.fromHex(guardianCommitment), Word.fromHex(commitmentHex),
-          Signature.deserialize(signatureHexToBytes(bytesToHex(new Uint8Array([
-            ...guardianSignature.toCompactRawBytes(), guardianSignature.recovery,
-          ])), 'ecdsa')),
-        );
-        const advice = new AdviceMap();
-        for (const entry of [rawEntry, eip712Entry, guardianEntry]) {
-          advice.insert(entry.key, new FeltArray(entry.values));
-        }
-        const signed = await buildUpdateSignersTransactionRequest(
-          mockClient, 1, [rawCommitment, eip712Commitment], {
-            ...requestOptions,
-            boundBlockNum: anchor.blockNum(),
-            signatureAdviceMap: advice,
-          },
-        );
-        const execution = await mockClient.transactions.executeRequest(id, signed.request);
-        expect(execution.result).toBeDefined();
-      } finally {
-        anchor.free();
+      const boundBlockNum = requestBoundBlockNum(unsigned.request);
+      const summary = await executeForSummaryAtTip(mockClient, id, unsigned.request);
+      const commitment = summary.toCommitment();
+      const commitmentHex = commitment.toHex();
+      const rawDigest = keccak_256(wordToBytes(Word.fromHex(commitmentHex)));
+      const rawSignature = secp256k1.sign(rawDigest, rawKey);
+      const guardianSignature = secp256k1.sign(rawDigest, guardianKey);
+      const eip712Signature = secp256k1.sign(
+        typedDataDigest(midenTransactionTypedData(wordToBytes(Word.fromHex(commitmentHex)))), eip712Key,
+      );
+      const rawEntry = buildSignatureAdviceEntry(
+        Word.fromHex(rawCommitment), Word.fromHex(commitmentHex),
+        Signature.deserialize(signatureHexToBytes(bytesToHex(new Uint8Array([
+          ...rawSignature.toCompactRawBytes(), rawSignature.recovery,
+        ])), 'ecdsa')),
+      );
+      const eip712Entry = buildEip712SignatureAdviceEntry(
+        Word.fromHex(eip712Commitment), Word.fromHex(commitmentHex),
+        bytesToHex(new Uint8Array([...eip712Signature.toCompactRawBytes(), eip712Signature.recovery])),
+        publicKeys[1],
+      );
+      const guardianEntry = buildSignatureAdviceEntry(
+        Word.fromHex(guardianCommitment), Word.fromHex(commitmentHex),
+        Signature.deserialize(signatureHexToBytes(bytesToHex(new Uint8Array([
+          ...guardianSignature.toCompactRawBytes(), guardianSignature.recovery,
+        ])), 'ecdsa')),
+      );
+      const advice = new AdviceMap();
+      for (const entry of [rawEntry, eip712Entry, guardianEntry]) {
+        advice.insert(entry.key, new FeltArray(entry.values));
       }
+      const signed = await buildUpdateSignersTransactionRequest(
+        mockClient, 1, [rawCommitment, eip712Commitment], {
+          ...requestOptions,
+          boundBlockNum,
+          signatureAdviceMap: advice,
+        },
+      );
+      const execution = await mockClient.transactions.executeRequest(id, signed.request);
+      expect(execution.result).toBeDefined();
     } finally {
       mockClient.terminate();
     }
@@ -153,28 +159,10 @@ describe('guarded multisig auth procedure on the mock chain', () => {
   it('accepts the auth args and binds the salt into the summary', async () => {
     const { request } = await buildRequest();
 
-    const { summary, anchor } = await executeForSummary(client, accountId, request);
-    try {
-      expect(summarySalt(summary).toHex()).toBe(SALT_HEX);
-      expect(summaryApprovalExpirationBlockNum(summary)).toBeUndefined();
-      expect(anchor.blockNum()).toBe(requestBoundBlockNum(request));
-      expect(summary.blockCommitment().toHex()).toBe(anchor.commitment().toHex());
-    } finally {
-      anchor.free();
-    }
-  });
+    const summary = await executeForSummaryAtTip(client, accountId, request);
 
-  it('lets a cosigner reproduce the commitment from the salt and the anchor block', async () => {
-    const proposer = await buildRequest();
-    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request);
-    try {
-      const rebuilt = await buildRequest({ boundBlockNum: anchor.blockNum() });
-      const reproduced = await executeForSummaryAt(client, accountId, rebuilt.request, anchor);
-
-      expect(reproduced.toCommitment().toHex()).toBe(summary.toCommitment().toHex());
-    } finally {
-      anchor.free();
-    }
+    expect(summarySalt(summary).toHex()).toBe(SALT_HEX);
+    expect(summaryApprovalExpirationBlockNum(summary)).toBeUndefined();
   });
 
   it('declares the block its auth args bind', async () => {
@@ -185,12 +173,14 @@ describe('guarded multisig auth procedure on the mock chain', () => {
 
   // Issue #462: a multisig summary binds the block its auth args name, not the
   // block it executes against, so a cosigner reproduces it at its own tip long
-  // after the proposal was made, with no anchor involved.
-  it('lets a cosigner reproduce the commitment at a later tip, without the anchor', async () => {
+  // after the proposal was made.
+  it('lets a cosigner reproduce the commitment from the salt and the bound block at a later tip', async () => {
     const proposer = await buildRequest();
-    const { summary, anchor } = await executeForSummary(client, accountId, proposer.request);
-    const boundBlockNum = anchor.blockNum();
-    anchor.free();
+    const boundBlockNum = requestBoundBlockNum(proposer.request);
+    if (boundBlockNum === undefined) {
+      throw new Error('the multisig request must carry auth args');
+    }
+    const summary = await executeForSummaryAtTip(client, accountId, proposer.request);
 
     await client.proveBlock();
     await client.proveBlock();
@@ -201,6 +191,22 @@ describe('guarded multisig auth procedure on the mock chain', () => {
     const reproduced = await executeForSummaryAtTip(client, accountId, rebuilt.request);
 
     expect(reproduced.toCommitment().toHex()).toBe(summary.toCommitment().toHex());
+  });
+
+  it('reads back from the summary the earlier block a request binds', async () => {
+    await client.proveBlock();
+    await client.syncChain();
+    const boundBlockNum = await client.getSyncHeight();
+    await client.proveBlock();
+    await client.proveBlock();
+    await client.syncChain();
+    expect(boundBlockNum).toBeGreaterThan(0);
+    expect(await client.getSyncHeight()).toBeGreaterThan(boundBlockNum);
+
+    const { request } = await buildRequest({ boundBlockNum });
+    const summary = await executeForSummaryAtTip(client, accountId, request);
+
+    expect(summaryBoundBlockNum(summary)).toBe(boundBlockNum);
   });
 
   it('refuses at the tip a request that binds a block without declaring it', async () => {
@@ -222,14 +228,15 @@ describe('guarded multisig auth procedure on the mock chain', () => {
 
   it('binds an approval expiration the proposer asks for', async () => {
     const { request } = await buildRequest({ approvalExpirationDelta: 100 });
-
-    const { summary, anchor } = await executeForSummary(client, accountId, request);
-    try {
-      expect(summaryApprovalExpirationBlockNum(summary)).toBe(anchor.blockNum() + 100);
-      expect(summarySalt(summary).toHex()).toBe(SALT_HEX);
-    } finally {
-      anchor.free();
+    const boundBlockNum = requestBoundBlockNum(request);
+    if (boundBlockNum === undefined) {
+      throw new Error('the multisig request must carry auth args');
     }
+
+    const summary = await executeForSummaryAtTip(client, accountId, request);
+
+    expect(summaryApprovalExpirationBlockNum(summary)).toBe(boundBlockNum + 100);
+    expect(summarySalt(summary).toHex()).toBe(SALT_HEX);
   });
 
   it('produces a different commitment for a different salt', async () => {
@@ -241,19 +248,177 @@ describe('guarded multisig auth procedure on the mock chain', () => {
       { accountId, salt: Word.fromHex('0x' + '33'.repeat(32)) },
     );
 
-    const a = await executeForSummary(client, accountId, first.request);
-    const b = await executeForSummary(client, accountId, second.request);
-    try {
-      expect(a.summary.toCommitment().toHex()).not.toBe(b.summary.toCommitment().toHex());
-    } finally {
-      a.anchor.free();
-      b.anchor.free();
-    }
+    const a = await executeForSummaryAtTip(client, accountId, first.request);
+    const b = await executeForSummaryAtTip(client, accountId, second.request);
+
+    expect(a.toCommitment().toHex()).not.toBe(b.toCommitment().toHex());
   });
 
   it('refuses an approval expiration the auth procedure would clamp', async () => {
     await expect(buildRequest({ approvalExpirationDelta: 65_536 })).rejects.toThrow(
       /between 1 and 65535/,
     );
+  });
+});
+
+/**
+ * Creation and verification through `Multisig` on the mock chain, against a
+ * GUARDIAN stand-in that answers a push with what was pushed (issue #538).
+ */
+describe('proposals name the block their summary binds', () => {
+  let chain: MidenClient;
+  let chainAccount: Account;
+  let chainAccountId: string;
+
+  const signer = {
+    commitment: SIGNER_COMMITMENT,
+    publicKey: '0x' + '00'.repeat(32),
+    scheme: 'falcon',
+    signAccountIdWithTimestamp: () => '0x',
+    signCommitment: () => '0x',
+  } as Signer;
+
+  const echoingGuardian = {
+    pushDeltaProposal: async (request: DeltaProposalRequest): Promise<DeltaProposalResponse> => ({
+      commitment: computeCommitmentFromTxSummary(request.deltaPayload.txSummary.data),
+      delta: {
+        accountId: request.accountId,
+        nonce: request.nonce,
+        prevCommitment: '0x' + '00'.repeat(32),
+        deltaPayload: request.deltaPayload,
+        status: {
+          status: 'pending',
+          timestamp: '2026-10-09T00:00:00Z',
+          proposerId: SIGNER_COMMITMENT,
+          cosignerSigs: [],
+        },
+      },
+    }),
+  } as unknown as GuardianHttpClient;
+
+  beforeAll(async () => {
+    chain = client;
+    const { account } = await createMultisigAccount(chain, {
+      threshold: 1,
+      signerCommitments: [SIGNER_COMMITMENT],
+      guardianCommitment: GUARDIAN_COMMITMENT,
+      seed: new Uint8Array(32).fill(11),
+    });
+    chainAccount = account;
+    chainAccountId = account.id().toString();
+  });
+
+  function multisigOnChain(): Multisig {
+    return new Multisig(
+      chainAccount,
+      { threshold: 1, signerCommitments: [SIGNER_COMMITMENT], guardianCommitment: GUARDIAN_COMMITMENT },
+      echoingGuardian,
+      signer,
+      chain,
+      chainAccountId,
+      'http://localhost:57291',
+    );
+  }
+
+  async function advanceAndSync(blocks: number): Promise<void> {
+    for (let i = 0; i < blocks; i += 1) {
+      await chain.proveBlock();
+    }
+    await chain.syncChain();
+  }
+
+  function signerUpdateRequest() {
+    return buildUpdateSignersTransactionRequest(chain, 1, [SIGNER_COMMITMENT, NEW_SIGNER_COMMITMENT], {
+      accountId: chainAccountId,
+      salt: Word.fromHex(SALT_HEX),
+    });
+  }
+
+  async function exportedAddSigner(): Promise<{ boundBlockNum: number; exported: ExportedProposal }> {
+    await chain.syncChain();
+    const boundBlockNum = await chain.getSyncHeight();
+    const multisig = multisigOnChain();
+    const proposal = await multisig.createAddSignerProposal(NEW_SIGNER_COMMITMENT, { nonce: 1 });
+    const exported = JSON.parse(multisig.exportProposalToJson(proposal.id)) as ExportedProposal;
+    return { boundBlockNum, exported };
+  }
+
+  function importOnAnotherClient(exported: ExportedProposal) {
+    return multisigOnChain().importProposal(JSON.stringify(exported));
+  }
+
+  it('proposes a custom request bound to a block the proposer has synced past', async () => {
+    await chain.syncChain();
+    const boundBlockNum = await chain.getSyncHeight();
+    const { request } = await signerUpdateRequest();
+    await advanceAndSync(3);
+    expect(await chain.getSyncHeight()).toBeGreaterThan(boundBlockNum);
+
+    const proposal = await multisigOnChain().createCustomProposal(request.serialize(), 'b2agg', { nonce: 1 });
+
+    expect(proposal.metadata.boundBlockNum).toBe(boundBlockNum);
+    expect(proposal.metadata.chainAnchor).toBeUndefined();
+  });
+
+  it('writes boundBlockNum, and no chainAnchor, on a built-in proposal', async () => {
+    const { boundBlockNum, exported } = await exportedAddSigner();
+
+    expect(exported.metadata.boundBlockNum).toBe(boundBlockNum);
+    expect(exported.metadata.chainAnchor).toBeUndefined();
+  });
+
+  it('rebuilds a built-in proposal at its boundBlockNum on a client that synced past it', async () => {
+    const { exported } = await exportedAddSigner();
+    delete exported.metadata.chainAnchor;
+    await advanceAndSync(2);
+
+    const imported = await importOnAnotherClient(exported);
+
+    expect(imported.verification).toEqual({ status: 'verified' });
+  });
+
+  it("verifies a proposal carrying only a legacy chainAnchor from its summary's block", async () => {
+    const { boundBlockNum, exported } = await exportedAddSigner();
+    await advanceAndSync(2);
+    const { request } = await signerUpdateRequest();
+    const anchor = await chain.transactions.captureAnchor(request);
+    const legacyAnchor = uint8ArrayToBase64(anchor.serialize());
+    const anchorBlockNum = anchor.blockNum();
+    anchor.free();
+    expect(anchorBlockNum).not.toBe(boundBlockNum);
+    delete exported.metadata.boundBlockNum;
+    exported.metadata.chainAnchor = legacyAnchor;
+
+    const imported = await importOnAnotherClient(exported);
+
+    expect(imported.verification).toEqual({ status: 'verified' });
+    expect(imported.metadata.chainAnchor).toBe(legacyAnchor);
+  });
+
+  it('verifies a built-in proposal that names no bound block', async () => {
+    const { exported } = await exportedAddSigner();
+    delete exported.metadata.boundBlockNum;
+    delete exported.metadata.chainAnchor;
+    await advanceAndSync(2);
+
+    const imported = await importOnAnotherClient(exported);
+
+    expect(imported.verification).toEqual({ status: 'verified' });
+  });
+
+  it('refuses a built-in proposal whose boundBlockNum names another block, before re-executing', async () => {
+    const { boundBlockNum, exported } = await exportedAddSigner();
+    await advanceAndSync(2);
+    exported.metadata.boundBlockNum = boundBlockNum + 1;
+    const preview = vi.spyOn(chain.transactions, 'preview');
+
+    try {
+      const outcome = await importOnAnotherClient(exported).catch((error: unknown) => error);
+
+      expect(preview).not.toHaveBeenCalled();
+      expect(outcome).toBeInstanceOf(BoundBlockMismatchError);
+    } finally {
+      preview.mockRestore();
+    }
   });
 });

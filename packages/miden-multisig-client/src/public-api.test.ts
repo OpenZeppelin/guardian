@@ -19,6 +19,8 @@ describe('package entry point', () => {
       'proposal_salt_malformed',
       'multisig_auth_args_missing',
       'bound_block_not_declared',
+      'transaction_summary_layout_unsupported',
+      'bound_block_mismatch',
     ];
 
     expect(new api.ProposalSaltMalformedError({
@@ -28,6 +30,12 @@ describe('package entry point', () => {
     }).code).toBe(codes[0]);
     expect(new api.MultisigAuthArgsMissingError('0xaaaa').code).toBe(codes[1]);
     expect(new api.BoundBlockNotDeclaredError(7).code).toBe(codes[2]);
+    expect(new api.TransactionSummaryLayoutError('version 2').code).toBe(codes[3]);
+    expect(new api.BoundBlockMismatchError({
+      proposalId: '0xaaaa',
+      declaredBoundBlockNum: 8,
+      boundBlockNum: 7,
+    }).code).toBe(codes[4]);
   });
 
   it('exports the tip-execution helper a multisig proposal is reproduced with', () => {
@@ -49,5 +57,9 @@ describe('package entry point', () => {
       'private_note',
     );
     expect(new api.ProposalNotHeldLocallyError('0xaaaa').proposalId).toBe('0xaaaa');
+  });
+
+  it('exports the reader for the block a summary binds', () => {
+    expect(typeof api.summaryBoundBlockNum).toBe('function');
   });
 });

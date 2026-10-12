@@ -126,6 +126,7 @@ export function fromServerProposalMetadata(server: ServerProposalMetadata): Prop
     amount: server.amount,
     noteType: server.note_type,
     chainAnchor: server.chain_anchor,
+    boundBlockNum: server.bound_block_num,
     reclaimHeight: server.reclaim_height,
     timelockHeight: server.timelock_height,
   };
@@ -256,6 +257,7 @@ export function toServerProposalMetadata(meta: ProposalMetadata): ServerProposal
     amount: meta.amount,
     note_type: meta.noteType,
     chain_anchor: meta.chainAnchor,
+    bound_block_num: meta.boundBlockNum,
     reclaim_height: meta.reclaimHeight,
     timelock_height: meta.timelockHeight,
   };

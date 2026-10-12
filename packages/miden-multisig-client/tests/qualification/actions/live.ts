@@ -10,7 +10,7 @@ import { AccountId, FeltArray, Poseidon2, TransactionSummary, Word } from '@mide
 
 import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
 import { ProposalMetadataCodec } from '../../../src/proposal/metadata.js';
-import { buildP2idTransactionRequest, chainAnchorBlockNum } from '../../../src/transaction.js';
+import { buildP2idTransactionRequest } from '../../../src/transaction.js';
 import {
   base64ToUint8Array,
   bytesToHex,
@@ -531,9 +531,8 @@ const LATE_EXECUTION_DEADLINE_MS = 600_000;
 
 /**
  * Waits until the chain tip is `LATE_EXECUTION_BLOCKS` past the block the scenario's proposal
- * binds. The summary carries that block only as a commitment, so it is read from the proposal's
- * chain anchor, which the SDK has already checked against the summary when it listed the
- * proposal. Mirrors `advance_past_bound` in the Rust driver.
+ * binds, read from the proposal's `boundBlockNum`, which the SDK has already checked against the
+ * summary when it listed the proposal. Mirrors `advance_past_bound` in the Rust driver.
  */
 export async function advancePastBound(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
   const session = sessions.get(scenarioId);
@@ -541,14 +540,14 @@ export async function advancePastBound(_context: ActionContext, scenarioId: stri
     return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
   }
   const proposal = session.multisig.listProposals().find((entry) => entry.id === session.proposalId);
-  if (!proposal?.metadata.chainAnchor) {
+  if (proposal?.metadata.boundBlockNum === undefined) {
     return {
       kind: 'failed',
       classification: 'setup',
-      reason: `proposal ${session.proposalId} is not listed with a chain anchor`,
+      reason: `proposal ${session.proposalId} is not listed with a bound block`,
     };
   }
-  const target = chainAnchorBlockNum(proposal.metadata.chainAnchor) + LATE_EXECUTION_BLOCKS;
+  const target = proposal.metadata.boundBlockNum + LATE_EXECUTION_BLOCKS;
   const started = Date.now();
   for (;;) {
     try {

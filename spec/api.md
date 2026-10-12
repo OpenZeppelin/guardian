@@ -208,6 +208,8 @@ bytes, and refuses a request that does not decode (`GUARDIAN_EXECUTION_REQUEST_C
 not reproduce the signed summary (`GUARDIAN_EXECUTION_BINDING_MISMATCH`). A self-executed proposal omits the field, so its wire shape is unchanged, and the
 proposal id is the summary commitment either way.
 
+Every proposal the multisig SDKs create also carries `bound_block_num`, the `u32` block its transaction summary binds. It is not signed and the server does not read it: the clients read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees, so a wrong value can deny a proposal, never get a wrong one accepted. Proposals created by 0.18.0 clients carry `chain_anchor` (a base64 Miden `ChainAnchor`) instead; current clients take their block from the summary, never read the anchor and never write it.
+
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
 EVM proposal creation request:
