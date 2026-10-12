@@ -1304,6 +1304,7 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
         None,
         None,
         client.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
