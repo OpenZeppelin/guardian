@@ -181,6 +181,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
 
         AppState {
+            execution: Default::default(),
             storage: Arc::new(mock_storage),
             metadata: Arc::new(mock_metadata),
             network_client: Arc::new(MockNetworkClient::new()),
