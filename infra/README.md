@@ -250,6 +250,17 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_allowed_chain_ids_secret_arn` | `""` | Existing EVM allowed chain IDs secret ARN; takes precedence over the managed value |
 | `guardian_evm_rpc_urls` | `""` | EVM `chain_id=url` entries used to create a stack-scoped RPC URLs secret |
 | `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
+| `guardian_execution_enabled` | `null` | `true` fails the plan without a prover URL or secret ARN; `false` turns execution off on purpose and refuses a prover; unset infers it from the prover but fails the plan rather than delete the stack's existing managed prover secret. Needs `secretsmanager:ListSecrets` at plan time |
+| `guardian_tx_prover_url` | `""` | Remote transaction prover URL; creates a stack-scoped secret (7-day recovery window) and turns Guardian execution on. An `http(s)` URL with a host and no userinfo, query or fragment, or the server refuses to start: a private prover is restricted at the network level, never by credentials in the URL |
+| `guardian_tx_prover_url_secret_arn` | `""` | Existing prover URL secret ARN; takes precedence over the managed value |
+| `guardian_proving_enabled` | `null` | Overrides `GUARDIAN_PROVING_ENABLED`; `false` refuses execution requests while executions in flight still settle |
+| `guardian_tx_prover_timeout_secs` | `null` | Overrides `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (server default 300) |
+| `guardian_execution_lease_secs` | `null` | Overrides `GUARDIAN_EXECUTION_LEASE_SECS` (server default 120, at most 3600) |
+| `guardian_execution_reconcile_interval_secs` | `null` | Overrides `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` (server default 30; must stay below the lease) |
+| `guardian_execution_expiration_horizon_blocks` | `null` | Overrides `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (server default 512, at least 256) |
+| `guardian_execution_max_concurrent` | `null` | Overrides `GUARDIAN_EXECUTION_MAX_CONCURRENT`, a memory safety bound on executions one task holds at once (server default 64, at least 1); raise it only with `server_memory` |
+| `guardian_execution_record_retention_days` | `null` | Overrides `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`, how long finished execution attempts are kept (server default 30; `0` keeps them forever, otherwise at least 2) |
+| `guardian_tx_prover_max_concurrent` | `null` | Sets `GUARDIAN_TX_PROVER_MAX_CONCURRENT`, an optional limit on proofs one task has at the prover at once (unset by default, at least 1 when set); set it for a shared or small prover, which sees this times the task count |
 | `guardian_evm_entrypoint_address` | `""` | Shared EVM EntryPoint address injected into the server task |
 | `guardian_cors_allowed_origins` | `""` | Comma-separated explicit HTTP origins allowed by credentialed CORS |
 | `guardian_allowed_account_schemes` | `""` (every scheme) | Comma-separated signature schemes new accounts may register with (`falcon`, `ecdsa`); the production checklist recommends `ecdsa`. Existing accounts unaffected |
@@ -307,6 +318,9 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `alarm_latency_threshold_seconds` | `1` | Average HTTP latency alarm threshold |
 | `alarm_cpu_threshold_percent` | `85` | ECS CPU saturation alarm threshold |
 | `alarm_memory_threshold_percent` | `90` | ECS memory saturation alarm threshold |
+| `alarm_execution_failures_threshold` | `1` | Operator-side execution failures (`PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`) per 5-minute period tolerated before the execution-failures alarm fires |
+| `alarm_execution_observation_outage_threshold_seconds` | `300` | Seconds without a chain observation for a submitted execution before the observation-outage alarm fires |
+| `alarm_execution_reservation_age_threshold_seconds` | `1800` | Age of the oldest active execution reservation that fires the reservation-age alarm; raise it with the lease or expiration horizon |
 | `cloudwatch_log_alarms_enabled` | `true` | ERROR log metric filter on the server log group + log-errors alarm (plus a WARN filter when the dashboard exists); requires `guardian_log_format = "json"` (plan-time check) |
 | `alarm_log_error_threshold` | `0` | ERROR log lines per 5-minute period tolerated before a period counts as breaching (two consecutive periods alarm) |
 
@@ -328,6 +342,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
 | `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
+| `guardian_tx_prover_url_secret_arn` | Secrets Manager ARN the server reads its prover URL from; empty when execution is not configured |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`) |

@@ -1,0 +1,371 @@
+use std::sync::Arc;
+
+use chrono::Utc;
+
+use super::executor::{ExecutionInput, ProposalExecutor};
+use super::worker::{ExecutionJob, run_execution};
+use crate::config::execution::{ExecutionConfig, ExecutionUnavailable};
+use crate::coordination::{ExecutionLeases, InMemoryExecutionLeases, release_quietly};
+use crate::delta_object::DeltaStatus;
+use crate::error::{GuardianError, LocalExecutionReason, Result};
+use crate::metadata::auth::Credentials;
+use crate::services::account_status::ensure_account_active_metadata;
+use crate::services::execution_status::ExecutionEnvelope;
+use crate::services::resolve_account;
+use crate::state::AppState;
+use crate::storage::{ExecutionRecord, LeaseFence, NewExecutionReservation, ReservationWrite};
+
+/// Everything the server needs to offer Guardian execution.
+#[derive(Clone)]
+pub struct ExecutionState {
+    pub config: ExecutionConfig,
+    pub leases: Arc<dyn ExecutionLeases>,
+    pub executor: Option<Arc<dyn ProposalExecutor>>,
+    pub replica_id: String,
+    /// One permit per execution this process holds in memory at once, from acceptance until its
+    /// worker finishes: a safety bound sized to memory, not a throughput setting.
+    pub capacity: Arc<tokio::sync::Semaphore>,
+    /// Cancelled when the process starts shutting down: no execution is accepted after it, and
+    /// attempts short of the no-retry boundary fail and release their accounts.
+    pub shutdown: tokio_util::sync::CancellationToken,
+}
+
+impl ExecutionState {
+    pub fn capacity_for(config: &ExecutionConfig) -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(
+            config.max_concurrent_executions as usize,
+        ))
+    }
+}
+
+impl Default for ExecutionState {
+    fn default() -> Self {
+        let config = ExecutionConfig::default();
+        Self {
+            capacity: Self::capacity_for(&config),
+            config,
+            leases: Arc::new(InMemoryExecutionLeases::new()),
+            executor: None,
+            replica_id: "single-process".to_string(),
+            shutdown: tokio_util::sync::CancellationToken::new(),
+        }
+    }
+}
+
+impl ExecutionState {
+    /// The executor when this server offers execution, and otherwise why not. The builder
+    /// installs one only when a prover is configured and proving is enabled.
+    pub fn availability(
+        &self,
+        canonicalization_enabled: bool,
+    ) -> std::result::Result<Arc<dyn ProposalExecutor>, ExecutionUnavailable> {
+        if !canonicalization_enabled {
+            return Err(ExecutionUnavailable::CanonicalizationDisabled);
+        }
+        match &self.executor {
+            Some(executor) => Ok(executor.clone()),
+            None => Err(self
+                .config
+                .availability()
+                .err()
+                .unwrap_or(ExecutionUnavailable::ProverNotConfigured)),
+        }
+    }
+
+    /// Stops accepting executions, fails every attempt short of the no-retry boundary, and waits
+    /// up to `grace` for every worker to finish. Returns whether all of them did; an attempt
+    /// still running at exit is resolved by reconciliation on another replica or the next start.
+    ///
+    /// The capacity is closed on return, whatever the outcome, so no request admitted after the
+    /// drain can take a permit and reserve an account the exiting process would leave held.
+    pub async fn drain(&self, grace: std::time::Duration) -> bool {
+        self.shutdown.cancel();
+        let every_permit = self
+            .capacity
+            .acquire_many(self.config.max_concurrent_executions);
+        let drained = matches!(tokio::time::timeout(grace, every_permit).await, Ok(Ok(_)));
+        self.capacity.close();
+        drained
+    }
+
+    fn available(&self, canonicalization_enabled: bool) -> Result<Arc<dyn ProposalExecutor>> {
+        self.availability(canonicalization_enabled)
+            .map_err(|_| GuardianError::ProvingUnavailable)
+    }
+
+    fn new_holder_id(&self) -> String {
+        let mut suffix = [0u8; 8];
+        rand::RngExt::fill(&mut rand::rng(), &mut suffix);
+        format!("{}:{}", self.replica_id, hex::encode(suffix))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestExecutionParams {
+    pub account_id: String,
+    pub proposal_id: String,
+    pub credentials: Credentials,
+    /// Whether the caller lets Guardian execute a transaction that creates a private output
+    /// note, which is otherwise left to local execution.
+    pub allow_private_note: bool,
+}
+
+/// Requests Guardian execution of a threshold-met proposal. Refusals that can be decided now
+/// return synchronously and create nothing; everything else runs in the background under a
+/// durable reservation.
+#[tracing::instrument(
+    level = "info",
+    skip(state, params),
+    fields(account_id = %params.account_id, proposal_id = %params.proposal_id)
+)]
+pub async fn request_execution(
+    state: &AppState,
+    params: RequestExecutionParams,
+) -> Result<ExecutionEnvelope> {
+    let RequestExecutionParams {
+        account_id,
+        proposal_id,
+        credentials,
+        allow_private_note,
+    } = params;
+    let resolved = resolve_account(state, &account_id, &credentials).await?;
+    ensure_account_active_metadata(&resolved.metadata)?;
+    let executor = state
+        .execution
+        .available(state.canonicalization.is_some())?;
+
+    let proposal = state
+        .storage
+        .pull_delta_proposal(&account_id, &proposal_id)
+        .await
+        .map_err(|error| {
+            if crate::storage::is_storage_not_found(&error) {
+                GuardianError::ProposalNotFound {
+                    account_id: account_id.clone(),
+                    commitment: proposal_id.clone(),
+                }
+            } else {
+                GuardianError::StorageError(error)
+            }
+        })?;
+    let DeltaStatus::Pending { cosigner_sigs, .. } = &proposal.status else {
+        return Err(GuardianError::ProposalNotFound {
+            account_id: account_id.clone(),
+            commitment: proposal_id.clone(),
+        });
+    };
+
+    if let Some(active) = state
+        .storage
+        .load_active_execution(&account_id)
+        .await
+        .map_err(GuardianError::StorageError)?
+    {
+        return answer_active(active, &proposal_id);
+    }
+    if proposal.delta_payload.get("transaction_request").is_none() {
+        return Err(GuardianError::ProposalMissingTransactionRequest);
+    }
+    let proposal_type = proposal.proposal_type().unwrap_or("custom").to_string();
+    if proposal_type == "switch_guardian" {
+        return Err(GuardianError::ProposalExecutesLocally {
+            proposal_type,
+            reason: LocalExecutionReason::SwitchGuardian,
+        });
+    }
+    if !allow_private_note && creates_private_note(&proposal.delta_payload)? {
+        return Err(GuardianError::ProposalExecutesLocally {
+            proposal_type,
+            reason: LocalExecutionReason::PrivateNote,
+        });
+    }
+    if state
+        .storage
+        .has_pending_candidate(&account_id)
+        .await
+        .map_err(GuardianError::StorageError)?
+    {
+        return Err(GuardianError::ConflictPendingDelta);
+    }
+
+    let current_state = state
+        .storage
+        .pull_state(&account_id)
+        .await
+        .map_err(|error| {
+            if crate::storage::is_storage_not_found(&error) {
+                GuardianError::StateNotFound(account_id.clone())
+            } else {
+                GuardianError::StorageError(error)
+            }
+        })?;
+    let input = ExecutionInput {
+        account_id: account_id.clone(),
+        state_json: current_state.state_json,
+        proposal_payload: proposal.delta_payload,
+        cosigner_signatures: cosigner_sigs.clone(),
+    };
+    let selection = executor.select_signatures(&input)?;
+    if !selection.is_ready() {
+        return Err(GuardianError::ProposalNotReady {
+            required: selection.required,
+            valid: selection.valid,
+        });
+    }
+
+    if state.execution.shutdown.is_cancelled() {
+        tracing::info!(%account_id, %proposal_id, "execution refused: the server is shutting down");
+        return Err(GuardianError::ExecutionBusy);
+    }
+    let Ok(permit) = state.execution.capacity.clone().try_acquire_owned() else {
+        crate::metrics::execution::record_capacity_refusal();
+        tracing::info!(%account_id, %proposal_id, "execution refused: the process admits no more executions at once");
+        return already_executing(state, &account_id, proposal_id).await;
+    };
+
+    let holder_id = state.execution.new_holder_id();
+    let elector = state.execution.leases.elector(&account_id, &holder_id);
+    let lease_ttl = state.execution.config.lease;
+    let Some(lease) = elector
+        .try_acquire(lease_ttl)
+        .await
+        .map_err(|e| GuardianError::StorageError(e.to_string()))?
+    else {
+        return already_executing(state, &account_id, proposal_id).await;
+    };
+    if state.execution.shutdown.is_cancelled() {
+        release_quietly(elector.as_ref(), lease).await;
+        tracing::info!(%account_id, %proposal_id, "execution refused: the server is shutting down");
+        return Err(GuardianError::ExecutionBusy);
+    }
+    let fence = LeaseFence::from(&lease);
+    let now = Utc::now();
+    let reservation = NewExecutionReservation {
+        account_id: account_id.clone(),
+        proposal_id: proposal_id.clone(),
+        fence: fence.clone(),
+        lease_expires_at: lease.expires_at,
+        ignored_signatures: selection.ignored,
+        now,
+    };
+    let written = state
+        .storage
+        .create_execution_reservation(reservation)
+        .await;
+    let written = match written {
+        Ok(written) => written,
+        Err(error) => {
+            release_quietly(elector.as_ref(), lease).await;
+            return Err(GuardianError::StorageError(error));
+        }
+    };
+    let attempt = match written {
+        ReservationWrite::Created { attempt } => attempt,
+        ReservationWrite::AlreadyReserved {
+            proposal_id: blocking,
+            ..
+        } => {
+            release_quietly(elector.as_ref(), lease).await;
+            if blocking == proposal_id {
+                let record = state
+                    .storage
+                    .load_active_execution(&account_id)
+                    .await
+                    .map_err(GuardianError::StorageError)?
+                    .ok_or_else(|| {
+                        GuardianError::StorageError(
+                            "the reservation that refused this request has vanished".to_string(),
+                        )
+                    })?;
+                return Ok(ExecutionEnvelope::from_record(&record, true, false));
+            }
+            return Err(GuardianError::ExecutionConflict {
+                blocking_proposal_id: blocking,
+            });
+        }
+        ReservationWrite::CandidateExists => {
+            release_quietly(elector.as_ref(), lease).await;
+            return Err(GuardianError::ConflictPendingDelta);
+        }
+        ReservationWrite::ProposalGone => {
+            release_quietly(elector.as_ref(), lease).await;
+            return Err(GuardianError::ProposalNotFound {
+                account_id: account_id.clone(),
+                commitment: proposal_id.clone(),
+            });
+        }
+        ReservationWrite::StaleLease => {
+            release_quietly(elector.as_ref(), lease).await;
+            return already_executing(state, &account_id, proposal_id).await;
+        }
+    };
+
+    let job = ExecutionJob {
+        account_id: account_id.clone(),
+        proposal_id: proposal_id.clone(),
+        attempt,
+        nonce: proposal.nonce,
+        base_commitment: proposal.prev_commitment,
+        scheme: resolved.metadata.auth.scheme(),
+        fence,
+        lease,
+        elector,
+        executor,
+        permit,
+    };
+    let worker_state = state.clone();
+    tokio::spawn(async move { run_execution(&worker_state, job, input).await });
+
+    let record = state
+        .storage
+        .load_latest_execution(&account_id, &proposal_id)
+        .await
+        .map_err(GuardianError::StorageError)?
+        .ok_or_else(|| {
+            GuardianError::StorageError("the new reservation is not readable".to_string())
+        })?;
+    let exists =
+        crate::services::execution_status::proposal_exists(state, &account_id, &proposal_id)
+            .await?;
+    Ok(ExecutionEnvelope::from_record(&record, exists, true))
+}
+
+/// Whether the transaction the cosigners signed creates a private output note, read from the
+/// signed summary rather than the proposal's metadata label. Execution reproduces exactly this
+/// summary, so the stored request cannot create a note the summary does not show.
+fn creates_private_note(delta_payload: &serde_json::Value) -> Result<bool> {
+    let summary = crate::services::proposal_signature::proposal_tx_summary(delta_payload)?;
+    Ok(summary
+        .output_notes()
+        .iter()
+        .any(|note| note.metadata().is_private()))
+}
+
+/// The answer for a request that lost the race for the account's lease: the winner's execution
+/// when it is this proposal's, a conflict otherwise.
+async fn already_executing(
+    state: &AppState,
+    account_id: &str,
+    proposal_id: String,
+) -> Result<ExecutionEnvelope> {
+    match state
+        .storage
+        .load_active_execution(account_id)
+        .await
+        .map_err(GuardianError::StorageError)?
+    {
+        Some(active) => answer_active(active, &proposal_id),
+        None => Err(GuardianError::ExecutionBusy),
+    }
+}
+
+/// An account already reserved: this proposal's execution when it is the one running, a
+/// conflict naming the blocker otherwise.
+fn answer_active(active: ExecutionRecord, proposal_id: &str) -> Result<ExecutionEnvelope> {
+    if active.reservation.proposal_id == proposal_id {
+        return Ok(ExecutionEnvelope::from_record(&active, true, false));
+    }
+    Err(GuardianError::ExecutionConflict {
+        blocking_proposal_id: active.reservation.proposal_id,
+    })
+}

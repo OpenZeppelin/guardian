@@ -125,6 +125,7 @@ mod tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
+            execution: Default::default(),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

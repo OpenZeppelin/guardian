@@ -48,6 +48,15 @@ service Guardian {
   // newest-first by nonce with decoded input/output note summaries.
   rpc GetDeltaHistory(GetDeltaHistoryRequest) returns (GetDeltaHistoryResponse);
 
+  // Ask Guardian to prove and submit a threshold-met proposal (issue #254).
+  rpc ExecuteDeltaProposal(ExecuteDeltaProposalRequest) returns (ExecuteDeltaProposalResponse);
+
+  // Report the latest execution of a proposal.
+  rpc GetDeltaProposalExecution(GetDeltaProposalExecutionRequest) returns (GetDeltaProposalExecutionResponse);
+
+  // Report the account's in-flight execution, if any.
+  rpc GetCurrentExecution(GetCurrentExecutionRequest) returns (GetCurrentExecutionResponse);
+
   // Nonce and commitment of the latest canonical state (issue #191), served
   // from the values stored with the state, without the state blob. A client
   // can skip the full GetState fetch when the nonce is below its local
@@ -429,4 +438,57 @@ message GetDeltaHistoryResponse {
   // Opaque resume token; absent when no further pages exist.
   optional string next_cursor = 4;
   string error_code = 5;
+}
+
+// Why a Guardian execution failed. `meta_json` carries the code's structured
+// meta (`reason`, `bound`) as JSON, the same object the HTTP body carries.
+message ExecutionError {
+  string code = 1;
+  string message = 2;
+  optional string meta_json = 3;
+}
+
+// The execution envelope, identical in meaning to the HTTP body.
+message ExecutionEnvelope {
+  string account_id = 1;
+  string proposal_id = 2;
+  // One of "pending", "proving", "submitted", "committed", "failed".
+  string state = 3;
+  optional ExecutionError error = 4;
+  optional uint64 delta_nonce = 5;
+  bool newly_accepted = 6;
+  bool proposal_exists = 7;
+  uint32 ignored_signatures = 8;
+  string updated_at = 9;
+}
+
+// Signed as the payload tagged with "guardian.ExecuteDeltaProposal\0" followed by the encoded
+// message, so a signed read of the same proposal never authenticates an execute.
+message ExecuteDeltaProposalRequest {
+  string account_id = 1;
+  string proposal_id = 2;
+  // Execute a transaction that creates a private output note. GUARDIAN refuses one without it,
+  // because only the executing party learns the note's details.
+  bool allow_private_note = 3;
+}
+
+message ExecuteDeltaProposalResponse {
+  ExecutionEnvelope execution = 1;
+}
+
+message GetDeltaProposalExecutionRequest {
+  string account_id = 1;
+  string proposal_id = 2;
+}
+
+message GetDeltaProposalExecutionResponse {
+  ExecutionEnvelope execution = 1;
+}
+
+message GetCurrentExecutionRequest {
+  string account_id = 1;
+}
+
+message GetCurrentExecutionResponse {
+  optional ExecutionEnvelope execution = 1;
 }

@@ -28,6 +28,9 @@ pub struct AppState {
     /// builds it is `LogAuditor` and a one-shot startup warning is
     /// emitted at construction time (FR-020 / FR-021).
     pub auditor: SharedAuditor,
+    /// Guardian execution of threshold-met proposals (issue #254). Offers nothing unless a
+    /// prover is configured and the build includes proving.
+    pub execution: crate::services::execute_proposal::ExecutionState,
     #[cfg(feature = "evm")]
     pub evm: Arc<EvmAppState>,
 }

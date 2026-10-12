@@ -1,0 +1,52 @@
+{
+  "description": "Transaction request envelope vectors shared by the Rust and TypeScript SDKs and the server. Sealing `bytes_hex` must produce `sealed`; each case must be accepted or refused as named.",
+  "bytes_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "sealed": {
+    "format_version": 1,
+    "protocol_line": "0.17",
+    "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+    "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
+  },
+  "cases": [
+    {
+      "name": "sealed by either SDK",
+      "envelope": {
+        "format_version": 1,
+        "protocol_line": "0.17",
+        "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+        "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
+      },
+      "expected": "accepted"
+    },
+    {
+      "name": "another protocol line",
+      "envelope": {
+        "format_version": 1,
+        "protocol_line": "0.16",
+        "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+        "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
+      },
+      "expected": "protocol_line_mismatch"
+    },
+    {
+      "name": "an unsupported format",
+      "envelope": {
+        "format_version": 2,
+        "protocol_line": "0.17",
+        "checksum": "0xfdeab9acf3710362bd2658cdc9a29e8f9c757fcf9811603a8c447cd1d9151108",
+        "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
+      },
+      "expected": "unsupported_format"
+    },
+    {
+      "name": "a tampered body",
+      "envelope": {
+        "format_version": 1,
+        "protocol_line": "0.17",
+        "checksum": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "bytes": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="
+      },
+      "expected": "checksum_mismatch"
+    }
+  ]
+}

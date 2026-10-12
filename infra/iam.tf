@@ -47,6 +47,9 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
             local.evm_rpc_urls_secret_arn != "" ? [
               local.evm_rpc_urls_secret_arn
             ] : [],
+            local.tx_prover_url_secret_arn != "" ? [
+              local.tx_prover_url_secret_arn
+            ] : [],
             local.is_prod ? [
               data.aws_secretsmanager_secret.dashboard_cursor[0].arn
             ] : []

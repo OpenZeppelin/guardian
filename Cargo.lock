@@ -3572,6 +3572,7 @@ dependencies = [
  "miden-client",
  "miden-confidential-contracts",
  "miden-keystore",
+ "miden-processor",
  "miden-protocol",
  "miden-rpc-client",
  "miden-standards",
@@ -3592,6 +3593,7 @@ dependencies = [
  "static_assertions",
  "subtle",
  "tempfile",
+ "thiserror 2.0.19",
  "tokio",
  "tokio-postgres",
  "tokio-postgres-rustls",
@@ -3643,6 +3645,7 @@ dependencies = [
  "rstest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "utoipa",
 ]

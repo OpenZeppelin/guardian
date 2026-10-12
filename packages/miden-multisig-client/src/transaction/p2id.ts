@@ -185,6 +185,9 @@ export async function buildP2idTransactionRequest(
   );
 
   let txBuilder = builder.withOwnOutputNotes(new MidenArrays.NoteArray([note]));
+  if (options.transactionExpirationDelta) {
+    txBuilder = txBuilder.withExpirationDelta(options.transactionExpirationDelta);
+  }
 
   if (options.signatureAdviceMap) {
     txBuilder = txBuilder.extendAdviceMap(options.signatureAdviceMap);

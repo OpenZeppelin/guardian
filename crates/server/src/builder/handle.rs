@@ -25,11 +25,13 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, get_canonical_nonce, get_delta, get_delta_history,
-    get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey, get_state, lookup,
-    push_delta, push_delta_proposal, sign_delta_proposal, status, status_root,
+    abandon_candidate, configure, execute_delta_proposal, get_canonical_nonce,
+    get_current_execution, get_delta, get_delta_history, get_delta_proposal,
+    get_delta_proposal_execution, get_delta_proposals, get_delta_since, get_pubkey, get_state,
+    lookup, push_delta, push_delta_proposal, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
+use crate::config::execution::RecordRetention;
 use crate::dashboard::require_dashboard_session;
 use crate::metrics::{
     MetricsConfig, MetricsGrpcLayer, describe_metrics, metrics_router, record_build_info,
@@ -131,6 +133,26 @@ impl ServerHandle {
             tracing::info!(
                 "Running in optimistic mode - deltas accepted without on-chain verification"
             );
+        }
+
+        if self.app_state.canonicalization.is_some() {
+            tracing::info!("Starting execution reconciler");
+            crate::jobs::execution_reconcile::start_execution_reconciler(self.app_state.clone());
+            match self.app_state.execution.config.record_retention {
+                RecordRetention::Days(days) => {
+                    tracing::info!(
+                        retention_days = days,
+                        "Starting execution record retention sweep"
+                    );
+                    crate::jobs::execution_retention::start_execution_retention_sweep(
+                        self.app_state.clone(),
+                        days,
+                    );
+                }
+                RecordRetention::KeepForever => {
+                    tracing::info!("Execution record retention disabled - records are kept forever")
+                }
+            }
         }
 
         // Issue #434: one lease holder walks the fleet against the chain
@@ -279,10 +301,65 @@ impl ServerHandle {
             return;
         }
 
-        // Wait for all servers
-        for task in tasks {
-            let _ = task.await;
+        let servers = async {
+            for task in tasks {
+                let _ = task.await;
+            }
+        };
+        tokio::select! {
+            _ = servers => {}
+            _ = shutdown_signal() => self.drain_executions().await,
         }
+    }
+
+    /// Releases the accounts of executions short of the no-retry boundary before the process
+    /// exits, so a deploy does not hold them until their leases lapse.
+    async fn drain_executions(&self) {
+        tracing::info!(
+            grace_secs = EXECUTION_DRAIN_GRACE.as_secs(),
+            "shutdown requested; draining Guardian executions"
+        );
+        if self.app_state.execution.drain(EXECUTION_DRAIN_GRACE).await {
+            tracing::info!("Guardian executions drained; exiting");
+        } else {
+            tracing::warn!(
+                "Guardian executions still running at exit; reconciliation resolves them once \
+                 their leases lapse"
+            );
+        }
+    }
+}
+
+/// How long a shutdown waits for execution workers. A worker short of the boundary fails at
+/// once, and one past it needs only its send, so this fits inside Docker's default 10-second stop
+/// timeout.
+const EXECUTION_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Resolves on Ctrl-C, or on SIGTERM where the platform has it (what Docker and ECS send).
+async fn shutdown_signal() {
+    let interrupt = async {
+        if let Err(error) = tokio::signal::ctrl_c().await {
+            tracing::warn!(%error, "cannot listen for Ctrl-C");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "cannot listen for SIGTERM");
+                std::future::pending::<()>().await
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = interrupt => {}
+        _ = terminate => {}
     }
 }
 
@@ -409,6 +486,12 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta/proposal/single", get(get_delta_proposal))
         .route("/delta/proposal", put(sign_delta_proposal))
         .route("/delta/candidate/abandon", post(abandon_candidate))
+        .route("/delta/proposal/execution", post(execute_delta_proposal))
+        .route(
+            "/delta/proposal/execution",
+            get(get_delta_proposal_execution),
+        )
+        .route("/delta/execution/current", get(get_current_execution))
         .route("/configure", post(configure))
         .route("/state", get(get_state))
         .route("/state/nonce", get(get_canonical_nonce))
@@ -539,6 +622,9 @@ mod tests {
             ("PUT", "/delta/proposal"),
             ("GET", "/delta/proposal/single"),
             ("POST", "/delta/candidate/abandon"),
+            ("POST", "/delta/proposal/execution"),
+            ("GET", "/delta/proposal/execution"),
+            ("GET", "/delta/execution/current"),
             ("POST", "/configure"),
             ("GET", "/state"),
             ("GET", "/state/nonce"),

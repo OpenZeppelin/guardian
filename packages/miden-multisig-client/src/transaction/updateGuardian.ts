@@ -7,13 +7,15 @@ import {
 import { normalizeHexWord } from '../utils/encoding.js';
 import { authSchemeId } from '../utils/signature.js';
 import { buildMultisigRequest, multisigRequestBuilder } from './authArgs.js';
+import { expirationInstructions } from './expiration.js';
 import type { MultisigRequestOptions } from './options.js';
 import type { SignatureScheme } from '../types.js';
 
-async function buildUpdateGuardianScript(
+export async function buildUpdateGuardianScript(
   client: MidenClient,
   newGuardianPubkey: string,
   signatureScheme: SignatureScheme,
+  transactionExpirationDelta: number | undefined,
 ): Promise<TransactionScript> {
   // A word literal preserves the key's element order on the operand stack.
   const keyLiteral = normalizeHexWord(newGuardianPubkey);
@@ -25,7 +27,7 @@ use miden::standards::auth::guardian
 
 @transaction_script
 pub proc main
-    push.${keyLiteral}
+    ${expirationInstructions(transactionExpirationDelta)}push.${keyLiteral}
     push.${schemeId}
     call.guardian::update_guardian_public_key
     drop
@@ -42,7 +44,12 @@ export async function buildUpdateGuardianTransactionRequest(
   options: MultisigRequestOptions,
 ): Promise<{ request: TransactionRequest; salt: Word }> {
   const signatureScheme = options.signatureScheme ?? 'falcon';
-  const script = await buildUpdateGuardianScript(client, newGuardianPubkey, signatureScheme);
+  const script = await buildUpdateGuardianScript(
+    client,
+    newGuardianPubkey,
+    signatureScheme,
+    options.transactionExpirationDelta,
+  );
 
   const { builder, saltHex } = await multisigRequestBuilder(client, options);
   let txBuilder = builder.withCustomScript(script);

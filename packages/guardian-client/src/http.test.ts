@@ -129,6 +129,7 @@ describe('GuardianHttpClient', () => {
           environment: 'devnet',
           started_at: '2026-06-17T10:00:00Z',
           uptime_seconds: 3600,
+          execution: { enabled: true },
         }),
       });
 
@@ -141,6 +142,7 @@ describe('GuardianHttpClient', () => {
         environment: 'devnet',
         startedAt: '2026-06-17T10:00:00Z',
         uptimeSeconds: 3600,
+        execution: { enabled: true },
       });
       expect(mockFetch).toHaveBeenCalledWith(
         'http://localhost:3000/status',
@@ -151,6 +153,44 @@ describe('GuardianHttpClient', () => {
           }),
         })
       );
+    });
+
+    it('reports why the server does not offer execution', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'ok',
+          version: '0.1.0',
+          git_commit: 'abc123def456',
+          environment: 'devnet',
+          started_at: '2026-06-17T10:00:00Z',
+          uptime_seconds: 3600,
+          execution: { enabled: false, reason: 'prover_not_configured' },
+        }),
+      });
+
+      const status = await client.getStatus();
+
+      expect(status.execution).toEqual({ enabled: false, reason: 'prover_not_configured' });
+    });
+
+    it('refuses a status whose execution capability is missing or names an unknown reason', async () => {
+      const base = {
+        status: 'ok',
+        version: '0.1.0',
+        git_commit: 'abc123def456',
+        environment: 'devnet',
+        started_at: '2026-06-17T10:00:00Z',
+        uptime_seconds: 3600,
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => base });
+      await expect(client.getStatus()).rejects.toThrow(/no execution capability/);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ...base, execution: { enabled: false, reason: 'gone_fishing' } }),
+      });
+      await expect(client.getStatus()).rejects.toThrow(/unknown execution unavailable reason/);
     });
 
     it('should throw GuardianHttpError on non-ok response', async () => {
@@ -485,6 +525,30 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('getDeltaProposal', () => {
+    it('keeps the stored transaction request of a Guardian-executable proposal', async () => {
+      client.setSigner(mockSigner);
+      const envelope = { format_version: 1, protocol_line: '0.17', checksum: '0x' + 'd'.repeat(64), bytes: 'AQID' };
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [], transaction_request: envelope },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'c'.repeat(64),
+            cosigner_sigs: [],
+          },
+        }),
+      });
+
+      const proposal = await client.getDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'e'.repeat(64));
+
+      expect(proposal.deltaPayload.transactionRequest).toEqual(envelope);
+    });
+
     it('should get a single delta proposal by commitment', async () => {
       client.setSigner(mockSigner);
 
@@ -649,6 +713,108 @@ describe('GuardianHttpClient', () => {
           }),
         })
       );
+    });
+  });
+
+  describe('Guardian execution', () => {
+    const account = '0x' + 'a'.repeat(30);
+    const serverExecution = {
+      account_id: account,
+      proposal_id: '0xproposal',
+      state: 'pending',
+      newly_accepted: true,
+      proposal_exists: true,
+      ignored_signatures: 1,
+      updated_at: '2026-09-30T12:00:00Z',
+    };
+
+    it('requests execution with a snake_case body and maps the envelope', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+
+      const execution = await client.executeDeltaProposal(account, '0xproposal');
+
+      expect(execution).toEqual({
+        accountId: account,
+        proposalId: '0xproposal',
+        state: 'pending',
+        error: null,
+        deltaNonce: null,
+        newlyAccepted: true,
+        proposalExists: true,
+        ignoredSignatures: 1,
+        updatedAt: '2026-09-30T12:00:00Z',
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/delta/proposal/execution',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({
+            account_id: account,
+            proposal_id: '0xproposal',
+            allow_private_note: false,
+          }),
+        })
+      );
+    });
+
+    it('sends and signs allow_private_note when the caller opts in', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = vi.mocked(mockSigner.signRequest!);
+      signRequest.mockClear();
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+
+      await client.executeDeltaProposal(account, '0xproposal', { allowPrivateNote: true });
+
+      const body = { account_id: account, proposal_id: '0xproposal', allow_private_note: true };
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://localhost:3000/delta/proposal/execution',
+        expect.objectContaining({ method: 'POST', body: JSON.stringify(body) })
+      );
+      const signed = signRequest.mock.calls[0][2];
+      expect(signed.toCanonicalJson()).toBe(
+        '{"account_id":"' + account + '","allow_private_note":true,"proposal_id":"0xproposal"}'
+      );
+    });
+
+    it('reads an execution and the in-flight one by query', async () => {
+      client.setSigner(mockSigner);
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ ...serverExecution, state: 'submitted', delta_nonce: 3 }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ execution: null }) });
+
+      const status = await client.getDeltaProposalExecution(account, '0xproposal');
+      expect(status.state).toBe('submitted');
+      expect(status.deltaNonce).toBe(3);
+      expect(await client.getCurrentExecution(account)).toBeNull();
+
+      expect(mockFetch.mock.calls[0][0]).toBe(
+        `http://localhost:3000/delta/proposal/execution?account_id=${account}&proposal_id=0xproposal`
+      );
+      expect(mockFetch.mock.calls[1][0]).toBe(
+        `http://localhost:3000/delta/execution/current?account_id=${account}`
+      );
+    });
+
+    it('surfaces a synchronous refusal as a typed code', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_NOT_READY',
+            message: 'This transaction still needs more signatures.',
+            meta: { retryable: false },
+          }),
+      });
+
+      const error = await client.executeDeltaProposal(account, '0xproposal').catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.code).toBe('proposal_not_ready');
+      expect(error.rawCode).toBe('GUARDIAN_PROPOSAL_NOT_READY');
     });
   });
 
@@ -1421,6 +1587,108 @@ describe('GuardianHttpError', () => {
       expect(e.meta?.retryable).toBe(false);
       expect(e.meta?.scheme).toBe('falcon');
       expect(e.meta?.allowedSchemes).toEqual(['ecdsa']);
+    });
+
+    it('surfaces the blocking proposal of an execution conflict as meta.blockingProposalId', async () => {
+      client.setSigner(mockSigner);
+      const blocking = '0x' + 'b'.repeat(64);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_EXECUTION_CONFLICT',
+            message: 'Another proposal is executing on this account.',
+            meta: { retryable: false, blocking_proposal_id: blocking },
+          }),
+      });
+
+      const error = await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.code).toBe('execution_conflict');
+      expect(e.isRetryable()).toBe(false);
+      expect(e.meta?.blockingProposalId).toBe(blocking);
+    });
+
+    it('surfaces a refused switch_guardian execution as proposal_executes_locally with meta.proposalType', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'A guardian switch is executed by the wallet that finishes the handoff.',
+            meta: { retryable: false, proposal_type: 'switch_guardian', reason: 'switch_guardian' },
+          }),
+      });
+
+      const error = await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((e) => e as GuardianHttpError);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const e = error as GuardianHttpError;
+      expect(e.status).toBe(409);
+      expect(e.code).toBe('proposal_executes_locally');
+      expect(e.rawCode).toBe('GUARDIAN_PROPOSAL_EXECUTES_LOCALLY');
+      expect(e.isRetryable()).toBe(false);
+      expect(e.meta?.proposalType).toBe('switch_guardian');
+      expect(e.meta?.reason).toBe('switch_guardian');
+    });
+
+    it('surfaces a refused private-note execution with meta.reason private_note', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'This transaction creates a private note.',
+            meta: { retryable: false, proposal_type: 'p2id', reason: 'private_note' },
+          }),
+      });
+
+      const e = (await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((error) => error)) as GuardianHttpError;
+
+      expect(e.code).toBe('proposal_executes_locally');
+      expect(e.meta?.proposalType).toBe('p2id');
+      expect(e.meta?.reason).toBe('private_note');
+    });
+
+    it('drops a meta.reason outside the known vocabulary', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
+            message: 'Execute it from your wallet instead.',
+            meta: { retryable: false, proposal_type: 'p2id', reason: 'something_else' },
+          }),
+      });
+
+      const e = (await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((error) => error)) as GuardianHttpError;
+
+      expect(e.meta?.reason).toBeUndefined();
     });
 
     it('omits meta.allowedSchemes rather than exposing a partial list when an element is malformed', async () => {

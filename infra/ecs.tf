@@ -43,6 +43,23 @@ resource "aws_ecs_task_definition" "server" {
     operating_system_family = "LINUX"
   }
 
+  lifecycle {
+    precondition {
+      condition     = var.guardian_execution_enabled != true || local.tx_prover_configured
+      error_message = "guardian_execution_enabled = true needs a prover: set GUARDIAN_TX_PROVER_URL (guardian_tx_prover_url) or GUARDIAN_TX_PROVER_URL_SECRET_ARN (guardian_tx_prover_url_secret_arn)."
+    }
+
+    precondition {
+      condition     = var.guardian_execution_enabled != false || !local.tx_prover_configured
+      error_message = "guardian_execution_enabled = false contradicts the configured prover: unset guardian_tx_prover_url and guardian_tx_prover_url_secret_arn, or drop guardian_execution_enabled = false."
+    }
+
+    precondition {
+      condition     = var.guardian_execution_enabled != null || local.tx_prover_configured || !local.managed_tx_prover_url_secret_exists
+      error_message = "This plan would delete the stack's managed prover URL secret and turn Guardian execution off, usually because GUARDIAN_TX_PROVER_URL is missing from this shell. Pass the prover URL again, or set guardian_execution_enabled = false to turn execution off on purpose."
+    }
+  }
+
   dynamic "volume" {
     for_each = local.ca_bundle_enabled ? [1] : []
     content {
@@ -261,6 +278,54 @@ resource "aws_ecs_task_definition" "server" {
               name  = "GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID"
               value = local.storage_encryption_secret_name
             }
+          ] : [],
+          var.guardian_proving_enabled != null ? [
+            {
+              name  = "GUARDIAN_PROVING_ENABLED"
+              value = tostring(var.guardian_proving_enabled)
+            }
+          ] : [],
+          var.guardian_tx_prover_timeout_secs != null ? [
+            {
+              name  = "GUARDIAN_TX_PROVER_TIMEOUT_SECS"
+              value = tostring(var.guardian_tx_prover_timeout_secs)
+            }
+          ] : [],
+          var.guardian_execution_lease_secs != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_LEASE_SECS"
+              value = tostring(var.guardian_execution_lease_secs)
+            }
+          ] : [],
+          var.guardian_execution_reconcile_interval_secs != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS"
+              value = tostring(var.guardian_execution_reconcile_interval_secs)
+            }
+          ] : [],
+          var.guardian_execution_expiration_horizon_blocks != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS"
+              value = tostring(var.guardian_execution_expiration_horizon_blocks)
+            }
+          ] : [],
+          var.guardian_execution_max_concurrent != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_MAX_CONCURRENT"
+              value = tostring(var.guardian_execution_max_concurrent)
+            }
+          ] : [],
+          var.guardian_execution_record_retention_days != null ? [
+            {
+              name  = "GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS"
+              value = tostring(var.guardian_execution_record_retention_days)
+            }
+          ] : [],
+          var.guardian_tx_prover_max_concurrent != null ? [
+            {
+              name  = "GUARDIAN_TX_PROVER_MAX_CONCURRENT"
+              value = tostring(var.guardian_tx_prover_max_concurrent)
+            }
           ] : []
         )
 
@@ -280,6 +345,12 @@ resource "aws_ecs_task_definition" "server" {
             {
               name      = "GUARDIAN_EVM_RPC_URLS"
               valueFrom = local.evm_rpc_urls_secret_arn
+            }
+          ] : [],
+          local.tx_prover_url_secret_arn != "" ? [
+            {
+              name      = "GUARDIAN_TX_PROVER_URL"
+              valueFrom = local.tx_prover_url_secret_arn
             }
           ] : [],
           local.is_prod ? [
@@ -402,6 +473,7 @@ resource "aws_ecs_service" "server" {
     aws_secretsmanager_secret_version.database_url,
     aws_secretsmanager_secret_version.evm_allowed_chain_ids,
     aws_secretsmanager_secret_version.evm_rpc_urls,
+    aws_secretsmanager_secret_version.tx_prover_url,
     aws_secretsmanager_secret_version.operator_public_keys
   ]
 }

@@ -429,6 +429,9 @@ impl DeltasProcessorBase {
                         );
                     }
                     Ok(CanonicalWrite::StaleLease) => return Err(Self::stale_lease_error(&delta)),
+                    Ok(CanonicalWrite::ProtectedByExecution) => {
+                        Self::log_protected_by_execution(&delta, "reconcile_expiry");
+                    }
                     Ok(CanonicalWrite::NotCandidate) => {
                         Self::log_not_candidate(&delta, "reconcile_expiry");
                     }
