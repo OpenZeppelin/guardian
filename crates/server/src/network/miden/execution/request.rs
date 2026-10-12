@@ -39,6 +39,10 @@ enum ScriptTemplate {
     SendNotes(Vec<PartialNote>),
 }
 
+/// The most blocks a stored request may declare. Replay fetches each declared block's header and
+/// proof from the node, so the cap bounds that work per attempt.
+pub const MAX_DECLARED_BLOCKS: usize = 16;
+
 /// A decoded `TransactionRequest`, field for field.
 #[derive(Debug, Clone)]
 pub struct StoredRequest {
@@ -98,6 +102,9 @@ impl StoredRequest {
     pub fn check_against(&self, summary: &TransactionSummary) -> Result<(), RequestInvalidReason> {
         if !self.block_numbers.contains(&summary.block_number()) {
             return Err(RequestInvalidReason::BoundBlockNotDeclared);
+        }
+        if self.block_numbers.len() > MAX_DECLARED_BLOCKS {
+            return Err(RequestInvalidReason::TooManyDeclaredBlocks);
         }
         match self.auth_arg {
             Some(auth_arg)

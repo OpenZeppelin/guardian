@@ -312,7 +312,8 @@ travels as `meta_json`):
   retried; it resolves only from what the chain shows.
 - `error` is present exactly when `state` is `failed`. Three codes carry `meta`:
   `GUARDIAN_EXECUTION_REQUEST_INVALID` (`reason`: `bound_block_not_declared`, `auth_args_missing`,
-  `approval_expiration_missing`, `input_notes_not_pinned`), `GUARDIAN_EXECUTION_EXPIRATION_REACHED`
+  `approval_expiration_missing`, `input_notes_not_pinned`, `too_many_declared_blocks`),
+  `GUARDIAN_EXECUTION_EXPIRATION_REACHED`
   (`bound`: `approval`, `transaction`) and `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`
   (`reason`: `private`, `unavailable`). The full list is in
   [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md#guardian-execution).
