@@ -2,10 +2,8 @@
  * Typed vocabulary of Guardian's stable, machine-readable error codes
  * (issue #318). Mirrors `GuardianError::code()` in
  * `crates/server/src/error.rs` — a drift-guard test asserts the two stay in
- * sync. The four codes the server emits in SCREAMING_SNAKE wire form
- * (`GUARDIAN_ACCOUNT_PAUSED`, `GUARDIAN_ACCOUNT_RELEASED`,
- * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`, `GUARDIAN_CANDIDATE_LANDED`)
- * are normalized to snake_case here so the union has one consistent shape; use
+ * sync. The codes the server emits in SCREAMING_SNAKE wire form (see
+ * `WIRE_ALIASES`) are normalized to snake_case here so the union has one consistent shape; use
  * {@link normalizeGuardianErrorCode} at the wire boundary.
  */
 export const GUARDIAN_ERROR_CODES = [
@@ -14,6 +12,7 @@ export const GUARDIAN_ERROR_CODES = [
   'account_not_found',
   'account_paused',
   'account_released',
+  'account_request_capacity_exceeded',
   'authentication_failed',
   'authentication_replay',
   'authorization_failed',
@@ -24,6 +23,9 @@ export const GUARDIAN_ERROR_CODES = [
   'conflict_pending_proposal',
   'data_unavailable',
   'delta_not_found',
+  'execution_busy',
+  'execution_conflict',
+  'execution_not_found',
   'insufficient_operator_permission',
   'insufficient_signatures',
   'invalid_account_id',
@@ -40,7 +42,12 @@ export const GUARDIAN_ERROR_CODES = [
   'network_error',
   'pending_proposals_limit',
   'proposal_already_signed',
+  'proposal_executes_locally',
+  'proposal_missing_transaction_request',
   'proposal_not_found',
+  'proposal_not_ready',
+  'proposal_request_too_large',
+  'proving_unavailable',
   'rate_limit_exceeded',
   'rpc_unavailable',
   'rpc_validation_failed',
@@ -72,6 +79,15 @@ const WIRE_ALIASES: Readonly<Record<string, GuardianErrorCode>> = {
   GUARDIAN_ACCOUNT_RELEASED: 'account_released',
   GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION: 'insufficient_operator_permission',
   GUARDIAN_CANDIDATE_LANDED: 'candidate_landed',
+  GUARDIAN_PROVING_UNAVAILABLE: 'proving_unavailable',
+  GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST: 'proposal_missing_transaction_request',
+  GUARDIAN_PROPOSAL_EXECUTES_LOCALLY: 'proposal_executes_locally',
+  GUARDIAN_PROPOSAL_NOT_READY: 'proposal_not_ready',
+  GUARDIAN_EXECUTION_CONFLICT: 'execution_conflict',
+  GUARDIAN_EXECUTION_BUSY: 'execution_busy',
+  GUARDIAN_EXECUTION_NOT_FOUND: 'execution_not_found',
+  GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE: 'proposal_request_too_large',
+  GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED: 'account_request_capacity_exceeded',
 };
 
 /** Type guard narrowing an arbitrary string to {@link GuardianErrorCode}. */
