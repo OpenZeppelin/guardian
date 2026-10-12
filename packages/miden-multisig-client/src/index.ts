@@ -67,15 +67,10 @@ export {
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
   ChainBehindBoundBlockError,
-  chainAnchorFromBase64,
-  chainAnchorToBase64,
-  chainAnchorBlockNum,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
-  SummaryAnchorMismatchError,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -231,9 +226,11 @@ export {
 
 export {
   type AuthArgErrorCode,
+  BoundBlockMismatchError,
   BoundBlockNotDeclaredError,
   MultisigAuthArgsMissingError,
   ProposalSaltMalformedError,
+  TransactionSummaryLayoutError,
 } from './multisig/authArgErrors.js';
 
 export {
