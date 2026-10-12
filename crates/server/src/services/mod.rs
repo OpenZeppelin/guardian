@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod abandon_candidate;
 pub mod account_status;
+pub mod candidate_chain;
 mod configure_account;
 mod dashboard_account_delta_detail;
 mod dashboard_account_deltas;
@@ -30,6 +31,7 @@ mod get_delta_since;
 mod get_state;
 mod lookup_account;
 pub mod pause_account;
+mod proposal_signature;
 mod push_delta;
 mod push_delta_proposal;
 pub mod release_on_switch;
@@ -436,6 +438,19 @@ mod normalize_tests {
                 .contains("proposal_type must not be empty"),
             "unexpected error: {error}"
         );
+    }
+
+    /// Client fields the server does not model pass through unread, so a new
+    /// SDK field needs no server deploy.
+    #[test]
+    fn normalize_payload_passes_bound_block_num_through() {
+        let payload = json!({
+            "tx_summary": { "data": "AAAA" },
+            "metadata": { "proposal_type": "p2id", "bound_block_num": 42 },
+        });
+
+        let normalized = normalize_payload(payload).expect("payload normalizes");
+        assert_eq!(normalized["metadata"]["bound_block_num"], json!(42));
     }
 }
 

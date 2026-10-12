@@ -127,6 +127,10 @@ pub(crate) fn decode_status_reason(status: &DeltaStatus) -> Option<&'static str>
             reason: Some(RetainReason::Diverged),
             ..
         } => Some("diverged"),
+        DeltaStatus::Retained {
+            reason: Some(RetainReason::Orphaned),
+            ..
+        } => Some("orphaned"),
         DeltaStatus::Discarded {
             reason: Some(DiscardReason::ClientAbandoned),
             ..

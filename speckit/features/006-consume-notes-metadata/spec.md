@@ -461,8 +461,8 @@ clear error.
 - **FR-015** *(added for issue #409)*: Authenticated consumption is
   the canonical mode for new-shape `consume_notes` proposals. Proposal
   creation MUST authenticate every note in the proposer's store (fetch
-  and import its inclusion proof if missing) before capturing the
-  transaction summary and its chain anchor, and MUST refuse to propose
+  and import its inclusion proof if missing) before deriving the
+  transaction summary, and MUST refuse to propose
   a note that is not yet committed on chain. Verification and execution
   MUST authenticate every embedded note the same way before rebuilding.
   A note that cannot be authenticated MUST fail with an explicit,

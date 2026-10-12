@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.18.0-rc.3"
+    "version": "0.18.0"
   },
   "paths": {
     "/": {
@@ -2475,7 +2475,7 @@
       },
       "ProposalMetadata": {
         "type": "object",
-        "description": "Operator-stated intent lifted from a matching proposal.\n`chain_anchor` remains only in the proposal payload to avoid duplicating it\nin delta metadata and dashboard listings.",
+        "description": "Operator-stated intent lifted from a matching proposal.\nThe fields that bind a proposal to a block (`bound_block_num`, and the\nlegacy `chain_anchor`) remain only in the proposal payload, to avoid\nduplicating them in delta metadata and dashboard listings.",
         "required": [
           "proposal_type"
         ],
@@ -2692,7 +2692,8 @@
         "description": "Why a candidate was moved to `Retained` instead of deleted\n(issue #345). The label is diagnostic — every retained delta is\nreconciled and TTL-expired identically — but it records which\nworker verdict parked the row, and a `diverged` row that later\nreconciles is direct evidence the divergence verdict was spurious\n(e.g. a lagging RPC node, or the pre-#326 empty-digest misread\nthat hit new accounts' first transactions).",
         "enum": [
           "retry_exhausted",
-          "diverged"
+          "diverged",
+          "orphaned"
         ]
       },
       "SignProposalRequest": {

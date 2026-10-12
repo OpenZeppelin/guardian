@@ -159,11 +159,13 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 - `{ "status": "pending", "timestamp": string, "proposer_id": string, "cosigner_sigs": CosignerSignature[] }`
 - `{ "status": "candidate", "timestamp": string, "retry_count": number }`
 - `{ "status": "canonical", "timestamp": string }`
-- `{ "status": "retained", "timestamp": string, "reason": "retry_exhausted" | "diverged" }` —
+- `{ "status": "retained", "timestamp": string, "reason": "retry_exhausted" | "diverged" | "orphaned" }` —
   a candidate the worker gave up verifying, kept for background
   reconciliation (issue #345): promoted to `canonical` if the chain ever
-  shows it landed, dropped after a server-side TTL otherwise. `reason`
-  is omitted when not recorded.
+  shows it landed, dropped after a server-side TTL otherwise. `orphaned`
+  (issue #17) marks a candidate whose predecessor in the account's
+  candidate queue was parked, discarded, or abandoned. `reason` is
+  omitted when not recorded.
 - `{ "status": "discarded", "timestamp": string, "reason": "client_abandoned" }` —
   `reason` is omitted for discards without a recorded reason.
 
@@ -184,6 +186,8 @@ Miden delta proposals use:
 `p2id` metadata carries `recipient_id`, `faucet_id`, `amount`, and an optional `note_type` (`"public"` or `"private"`, issue #322). Clients emit `note_type` only when the note is private; an absent field means public, which keeps proposals created before the field existed valid. The value is part of the signed metadata: verifiers rebuild the transaction from it, so a tampered `note_type` fails the tx_summary commitment check.
 
 `p2id` metadata may additionally carry `reclaim_height` and/or `timelock_height` (issue #366): absolute `u32` block heights that make the proposal create a P2IDE note instead of a plain P2ID note (`reclaim_height` lets the sender reclaim an unconsumed note from that block on; `timelock_height` blocks consumption before that block). Presence of either field selects P2IDE; both absent means plain P2ID, which keeps pre-existing proposals valid. `0` is rejected because it is the on-chain encoding for "no constraint". Like `note_type`, the heights are part of the signed metadata and a tampered value fails the tx_summary commitment check.
+
+Every proposal the multisig SDKs create also carries `bound_block_num`, the `u32` block its transaction summary binds. It is not signed and the server does not read it: the clients read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees, so a wrong value can deny a proposal, never get a wrong one accepted. Proposals created by 0.18.0 clients carry `chain_anchor` (a base64 Miden `ChainAnchor`) instead; current clients take their block from the summary, never read the anchor and never write it.
 
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
 
@@ -255,6 +259,13 @@ For an EIP-712 Miden approval, the same endpoint and envelope use `"message_form
 - EVM create/approve request bodies carry raw ECDSA signatures. Signer identity is derived from `guardian_evm_session`.
 - Stored EVM signers are normalized EOA addresses.
 - EVM proposal signatures are verified with `ecrecover(hash, signature)`.
+
+Guardian verifies every Miden approval against the proposal's transaction summary before storing it:
+
+- Falcon and raw ECDSA approvals sign the transaction-summary commitment; EIP-712 approvals sign the typed-data hash above. The Falcon public key comes from the signature. ECDSA approvals must carry `public_key`; a raw approval's `v` must be `0/1` and recover to that key, as execution recovers it.
+- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must equal the request signer, so a cosigner can only approve for themselves.
+- On `POST /delta/proposal`, `signatures` may carry at most the proposer's own approval. Other cosigners approve through `PUT /delta/proposal`.
+- A signature that does not parse or verify, or whose signer is not the request signer (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
 
 ### DeltaProposalEnvelope
 
@@ -593,7 +604,7 @@ behavior.
 | `guardian_release_sweep_rotations_total` | counter | `outcome` (`completed`/`partial`) |
 | `guardian_release_sweep_rotation_duration_seconds` | histogram | — |
 | `guardian_release_sweep_accounts_total` | counter | `outcome` (`released`/`confirming`/`still_bound`/`own_key_mismatch`/`storage_opaque`/`no_binding`/`chain_behind_stored`/`probe_failed`) |
-| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
+| `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`orphaned`/`abandoned`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
 | `guardian_canonicalization_pass_accounts` | gauge | — |

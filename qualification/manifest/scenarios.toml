@@ -696,3 +696,76 @@ actions = ["account-create", "account-register", "asset-transfer", "note-consume
 step_budget = "480s"
 required = true
 core = false
+
+# The candidate queue (issue #17). All three run on the stack's queue server,
+# which switches queueing on (GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT, two
+# in this profile and four in the live one) while the main server keeps the
+# default of one in-flight candidate per account.
+#
+# Rust only, like the scheme gate: admission is server behaviour, so one
+# black-box exercise proves it. The queue server holds the fixture account in a
+# database of its own, because the candidates this queues never canonicalize
+# against the stub chain and nothing could take them back out of the main
+# server's shared fixture account. The order of the two actions matters: the
+# proposal is refused while the queue still has room, so the refusal is the
+# nonce rule rather than a full queue. The limit then fills the queue and finds
+# it refusing every submission whatever its base, which is the one in-flight
+# gate a depth of one has always been.
+[[scenario]]
+id = "det-candidate-queue"
+title = "The candidate queue refuses a proposal at a queued nonce, fills to its depth, then refuses every base"
+profile = "deterministic"
+sdk = "rust"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["queue-cosigner-proposal-refused", "queue-depth-limit"]
+step_budget = "60s"
+required = true
+core = false
+
+# The premise of queueing chained candidates: the node accepts a transaction
+# built on the state another one still in flight produced, and GUARDIAN
+# promotes the chain in nonce order. At the default depth of one the second
+# transfer's proposal is refused, so this is what an operator opting in relies
+# on. Whether a transfer was admitted behind a still-queued predecessor is
+# timing, so it is observed, and a run that never saw it is environment-blocked
+# rather than passed: it would not have exercised the queue.
+[[scenario]]
+id = "live-candidate-queue-chained-1of1-ecdsa"
+title = "Three transfers sent back to back land and are promoted in nonce order"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["queue-account-create", "account-register", "asset-transfer", "note-consume", "queue-transfers-chained"]
+step_budget = "480s"
+required = true
+core = false
+
+# A stranded head: the producer prepares a transaction, which acknowledges it
+# and queues it, and never submits it. A proposal built on the canonical state
+# carries the head's nonce, so it could never be pushed, and it is refused even
+# though the queue has room. Abandoning the head releases the account, and a
+# fresh transfer at the head's nonce then lands. A successor queued behind a
+# head that later fails cannot be produced through either SDK: neither applies
+# a transaction locally without submitting it, so neither ever chains on a
+# state the chain did not accept. The orphan sweep behind a failed head is
+# covered by the server's end-to-end tests over the real delta path.
+[[scenario]]
+id = "live-candidate-queue-stranded-head-1of1-ecdsa"
+title = "A stranded queue head refuses proposals at its nonce, and the account recovers once it is abandoned"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+# `proposal-sign` for the TypeScript leg, as in the custom-proposal scenario:
+# its client does not sign its own proposal at creation.
+actions = ["queue-account-create", "account-register", "asset-transfer", "note-consume", "custom-proposal-create", "proposal-sign", "custom-proposal-prepare", "queue-head-blocks-proposal", "queue-head-abandon-recover"]
+step_budget = "480s"
+required = true
+core = false

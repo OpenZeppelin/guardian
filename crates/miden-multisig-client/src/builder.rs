@@ -16,7 +16,6 @@ use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-use miden_protocol::crypto::rand::RandomCoin;
 
 use crate::MidenSdkClient;
 use crate::client::MultisigClient;
@@ -344,12 +343,8 @@ pub(crate) async fn create_miden_client(
         .map_err(|e| MultisigError::MidenClient(format!("failed to open SQLite store: {}", e)))?;
     let store = Arc::new(store);
 
-    let rng_seed: [u32; 4] = rand::random();
-    let rng = Box::new(RandomCoin::new(rng_seed.into()));
-
     configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
         .store(store)
-        .rng(rng)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()

@@ -71,11 +71,17 @@ export type DeltaStatus =
   | { status: 'pending'; timestamp: string; proposerId: string; cosignerSigs: CosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  /** Candidate the Guardian gave up verifying (retry exhaustion or a
-   * confirmed-diverged observation) but kept for background
-   * reconciliation (issue #345); promoted to `canonical` if the chain
-   * ever shows it landed, dropped after a server-side TTL otherwise. */
-  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
+  /** Candidate the Guardian gave up verifying (retry exhaustion, a
+   * confirmed-diverged observation, or an orphaned position in the
+   * account's candidate queue after its predecessor was parked) but
+   * kept for background reconciliation (issue #345 / #17); promoted to
+   * `canonical` if the chain ever shows it landed, dropped after a
+   * server-side TTL otherwise. */
+  | {
+      status: 'retained';
+      timestamp: string;
+      reason?: 'retry_exhausted' | 'diverged' | 'orphaned';
+    }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ProposalType =
@@ -112,11 +118,13 @@ export interface ProposalMetadata {
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   noteType?: string;
   /**
-   * Base64-serialized Miden `ChainAnchor` pinning the reference block the
-   * proposal's transaction summary was built at. Since protocol 0.16 the
-   * signed summary binds the reference block commitment, so cosigners and the
-   * executor need this anchor to reproduce the summary the proposer signed.
+   * The block the proposal's transaction summary binds. Not signed: the
+   * multisig SDKs read the block from the summary and refuse a proposal whose
+   * value disagrees, so a wrong value can deny a proposal but never get a
+   * wrong one accepted.
    */
+  boundBlockNum?: number;
+  /** Legacy: the base64 Miden `ChainAnchor` 0.18 clients wrote instead of `boundBlockNum`. */
   chainAnchor?: string;
   /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
   reclaimHeight?: number;

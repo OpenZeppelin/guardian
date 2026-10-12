@@ -17,13 +17,13 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.0-rc.3 @miden-sdk/miden-sdk@0.17.0-rc.5
+npm install @openzeppelin/miden-multisig-client@0.18.0 @miden-sdk/miden-sdk@0.17.0
 ```
 
-Miden 0.17 requires a new client database: a store created under 0.16 does
-not open. Pass a fresh `storeName` when creating the `MidenClient`, or delete
-the existing IndexedDB database first. Accounts and pending proposals from the
-0.16 line do not carry over; see the compatibility document below.
+Miden 0.17 requires a new client database: a store created under 0.16 does not
+open. Pass a fresh `storeName` when creating the `MidenClient`, or delete the
+existing IndexedDB database first. Accounts and pending proposals from the 0.16
+line do not carry over. See the compatibility document below.
 
 > **Why the peer version is exact**: the transaction-summary layout and the
 > guarded-multisig procedure roots are only byte-compatible between one
@@ -310,8 +310,10 @@ createSwitchGuardianProposal(endpoint, pubkey, { nonce }?)
 createCustomProposal(requestBytes, label, { nonce }?)
 ```
 
-All methods accept `nonce` (identifies the proposal; defaults to
-`Date.now()`). `newThreshold` defaults to the current threshold on add and to
+All methods accept `nonce` (identifies the proposal; defaults to the store
+account's nonce plus one, the nonce the executed transaction will have, as the
+Rust SDK labels proposals; through 0.18.0 the default was `Date.now()`).
+`newThreshold` defaults to the current threshold on add and to
 the min of the current threshold and the remaining signer count on remove.
 The option shapes are exported as `CreateProposalOptions`,
 `CreateSignerProposalOptions`, and `CreateP2idProposalOptions`.
@@ -367,7 +369,12 @@ for (const p of proposals) {
 ### Recover From a Dead Transaction (Abandon)
 
 If an approved transaction died client-side after guardian approval, the
-candidate keeps the account locked on GUARDIAN. Record an abandon intent
+candidate keeps the account locked on GUARDIAN: proposals and deltas answer
+`conflict_pending_delta` while the account's candidate queue (one candidate
+by default) is full, when they build on the state that candidate already
+claimed, or when their nonce does not extend the queue (a proposal's must be
+the newest queued candidate's plus one), and any candidate queued behind it
+can never land. Record an abandon intent
 and poll for the resolution:
 
 ```typescript
@@ -456,8 +463,10 @@ sync height, so `syncProposals`, `signProposal`, `executeProposal`,
 client first. Foreign accounts, the fee faucet among them, load at the tip, so
 a proposal stays verifiable however long it waits for signatures, even after
 the node has pruned the bound block's account state (devnet keeps about 50
-blocks). The proposal's `chainAnchor` still names the bound block, and
-0.18.0-rc.1 clients still re-execute at it.
+blocks). The proposal's `boundBlockNum` records the bound block. The SDK reads
+that block from the signed summary when it creates a proposal and when it
+verifies one, and refuses a proposal whose `boundBlockNum` disagrees
+(`BoundBlockMismatchError`), as the Rust SDK does.
 
 `createTransactionProposalRequest(proposalId)` returns the final, fully
 signed request for an integration that proves and submits with its own
@@ -475,6 +484,18 @@ if (proposal.status === 'ready') {
   console.log('Transaction executed on-chain!');
 }
 ```
+
+GUARDIAN pins every proposal to the account state its transaction must execute
+on. Execution (and `createTransactionProposalRequest` and
+`prepareCustomExecution`) refuses a proposal pinned to a state other than the one
+this client holds: sync with `syncState()` and retry, or create a new proposal if
+the account has moved past that state. A `switch_guardian` proposal is checked
+the same way when the pre-switch GUARDIAN serves it. When that GUARDIAN never
+received it (made offline), is unreachable, or answers with an error, the switch
+executes without the check (logging a warning in the last two cases), so a
+GUARDIAN the account is rotating away from cannot block the rotation. After
+the switch the delta is pushed back to it best-effort, naming the state the
+switch executed on, as the Rust SDK does.
 
 ### Export Proposal for Offline Signing
 
@@ -541,7 +562,7 @@ exported/imported through the normal flow, but the SDK cannot build its on-chain
 transaction — the integration owns that recipe and submits it itself.
 
 ```typescript
-import { buildP2idTransactionRequest, chainAnchorBlockNum } from '@openzeppelin/miden-multisig-client';
+import { buildP2idTransactionRequest } from '@openzeppelin/miden-multisig-client';
 
 // Producer: build a transaction and propose it under a custom label.
 // The options object accepts `noteType` (`NoteType.Public` (default) or
@@ -570,7 +591,8 @@ const advice = await multisig.prepareCustomExecution(proposal.id, request.serial
 // The browser TransactionRequest is immutable, so rebuild from the same recipe
 // (inputs + salt + bound block) with the advice, then submit. `submitTransaction`
 // executes at the chain tip: the rebuilt request declares the block it binds.
-const boundBlockNum = chainAnchorBlockNum(proposal.metadata.chainAnchor);
+// `prepareCustomExecution` has checked `boundBlockNum` against the signed summary.
+const boundBlockNum = proposal.metadata.boundBlockNum;
 const { request: finalRequest } = await buildP2idTransactionRequest(
   midenClient, senderId, recipientId, faucetId, amount,
   { salt, boundBlockNum, signatureAdviceMap: advice },
@@ -594,23 +616,32 @@ integration asks for one through `approvalExpirationDelta`, which the
 `create*Proposal` methods forward from their options.
 
 The integration keeps its own recipe (build inputs + salt) and reads the bound
-block from the proposal's chain anchor, so it can reproduce the exact
-transaction at execute time — the SDK does not store the serialized request.
+block from `proposal.metadata.boundBlockNum`, so it can reproduce the exact
+transaction at execute time - the SDK does not store the serialized request.
+Verification and `prepareCustomExecution` refuse a custom proposal whose
+`boundBlockNum` disagrees with its signed summary, as for every other type. A
+proposal a 0.18.0 client made has none; `summaryBoundBlockNum` reads its block
+from the summary.
 The binding check guarantees the rebuilt transaction matches the commitment the
-cosigners signed. A request built at one sync height and anchored at another is
-refused by `executeForSummary` with `SummaryAnchorMismatchError`; rebuild and
-retry.
+cosigners signed. The request may bind any block up to the client's sync
+height: `createCustomProposal` syncs up to that block when the client is behind
+it and derives the summary at the chain tip.
 
 The summary binds the salt itself, so the value the cosigners signed over is
-readable back out of it:
+readable back out of it, as is the block it binds:
 
 ```typescript
-import { summarySalt, summaryApprovalExpirationBlockNum } from '@openzeppelin/miden-multisig-client';
+import {
+  summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
+  summarySalt,
+} from '@openzeppelin/miden-multisig-client';
 import { TransactionSummary } from '@miden-sdk/miden-sdk';
 
 const summary = TransactionSummary.deserialize(bytes);
 const salt = summarySalt(summary);
 const expiresAt = summaryApprovalExpirationBlockNum(summary); // undefined: never
+const boundBlockNum = summaryBoundBlockNum(summary);
 ```
 
 The SDK's own verification path compares `summarySalt(summary)` with the
@@ -795,8 +826,7 @@ discriminator.
   trip and are imported into the local store as committed (with one
   `syncState` if the store is behind the note's block). Verification
   therefore reads and writes the local store and contacts the node.
-  `createConsumeNotesProposal` does the same before the summary and its
-  chain anchor are captured, and refuses a note that is not yet
+  `createConsumeNotesProposal` does the same before the summary is derived, and refuses a note that is not yet
   committed on chain.
 
 `createConsumeNotesProposal` always emits v2 starting with this

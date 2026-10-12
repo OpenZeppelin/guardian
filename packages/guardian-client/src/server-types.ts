@@ -22,7 +22,7 @@ export type ServerDeltaStatus =
   | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
   | { status: 'candidate'; timestamp: string }
   | { status: 'canonical'; timestamp: string }
-  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' }
+  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' | 'orphaned' }
   | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ServerProposalType =
@@ -58,7 +58,9 @@ export interface ServerProposalMetadata {
   amount?: string;
   /** P2ID note visibility, "public" or "private" (issue #322). Absent => public. */
   note_type?: string;
-  /** Base64-serialized Miden `ChainAnchor` pinning the proposal's reference block. */
+  /** The block the proposal's transaction summary binds (unsigned). */
+  bound_block_num?: number;
+  /** Legacy base64 Miden `ChainAnchor` written by 0.18 clients. */
   chain_anchor?: string;
   /** P2IDE reclaim block height (issue #366). Presence of either height means a P2IDE note. */
   reclaim_height?: number;
