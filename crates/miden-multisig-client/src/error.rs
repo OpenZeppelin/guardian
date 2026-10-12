@@ -32,14 +32,17 @@ pub enum MultisigError {
     #[error("miden client error: {0}")]
     MidenClient(String),
 
+    /// A proposal's `bound_block_num` names a block other than the one its
+    /// signed summary binds. TypeScript custom producers rebuild at that
+    /// number, so both SDKs refuse a wrong one by name.
     #[error(
-        "the transaction summary binds block commitment {summary_block_commitment} but the \
-         captured chain anchor is {anchor_commitment}; a sync landed between building the \
-         request and capturing its anchor, so rebuild the request and retry"
+        "proposal {proposal_id} declares bound_block_num {declared}, but its signed \
+         transaction summary binds block {bound}"
     )]
-    SummaryAnchorMismatch {
-        anchor_commitment: String,
-        summary_block_commitment: String,
+    BoundBlockMismatch {
+        proposal_id: String,
+        declared: u32,
+        bound: BlockNumber,
     },
 
     /// A multisig request binds a block in its auth args without declaring it
