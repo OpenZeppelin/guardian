@@ -465,9 +465,11 @@ impl GuardianClient {
     }
 
     /// Revokes every session of the configured wallet on this Guardian,
-    /// including sessions started elsewhere, and stops using the active one
-    /// if that wallet granted it. Signed by the wallet. Returns how many
-    /// sessions the server revoked.
+    /// including sessions started elsewhere, and stops using the session
+    /// held when the call was made if that wallet granted it. A session a
+    /// client sharing this one's [`SessionSlot`] starts while the call is in
+    /// flight was issued after it and stays in use. Signed by the wallet.
+    /// Returns how many sessions the server revoked.
     pub async fn revoke_all_sessions(&mut self) -> ClientResult<u64> {
         let timestamp = self.next_timestamp();
         let (commitment, pubkey_hex, signature_hex) = {
@@ -480,8 +482,16 @@ impl GuardianClient {
                 wallet.sign_word_hex(digest),
             )
         };
+        let commitment = commitment.into_hex();
+        let revoking = self.session.lock().as_ref().and_then(|session| {
+            session
+                .info
+                .signer_commitment
+                .eq_ignore_ascii_case(&commitment)
+                .then(|| session.info.session_public_key.clone())
+        });
         let mut request = tonic::Request::new(RevokeAllSessionsRequest {
-            signer_commitment: commitment.into_hex(),
+            signer_commitment: commitment,
         });
         attach_auth_headers(&mut request, &pubkey_hex, &signature_hex, timestamp)?;
         let revoked = self
@@ -490,13 +500,9 @@ impl GuardianClient {
             .await?
             .into_inner()
             .revoked;
-        let commitment = commitment.into_hex();
-        self.session.clear_if(|session| {
-            session
-                .info
-                .signer_commitment
-                .eq_ignore_ascii_case(&commitment)
-        });
+        if let Some(session_public_key) = revoking {
+            self.session.clear_key(&session_public_key);
+        }
         Ok(revoked)
     }
 

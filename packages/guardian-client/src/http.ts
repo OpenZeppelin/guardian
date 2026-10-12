@@ -380,33 +380,31 @@ export class GuardianHttpClient {
   /**
    * Revoke every session of the wallet signer on the server
    * (`POST /session/revoke-all`), including sessions started elsewhere, and
-   * stop using the current one. Signed by the wallet. Returns how many
-   * sessions the server revoked.
+   * stop using the session that was current when the call was made. A
+   * session started while the call is in flight was issued after it and
+   * stays in use. Signed by the wallet. Returns how many sessions the server
+   * revoked.
    */
   async revokeAllSessions(): Promise<number> {
-    if (!this.signer) {
+    const signer = this.signer;
+    if (!signer) {
       throw new Error('No signer configured. Call setSigner() first.');
     }
-    if (!this.signer.signSessionRevokeAll) {
+    if (!signer.signSessionRevokeAll) {
       throw new Error('This signer cannot sign Guardian session revocations');
     }
+    const revoking = this.session;
     const timestamp = this.nextTimestamp();
-    const signature = await this.signer.signSessionRevokeAll(this.signer.commitment, timestamp);
-    const body: ServerRevokeAllSessionsRequest = { signer_commitment: this.signer.commitment };
+    const signature = await signer.signSessionRevokeAll(signer.commitment, timestamp);
+    const body: ServerRevokeAllSessionsRequest = { signer_commitment: signer.commitment };
     const response = await this.fetch('/session/revoke-all', {
       method: 'POST',
-      headers: authHeaders(
-        this.signer.publicKey,
-        signature,
-        timestamp,
-        this.signer.requestAuthFormat
-      ),
+      headers: authHeaders(signer.publicKey, signature, timestamp, signer.requestAuthFormat),
       body: JSON.stringify(body),
     });
     const data = (await response.json()) as ServerRevokeAllSessionsResponse;
-    const session = this.session;
-    if (session?.signerCommitment.toLowerCase() === this.signer.commitment.toLowerCase()) {
-      this.endSession(session, 'logout');
+    if (revoking?.signerCommitment.toLowerCase() === signer.commitment.toLowerCase()) {
+      this.endSession(revoking, 'logout');
     }
     return data.revoked;
   }

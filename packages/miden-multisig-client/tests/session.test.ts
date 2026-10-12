@@ -78,8 +78,10 @@ function memoryStore(): SessionKeyStore & { records: Map<string, StoredSessionKe
     save: async (record) => {
       records.set(record.id, record);
     },
-    remove: async (id) => {
-      records.delete(id);
+    remove: async (id, publicKey) => {
+      if (records.get(id)?.publicKey === publicKey) {
+        records.delete(id);
+      }
     },
   };
 }
@@ -503,7 +505,27 @@ describe('IndexedDbSessionKeyStore', () => {
       verifies(key.publicKey, wordToBytes(sessionLogoutDigest(key.publicKey, 1)), signature),
     ).toBe(true);
 
-    await store.remove('guardian:signer');
+    await store.remove('guardian:signer', key.publicKey);
+    await expect(store.load('guardian:signer')).resolves.toBeNull();
+  });
+
+  it('removes a key only if the record still holds it', async () => {
+    const store = new IndexedDbSessionKeyStore(`guardian-sessions-cas-${Date.now()}`);
+    const older = await WebCryptoSessionKey.generate();
+    const newer = await WebCryptoSessionKey.generate();
+    await store.save({
+      id: 'guardian:signer',
+      privateKey: newer.privateKey,
+      publicKey: newer.publicKey,
+      expiresAt: 2_000_000_000,
+    });
+
+    await store.remove('guardian:signer', older.publicKey);
+    await expect(store.load('guardian:signer')).resolves.toMatchObject({
+      publicKey: newer.publicKey,
+    });
+
+    await store.remove('guardian:signer', newer.publicKey);
     await expect(store.load('guardian:signer')).resolves.toBeNull();
   });
 

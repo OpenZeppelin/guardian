@@ -115,7 +115,12 @@ export interface StoredSessionKey {
 export interface SessionKeyStore {
   load(id: string): Promise<StoredSessionKey | null>;
   save(record: StoredSessionKey): Promise<void>;
-  remove(id: string): Promise<void>;
+  /**
+   * Remove the record `id` only if it still holds `publicKey`, as one atomic
+   * step, so a newer key another tab saved for the same wallet and Guardian is
+   * never deleted.
+   */
+  remove(id: string, publicKey: string): Promise<void>;
 }
 
 /**
@@ -126,10 +131,7 @@ export async function forgetSessionKey(
   store: SessionKeyStore,
   session: { storeId: string; publicKey: string },
 ): Promise<void> {
-  const record = await store.load(session.storeId);
-  if (record?.publicKey === session.publicKey) {
-    await store.remove(session.storeId);
-  }
+  await store.remove(session.storeId, session.publicKey);
 }
 
 /**
@@ -154,9 +156,23 @@ export class IndexedDbSessionKeyStore implements SessionKeyStore {
     await this.request('readwrite', (store) => store.put(record));
   }
 
-  async remove(id: string): Promise<void> {
-    await this.request('readwrite', (store) => store.delete(id));
+  async remove(id: string, publicKey: string): Promise<void> {
+    const database = await this.open();
+    return new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(IndexedDbSessionKeyStore.STORE, 'readwrite');
+      const store = transaction.objectStore(IndexedDbSessionKeyStore.STORE);
+      const lookup = store.get(id);
+      lookup.onsuccess = () => {
+        if ((lookup.result as StoredSessionKey | undefined)?.publicKey === publicKey) {
+          store.delete(id);
+        }
+      };
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
   }
+
 
   private async request<T>(
     mode: IDBTransactionMode,

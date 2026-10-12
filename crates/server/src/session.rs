@@ -23,6 +23,14 @@ pub const SESSION_MAX_TTL_ENV: &str = "GUARDIAN_SESSION_MAX_TTL_SECONDS";
 /// Default and upper bound of the maximum lifetime: 8 hours, as for operator
 /// and EVM sessions. Operators may only shorten it.
 pub const DEFAULT_SESSION_MAX_TTL_SECONDS: u32 = 8 * 60 * 60;
+/// SDKs request this much less than the advertised maximum, so client clock
+/// drift cannot push a grant over it.
+const CLIENT_TTL_MARGIN_SECS: u64 = 60;
+/// Shortest maximum lifetime an operator may configure: a grant must expire
+/// more than the clock-skew window from now, and SDKs keep
+/// [`CLIENT_TTL_MARGIN_SECS`] below the maximum, so anything shorter leaves
+/// clients no lifetime they can register.
+const MIN_SESSION_MAX_TTL_SECONDS: u64 = MAX_TIMESTAMP_SKEW_SECS + CLIENT_TTL_MARGIN_SECS + 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionConfig {
@@ -38,15 +46,22 @@ impl Default for SessionConfig {
 }
 
 impl SessionConfig {
-    /// `max_ttl_seconds` must be longer than the request clock-skew window
+    /// `max_ttl_seconds` must be at least [`MIN_SESSION_MAX_TTL_SECONDS`]
     /// and at most [`DEFAULT_SESSION_MAX_TTL_SECONDS`].
     pub fn new(max_ttl_seconds: u32) -> Result<Self> {
-        if u64::from(max_ttl_seconds) <= MAX_TIMESTAMP_SKEW_SECS
-            || max_ttl_seconds > DEFAULT_SESSION_MAX_TTL_SECONDS
-        {
+        if u64::from(max_ttl_seconds) < MIN_SESSION_MAX_TTL_SECONDS {
             return Err(GuardianError::ConfigurationError(format!(
-                "{SESSION_MAX_TTL_ENV} must be between {} and {DEFAULT_SESSION_MAX_TTL_SECONDS} seconds",
-                MAX_TIMESTAMP_SKEW_SECS + 1
+                "{SESSION_MAX_TTL_ENV} is {max_ttl_seconds}s but must be at least \
+                 {MIN_SESSION_MAX_TTL_SECONDS}s: a session must outlast the \
+                 {MAX_TIMESTAMP_SKEW_SECS}s request clock-skew window plus the \
+                 {CLIENT_TTL_MARGIN_SECS}s margin SDKs keep below the maximum, or no \
+                 client can start one"
+            )));
+        }
+        if max_ttl_seconds > DEFAULT_SESSION_MAX_TTL_SECONDS {
+            return Err(GuardianError::ConfigurationError(format!(
+                "{SESSION_MAX_TTL_ENV} is {max_ttl_seconds}s but must be at most \
+                 {DEFAULT_SESSION_MAX_TTL_SECONDS}s (8 hours)"
             )));
         }
         Ok(Self { max_ttl_seconds })
@@ -348,11 +363,12 @@ mod tests {
             u64::from(DEFAULT_SESSION_MAX_TTL_SECONDS)
         );
         assert!(SessionConfig::new(0).is_err());
+        let too_short = SessionConfig::new(360).unwrap_err().to_string();
         assert!(
-            SessionConfig::new(MAX_TIMESTAMP_SKEW_SECS as u32).is_err(),
-            "must outlive the skew window"
+            too_short.contains("at least 361s") && too_short.contains("clock-skew window"),
+            "explains the minimum: {too_short}"
         );
-        assert!(SessionConfig::new(MAX_TIMESTAMP_SKEW_SECS as u32 + 1).is_ok());
+        assert!(SessionConfig::new(361).is_ok());
         assert!(SessionConfig::new(DEFAULT_SESSION_MAX_TTL_SECONDS + 1).is_err());
     }
 

@@ -204,7 +204,7 @@ export async function resumeGuardianSession(
     return null;
   }
   if (record.expiresAt - SESSION_EXPIRY_MARGIN_SECONDS <= nowSeconds()) {
-    await store.remove(id);
+    await store.remove(id, record.publicKey);
     return null;
   }
   const session = new GuardianSession(

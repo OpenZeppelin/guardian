@@ -273,7 +273,7 @@ lifetime. See [`spec/api.md`](../spec/api.md#session-authentication).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `GUARDIAN_SESSION_MAX_TTL_SECONDS` | `28800` (8 h) | Latest a session may expire, counted from registration; grants asking for longer are rejected. Operators may only shorten it: the value must be between 301 (longer than the 5-minute request clock-skew window) and 28800, otherwise startup fails. Sessions live in `auth_sessions` (realm `miden`) on Postgres, in memory otherwise (lost on restart; clients start a new session). |
+| `GUARDIAN_SESSION_MAX_TTL_SECONDS` | `28800` (8 h) | Latest a session may expire, counted from registration; grants asking for longer are rejected. Operators may only shorten it: the value must be between 361 (the 5-minute request clock-skew window plus the 60-second margin SDKs keep below the maximum) and 28800, otherwise startup fails with an error saying so. Sessions live in `auth_sessions` (realm `miden`) on Postgres, in memory otherwise (lost on restart; clients start a new session). |
 
 ## Runtime — dashboard
 

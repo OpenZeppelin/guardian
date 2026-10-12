@@ -1872,6 +1872,27 @@ describe('GuardianHttpClient sessions', () => {
     expect(session.signRequest).not.toHaveBeenCalled();
   });
 
+  it('keeps a session started while revoke-all is in flight', async () => {
+    client.setSigner({
+      ...mockSigner,
+      signSessionRevokeAll: vi.fn().mockReturnValue('0x' + '7'.repeat(128)),
+    });
+    client.setSession(session);
+    let respond!: (value: unknown) => void;
+    mockFetch.mockReturnValueOnce(new Promise((resolve) => (respond = resolve)));
+    const pending = client.revokeAllSessions();
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledOnce());
+
+    const started = sessionExpiringIn(3600);
+    client.setSession(started);
+    respond({ ok: true, json: async () => ({ revoked: 1 }) });
+    await expect(pending).resolves.toBe(1);
+
+    expect(client.getSession()).toBe(started);
+    expect(started.onEnded).not.toHaveBeenCalled();
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith('logout');
+  });
+
   it('keeps the session when revoke-all fails', async () => {
     client.setSigner({
       ...mockSigner,
