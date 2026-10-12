@@ -1,12 +1,14 @@
 # shellcheck shell=bash
-# Restarts only the Guardian container, leaving the database and its volume
-# untouched. Restarting the whole stack would prove nothing: the data has to
-# outlive the process that wrote it, not be rewritten by a fresh one.
+# Restarts the Guardian containers whose data the restart pass reads back,
+# leaving the database and its volumes untouched. Restarting the whole stack
+# would prove nothing: the data has to outlive the process that wrote it, not be
+# rewritten by a fresh one. The executing server is included because the
+# refusals scenario asserts that its failed execution survives a restart.
 
 qual_restart_server() {
   local project="$1" compose_file="$2" env_file="$3"
   docker compose -p "${project}" -f "${compose_file}" --env-file "${env_file}" \
-    restart server >/dev/null 2>&1
+    restart server server-executing >/dev/null 2>&1
 }
 
 # Replaces the Guardian container with a different image, leaving the database
@@ -32,12 +34,12 @@ qual_swap_server_image() {
     && mv "${tmp}" "${env_file}" || return 1
 
   # Every GUARDIAN in the stack, not only the one most scenarios talk to. The
-  # migration target, the scheme-gated and the queue server run the same image,
-  # and leaving them on the seeded release meant the phase that is supposed to
-  # judge the image under test was still asking an older one: `det-scheme-gate`
-  # failed after a successful upgrade because the gate it asserts did not exist
-  # in the release the third server was still running.
+  # migration target, the scheme-gated, the executing and the queue server run
+  # the same image, and leaving them on the seeded release meant the phase that
+  # is supposed to judge the image under test was still asking an older one:
+  # `det-scheme-gate` failed after a successful upgrade because the gate it
+  # asserts did not exist in the release the third server was still running.
   docker compose -p "${project}" -f "${compose_file}" --env-file "${env_file}" \
     up -d --no-deps --force-recreate \
-    server server-migration-target server-scheme-gated server-queue >/dev/null 2>&1
+    server server-migration-target server-scheme-gated server-executing server-queue >/dev/null 2>&1
 }

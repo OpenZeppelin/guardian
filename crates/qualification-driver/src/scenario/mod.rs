@@ -34,6 +34,13 @@ pub enum ActionOutcome {
     EnvironmentBlocked {
         reason: String,
     },
+    /// GUARDIAN reported, as the outcome of an execution it ran, that the execution failed. The
+    /// node and prover it reached are part of the product under test, so link wording in the
+    /// cause is GUARDIAN's verdict rather than evidence of the suite's own link failing, and it
+    /// is never reclassified.
+    ExecutionFailed {
+        reason: String,
+    },
 }
 
 impl ActionOutcome {
@@ -48,6 +55,45 @@ impl ActionOutcome {
         Self::Failed {
             reason: reason.into(),
             classification: Classification::Setup,
+        }
+    }
+}
+
+/// One of the GUARDIANs `qualification/stack/run.sh` starts beside the main one, on both
+/// profiles, and exports the endpoint of.
+///
+/// Only deterministic actions read these, against a stack this suite brought up itself. A
+/// missing endpoint is therefore the harness being wrong, never the environment: reporting it
+/// environment-blocked would let a change to `run.sh` that stopped exporting one drop a required
+/// scenario with a zero exit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StackServer {
+    SchemeGated,
+    Executing,
+    Queue,
+}
+
+impl StackServer {
+    const fn grpc_variable(self) -> &'static str {
+        match self {
+            Self::SchemeGated => "QUAL_GUARDIAN_SCHEME_GATED_GRPC",
+            Self::Executing => "QUAL_GUARDIAN_EXECUTING_GRPC",
+            Self::Queue => "QUAL_GUARDIAN_QUEUE_GRPC",
+        }
+    }
+
+    pub fn grpc_endpoint(self) -> Result<String, ActionOutcome> {
+        self.endpoint_from(std::env::var(self.grpc_variable()).ok())
+    }
+
+    fn endpoint_from(self, value: Option<String>) -> Result<String, ActionOutcome> {
+        match value {
+            Some(endpoint) if !endpoint.trim().is_empty() => Ok(endpoint),
+            Some(_) | None => Err(ActionOutcome::failed_setup(format!(
+                "{} is unset, but the stack always starts the GUARDIAN it names, so \
+                 qualification/stack/run.sh no longer exports it",
+                self.grpc_variable()
+            ))),
         }
     }
 }
@@ -71,7 +117,8 @@ impl ActionOutcome {
 /// product's whatever its wording, and softening it would cost the one gate
 /// that has to stay hard. The scenario's own profile decides, not the runner's
 /// configuration, so no combination of options can lend a deterministic
-/// scenario the exemption.
+/// scenario the exemption. An [`ActionOutcome::ExecutionFailed`] is never
+/// reclassified on either profile.
 fn report_as(
     outcome: ActionOutcome,
     live: bool,
@@ -93,6 +140,9 @@ fn report_as(
         ActionOutcome::EnvironmentBlocked { reason } => {
             (Outcome::EnvironmentBlocked, Some(reason), None)
         }
+        ActionOutcome::ExecutionFailed { reason } => {
+            (Outcome::Failed, Some(reason), Some(Classification::Product))
+        }
     }
 }
 
@@ -102,6 +152,10 @@ pub struct Runner {
     pub http: reqwest::Client,
     pub fixtures: Option<Fixtures>,
     pub post_restart: bool,
+    /// This pass runs on a database an older release seeded and the image under test then
+    /// migrated. A scenario whose second pass reads back what only its own first pass wrote
+    /// runs that first pass here instead, because the older release could not have written it.
+    pub upgrade_target: bool,
     pub live: Option<live::LiveContext>,
     /// Scoped to one scenario: its actions share the account they act on, and
     /// it is cleared between scenarios so no run can inherit another's state.
@@ -123,6 +177,7 @@ impl Runner {
             http,
             fixtures: None,
             post_restart: false,
+            upgrade_target: false,
             live: None,
             session: tokio::sync::Mutex::new(None),
         })
@@ -135,6 +190,11 @@ impl Runner {
 
     pub fn post_restart(mut self, post_restart: bool) -> Self {
         self.post_restart = post_restart;
+        self
+    }
+
+    pub fn upgrade_target(mut self, upgrade_target: bool) -> Self {
+        self.upgrade_target = upgrade_target;
         self
     }
 
@@ -213,12 +273,31 @@ impl Runner {
         // path never produced, twice.
         let handled = if live_profile {
             match action {
-                Action::AccountCreate => {
-                    Some(live::create(self, scenario.shape, scenario.scheme, run_tag).await)
+                Action::AccountCreate => Some(
+                    live::create(
+                        self,
+                        scenario.shape,
+                        scenario.scheme,
+                        run_tag,
+                        execution_mode_for(scenario),
+                    )
+                    .await,
+                ),
+                Action::GuardianExecute => Some(live::guardian_execute(self).await),
+                Action::ChainAdvancePastBound => Some(live::advance_past_bound(self).await),
+                Action::GuardianExecuteBaseClient => {
+                    Some(live::guardian_execute_base_client(self).await)
                 }
-                Action::QueueAccountCreate => {
-                    Some(live::create_queued(self, scenario.shape, scenario.scheme, run_tag).await)
-                }
+                Action::QueueAccountCreate => Some(
+                    live::create_queued(
+                        self,
+                        scenario.shape,
+                        scenario.scheme,
+                        run_tag,
+                        execution_mode_for(scenario),
+                    )
+                    .await,
+                ),
                 Action::QueueTransfersChained => Some(live::send_chained_transfers(self).await),
                 Action::QueueHeadBlocksProposal => {
                     Some(live::assert_stranded_head_blocks_proposal(self).await)
@@ -285,6 +364,12 @@ impl Runner {
                 Action::AccountPausedRefuses => {
                     Some(account::assert_paused_account_refuses(self).await)
                 }
+                Action::GuardianExecutionUnavailable => {
+                    Some(account::assert_execution_unavailable(self).await)
+                }
+                Action::GuardianExecutionRefusals => {
+                    Some(account::assert_execution_refusals(self).await)
+                }
                 Action::QueueCosignerProposalRefused => {
                     Some(queue::assert_cosigner_proposal_refused(self).await)
                 }
@@ -305,6 +390,21 @@ impl Runner {
                 reason: format!("no driver implementation yet for action {other:?}"),
             },
         }
+    }
+}
+
+/// A scenario that hands its proposal to GUARDIAN, through the SDK or the base client alone,
+/// creates it Guardian-executable; every other scenario keeps the default, so it covers exactly
+/// what it did before.
+fn execution_mode_for(scenario: &Scenario) -> miden_multisig_client::ProposalExecutionMode {
+    if scenario.actions.contains(&Action::GuardianExecute)
+        || scenario
+            .actions
+            .contains(&Action::GuardianExecuteBaseClient)
+    {
+        miden_multisig_client::ProposalExecutionMode::GuardianExecutable
+    } else {
+        miden_multisig_client::ProposalExecutionMode::SelfExecuted
     }
 }
 
@@ -459,6 +559,44 @@ mod tests {
     /// The deterministic profile owns the pull-request gate. Wording that reads
     /// as a network fault there is a stack this repository brought up itself
     /// misbehaving, so it stays a failure.
+    /// A GUARDIAN execution that failed reaching its node or prover is GUARDIAN's
+    /// outcome: those links are inside the product a GUARDIAN-execution scenario tests.
+    #[test]
+    fn an_execution_guardian_reported_failed_stays_a_product_failure() {
+        let reason = "GUARDIAN execution failed after [Pending, Proving]: NodeUnavailable: \
+                      transport error: connection error";
+        let (outcome, _, classification) = report_as(
+            ActionOutcome::ExecutionFailed {
+                reason: reason.to_string(),
+            },
+            true,
+        );
+        assert_eq!(outcome, Outcome::Failed);
+        assert_eq!(classification, Some(Classification::Product));
+    }
+
+    /// The stack always exports its servers' endpoints, so a missing one fails
+    /// as setup rather than letting a required scenario report environment-blocked.
+    #[test]
+    fn a_missing_stack_endpoint_fails_as_setup() {
+        for value in [None, Some(String::new()), Some("  ".to_string())] {
+            assert!(matches!(
+                StackServer::Executing.endpoint_from(value),
+                Err(ActionOutcome::Failed {
+                    classification: Classification::Setup,
+                    ..
+                })
+            ));
+        }
+        assert_eq!(
+            StackServer::Queue
+                .endpoint_from(Some("http://127.0.0.1:50055".to_string()))
+                .ok()
+                .as_deref(),
+            Some("http://127.0.0.1:50055")
+        );
+    }
+
     #[test]
     fn a_deterministic_transport_failure_stays_a_failure() {
         let (outcome, _, classification) = report_as(
