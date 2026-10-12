@@ -4,7 +4,7 @@ use std::time::Duration;
 use chrono::Utc;
 
 use crate::jobs::execution_reconcile::{PassKind, Reconciled, Reconciler};
-use crate::network::StateVerification;
+use crate::network::{StateVerification, TransactionSearch};
 use crate::services::execution_status::ExecutionState;
 use crate::storage::{
     ExecutionFailureCode, LeaseFence, NewExecutionReservation, PromoteWrite, ReservationWrite,
@@ -12,9 +12,16 @@ use crate::storage::{
 use crate::testing::mocks::MockNetworkClient;
 
 use super::SubmissionOutcome;
-use super::tests::{ACCOUNT, BASE, Fixture, PROPOSAL, Script, is_submitted_or_terminal};
+use super::tests::{
+    ACCOUNT, BASE, Fixture, NEW_COMMITMENT, PROPOSAL, Script, is_submitted_or_terminal,
+};
 
 const LEASE: Duration = Duration::from_millis(300);
+
+/// A state that is neither the base nor the submitted one, such as a guardian switch leaves.
+const MOVED_ON: &str = "0x9999";
+const SWITCH_PROPOSAL: &str = "0x5151515151515151515151515151515151515151515151515151515151515151";
+const NEW_GUARDIAN: &str = "0x7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e";
 
 struct Faults {
     f: Fixture,
@@ -63,6 +70,68 @@ impl Faults {
             .lock()
             .unwrap()
             .push(verification);
+    }
+
+    fn history_shows(&self, search: Result<TransactionSearch, String>) {
+        self.chain
+            .find_transaction_ending_at_responses
+            .lock()
+            .unwrap()
+            .push(search);
+    }
+
+    /// A pending `switch_guardian` proposal the cosigners built on the submitted state, as they
+    /// would after the execution landed.
+    async fn store_switch_from_submitted_state(&self) {
+        self.f
+            .state
+            .storage
+            .submit_delta_proposal(
+                SWITCH_PROPOSAL,
+                &crate::delta_object::DeltaObject {
+                    account_id: ACCOUNT.to_string(),
+                    nonce: 2,
+                    prev_commitment: NEW_COMMITMENT.to_string(),
+                    new_commitment: None,
+                    delta_payload: serde_json::json!({
+                        "tx_summary": { "data": "switch" },
+                        "signatures": [],
+                        "metadata": { "proposal_type": "switch_guardian" },
+                    }),
+                    ack_sig: String::new(),
+                    ack_pubkey: String::new(),
+                    ack_scheme: String::new(),
+                    status: crate::delta_object::DeltaStatus::Pending {
+                        timestamp: "2026-09-30T12:00:00Z".to_string(),
+                        proposer_id: "0xproposer".to_string(),
+                        cosigner_sigs: vec![],
+                    },
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Applying the switch proposal to the stored state reaches `commitment`, with `guardian`
+    /// as the account's guardian key; the stored state itself names no guardian key.
+    fn chain_applies_switch_to(&self, commitment: &str, guardian: &str) {
+        self.chain
+            .apply_delta_responses
+            .lock()
+            .unwrap()
+            .push(Ok(crate::network::AppliedState {
+                state_json: serde_json::json!({ "switched": true }),
+                commitment: commitment.to_string(),
+                nonce: None,
+            }));
+        let mut keys = self
+            .chain
+            .extract_guardian_commitment_responses
+            .lock()
+            .unwrap();
+        keys.push(Ok(Some(guardian.to_string())));
+        keys.push(Ok(None));
     }
 
     /// The block the chain's next account reads report they were taken at.
@@ -278,18 +347,128 @@ async fn a_read_from_before_the_execution_block_is_a_lagging_node_not_evidence()
 }
 
 #[tokio::test]
-async fn an_account_moved_elsewhere_discards_the_submission() {
+async fn an_account_moved_elsewhere_without_the_submission_in_its_history_discards_it() {
     let faults = Faults::submitted_and_abandoned(Script::default()).await;
     faults.chain_at(100);
     faults.chain_shows(Ok(StateVerification::Mismatch {
-        on_chain: "0x9999".to_string(),
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: None,
+        resume_from_block: 101,
     }));
     assert_eq!(
         faults.reconcile(PassKind::Steady).await,
         Reconciled::Resolved(ExecutionFailureCode::CandidateDiscarded)
     );
+    assert_eq!(
+        faults.chain.get_find_transaction_ending_at_calls(),
+        vec![(ACCOUNT.to_string(), NEW_COMMITMENT.to_string(), 100)],
+        "the search starts at the block the transaction executed against"
+    );
     assert!(!faults.reservation_held().await);
     faults.never_reproduced_again();
+}
+
+#[tokio::test]
+async fn history_that_does_not_yet_reach_the_read_block_waits() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(120);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: None,
+        resume_from_block: 120,
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn unsearchable_history_keeps_a_moved_account_submitted() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(120);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Err("transaction history unavailable".to_string()));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::ObservationUnavailable
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+}
+
+/// The transaction lands (base to the submitted state) and the cosigners switch the guardian
+/// before Guardian promotes it, so the chain shows a third state. History proves the
+/// transaction landed: reconciliation leaves it to promotion instead of discarding it, and the
+/// canonicalization pass promotes the candidate, which commits the execution and moves the
+/// stored state through the submitted one. A private account shows the chain nothing but its
+/// commitment, so the history search is the only evidence that the transaction landed, and the
+/// release sweep recognizes the switch only by applying it to the submitted state, which the
+/// sweep at the end of the test does.
+#[tokio::test]
+async fn a_submission_that_landed_before_a_guardian_switch_commits_through_promotion() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(130);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: Some(110),
+        resume_from_block: 111,
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::AwaitingPromotion
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: Some(110),
+        resume_from_block: 111,
+    }));
+    crate::jobs::canonicalization::process_canonicalizations_now(&faults.f.state)
+        .await
+        .unwrap();
+
+    assert_eq!(faults.state().await, ExecutionState::Committed);
+    assert!(!faults.reservation_held().await);
+    let stored = faults.f.state.storage.pull_state(ACCOUNT).await.unwrap();
+    assert_eq!(stored.commitment, NEW_COMMITMENT);
+    let delta = faults.f.state.storage.pull_delta(ACCOUNT, 1).await.unwrap();
+    assert!(delta.status.is_canonical(), "{:?}", delta.status);
+    faults.never_reproduced_again();
+
+    faults.store_switch_from_submitted_state().await;
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.chain_applies_switch_to(MOVED_ON, NEW_GUARDIAN);
+    crate::jobs::release_sweep::run_release_sweep_now(&faults.f.state)
+        .await
+        .unwrap();
+
+    let metadata = faults.f.state.metadata.get(ACCOUNT).await.unwrap().unwrap();
+    assert!(
+        metadata.released_at.is_some(),
+        "the switch built on the submitted state releases the private account"
+    );
+    assert_eq!(
+        faults.chain.get_fetch_on_chain_guardian_binding_calls(),
+        Vec::<String>::new(),
+        "the switch is recognized from its commitment, not from published storage"
+    );
 }
 
 #[tokio::test]
