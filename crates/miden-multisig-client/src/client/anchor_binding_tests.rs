@@ -25,7 +25,9 @@ use crate::execution::build_final_transaction_request;
 use crate::keystore::{GuardianKeyStore, KeyManager};
 use crate::payload::ProposalPayload;
 use crate::proposal::{SerializedNote, TransactionType};
-use crate::transaction::{chain_anchor_to_base64, execute_for_summary, word_to_hex};
+use crate::transaction::{
+    deserialize_transaction_request, execute_for_summary_at_tip, word_to_hex,
+};
 
 /// Issue #409: a cosigner on a fresh store, syncing at a later block than
 /// the proposer, lists a pending proposal through the strict (signing-path)
@@ -58,7 +60,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     proposer.account = Some(MultisigAccount::new(account.clone()));
     proposer.miden_client.sync_state().await.unwrap();
 
-    // Proposal creation authenticates the notes before capturing the anchor
+    // Proposal creation authenticates the notes before deriving the summary
     // (see `ProposalBuilder::build_consume_notes`); mirror it here.
     let node_rpc = proposer.node_rpc_client();
     crate::transaction::ensure_notes_authenticated(
@@ -85,12 +87,12 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     )
     .await
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut proposer.miden_client, account.id(), tx_request)
+    let tx_summary =
+        execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), tx_request)
             .await
             .unwrap();
     let proposal_id = word_to_hex(&tx_summary.to_commitment());
-    let anchor_height = chain_anchor.block_num();
+    let bound_height = tx_summary.block_number();
 
     let delta_payload = ProposalPayload::new(&tx_summary)
         .with_note_consumption_metadata_v2(
@@ -99,7 +101,6 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
             word_to_hex(&salt),
         )
         .with_required_signatures(1)
-        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor))
         .to_json()
         .to_string();
 
@@ -123,7 +124,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     api.advance_blocks(5);
 
     // The second signer: fresh store, has never seen this account, syncs at
-    // the new tip — strictly past the block the proposal was anchored at.
+    // the new tip, strictly past the block the proposal binds.
     let dir2 = tempfile::tempdir().unwrap();
     let (mut cosigner, _store2) = offline_client_with_node_parts(dir2.path(), api.clone()).await;
     cosigner
@@ -138,8 +139,8 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     cosigner.miden_client.sync_state().await.unwrap();
     let cosigner_height = cosigner.miden_client.get_sync_height().await.unwrap();
     assert!(
-        cosigner_height > anchor_height,
-        "the cosigner must sync past the anchor ({anchor_height}) to exercise the bug; \
+        cosigner_height > bound_height,
+        "the cosigner must sync past the bound block ({bound_height}) to exercise the bug; \
          synced at {cosigner_height}"
     );
 
@@ -177,11 +178,11 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     )
     .await
     .unwrap();
-    let (tip_summary, tip_anchor) =
-        execute_for_summary(&mut cosigner.miden_client, account.id(), tip_request)
+    let tip_summary =
+        execute_for_summary_at_tip(&mut cosigner.miden_client, account.id(), tip_request)
             .await
             .unwrap();
-    assert!(tip_anchor.block_num() > anchor_height);
+    assert!(tip_summary.block_number() > bound_height);
     assert_ne!(
         word_to_hex(&tip_summary.to_commitment()),
         proposal_id,
@@ -263,8 +264,8 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
     )
     .await
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut proposer.miden_client, account.id(), tx_request)
+    let tx_summary =
+        execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), tx_request)
             .await
             .unwrap();
     let proposal_id = word_to_hex(&tx_summary.to_commitment());
@@ -279,7 +280,6 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
             word_to_hex(&salt),
         )
         .with_required_signatures(1)
-        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor))
         .to_json()
         .to_string();
 
@@ -462,17 +462,14 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
         client.key_manager.scheme(),
     )
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut client.miden_client, account.id(), tx_request)
-            .await
-            .unwrap();
+    let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
+        .await
+        .unwrap();
     let good_id = word_to_hex(&tx_summary.to_commitment());
-    let anchor_b64 = chain_anchor_to_base64(&chain_anchor);
     let payload = |salt_hex: String| {
         ProposalPayload::new(&tx_summary)
             .with_add_signer_metadata(1, signers_hex.clone(), salt_hex)
             .with_required_signatures(1)
-            .with_chain_anchor(anchor_b64.clone())
             .to_json()
             .to_string()
     };
@@ -572,15 +569,13 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
         client.key_manager.scheme(),
     )
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut client.miden_client, account.id(), tx_request)
-            .await
-            .unwrap();
+    let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
+        .await
+        .unwrap();
     let proposal_id = word_to_hex(&tx_summary.to_commitment());
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex.clone(), word_to_hex(&salt))
-        .with_required_signatures(1)
-        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor));
+        .with_required_signatures(1);
     let unsigned = pending_proto_delta(&account, 1, payload.to_json().to_string(), &signer_hex);
 
     // What GUARDIAN hands back after accepting the signature: the same
@@ -634,27 +629,56 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
     assert!(updated.is_actionable());
 }
 
-/// A custom proposal's request is built by the producer against the store's
-/// sync height and handed over as bytes. Blocks landing on the node in between
-/// must not move the proposal's anchor: `propose_custom_transaction` anchors at
-/// the height the request binds and does not sync first, or the anchor and the
-/// summary would name different blocks and the pair would be refused.
+/// The reported shape of issue #538: a producer builds a custom request at
+/// block N, the chain moves on, and the proposer syncs past N before it
+/// proposes. The proposal is created, cosigned, acknowledged by GUARDIAN with
+/// a real key, and lands on chain. 0.18.0 refused it at creation with
+/// `SummaryAnchorMismatch`: an anchor can only be captured at the proposer's
+/// sync height, and the summary binds N.
 #[tokio::test]
-async fn custom_proposal_keeps_the_anchor_the_producer_bound_when_the_chain_moves_on() {
-    use guardian_client::PushDeltaProposalResponse;
+async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_past_it() {
+    use guardian_client::{
+        DeltaObject as ProtoDeltaObject, GetDeltaProposalResponse, PushDeltaProposalResponse,
+        PushDeltaResponse, SignDeltaProposalResponse,
+    };
+    use guardian_shared::{DeltaSignature, ProposalSignature, SignatureScheme};
+    use miden_client::rpc::encryption::TransactionEncryptionKey;
+    use miden_client::store::TransactionFilter;
+    use miden_client::transaction::TransactionStatus;
+    use miden_confidential_contracts::multisig_guardian::{
+        MultisigGuardianBuilder, MultisigGuardianConfig,
+    };
+    use miden_protocol::crypto::dsa::eddsa_25519_sha512::SigningKey;
     use miden_protocol::utils::serde::Serializable;
 
     use crate::procedures::ProcedureName;
 
-    let keystore = Arc::new(GuardianKeyStore::generate());
-    let signer_commitment = keystore.commitment();
-    let guardian_commitment = Word::from([9u32, 9, 9, 9]);
-    let account = multisig_account(signer_commitment, guardian_commitment, 48);
+    // 2-of-2, with a real GUARDIAN key so its acknowledgement verifies in the
+    // auth procedure.
+    let proposer_keys = Arc::new(GuardianKeyStore::generate());
+    let cosigner_keys = Arc::new(GuardianKeyStore::generate());
+    let guardian_keys = GuardianKeyStore::generate();
+    let account = MultisigGuardianBuilder::new(
+        MultisigGuardianConfig::new(
+            2,
+            vec![proposer_keys.commitment(), cosigner_keys.commitment()],
+            guardian_keys.commitment(),
+        )
+        .with_signature_scheme(SignatureScheme::Falcon),
+    )
+    .with_seed([54; 32])
+    .build()
+    .expect("2-of-2 multisig account builds");
     let api = chain_with_notes(Vec::new());
 
-    let dir = tempfile::tempdir().unwrap();
-    let (mut proposer, _store) =
-        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore.clone()).await;
+    let proposer_dir = tempfile::tempdir().unwrap();
+    let (mut proposer, _proposer_store) = offline_client_parts_with_keystore(
+        proposer_dir.path(),
+        api.clone(),
+        None,
+        proposer_keys.clone(),
+    )
+    .await;
     proposer.set_node_rpc_client(api.clone());
     proposer
         .add_or_update_account(&account, true)
@@ -663,8 +687,8 @@ async fn custom_proposal_keeps_the_anchor_the_producer_bound_when_the_chain_move
     proposer.account = Some(MultisigAccount::new(account.clone()));
     proposer.miden_client.sync_state().await.unwrap();
 
-    // The producer's side: sync, then build, bound to the sync height.
-    let bound_height = proposer.miden_client.get_sync_height().await.unwrap();
+    // The producer builds at the proposer's sync height N.
+    let bound_block = proposer.miden_client.get_sync_height().await.unwrap();
     let auth_args = proposer
         .multisig_auth_args(Word::from([5u32, 6, 7, 8]), None, None)
         .await
@@ -686,43 +710,180 @@ async fn custom_proposal_keeps_the_anchor_the_producer_bound_when_the_chain_move
     .await
     .unwrap();
     let request_bytes = tx_request.to_bytes();
-
-    // The summary the producer's request yields at the bound height is the
-    // proposal id GUARDIAN has to answer with.
-    let (expected_summary, _) =
-        execute_for_summary(&mut proposer.miden_client, account.id(), tx_request)
+    let expected_summary =
+        execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), tx_request)
             .await
             .unwrap();
-    let expected_id = word_to_hex(&expected_summary.to_commitment());
+    assert_eq!(expected_summary.block_number(), bound_block);
+    let commitment = expected_summary.to_commitment();
+    let expected_id = word_to_hex(&commitment);
+    let proposer_hex = word_to_hex(&proposer_keys.commitment());
 
-    let service =
-        MockGuardianService::default().with_push_delta_proposal(Ok(PushDeltaProposalResponse {
+    // What GUARDIAN serves once the cosigner has signed.
+    let mut signed_payload = ProposalPayload::new(&expected_summary)
+        .with_signature(proposer_keys.as_ref(), commitment)
+        .with_custom_metadata("b2agg".to_string())
+        .with_required_signatures(2);
+    signed_payload.signatures.push(DeltaSignature {
+        signer_id: cosigner_keys.commitment_hex(),
+        signature: ProposalSignature::Falcon {
+            signature: cosigner_keys.sign_word_hex(commitment),
+        },
+    });
+    let signed_delta = pending_proto_delta(
+        &account,
+        1,
+        signed_payload.to_json().to_string(),
+        &proposer_hex,
+    );
+
+    let service = MockGuardianService::default()
+        .with_push_delta_proposal(Ok(PushDeltaProposalResponse {
             success: true,
             message: String::new(),
             commitment: expected_id.clone(),
             delta: None,
+        }))
+        .with_sign_delta_proposal(Ok(SignDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            delta: Some(signed_delta.clone()),
+        }))
+        .with_push_delta(Ok(PushDeltaResponse {
+            success: true,
+            message: String::new(),
+            delta: Some(ProtoDeltaObject {
+                ack_scheme: Some("falcon".to_string()),
+                ..signed_delta.clone()
+            }),
+            ack_sig: Some(guardian_keys.sign_word_hex(commitment)),
         }));
     let handle = service.handle();
     let endpoint = start_mock_server(service).await.unwrap();
     handle.set_persistent_get_state(registered_state(&account));
+    handle.set_persistent_get_pubkey(word_to_hex(&guardian_keys.commitment()));
     proposer
         .set_guardian_endpoint(&endpoint, false)
         .await
         .unwrap();
 
-    // The chain moves on before the producer hands the bytes over.
+    // The chain moves on and the proposer syncs past N before proposing.
     api.advance_blocks(3);
+    proposer.miden_client.sync_state().await.unwrap();
+    assert!(proposer.miden_client.get_sync_height().await.unwrap() > bound_block);
 
     let proposal = proposer
         .propose_custom_transaction(&request_bytes, "b2agg")
         .await
-        .expect("the proposal anchors at the height the request binds, not at the node's tip");
+        .expect("a request bound to an older block is proposed at the tip");
     assert!(proposal.id.eq_ignore_ascii_case(&expected_id));
     assert_eq!(
-        proposal.metadata.chain_anchor().unwrap().block_num(),
-        bound_height,
-        "the anchor must name the block the producer bound the request to"
+        proposal.metadata.bound_block_num,
+        Some(bound_block.as_u32()),
+        "the proposal records the block the producer's request binds"
     );
+
+    // A second client cosigns what the proposer pushed.
+    let pushed = handle.pushed_proposals();
+    assert_eq!(pushed.len(), 1, "one proposal pushed: {pushed:?}");
+    let pushed_payload: serde_json::Value = serde_json::from_str(&pushed[0].delta_payload).unwrap();
+    assert_eq!(
+        pushed_payload["metadata"]["bound_block_num"].as_u64(),
+        Some(u64::from(bound_block.as_u32())),
+        "the pushed proposal names the block the producer's request binds"
+    );
+    handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+        success: true,
+        message: String::new(),
+        proposal: Some(pending_proto_delta(
+            &account,
+            1,
+            pushed[0].delta_payload.clone(),
+            &proposer_hex,
+        )),
+    });
+    let cosigner_dir = tempfile::tempdir().unwrap();
+    let (mut cosigner, _cosigner_store) = offline_client_parts_with_keystore(
+        cosigner_dir.path(),
+        api.clone(),
+        None,
+        cosigner_keys.clone(),
+    )
+    .await;
+    cosigner.set_node_rpc_client(api.clone());
+    cosigner
+        .add_or_update_account(&account, true)
+        .await
+        .unwrap();
+    cosigner.account = Some(MultisigAccount::new(account.clone()));
+    cosigner
+        .set_guardian_endpoint(&endpoint, false)
+        .await
+        .unwrap();
+    let signed = cosigner
+        .sign_proposal(&expected_id)
+        .await
+        .expect("the cosigner signs");
+    assert!(signed.status.is_ready(), "2-of-2 met: {:?}", signed.status);
+
+    // The producer assembles the advice, gets the GUARDIAN ack and submits.
+    handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+        success: true,
+        message: String::new(),
+        proposal: Some(signed_delta),
+    });
+    let advice = proposer
+        .prepare_custom_execution(&expected_id, &request_bytes)
+        .await
+        .expect("the producer's request reproduces the signed summary");
+    let mut final_request = deserialize_transaction_request(&request_bytes).unwrap();
+    final_request.advice_map_mut().extend(advice);
+    // Submission seals the transaction against the validators' encryption key,
+    // which the mock RPC does not serve.
+    proposer
+        .miden_client
+        .seed_transaction_encryption_key(TransactionEncryptionKey::new_unattested(
+            b"issue-538".to_vec(),
+            SigningKey::new().public_key(),
+            Word::default(),
+        ))
+        .await
+        .unwrap();
+    let nonce_before = proposer
+        .miden_client
+        .get_account(account.id())
+        .await
+        .unwrap()
+        .expect("the proposer holds the account")
+        .nonce()
+        .as_canonical_u64();
+    proposer
+        .submit_transaction(&expected_id, final_request)
+        .await
+        .expect("the transaction is submitted");
+
+    api.prove_block();
+    proposer.miden_client.sync_state().await.unwrap();
+    let transactions = proposer
+        .miden_client
+        .get_transactions(TransactionFilter::All)
+        .await
+        .unwrap();
+    assert!(
+        transactions
+            .iter()
+            .any(|tx| matches!(tx.status, TransactionStatus::Committed { .. })),
+        "the transaction must land on chain: {transactions:?}"
+    );
+    let nonce_after = proposer
+        .miden_client
+        .get_account(account.id())
+        .await
+        .unwrap()
+        .expect("the proposer holds the account")
+        .nonce()
+        .as_canonical_u64();
+    assert_eq!(nonce_after, nonce_before + 1);
 }
 
 /// A multisig account already deployed on a chain that charges a verification
@@ -820,18 +981,22 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
         client.key_manager.scheme(),
     )
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut client.miden_client, account.id(), tx_request.clone())
+    let chain_anchor = client
+        .miden_client
+        .chain_anchor_for_request(&tx_request)
+        .await
+        .unwrap();
+    let tx_summary =
+        execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request.clone())
             .await
             .unwrap();
     let proposal_id = word_to_hex(&tx_summary.to_commitment());
-    let bound_block = chain_anchor.block_num();
-    assert_eq!(tx_summary.block_number(), bound_block);
+    let bound_block = tx_summary.block_number();
+    assert_eq!(chain_anchor.block_num(), bound_block);
 
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
         .with_required_signatures(1)
-        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor))
         .to_json()
         .to_string();
     let service = MockGuardianService::default();
@@ -951,11 +1116,11 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
         proposer.key_manager.scheme(),
     )
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut proposer.miden_client, account.id(), tx_request)
+    let tx_summary =
+        execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), tx_request)
             .await
             .unwrap();
-    let bound_block = chain_anchor.block_num();
+    let bound_block = tx_summary.block_number();
     assert!(
         bound_block > cosigner_height,
         "the proposal must bind a block the cosigner has not synced to ({bound_block} vs \
@@ -965,7 +1130,6 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
         .with_required_signatures(1)
-        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor))
         .to_json()
         .to_string();
     let service = MockGuardianService::default();
@@ -1041,15 +1205,14 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
         proposer.key_manager.scheme(),
     )
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        execute_for_summary(&mut proposer.miden_client, account.id(), tx_request)
+    let tx_summary =
+        execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), tx_request)
             .await
             .unwrap();
 
     let payload = ProposalPayload::new(&tx_summary)
         .with_add_signer_metadata(1, signers_hex, word_to_hex(&salt))
         .with_required_signatures(1)
-        .with_chain_anchor(chain_anchor_to_base64(&chain_anchor))
         .to_json()
         .to_string();
     let service = MockGuardianService::default();
@@ -1091,4 +1254,378 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
         "a cosigner that never synced must sync and verify: {:?}",
         proposals[0].verification
     );
+}
+
+/// A listing client on a mock GUARDIAN and an update-procedure-threshold
+/// summary bound to its sync height, for the tests below that serve a
+/// hand-shaped payload.
+struct ClientWithSummary {
+    client: super::MultisigClient,
+    _dir: tempfile::TempDir,
+    api: Arc<miden_client::testing::mock::MockRpcApi>,
+    guardian: guardian_client::testing::mocks::MockGuardianHandle,
+    account: miden_protocol::account::Account,
+    signer_commitment: Word,
+    tx_summary: miden_protocol::transaction::TransactionSummary,
+    salt: Word,
+}
+
+async fn client_with_summary(seed: u8) -> ClientWithSummary {
+    use crate::procedures::ProcedureName;
+
+    let keystore = Arc::new(GuardianKeyStore::generate());
+    let signer_commitment = keystore.commitment();
+    let account = multisig_account(signer_commitment, Word::from([9u32, 9, 9, 9]), seed);
+    let api = chain_with_notes(Vec::new());
+    let (mut client, dir, guardian, _) =
+        client_on_mock_guardian(api.clone(), &account, keystore).await;
+
+    let salt = Word::from([5u32, 6, 7, 8]);
+    let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
+    let tx_type = TransactionType::UpdateProcedureThreshold {
+        procedure: ProcedureName::SendAsset,
+        new_threshold: 1,
+    };
+    let tx_request = build_final_transaction_request(
+        &client.miden_client,
+        &tx_type,
+        &account,
+        &auth_args,
+        Vec::new(),
+        None,
+        None,
+        client.key_manager.scheme(),
+    )
+    .await
+    .unwrap();
+    let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
+        .await
+        .unwrap();
+    ClientWithSummary {
+        client,
+        _dir: dir,
+        api,
+        guardian,
+        account,
+        signer_commitment,
+        tx_summary,
+        salt,
+    }
+}
+
+/// Serves `payload` as the account's one pending proposal and lists it.
+async fn list_served(
+    setup: &mut ClientWithSummary,
+    payload: serde_json::Value,
+) -> Vec<crate::proposal::Proposal> {
+    setup
+        .guardian
+        .set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
+            success: true,
+            message: String::new(),
+            proposals: vec![pending_proto_delta(
+                &setup.account,
+                1,
+                payload.to_string(),
+                &word_to_hex(&setup.signer_commitment),
+            )],
+        });
+    setup
+        .client
+        .list_proposals()
+        .await
+        .expect("the listing reports the proposal")
+}
+
+/// A `bound_block_num` that disagrees with the block the signed summary binds
+/// is refused by name, as the TypeScript SDK refuses it. TypeScript custom
+/// producers rebuild at that number, so a wrong one must not pass silently.
+#[tokio::test]
+async fn proposal_whose_bound_block_num_disagrees_with_its_summary_is_refused() {
+    use crate::procedures::ProcedureName;
+
+    let mut setup = client_with_summary(55).await;
+    let bound_block = setup.tx_summary.block_number().as_u32();
+    let mut payload = ProposalPayload::new(&setup.tx_summary)
+        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&setup.salt))
+        .with_required_signatures(1)
+        .to_json();
+    payload["metadata"]["bound_block_num"] = serde_json::json!(bound_block + 1);
+
+    let proposals = list_served(&mut setup, payload).await;
+    assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
+    match &proposals[0].verification {
+        crate::proposal::ProposalVerification::Failed { retryable, message } => {
+            assert!(
+                !retryable,
+                "a wrong bound_block_num cannot clear on retry: {message}"
+            );
+            assert!(
+                message.contains(&format!("bound_block_num {}", bound_block + 1))
+                    && message.contains(&format!("binds block {bound_block}")),
+                "the refusal must name both blocks: {message}"
+            );
+        }
+        other => panic!("expected a failed verification, got {other:?}"),
+    }
+}
+
+/// A proposal a 0.18.0 client made carries a `chain_anchor` and no
+/// `bound_block_num`. It still verifies: the field is unknown now, and the
+/// bound block is read from the signed summary.
+#[tokio::test]
+async fn proposal_made_by_a_0_18_client_still_verifies() {
+    use crate::procedures::ProcedureName;
+
+    let mut setup = client_with_summary(57).await;
+    let mut payload = ProposalPayload::new(&setup.tx_summary)
+        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&setup.salt))
+        .with_required_signatures(1)
+        .to_json();
+    let metadata = payload["metadata"].as_object_mut().unwrap();
+    metadata.remove("bound_block_num");
+    metadata.insert(
+        "chain_anchor".to_string(),
+        serde_json::json!("bW9jay1jaGFpbi1hbmNob3I="),
+    );
+
+    let proposals = list_served(&mut setup, payload).await;
+    assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
+    assert!(
+        proposals[0].is_verified(),
+        "a legacy proposal must still verify: {:?}",
+        proposals[0].verification
+    );
+}
+
+/// A listing syncs the chain once before verifying, so a proposal bound to a
+/// block the node has not produced yet fails as retryable at once instead of
+/// costing another sync per proposal.
+#[tokio::test]
+async fn listing_syncs_the_chain_once_however_many_proposals_bind_blocks_above_the_tip() {
+    use miden_protocol::block::BlockNumber;
+    use miden_protocol::transaction::TransactionSummary;
+
+    use crate::procedures::ProcedureName;
+
+    let mut setup = client_with_summary(59).await;
+    let tip = setup.api.get_chain_tip_block_num().as_u32();
+    let summary = &setup.tx_summary;
+    let proposals = [100u32, 200]
+        .into_iter()
+        .zip(1u64..)
+        .map(|(ahead, nonce)| {
+            let bound_ahead = TransactionSummary::new(
+                summary.account_delta().clone(),
+                summary.input_notes().clone(),
+                summary.output_notes().clone(),
+                BlockNumber::from(tip + ahead),
+                summary.block_commitment(),
+                summary.expiration_delta(),
+                summary.user_params(),
+            );
+            let payload = ProposalPayload::new(&bound_ahead)
+                .with_procedure_threshold_metadata(
+                    ProcedureName::SendAsset,
+                    1,
+                    word_to_hex(&setup.salt),
+                )
+                .with_required_signatures(1)
+                .to_json()
+                .to_string();
+            pending_proto_delta(
+                &setup.account,
+                nonce,
+                payload,
+                &word_to_hex(&setup.signer_commitment),
+            )
+        })
+        .collect();
+    setup
+        .guardian
+        .set_persistent_get_delta_proposals(GetDeltaProposalsResponse {
+            success: true,
+            message: String::new(),
+            proposals,
+        });
+    // The mock node never caches the genesis commitment, so every chain sync
+    // asks it for the genesis header again; one sync's requests are the unit.
+    let api = setup.api.clone();
+    let genesis_requests = || api.block_header_requests(BlockNumber::GENESIS).len();
+    let before = genesis_requests();
+    setup.client.miden_client.sync_state().await.unwrap();
+    let per_sync = genesis_requests() - before;
+    assert!(per_sync > 0, "a chain sync must reach the mock node");
+    let syncs_since = |before: usize| (genesis_requests() - before) / per_sync;
+
+    let before = genesis_requests();
+    let listed = setup
+        .client
+        .list_proposals()
+        .await
+        .expect("the listing reports both proposals");
+    assert_eq!(syncs_since(before), 1, "chain syncs for one listing");
+    assert_eq!(listed.len(), 2, "proposals: {listed:?}");
+    for proposal in &listed {
+        match &proposal.verification {
+            crate::proposal::ProposalVerification::Failed { retryable, message } => {
+                assert!(
+                    retryable,
+                    "a node behind the bound block clears on a later listing: {message}"
+                );
+                assert!(
+                    message.contains("has not reached that block yet"),
+                    "message: {message}"
+                );
+            }
+            other => panic!("expected a failed verification, got {other:?}"),
+        }
+    }
+
+    let before = genesis_requests();
+    let (verified, skipped) = setup
+        .client
+        .list_proposals_isolating_failures()
+        .await
+        .expect("the recovery listing isolates both proposals");
+    assert_eq!(
+        syncs_since(before),
+        1,
+        "chain syncs for one recovery listing"
+    );
+    assert!(verified.is_empty(), "verified: {verified:?}");
+    assert_eq!(skipped.len(), 2, "skipped: {skipped:?}");
+}
+
+/// A client holding `account` on `api`, synced and pointed at a fresh mock
+/// GUARDIAN that serves the account's state.
+async fn client_on_mock_guardian(
+    api: Arc<miden_client::testing::mock::MockRpcApi>,
+    account: &miden_protocol::account::Account,
+    keystore: Arc<GuardianKeyStore>,
+) -> (
+    super::MultisigClient,
+    tempfile::TempDir,
+    guardian_client::testing::mocks::MockGuardianHandle,
+    String,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, _store) =
+        offline_client_parts_with_keystore(dir.path(), api.clone(), None, keystore).await;
+    client.set_node_rpc_client(api);
+    client.add_or_update_account(account, true).await.unwrap();
+    client.account = Some(MultisigAccount::new(account.clone()));
+    client.miden_client.sync_state().await.unwrap();
+
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    handle.set_persistent_get_state(registered_state(account));
+    client
+        .set_guardian_endpoint(&endpoint, false)
+        .await
+        .unwrap();
+    (client, dir, handle, endpoint)
+}
+
+/// Every built-in proposal records the block its summary binds as
+/// `bound_block_num`. Rust readers accept a missing value, so only this test
+/// pins the seven Rust writers. The mock's canned push response carries no
+/// matching commitment, so creation fails after the push under test.
+#[tokio::test]
+async fn built_in_proposals_write_the_bound_block_num() {
+    use guardian_shared::FromJson;
+    use miden_client::transaction::TransactionSummary;
+    use miden_confidential_contracts::multisig_guardian::{
+        MultisigGuardianBuilder, MultisigGuardianConfig,
+    };
+
+    use super::test_support::test_wallet;
+    use crate::procedures::ProcedureName;
+
+    let keystore = Arc::new(GuardianKeyStore::generate());
+    let second_signer = Word::from([7u32, 7, 7, 7]);
+    let new_guardian = Word::from([4u32, 4, 4, 4]);
+    let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
+        1,
+        vec![keystore.commitment(), second_signer],
+        Word::from([9u32, 9, 9, 9]),
+    ))
+    .with_seed([56; 32])
+    .build()
+    .expect("1-of-2 multisig account builds");
+    let note = p2id_note_for(&account, 31, NoteType::Private);
+    let api = chain_with_notes(vec![RawOutputNote::Full(note.clone())]);
+    let (mut client, _dir, handle, endpoint) =
+        client_on_mock_guardian(api, &account, keystore.clone()).await;
+    let node_rpc = client.node_rpc_client();
+    crate::transaction::ensure_notes_authenticated(
+        &mut client.miden_client,
+        &node_rpc,
+        std::slice::from_ref(&note),
+    )
+    .await
+    .unwrap();
+    // A switch first checks that its target serves the commitment it names,
+    // and the target here is this same mock.
+    handle.set_persistent_get_pubkey(word_to_hex(&new_guardian));
+
+    // One proposal per builder in `transaction/builder.rs` (seven sites). A
+    // P2ID transfer spends from the vault, so it runs on a funded account.
+    for tx_type in [
+        TransactionType::AddCosigner {
+            new_commitment: Word::from([3u32, 3, 3, 3]),
+        },
+        TransactionType::RemoveCosigner {
+            commitment: second_signer,
+        },
+        TransactionType::UpdateSigners {
+            new_threshold: 2,
+            signer_commitments: vec![keystore.commitment(), second_signer],
+        },
+        TransactionType::SwitchGuardian {
+            new_endpoint: endpoint,
+            new_commitment: new_guardian,
+        },
+        TransactionType::UpdateProcedureThreshold {
+            procedure: ProcedureName::SendAsset,
+            new_threshold: 1,
+        },
+        TransactionType::consume_notes_v2(vec![note.id()], vec![SerializedNote::from_note(&note)]),
+    ] {
+        let _ = client.propose_transaction(tx_type).await;
+    }
+    let mut pushed = handle.pushed_proposals();
+
+    let mut funded = multisig_account(keystore.commitment(), Word::from([9u32, 9, 9, 9]), 58);
+    let funded_api = fee_charging_chain_holding(&mut funded);
+    let (mut payer, _payer_dir, payer_handle, _) =
+        client_on_mock_guardian(funded_api, &funded, keystore).await;
+    let fee_faucet = crate::transaction::synced_fee_faucet_id(&payer.miden_client)
+        .await
+        .unwrap();
+    let _ = payer
+        .propose_transaction(TransactionType::transfer(
+            test_wallet(201).id(),
+            fee_faucet,
+            1000,
+        ))
+        .await;
+    pushed.extend(payer_handle.pushed_proposals());
+
+    assert_eq!(
+        pushed.len(),
+        7,
+        "every builder reaches GUARDIAN: {pushed:?}"
+    );
+    for request in pushed {
+        let payload: serde_json::Value = serde_json::from_str(&request.delta_payload).unwrap();
+        let summary = TransactionSummary::from_json(&payload["tx_summary"]).unwrap();
+        assert_eq!(
+            payload["metadata"]["bound_block_num"].as_u64(),
+            Some(u64::from(summary.block_number().as_u32())),
+            "bound_block_num must name the block the summary binds: {payload}"
+        );
+        assert!(payload["metadata"].get("chain_anchor").is_none());
+    }
 }

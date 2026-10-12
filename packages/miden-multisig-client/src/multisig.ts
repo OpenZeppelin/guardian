@@ -16,7 +16,7 @@ import type {
   ProposalSignatureEntry,
   ProposalType,
 } from './types.js';
-import { ProposalSaltMalformedError } from './multisig/authArgErrors.js';
+import { BoundBlockMismatchError, ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
 import {
@@ -35,17 +35,14 @@ import {
   TransactionRequest,
   TransactionSummary,
   Word,
-  type ChainAnchor,
 } from '@miden-sdk/miden-sdk';
 import {
-  chainAnchorFromBase64,
-  chainAnchorToBase64,
-  executeForSummary,
   executeForSummaryAtTip,
   isStaleChainError,
   prepareTipExecution,
   syncToBoundBlock,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
@@ -246,7 +243,7 @@ function assertProposalOptionsBag(
 
 /**
  * What a rebuild of a proposal's request pins so the signed summary
- * reproduces: the salt, the block its anchor names, and the approval
+ * reproduces: the salt, the block its summary binds, and the approval
  * expiration the summary binds, as the delta the builders take.
  */
 interface ProposalRequestBinding {
@@ -257,10 +254,9 @@ interface ProposalRequestBinding {
 
 function proposalRequestBinding(
   summary: TransactionSummary,
-  anchor: ChainAnchor,
+  boundBlockNum: number,
   saltHex: string,
 ): ProposalRequestBinding {
-  const boundBlockNum = anchor.blockNum();
   return {
     saltHex: normalizeHexWord(saltHex),
     boundBlockNum,
@@ -321,6 +317,9 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 
 /** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
 const MAX_SALT_HEX_DIGITS = 64;
+
+/** Block numbers are `u32` on chain. */
+const MAX_BLOCK_NUM = 0xffff_ffff;
 
 /**
  * Consecutive successful listings that must omit a guardian-known proposal
@@ -616,6 +615,20 @@ export class Multisig {
       accountId: this._accountId,
       approvalExpirationDelta: options.approvalExpirationDelta,
       signatureScheme: this.signer.scheme,
+    };
+  }
+
+  /**
+   * Derives a new proposal's summary at the chain tip, with the block it binds
+   * for the proposal's `boundBlockNum`.
+   */
+  private async deriveProposalSummary(
+    request: TransactionRequest,
+  ): Promise<{ summaryBase64: string; boundBlockNum: number }> {
+    const summary = await executeForSummaryAtTip(this.midenClient, this._accountId, request);
+    return {
+      summaryBase64: uint8ArrayToBase64(summary.serialize()),
+      boundBlockNum: summaryBoundBlockNum(summary),
     };
   }
 
@@ -973,8 +986,12 @@ export class Multisig {
         existingProposal?.signatures ?? [],
       );
       // The outcome lands on the proposal either way; a failure is reported
-      // there rather than failing the sync.
-      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
+      // there rather than failing the sync. The chain was synced once above,
+      // so a bound block past that height stays a retryable failure until the
+      // next listing instead of costing a sync per proposal.
+      await this.verifyProposalMetadataBinding(proposal, async () => undefined).catch(
+        () => undefined,
+      );
       reported.set(proposal.id, { delta, verified: proposal });
     }
 
@@ -1058,6 +1075,11 @@ export class Multisig {
       currentNonce = undefined;
     }
 
+    // At most one chain sync for the whole listing, however many proposals
+    // bind a block above the store's sync height.
+    let listingSync: Promise<void> | undefined;
+    const syncOnce = () => (listingSync ??= this.syncChain());
+
     const proposals: Proposal[] = [];
     const skipped: Array<{ identifier: string; reason: string }> = [];
     for (let position = 0; position < deltas.length; position += 1) {
@@ -1081,7 +1103,7 @@ export class Multisig {
         if (currentNonce !== undefined && BigInt(proposal.nonce) <= currentNonce) {
           continue;
         }
-        await this.verifyProposalMetadataBinding(proposal);
+        await this.verifyProposalMetadataBinding(proposal, syncOnce);
         proposals.push(proposal);
       } catch (error) {
         skipped.push({
@@ -1164,13 +1186,10 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options);
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'add_signer',
       targetThreshold,
       targetSignerCommitments,
@@ -1223,13 +1242,10 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options);
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'remove_signer',
       targetThreshold,
       targetSignerCommitments,
@@ -1270,13 +1286,10 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'change_threshold',
       targetThreshold: newThreshold,
       targetSignerCommitments: this.signerCommitments,
@@ -1319,16 +1332,13 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
     const action = targetThreshold === 0
       ? `Clear threshold override for ${targetProcedure}`
       : `Set ${targetProcedure} threshold override to ${targetThreshold}`;
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'update_procedure_threshold',
       targetProcedure,
       targetThreshold,
@@ -1396,13 +1406,10 @@ export class Multisig {
       },
     );
 
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'switch_guardian',
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('switch_guardian'),
@@ -1508,7 +1515,7 @@ export class Multisig {
     }
     // Canonical consumption mode is authenticated (issue #409): the summary this
     // proposal signs must be the one every cosigner's rebuild reproduces, so
-    // the notes are authenticated here first, before the anchor is captured.
+    // the notes are authenticated here first, before the summary is derived.
     await this.ensureNotesAuthenticated(fetchedNotes);
     const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
@@ -1519,13 +1526,10 @@ export class Multisig {
       this.proposalRequestOptions(options),
     );
 
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'consume_notes',
       noteIds,
       metadataVersion: CONSUME_NOTES_METADATA_VERSION_V2,
@@ -1583,13 +1587,10 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options);
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'p2id',
       saltHex: salt.toHex(),
       requiredSignatures: this.getEffectiveThreshold('p2id'),
@@ -2206,28 +2207,14 @@ export class Multisig {
     await this.syncChain();
     const delta = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
     const existing = this.getLocalProposal(proposalId);
-    const proposal = this.proposalFactory().fromDelta(
+    // Parsed for its id check: a proposal GUARDIAN does not serve, or whose id
+    // is not its summary's commitment, is not submitted (as in the Rust SDK).
+    this.proposalFactory().fromDelta(
       delta,
       normalizedProposalId,
       existing?.metadata,
       existing?.signatures ?? [],
     );
-
-    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
-    try {
-      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-      const txSummary = TransactionSummary.deserialize(
-        base64ToUint8Array(delta.deltaPayload.txSummary.data),
-      );
-      const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
-      if (anchorCommitment !== summaryBlockCommitment) {
-        throw new Error(
-          `Proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
-        );
-      }
-    } finally {
-      anchor.free();
-    }
     await this.submitAtTip(request);
   }
 
@@ -2249,9 +2236,15 @@ export class Multisig {
     await retryRpcRead(() => this.midenClient.syncChain(), this.rpcConfig);
   }
 
-  /** {@link syncToBoundBlock} with this client's RPC retry policy. */
-  private async syncToBoundBlock(boundBlockNum: number): Promise<void> {
-    await syncToBoundBlock(this.midenClient, boundBlockNum, () => this.syncChain());
+  /**
+   * {@link syncToBoundBlock} with this client's RPC retry policy. A listing
+   * passes its own `syncChain` so it syncs at most once for all its proposals.
+   */
+  private async syncToBoundBlock(
+    boundBlockNum: number,
+    syncChain: () => Promise<void> = () => this.syncChain(),
+  ): Promise<void> {
+    await syncToBoundBlock(this.midenClient, boundBlockNum, syncChain);
   }
 
   /**
@@ -2284,13 +2277,10 @@ export class Multisig {
 
     const request = deserializeTransactionRequest(transactionRequestBytes);
     const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
-    const { summary, anchor } = await executeForSummary(this.midenClient, this._accountId, request);
-    const chainAnchor = chainAnchorToBase64(anchor);
-    anchor.free();
-    const summaryBase64 = uint8ArrayToBase64(summary.serialize());
+    const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
-      chainAnchor,
+      boundBlockNum,
       proposalType: 'custom',
       description: '',
       rawProposalType: label,
@@ -2348,26 +2338,11 @@ export class Multisig {
     const txSummary = TransactionSummary.deserialize(
       base64ToUint8Array(delta.deltaPayload.txSummary.data),
     );
+    this.requireProposalBoundBlockNum(proposal.id, proposal.metadata, txSummary);
     const signedCommitmentHex = normalizeHexWord(txSummary.toCommitment().toHex());
 
     const bindingRequest = deserializeTransactionRequest(transactionRequestBytes);
 
-    // The anchor arrives from an untrusted party via GUARDIAN, so its block
-    // commitment is checked against the signed summary: it has to name the
-    // block the summary binds. The probe itself runs at the chain tip, where
-    // the request's declared bound block reproduces the signed summary.
-    const anchor = this.requireProposalAnchor(proposalId, proposal.metadata);
-    try {
-      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-      const summaryBlockCommitment = normalizeHexWord(txSummary.blockCommitment().toHex());
-      if (anchorCommitment !== summaryBlockCommitment) {
-        throw new Error(
-          `Custom proposal ${proposalId} chain anchor does not match the block commitment bound into its tx_summary`,
-        );
-      }
-    } finally {
-      anchor.free();
-    }
     const derived = await executeForSummaryAtTip(this.midenClient, this._accountId, bindingRequest);
     const derivedCommitmentHex = normalizeHexWord(derived.toCommitment().toHex());
     if (derivedCommitmentHex !== signedCommitmentHex) {
@@ -2678,13 +2653,11 @@ export class Multisig {
       await this.verifyGuardianEndpointCommitment(metadata.newGuardianEndpoint, metadata.newGuardianPubkey);
     }
 
-    const anchor = this.requireProposalAnchor(proposalId, metadata);
-    let binding: ProposalRequestBinding;
-    try {
-      binding = proposalRequestBinding(txSummary, anchor, saltHex);
-    } finally {
-      anchor.free();
-    }
+    const binding = proposalRequestBinding(
+      txSummary,
+      this.requireProposalBoundBlockNum(proposalId, metadata, txSummary),
+      saltHex,
+    );
     // A switch_guardian proposal is verified without a rebuild, so this may be
     // the first time this client needs the chain at the bound block.
     await this.syncToBoundBlock(binding.boundBlockNum);
@@ -2909,9 +2882,12 @@ export class Multisig {
    * transient. Rethrows the failure so strict callers keep failing closed
    * while `syncProposals` keeps going with the outcome recorded.
    */
-  private async verifyProposalMetadataBinding(proposal: Proposal): Promise<string> {
+  private async verifyProposalMetadataBinding(
+    proposal: Proposal,
+    syncChain?: () => Promise<void>,
+  ): Promise<string> {
     try {
-      const commitment = await this.checkProposalMetadataBinding(proposal);
+      const commitment = await this.checkProposalMetadataBinding(proposal, syncChain);
       proposal.verification = { status: 'verified' };
       return commitment;
     } catch (error) {
@@ -2924,83 +2900,67 @@ export class Multisig {
     }
   }
 
-  private async checkProposalMetadataBinding(proposal: Proposal): Promise<string> {
+  private async checkProposalMetadataBinding(
+    proposal: Proposal,
+    syncChain?: () => Promise<void>,
+  ): Promise<string> {
     const txSummaryCommitment = this.ensureProposalCommitmentMatchesSummary(proposal);
-
     const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
+    const boundBlockNum = this.requireProposalBoundBlockNum(proposal.id, proposal.metadata, summary);
 
-    // The anchor arrives from an untrusted party via GUARDIAN, so check that it
-    // names the block the signed summary binds: the rebuild below binds the
-    // block it names. Nothing executes against it; the rebuild runs at the
-    // chain tip. `ChainAnchor.deserialize` already enforced internal
-    // header/chain consistency.
-    const anchor = this.requireProposalAnchor(proposal.id, proposal.metadata);
-    try {
-      const anchorCommitment = normalizeHexWord(anchor.commitment().toHex());
-      const summaryBlockCommitment = normalizeHexWord(summary.blockCommitment().toHex());
-      if (anchorCommitment !== summaryBlockCommitment) {
-        throw new Error(
-          `Invalid proposal: chain anchor does not match the block commitment bound into the tx_summary for ${proposal.id}`,
-        );
-      }
-
-      if (proposal.metadata.proposalType === 'custom') {
-        // Custom proposals have no per-type reconstruction recipe;
-        // the id ↔ tx_summary commitment match above is the only available
-        // integrity guarantee for an opaque proposal.
-        return txSummaryCommitment;
-      }
-
-      // The salt check needs no re-execution, so it runs for every built-in
-      // type, switch_guardian included (as in the Rust SDK): a mismatched salt
-      // would otherwise collect signatures and only fail in the VM.
-      const binding = proposalRequestBinding(
-        summary,
-        anchor,
-        this.requireProposalSaltHex(proposal.id, proposal.metadata),
-      );
-      if (summarySaltHex(summary) !== binding.saltHex) {
-        throw new Error(
-          `Invalid proposal: metadata salt does not match the salt bound into the tx_summary for ${proposal.id}`,
-        );
-      }
-
-      if (proposal.metadata.proposalType === 'switch_guardian') {
-        // Re-execution would mutate the WASM account twice. The proposal ID,
-        // the salt above and the guardian endpoint commitment provide the
-        // binding checks for this type.
-        return txSummaryCommitment;
-      }
-
-      // The rebuild reads the chain's fee faucet from the synced protocol
-      // configuration and executes at the tip, so the store has to have synced
-      // to the block the summary binds; a cosigner that has only just loaded
-      // the account has not.
-      await this.syncToBoundBlock(binding.boundBlockNum);
-
-      // A consume-notes summary commits to *authenticated* consumption (see
-      // ensureNotesAuthenticated), which miden-client decides from this store
-      // alone. Put the store in that mode before the rebuild, or a cosigner
-      // that never held these notes reproduces a different commitment.
-      if (
-        proposal.metadata.proposalType === 'consume_notes' &&
-        proposal.metadata.metadataVersion === CONSUME_NOTES_METADATA_VERSION_V2
-      ) {
-        await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
-      }
-
-      const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, binding);
-      const reconstructed = await executeForSummaryAtTip(this.midenClient, this._accountId, request);
-      const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
-
-      if (reconstructedCommitment !== txSummaryCommitment) {
-        throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
-      }
-
+    if (proposal.metadata.proposalType === 'custom') {
+      // Custom proposals have no per-type reconstruction recipe; the id and
+      // bound-block checks above are the only available integrity guarantee
+      // for an opaque proposal.
       return txSummaryCommitment;
-    } finally {
-      anchor.free();
     }
+
+    // The salt check needs no re-execution, so it runs for every built-in
+    // type, switch_guardian included (as in the Rust SDK).
+    const binding = proposalRequestBinding(
+      summary,
+      boundBlockNum,
+      this.requireProposalSaltHex(proposal.id, proposal.metadata),
+    );
+    if (summarySaltHex(summary) !== binding.saltHex) {
+      throw new Error(
+        `Invalid proposal: metadata salt does not match the salt bound into the tx_summary for ${proposal.id}`,
+      );
+    }
+
+    if (proposal.metadata.proposalType === 'switch_guardian') {
+      // Re-execution would mutate the WASM account twice. The proposal ID,
+      // the salt above and the guardian endpoint commitment provide the
+      // binding checks for this type.
+      return txSummaryCommitment;
+    }
+
+    // The rebuild reads the chain's fee faucet from the synced protocol
+    // configuration and executes at the tip, so the store has to have synced
+    // to the block the summary binds; a cosigner that has only just loaded
+    // the account has not.
+    await this.syncToBoundBlock(binding.boundBlockNum, syncChain);
+
+    // A consume-notes summary commits to *authenticated* consumption (see
+    // ensureNotesAuthenticated), which miden-client decides from this store
+    // alone. Put the store in that mode before the rebuild, or a cosigner
+    // that never held these notes reproduces a different commitment.
+    if (
+      proposal.metadata.proposalType === 'consume_notes' &&
+      proposal.metadata.metadataVersion === CONSUME_NOTES_METADATA_VERSION_V2
+    ) {
+      await this.ensureNotesAuthenticated(decodeEmbeddedConsumeNotes(proposal.metadata));
+    }
+
+    const request = await this.buildTransactionRequestFromMetadata(proposal.metadata, binding);
+    const reconstructed = await executeForSummaryAtTip(this.midenClient, this._accountId, request);
+    const reconstructedCommitment = normalizeHexWord(reconstructed.toCommitment().toHex());
+
+    if (reconstructedCommitment !== txSummaryCommitment) {
+      throw new Error(`Invalid proposal: metadata does not match tx_summary for ${proposal.id}`);
+    }
+
+    return txSummaryCommitment;
   }
 
   /**
@@ -3052,19 +3012,52 @@ export class Multisig {
   }
 
   /**
-   * Decodes a proposal's chain anchor, which names the block its signed summary
-   * binds. Throws when absent: every proposal carries one, so a proposal
-   * without it is malformed and is neither verified nor executed. The caller
-   * owns the returned anchor and must `free()` it once done.
+   * The block a proposal's signed summary binds, read from the summary as the
+   * Rust SDK does.
+   *
+   * GUARDIAN serves `boundBlockNum` unsigned and the response is cast, not
+   * parsed. An absent value, from a proposal a 0.18.0 client made, is accepted;
+   * a legacy `chainAnchor` is not read. A present value has to be a block
+   * number equal to the summary's, for every proposal type, so a wrong one is
+   * refused by name before anything executes or is signed.
+   *
+   * @throws BoundBlockMismatchError when the served value names another block.
    */
-  private requireProposalAnchor(proposalId: string, metadata: ProposalMetadata): ChainAnchor {
-    if (!metadata.chainAnchor) {
+  private requireProposalBoundBlockNum(
+    proposalId: string,
+    metadata: ProposalMetadata,
+    summary: TransactionSummary,
+  ): number {
+    const declared = this.servedBoundBlockNum(proposalId, metadata);
+    const boundBlockNum = summaryBoundBlockNum(summary);
+    if (declared !== undefined && declared !== boundBlockNum) {
+      throw new BoundBlockMismatchError({
+        proposalId,
+        declaredBoundBlockNum: declared,
+        boundBlockNum,
+      });
+    }
+    return boundBlockNum;
+  }
+
+  /** The served `boundBlockNum`, `undefined` when absent; throws when malformed. */
+  private servedBoundBlockNum(proposalId: string, metadata: ProposalMetadata): number | undefined {
+    const boundBlockNum: unknown = metadata.boundBlockNum;
+    if (boundBlockNum === undefined || boundBlockNum === null) {
+      return undefined;
+    }
+    if (
+      typeof boundBlockNum !== 'number' ||
+      !Number.isInteger(boundBlockNum) ||
+      boundBlockNum < 0 ||
+      boundBlockNum > MAX_BLOCK_NUM
+    ) {
       throw new Error(
-        `Proposal ${proposalId} has no chain anchor, which names the block its signed ` +
-          'summary binds; it cannot be verified or executed',
+        `Proposal ${proposalId} has a malformed boundBlockNum '${String(boundBlockNum)}': ` +
+          `expected an integer between 0 and ${MAX_BLOCK_NUM}`,
       );
     }
-    return chainAnchorFromBase64(metadata.chainAnchor);
+    return boundBlockNum;
   }
 
   /**
