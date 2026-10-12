@@ -47,10 +47,13 @@ impl MultisigClient {
             .map_err(|e| MultisigError::GuardianConnection(e.to_string()))
     }
 
-    /// Creates an authenticated GUARDIAN client.
+    /// Creates an authenticated GUARDIAN client that shares this client's
+    /// Guardian session, if one is active.
     pub(crate) async fn create_authenticated_guardian_client(&self) -> Result<GuardianClient> {
         let client = self.create_guardian_client().await?;
-        Ok(client.with_signer(self.key_manager.clone()))
+        Ok(client
+            .with_signer(self.key_manager.clone())
+            .with_session_slot(self.guardian_session.clone()))
     }
 
     pub(crate) async fn get_on_chain_account_commitment(

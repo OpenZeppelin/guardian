@@ -3445,6 +3445,266 @@
         }
       }
     },
+    "/session": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Register a wallet-authorized P-256 delegated signer.",
+        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session`. Wallet-only\nroutes (`POST /delta`, `/delta/candidate/abandon`, `/configure`,\n`/state/lookup`, `/session/revoke-all`) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
+        "operationId": "create_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Grant does not match this Guardian, its lifetime is invalid, its origin is too long, or it is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid signature, stale grant, or session key registered with another grant or revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signer is not a cosigner of any account (`authorization_failed`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/session/logout": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Revoke the session whose key signs this request.",
+        "description": "`x-pubkey` is the session public key, `x-signature` the session-key\nsignature over `SessionLogoutMessage(x-pubkey, x-timestamp)`.",
+        "operationId": "revoke_session",
+        "responses": {
+          "200": {
+            "description": "Session revoked (idempotent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeSessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Malformed or invalid session key or signature, or stale timestamp",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/session/revoke-all": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Revoke every session of the wallet key signing this request.",
+        "description": "Wallet-only: `x-signature` is the wallet's signature over\n`SessionRevokeAllMessage(signer_commitment, x-timestamp)`, raw or as\nEIP-712 typed data (`x-auth-format: eip712`). Idempotent.",
+        "operationId": "revoke_all_sessions",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeAllSessionsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Sessions revoked (idempotent)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeAllSessionsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed signer commitment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid signature, stale timestamp, or signature by another key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed by a delegated signer (`wallet_signature_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/state": {
       "get": {
         "tags": [
@@ -4255,6 +4515,57 @@
             "minimum": 0
           },
           "user_op_hash": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "required": [
+          "scheme",
+          "signature",
+          "grant"
+        ],
+        "properties": {
+          "auth_format": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`raw` (default) or `eip712` (ECDSA only; readable `GuardianSession`\ntyped data)."
+          },
+          "grant": {
+            "$ref": "#/components/schemas/SessionGrantRequest"
+          },
+          "public_key": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hex wallet public key; required for ECDSA, ignored for Falcon."
+          },
+          "scheme": {
+            "$ref": "#/components/schemas/SignatureScheme",
+            "description": "Wallet signature scheme: `falcon` or `ecdsa`."
+          },
+          "signature": {
+            "type": "string",
+            "description": "Hex wallet signature over the grant."
+          }
+        }
+      },
+      "CreateSessionResponse": {
+        "type": "object",
+        "required": [
+          "signer_commitment",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "description": "RFC 3339 UTC."
+          },
+          "signer_commitment": {
             "type": "string"
           }
         }
@@ -7140,6 +7451,90 @@
           "orphaned"
         ]
       },
+      "RevokeAllSessionsRequest": {
+        "type": "object",
+        "required": [
+          "signer_commitment"
+        ],
+        "properties": {
+          "signer_commitment": {
+            "type": "string",
+            "description": "Hex commitment of the wallet key whose sessions end; it must be the\nkey that signs this request."
+          }
+        }
+      },
+      "RevokeAllSessionsResponse": {
+        "type": "object",
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How many active sessions were revoked; zero when none existed.",
+            "minimum": 0
+          }
+        }
+      },
+      "RevokeSessionResponse": {
+        "type": "object",
+        "required": [
+          "revoked"
+        ],
+        "properties": {
+          "revoked": {
+            "type": "boolean",
+            "description": "Whether an active session existed; logout is idempotent."
+          }
+        }
+      },
+      "SessionGrantRequest": {
+        "type": "object",
+        "description": "Fields of a session grant, in the order the wallet displays them. The\nscope is not sent: every v1 grant states the same fixed text, which the\nserver supplies.",
+        "required": [
+          "signer_commitment",
+          "session_public_key",
+          "issued_at",
+          "expires_at",
+          "guardian_commitment",
+          "network"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds; more than the skew window and at most\n`sessions.max_ttl_seconds` after server time.",
+            "minimum": 0
+          },
+          "guardian_commitment": {
+            "type": "string",
+            "description": "Hex commitment of this Guardian's ACK key for `scheme` (`GET /pubkey`)."
+          },
+          "issued_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Unix seconds; within the request timestamp skew window of server time.",
+            "minimum": 0
+          },
+          "network": {
+            "type": "string",
+            "description": "Must equal `environment` from `GET /status`."
+          },
+          "origin": {
+            "type": "string",
+            "description": "The website that asked for the grant, e.g. `https://multisig.example`,\nshown to the user by the wallet; empty for clients outside a browser.\nAt most 256 bytes. Guardian does not check it against requests."
+          },
+          "session_public_key": {
+            "type": "string",
+            "description": "Hex SEC1-compressed P-256 delegated-signer public key (33 bytes)."
+          },
+          "signer_commitment": {
+            "type": "string",
+            "description": "Hex commitment of the wallet public key that signs the grant."
+          }
+        }
+      },
       "SessionInfoResponse": {
         "type": "object",
         "required": [
@@ -7155,6 +7550,21 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "SessionsStatus": {
+        "type": "object",
+        "description": "Session parameters a client needs before it builds a grant.",
+        "required": [
+          "max_ttl_seconds"
+        ],
+        "properties": {
+          "max_ttl_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Grants may expire at most this many seconds after registration.",
+            "minimum": 0
           }
         }
       },
@@ -7176,6 +7586,14 @@
             "$ref": "#/components/schemas/ProposalSignature"
           }
         }
+      },
+      "SignatureScheme": {
+        "type": "string",
+        "description": "Supported signature schemes",
+        "enum": [
+          "falcon",
+          "ecdsa"
+        ]
       },
       "StateObject": {
         "type": "object",
@@ -7218,7 +7636,8 @@
           "git_commit",
           "environment",
           "started_at",
-          "uptime_seconds"
+          "uptime_seconds",
+          "sessions"
         ],
         "properties": {
           "environment": {
@@ -7228,6 +7647,10 @@
           "git_commit": {
             "type": "string",
             "description": "Short git SHA at build time (`\"unknown\"` when unavailable)."
+          },
+          "sessions": {
+            "$ref": "#/components/schemas/SessionsStatus",
+            "description": "Session authentication for Miden accounts (issue #219). Present on\nevery Guardian that accepts session grants; SDKs treat its absence as\n\"no sessions\"."
           },
           "started_at": {
             "type": "string",

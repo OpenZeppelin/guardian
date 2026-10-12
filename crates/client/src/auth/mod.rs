@@ -72,6 +72,34 @@ impl Auth {
     }
 }
 
+impl crate::keystore::Signer for Auth {
+    fn scheme(&self) -> guardian_shared::SignatureScheme {
+        match self {
+            Auth::FalconRpoSigner(_) => guardian_shared::SignatureScheme::Falcon,
+            Auth::EcdsaSigner(_) => guardian_shared::SignatureScheme::Ecdsa,
+        }
+    }
+
+    fn commitment(&self) -> miden_protocol::Word {
+        match self {
+            Auth::FalconRpoSigner(signer) => signer.commitment(),
+            Auth::EcdsaSigner(signer) => signer.commitment(),
+        }
+    }
+
+    fn commitment_hex(&self) -> String {
+        guardian_shared::hex::IntoHex::into_hex(self.commitment())
+    }
+
+    fn public_key_hex(&self) -> String {
+        Auth::public_key_hex(self)
+    }
+
+    fn sign_word_hex(&self, message: miden_protocol::Word) -> String {
+        Auth::sign_word_hex(self, message)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

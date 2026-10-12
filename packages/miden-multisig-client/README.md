@@ -214,6 +214,67 @@ After creating the account, register it on the GUARDIAN server:
 await multisig.registerOnGuardian();
 ```
 
+### Sign Requests With a Session
+
+Every Guardian request is otherwise signed by the wallet, which on a hardware
+wallet means a prompt per request. When the Guardian supports sessions, the
+wallet signs one grant and a non-extractable WebCrypto P-256 key, the delegated
+signer, signs reads and proposal requests until the session ends:
+
+```typescript
+import {
+  IndexedDbSessionKeyStore,
+  describeSessionGrant,
+} from '@openzeppelin/miden-multisig-client';
+
+const store = new IndexedDbSessionKeyStore(); // optional: survive reloads
+// 'expired', 'revoked' or 'rejected': requests are wallet-signed again, so
+// offer a new session. 'logout': the app ended it itself.
+const onEnded = (reason) => console.info('Guardian session ended:', reason);
+const session =
+  (await client.resumeSession(signer, store, { onEnded })) ??
+  (await client.startSession(signer, {
+    store,
+    onEnded,
+    // Required for raw wallets, which only show a hash.
+    confirm: (grant) => showToUser(describeSessionGrant(grant)),
+  }));
+
+// ...sync, list proposals and create proposals without wallet prompts.
+// Approving a proposal still asks the wallet to sign the transaction.
+
+await client.endSession(store); // this session only
+await client.revokeAllSessions(signer, store); // every session of the signer, wallet-signed
+```
+
+The grant covers every account the signer cosigns on this Guardian, now or
+later, until it expires. It names the website that asked for it
+(`location.origin` by default). The page writes that field, so it is
+unverified: the trustworthy signal is the wallet's own indicator of the
+requesting site, and Guardian does not check it against requests. Ledger and
+other EIP-712 wallets sign the grant as readable typed data (`GuardianSession`:
+signer, session key, website, issued/expires, scope, Guardian key, network).
+Without registered display metadata, Ledger devices need "Verbose EIP-712"
+enabled. Raw (Falcon, raw ECDSA) wallets show only a hash, so `startSession`
+requires `confirm` for them; that shows the fields on an honest page but is
+no protection against a phishing page, which shows what it wants.
+Transaction approvals, account registration, delta pushes, candidate abandons
+and account lookup still use the wallet; the server rejects session
+credentials there with `wallet_signature_required`.
+
+The session ends when it expires, when it is logged out or revoked, or when
+Guardian no longer accepts it (for example after a Guardian restart without
+persistent sessions, or a Guardian key rotation). Requests then go back to the
+wallet, the stored key is forgotten, and `onEnded` is called once with the
+reason. Removing the signer from an account ends its delegated access to that
+account (`authorization_failed`, the session keeps working for the others);
+adding it back restores any unexpired grant.
+
+Page logout is not revocation: a script that stole the key keeps it, so use
+`revokeAllSessions` when in doubt, and run it again 10 minutes later.
+Revoke-all ends the sessions already registered with Guardian, and a page that
+got a grant signed can register it for up to about 10 minutes afterwards.
+
 ### Load an Existing Multisig
 
 The configuration is automatically detected from the account's on-chain storage:

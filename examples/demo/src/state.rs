@@ -106,6 +106,10 @@ impl SessionState {
         Ok(())
     }
 
+    pub fn has_client(&self) -> bool {
+        self.client.is_some()
+    }
+
     pub fn has_account(&self) -> bool {
         self.client
             .as_ref()
