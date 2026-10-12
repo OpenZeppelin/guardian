@@ -3,10 +3,12 @@
 | | |
 |---|---|
 | **Status** | Draft |
+| **Depends on** | [RFC 0001](https://github.com/OpenZeppelin/guardian/blob/254-execution-impl/docs/rfcs/0001-server-side-transaction-execution.md) (server-side transaction execution, on PR #510 until it merges): the execution worker is the second caller of the pipeline |
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
 | **Working artifacts** | `speckit/features/251-guardian-modules/` (created after this RFC is accepted) |
-| **Revision** | 16 (2026-10-09): sixth review round: `notify_gap` trait method (default no-op) and `POST /v1/notify-gap`; transport byte mapping stated; budget enforcement restated with startup over-budget report; notify delivery on the coordination leadership lease with fenced cursor writes; catalog removal of an instance with unacknowledged events sets `resync_required`; `resync_required` row in the failure table; resync in invariant 4; citations re-pinned (`sweep.rs:667`, `worker.rs:389` at `29c722b4`); `reserved "version"`; `validate_params` on unresolved params; `GET` under `dashboard:read` |
+| **Revision** | 17 (2026-10-11): seventh review round: `pending` reconciled with module state through a per-account nonce watermark applied atomically with the counters, and a consistent Guardian snapshot (section 3.4); remote delivery fenced across resync on the module side by the same watermark and `Gap.resume_from_nonce` (section 3.3); `instance_id` in every request, so one remote service can back several instances (section 2.1); one accounting clock, `signed_at`, carried in `CommitEvent` and fixed before evaluation as `HookRequest.accounting_time` (section 3.4); storage projections keyed by `StorageSlotName` with explicit create, update and remove operations, matching Miden 0.17; RFC 0001 linked at its reviewable location; baseline moved to `main` at `1224ef13` |
+| **Revision 16** | 2026-10-09: sixth review round: `notify_gap` trait method (default no-op) and `POST /v1/notify-gap`; transport byte mapping stated; budget enforcement restated with startup over-budget report; notify delivery on the coordination leadership lease with fenced cursor writes; catalog removal of an instance with unacknowledged events sets `resync_required`; `resync_required` row in the failure table; resync in invariant 4; citations re-pinned (`sweep.rs:667`, `worker.rs:389` at `29c722b4`); `reserved "version"`; `validate_params` on unresolved params; `GET` under `dashboard:read` |
 | **Revision 15** | 2026-10-09: fifth review round: resync machinery added to M2 scope; resync listed under `policies:write` and in the operator capability table; `NotifyGap` failures non-fatal within protocol version 1; `Gap.dropped_before` defined as the restart position; in-process `HookRequest.params` carry unresolved secret references; orphaned entry in the `GET` example |
 | **Revision 14** | 2026-10-09: fourth review round: retention drop puts the module into `resync_required` with an operator resync and a `NotifyGap` call; budget counts disabled instances; orphaned assignments defined; `$secret` reserved at any depth; `GUARDIAN_MODULE_TIMEOUT_MAX_MS` and `require_fresh_state_ms` named; JCS params; `protocol_version` covers projections and `TxProjection.version` removed; registration projection cost; `module_catalog_hash` column; `all`-first masking note; requirement status column (R5 partly met) |
 | **Revision 13** | 2026-10-09: third review round: re-onboarding preserves stored assignments; budget checked at startup on `all` + `default` and per account on assignment; `network` in `CommitEvent`; protocol encodings; `pending` ordering; delivery starts at the latest event; outbox retention; `validate_params` at startup; operator API bodies; operator client in M2 scope. `event_id` kept as the commitment, with its cross-account uniqueness cited |
@@ -22,7 +24,7 @@
 | **Revision 3** | 2026-10-08: module kinds and instances replace endpoint-based catalog entries; `guardian-module-sdk` crate; operator-registered kinds through `ServerBuilder` (section 2.5), following oif-aggregator's adapter pattern; invariant 1 limited to remote modules |
 | **Revision 2** | 2026-10-08: adds `scope = default`, copied into an account's assignment at registration, removable per account, not retroactive |
 | **Revision 1** | 2026-10-08: first draft |
-| **Code baseline** | `main` at `c892795a`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510). Miden pins: protocol 0.17.0 |
+| **Code baseline** | `main` at `1224ef13`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510). Miden pins: protocol 0.17.0 |
 
 ---
 
@@ -96,6 +98,8 @@ pub trait ModuleFactory: Send + Sync {
     fn create(&self, instance: &ModuleInstanceConfig) -> Result<Arc<dyn Module>, ModuleError>;
 }
 ```
+
+**Instance identity.** Every message the Guardian sends to a module carries `instance_id`, the catalog `id` of the instance it is calling (`ValidateParamsRequest`, `HookRequest`, `CommitEvent`, `Gap`). One remote service can therefore back several instances, for example a sanctions service configured once per list, and keep their state, delivery watermarks and resync handling apart: a module keys all state by (`instance_id`, `account_id`). Each instance has its own `auth` credential, and the `serve` harness binds credentials to instance ids (`.instance("sanctions-ofac", token_file)`), rejecting with `PERMISSION_DENIED` a request whose `instance_id` does not match the credential that authenticated it. An operator who prefers full isolation can still give each instance its own endpoint; the protocol does not depend on it.
 
 The trait, the factory and all protocol types live in a separately published crate, `guardian-module-sdk`, so a kind can be written without depending on the server (section 2.5). `notify_gap` has a default no-op so stateless kinds need not implement it; stateful kinds override it to reset or re-seed state after a gap (section 3.3). The `GrpcModule` and `HttpModule` implementations call the `NotifyGap` RPC, and the `serve` harness routes `NotifyGap` to `notify_gap`, so in-process and remote modules see gaps the same way.
 
@@ -292,7 +296,7 @@ There are two ways to use a module someone else wrote, for example a crate publi
 async fn main() -> anyhow::Result<()> {
     guardian_module_sdk::serve(acme_sanctions::AcmeSanctions::from_env()?)
         .grpc("0.0.0.0:7443")
-        .token_from_file("/run/secrets/module_token")
+        .instance("sanctions-ofac", "/run/secrets/module_token")
         .run()
         .await
 }
@@ -373,7 +377,7 @@ x402 uses HTTP `402 Payment Required` for machine payments: a resource server an
 
 **The facilitator itself is a separate service, which is why it is an external module.** Its `/verify` and `/settle` API is called by resource servers on the internet, not by the Guardian, and sits outside `guardian.module.v1`. Inside the Guardian process it would put an internet-facing payment API next to the ack signing keys; as a remote module it runs in its own process, where invariant 1 holds (it can refuse payments, never cause a signature). It may also hold its own keys or funds for settlement, depend on other chains' clients, be run by a different party than the Guardian operator, and follow a spec that is still moving, none of which belongs in the Guardian's release cycle.
 
-**What this RFC does not cover.** A facilitator drives a flow: it receives a payment request, starts settlement and waits for it. Allow/deny hooks cannot express "Guardian, execute this pre-authorized payment now". That needs a hook in the other direction, possibly through the Guardian execution path of RFC 0001, and is future work (section 7).
+**What this RFC does not cover.** A facilitator drives a flow: it receives a payment request, starts settlement and waits for it. Allow/deny hooks cannot express "Guardian, execute this pre-authorized payment now". That needs a hook in the other direction, possibly through the Guardian execution path of [RFC 0001](https://github.com/OpenZeppelin/guardian/blob/254-execution-impl/docs/rfcs/0001-server-side-transaction-execution.md), and is future work (section 7).
 
 ---
 
@@ -402,7 +406,7 @@ enum Hook {
 
 message DescribeRequest {}
 message ModuleInfo { string name = 1; string version = 2; uint32 protocol_version = 3; repeated Hook hooks = 4; }
-message ValidateParamsRequest { bytes params = 1; }      // UTF-8 JSON
+message ValidateParamsRequest { bytes params = 1; string instance_id = 2; }  // params: UTF-8 JSON
 message ParamsVerdict { bool ok = 1; string message = 2; }
 message NotifyAck {}
 
@@ -410,6 +414,8 @@ message Gap {
   string account_id = 1;
   string network = 2;
   google.protobuf.Timestamp dropped_before = 3;  // restart position: events for the account committed before this and not acknowledged may be missing
+  string instance_id = 4;
+  uint64 resume_from_nonce = 5;       // first nonce delivered after the gap; the module's watermark becomes resume_from_nonce - 1 (section 3.3)
 }
 
 message HookRequest {
@@ -418,6 +424,8 @@ message HookRequest {
   string network = 3;                 // "miden"
   string account_id = 4;
   bytes params = 5;                   // UTF-8 JSON, effective params for this account and module
+  string instance_id = 6;             // catalog id of the instance being called
+  google.protobuf.Timestamp accounting_time = 7;  // recorded as signed_at if this transaction is signed (section 3.4)
   oneof subject {
     TransactionSubject transaction = 10;
     RegistrationSubject registration = 11;
@@ -434,10 +442,12 @@ message TransactionSubject {
 }
 
 message PendingTransaction {
-  string new_commitment = 1;
+  string new_commitment = 1;          // = event_id once committed
   TxProjection projection = 2;
-  google.protobuf.Timestamp signed_at = 3;
+  google.protobuf.Timestamp signed_at = 3;      // the accounting clock (section 3.4)
   PendingState state = 4;
+  uint64 nonce = 5;                   // account nonce after this transaction; compared with the module's watermark
+  optional google.protobuf.Timestamp committed_at = 6;  // set when state = committed
 }
 enum PendingState {
   PENDING_STATE_UNSPECIFIED = 0;
@@ -497,15 +507,21 @@ enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVA
 message InputNote { string note_id = 1; repeated Asset assets = 2; }
 
 message StorageChange {
-  uint32 slot = 1;
-  oneof change {
-    string value = 2;                 // new slot value
-    MapChanges map = 3;
-  }
+  string slot_name = 1;               // StorageSlotName, e.g. "miden::standards::auth::multisig::config"
+  StorageSlotKind kind = 2;
+  StorageOp op = 3;
+  string value = 4;                   // kind = value, op = create or update: the new value
+  MapChanges map = 5;                 // kind = map, op = create: initial entries; op = update: changed entries
 }
+enum StorageSlotKind { STORAGE_SLOT_KIND_UNSPECIFIED = 0; STORAGE_SLOT_KIND_VALUE = 1; STORAGE_SLOT_KIND_MAP = 2; }
+enum StorageOp { STORAGE_OP_UNSPECIFIED = 0; STORAGE_OP_CREATE = 1; STORAGE_OP_UPDATE = 2; STORAGE_OP_REMOVE = 3; }
 message MapChanges { repeated MapEntry entries = 1; }
-message MapEntry { string key = 1; string value = 2; }
-message StorageSlot { uint32 slot = 1; oneof content { string value = 2; MapChanges map = 3; } }
+message MapEntry { string key = 1; string value = 2; }  // value = empty word: the entry was removed
+message StorageSlot {
+  string slot_name = 1;
+  StorageSlotKind kind = 2;
+  oneof content { string value = 3; MapChanges map = 4; }
+}
 
 message CommitEvent {
   string event_id = 1;                // = new_commitment; stable across redelivery
@@ -515,6 +531,9 @@ message CommitEvent {
   TxProjection projection = 5;
   google.protobuf.Timestamp committed_at = 6;
   string network = 7;                 // "miden", as in HookRequest
+  uint64 nonce = 8;                   // account nonce after this transaction; the delivery watermark (section 3.3)
+  google.protobuf.Timestamp signed_at = 9;   // the accounting clock, identical to the value the module saw in pending (section 3.4)
+  string instance_id = 10;
 }
 ```
 
@@ -525,6 +544,9 @@ message CommitEvent {
 - Words, digests, commitments and roots (`prev_commitment`, `new_commitment`, `note_id`, `recipient_digest`, `script_root`, `nft_id`, storage values, map keys and values): `0x` followed by 64 lowercase hex characters.
 - Amounts and other single field elements (`fungible_amount`): unsigned decimal strings, so values above 2^53 survive JSON.
 - Account ids (`account_id`, `faucet_id`, `p2id_target`): the Guardian's canonical `0x` lowercase hex form of the account id.
+- Nonces (`nonce`, `resume_from_nonce`): `uint64`, which the proto3 JSON mapping renders as a decimal string, consistent with the amount rule.
+- Storage slots: the slot's `StorageSlotName` as its string form, which is stable across accounts and protocol bumps and is what the dashboard projector already emits (`crates/server/src/delta_summary/projection.rs:301`) **[READ]**. Miden 0.17 identifies slots by name and records each changed slot as a value or map patch with a create, update or remove operation (`miden-protocol-0.17.0/src/account/patch/storage/slot_patch.rs:27-30`, `value_patch.rs:18-26`, `map_patch.rs:20-33`) **[READ]**; `StorageChange` carries exactly that. A removed slot has `op = remove` and no content. A removed map entry has the empty word as its value, as in the existing projector.
+- Timestamps: `google.protobuf.Timestamp`, RFC 3339 in UTC in the JSON mapping, always taken from the Guardian's clock.
 
 **Versioning.** `ModuleInfo.protocol_version` versions the whole wire contract, `TxProjection` and `AccountProjection` included; there is no separate projection version. Adding fields stays within a protocol version (proto3 readers ignore unknown fields). A breaking change, including a breaking projection change, increments it. The Guardian supports a range of protocol versions, and a module whose `describe` reports a version outside that range is refused at startup.
 
@@ -543,9 +565,11 @@ The proposer's `proposal_type` label is forwarded as `unverified_hint` only. A p
 Delivery is at least once:
 
 - The `module_events` row is written in the same storage write that commits the delta (promotion in candidate mode, the push in optimistic mode), so an event exists if and only if the delta became committed. A rollback, including a `StaleBase` rollback, leaves no event.
-- Delivery runs on the replica holding the notifier's leadership lease, through the existing coordination mechanism (`crates/server/src/coordination/leader.rs:7-30`, wired by `.coordination(..)` in `main.rs`) **[READ]**. Cursor advances and the cursor move made by a resync are conditional writes fenced by the lease's fence token, so a delivery in flight on a replica that lost the lease cannot advance the cursor, and a pre-gap redelivery cannot land after the resync's `NotifyGap`.
+- Delivery runs on the replica holding the notifier's leadership lease, through the existing coordination mechanism (`crates/server/src/coordination/leader.rs:7-30`, wired by `.coordination(..)` in `main.rs`) **[READ]**. Cursor advances and the cursor move made by a resync are conditional writes fenced by the lease's fence token, so a delivery in flight on a replica that lost the lease cannot advance the cursor. The fence covers only the Guardian's own writes: an RPC already sent by the old leader can still reach the module late. The module side is fenced by the delivery watermark below.
 - Delivery is tracked per (module, account) and is in order per account: the next event for an account is sent only after the previous one is acknowledged, which is what volume counters need. Accounts are independent, so one account whose events keep failing does not hold back notify for any other account. Failures retry with backoff indefinitely.
-- `event_id` is the new commitment, so modules deduplicate redelivery. It is unique across accounts, not only within one: a Miden account commitment hashes the account header, and the header includes the account id (`miden-protocol-0.17.0/src/account/header.rs:104-114,120-126`) **[READ]**, so two accounts share a commitment only through a hash collision.
+- **Delivery watermark.** Every `CommitEvent` carries the account `nonce` after the transaction. Nonces of stored deltas are unique per account (`UNIQUE(account_id, nonce)` on `deltas`, `crates/server/migrations/2026-01-01-000001_initial_schema/up.sql:22`) **[READ]** and delivery is in nonce order, so a module keeps one number per (`instance_id`, `account_id`): the highest nonce it has applied. It applies an event only if `nonce` is above the watermark, and stores the new watermark in the same atomic write as the state change. An event at or below the watermark is a redelivery, or a delivery from before a resync, and is acknowledged without effect. The `serve` harness and the in-process `StatefulModule` helper in `guardian-module-sdk` implement this, and the conformance suite checks it.
+- **Resync fencing.** `Gap.resume_from_nonce` is the nonce of the first event delivered after the resync. A module handles `NotifyGap` by resetting or re-seeding its state for the account and setting its watermark to `resume_from_nonce - 1` in one atomic write, and only if that raises the watermark; a duplicated or delayed `NotifyGap` therefore cannot reset state twice. Every event the old leader could still have in flight was committed before the resync, so its nonce is below `resume_from_nonce` and the module discards it. A module that does not implement `NotifyGap` gets no fencing and no reset; it already has no gap handling, so a late pre-gap event only applies a transaction that did happen.
+- `event_id` is the new commitment and identifies the event in logs and in `pending`. It is unique across accounts, not only within one: a Miden account commitment hashes the account header, and the header includes the account id (`miden-protocol-0.17.0/src/account/header.rs:104-114,120-126`) **[READ]**, so two accounts share a commitment only through a hash collision.
 - Optional `require_fresh_state_ms` per module, checked per account: if that module has an undelivered event for this account older than the configured lag, its `evaluate` for this account is treated as an error without being called and `on_error` applies. With `pending` (section 3.4) a lagging module still sees every signed transaction, so this is an age limit for operators who want one, not the main guard.
 
 - **Starting position.** Delivery for a (module, account) pair starts at the latest event when the instance is first seen, or when it is first assigned to the account; earlier events are not replayed. A module added on day 30 therefore starts with empty counters for existing accounts, and a stateful module that needs history must obtain it elsewhere. Without this rule a new module would begin hundreds of events behind and immediately exceed the backlog cap (section 3.4).
@@ -570,7 +594,23 @@ A stateful limit (daily volume, rolling volume, velocity, new-recipient cooldown
 
 Order is fixed: committed entries first, in commit order, then queued candidates in chain order (ascending nonce). The list is therefore the account's history in the order it happened or will happen.
 
-The module decides on its counters, plus `pending`, plus the transaction being evaluated. Every signed transaction is counted exactly once: it leaves `pending` when the module acknowledges its event, the moment it enters the module's counters. A candidate that is discarded or superseded drops out of `pending`, so no release or expiry hook is needed. `signed_at` places pending entries in time windows.
+The module decides on its counters, plus the `pending` entries it has not applied yet, plus the transaction being evaluated. A transaction can sit in both the module's counters and `pending`: the module applies an event before the Guardian records the acknowledgement, a `NotifyAck` can be lost, and a candidate can be promoted and delivered between the Guardian's snapshot and the module's evaluation. Adding `pending` naively would count it twice. Reconciliation therefore uses the delivery watermark (section 3.3):
+
+- **Module side.** `evaluate` reads the counters and the watermark from one consistent snapshot of the module's state, which `notify` updates atomically. A pending entry counts only if its `nonce` is above that watermark; an entry at or below it is already in the counters. The rule is the same for both pending states, because a candidate keeps its nonce when it is committed.
+- **Guardian side.** The candidate queue and the unacknowledged events are read in one consistent snapshot (one repeatable-read transaction on Postgres, under the account lock on the filesystem backend). Promotion writes the `module_events` row in the same storage write that changes the candidate's status, so a snapshot lists every signed transaction exactly once, as a candidate or as committed, never both and never neither.
+
+With both, every signed transaction is counted exactly once whatever the interleaving of `evaluate`, `notify` and acknowledgement writes:
+
+| Interleaving | Counters | `pending` | Counted by the module |
+|---|---|---|---|
+| Event applied, ack not yet stored | include A, watermark = A | A (committed) | A once: skipped in `pending` |
+| `NotifyAck` lost, redelivery pending | include A | A (committed) | A once; the redelivery is a no-op |
+| A promoted and applied after the snapshot | include A | A (candidate) | A once: same nonce, skipped |
+| A signed, not yet committed | exclude A | A (candidate) | A once, from `pending` |
+
+A candidate that is discarded or superseded drops out of `pending`, so no release or expiry hook is needed. In optimistic mode two overlapping pushes can share a nonce (`submit_delta` upserts on `(account_id, nonce)`); the watermark then counts whichever is delivered first, one more reason stateful limits are exact only in candidate mode.
+
+**Accounting clock.** Time windows (daily volume, cooldowns) use one clock: `signed_at`, the Guardian's time when it signed the transaction. Signing is the moment the Guardian committed to the spend, and it does not move: a transaction signed at 23:59 and committed at 00:01 belongs to the earlier day, both in `pending` and after `notify`. The Guardian fixes the value before the pipeline runs and sends it as `HookRequest.accounting_time`, so the transaction under evaluation is placed in the same window it will later carry; it is stored with the delta and repeated unchanged as `PendingTransaction.signed_at` and `CommitEvent.signed_at`. `committed_at` is informational. A module needing commit-time accounting can read it from `CommitEvent` and from committed `pending` entries, but must then treat candidates as belonging to no window yet.
 
 The list is exact for every delta that gets stored. `push_delta` reads the candidate queue (`crates/server/src/services/push_delta.rs:86`) **[READ]** before the pipeline runs and the delta is signed (`:182`), and the storage gate admits the delta under the account lock only if it extends the queue's tail (`crates/server/src/storage/mod.rs:374-399`) **[READ]**. A candidate admitted after the queue was read moves the tail, so the later delta is refused with a 409 and its signature is never returned. Two concurrent requests can both pass `evaluate`, but at most one is stored.
 
@@ -583,6 +623,7 @@ Limits:
 - **Backlog cap.** Applies only to modules that subscribe to `after_transaction_committed`. The committed part grows while such a module is unreachable. Above `GUARDIAN_MODULE_PENDING_MAX` entries for an account (default 256), that module's `evaluate` for the account is treated as an error without being called and `on_error` applies. The candidate part is bounded by the candidate queue depth.
 - **Projections are stored, not recomputed.** The projection is computed once when the delta is signed and stored with the candidate and with the `module_events` row.
 - **No counting in `evaluate`.** Module authors keep state only from `notify`. The conformance suite evaluates the same request twice and checks that the module's state does not change.
+- **Conformance cases for counting.** The suite drives each interleaving in the table above against the module under test: an evaluation between the module applying an event and the Guardian storing the acknowledgement, a dropped `NotifyAck` followed by an evaluation and the redelivery, a candidate promoted and delivered between snapshot and evaluation, and `evaluate` running concurrently with `notify` under a randomized schedule. Each case asserts that the counted total equals the sum of signed transactions. A failover test sends a pre-gap `Notify` from a replica that has lost the lease after the new leader's `NotifyGap`, and asserts that the module discards it.
 
 ---
 
@@ -661,7 +702,7 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 **First implementation (milestone M2):**
 
 - Hook points from section 2.3, pipeline, catalog and configuration with kinds and instances, and the `grpc` and `http` kinds.
-- `guardian-module-sdk` crate: `Module`, `ModuleFactory`, protocol types, the `serve` harness for remote modules, and the conformance suite.
+- `guardian-module-sdk` crate: `Module`, `ModuleFactory`, protocol types, the `serve` harness for remote modules with per-instance credentials, the `StatefulModule` watermark helper, and the conformance suite including the counting and failover cases in section 3.4.
 - `ServerBuilder::from_env()` (environment wiring moved out of `main.rs`) and `ServerBuilder::with_module_kind` for operator-registered kinds.
 - `GUARDIAN_MODULES_CONFIG` catalog file read at startup; `enabled` and `operator_can_disable` instance fields; runtime enable and disable in the metadata store under `policies:write`; catalog hash metric, in `/dashboard/info`, and recorded with each signed delta.
 - `custom-guardian` template shipped with each release (manifest, `main.rs`, `Dockerfile`, release `Cargo.lock`).
