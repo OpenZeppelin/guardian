@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 import {
   fromServerCanonicalNonce,
@@ -503,7 +504,7 @@ describe('conversion', () => {
       expect(result.salt).toBe(original.salt);
     });
 
-    it('chainAnchor survives roundtrip as chain_anchor on the wire', () => {
+    it('a legacy chainAnchor survives roundtrip as chain_anchor on the wire', () => {
       const original: ProposalMetadata = {
         proposalType: 'add_signer',
         targetThreshold: 2,
@@ -516,6 +517,22 @@ describe('conversion', () => {
 
       const result = fromServerProposalMetadata(server);
       expect(result.chainAnchor).toBe('bW9jay1jaGFpbi1hbmNob3I=');
+    });
+
+    it('boundBlockNum survives roundtrip as bound_block_num on the wire', () => {
+      const original: ProposalMetadata = {
+        proposalType: 'add_signer',
+        targetThreshold: 2,
+        signerCommitments: ['0xabc'],
+        boundBlockNum: 42,
+      };
+
+      const server = toServerProposalMetadata(original);
+      expect(server.bound_block_num).toBe(42);
+      expect(server.chain_anchor).toBeUndefined();
+
+      const result = fromServerProposalMetadata(server);
+      expect(result.boundBlockNum).toBe(42);
     });
 
     it('p2id noteType survives roundtrip as note_type on the wire (issue #322)', () => {
@@ -551,6 +568,21 @@ describe('conversion', () => {
       const result = fromServerProposalMetadata(server);
       expect(result.reclaimHeight).toBe(12345);
       expect(result.timelockHeight).toBe(700);
+    });
+
+    describe('shared proposal metadata wire sample (issue #538)', () => {
+      const fixture = JSON.parse(
+        readFileSync(
+          new URL('../../../fixtures/miden-multisig-client/proposal-metadata-wire.json', import.meta.url),
+          'utf-8',
+        ),
+      ) as Record<'current' | 'legacy', { wire: ServerProposalMetadata; guardian: ProposalMetadata }>;
+      const onTheWire = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+
+      it.each(['current', 'legacy'] as const)('maps the %s sample both ways', (sample) => {
+        expect(onTheWire(fromServerProposalMetadata(fixture[sample].wire))).toEqual(fixture[sample].guardian);
+        expect(onTheWire(toServerProposalMetadata(fixture[sample].guardian))).toEqual(fixture[sample].wire);
+      });
     });
   });
 });

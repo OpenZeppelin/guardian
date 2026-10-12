@@ -98,10 +98,11 @@ commitment. Guardian records that commitment as the proposal's base. On protocol
 signed summary also binds a **bound block**: the block the proposer chose, whose number and
 commitment the summary carries and whose number the request declares in `block_numbers()`. It
 fixes what the cosigners signed against; it is not where the transaction must execute. Both SDKs
-on `main` verify, sign and execute at the chain tip under that bound block. The proposal still
-ships a serialized `ChainAnchor` (wire field `chain_anchor`,
-`crates/miden-multisig-client/src/payload.rs:82-88`), which now only names the bound block for
-SDK compatibility; the server never reads it and Guardian execution does not need it. Creation
+on `main` verify, sign and execute at the chain tip under that bound block. Since #541 the
+proposal names that block in an unsigned `bound_block_num` metadata field, which both SDKs check
+against the summary; proposals from 0.18.0 clients carry a serialized `ChainAnchor` (wire field
+`chain_anchor`) instead. The server reads neither: Guardian execution takes the bound block from
+the signed summary. Creation
 does not establish that the request produces the supplied summary. Guardian reproduces the
 request and checks the signed-summary binding after delegated execution is accepted,
 before acknowledgment or remote proving.
@@ -444,7 +445,7 @@ The **account and reference-chain snapshot is required for every transaction**. 
 
 - **Tip peaks.** A genesis-seeded `SyncChainMmr` to `R` supplies them. This is the spike's construction, which is normative again. The delta is logarithmic in chain length, and a cold start took about 0.6 s on 0.16 testnet **[RAN]**.
 - **Tracked-block paths.** One `GetBlockHeaderByNumber(n, include_mmr_proof)` per tracked block (`miden-node-proto-build-0.17.0-rc.3/proto/rpc.proto:270-295`) **[READ]**. A path returned at a later chain length is adjusted to forest `R`.
-- **The tracked set must be supplied by Guardian.** The executor asks the data store only for note blocks plus `R`. It never asks for the bound block (`miden-tx-0.17.0-rc.7/src/executor/mod.rs:280-281`), and lazy block-witness loading is a TODO (`src/host/tx_event.rs:491-494`) **[READ]**. So Guardian's `DataStore` adds the request's declared `block_numbers()` itself, as `ClientDataStore` does (`miden-client-0.17.0-rc.4/src/store/data_store/mod.rs:335-342`) **[READ]**.
+- **The tracked set must be supplied by Guardian.** The executor asks the data store only for note blocks plus `R`. It never asks for the bound block (`miden-tx-0.17.0-rc.7/src/executor/mod.rs:280-281`), and lazy block-witness loading is a TODO (`src/host/tx_event.rs:491-494`) **[READ]**. So Guardian's `DataStore` adds the request's declared `block_numbers()` itself, as `ClientDataStore` does (`miden-client-0.17.0-rc.4/src/store/data_store/mod.rs:335-342`) **[READ]**. A request may declare at most 16 blocks; more is refused as `RequestInvalid(too_many_declared_blocks)`, which bounds the header and proof reads one attempt makes.
 - **The `ProtocolConfig`.** The data store now returns the configuration the reference header commits to (`miden-tx-0.17.0-rc.7/src/executor/data_store.rs:29-44`) **[READ]**. The fee asset left the header for it. Guardian fetches it with `include_protocol_config` and checks it against the header's commitment.
 
 This gives a stronger binding check than 0.16's. The bound block's commitment is proven by an MMR path under the tip header's chain commitment, instead of being compared against a second header read from the same node. The trust question narrows to whether `R`'s header is canonical (question 2).
@@ -475,7 +476,7 @@ sequenceDiagram
   W->>GS: Load account, TransactionRequest, signatures
   W->>W: Structural checks: bound block declared, auth arg + preimage, approval expiration, pinned notes
   W->>Node: Chain tip; refuse if approval expiration reached
-  W->>Node: SyncChainMmr to tip R, header + ProtocolConfig, MMR paths for bound + note blocks (Q2)
+  W->>Node: SyncChainMmr to tip R, header + ProtocolConfig, MMR paths for declared + note blocks (Q2)
   W->>W: Build ephemeral DataStore over stored state + chain view at R (Q5)
   W->>W: Reproduce unsigned, verify signed-summary binding
   W->>W: Add signatures and Guardian acknowledgment, execute, verify again

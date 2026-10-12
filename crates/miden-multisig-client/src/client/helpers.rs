@@ -214,7 +214,28 @@ impl MultisigClient {
         &mut self,
         proposal: &mut Proposal,
     ) -> Result<()> {
-        let outcome = self.check_proposal_summary_binding(proposal).await;
+        self.record_proposal_summary_binding(proposal, true).await
+    }
+
+    /// [`Self::verify_proposal_summary_binding`] for a listing, which synced
+    /// the chain once before verifying its proposals: a proposal bound to a
+    /// block above that height fails as retryable at once rather than costing
+    /// another sync per proposal.
+    pub(crate) async fn verify_listed_proposal_summary_binding(
+        &mut self,
+        proposal: &mut Proposal,
+    ) -> Result<()> {
+        self.record_proposal_summary_binding(proposal, false).await
+    }
+
+    async fn record_proposal_summary_binding(
+        &mut self,
+        proposal: &mut Proposal,
+        sync_to_bound_block: bool,
+    ) -> Result<()> {
+        let outcome = self
+            .check_proposal_summary_binding(proposal, sync_to_bound_block)
+            .await;
         proposal.verification = match &outcome {
             Ok(()) => ProposalVerification::Verified,
             Err(e) => ProposalVerification::Failed {
@@ -226,7 +247,11 @@ impl MultisigClient {
         outcome
     }
 
-    async fn check_proposal_summary_binding(&mut self, proposal: &Proposal) -> Result<()> {
+    async fn check_proposal_summary_binding(
+        &mut self,
+        proposal: &Proposal,
+        sync_to_bound_block: bool,
+    ) -> Result<()> {
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
         let proposal_id_commitment = word_to_hex(&tx_summary_commitment);
@@ -237,19 +262,20 @@ impl MultisigClient {
             )));
         }
 
-        // The anchor arrives from an untrusted party via GUARDIAN. Nothing here
-        // executes against it, since the rebuild below runs at the tip, but it
-        // has to name the block the signed summary binds: the TypeScript SDK
-        // rebuilds at the block it names, and 0.18.0-rc.1 clients re-execute
-        // at it. ChainAnchor deserialization already enforced internal
-        // header/chain consistency.
-        let chain_anchor = proposal.metadata.chain_anchor()?;
-        if chain_anchor.block_commitment() != proposal.tx_summary.block_commitment() {
-            return Err(MultisigError::InvalidConfig(format!(
-                "proposal {} chain_anchor does not match the block commitment bound \
-                 into its tx_summary",
-                proposal.id
-            )));
+        // The bound block needs no check of its own: the summary commitment
+        // covers its number and commitment, and the kernel authenticates that
+        // block under the tip, so only a rebuild at it reproduces the signed
+        // summary. `bound_block_num` is unsigned and TypeScript custom
+        // producers rebuild with it, so both SDKs refuse one that disagrees.
+        let bound_block = proposal.tx_summary.block_number();
+        if let Some(declared) = proposal.metadata.bound_block_num
+            && declared != bound_block.as_u32()
+        {
+            return Err(MultisigError::BoundBlockMismatch {
+                proposal_id: proposal.id.clone(),
+                declared,
+                bound: bound_block,
+            });
         }
 
         // Custom proposal types (issue #266) have no per-type reconstruction
@@ -286,11 +312,19 @@ impl MultisigClient {
         // configuration and executes at the tip, so the store has to have
         // synced to the block the summary binds; a cosigner that has only
         // just pulled the account has not.
-        crate::transaction::sync_to_block(
-            &mut self.miden_client,
-            proposal.tx_summary.block_number(),
-        )
-        .await?;
+        if sync_to_bound_block {
+            crate::transaction::sync_to_block(&mut self.miden_client, bound_block).await?;
+        } else {
+            let synced = self.miden_client.get_sync_height().await.map_err(|e| {
+                MultisigError::miden_client_with_context("failed to read the sync height", e)
+            })?;
+            if synced < bound_block {
+                return Err(MultisigError::ChainBehindBoundBlock {
+                    synced,
+                    bound_block_num: bound_block,
+                });
+            }
+        }
         let auth_args = proposal_auth_args(&self.miden_client, &proposal.tx_summary).await?;
 
         // A consume-notes summary commits to *authenticated* consumption

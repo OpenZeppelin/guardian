@@ -781,7 +781,7 @@ Causes of a `failed` execution, in `error.code`:
 
 | Code | `meta` | Retry? |
 |---|---|---|
-| `GUARDIAN_EXECUTION_REQUEST_INVALID` | `reason`: `bound_block_not_declared`, `auth_args_missing`, `approval_expiration_missing`, `input_notes_not_pinned` | No; the request cannot be executed by Guardian. |
+| `GUARDIAN_EXECUTION_REQUEST_INVALID` | `reason`: `bound_block_not_declared`, `auth_args_missing`, `approval_expiration_missing`, `input_notes_not_pinned`, `too_many_declared_blocks` (the request declares more than 16 blocks in `block_numbers`) | No; the request cannot be executed by Guardian. |
 | `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | `bound`: `approval` or `transaction` | `approval`: no, the cosigners must sign a new proposal. `transaction`: yes, a new request executes at the new tip with a fresh transaction window. |
 | `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | `reason`: `private` or `unavailable` | Only for `unavailable`. |
 | `GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`, `GUARDIAN_EXECUTION_PROVING_FAILED`, `GUARDIAN_EXECUTION_SEALING_FAILED`, `GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`, `GUARDIAN_EXECUTION_LEASE_EXPIRED`, `GUARDIAN_EXECUTION_ABANDONED` | none | Yes; the proposal is untouched. |
