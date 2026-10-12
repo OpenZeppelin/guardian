@@ -439,6 +439,19 @@ mod normalize_tests {
             "unexpected error: {error}"
         );
     }
+
+    /// Client fields the server does not model pass through unread, so a new
+    /// SDK field needs no server deploy.
+    #[test]
+    fn normalize_payload_passes_bound_block_num_through() {
+        let payload = json!({
+            "tx_summary": { "data": "AAAA" },
+            "metadata": { "proposal_type": "p2id", "bound_block_num": 42 },
+        });
+
+        let normalized = normalize_payload(payload).expect("payload normalizes");
+        assert_eq!(normalized["metadata"]["bound_block_num"], json!(42));
+    }
 }
 
 #[cfg(all(test, not(any(feature = "integration", feature = "e2e"))))]

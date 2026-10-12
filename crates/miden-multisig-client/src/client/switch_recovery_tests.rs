@@ -58,7 +58,7 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     // proposal creation does: the note authenticated in its store first (the
     // canonical consumption mode every verifier's rebuild reproduces, issue
     // #409), then the same request builder and an abort-execution for the
-    // summary, with the anchor tracking the note's block.
+    // summary.
     let dir1 = tempfile::tempdir().unwrap();
     let (mut author, _store1) =
         offline_client_parts_with_keystore(dir1.path(), api.clone(), None, keystore.clone()).await;
@@ -91,10 +91,13 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     )
     .await
     .unwrap();
-    let (tx_summary, chain_anchor) =
-        crate::transaction::execute_for_summary(&mut author.miden_client, account.id(), tx_request)
-            .await
-            .unwrap();
+    let tx_summary = crate::transaction::execute_for_summary_at_tip(
+        &mut author.miden_client,
+        account.id(),
+        tx_request,
+    )
+    .await
+    .unwrap();
 
     let delta_payload = ProposalPayload::new(&tx_summary)
         .with_note_consumption_metadata_v2(
@@ -103,7 +106,6 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
             word_to_hex(&salt),
         )
         .with_required_signatures(1)
-        .with_chain_anchor(crate::transaction::chain_anchor_to_base64(&chain_anchor))
         .to_json()
         .to_string();
 
@@ -264,14 +266,12 @@ async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
             endpoint_b.clone(),
             exported.metadata.salt_hex.clone().expect("salt exported"),
         )
-        .with_required_signatures(1)
-        .with_chain_anchor(
-            exported
-                .metadata
-                .chain_anchor
-                .clone()
-                .expect("anchor exported"),
-        );
+        .with_required_signatures(1);
+    assert_eq!(
+        exported.metadata.bound_block_num,
+        Some(switch_summary.block_number().as_u32()),
+        "offline creation records the block the summary binds"
+    );
     switch_payload
         .signatures
         .push(guardian_shared::DeltaSignature {
