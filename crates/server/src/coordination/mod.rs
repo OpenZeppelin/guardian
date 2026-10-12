@@ -1,4 +1,5 @@
 pub mod challenge_store;
+pub mod execution_leases;
 pub mod leader;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -7,6 +8,11 @@ pub mod stats_store;
 
 pub use challenge_store::{
     ChallengePayload, ChallengeStore, InMemoryChallengeStore, StoredChallenge,
+};
+#[cfg(feature = "postgres")]
+pub use execution_leases::PgExecutionLeases;
+pub use execution_leases::{
+    ExecutionLeases, InMemoryExecutionLeases, Renewal, lease_deadline, release_quietly,
 };
 pub use leader::{AlwaysLeader, LeaderElector, Lease};
 pub use session_store::{
@@ -59,6 +65,8 @@ pub struct CoordinationHandles {
     pub stats_leader: Arc<dyn LeaderElector>,
     /// Single-owner lease for the chain-driven release sweep (issue #434).
     pub release_sweep_leader: Arc<dyn LeaderElector>,
+    /// Account-scoped leases that fence Guardian executions (issue #254).
+    pub execution_leases: Arc<dyn ExecutionLeases>,
     /// Shared publication store for the `/dashboard/stats` aggregate.
     pub stats_store: Arc<dyn StatsStore>,
     #[cfg(feature = "evm")]
@@ -79,6 +87,7 @@ impl CoordinationHandles {
                 RELEASE_SWEEP_LEASE,
                 "single-process",
             )),
+            execution_leases: Arc::new(InMemoryExecutionLeases::new()),
             stats_store: Arc::new(InMemoryStatsStore::new()),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(InMemorySessionStore::new()),
@@ -117,6 +126,7 @@ impl CoordinationHandles {
                 RELEASE_SWEEP_LEASE,
                 holder_id,
             )),
+            execution_leases: Arc::new(PgExecutionLeases::new(pool.clone())),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),

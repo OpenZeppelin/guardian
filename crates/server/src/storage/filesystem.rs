@@ -4,12 +4,14 @@ use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
-    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
+    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalAdmission, ProposalRecord,
+    ProposalWrite, StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -49,6 +51,22 @@ struct StateFile {
     state: StateObject,
     #[serde(default)]
     nonce: Option<u64>,
+}
+
+/// The candidate an execution admission is about to write. Recorded before the candidate, it
+/// names what a crash short of the evidence commit may have left behind. It outlives the
+/// commit harmlessly: only a failing attempt without evidence that it names consults it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InterruptedAdmission {
+    proposal_id: String,
+    attempt: u32,
+    nonce: u64,
+}
+
+impl InterruptedAdmission {
+    fn belongs_to(&self, reservation: &crate::storage::ExecutionReservation) -> bool {
+        self.proposal_id == reservation.proposal_id && self.attempt == reservation.attempt
+    }
 }
 
 impl FilesystemService {
@@ -759,12 +777,76 @@ impl StorageBackend for FilesystemService {
         Ok(proposals)
     }
 
+    async fn admit_delta_proposal(
+        &self,
+        admission: ProposalAdmission,
+    ) -> Result<ProposalWrite, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let account_id = admission.proposal.account_id.clone();
+        let key = |commitment: &str| -> Result<String, String> {
+            let normalized = normalize_commitment_hex(commitment).map_err(|e| e.to_string())?;
+            Ok(normalized.trim_start_matches("0x").to_string())
+        };
+        let admitted = key(&admission.commitment)?;
+        let records = self.load_proposal_records(&account_id).await?;
+        let live = records
+            .iter()
+            .map(|record| key(&record.commitment))
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        if live.contains(&admitted) {
+            return Ok(ProposalWrite::AlreadyStored);
+        }
+        let viable = records
+            .iter()
+            .filter(|record| {
+                record.proposal.status.is_pending()
+                    && record.proposal.prev_commitment == admission.proposal.prev_commitment
+                    && admission
+                        .queue_tail_nonce
+                        .is_none_or(|tail| record.proposal.nonce > tail)
+            })
+            .map(|record| key(&record.commitment))
+            .collect::<Result<Vec<_>, _>>()?;
+        if viable.len() >= admission.max_viable_proposals {
+            return Ok(ProposalWrite::PendingLimit {
+                limit: admission.max_viable_proposals,
+            });
+        }
+        let mut sizes = self.read_request_sizes(&account_id).await?;
+        let used = viable
+            .iter()
+            .map(|commitment| sizes.get(commitment).copied().unwrap_or(0))
+            .fold(0u64, u64::saturating_add);
+        if used.saturating_add(admission.request_bytes) > admission.max_account_request_bytes {
+            return Ok(ProposalWrite::AccountRequestBytesLimit {
+                limit: admission.max_account_request_bytes,
+                used,
+            });
+        }
+        sizes.retain(|commitment, _| live.contains(commitment));
+        sizes.insert(admitted, admission.request_bytes);
+        self.write_request_sizes(&account_id, &sizes).await?;
+        self.submit_delta_proposal(&admission.commitment, &admission.proposal)
+            .await?;
+        Ok(ProposalWrite::Stored)
+    }
+
     async fn update_delta_proposal(
         &self,
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        // For filesystem, update is the same as submit
+        // Like the Postgres `UPDATE`, a proposal that is gone stays gone: a signature racing the
+        // execution that consumed or discarded the proposal must not write it back. The lock is
+        // the one execution resolution deletes proposals under.
+        let _guard = self.delta_write_lock.lock().await;
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        if !fs::try_exists(&path)
+            .await
+            .map_err(|e| format!("Failed to check proposal file: {e}"))?
+        {
+            return Ok(());
+        }
         self.submit_delta_proposal(commitment, proposal).await
     }
 
@@ -895,6 +977,16 @@ impl StorageBackend for FilesystemService {
         // re-read under the lock so the chain-tail and depth rules
         // (issue #17) see every committed candidate.
         let current_state = self.pull_state(&delta.account_id).await?;
+        if let Some(active) = self
+            .read_executions(&delta.account_id)
+            .await?
+            .into_iter()
+            .find(|record| record.reservation.is_active())
+        {
+            return Ok(crate::storage::CandidateSubmission::ExecutionReserved {
+                proposal_id: active.reservation.proposal_id,
+            });
+        }
         let queue: Vec<crate::storage::QueuedCandidate> = self
             .pull_candidate_deltas(&delta.account_id)
             .await?
@@ -950,19 +1042,35 @@ impl StorageBackend for FilesystemService {
 
         // Source-kind gate under the lock: a superseded row cannot be
         // stamped canonical, and a promoted row cannot be superseded
-        // mid-promotion.
-        if let Ok(existing) = self
+        // mid-promotion. A row that is gone was discarded or resolved
+        // meanwhile, and promoting it would re-create it.
+        match self
             .pull_delta(&promotion.state.account_id, promotion.delta.nonce)
             .await
-            && !promotion.source.matches(&existing.status)
         {
-            return Ok(crate::storage::PromoteWrite::NotCandidate);
+            Ok(existing) if promotion.source.matches(&existing.status) => {}
+            Ok(_) => return Ok(crate::storage::PromoteWrite::NotCandidate),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {
+                return Ok(crate::storage::PromoteWrite::NotCandidate);
+            }
+            Err(e) => return Err(e),
         }
 
+        // The writes below are separate files. A promotion interrupted after the state write
+        // left the state at this promotion's target, and re-running it must finish the job
+        // rather than report a stale base.
         let current_state = self.pull_state(&promotion.state.account_id).await?;
-        if current_state.commitment != promotion.delta.prev_commitment {
+        let resumed = current_state.commitment == promotion.state.commitment;
+        if !resumed && current_state.commitment != promotion.delta.prev_commitment {
             return Ok(crate::storage::PromoteWrite::StaleBase);
         }
+        let promoted_at = DateTime::parse_from_rfc3339(&promotion.now)
+            .map(|at| at.with_timezone(&Utc))
+            .map_err(|e| format!("Failed to parse promotion timestamp: {e}"))?;
+        // The execution settles last, so a committed outcome never names a state that is not
+        // canonical. An interruption before the delta write leaves an execution-owned candidate
+        // that canonicalization promotes again; one after it leaves a canonical candidate under
+        // a held reservation, which reconciliation settles.
         self.submit_state(&promotion.state).await?;
         if let Some(new_auth) = promotion.new_auth {
             metadata
@@ -976,7 +1084,14 @@ impl StorageBackend for FilesystemService {
             &promotion.now,
         )
         .await?;
-        Ok(crate::storage::PromoteWrite::Applied)
+        let settled_execution = self
+            .commit_promoted_execution(
+                &promotion.state.account_id,
+                promotion.delta.nonce,
+                promoted_at,
+            )
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied { settled_execution })
     }
 
     async fn discard_candidate(
@@ -992,6 +1107,11 @@ impl StorageBackend for FilesystemService {
         // metadata flag ops) run under the guard, so holding it across
         // the sequence is deadlock-free.
         let _guard = self.delta_write_lock.lock().await;
+        if kind == DeltaStatusKind::Candidate
+            && self.execution_owns_candidate(account_id, nonce).await?
+        {
+            return Ok(crate::storage::CanonicalWrite::ProtectedByExecution);
+        }
 
         // Guard the delete on the expected lifecycle kind so a stale
         // discard can never remove a row that was promoted meanwhile.
@@ -1048,6 +1168,9 @@ impl StorageBackend for FilesystemService {
         if !delta.status.is_candidate() {
             return Ok(crate::storage::CanonicalWrite::NotCandidate);
         }
+        if !status.is_candidate() && self.execution_owns_candidate(account_id, nonce).await? {
+            return Ok(crate::storage::CanonicalWrite::ProtectedByExecution);
+        }
 
         // A concurrently recorded abandon intent must not be wiped into
         // a retained status, which has no field to carry it: refuse the
@@ -1064,6 +1187,403 @@ impl StorageBackend for FilesystemService {
         self.write(&path, &updated).await?;
 
         Ok(crate::storage::CanonicalWrite::Applied)
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        use crate::storage::ReservationWrite;
+        crate::storage::execution::ensure_execution_lease(
+            &reservation.account_id,
+            &reservation.fence,
+        )?;
+        if reservation.lease_expires_at <= reservation.now {
+            return Ok(ReservationWrite::StaleLease);
+        }
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&reservation.account_id).await?;
+        if let Some(active) = records.iter().find(|record| record.reservation.is_active()) {
+            return Ok(ReservationWrite::AlreadyReserved {
+                holder_id: active.reservation.fence.holder_id.clone(),
+                proposal_id: active.reservation.proposal_id.clone(),
+            });
+        }
+        if self.has_pending_candidate(&reservation.account_id).await? {
+            return Ok(ReservationWrite::CandidateExists);
+        }
+        match self
+            .pull_delta_proposal(&reservation.account_id, &reservation.proposal_id)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if crate::storage::is_storage_not_found(&error) => {
+                return Ok(ReservationWrite::ProposalGone);
+            }
+            Err(error) => return Err(error),
+        }
+        let attempt = records
+            .iter()
+            .filter(|record| record.reservation.proposal_id == reservation.proposal_id)
+            .map(|record| record.reservation.attempt)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        records.push(crate::storage::ExecutionRecord {
+            reservation: crate::storage::ExecutionReservation {
+                account_id: reservation.account_id.clone(),
+                proposal_id: reservation.proposal_id,
+                attempt,
+                fence: reservation.fence,
+                lease_expires_at: reservation.lease_expires_at,
+                phase: crate::storage::ExecutionPhase::Accepted,
+                ignored_signatures: reservation.ignored_signatures,
+                released_at: None,
+                created_at: reservation.now,
+                updated_at: reservation.now,
+            },
+            evidence: None,
+            outcome: None,
+        });
+        self.write_executions(&reservation.account_id, &records)
+            .await?;
+        Ok(ReservationWrite::Created { attempt })
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        use crate::storage::ReservationUpdate;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let now = Utc::now();
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(ReservationUpdate::NotActive);
+        };
+        if !active.reservation.owns_live(fence, now) {
+            return Ok(ReservationUpdate::StaleLease);
+        }
+        active.reservation.lease_expires_at = lease_expires_at;
+        active.reservation.phase = phase;
+        active.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(ReservationUpdate::Applied)
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &crate::storage::LeaseFence,
+        claimant: &crate::storage::LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        use crate::storage::ClaimWrite;
+        crate::storage::execution::ensure_execution_lease(account_id, claimant)?;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(ClaimWrite::NotActive);
+        };
+        if active.reservation.fence != *expected {
+            return Ok(ClaimWrite::ClaimSuperseded);
+        }
+        if claimant.fence_token <= expected.fence_token || lease_expires_at <= Utc::now() {
+            return Ok(ClaimWrite::StaleLease);
+        }
+        active.reservation.fence = claimant.clone();
+        active.reservation.lease_expires_at = lease_expires_at;
+        active.reservation.updated_at = Utc::now();
+        self.write_executions(account_id, &records).await?;
+        Ok(ClaimWrite::Claimed)
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        Ok(self
+            .read_executions(account_id)
+            .await?
+            .into_iter()
+            .find(|record| record.reservation.is_active()))
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        Ok(self
+            .read_executions(account_id)
+            .await?
+            .into_iter()
+            .filter(|record| record.reservation.proposal_id == proposal_id)
+            .max_by_key(|record| record.reservation.attempt))
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        use crate::storage::AdmissionWrite;
+        admission.ensure_evidence_describes_candidate()?;
+        let account_id = admission.delta.account_id.clone();
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(AdmissionWrite::NotAuthorized);
+        };
+        if !active.reservation.authorizes(
+            &admission.fence,
+            &admission.evidence.proposal_id,
+            admission.evidence.attempt,
+        ) || active.evidence.is_some()
+        {
+            return Ok(AdmissionWrite::NotAuthorized);
+        }
+        if !active
+            .reservation
+            .owns_live(&admission.fence, admission.now)
+        {
+            return Ok(AdmissionWrite::StaleLease);
+        }
+        let current_state = self.pull_state(&account_id).await?;
+        if current_state.commitment != admission.delta.prev_commitment {
+            return Ok(AdmissionWrite::StaleBase);
+        }
+        let account = metadata
+            .get(&account_id)
+            .await?
+            .ok_or_else(|| format!("account metadata for {account_id} disappeared"))?;
+        if account.paused_at.is_some() || account.released_at.is_some() {
+            return Ok(AdmissionWrite::AccountInactive);
+        }
+        if self.has_pending_candidate(&account_id).await? {
+            return Ok(AdmissionWrite::CandidateExists);
+        }
+        match self.pull_delta(&account_id, admission.delta.nonce).await {
+            Ok(existing)
+                if existing.status.is_retained() || existing.status.is_client_abandoned() =>
+            {
+                self.delete_delta(&account_id, admission.delta.nonce)
+                    .await?;
+            }
+            Ok(_) => return Ok(AdmissionWrite::NonceOccupied),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {}
+            Err(e) => return Err(e),
+        }
+
+        // The filesystem cannot commit several files atomically, so the evidence, written last in
+        // one file, is the commit point. The admission is recorded first, so a crash before the
+        // evidence leaves a pre-boundary attempt that was never sent and whose failure removes
+        // exactly the candidate it wrote; a crash after it has everything a boundary-crossed
+        // attempt needs.
+        let interrupted = InterruptedAdmission {
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            nonce: admission.delta.nonce,
+        };
+        self.write_admission_marker(&account_id, &interrupted)
+            .await?;
+        self.write_delta_holding_lock(&admission.delta).await?;
+        metadata
+            .set_has_pending_candidate(&account_id, true, &admission.now.to_rfc3339())
+            .await?;
+        active.evidence = Some(admission.evidence.clone());
+        active.reservation.phase = crate::storage::ExecutionPhase::SubmissionCommitted;
+        active.reservation.updated_at = admission.now;
+        self.write_executions(&account_id, &records).await?;
+        Ok(AdmissionWrite::Admitted)
+    }
+
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        use crate::storage::ResolveWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&resolution.account_id).await?;
+        let record = match resolvable(&mut records, &resolution) {
+            Ok(record) => record,
+            Err(outcome) => return Ok(outcome),
+        };
+        let Some(evidence) = record.evidence.clone() else {
+            return Ok(ResolveWrite::WrongSideOfBoundary);
+        };
+        record.outcome = Some(failed_outcome(&resolution));
+        record.reservation.released_at = Some(resolution.now);
+        record.reservation.updated_at = resolution.now;
+        // The candidate and proposal go first: a crash before the outcome is written leaves an
+        // unresolved boundary-crossed attempt for reconciliation, never a released execution
+        // whose proposal still advertises a retry.
+        if let Ok(candidate) = self
+            .pull_delta(&resolution.account_id, evidence.candidate_nonce)
+            .await
+            && candidate.status.is_candidate()
+        {
+            self.delete_delta(&resolution.account_id, evidence.candidate_nonce)
+                .await?;
+        }
+        self.delete_delta_proposal(&resolution.account_id, &resolution.proposal_id)
+            .await?;
+        self.release_pending_flag_if_queue_empty(
+            metadata,
+            &resolution.account_id,
+            &resolution.now.to_rfc3339(),
+        )
+        .await?;
+        self.write_executions(&resolution.account_id, &records)
+            .await?;
+        Ok(ResolveWrite::Resolved)
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        use crate::storage::ResolveWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&resolution.account_id).await?;
+        let record = match resolvable(&mut records, &resolution) {
+            Ok(record) => record,
+            Err(outcome) => return Ok(outcome),
+        };
+        if record.evidence.is_some() {
+            return Ok(ResolveWrite::WrongSideOfBoundary);
+        }
+        record.outcome = Some(failed_outcome(&resolution));
+        record.reservation.released_at = Some(resolution.now);
+        record.reservation.updated_at = resolution.now;
+        // A marker for this attempt without evidence is an admission interrupted short of its
+        // commit point, which may have written its candidate. Canonicalization clears the flag
+        // it set.
+        if let Some(interrupted) = self
+            .read_admission_marker(&resolution.account_id)
+            .await?
+            .filter(|marker| marker.belongs_to(&record.reservation))
+        {
+            match self
+                .pull_delta(&resolution.account_id, interrupted.nonce)
+                .await
+            {
+                Ok(delta) if delta.status.is_candidate() => {
+                    self.delete_delta(&resolution.account_id, interrupted.nonce)
+                        .await?;
+                }
+                Ok(_) => {}
+                Err(e) if crate::storage::is_storage_not_found(&e) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.write_executions(&resolution.account_id, &records)
+            .await?;
+        Ok(ResolveWrite::Resolved)
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        use crate::storage::SettleWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(SettleWrite::NotActive);
+        };
+        if !active.reservation.owns_live(fence, now) {
+            return Ok(SettleWrite::StaleLease);
+        }
+        let Some(evidence) = active.evidence.clone() else {
+            return Ok(SettleWrite::NotPromoted);
+        };
+        let current_state = self.pull_state(account_id).await?;
+        let canonical = match self.pull_delta(account_id, evidence.candidate_nonce).await {
+            Ok(delta) => delta.status.is_canonical(),
+            Err(e) if crate::storage::is_storage_not_found(&e) => false,
+            Err(e) => return Err(e),
+        };
+        if !canonical
+            || !current_state
+                .commitment
+                .eq_ignore_ascii_case(&evidence.expected_commitment)
+        {
+            return Ok(SettleWrite::NotPromoted);
+        }
+        active.outcome = Some(crate::storage::ExecutionOutcome {
+            account_id: account_id.to_string(),
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            terminal: crate::storage::ExecutionTerminal::Committed,
+            resolved_at: now,
+        });
+        active.reservation.released_at = Some(now);
+        active.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(SettleWrite::Settled)
+    }
+
+    /// One account whose records cannot be read is skipped, not allowed to stop reconciliation
+    /// for every other account.
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        let mut unresolved = Vec::new();
+        for account_id in self.fanout_account_ids().await? {
+            match self.read_executions(&account_id).await {
+                Ok(records) => unresolved.extend(
+                    records
+                        .into_iter()
+                        .filter(|record| record.reservation.is_active()),
+                ),
+                Err(error) => {
+                    tracing::error!(%account_id, %error, "cannot read the account's execution records; reconciliation skips it");
+                }
+            }
+        }
+        Ok(unresolved)
+    }
+
+    /// One account whose records cannot be read or rewritten is skipped, not allowed to stop
+    /// the sweep for every other account.
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let mut pruned = 0;
+        for account_id in self.fanout_account_ids().await? {
+            if pruned >= limit {
+                break;
+            }
+            match self
+                .prune_account_executions(&account_id, cutoff, limit - pruned)
+                .await
+            {
+                Ok(count) => pruned += count,
+                Err(error) => {
+                    tracing::error!(%account_id, %error, "cannot prune the account's execution records; the sweep skips it");
+                }
+            }
+        }
+        Ok(pruned)
     }
 
     // ----------------------------------------------------------------------
@@ -1405,6 +1925,239 @@ impl FilesystemService {
         }
         ids.sort();
         Ok(ids)
+    }
+}
+
+impl FilesystemService {
+    /// Decoded request sizes of the account's proposals, kept beside them because a proposal's
+    /// payload may be encrypted by the time it reaches this backend. Entries for deleted
+    /// proposals are pruned on the next admission and never counted before then.
+    fn get_request_sizes_path(&self, account_id: &str) -> PathBuf {
+        self.app_path
+            .join(account_id)
+            .join("proposal_request_bytes.json")
+    }
+
+    async fn read_request_sizes(
+        &self,
+        account_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>, String> {
+        match fs::read_to_string(self.get_request_sizes_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to deserialize proposal request sizes: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(e) => Err(format!("Failed to read proposal request sizes: {e}")),
+        }
+    }
+
+    async fn write_request_sizes(
+        &self,
+        account_id: &str,
+        sizes: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(sizes)
+            .map_err(|e| format!("Failed to serialize proposal request sizes: {e}"))?;
+        self.write(&self.get_request_sizes_path(account_id), &content)
+            .await
+    }
+
+    fn get_executions_path(&self, account_id: &str) -> PathBuf {
+        self.app_path.join(account_id).join("executions.json")
+    }
+
+    fn get_admission_marker_path(&self, account_id: &str) -> PathBuf {
+        self.app_path
+            .join(account_id)
+            .join("execution_admission.json")
+    }
+
+    async fn read_admission_marker(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<InterruptedAdmission>, String> {
+        match fs::read_to_string(self.get_admission_marker_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|e| format!("Failed to deserialize the execution admission marker: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to read the execution admission marker: {e}"
+            )),
+        }
+    }
+
+    async fn write_admission_marker(
+        &self,
+        account_id: &str,
+        marker: &InterruptedAdmission,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string(marker)
+            .map_err(|e| format!("Failed to serialize the execution admission marker: {e}"))?;
+        self.write(&self.get_admission_marker_path(account_id), &content)
+            .await
+    }
+
+    async fn read_executions(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        match fs::read_to_string(self.get_executions_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to deserialize executions: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("Failed to read executions file: {e}")),
+        }
+    }
+
+    async fn write_executions(
+        &self,
+        account_id: &str,
+        records: &[crate::storage::ExecutionRecord],
+    ) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(records)
+            .map_err(|e| format!("Failed to serialize executions: {e}"))?;
+        self.write(&self.get_executions_path(account_id), &content)
+            .await
+    }
+
+    /// Drops up to `limit` of one account's prunable attempts under `delta_write_lock`,
+    /// rewriting its records only when one was dropped.
+    async fn prune_account_executions(
+        &self,
+        account_id: &str,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let records = self.read_executions(account_id).await?;
+        let mut newest: HashMap<String, u32> = HashMap::new();
+        for record in &records {
+            let attempt = newest
+                .entry(record.reservation.proposal_id.clone())
+                .or_default();
+            *attempt = (*attempt).max(record.reservation.attempt);
+        }
+        let mut proposal_exists: HashMap<String, bool> = HashMap::new();
+        let mut kept = Vec::with_capacity(records.len());
+        let mut dropped = 0;
+        for record in records {
+            if dropped >= limit || !record.finished_before(cutoff) {
+                kept.push(record);
+                continue;
+            }
+            let proposal_id = &record.reservation.proposal_id;
+            let superseded = newest
+                .get(proposal_id)
+                .is_some_and(|attempt| *attempt > record.reservation.attempt);
+            let prunable = superseded || {
+                let exists = match proposal_exists.get(proposal_id) {
+                    Some(exists) => *exists,
+                    None => {
+                        let exists = match self.pull_delta_proposal(account_id, proposal_id).await {
+                            Ok(_) => true,
+                            Err(error) if crate::storage::is_storage_not_found(&error) => false,
+                            Err(error) => return Err(error),
+                        };
+                        proposal_exists.insert(proposal_id.clone(), exists);
+                        exists
+                    }
+                };
+                !exists
+            };
+            if prunable {
+                dropped += 1;
+            } else {
+                kept.push(record);
+            }
+        }
+        if dropped > 0 {
+            self.write_executions(account_id, &kept).await?;
+        }
+        Ok(dropped)
+    }
+
+    /// Whether `delta` is the candidate of an unresolved boundary-crossed
+    /// execution. Callers must hold `delta_write_lock`.
+    async fn execution_owns_candidate(&self, account_id: &str, nonce: u64) -> Result<bool, String> {
+        Ok(self
+            .read_executions(account_id)
+            .await?
+            .iter()
+            .any(|record| record.owns_candidate(nonce)))
+    }
+
+    /// Persist `committed` and release the reservation whose candidate was
+    /// just promoted, reporting whether one did. Callers must hold
+    /// `delta_write_lock`.
+    async fn commit_promoted_execution(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        now: DateTime<Utc>,
+    ) -> Result<bool, String> {
+        let mut records = self.read_executions(account_id).await?;
+        let Some(record) = records
+            .iter_mut()
+            .find(|record| record.owns_candidate(nonce))
+        else {
+            return Ok(false);
+        };
+        record.outcome = Some(crate::storage::ExecutionOutcome {
+            account_id: account_id.to_string(),
+            proposal_id: record.reservation.proposal_id.clone(),
+            attempt: record.reservation.attempt,
+            terminal: crate::storage::ExecutionTerminal::Committed,
+            resolved_at: now,
+        });
+        record.reservation.released_at = Some(now);
+        record.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(true)
+    }
+}
+
+fn resolvable<'a>(
+    records: &'a mut [crate::storage::ExecutionRecord],
+    resolution: &crate::storage::ExecutionResolution,
+) -> Result<&'a mut crate::storage::ExecutionRecord, crate::storage::ResolveWrite> {
+    use crate::storage::ResolveWrite;
+    let record = records
+        .iter_mut()
+        .find(|record| {
+            record.reservation.proposal_id == resolution.proposal_id
+                && record.reservation.attempt == resolution.attempt
+        })
+        .ok_or(ResolveWrite::NotAuthorized)?;
+    if record.outcome.is_some() {
+        return Err(ResolveWrite::AlreadyResolved);
+    }
+    if !record.reservation.authorizes(
+        &resolution.fence,
+        &resolution.proposal_id,
+        resolution.attempt,
+    ) {
+        return Err(ResolveWrite::NotAuthorized);
+    }
+    if !record
+        .reservation
+        .owns_live(&resolution.fence, resolution.now)
+    {
+        return Err(ResolveWrite::StaleLease);
+    }
+    Ok(record)
+}
+
+fn failed_outcome(
+    resolution: &crate::storage::ExecutionResolution,
+) -> crate::storage::ExecutionOutcome {
+    crate::storage::ExecutionOutcome {
+        account_id: resolution.account_id.clone(),
+        proposal_id: resolution.proposal_id.clone(),
+        attempt: resolution.attempt,
+        terminal: crate::storage::ExecutionTerminal::Failed {
+            failure: resolution.failure.clone(),
+        },
+        resolved_at: resolution.now,
     }
 }
 
@@ -2048,7 +2801,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, crate::storage::PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            crate::storage::PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             flag().await,
             "the queued successor keeps the account flagged"
@@ -2694,6 +3452,35 @@ mod tests {
 
         // Cleanup
         tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn updating_a_deleted_proposal_does_not_bring_it_back() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let service = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let proposal = create_test_delta(account_id, 1);
+        let commitment = "0xabc123";
+        service
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+        service
+            .delete_delta_proposal(account_id, commitment)
+            .await
+            .unwrap();
+        service
+            .update_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+        assert!(
+            service
+                .pull_delta_proposal(account_id, commitment)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

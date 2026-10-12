@@ -82,6 +82,11 @@ impl DeltaCommitStrategy {
                             actual: delta.prev_commitment.clone(),
                         })
                     }
+                    CandidateSubmission::ExecutionReserved { proposal_id } => {
+                        Err(GuardianError::ExecutionConflict {
+                            blocking_proposal_id: proposal_id,
+                        })
+                    }
                 }
             }
             DeltaCommitStrategy::Optimistic => {
