@@ -6348,8 +6348,8 @@ describe('Multisig', () => {
       });
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
       const relayCall = mockFetch.mock.calls.find(
-        ([url, init]: [string, RequestInit]) =>
-          String(url).includes('/delta/proposal') && init?.method === 'PUT',
+        ([url, init]) =>
+          String(url).includes('/delta/proposal') && (init as RequestInit)?.method === 'PUT',
       );
       expect(relayCall).toBeDefined();
       expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
