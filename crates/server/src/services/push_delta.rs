@@ -1871,14 +1871,17 @@ mod tests {
 
     /// The shape of an account-creating transaction that consumes a note:
     /// the delta carries the written configuration (the auth component's
-    /// threshold slot with `threshold_config`, and the approver map when
-    /// `approver` is given). With the initial account's own values that is
-    /// pure initialization; with different values it is a configuration
-    /// change made in the creating transaction itself.
+    /// threshold slot with `threshold_config`, the approver map when
+    /// `approver` is given, and the procedure-thresholds map when
+    /// `procedure_overrides` is given, each map as a created slot's
+    /// complete post-state). With the initial account's own values that is
+    /// pure initialization; with different or missing values it is a
+    /// configuration change made in the creating transaction itself.
     fn creating_receive_summary(
         account_id: &str,
         threshold_config: miden_protocol::Word,
         approver: Option<miden_protocol::Word>,
+        procedure_overrides: Option<&[(miden_protocol::Word, u32)]>,
     ) -> serde_json::Value {
         use guardian_shared::ToJson;
         use miden_protocol::account::{
@@ -1906,6 +1909,22 @@ mod tests {
                     entries: StorageMapPatchEntries::from_raw(
                         [(StorageMapKey::new(Word::from([0u32, 0, 0, 0])), approver)]
                             .into_iter()
+                            .collect(),
+                    ),
+                }),
+            ));
+        }
+        if let Some(overrides) = procedure_overrides {
+            use miden_protocol::account::{StorageMapPatch, StorageMapPatchEntries};
+            entries.push((
+                AuthGuardedMultisig::procedure_thresholds_slot().clone(),
+                StorageSlotPatch::Map(StorageMapPatch::Create {
+                    entries: StorageMapPatchEntries::from_raw(
+                        overrides
+                            .iter()
+                            .map(|(root, threshold)| {
+                                (StorageMapKey::new(*root), Word::from([*threshold, 0, 0, 0]))
+                            })
                             .collect(),
                     ),
                 }),
@@ -2008,6 +2027,7 @@ mod tests {
             account_id,
             miden_protocol::Word::from([2u32, 1, 0, 0]),
             Some(word_from_hex(&approver.commitment_hex)),
+            None,
         );
         let summary =
             miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
@@ -2094,6 +2114,7 @@ mod tests {
             account_id,
             miden_protocol::Word::from([2u32, 2, 0, 0]),
             None,
+            None,
         );
         let summary =
             miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
@@ -2107,6 +2128,79 @@ mod tests {
             0,
             "consume_notes",
             ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
+        )
+        .await;
+        assert!(
+            matches!(
+                refused,
+                Err(GuardianError::InsufficientSignatures {
+                    required: 2,
+                    got: 1
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_not_committed(&storage);
+    }
+
+    /// A created map is the complete post-state of its slot and omits
+    /// cleared keys, so clearing a procedure override in the creating
+    /// transaction leaves no entry to compare: the override's absence
+    /// from the patch is the change. The same map written in full is
+    /// initialization and stays admitted at the receive override.
+    #[tokio::test]
+    async fn multisig_push_counts_a_cleared_override_in_the_creating_transaction() {
+        use crate::testing::helpers::TestSigner;
+        use guardian_shared::FromJson;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let approver = TestSigner::new();
+        let receive: miden_protocol::Word = BasicWallet::receive_asset_root().into();
+        let send: miden_protocol::Word = BasicWallet::move_asset_to_note_root().into();
+        let overrides = [(receive, 1), (send, 1)];
+
+        // The created procedure-thresholds map carries both stored
+        // overrides: pure initialization, admitted at the receive override.
+        let full = creating_receive_summary(
+            account_id,
+            miden_protocol::Word::from([2u32, 1, 0, 0]),
+            None,
+            Some(&overrides),
+        );
+        let full_summary =
+            miden_protocol::transaction::TransactionSummary::from_json(&full).expect("summary");
+        let (admitted, _) = push_payload_on_multisig(
+            full,
+            std::slice::from_ref(&approver.commitment_hex),
+            2,
+            &overrides,
+            0,
+            "consume_notes",
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &full_summary)]),
+        )
+        .await;
+        assert!(admitted.is_ok(), "{admitted:?}");
+
+        // The same creating receive whose created map omits the send
+        // override cleared it, which is a set_procedure_threshold call
+        // held to the account default.
+        let cleared = creating_receive_summary(
+            account_id,
+            miden_protocol::Word::from([2u32, 1, 0, 0]),
+            None,
+            Some(&[(receive, 1)]),
+        );
+        let cleared_summary =
+            miden_protocol::transaction::TransactionSummary::from_json(&cleared).expect("summary");
+        let (refused, storage) = push_payload_on_multisig(
+            cleared,
+            std::slice::from_ref(&approver.commitment_hex),
+            2,
+            &overrides,
+            0,
+            "consume_notes",
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &cleared_summary)]),
         )
         .await;
         assert!(

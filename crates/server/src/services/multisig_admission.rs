@@ -5,7 +5,9 @@
 use std::collections::BTreeSet;
 
 use miden_protocol::Word;
-use miden_protocol::account::{Account, StorageMapKey, StorageSlotName, StorageSlotPatch};
+use miden_protocol::account::{
+    Account, StorageMapKey, StorageMapPatch, StorageSlotContent, StorageSlotName, StorageSlotPatch,
+};
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
 use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::account::wallets::BasicWallet;
@@ -142,7 +144,10 @@ impl InvokedProcedure {
 /// registered initial account already holds. A value or entry this gate
 /// cannot read, or one that differs from the stored initial state, is
 /// treated as a real change, the over-requiring direction; a removal is
-/// never initialization.
+/// never initialization. A created map is the complete post-state of its
+/// slot and omits cleared (empty-valued) keys, so a stored entry the
+/// patch lacks was cleared by a procedure called in that transaction:
+/// the whole stored map must be covered, not only the patched keys.
 fn is_initialization_patch(
     account: &Account,
     slot: &StorageSlotName,
@@ -153,13 +158,36 @@ fn is_initialization_patch(
         StorageSlotPatch::Value(value_patch) => value_patch
             .value()
             .is_some_and(|value| storage.get_item(slot).is_ok_and(|stored| stored == value)),
-        StorageSlotPatch::Map(map_patch) => map_patch.entries().is_some_and(|entries| {
-            entries.as_map().iter().all(|(key, value)| {
-                storage
-                    .get_map_item(slot, key.clone())
-                    .is_ok_and(|stored| stored == *value)
-            })
-        }),
+        StorageSlotPatch::Map(map_patch) => {
+            let Some(StorageSlotContent::Map(stored)) =
+                storage.get(slot).map(|stored_slot| stored_slot.content())
+            else {
+                return false;
+            };
+            let entries = match map_patch {
+                StorageMapPatch::Create { entries } => {
+                    if stored
+                        .entries()
+                        .any(|(key, value)| entries.as_map().get(key) != Some(value))
+                    {
+                        return false;
+                    }
+                    entries
+                }
+                // An update names only the entries it touches, cleared ones
+                // carried with an empty value, so the stored map needs no
+                // separate coverage check.
+                StorageMapPatch::Update { entries } => entries,
+                StorageMapPatch::Remove => return false,
+            };
+            // An absent stored key reads as the empty word, so an
+            // empty-valued patch entry matches exactly when the initial
+            // account holds nothing there.
+            entries
+                .as_map()
+                .iter()
+                .all(|(key, value)| stored.get(key) == *value)
+        }
     }
 }
 
