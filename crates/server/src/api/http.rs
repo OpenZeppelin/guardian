@@ -682,8 +682,11 @@ pub async fn get_delta_proposal(
     Ok(Json(response.proposal))
 }
 
-/// Add a cosigner signature to an existing multisig proposal. When the
-/// signature threshold is reached the proposal is promoted to a delta.
+/// Add a cosigner signature to an existing multisig proposal. The approval
+/// is credited to the cosigner its signature cryptographically verifies
+/// for, so an authenticated signer may also relay an approval another
+/// cosigner produced off channel. When the signature threshold is reached
+/// the proposal is promoted to a delta.
 #[utoipa::path(
     put,
     path = "/delta/proposal",

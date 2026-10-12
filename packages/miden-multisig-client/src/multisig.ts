@@ -2436,6 +2436,7 @@ export class Multisig {
       adviceMap.insert(key, new FeltArray(values));
     }
 
+    await this.relayCollectedApprovals(normalizeHexWord(proposalId), signaturesForExecution, delta);
     const executionDelta = { ...delta, deltaPayload: delta.deltaPayload.txSummary };
     const pushResult = await this.guardian.pushDelta(executionDelta);
     const ackSigHex = pushResult.ackSig;
@@ -2480,6 +2481,47 @@ export class Multisig {
   private getLocalProposal(proposalId: string): Proposal | undefined {
     const normalizedProposalId = normalizeHexWord(proposalId);
     return this.proposals.get(proposalId) ?? this.proposals.get(normalizedProposalId);
+  }
+
+  /**
+   * Relay locally collected approvals (signatures imported from an exported
+   * proposal document and verified into this client's cache) to GUARDIAN's
+   * stored proposal. GUARDIAN acknowledges a multisig delta only when its
+   * stored proposal carries a threshold of verified approvals (issue #524),
+   * and off-channel approvals exist only in the document, so each one the
+   * server does not yet hold is relayed through the signing endpoint before
+   * the acknowledgement push. The endpoint credits an approval to the
+   * cosigner its signature cryptographically verifies for, so any configured
+   * signer may relay; an approval GUARDIAN already holds answers
+   * `proposal_already_signed` and is skipped.
+   */
+  private async relayCollectedApprovals(
+    proposalId: string,
+    signatures: ProposalSignatureEntry[],
+    delta: DeltaObject,
+  ): Promise<void> {
+    const alreadyHeld = new Set(
+      delta.status.status === 'pending'
+        ? delta.status.cosignerSigs.map((sig) => normalizeHexWord(sig.signerId))
+        : [],
+    );
+    for (const entry of signatures) {
+      if (alreadyHeld.has(normalizeHexWord(entry.signerId))) {
+        continue;
+      }
+      try {
+        await this.guardian.signDeltaProposal({
+          accountId: this._accountId,
+          commitment: proposalId,
+          signature: entry.signature,
+        });
+      } catch (error) {
+        if (error instanceof GuardianHttpError && error.code === 'proposal_already_signed') {
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   /**
@@ -2608,6 +2650,7 @@ export class Multisig {
     }
 
     if (!isSwitchGuardian && delta) {
+      await this.relayCollectedApprovals(normalizedProposalId, signaturesForExecution, delta);
       const executionDelta = {
         ...delta,
         deltaPayload: delta.deltaPayload.txSummary,

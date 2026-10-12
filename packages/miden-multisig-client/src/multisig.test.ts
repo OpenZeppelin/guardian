@@ -5076,7 +5076,17 @@ describe('Multisig', () => {
             status: 'pending',
             timestamp: '2024-01-01T00:00:00Z',
             proposer_id: '0x' + 'a'.repeat(64),
-            cosigner_sigs: [],
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                timestamp: '2024-01-01T00:00:00Z',
+                signature: {
+                  scheme: 'ecdsa',
+                  signature: cosignerSignature,
+                  public_key: cosignerPubkey,
+                },
+              },
+            ],
           },
         }),
       });
@@ -5605,7 +5615,13 @@ describe('Multisig', () => {
               status: 'pending',
               timestamp: '2024-01-01T00:00:00Z',
               proposer_id: '0x' + 'a'.repeat(64),
-              cosigner_sigs: [],
+              cosigner_sigs: [
+                {
+                  signer_id: '0x' + 'a'.repeat(64),
+                  timestamp: '2024-01-01T00:00:00Z',
+                  signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+                },
+              ],
             },
           }),
         });
@@ -6127,7 +6143,17 @@ describe('Multisig', () => {
             status: 'pending',
             timestamp: '2024-01-01T00:00:00Z',
             proposer_id: '0x' + 'a'.repeat(64),
-            cosigner_sigs: [],
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                timestamp: '2024-01-01T00:00:00Z',
+                signature: {
+                  scheme: 'ecdsa',
+                  signature: cosignerSignature,
+                  public_key: cosignerPubkey,
+                },
+              },
+            ],
           },
         }),
       });
@@ -6279,6 +6305,37 @@ describe('Multisig', () => {
           },
         }),
       });
+      // GUARDIAN does not hold the imported document's approval, so the
+      // execute flow relays it through the signing endpoint before the
+      // acknowledgement push (issue #524).
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          prev_commitment: '0x' + 'b'.repeat(64),
+          delta_payload: {
+            tx_summary: { data: 'AQID' },
+            signatures: [],
+          },
+          status: {
+            status: 'pending',
+            timestamp: '2024-01-01T00:00:00Z',
+            proposer_id: '0x' + 'a'.repeat(64),
+            cosigner_sigs: [
+              {
+                signer_id: '0x' + 'a'.repeat(64),
+                timestamp: '2024-01-01T00:00:00Z',
+                signature: {
+                  scheme: 'ecdsa',
+                  signature: cosignerSignature,
+                  public_key: cosignerPubkey,
+                },
+              },
+            ],
+          },
+        }),
+      });
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -6290,6 +6347,11 @@ describe('Multisig', () => {
         }),
       });
       await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+      const relayCall = mockFetch.mock.calls.find(
+        ([url, init]: [string, RequestInit]) =>
+          String(url).includes('/delta/proposal') && init?.method === 'PUT',
+      );
+      expect(relayCall).toBeDefined();
       expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.proveTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);

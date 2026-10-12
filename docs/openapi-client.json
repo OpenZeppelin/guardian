@@ -657,7 +657,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Add a cosigner signature to an existing multisig proposal. When the\nsignature threshold is reached the proposal is promoted to a delta.",
+        "summary": "Add a cosigner signature to an existing multisig proposal. The approval\nis credited to the cosigner its signature cryptographically verifies\nfor, so an authenticated signer may also relay an approval another\ncosigner produced off channel. When the signature threshold is reached\nthe proposal is promoted to a delta.",
         "operationId": "sign_delta_proposal",
         "parameters": [
           {
