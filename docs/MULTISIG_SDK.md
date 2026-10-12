@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.0 @miden-sdk/miden-sdk@0.17.0
+npm install @openzeppelin/miden-multisig-client@0.18.1 @miden-sdk/miden-sdk@0.17.3
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "=0.18.0"
-miden-client = "=0.17.0"
+miden-multisig-client = "=0.18.1"
+miden-client = "=0.17.3"
 ```
 
 ### 5-Minute Example
@@ -746,14 +746,15 @@ flag.
 
 #### The transport-drain strategy
 
-A fresh store has no note-transport cursor — and in a store shared with
-other accounts, sync may have advanced the cursor past private notes
-addressed to the recovered account. The drain rescans the full transport
-backlog for every tracked note tag (running as many transport syncs as the
-upstream per-sync tag backfill cap requires), regardless of the stored
-cursor, and never regresses it. It is idempotent, and a failed drain
-restores the covered-tags bookkeeping so normal sync keeps working exactly
-as before the attempt.
+The note transport keeps one cursor per tracked note tag, and a tag
+without one is served from the first retained note. A recovered account's
+tag has no cursor yet, on a fresh device and in a store shared with other
+accounts alike, so its whole retained backlog is fetched. Each transport
+fetch reads a bounded number of pages; the drain keeps fetching until a
+fetch imports nothing new, at most 64 fetches. It is idempotent: imports
+dedupe and cursors only move forward. A backlog still yielding notes after
+64 fetches is reported `failed` with `retryable: true`, and a rerun
+continues from the stored cursors.
 
 Transport problems land in `report.transport`, never as exceptions:
 `unavailable` means no transport endpoint is configured or the transport
@@ -1382,14 +1383,15 @@ flag.
 
 #### The transport-drain strategy
 
-A fresh store has no note-transport cursor — and in a store shared with
-other accounts, sync may have advanced the cursor past private notes
-addressed to the recovered account. The drain rescans the full transport
-backlog for every tracked note tag (running as many transport syncs as the
-upstream per-sync tag backfill cap requires), regardless of the stored
-cursor, and never regresses it. It is idempotent, and a failed drain
-restores the covered-tags bookkeeping so normal sync keeps working exactly
-as before the attempt.
+The note transport keeps one cursor per tracked note tag, and a tag
+without one is served from the first retained note. A recovered account's
+tag has no cursor yet, on a fresh device and in a store shared with other
+accounts alike, so its whole retained backlog is fetched. Each transport
+fetch reads a bounded number of pages; the drain keeps fetching until a
+fetch imports nothing new, at most 64 fetches. It is idempotent: imports
+dedupe and cursors only move forward. A backlog still yielding notes after
+64 fetches is reported `failed` with `retryable: true`, and a rerun
+continues from the stored cursors.
 
 Transport problems land in `report.transport`, never as errors:
 `Unavailable` means no transport endpoint is configured or the transport

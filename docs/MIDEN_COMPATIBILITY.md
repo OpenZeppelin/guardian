@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
@@ -27,6 +28,10 @@ elsewhere and link here:
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
+
+0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
+`miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
+Rust pins are 0.17.1 for the protocol crates and 0.17.3 for the client crates.
 
 0.18.0 builds on the stable Miden 0.17 release. `@miden-sdk/miden-sdk` 0.17.0 embeds
 `miden-client` 0.17.0 and `miden-protocol` / `miden-standards` 0.17.0, so every Rust pin
@@ -116,7 +121,28 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
-**Moving past 0.18.0: TypeScript proposals are labelled with the account's next
+**Upgrading from 0.18.0 to 0.18.1: Miden 0.17 patch pins.** 0.18.1 moves to
+`miden-protocol` / `miden-standards` 0.17.1, `miden-client` 0.17.3 and
+`@miden-sdk/miden-sdk` 0.17.3. The `auth_tx` procedure root and the stored
+account data are unchanged, so accounts carry over. Upstream changes that reach
+the SDKs:
+
+- **Note transport keeps one cursor per tag** (miden-client 0.17.1). A tag
+  without a cursor, such as a recovered account's, is served from the first
+  retained note, and each fetch reads a bounded number of pages. The transport
+  drain of the recovery flow keeps fetching until a fetch imports nothing new
+  instead of clearing the covered-tags bookkeeping, and pages fetched before a
+  failed one stay imported. Upstream deprecated the covered-tags setting, the
+  global transport cursor and `NoteTransportError::PaginationDidNotTerminate`.
+- **The relay outbox is gone** (miden-client 0.17.2). Private notes are sent
+  directly; upstream's store migration drops the stale outbox row.
+- **`NodeRpcClient` gained `is_invitation_code_valid`** (miden-client 0.17.3).
+  A custom `NodeRpcClient` implementation must add it.
+- **Browser clients sharing a store name share one IndexedDB connection** while
+  any of them is alive. Release a `MidenClient` with
+  `await client[Symbol.asyncDispose]()` before deleting or reopening its store.
+
+**Upgrading from 0.18.0 to 0.18.1: TypeScript proposals are labelled with the account's next
 nonce** keeps the protocol pins, stored data and server contracts, but changes a
 TypeScript SDK default and two admission rules of a server that queues chained
 candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
@@ -213,9 +239,9 @@ Nothing stored under Miden 0.16 survives:
   height, timelock height). The script roots moved with the layouts.
 - **Execution proofs come from VM 0.35** (Plonky3 0.8). A 0.16 proof is rejected.
 
-### Proposals name their bound block (after 0.18.0)
+### Proposals name their bound block (0.18.1)
 
-The release after 0.18.0 changes the proposal metadata both SDKs write. It is a
+0.18.1 changes the proposal metadata both SDKs write. It is a
 breaking SDK change and needs no server change.
 
 - **Proposals no longer carry `chain_anchor`.** Proposal creation captured an
@@ -273,7 +299,7 @@ Last checked 2026-10-05.
   reports every account as already allowed. Testnet runs Miden 0.16, so
   on testnet the examples need a local `miden-node` from the pinned line until
   it upgrades.
-- **miden-client fee path.** miden-client (still in 0.17.0) commits the
+- **miden-client fee path.** miden-client (still in 0.17.3) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
@@ -296,8 +322,8 @@ Last checked 2026-10-05.
   and recovery are in
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
-- **Pins.** The workspace pins the stable 0.17.0 protocol and client crates and
-  web SDK 0.17.0 (see the matrix). The protocol pin follows the client and web
+- **Pins.** The workspace pins protocol crates 0.17.1, client crates 0.17.3 and
+  web SDK 0.17.3 (see the matrix). The protocol pin follows the client and web
   SDK releases, not the protocol tags, because both SDKs must embed the same
   kernel.
 

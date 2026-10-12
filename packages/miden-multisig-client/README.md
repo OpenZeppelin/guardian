@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.0 @miden-sdk/miden-sdk@0.17.0
+npm install @openzeppelin/miden-multisig-client@0.18.1 @miden-sdk/miden-sdk@0.17.3
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
@@ -730,10 +730,11 @@ local store) becomes a `RecoveryStepProblem` entry instead of aborting the
 flow, and `retryable: true` means rerunning the flow — which is idempotent —
 can plausibly recover more. In brief:
 
-- **Transport drain** — rescans the full private-note transport backlog for
-  every tracked tag, regardless of the stored cursor (and without ever
-  regressing it). Bounded by the transport service's retention: a
-  best-effort rescan, **not** a backup.
+- **Transport drain** — fetches the private-note transport backlog for
+  every tracked tag until a fetch imports nothing new. A recovered account's
+  tag has no transport cursor yet, so its whole retained backlog is fetched.
+  Bounded by the transport service's retention: a best-effort rescan,
+  **not** a backup.
 - **Proposal import** — rebuilds importable notes from the bytes v2
   consume-notes proposals embed (validated against the proposals' declared
   note ids) plus node-fetched inclusion proofs, so it works for private
