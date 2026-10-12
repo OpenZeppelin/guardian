@@ -8,7 +8,6 @@ import {
 import {
   AccountInspector,
   buildP2idTransactionRequest,
-  chainAnchorBlockNum,
   EcdsaSigner,
   FalconSigner,
   MidenWalletSigner,
@@ -467,7 +466,7 @@ export interface CustomProposalRecipe {
   faucetId: string;
   amount: string;
   saltHex: string;
-  /** The block the signed summary binds: the proposal's anchor block. */
+  /** The block the signed summary binds: the proposal's `boundBlockNum`. */
   boundBlockNum: number;
 }
 
@@ -497,10 +496,10 @@ async function buildRequestFromRecipe(
 }
 
 function proposalBoundBlockNum(proposal: Proposal): number {
-  if (!proposal.metadata.chainAnchor) {
-    throw new Error(`Proposal ${proposal.id} carries no chain anchor`);
+  if (proposal.metadata.boundBlockNum === undefined) {
+    throw new Error(`Proposal ${proposal.id} does not name the block its summary binds`);
   }
-  return chainAnchorBlockNum(proposal.metadata.chainAnchor);
+  return proposal.metadata.boundBlockNum;
 }
 
 export async function createCustomP2idProposal(

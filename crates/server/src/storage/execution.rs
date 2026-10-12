@@ -406,6 +406,7 @@ mod tests {
             ExecutionFailureCode::BindingMismatch,
             ExecutionFailureCode::RequestInvalid(RequestInvalidReason::BoundBlockNotDeclared),
             ExecutionFailureCode::RequestInvalid(RequestInvalidReason::InputNotesNotPinned),
+            ExecutionFailureCode::RequestInvalid(RequestInvalidReason::TooManyDeclaredBlocks),
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval),
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction),
             ExecutionFailureCode::ForeignAccountUnavailable(

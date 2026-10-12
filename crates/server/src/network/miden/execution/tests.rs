@@ -1018,19 +1018,53 @@ mod executor {
     }
 
     #[tokio::test]
-    async fn blocks_the_request_declares_beyond_the_signed_ones_are_not_fetched() {
+    async fn a_declared_historical_block_besides_the_bound_one_is_fetched() {
         let proposal = proposal(true).await;
         let request = proposal
             .signed_request()
             .auth_arg(proposal.auth_commitment)
             .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
-            .block_numbers([BlockNumber::from(BOUND), BlockNumber::from(u32::MAX)]);
+            .block_numbers([BlockNumber::from(1), BlockNumber::from(BOUND)]);
         assert!(
             proposal
                 .executor()
                 .prepare(proposal.with_request(request, &[0, 1]))
                 .await
                 .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_block_above_the_tip_is_chain_behind() {
+        let proposal = proposal(true).await;
+        let request = proposal
+            .signed_request()
+            .auth_arg(proposal.auth_commitment)
+            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .block_numbers([BlockNumber::from(BOUND), BlockNumber::from(u32::MAX)]);
+        assert_eq!(
+            proposal
+                .refusal(proposal.with_request(request, &[0, 1]))
+                .await,
+            ExecutionFailureCode::ChainBehind
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_declaring_more_blocks_than_the_cap_is_refused() {
+        let proposal = proposal(true).await;
+        let declared =
+            (0..=super::super::request::MAX_DECLARED_BLOCKS as u32).map(BlockNumber::from);
+        let request = proposal
+            .signed_request()
+            .auth_arg(proposal.auth_commitment)
+            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .block_numbers(declared);
+        assert_eq!(
+            proposal
+                .refusal(proposal.with_request(request, &[0, 1]))
+                .await,
+            ExecutionFailureCode::RequestInvalid(RequestInvalidReason::TooManyDeclaredBlocks)
         );
     }
 
@@ -1199,7 +1233,14 @@ mod executor {
             failure.message
         );
         assert!(
-            failure.message.contains("i/o timeout"),
+            failure
+                .message
+                .ends_with("; the prover stayed unreachable until then"),
+            "{}",
+            failure.message
+        );
+        assert!(
+            !failure.message.contains("i/o timeout"),
             "{}",
             failure.message
         );
@@ -1471,10 +1512,9 @@ mod executor {
             "{}",
             failure.message
         );
-        assert!(
-            failure.message.contains("encryption key"),
-            "{}",
-            failure.message
+        assert_eq!(
+            failure.message,
+            "Guardian could not seal the transaction inputs for submission"
         );
     }
 

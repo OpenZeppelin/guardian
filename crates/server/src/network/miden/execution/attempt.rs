@@ -350,7 +350,7 @@ impl ProposalExecutor for MidenExecutor {
                 }
             })?;
         let bound = summary.block_number();
-        let mut tracked = BTreeSet::from([bound]);
+        let mut tracked = request.block_numbers().clone();
         for block in unsigned
             .input_notes
             .iter()

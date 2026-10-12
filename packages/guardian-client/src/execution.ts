@@ -29,6 +29,7 @@ export const REQUEST_INVALID_REASONS = [
   'auth_args_missing',
   'approval_expiration_missing',
   'input_notes_not_pinned',
+  'too_many_declared_blocks',
 ] as const;
 export type RequestInvalidReason = (typeof REQUEST_INVALID_REASONS)[number];
 
