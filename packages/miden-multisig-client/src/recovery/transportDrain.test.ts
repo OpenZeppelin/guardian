@@ -1,41 +1,89 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
 import { freshDeviceStore as freshDevice } from '../testing/fake-indexeddb-device.js';
-import { drainPrivateNoteBacklog } from './transportDrain.js';
+import { drainPrivateNoteBacklog, readTransportCursors } from './transportDrain.js';
+
+let stubStores = 0;
+
+/** Opens (creating on first use) a stub store laid out like the SDK's. */
+async function openStubStore(name: string): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, 1);
+    request.onupgradeneeded = () => {
+      request.result.createObjectStore('settings', { keyPath: ['scope', 'key'] });
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function writeStubCursor(name: string, position: number): Promise<void> {
+  const db = await openStubStore(name);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const request = db
+        .transaction('settings', 'readwrite')
+        .objectStore('settings')
+        .put({ scope: 0, key: 'note_transport_cursors', value: new Uint8Array([position]) });
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  } finally {
+    db.close();
+  }
+}
 
 /**
  * Classification tests use hand-rolled stub clients — the primitive takes the
- * `MidenClient` as an argument, so no module mocking is needed. Behavioral
- * tests (further down) run against the real WASM mock client.
+ * `MidenClient` as an argument, so no module mocking is needed. Each stub has
+ * its own IndexedDB store with the SDK's `settings` layout, so the drain reads
+ * real transport cursors. Behavioral tests (further down) run against the
+ * real WASM mock client.
  */
-function stubClient(options: {
+async function stubClient(options: {
   /**
    * Note counts returned by successive `notes.list()` calls: the first is the
-   * count before the drain, then one per fetch. The last value repeats.
+   * count before the drain. The last value repeats.
    */
   counts: number[];
   fetchPrivate: () => Promise<void>;
-}): {
+  /** How many successful fetches advance the transport cursor (default 0). */
+  moves?: number;
+}): Promise<{
   client: MidenClient;
   fetchPrivate: ReturnType<typeof vi.fn>;
   list: ReturnType<typeof vi.fn>;
-} {
+}> {
+  const name = `stub_store_${stubStores}`;
+  stubStores += 1;
+  (await openStubStore(name)).close();
   let call = 0;
-  const fetchPrivate = vi.fn(options.fetchPrivate);
+  let fetches = 0;
+  const fetchPrivate = vi.fn(async () => {
+    await options.fetchPrivate();
+    fetches += 1;
+    if (fetches <= (options.moves ?? 0)) {
+      await writeStubCursor(name, fetches);
+    }
+  });
   const list = vi.fn(async () => {
     const length = options.counts[Math.min(call, options.counts.length - 1)];
     call += 1;
     return new Array(length).fill({});
   });
-  const client = { notes: { list, fetchPrivate } } as unknown as MidenClient;
+  const client = {
+    notes: { list, fetchPrivate },
+    storeIdentifier: async () => name,
+  } as unknown as MidenClient;
   return { client, fetchPrivate, list };
 }
 
 describe('drainPrivateNoteBacklog', () => {
   it('reports completed with the count of newly imported records', async () => {
-    const { client, fetchPrivate } = stubClient({
-      counts: [1, 3, 3],
+    const { client, fetchPrivate } = await stubClient({
+      counts: [1, 3],
       fetchPrivate: async () => {},
+      moves: 1,
     });
 
     const report = await drainPrivateNoteBacklog(client);
@@ -44,10 +92,11 @@ describe('drainPrivateNoteBacklog', () => {
     expect(report).toEqual({ status: 'completed', imported: 2, retryable: false });
   });
 
-  it('keeps fetching until a fetch imports nothing new', async () => {
-    const { client, fetchPrivate } = stubClient({
-      counts: [0, 2, 5, 5],
+  it('keeps fetching until a fetch moves no transport cursor', async () => {
+    const { client, fetchPrivate } = await stubClient({
+      counts: [0, 5],
       fetchPrivate: async () => {},
+      moves: 2,
     });
 
     const report = await drainPrivateNoteBacklog(client);
@@ -59,14 +108,28 @@ describe('drainPrivateNoteBacklog', () => {
     expect(report).toEqual({ status: 'completed', imported: 5, retryable: false });
   });
 
-  it('reports a backlog that outlasts the fetch budget as a retryable failure', async () => {
-    let count = 0;
-    const fetchPrivate = vi.fn(async () => {
-      count += 1;
+  it('keeps fetching while fetches move the cursor without importing anything', async () => {
+    const { client, fetchPrivate } = await stubClient({
+      counts: [0, 1],
+      fetchPrivate: async () => {},
+      moves: 3,
     });
-    const client = {
-      notes: { list: vi.fn(async () => new Array(count).fill({})), fetchPrivate },
-    } as unknown as MidenClient;
+
+    const report = await drainPrivateNoteBacklog(client);
+
+    // A store upgraded from 0.18.0 restarts every tag from the first retained
+    // note, so the first fetches walk history the store already holds and
+    // import nothing; the note behind them is only reached by continuing.
+    expect(fetchPrivate).toHaveBeenCalledTimes(4);
+    expect(report).toEqual({ status: 'completed', imported: 1, retryable: false });
+  });
+
+  it('reports a backlog that outlasts the fetch budget as a retryable failure', async () => {
+    const { client, fetchPrivate } = await stubClient({
+      counts: [0, 64],
+      fetchPrivate: async () => {},
+      moves: Number.POSITIVE_INFINITY,
+    });
 
     const report = await drainPrivateNoteBacklog(client);
 
@@ -78,7 +141,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('reports a disabled transport as unavailable, not retryable, without throwing', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error(
@@ -96,7 +159,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('skips the post-drain store re-count when the transport is disabled', async () => {
-    const { client, list } = stubClient({
+    const { client, list } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error('note transport is disabled');
@@ -111,7 +174,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('escalates a connection lost mid-drain with partial progress to a retryable failure', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 3],
       fetchPrivate: async () => {
         throw new TypeError('Failed to fetch');
@@ -128,7 +191,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('classifies a mid-drain node RPC failure as failed, not unavailable', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error('grpc request failed for sync_state: unavailable');
@@ -145,7 +208,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('classifies a permanently misconfigured transport endpoint as not retryable', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error('connection error: invalid uri: missing scheme');
@@ -161,7 +224,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('keeps a dropped connection retryable', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error('connection error: connection refused');
@@ -175,7 +238,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('reports an unreachable transport as unavailable and retryable', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new TypeError('Failed to fetch');
@@ -189,7 +252,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('reports the pagination convergence guard as a retryable failure, keeping the partial count', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 5],
       fetchPrivate: async () => {
         throw new Error(
@@ -207,7 +270,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('reports unrecognized errors as a permanent failure', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error('deserialization error: invalid note details');
@@ -222,7 +285,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('classifies non-Error throws without crashing', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         // eslint-disable-next-line @typescript-eslint/only-throw-error
@@ -250,7 +313,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('rethrows a WASM storage error raised inside the drain', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw new Error('failed fetching all private notes: storage error: Indexdb error');
@@ -263,7 +326,7 @@ describe('drainPrivateNoteBacklog', () => {
   it('rethrows an IndexedDB transaction abort raised inside the drain', async () => {
     const abort = new Error('Transaction aborted');
     abort.name = 'AbortError';
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw abort;
@@ -276,7 +339,7 @@ describe('drainPrivateNoteBacklog', () => {
   it('keeps a generic request abort as a transport report, not a store failure', async () => {
     const abort = new Error('The operation was aborted');
     abort.name = 'AbortError';
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         throw abort;
@@ -290,7 +353,7 @@ describe('drainPrivateNoteBacklog', () => {
   });
 
   it('classifies throws with a non-string message without crashing', async () => {
-    const { client } = stubClient({
+    const { client } = await stubClient({
       counts: [0, 0],
       fetchPrivate: async () => {
         // eslint-disable-next-line @typescript-eslint/only-throw-error
@@ -355,6 +418,11 @@ describe('drainPrivateNoteBacklog (wasm mock client)', () => {
     expect(first.status).toBe('completed');
     expect(first.imported).toBe(1);
     expect(first.retryable).toBe(false);
+    // Drift guard for the stop signal: the drain reads the per-tag cursors
+    // straight from the SDK's IndexedDB store. If an SDK bump renamed the key
+    // or moved the table, the read would return null after every fetch and
+    // the drain would stop after one fetch while reporting completed.
+    expect(await readTransportCursors(deviceB)).not.toBeNull();
 
     // Idempotence: draining again re-fetches the same backlog but imports
     // nothing new.

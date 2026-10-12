@@ -5,8 +5,8 @@
  * shared store, the account's note tag has no note-transport cursor yet.
  * Since miden-client 0.17.1 the transport keeps one cursor per tag and scans
  * a tag without one from the first retained note, but each sync fetches a
- * bounded number of pages. The drain here keeps fetching until the backlog
- * stops yielding notes, so a recovery flow does not have to wait for later
+ * bounded number of pages. The drain here keeps fetching until a fetch moves
+ * no tag's cursor, so a recovery flow does not have to wait for later
  * background syncs.
  */
 
@@ -16,9 +16,9 @@ import { isTransientRpcError } from '../rpc/errors.js';
 
 /**
  * Outcome class of a private-note transport backlog drain:
- * - `completed` — the transport backlog was fetched until a fetch yielded no
- *   new notes; every note the transport still holds for the tracked tags is
- *   now in the local store.
+ * - `completed` — the transport backlog was fetched until a fetch moved no
+ *   tag's cursor; every note the transport still holds for the tracked tags
+ *   is now in the local store.
  * - `unavailable` — the transport could not be consulted at all: it is
  *   disabled for the injected `MidenClient` (no `noteTransportUrl`
  *   configured) or unreachable before anything was imported (`imported` is
@@ -92,11 +92,59 @@ export const NODE_CONNECT_FRAGMENT = 'failed to connect to the Miden node';
 /**
  * Mirror of the Rust SDK's `MAX_DRAIN_PASSES`: upper bound on transport
  * fetches one drain runs. Each fetch reads up to 32 pages per request group
- * of up to 128 tags; a backlog that still yields notes after this many
+ * of up to 128 tags; a backlog whose cursors still move after this many
  * fetches is reported as a retryable failure, and the stored per-tag cursors
  * let the next drain or sync continue from there.
  */
 const MAX_DRAIN_PASSES = 64;
+
+/**
+ * miden-client's `NOTE_TRANSPORT_CURSORS_KEY`, a setting in its client-owned
+ * scope (`SettingScope::Client` = 0), which the SDK's `settings` API does not
+ * reach. Exported for the drift-guard test, which pins the key and the
+ * store layout below against the shipped SDK.
+ */
+export const NOTE_TRANSPORT_CURSORS_KEY = 'note_transport_cursors';
+const CLIENT_SETTING_SCOPE = 0;
+/** The SDK's IndexedDB table for settings, keyed by `[scope, key]`. */
+const SETTINGS_TABLE = 'settings';
+
+/**
+ * The stored per-tag note-transport cursors, as the raw bytes miden-client
+ * keeps, read from the client's IndexedDB store. Compared, never decoded: a
+ * fetch that leaves them unchanged found every tracked tag's history
+ * exhausted. Throws when the store cannot be read, which is a local-store
+ * failure the caller must see.
+ */
+export async function readTransportCursors(midenClient: MidenClient): Promise<Uint8Array | null> {
+  const name = await midenClient.storeIdentifier();
+  const db: IDBDatabase = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    if (!db.objectStoreNames.contains(SETTINGS_TABLE)) {
+      throw new Error(`storage error: the store ${name} has no ${SETTINGS_TABLE} table`);
+    }
+    const row: { value?: Uint8Array } | undefined = await new Promise((resolve, reject) => {
+      const request = db
+        .transaction(SETTINGS_TABLE, 'readonly')
+        .objectStore(SETTINGS_TABLE)
+        .get([CLIENT_SETTING_SCOPE, NOTE_TRANSPORT_CURSORS_KEY]);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return row?.value ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && a.every((byte, index) => byte === b[index]);
+}
 
 /**
  * Mirror of the Rust SDK's `CONNECT_PERMANENT_SIGNALS`: connection-failure
@@ -209,9 +257,10 @@ function classifyDrainFailure(err: unknown): DrainFailure {
  * that was injected into `MultisigClient`. The recovered account must already
  * be in the store so its note tag is tracked (`MultisigClient.load` does
  * this). Its tag has no transport cursor yet, so the transport serves it from
- * the first retained note. The drain runs transport fetches until one imports
- * nothing new, and is idempotent: imports dedupe, and per-tag cursors only
- * move forward.
+ * the first retained note. The drain runs transport fetches until one moves
+ * no tag's cursor, which only an exhausted backlog leaves unchanged: a fetch
+ * whose pages were all duplicates or screened out still advances it. The
+ * drain is idempotent: imports dedupe, and per-tag cursors only move forward.
  *
  * Transport recovery is bounded by the transport service's retention:
  * senders may bypass the transport entirely and relayed blobs are pruned
@@ -231,45 +280,45 @@ export async function drainPrivateNoteBacklog(
   // tab) during the drain are attributed to it.
   const importedSince = async (): Promise<number> => Math.max((await noteCount()) - before, 0);
 
-  try {
-    let last = before;
-    for (let pass = 0; pass < MAX_DRAIN_PASSES; pass += 1) {
+  let last = await readTransportCursors(midenClient);
+  for (let pass = 0; pass < MAX_DRAIN_PASSES; pass += 1) {
+    try {
       // fetchPrivate throws the upstream disabled error when no transport is
       // configured, where syncNoteTransport silently no-ops; this drain must
       // report `unavailable`. A failed fetch still imports the pages fetched
       // before it.
       await midenClient.notes.fetchPrivate();
-      const count = await noteCount();
-      if (count === last) {
-        return { status: 'completed', imported: await importedSince(), retryable: false };
+    } catch (err) {
+      // A broken local store is an environment failure, not a transport
+      // outcome: the whole recovery flow needs to know, so it propagates
+      // (matching the Rust `StoreError` branch) instead of being folded into
+      // the report.
+      if (isLocalStoreError(err)) {
+        throw err;
       }
-      last = count;
+      const { status, retryable, reason, scanned } = classifyDrainFailure(err);
+      // A disabled transport throws before fetching anything, so skip the
+      // re-count entirely.
+      const imported = scanned ? await importedSince() : 0;
+      if (status === 'unavailable' && imported > 0) {
+        // `unavailable` promises "nothing was imported"; pages imported before
+        // the failure make it an interrupted drain, so report it as a failure,
+        // keeping the classified retryability, like the Rust twin.
+        return { status: 'failed', imported, retryable, reason };
+      }
+      return { status, imported, retryable, reason };
     }
-  } catch (err) {
-    // A broken local store is an environment failure, not a transport
-    // outcome: the whole recovery flow needs to know, so it propagates
-    // (matching the Rust `StoreError` branch) instead of being folded into
-    // the report.
-    if (isLocalStoreError(err)) {
-      throw err;
+    const cursors = await readTransportCursors(midenClient);
+    if (sameBytes(cursors, last)) {
+      return { status: 'completed', imported: await importedSince(), retryable: false };
     }
-    const { status, retryable, reason, scanned } = classifyDrainFailure(err);
-    // A disabled transport throws before fetching anything, so skip the
-    // re-count entirely.
-    const imported = scanned ? await importedSince() : 0;
-    if (status === 'unavailable' && imported > 0) {
-      // `unavailable` promises "nothing was imported"; pages imported before
-      // the failure make it an interrupted drain, so report it as a failure,
-      // keeping the classified retryability, like the Rust twin.
-      return { status: 'failed', imported, retryable, reason };
-    }
-    return { status, imported, retryable, reason };
+    last = cursors;
   }
 
   return {
     status: 'failed',
     imported: await importedSince(),
     retryable: true,
-    reason: `the transport backlog still yielded notes after ${MAX_DRAIN_PASSES} fetches; rerun the drain to continue from the stored cursors`,
+    reason: `the transport backlog was not exhausted after ${MAX_DRAIN_PASSES} fetches; rerun the drain to continue from the stored cursors`,
   };
 }

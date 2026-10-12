@@ -751,10 +751,14 @@ without one is served from the first retained note. A recovered account's
 tag has no cursor yet, on a fresh device and in a store shared with other
 accounts alike, so its whole retained backlog is fetched. Each transport
 fetch reads a bounded number of pages; the drain keeps fetching until a
-fetch imports nothing new, at most 64 fetches. It is idempotent: imports
-dedupe and cursors only move forward. A backlog still yielding notes after
-64 fetches is reported `failed` with `retryable: true`, and a rerun
-continues from the stored cursors.
+fetch moves no tag's cursor, at most 64 fetches. A fetch whose pages hold
+only notes the store already has, or notes no tracked account can consume,
+still moves the cursor, so a store upgraded from 0.18.0 (whose tags all
+restart from the first retained note) walks past the history it holds to
+the notes behind it. It is idempotent: imports dedupe and cursors only move
+forward. A backlog whose cursors still move after 64 fetches is reported
+`failed` with `retryable: true`, and a rerun continues from the stored
+cursors.
 
 Transport problems land in `report.transport`, never as exceptions:
 `unavailable` means no transport endpoint is configured or the transport
@@ -1434,10 +1438,14 @@ without one is served from the first retained note. A recovered account's
 tag has no cursor yet, on a fresh device and in a store shared with other
 accounts alike, so its whole retained backlog is fetched. Each transport
 fetch reads a bounded number of pages; the drain keeps fetching until a
-fetch imports nothing new, at most 64 fetches. It is idempotent: imports
-dedupe and cursors only move forward. A backlog still yielding notes after
-64 fetches is reported `failed` with `retryable: true`, and a rerun
-continues from the stored cursors.
+fetch moves no tag's cursor, at most 64 fetches. A fetch whose pages hold
+only notes the store already has, or notes no tracked account can consume,
+still moves the cursor, so a store upgraded from 0.18.0 (whose tags all
+restart from the first retained note) walks past the history it holds to
+the notes behind it. It is idempotent: imports dedupe and cursors only move
+forward. A backlog whose cursors still move after 64 fetches is reported
+`failed` with `retryable: true`, and a rerun continues from the stored
+cursors.
 
 Transport problems land in `report.transport`, never as errors:
 `Unavailable` means no transport endpoint is configured or the transport

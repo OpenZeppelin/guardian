@@ -561,7 +561,7 @@ flow, and `retryable: true` means rerunning the flow — which is idempotent —
 can plausibly recover more. In brief:
 
 - **Transport drain** — fetches the private-note transport backlog for
-  every tracked tag until a fetch imports nothing new. A recovered account's
+  every tracked tag until a fetch moves no tag's cursor. A recovered account's
   tag has no transport cursor yet, so its whole retained backlog is fetched.
   Bounded by the transport service's retention: a best-effort rescan,
   **not** a backup.

@@ -56,6 +56,7 @@ use std::sync::Arc;
 
 use guardian_client::{GetStateResponse, SessionSlot};
 use miden_client::rpc::Endpoint;
+use miden_client::store::Store;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
@@ -122,6 +123,9 @@ pub struct StateVerificationResult {
 /// ```
 pub struct MultisigClient {
     pub(crate) miden_client: MidenSdkClient,
+    /// The store `miden_client` was built on, for the client-owned settings
+    /// the public settings API does not reach (the note-transport cursors).
+    pub(crate) miden_store: Arc<dyn Store>,
     pub(crate) key_manager: Arc<dyn KeyManager>,
     /// Guardian server endpoint.
     pub(crate) guardian_endpoint: String,
@@ -154,6 +158,7 @@ impl MultisigClient {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         miden_client: MidenSdkClient,
+        miden_store: Arc<dyn Store>,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,
@@ -166,6 +171,7 @@ impl MultisigClient {
             crate::builder::configured_node_rpc_client(&miden_endpoint, &rpc_config);
         Self {
             miden_client,
+            miden_store,
             key_manager,
             guardian_endpoint,
             account: None,

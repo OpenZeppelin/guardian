@@ -129,11 +129,15 @@ the SDKs:
 
 - **Note transport keeps one cursor per tag** (miden-client 0.17.1). A tag
   without a cursor, such as a recovered account's, is served from the first
-  retained note, and each fetch reads a bounded number of pages. The transport
-  drain of the recovery flow keeps fetching until a fetch imports nothing new
-  instead of clearing the covered-tags bookkeeping, and pages fetched before a
-  failed one stay imported. Upstream deprecated the covered-tags setting, the
-  global transport cursor and `NoteTransportError::PaginationDidNotTerminate`.
+  retained note, and each fetch reads a bounded number of pages. Upstream does
+  not carry the 0.17.0 global cursor over, so a store upgraded from 0.18.0
+  restarts every tag from the first retained note: its first syncs re-walk
+  transport history it already holds (imports dedupe) before they reach newer
+  notes. The transport drain of the recovery flow keeps fetching until a fetch
+  moves no tag's cursor instead of clearing the covered-tags bookkeeping, so
+  it reaches those notes in one call, and pages fetched before a failed one
+  stay imported. Upstream deprecated the covered-tags setting, the global
+  transport cursor and `NoteTransportError::PaginationDidNotTerminate`.
 - **The relay outbox is gone** (miden-client 0.17.2). Private notes are sent
   directly; upstream's store migration drops the stale outbox row.
 - **`NodeRpcClient` gained `is_invitation_code_valid`** (miden-client 0.17.3).
@@ -143,9 +147,9 @@ the SDKs:
   `await client[Symbol.asyncDispose]()` before deleting or reopening its store.
 
 **Upgrading from 0.18.0 to 0.18.1: TypeScript proposals are labelled with the account's next
-nonce** keeps the protocol pins, stored data and server contracts, but changes a
-TypeScript SDK default and two admission rules of a server that queues chained
-candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
+nonce.** Apart from the patch pins above, this keeps stored data and server
+contracts, but changes a TypeScript SDK default and two admission rules of a
+server that queues chained candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
 
 - **`create*Proposal` defaults `nonce` to the store account's nonce plus one**, the
   nonce the executed transaction will have, as the Rust SDK has since #72. Through
@@ -279,9 +283,11 @@ breaking SDK change and needs no server change.
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-05.
+Last checked 2026-10-12.
 
-- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach.
+- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
+  on 2026-10-12 it answered requests whose accept header named client 0.17.3
+  (and 0.17.0), and refused 0.18.0 and 0.17.0-rc.5.
   The devnet run below was made on the Miden 0.17 release candidates and has not
   been repeated on 0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's

@@ -13,6 +13,7 @@ use miden_client::note_transport::{
     NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
 };
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
+use miden_client::store::Store;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
@@ -296,7 +297,7 @@ impl MultisigClientBuilder {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;
 
-        let miden_client = create_miden_client(
+        let (miden_client, miden_store) = create_miden_client(
             &account_dir,
             &miden_endpoint,
             note_transport_endpoint.as_deref(),
@@ -307,6 +308,7 @@ impl MultisigClientBuilder {
 
         Ok(MultisigClient::new(
             miden_client,
+            miden_store,
             key_manager,
             guardian_endpoint,
             account_dir,
@@ -318,7 +320,8 @@ impl MultisigClientBuilder {
     }
 }
 
-/// Creates a miden-client instance with SQLite storage.
+/// Creates a miden-client instance with SQLite storage, returned with the
+/// store it was built on.
 ///
 /// Each call creates a fresh database with a unique filename to ensure
 /// no accumulated state from previous sessions.
@@ -328,7 +331,7 @@ pub(crate) async fn create_miden_client(
     note_transport_endpoint: Option<&str>,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
-) -> Result<MidenSdkClient> {
+) -> Result<(MidenSdkClient, Arc<dyn Store>)> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -341,15 +344,19 @@ pub(crate) async fn create_miden_client(
     let store = SqliteStore::new(store_path)
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to open SQLite store: {}", e)))?;
-    let store = Arc::new(store);
+    let store: Arc<dyn Store> = Arc::new(store);
 
-    configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
-        .store(store)
-        .tx_discard_delta(Some(20))
-        .max_block_number_delta(256)
-        .build()
-        .await
-        .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
+    let client =
+        configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
+            .store(store.clone())
+            .tx_discard_delta(Some(20))
+            .max_block_number_delta(256)
+            .build()
+            .await
+            .map_err(|e| {
+                MultisigError::MidenClient(format!("failed to create miden client: {}", e))
+            })?;
+    Ok((client, store))
 }
 
 #[cfg(test)]
