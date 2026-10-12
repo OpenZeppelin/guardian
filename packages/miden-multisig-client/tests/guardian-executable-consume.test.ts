@@ -12,8 +12,8 @@ import {
   GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
 } from '../src/transaction/expiration.js';
 import {
-  executeForSummary,
   executeForSummaryAtTip,
+  summaryBoundBlockNum,
   summaryApprovalExpirationBlockNum,
 } from '../src/transaction/summary.js';
 
@@ -72,15 +72,13 @@ async function propose(): Promise<Proposed> {
     };
     const pinned = await buildPinnedConsumeNotesTransactionRequest(proposer, notes, options);
     const unpinned = await buildConsumeNotesTransactionRequestFromNotes(proposer, notes, options);
-    const { summary, anchor } = await executeForSummary(proposer, accountId, pinned.request);
-    const boundBlockNum = anchor.blockNum();
-    anchor.free();
+    const summary = await executeForSummaryAtTip(proposer, accountId, pinned.request);
+    const boundBlockNum = summaryBoundBlockNum(summary);
     const selfExecuted = await buildConsumeNotesTransactionRequestFromNotes(proposer, notes, {
       accountId,
       salt: Word.fromHex(SALT_HEX),
     });
-    const selfExecutedSummary = await executeForSummary(proposer, accountId, selfExecuted.request);
-    selfExecutedSummary.anchor.free();
+    const selfExecutedSummary = await executeForSummaryAtTip(proposer, accountId, selfExecuted.request);
 
     await proposer.proveBlock();
     await proposer.proveBlock();
@@ -91,7 +89,7 @@ async function propose(): Promise<Proposed> {
       pinnedRequest: pinned.request.serialize(),
       unpinnedRequest: unpinned.request.serialize(),
       summaryCommitment: summary.toCommitment().toHex(),
-      selfExecutedCommitment: selfExecutedSummary.summary.toCommitment().toHex(),
+      selfExecutedCommitment: selfExecutedSummary.toCommitment().toHex(),
       summaryExpirationDelta: summary.expirationDelta(),
       approvalExpirationBlockNum: summaryApprovalExpirationBlockNum(summary),
       boundBlockNum,

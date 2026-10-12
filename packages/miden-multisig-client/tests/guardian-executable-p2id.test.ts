@@ -22,10 +22,9 @@ import {
   GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
 } from '../src/transaction/expiration.js';
 import {
-  chainAnchorFromBase64,
-  executeForSummary,
   executeForSummaryAtTip,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
 } from '../src/transaction/summary.js';
 import { base64ToUint8Array, bytesToHex } from '../src/utils/encoding.js';
 import {
@@ -113,9 +112,8 @@ beforeAll(async () => {
   const notes = (await client.notes.list({ status: 'committed' })).map((record) => record.toNote());
   const consumeOptions = { accountId, salt: Word.fromHex(SALT_HEX), signatureScheme: 'ecdsa' as const };
   const unsigned = await buildConsumeNotesTransactionRequestFromNotes(client, notes, consumeOptions);
-  const { summary, anchor } = await executeForSummary(client, accountId, unsigned.request);
-  const boundBlockNum = anchor.blockNum();
-  anchor.free();
+  const summary = await executeForSummaryAtTip(client, accountId, unsigned.request);
+  const boundBlockNum = summaryBoundBlockNum(summary);
   const signed = await buildConsumeNotesTransactionRequestFromNotes(client, notes, {
     ...consumeOptions,
     boundBlockNum,
@@ -171,13 +169,10 @@ async function proposeP2id(mode: ProposalExecutionMode): Promise<Pushed> {
   );
   expect(pushed).toHaveLength(1);
   const payload = pushed[0].deltaPayload;
-  const chainAnchor = payload.metadata?.chainAnchor;
-  if (chainAnchor === undefined) {
-    throw new Error('the pushed proposal carries no chain anchor');
+  const boundBlockNum = payload.metadata?.boundBlockNum;
+  if (boundBlockNum === undefined) {
+    throw new Error('the pushed proposal carries no bound block');
   }
-  const anchor = chainAnchorFromBase64(chainAnchor);
-  const boundBlockNum = anchor.blockNum();
-  anchor.free();
   return {
     summary: TransactionSummary.deserialize(base64ToUint8Array(payload.txSummary.data)),
     boundBlockNum,
