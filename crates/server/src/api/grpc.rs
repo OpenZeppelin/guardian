@@ -7,7 +7,7 @@ use crate::services::{
 };
 use crate::state::AppState;
 use guardian_shared::SignatureScheme;
-use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use prost::Message;
 use tonic::{Request, Response, Status};
 
@@ -421,6 +421,64 @@ impl Guardian for GuardianService {
         }
     }
 
+    async fn execute_delta_proposal(
+        &self,
+        request: Request<ExecuteDeltaProposalRequest>,
+    ) -> Result<Response<ExecuteDeltaProposalResponse>, Status> {
+        let credentials = authenticated_operation(&request, SignedOperation::ExecuteDeltaProposal)?;
+        let data = request.into_inner();
+        let params = crate::services::execute_proposal::RequestExecutionParams {
+            account_id: data.account_id,
+            proposal_id: data.proposal_id,
+            credentials,
+            allow_private_note: data.allow_private_note,
+        };
+        let envelope =
+            crate::services::execute_proposal::request_execution(&self.app_state, params)
+                .await
+                .map_err(Status::from)?;
+        Ok(Response::new(ExecuteDeltaProposalResponse {
+            execution: Some(execution_envelope_to_proto(envelope)),
+        }))
+    }
+
+    async fn get_delta_proposal_execution(
+        &self,
+        request: Request<GetDeltaProposalExecutionRequest>,
+    ) -> Result<Response<GetDeltaProposalExecutionResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+        let envelope = crate::services::execution_status::get_execution(
+            &self.app_state,
+            &data.account_id,
+            &data.proposal_id,
+            &credentials,
+        )
+        .await
+        .map_err(Status::from)?;
+        Ok(Response::new(GetDeltaProposalExecutionResponse {
+            execution: Some(execution_envelope_to_proto(envelope)),
+        }))
+    }
+
+    async fn get_current_execution(
+        &self,
+        request: Request<GetCurrentExecutionRequest>,
+    ) -> Result<Response<GetCurrentExecutionResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+        let envelope = crate::services::execution_status::current_execution(
+            &self.app_state,
+            &data.account_id,
+            &credentials,
+        )
+        .await
+        .map_err(Status::from)?;
+        Ok(Response::new(GetCurrentExecutionResponse {
+            execution: envelope.map(execution_envelope_to_proto),
+        }))
+    }
+
     /// Resolve a public-key commitment to the set of account IDs that
     /// authorize it. Mirror of HTTP `GET /state/lookup`.
     async fn get_account_by_key_commitment(
@@ -459,7 +517,42 @@ fn authenticated_request<T: Message>(request: &Request<T>) -> Result<Credentials
         .with_request_payload_bytes(request_bytes))
 }
 
+/// [`authenticated_request`] for a request signed as `operation`, whose signed payload is
+/// domain-separated from every other request with the same body.
+fn authenticated_operation<T: Message>(
+    request: &Request<T>,
+    operation: SignedOperation,
+) -> Result<Credentials, Status> {
+    let request_bytes = request.get_ref().encode_to_vec();
+    let request_payload = AuthRequestPayload::for_operation(operation, &request_bytes);
+    Ok(request
+        .metadata()
+        .extract_credentials()?
+        .with_request_payload(request_payload)
+        .with_request_payload_bytes(request_bytes))
+}
+
 // Helper functions to convert between internal types and protobuf types
+
+fn execution_envelope_to_proto(
+    envelope: crate::services::execution_status::ExecutionEnvelope,
+) -> ExecutionEnvelope {
+    ExecutionEnvelope {
+        account_id: envelope.account_id,
+        proposal_id: envelope.proposal_id,
+        state: envelope.state.as_str().to_string(),
+        error: envelope.error.map(|error| ExecutionError {
+            code: error.code,
+            message: error.message,
+            meta_json: error.meta.map(|meta| meta.to_string()),
+        }),
+        delta_nonce: envelope.delta_nonce,
+        newly_accepted: envelope.newly_accepted,
+        proposal_exists: envelope.proposal_exists,
+        ignored_signatures: envelope.ignored_signatures,
+        updated_at: envelope.updated_at,
+    }
+}
 
 /// Project a service-layer history entry into its proto shape. Enum
 /// labels (`tag`, `kind`, `section`) cross the wire as the same stable

@@ -31,7 +31,7 @@ locals {
   http_error_statuses = ["500", "501", "502", "503", "504"]
   grpc_error_codes    = ["internal", "unavailable", "unknown", "data_loss", "deadline_exceeded"]
 
-  # The nine Prometheus histograms. The awsemf exporter delta-converts
+  # The Prometheus histograms forwarded to CloudWatch. The awsemf exporter delta-converts
   # cumulative counters but NOT histograms (their sum/count would be
   # republished as process-lifetime totals every scrape, making
   # CloudWatch Average lifetime-weighted — hours of cheap health checks
@@ -48,6 +48,9 @@ locals {
     "guardian_canonicalization_reconcile_run_duration_seconds",
     "guardian_canonicalization_candidate_age_seconds",
     "guardian_release_sweep_rotation_duration_seconds",
+    "guardian_execution_chain_view_duration_seconds",
+    "guardian_execution_proving_duration_seconds",
+    "guardian_execution_phase_duration_seconds",
   ]
 
   http_error_rate_expression = "100 * (${join(" + ", [for s in local.http_error_statuses : "FILL(h${s}, 0)"])}) / FILL(hall, 1)"
@@ -70,6 +73,23 @@ locals {
     }
   }
   canonicalization_failures_expression = join(" + ", [for id in sort(keys(local.canonicalization_failure_queries)) : "FILL(${id}, 0)"])
+
+  # Execution failure codes that point at the operator's side (prover,
+  # node, chain view, sealing) rather than at the proposal or its
+  # cosigners. Values are ExecutionFailureCode::as_str in
+  # crates/shared/src/execution.rs, exported with outcome=failed.
+  execution_operator_failure_codes = [
+    "GUARDIAN_EXECUTION_PROVING_FAILED",
+    "GUARDIAN_EXECUTION_NODE_UNAVAILABLE",
+    "GUARDIAN_EXECUTION_CHAIN_INCONSISTENT",
+    "GUARDIAN_EXECUTION_SEALING_FAILED",
+    "GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED",
+  ]
+  execution_failure_query_ids = {
+    for code in local.execution_operator_failure_codes :
+    code => "x${lower(replace(trimprefix(code, "GUARDIAN_EXECUTION_"), "_", ""))}"
+  }
+  execution_failures_expression = join(" + ", [for code in local.execution_operator_failure_codes : "FILL(${local.execution_failure_query_ids[code]}, 0)"])
 
   # Injected into the sidecar via AOT_CONFIG_CONTENT, so no config file,
   # SSM parameter, or custom image is needed.
@@ -216,6 +236,30 @@ locals {
           {
             metric_name_selectors = ["^guardian_release_sweep_rotation_duration_seconds$"]
             dimensions            = [[]]
+          },
+          {
+            metric_name_selectors = ["^guardian_execution_outcomes_total$"]
+            dimensions            = [["outcome", "code"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_execution_reconcile_outcomes_total$"]
+            dimensions            = [["outcome"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_execution_phase_duration_seconds$"]
+            dimensions            = [["phase"]]
+          },
+          {
+            metric_name_selectors = [
+              "^guardian_execution_chain_view_duration_seconds$",
+              "^guardian_execution_proving_duration_seconds$",
+              "^guardian_execution_prover_retries_total$",
+              "^guardian_execution_capacity_refusals_total$",
+              "^guardian_execution_oldest_reservation_age_seconds$",
+              "^guardian_execution_observation_outage_seconds$",
+              "^guardian_execution_records_pruned_total$",
+            ]
+            dimensions = [[]]
           },
           {
             metric_name_selectors = [
@@ -517,6 +561,50 @@ resource "aws_cloudwatch_dashboard" "server" {
           ]
         }
       },
+      # --- Row 7: Guardian execution ----------------------------------------
+      {
+        type = "metric", x = 0, y = 42, width = 8, height = 6
+        properties = {
+          title  = "Execution outcomes"
+          region = var.aws_region, view = "timeSeries", stat = "Sum", period = 300
+          metrics = [
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",outcome,code} MetricName=\"guardian_execution_outcomes_total\"', 'Sum', 300)", id = "e1" }],
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",outcome} MetricName=\"guardian_execution_reconcile_outcomes_total\"', 'Sum', 300)", id = "e2", label = "reconcile" }],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 8, y = 42, width = 8, height = 6
+        properties = {
+          title  = "Oldest reservation & observation outage (max s)"
+          region = var.aws_region, view = "timeSeries", period = 300
+          yAxis  = { left = { min = 0 } }
+          metrics = [
+            ["${local.metrics_namespace}", "guardian_execution_oldest_reservation_age_seconds", { stat = "Maximum", label = "oldest reservation age" }],
+            ["${local.metrics_namespace}", "guardian_execution_observation_outage_seconds", { stat = "Maximum", label = "observation outage" }],
+          ]
+          annotations = {
+            horizontal = [
+              { label = "reservation age alarm", value = var.alarm_execution_reservation_age_threshold_seconds },
+              { label = "outage alarm", value = var.alarm_execution_observation_outage_threshold_seconds },
+            ]
+          }
+        }
+      },
+      {
+        type = "metric", x = 16, y = 42, width = 8, height = 6
+        properties = {
+          title  = "Execution phases (avg s), prover retries"
+          region = var.aws_region, view = "timeSeries", period = 300
+          metrics = [
+            ["${local.metrics_namespace}", "guardian_execution_proving_duration_seconds", { stat = "Average", label = "proving avg" }],
+            ["${local.metrics_namespace}", "guardian_execution_chain_view_duration_seconds", { stat = "Average", label = "chain view avg" }],
+            ["${local.metrics_namespace}", "guardian_execution_phase_duration_seconds", "phase", "prepare", { stat = "Average", label = "prepare avg" }],
+            ["${local.metrics_namespace}", "guardian_execution_phase_duration_seconds", "phase", "send", { stat = "Average", label = "send avg" }],
+            ["${local.metrics_namespace}", "guardian_execution_prover_retries_total", { stat = "Sum", label = "prover retries", yAxis = "right" }],
+          ]
+        }
+      },
       ], var.cloudwatch_log_alarms_enabled ? [
       # Metric-filter counts from the server log group (log_alarms.tf), not
       # scraped metrics; present only when the filters are deployed.
@@ -705,6 +793,84 @@ resource "aws_cloudwatch_metric_alarm" "canonicalization_failures" {
       }
     }
   }
+}
+
+resource "aws_cloudwatch_metric_alarm" "execution_failures" {
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-execution-failures"
+  alarm_description   = "Guardian executions are failing for operator-side reasons (${join(", ", local.execution_operator_failure_codes)}): more than ${var.alarm_execution_failures_threshold} in a 5-minute period. Check the prover and the Miden node${local.alarm_description_links}"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.alarm_execution_failures_threshold
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "failures"
+    expression  = local.execution_failures_expression
+    label       = "operator-side execution failures"
+    return_data = true
+  }
+
+  dynamic "metric_query" {
+    for_each = local.execution_failure_query_ids
+    content {
+      id = metric_query.value
+      metric {
+        namespace   = local.metrics_namespace
+        metric_name = "guardian_execution_outcomes_total"
+        dimensions  = { outcome = "failed", code = metric_query.key }
+        stat        = "Sum"
+        period      = 300
+      }
+    }
+  }
+}
+
+# The reconciler resets the gauge to 0 on every pass that observes the
+# chain for all submitted executions, so it only climbs while the node
+# stays unreachable for a submitted transaction.
+resource "aws_cloudwatch_metric_alarm" "execution_observation_outage" {
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-execution-observation-outage"
+  alarm_description   = "Guardian has been unable to observe the chain for a submitted execution for more than ${var.alarm_execution_observation_outage_threshold_seconds}s; the account stays reserved until the node answers${local.alarm_description_links}"
+  namespace           = local.metrics_namespace
+  metric_name         = "guardian_execution_observation_outage_seconds"
+  statistic           = "Maximum"
+  period              = 300
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.alarm_execution_observation_outage_threshold_seconds
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+}
+
+# A submitted execution settles within its 256-block expiration plus a
+# lease, so a reservation older than the default threshold is stuck
+# (for example a candidate promoted by a replica that does not release
+# reservations, or a reconciler that cannot take the lease).
+resource "aws_cloudwatch_metric_alarm" "execution_reservation_age" {
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-execution-reservation-age"
+  alarm_description   = "Guardian's oldest active execution reservation is older than ${var.alarm_execution_reservation_age_threshold_seconds}s; its account cannot start another execution until it is released${local.alarm_description_links}"
+  namespace           = local.metrics_namespace
+  metric_name         = "guardian_execution_oldest_reservation_age_seconds"
+  statistic           = "Maximum"
+  period              = 300
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.alarm_execution_reservation_age_threshold_seconds
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
 }
 
 # guardian_build_info is a constant-1 gauge emitted from metrics-listener

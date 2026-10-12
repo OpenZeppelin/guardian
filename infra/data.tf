@@ -21,6 +21,16 @@ data "aws_secretsmanager_secret" "dashboard_cursor" {
   name  = local.dashboard_cursor_secret_name
 }
 
+# The stack's managed prover URL secret as Secrets Manager holds it now, read so a plan that
+# would delete it can be refused (see guardian_execution_enabled). A secret already scheduled
+# for deletion is not listed.
+data "aws_secretsmanager_secrets" "managed_tx_prover_url" {
+  filter {
+    name   = "name"
+    values = [local.tx_prover_url_secret_name]
+  }
+}
+
 data "aws_kms_key" "dashboard_cursor" {
   count  = local.is_prod && data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id != "" ? 1 : 0
   key_id = data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id
@@ -116,6 +126,7 @@ locals {
   operator_public_keys_secret_name           = "${var.stack_name}/server/operator-public-keys"
   evm_allowed_chain_ids_secret_name          = "${var.stack_name}/server/evm-allowed-chain-ids"
   evm_rpc_urls_secret_name                   = "${var.stack_name}/server/evm-rpc-urls"
+  tx_prover_url_secret_name                  = "${var.stack_name}/server/tx-prover-url"
   ack_falcon_secret_name                     = var.guardian_ack_falcon_secret_name != "" ? var.guardian_ack_falcon_secret_name : "${var.stack_name}/server/ack-falcon-secret-key"
   ack_ecdsa_secret_name                      = var.guardian_ack_ecdsa_secret_name != "" ? var.guardian_ack_ecdsa_secret_name : "${var.stack_name}/server/ack-ecdsa-secret-key"
   managed_storage_encryption_enabled         = local.is_prod && var.guardian_storage_encryption_secret_name != ""
@@ -158,6 +169,10 @@ locals {
   evm_allowed_chain_ids_secret_arn                            = var.guardian_evm_allowed_chain_ids_secret_arn != "" ? var.guardian_evm_allowed_chain_ids_secret_arn : (local.managed_evm_allowed_chain_ids_secret_enabled ? aws_secretsmanager_secret.evm_allowed_chain_ids[0].arn : "")
   managed_evm_rpc_urls_secret_enabled                         = var.guardian_evm_rpc_urls_secret_arn == "" && var.guardian_evm_rpc_urls != ""
   evm_rpc_urls_secret_arn                                     = var.guardian_evm_rpc_urls_secret_arn != "" ? var.guardian_evm_rpc_urls_secret_arn : (local.managed_evm_rpc_urls_secret_enabled ? aws_secretsmanager_secret.evm_rpc_urls[0].arn : "")
+  tx_prover_configured                                        = var.guardian_tx_prover_url_secret_arn != "" || var.guardian_tx_prover_url != ""
+  managed_tx_prover_url_secret_exists                         = contains(data.aws_secretsmanager_secrets.managed_tx_prover_url.names, local.tx_prover_url_secret_name)
+  managed_tx_prover_url_secret_enabled                        = var.guardian_tx_prover_url_secret_arn == "" && var.guardian_tx_prover_url != ""
+  tx_prover_url_secret_arn                                    = var.guardian_tx_prover_url_secret_arn != "" ? var.guardian_tx_prover_url_secret_arn : (local.managed_tx_prover_url_secret_enabled ? aws_secretsmanager_secret.tx_prover_url[0].arn : "")
   managed_operator_public_keys_secret_enabled                 = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
   operator_public_keys_secret_arn                             = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 

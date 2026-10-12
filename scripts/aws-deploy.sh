@@ -43,6 +43,9 @@ set -euo pipefail
 #   GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM chain IDs (optional)
 #   GUARDIAN_EVM_RPC_URLS - Comma-separated chain_id=url EVM RPC map; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_EVM_RPC_URLS_SECRET_ARN - Secrets Manager ARN with comma-separated EVM RPC map (optional)
+#   GUARDIAN_TX_PROVER_URL - Remote transaction prover URL; creates a stack Secrets Manager secret and turns Guardian execution on (optional)
+#   GUARDIAN_TX_PROVER_URL_SECRET_ARN - Secrets Manager ARN holding the remote transaction prover URL (optional)
+#   GUARDIAN_PROVING_ENABLED - true or false; false refuses execution requests while in-flight executions still settle (optional)
 #   GUARDIAN_EVM_ENTRYPOINT_ADDRESS - Shared EVM EntryPoint address (default: EntryPoint v0.9)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON - JSON array of Falcon operator public keys; creates a stack Secrets Manager secret (optional)
 #   GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN - Secrets Manager ARN with dashboard operator public keys JSON (optional)
@@ -76,6 +79,9 @@ GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN="${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECR
 GUARDIAN_EVM_RPC_URLS="${GUARDIAN_EVM_RPC_URLS:-${TF_VAR_guardian_evm_rpc_urls:-}}"
 GUARDIAN_EVM_RPC_URLS_SECRET_ARN="${GUARDIAN_EVM_RPC_URLS_SECRET_ARN:-${TF_VAR_guardian_evm_rpc_urls_secret_arn:-}}"
 GUARDIAN_EVM_ENTRYPOINT_ADDRESS="${GUARDIAN_EVM_ENTRYPOINT_ADDRESS:-${TF_VAR_guardian_evm_entrypoint_address:-}}"
+GUARDIAN_TX_PROVER_URL="${GUARDIAN_TX_PROVER_URL:-${TF_VAR_guardian_tx_prover_url:-}}"
+GUARDIAN_TX_PROVER_URL_SECRET_ARN="${GUARDIAN_TX_PROVER_URL_SECRET_ARN:-${TF_VAR_guardian_tx_prover_url_secret_arn:-}}"
+GUARDIAN_PROVING_ENABLED="${GUARDIAN_PROVING_ENABLED:-${TF_VAR_guardian_proving_enabled:-}}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON="${GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON:-}"
 GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN="${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN:-${TF_VAR_guardian_operator_public_keys_secret_arn:-}}"
 GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME="${GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME:-${TF_VAR_guardian_storage_encryption_secret_name:-}}"
@@ -292,6 +298,13 @@ build_tf_vars() {
   TF_VARS+=("-var" "guardian_evm_allowed_chain_ids_secret_arn=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_evm_rpc_urls_secret_arn=${GUARDIAN_EVM_RPC_URLS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
+  TF_VARS+=("-var" "guardian_tx_prover_url_secret_arn=${GUARDIAN_TX_PROVER_URL_SECRET_ARN}")
+  if [ -n "$GUARDIAN_TX_PROVER_URL" ]; then
+    TF_VARS+=("-var" "guardian_tx_prover_url=${GUARDIAN_TX_PROVER_URL}")
+  fi
+  if [ -n "$GUARDIAN_PROVING_ENABLED" ]; then
+    TF_VARS+=("-var" "guardian_proving_enabled=${GUARDIAN_PROVING_ENABLED}")
+  fi
   if [ -n "$GUARDIAN_CORS_ALLOWED_ORIGINS" ]; then
     TF_VARS+=("-var" "guardian_cors_allowed_origins=${GUARDIAN_CORS_ALLOWED_ORIGINS}")
   fi
@@ -769,6 +782,7 @@ cmd_deploy() {
   local DATABASE_URL_SECRET_ARN
   local EVM_ALLOWED_CHAIN_IDS_SECRET_ARN
   local EVM_RPC_URLS_SECRET_ARN
+  local TX_PROVER_URL_SECRET_ARN
   local EVM_ENTRYPOINT_ADDRESS
   local CORS_ALLOWED_ORIGINS
   ALB_URL=$(terraform_output_raw alb_url)
@@ -794,6 +808,7 @@ cmd_deploy() {
   DATABASE_URL_SECRET_ARN=$(terraform_output_raw database_url_secret_arn)
   EVM_ALLOWED_CHAIN_IDS_SECRET_ARN=$(terraform_output_raw guardian_evm_allowed_chain_ids_secret_arn)
   EVM_RPC_URLS_SECRET_ARN=$(terraform_output_raw guardian_evm_rpc_urls_secret_arn)
+  TX_PROVER_URL_SECRET_ARN=$(terraform_output_raw guardian_tx_prover_url_secret_arn)
   EVM_ENTRYPOINT_ADDRESS=$(terraform_output_raw guardian_evm_entrypoint_address)
   CORS_ALLOWED_ORIGINS=$(terraform_output_raw guardian_cors_allowed_origins)
 
@@ -852,6 +867,9 @@ cmd_deploy() {
     fi
     if [ -n "$EVM_RPC_URLS_SECRET_ARN" ]; then
       echo "  EVM RPC URLs secret: ${EVM_RPC_URLS_SECRET_ARN}"
+    fi
+    if [ -n "$TX_PROVER_URL_SECRET_ARN" ]; then
+      echo "  Prover URL secret: ${TX_PROVER_URL_SECRET_ARN}"
     fi
     if [ -n "$EVM_ENTRYPOINT_ADDRESS" ]; then
       echo "  EVM EntryPoint address: ${EVM_ENTRYPOINT_ADDRESS}"
@@ -1041,6 +1059,9 @@ case "${COMMAND:-}" in
     echo "  GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM chain IDs"
     echo "  GUARDIAN_EVM_RPC_URLS= Comma-separated chain_id=url EVM RPC map; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_EVM_RPC_URLS_SECRET_ARN= Secrets Manager ARN with comma-separated EVM RPC map"
+    echo "  GUARDIAN_TX_PROVER_URL= Remote transaction prover URL; creates a stack Secrets Manager secret and turns Guardian execution on"
+    echo "  GUARDIAN_TX_PROVER_URL_SECRET_ARN= Secrets Manager ARN holding the remote transaction prover URL"
+    echo "  GUARDIAN_PROVING_ENABLED= true or false; false refuses execution requests while in-flight executions still settle"
     echo "  GUARDIAN_EVM_ENTRYPOINT_ADDRESS= Shared EVM EntryPoint address (default: v0.9)"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON= JSON array of Falcon operator public keys; creates a stack Secrets Manager secret"
     echo "  GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN= Secrets Manager ARN with dashboard operator public keys JSON"

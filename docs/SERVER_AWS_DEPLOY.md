@@ -415,7 +415,11 @@ become the only trusted ones.
 The deploy script resolves the ECR `latest` tag to an immutable digest before calling Terraform, so image pushes always produce a real ECS task-definition revision instead of relying on tag reuse.
 It also keeps separate local Terraform state files per `STACK_NAME` and `DEPLOY_STAGE`, using `infra/terraform.<stack>.<stage>.tfstate` by default.
 
-AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; set `GUARDIAN_SERVER_FEATURES=postgres,evm` only when deploying the optional EVM API surface.
+AWS deployments must include the `postgres` server feature. The script defaults `GUARDIAN_SERVER_FEATURES` to `postgres`; add `evm` only when deploying the optional EVM API surface. Guardian execution is always built in and stays off until `GUARDIAN_TX_PROVER_URL` is set. To turn it on, pass `GUARDIAN_TX_PROVER_URL` to the script (or `guardian_tx_prover_url` to Terraform): the stack stores it in a `<stack-name>/server/tx-prover-url` Secrets Manager secret, because a private prover's hostname can be sensitive, grants the ECS task execution role read access, and injects it as a container secret. The URL must be `http` or `https` with a host and no userinfo (`user:pass@`), query or fragment, or the server refuses to start: the prover client sends no credentials, so restrict a private prover at the network level (security group, private subnet or VPC endpoint). Point at an existing secret with `GUARDIAN_TX_PROVER_URL_SECRET_ARN` instead. `GUARDIAN_PROVING_ENABLED=false` is the kill switch. The lease, reconcile interval, prover timeout and expiration horizon take `TF_VAR_guardian_*` overrides (see `infra/README.md`). The prover receives the full transaction inputs, so it must be one you trust; see [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--guardian-execution).
+
+The script passes `guardian_tx_prover_url` to Terraform only when `GUARDIAN_TX_PROVER_URL` is set in that run. A later `deploy` without it falls back to the variable's empty default, which would delete the managed `<stack-name>/server/tx-prover-url` secret and start the new task definition with execution off. The plan refuses that: while the managed secret exists, a deploy with no prover fails with a message naming `GUARDIAN_TX_PROVER_URL`, unless `guardian_execution_enabled = false` says turning execution off is intended. Set `guardian_execution_enabled = true` (in `infra/terraform.tfvars`, or `TF_VAR_guardian_execution_enabled=true`) to make a missing prover fail every plan, including the first. Keep `guardian_tx_prover_url` in `infra/terraform.tfvars`, or create the secret yourself and pass `GUARDIAN_TX_PROVER_URL_SECRET_ARN`, so every deploy carries it. The managed secret has a 7-day recovery window: a deleted one is restored with `aws secretsmanager restore-secret --secret-id <stack-name>/server/tx-prover-url` and then `terraform import 'aws_secretsmanager_secret.tx_prover_url[0]' <arn>`, and re-creating it by name within those 7 days fails until it is restored or the window passes. The plan reads the secret with `secretsmanager:ListSecrets`, so the identity running Terraform needs it.
+
+**Enable execution in two deploys.** A replica from a release without Guardian execution still runs canonicalization during a rolling update: it promotes a Guardian-executed candidate without releasing the execution reservation, and it skips the gate that keeps a candidate under a live execution from being discarded. Either can leave the account reserved with no way for the reconciler to release it, so no further execution can start on it. First roll this release out with `GUARDIAN_TX_PROVER_URL` unset and wait until the ECS service has finished the deployment and no task of the previous task definition is running (`aws ecs describe-services` lists a single `PRIMARY` deployment with `rolloutState` `COMPLETED`). Then set the prover URL in a second deploy. Proposals stored by old replicas during the overlap have `request_bytes = 0` (the migration's column default) whatever request they carry, so they do not count toward `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`. See [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#upgrading-and-rolling-back).
 
 ### Reviewable Build, Plan, Apply
 
@@ -610,7 +614,8 @@ exposes no knobs for a routable bind address.
   possible follow-up.
 - Terraform creates a CloudWatch **dashboard** named `<stack>-server` (request
   volume, error rate, latency, proposal/delta lifecycle, canonicalization
-  health, storage and DB-pool health, Miden RPC, ECS CPU/memory/tasks) and
+  health, storage and DB-pool health, Miden RPC, ECS CPU/memory/tasks, Guardian
+  execution) and
   these **alarms**:
 
 | Alarm | Fires when |
@@ -619,6 +624,9 @@ exposes no knobs for a routable bind address.
 | `<stack>-grpc-error-rate` | gRPC server-fault responses (`internal`, `unavailable`, `unknown`, `data_loss`, `deadline_exceeded`) exceed the same threshold for 15 min; the same health-check dilution applies |
 | `<stack>-http-latency` | Average HTTP latency exceeds `alarm_latency_threshold_seconds` (default 1s) for 15 min. Fleet average across all routes — continuous ALB health-check probes dilute it on low-traffic stacks, so treat it as a sustained-degradation signal |
 | `<stack>-canonicalization-failures` | Canonicalization passes (full, fast, or reconcile) report `error` or `partial` (some accounts failed) outcomes for 10 min |
+| `<stack>-execution-failures` | More than `alarm_execution_failures_threshold` (default 1) executions in a 5-minute period fail with an operator-side code (`GUARDIAN_EXECUTION_PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`): check the prover, the Miden node and the acknowledgement signer. Failures caused by the proposal or its signers are not counted |
+| `<stack>-execution-observation-outage` | Guardian could not observe the chain for a submitted execution for more than `alarm_execution_observation_outage_threshold_seconds` (default 300 s); the account stays reserved meanwhile |
+| `<stack>-execution-reservation-age` | The oldest active execution reservation is older than `alarm_execution_reservation_age_threshold_seconds` (default 1800 s, above 256 blocks plus the lease); the account cannot start another execution until it is released. Raise it with the lease or the expiration horizon |
 | `<stack>-metrics-missing` | Application metrics stop arriving — the constant `guardian_build_info` heartbeat disappears (metrics endpoint down, sidecar dead, or scrape failing) |
 | `<stack>-metrics-refresh-failures` | Slow-aggregate refresher attempts are failing; delta/proposal/account gauges are stale |
 | `<stack>-metrics-refresh-stale` | The refresh timestamp stopped advancing for ≥ 10 min (hung or dead refresher — catches what the failures counter cannot) |
@@ -950,6 +958,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `operator_public_keys_secret_name` | Terraform-managed operator public keys secret name, when created |
 | `guardian_evm_allowed_chain_ids_secret_arn` | Secrets Manager ARN used for EVM allowed chain IDs |
 | `guardian_evm_rpc_urls_secret_arn` | Secrets Manager ARN used for EVM RPC URLs |
+| `guardian_tx_prover_url_secret_arn` | Secrets Manager ARN the server reads its prover URL from; empty when execution is not configured |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
 | `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`); empty keeps every scheme |

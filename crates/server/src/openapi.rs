@@ -53,6 +53,10 @@ pub struct ApiErrorMeta {
     /// for `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub released_at: Option<String>,
+    /// The proposal whose execution holds the account. Present only for
+    /// `GUARDIAN_EXECUTION_CONFLICT`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocking_proposal_id: Option<String>,
 }
 
 /// Wire shape of a Guardian error response body: `{ code, message, meta }`
@@ -210,6 +214,9 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::get_delta_proposal,
         crate::api::http::sign_delta_proposal,
         crate::api::http::abandon_candidate,
+        crate::api::http::execute_delta_proposal,
+        crate::api::http::get_delta_proposal_execution,
+        crate::api::http::get_current_execution,
     ),
     components(schemas(ApiErrorResponse, ApiErrorMeta, crate::services::StatusResponse)),
     modifiers(&ClientSecurityAddon, &CommonResponsesAddon),

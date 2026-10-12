@@ -142,18 +142,19 @@ Mapping AWS resources to the Terraform files that own them:
 | Operator public keys secret | [`operator_secrets.tf`](../../infra/operator_secrets.tf) | Optional dashboard operator Falcon pubkey list. |
 | ACK Falcon/ECDSA secrets (existing) | [`data.tf`](../../infra/data.tf) | Looked up via `data` in `prod`; created out-of-band by `aws-deploy.sh bootstrap-ack-keys`. |
 | EVM allowed chains + RPC URLs secrets | [`data.tf`](../../infra/data.tf) | Optional; populated by deploy script from `config/evm/chains.json`. |
+| Remote prover URL secret | [`operator_secrets.tf`](../../infra/operator_secrets.tf) | Optional; Terraform-managed from `guardian_tx_prover_url` (7-day recovery window, and a plan that would delete it without `guardian_execution_enabled = false` fails) or an existing ARN. Enables Guardian execution. The URL carries no credentials: the server refuses userinfo, a query or a fragment. |
 | ALB SG | [`security_groups.tf:2`](../../infra/security_groups.tf#L2) | Ingress `80/443` from `alb_ingress_cidrs`. |
 | Server SG | [`security_groups.tf:35`](../../infra/security_groups.tf#L35) | Ingress `3000`/`50051` only from ALB SG; egress all. |
 | RDS Proxy SG | [`security_groups.tf:67`](../../infra/security_groups.tf#L67) | Prod-only; ingress `5432` from server SG. |
 | Postgres SG | [`security_groups.tf:92`](../../infra/security_groups.tf#L92) | Ingress `5432` from server SG, plus RDS Proxy SG in prod. |
-| ECS task execution role | [`iam.tf:2`](../../infra/iam.tf#L2) | Pulls images, reads DB / EVM secrets at task start. |
+| ECS task execution role | [`iam.tf:2`](../../infra/iam.tf#L2) | Pulls images, reads DB / EVM / prover URL secrets at task start. |
 | ECS task runtime role | [`iam.tf:53`](../../infra/iam.tf#L53) | App-level `GetSecretValue` for ACK + operator secrets; SSM channels for ECS Exec. |
 | ACK secrets policy | [`iam.tf:70`](../../infra/iam.tf#L70) | Gated on `local.is_prod` — dev never reads ACK secrets. |
 | Operator pubkeys policy | [`iam.tf:93`](../../infra/iam.tf#L93) | Created if user supplies an existing ARN or a managed list. |
 | RDS Proxy role | [`iam.tf:136`](../../infra/iam.tf#L136) | Reads the proxy's credentials secret. |
 | CloudWatch log groups | [`logs.tf`](../../infra/logs.tf) | `server` group, `cluster` (ECS Exec) group, and the EMF metrics group when CloudWatch metrics are enabled. |
 | ADOT metrics sidecar + collector config | [`ecs.tf`](../../infra/ecs.tf), [`observability.tf`](../../infra/observability.tf) | Non-essential container in the server task; config injected via `AOT_CONFIG_CONTENT`. |
-| CloudWatch dashboard + alarms | [`observability.tf`](../../infra/observability.tf) | `<stack>-server` dashboard; error-rate, latency, canonicalization, metrics-pipeline, and ECS saturation alarms. |
+| CloudWatch dashboard + alarms | [`observability.tf`](../../infra/observability.tf) | `<stack>-server` dashboard; error-rate, latency, canonicalization, Guardian execution (operator-side failures, chain-observation outage, reservation age), metrics-pipeline, and ECS saturation alarms. |
 | Alarm SNS topic + Slack channel | [`alerting.tf`](../../infra/alerting.tf) | Opt-in `<stack>-alarms` topic appended to every alarm's ALARM/OK actions; optional Amazon Q Developer in chat applications Slack channel configuration subscribed to it, with a notifications-only channel role. |
 | CloudWatch log metric filters + log-errors alarm | [`log_alarms.tf`](../../infra/log_alarms.tf) | ERROR/WARN line counts from the server log group as custom metrics; alarm on sustained ERROR output. Gated by `cloudwatch_log_alarms_enabled`, requires JSON logs (plan-time precondition). |
 | ADOT EMF log-write policy | [`iam.tf`](../../infra/iam.tf) | Task-role, stream-level writes on the EMF group only. |
@@ -195,7 +196,7 @@ Concrete defaults are in
 
 ## Identity and secrets
 
-Five categories of secret participate in a deploy:
+Six categories of secret participate in a deploy:
 
 1. **`DATABASE_URL`** — written by Terraform from RDS connection details
    ([`rds.tf:57`](../../infra/rds.tf#L57)). Server task reads it via the
@@ -218,10 +219,18 @@ Five categories of secret participate in a deploy:
    populated from `config/evm/chains.json`, exposed to the task as
    `GUARDIAN_EVM_ALLOWED_CHAIN_IDS` and `GUARDIAN_EVM_RPC_URLS`
    ([`ecs.tf:125`](../../infra/ecs.tf#L125)).
+6. **Remote prover URL** (optional) - the prover Guardian execution sends
+   proofs to. Terraform-managed from `guardian_tx_prover_url` (7-day recovery
+   window; the plan refuses to delete it unless `guardian_execution_enabled =
+   false`) or an existing ARN; exposed to the task as `GUARDIAN_TX_PROVER_URL`
+   ([`ecs.tf:344`](../../infra/ecs.tf#L344)). Stored as a secret because a
+   private prover's hostname can be sensitive, not because it holds
+   credentials: the server refuses a URL with userinfo, a query or a fragment,
+   so a private prover is restricted at the network level.
 
 The IAM split is deliberate:
 - The **execution role** only reads secrets the AWS-ECS agent needs *before*
-  the container starts (DB URL, EVM secrets surfaced as env).
+  the container starts (DB URL, EVM secrets and the prover URL surfaced as env).
 - The **task role** owns secret reads the *application* performs at runtime
   (ACK keys, operator pubkeys) and SSM channels for ECS Exec.
 
