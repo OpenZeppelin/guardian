@@ -7,10 +7,19 @@ use crate::environment::error_chain;
 
 use super::network::MidenClient;
 
+/// How many notes one consume transaction carries. Faucet top-ups arrive as
+/// many small notes, and proving all of them in one transaction outlasts the
+/// remote prover's connection: 84 notes timed out on every attempt, while
+/// batches of ten each proved in seconds.
+pub const NOTES_PER_TRANSACTION: usize = 10;
+
 /// Consumes the notes addressed to an account, which is what actually deploys
 /// it and moves the funds into its vault. A note sent to an address is not a
 /// balance: the account does not exist on chain until it transacts, and this
 /// first transaction pays its own fee out of the note it consumes.
+///
+/// Each batch commits on its own, so a failure partway leaves the earlier
+/// batches consumed and the rest waiting for the next attempt.
 pub async fn consume_pending_notes(
     client: &mut MidenClient,
     account_id: AccountId,
@@ -25,10 +34,6 @@ pub async fn consume_pending_notes(
         .await
         .map_err(|error| anyhow!("listing consumable notes failed: {error}"))?;
 
-    if consumable.is_empty() {
-        return Ok(0);
-    }
-
     let mut notes: Vec<Note> = Vec::with_capacity(consumable.len());
     for (record, _relevance) in &consumable {
         let note: Note = record
@@ -37,24 +42,33 @@ pub async fn consume_pending_notes(
             .map_err(|error| anyhow!("a consumable note could not be read as a note: {error:?}"))?;
         notes.push(note);
     }
-    let count = notes.len();
+    let waiting = notes.len();
 
-    let request = TransactionRequestBuilder::new()
-        .input_notes(notes.into_iter().map(|note| (note, None)))
-        .build()
-        .map_err(|error| anyhow!("building the consume request failed: {error}"))?;
+    let mut consumed = 0;
+    for batch in notes.chunks(NOTES_PER_TRANSACTION) {
+        let request = TransactionRequestBuilder::new()
+            .input_notes(batch.iter().cloned().map(|note| (note, None)))
+            .build()
+            .map_err(|error| anyhow!("building the consume request failed: {error}"))?;
 
-    client
-        .submit_new_transaction(account_id, request)
-        .await
-        .map_err(|error| anyhow!("the bootstrap transaction failed: {}", error_chain(&error)))?;
+        client
+            .submit_new_transaction(account_id, request)
+            .await
+            .map_err(|error| {
+                anyhow!(
+                    "the bootstrap transaction failed after consuming {consumed} of {waiting} note(s): {}",
+                    error_chain(&error)
+                )
+            })?;
 
-    client.sync_state().await.map_err(|error| {
-        anyhow!(
-            "syncing after the bootstrap failed: {}",
-            error_chain(&error)
-        )
-    })?;
+        client.sync_state().await.map_err(|error| {
+            anyhow!(
+                "syncing after the bootstrap failed: {}",
+                error_chain(&error)
+            )
+        })?;
+        consumed += batch.len();
+    }
 
-    Ok(count)
+    Ok(consumed)
 }
