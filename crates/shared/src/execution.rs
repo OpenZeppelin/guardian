@@ -67,6 +67,7 @@ pub enum RequestInvalidReason {
     AuthArgsMissing,
     ApprovalExpirationMissing,
     InputNotesNotPinned,
+    TooManyDeclaredBlocks,
 }
 
 /// Which signed expiration bound the chain has reached.
