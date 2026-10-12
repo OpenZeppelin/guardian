@@ -1870,13 +1870,20 @@ mod tests {
     }
 
     /// The shape of an account-creating transaction that consumes a note:
-    /// the delta carries the initial storage (here the auth component's
-    /// threshold slot) although no update procedure was called.
-    fn creating_receive_summary(account_id: &str) -> serde_json::Value {
+    /// the delta carries the written configuration (the auth component's
+    /// threshold slot with `threshold_config`, and the approver map when
+    /// `approver` is given). With the initial account's own values that is
+    /// pure initialization; with different values it is a configuration
+    /// change made in the creating transaction itself.
+    fn creating_receive_summary(
+        account_id: &str,
+        threshold_config: miden_protocol::Word,
+        approver: Option<miden_protocol::Word>,
+    ) -> serde_json::Value {
         use guardian_shared::ToJson;
         use miden_protocol::account::{
             AccountCodePatch, AccountDelta, AccountId, AccountStoragePatch, AccountVaultDelta,
-            StorageSlotPatch, StorageValuePatch,
+            StorageMapKey, StorageSlotPatch, StorageValuePatch,
         };
         use miden_protocol::note::Note;
         use miden_protocol::transaction::{
@@ -1885,13 +1892,26 @@ mod tests {
         use miden_protocol::{Felt, Word, ZERO};
         use miden_standards::account::auth::AuthGuardedMultisig;
 
-        let storage_patch = AccountStoragePatch::from_entries([(
+        let mut entries = vec![(
             AuthGuardedMultisig::threshold_config_slot().clone(),
             StorageSlotPatch::Value(StorageValuePatch::Update {
-                value: Word::from([2u32, 1, 0, 0]),
+                value: threshold_config,
             }),
-        )])
-        .expect("storage patch");
+        )];
+        if let Some(approver) = approver {
+            use miden_protocol::account::{StorageMapPatch, StorageMapPatchEntries};
+            entries.push((
+                AuthGuardedMultisig::approver_public_keys_slot().clone(),
+                StorageSlotPatch::Map(StorageMapPatch::Create {
+                    entries: StorageMapPatchEntries::from_raw(
+                        [(StorageMapKey::new(Word::from([0u32, 0, 0, 0])), approver)]
+                            .into_iter()
+                            .collect(),
+                    ),
+                }),
+            ));
+        }
+        let storage_patch = AccountStoragePatch::from_entries(entries).expect("storage patch");
         let delta = AccountDelta::new(
             AccountId::from_hex(account_id).expect("account id"),
             storage_patch,
@@ -1982,7 +2002,13 @@ mod tests {
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let approver = TestSigner::new();
-        let payload = creating_receive_summary(account_id);
+        // The written configuration is exactly what the initial account
+        // holds (threshold 2, one approver at index 0): pure initialization.
+        let payload = creating_receive_summary(
+            account_id,
+            miden_protocol::Word::from([2u32, 1, 0, 0]),
+            Some(word_from_hex(&approver.commitment_hex)),
+        );
         let summary =
             miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
         let receive: miden_protocol::Word = BasicWallet::receive_asset_root().into();
@@ -2031,6 +2057,54 @@ mod tests {
             2,
             &[(receive, 1)],
             1,
+            "consume_notes",
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
+        )
+        .await;
+        assert!(
+            matches!(
+                refused,
+                Err(GuardianError::InsufficientSignatures {
+                    required: 2,
+                    got: 1
+                })
+            ),
+            "{refused:?}"
+        );
+        assert_not_committed(&storage);
+    }
+
+    /// A creating transaction can both consume a note and change the
+    /// signer configuration, and on chain the update procedure still
+    /// counts. A config patch that differs from the registered initial
+    /// account is such a change, so a receive override and a cheap label
+    /// cannot admit it below the update-signers threshold.
+    #[tokio::test]
+    async fn multisig_push_counts_a_configuration_change_in_the_creating_transaction() {
+        use crate::testing::helpers::TestSigner;
+        use guardian_shared::FromJson;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let approver = TestSigner::new();
+        // The initial account holds threshold config [2, 1]; this creating
+        // transaction writes [2, 2]: a signer-set change made in the same
+        // transaction that consumes the note.
+        let payload = creating_receive_summary(
+            account_id,
+            miden_protocol::Word::from([2u32, 2, 0, 0]),
+            None,
+        );
+        let summary =
+            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
+        let receive: miden_protocol::Word = BasicWallet::receive_asset_root().into();
+
+        let (refused, storage) = push_payload_on_multisig(
+            payload,
+            std::slice::from_ref(&approver.commitment_hex),
+            2,
+            &[(receive, 1)],
+            0,
             "consume_notes",
             ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
         )

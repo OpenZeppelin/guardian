@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use miden_protocol::Word;
-use miden_protocol::account::{Account, StorageMapKey, StorageSlotName};
+use miden_protocol::account::{Account, StorageMapKey, StorageSlotName, StorageSlotPatch};
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
 use miden_standards::account::auth::AuthGuardedMultisig;
 use miden_standards::account::wallets::BasicWallet;
@@ -55,12 +55,14 @@ impl InvokedProcedure {
     /// Guardian does not model, held to the account default. The
     /// executed-transactions slot is bookkeeping the auth procedure
     /// writes on every transaction and implies nothing. The
-    /// account-creating transaction (`account_is_new`) writes the
-    /// whole initial storage into its delta without calling any update
-    /// procedure, so its slot patches imply nothing either; its notes
-    /// still count, and a creating transaction whose summary shows no
-    /// procedure falls to the account default like any other.
-    fn of_summary(summary: &TransactionSummary, account_is_new: bool) -> BTreeSet<Self> {
+    /// account-creating transaction is deltaed against the empty
+    /// account, so it carries the whole initial storage: a patch that
+    /// writes exactly what the registered initial account (`account`,
+    /// the tail at nonce zero) already holds is initialization and
+    /// implies nothing, while one that differs was written by a
+    /// procedure called in that same transaction (a first-transaction
+    /// signer change) and keeps counting.
+    fn of_summary(summary: &TransactionSummary, account: &Account) -> BTreeSet<Self> {
         let mut invoked = BTreeSet::new();
         if summary.input_notes().num_notes() > 0 {
             invoked.insert(Self::ReceiveAsset);
@@ -68,15 +70,17 @@ impl InvokedProcedure {
         if summary.output_notes().iter().any(is_non_fee_output_note) {
             invoked.insert(Self::SendAsset);
         }
-        if !account_is_new {
-            invoked.extend(
-                summary
-                    .account_delta()
-                    .storage()
-                    .slots()
-                    .filter_map(|(slot, _)| Self::of_patched_slot(slot)),
-            );
-        }
+        let account_is_new = account.is_new();
+        invoked.extend(
+            summary
+                .account_delta()
+                .storage()
+                .slots()
+                .filter(|(slot, patch)| {
+                    !account_is_new || !is_initialization_patch(account, slot, patch)
+                })
+                .filter_map(|(slot, _)| Self::of_patched_slot(slot)),
+        );
         invoked
     }
 
@@ -131,6 +135,31 @@ impl InvokedProcedure {
             Self::ReceiveAsset => vec![BasicWallet::receive_asset_root().into()],
             Self::AccountDefault => Vec::new(),
         }
+    }
+}
+
+/// Whether a creating transaction's storage patch only writes what the
+/// registered initial account already holds. A value or entry this gate
+/// cannot read, or one that differs from the stored initial state, is
+/// treated as a real change, the over-requiring direction; a removal is
+/// never initialization.
+fn is_initialization_patch(
+    account: &Account,
+    slot: &StorageSlotName,
+    patch: &StorageSlotPatch,
+) -> bool {
+    let storage = account.storage();
+    match patch {
+        StorageSlotPatch::Value(value_patch) => value_patch
+            .value()
+            .is_some_and(|value| storage.get_item(slot).is_ok_and(|stored| stored == value)),
+        StorageSlotPatch::Map(map_patch) => map_patch.entries().is_some_and(|entries| {
+            entries.as_map().iter().all(|(key, value)| {
+                storage
+                    .get_map_item(slot, key.clone())
+                    .is_ok_and(|stored| stored == *value)
+            })
+        }),
     }
 }
 
@@ -211,7 +240,7 @@ impl MultisigAccount {
         pushed: &TransactionSummary,
         claimed: Option<InvokedProcedure>,
     ) -> Result<usize> {
-        let mut invoked = InvokedProcedure::of_summary(pushed, self.account.is_new());
+        let mut invoked = InvokedProcedure::of_summary(pushed, &self.account);
         if invoked.is_empty() {
             invoked.insert(InvokedProcedure::AccountDefault);
         }
