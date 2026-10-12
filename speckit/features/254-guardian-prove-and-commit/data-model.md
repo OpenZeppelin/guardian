@@ -591,7 +591,7 @@ never a reconcile-owned write; the expiration bound remains the backstop.
 
 | Reconcile-owned path | Observation | Outcome |
 |---|---|---|
-| **Superseded** | Account moved to a commitment that is neither `base_commitment` nor `expected_commitment` | `failed` / `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` |
+| **Superseded** | Account moved to a commitment that is neither `base_commitment` nor `expected_commitment`, and its transaction history from `reference_block` through the observed block has no transaction ending at `expected_commitment` (one that does means it landed: promotion commits it) | `failed` / `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` |
 | **Expired** | Chain passed `expiration_block` with the account still at `base_commitment` | `failed` / `GUARDIAN_EXECUTION_EXPIRED` |
 
 Plus FR-031 restart recovery, which resolves rather than retries.
