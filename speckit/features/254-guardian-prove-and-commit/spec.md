@@ -1035,7 +1035,10 @@ This is an admission/execution policy, not a universal property of signed summar
   - **Committed** — the expected resulting account commitment is observed on chain, or the
     transaction is observed included; settle `committed`.
   - **Superseded** — the account is observed at a commitment that is neither the base nor
-    the expected result; the transaction can no longer land; settle `failed`.
+    the expected result, and its transaction history from the reference block through the
+    observed block has no transaction ending at the expected result; the transaction can no
+    longer land; settle `failed`. A history that has one means the transaction landed and the
+    account moved on: the candidate is promoted and the execution settles `committed`.
   - **Expired** — the chain height is observed at or past the expiration block recorded
     under FR-039 while the account is still at base; the transaction can never land; settle
     `failed`. FR-046 guarantees that bound is finite and within the horizon. A transaction

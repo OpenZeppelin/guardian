@@ -785,6 +785,77 @@ impl DeltasProcessorBase {
             && successors.iter().any(|successor| successor == on_chain)
     }
 
+    /// Whether this candidate is the one a Guardian execution submitted and
+    /// the account's transaction history shows it landed: the chain then
+    /// passed through it before moving on, as when the cosigners switch the
+    /// account's guardian, which needs no acknowledgment from this server.
+    /// The execution's evidence bounds the search from its reference block.
+    /// Any other candidate, or a search that could not be made, is left to
+    /// the divergence path, which never discards an executing candidate.
+    async fn executed_candidate_landed(&self, delta: &DeltaObject, recomputed: &str) -> bool {
+        let evidence = match self
+            .state
+            .storage
+            .load_active_execution(&delta.account_id)
+            .await
+        {
+            Ok(Some(record)) => record.evidence,
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    %error,
+                    "Failed to read the account's execution; leaving the diverged candidate to the next pass"
+                );
+                None
+            }
+        };
+        let Some(evidence) = evidence else {
+            return false;
+        };
+        if evidence.candidate_nonce != delta.nonce
+            || !evidence
+                .expected_commitment
+                .eq_ignore_ascii_case(recomputed)
+        {
+            return false;
+        }
+        match self
+            .state
+            .network_client
+            .find_transaction_ending_at(
+                &delta.account_id,
+                recomputed,
+                evidence.reference_block,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
+            .await
+        {
+            Ok(search) => match search.found_in_block {
+                Some(block) => {
+                    tracing::info!(
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        landed_in_block = block,
+                        "The executed candidate landed before the account moved on; promoting it"
+                    );
+                    true
+                }
+                None => false,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    %error,
+                    "Transaction history could not be searched for the executed candidate"
+                );
+                false
+            }
+        }
+    }
+
     /// Whether the candidate queued just before the current one is still
     /// a candidate (issue #17). A successor only *waits* on a queued
     /// predecessor; one that was parked, discarded, or abandoned on this
@@ -1025,9 +1096,23 @@ impl DeltasProcessorBase {
             // never land anymore and the expected commitment is permanently
             // unsatisfiable. Waiting out the grace period would only keep the
             // account locked (every new proposal 409s meanwhile) — discard as
-            // soon as the divergence is confirmed.
+            // soon as the divergence is confirmed. The exception is a
+            // Guardian-executed candidate whose transaction history shows it
+            // landed before the account moved on: it is promoted instead.
             Ok(StateVerification::Mismatch { on_chain }) if on_chain != delta.prev_commitment => {
-                self.handle_diverged_candidate(delta, &on_chain).await
+                if self
+                    .executed_candidate_landed(&delta, &recomputed_commitment)
+                    .await
+                {
+                    self.canonicalize_verified_delta(
+                        delta,
+                        applied,
+                        crate::metrics::labels::CandidateOutcome::Canonicalized,
+                    )
+                    .await
+                } else {
+                    self.handle_diverged_candidate(delta, &on_chain).await
+                }
             }
             // On-chain still shows the candidate's base state: the
             // transaction simply has not landed yet. This read also proves
@@ -3535,7 +3620,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(mock_network),
+            Arc::new(mock_network.clone()),
             metadata.clone(),
             clock,
         );
@@ -3552,6 +3637,12 @@ mod tests {
         assert_eq!(status_updates[0].2.retry_count(), 0);
         assert!(storage.get_delete_delta_calls().is_empty());
         assert!(metadata.get_set_calls().is_empty());
+        assert!(
+            mock_network
+                .get_find_transaction_ending_at_calls()
+                .is_empty(),
+            "only a Guardian-executed candidate is searched for in the account's history"
+        );
     }
 
     #[tokio::test]
