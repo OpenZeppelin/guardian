@@ -302,7 +302,9 @@ confirm the SDK raises a dedicated error.
   instead of deleting the record. Records MUST be removed after expiry; there
   are no permanent tombstones. The default and maximum lifetime is 8 hours,
   matching operator and EVM sessions; operators MAY configure a shorter
-  maximum, which MUST be longer than the 300-second skew window.
+  maximum, which MUST be at least 361 seconds: the 300-second skew window
+  plus the 60-second margin SDKs keep below the advertised maximum. A shorter
+  value MUST fail startup with an error that says so.
 - **FR-007 — Request authentication**: For a request with
   `x-auth-format: session`, `resolve_account` MUST, before and instead of
   `Auth::verify`, in this order:
