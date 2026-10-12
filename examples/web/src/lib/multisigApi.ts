@@ -31,7 +31,7 @@ type ResolvedSigner = {
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
   commitment: string;
-  publicKey: string;
+  publicKey?: string;
   scheme: SignatureScheme;
 }
 
