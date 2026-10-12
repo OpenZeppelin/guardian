@@ -1,0 +1,47 @@
+{
+  "boundBlockNum": 42,
+  "current": {
+    "wire": {
+      "proposal_type": "p2id",
+      "description": "Send 1000 of asset 0x2a3b4c5d... to 0x1a2b3c4d...",
+      "salt": "0x0101010101010101010101010101010101010101010101010101010101010101",
+      "required_signatures": 2,
+      "recipient_id": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8",
+      "faucet_id": "0x2a3b4c5d6e7f8091a2b3c4d5e6f708",
+      "amount": "1000",
+      "bound_block_num": 42
+    },
+    "guardian": {
+      "proposalType": "p2id",
+      "description": "Send 1000 of asset 0x2a3b4c5d... to 0x1a2b3c4d...",
+      "salt": "0x0101010101010101010101010101010101010101010101010101010101010101",
+      "requiredSignatures": 2,
+      "recipientId": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8",
+      "faucetId": "0x2a3b4c5d6e7f8091a2b3c4d5e6f708",
+      "amount": "1000",
+      "boundBlockNum": 42
+    }
+  },
+  "legacy": {
+    "wire": {
+      "proposal_type": "p2id",
+      "description": "Send 1000 of asset 0x2a3b4c5d... to 0x1a2b3c4d...",
+      "salt": "0x0101010101010101010101010101010101010101010101010101010101010101",
+      "required_signatures": 2,
+      "recipient_id": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8",
+      "faucet_id": "0x2a3b4c5d6e7f8091a2b3c4d5e6f708",
+      "amount": "1000",
+      "chain_anchor": "bW9jay1jaGFpbi1hbmNob3I="
+    },
+    "guardian": {
+      "proposalType": "p2id",
+      "description": "Send 1000 of asset 0x2a3b4c5d... to 0x1a2b3c4d...",
+      "salt": "0x0101010101010101010101010101010101010101010101010101010101010101",
+      "requiredSignatures": 2,
+      "recipientId": "0x1a2b3c4d5e6f708192a3b4c5d6e7f8",
+      "faucetId": "0x2a3b4c5d6e7f8091a2b3c4d5e6f708",
+      "amount": "1000",
+      "chainAnchor": "bW9jay1jaGFpbi1hbmNob3I="
+    }
+  }
+}

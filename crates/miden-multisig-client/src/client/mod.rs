@@ -178,10 +178,9 @@ impl MultisigClient {
     /// left out binds the store's sync height, which a fresh proposal wants:
     /// [`sync`](Self::sync) first, then build, then
     /// [`propose_custom_transaction`](Self::propose_custom_transaction), which
-    /// captures its anchor at that same height and does not sync again. A
-    /// rebuild passes the block its proposal's anchor names. The fee conversion
-    /// info names the fee faucet of the protocol configuration the last sync
-    /// delivered.
+    /// derives the summary at the chain tip. A rebuild passes the block the
+    /// proposal's summary binds. The fee conversion info names the fee faucet
+    /// of the protocol configuration the last sync delivered.
     pub async fn multisig_auth_args(
         &self,
         salt: Word,

@@ -23,12 +23,8 @@ pub use consume::{
 pub use guardian::build_update_guardian_transaction_request;
 pub use payment::build_p2id_transaction_request;
 
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64;
 use miden_client::ClientError;
-use miden_client::transaction::{
-    ChainAnchor, TransactionExecutorError, TransactionRequest, TransactionSummary,
-};
+use miden_client::transaction::{TransactionExecutorError, TransactionRequest, TransactionSummary};
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::{Felt, Word};
@@ -45,69 +41,17 @@ pub fn deserialize_transaction_request(bytes: &[u8]) -> Result<TransactionReques
     })
 }
 
-/// Serializes a [`ChainAnchor`] to base64 for the proposal wire payload.
-pub fn chain_anchor_to_base64(anchor: &ChainAnchor) -> String {
-    use miden_client::Serializable;
-    BASE64.encode(anchor.to_bytes())
-}
-
-/// Deserializes a [`ChainAnchor`] from its base64 wire form. `ChainAnchor`
-/// deserialization validates the header/chain consistency internally, so a
-/// decoded anchor only needs its block commitment checked against the signed
-/// transaction summary before the block it names is taken as the one the
-/// summary binds.
-pub fn chain_anchor_from_base64(anchor_b64: &str) -> Result<ChainAnchor> {
-    use miden_client::Deserializable;
-    let bytes = BASE64
-        .decode(anchor_b64)
-        .map_err(|e| MultisigError::InvalidConfig(format!("invalid chain_anchor base64: {e}")))?;
-    ChainAnchor::read_from_bytes(&bytes)
-        .map_err(|e| MultisigError::InvalidConfig(format!("invalid chain_anchor: {e}")))
-}
-
-/// Derives the summary awaiting authorization for a proposal the caller is
-/// creating now, and captures a [`ChainAnchor`] at the current sync height to
-/// ship with it.
-///
-/// The summary is derived at the chain tip, like every other execution of a
-/// multisig proposal (see [`execute_for_summary_at_tip`]). The anchor still
-/// travels in the proposal: it names the block the request's auth args bind,
-/// which is how the TypeScript SDK learns that block for a rebuild, and
-/// 0.18.0-rc.1 clients re-execute at it. A proposer builds at the sync height
-/// the anchor is captured at. A sync landing between the build and the capture
-/// leaves the two one block apart; it is caught here, before the proposal is
-/// pushed, so the proposer rebuilds instead.
-pub async fn execute_for_summary(
-    client: &mut MidenSdkClient,
-    account_id: AccountId,
-    request: TransactionRequest,
-) -> Result<(TransactionSummary, ChainAnchor)> {
-    let anchor = client
-        .chain_anchor_for_request(&request)
-        .await
-        .map_err(|e| MultisigError::MidenClient(format!("failed to capture chain anchor: {e}")))?;
-    let summary = execute_for_summary_at_tip(client, account_id, request).await?;
-    if anchor.block_commitment() != summary.block_commitment() {
-        return Err(MultisigError::SummaryAnchorMismatch {
-            anchor_commitment: word_to_hex(&anchor.block_commitment()),
-            summary_block_commitment: word_to_hex(&summary.block_commitment()),
-        });
-    }
-    Ok((summary, anchor))
-}
-
 /// Executes a multisig request at the chain tip to get its summary (expects the
-/// Unauthorized error). This is how cosigners and the executor reproduce a
-/// proposal's summary, whatever block they have synced to.
+/// Unauthorized error). Proposers derive a new proposal's summary with it, and
+/// cosigners and the executor reproduce it, whatever block they have synced to.
 ///
 /// Since protocol 0.17 a multisig summary binds the block its auth args name
 /// (the bound block), not the block the transaction executes against, so it
 /// reproduces at any later tip once the bound block is in the transaction's
 /// partial blockchain. The request declares it (see
 /// [`TransactionRequestBuilderExt`]), and foreign accounts, the fee faucet
-/// among them, load at the tip. Re-executing at the proposal's anchor instead
-/// loads them at the bound block, which a node prunes about 50 blocks later
-/// (issue #462).
+/// among them, load at the tip. Executing at the bound block instead would load
+/// them there, which a node prunes about 50 blocks later (issue #462).
 pub async fn execute_for_summary_at_tip(
     client: &mut MidenSdkClient,
     account_id: AccountId,

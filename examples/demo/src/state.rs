@@ -22,7 +22,7 @@ pub struct CustomProposalRecipe {
     /// P2IDE heights (issue #366); the default => plain P2ID note.
     pub heights: P2ideHeights,
     pub salt: Word,
-    /// The block the signed summary binds: the proposal's anchor block.
+    /// The block the signed summary binds: the proposal's `bound_block_num`.
     pub bound_block_num: BlockNumber,
 }
 
