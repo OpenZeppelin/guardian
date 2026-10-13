@@ -16,8 +16,22 @@ import {
 } from "@miden-sdk/miden-sdk";
 import { getProcedureRoot } from "../procedures.js";
 import { MAX_SIGNERS } from "./layout.js";
-import type { MultisigConfig, CreateAccountResult } from "../types.js";
+import type {
+  MultisigConfig,
+  CreateAccountResult,
+  SignatureScheme,
+} from "../types.js";
 import { normalizeSignerCommitment } from "../utils/signature.js";
+import {
+  DEFAULT_SIGNATURE_SCHEME,
+  allSignersUse,
+  resolveSignerSpecs,
+  signerCommitmentsOf,
+} from "./signers.js";
+import {
+  buildGuardianStorageSlots,
+  buildMultisigStorageSlots,
+} from "./storage.js";
 
 /**
  * Discriminants of the SDK's wasm `AuthScheme` enum, which `AuthGuardedMultisigConfig` takes.
@@ -43,24 +57,37 @@ const AUTH_SCHEME = { ecdsa: 1, falcon: 2 } as const;
  * the component's MASM export names (`update_signers` is exported as `update_signers_and_threshold`),
  * and `send_asset`/`receive_asset` are `BasicWallet` procedures that the auth component never
  * exports at all. `procedure_roots_match_upstream_component` pins the table to the component.
+ *
+ * The SDK's `AuthGuardedMultisigConfig` takes one scheme for every approver and the guardian, so
+ * a configuration whose approvers do not all use the guardian's scheme is built by
+ * {@link buildGuardedMultisigComponentFromLibrary} instead.
  */
 function buildGuardedMultisigComponent(
   config: MultisigConfig,
 ): AccountComponent {
-  const approvers = config.signerCommitments.map((commitment) =>
+  const guardianScheme = config.signatureScheme ?? DEFAULT_SIGNATURE_SCHEME;
+  if (!allSignersUse(resolveSignerSpecs(config), guardianScheme)) {
+    return buildGuardedMultisigComponentFromLibrary(config);
+  }
+  return buildStandardGuardedMultisigComponent(config, guardianScheme);
+}
+
+function buildStandardGuardedMultisigComponent(
+  config: MultisigConfig,
+  scheme: SignatureScheme,
+): AccountComponent {
+  const approvers = signerCommitmentsOf(config.signerCommitments).map((commitment) =>
     Word.fromHex(normalizeSignerCommitment(commitment)),
   );
   const guardian = Word.fromHex(
     normalizeSignerCommitment(config.guardianCommitment),
   );
-  const scheme =
-    AUTH_SCHEME[config.signatureScheme === "ecdsa" ? "ecdsa" : "falcon"];
 
   const baseConfig = new AuthGuardedMultisigConfig(
     approvers,
     config.threshold,
     guardian,
-    scheme,
+    AUTH_SCHEME[scheme],
   );
 
   if (!config.procedureThresholds?.length) {
@@ -78,6 +105,27 @@ function buildGuardedMultisigComponent(
   return createAuthGuardedMultisig(
     baseConfig.withProcThresholds(thresholds),
   ).withSupportsAllTypes();
+}
+
+/**
+ * Builds the guarded-multisig component with one scheme per approver.
+ *
+ * The code is the upstream component's own compiled library, taken from the SDK-built component,
+ * so procedure roots and fee wiring are identical to {@link buildStandardGuardedMultisigComponent};
+ * only the storage differs. The slots follow `From<AuthGuardedMultisig> for AccountComponent` in
+ * miden-standards: `approver_schemes` maps `[i, 0, 0, 0]` to `[scheme_id_i, 0, 0, 0]`. For a
+ * single-scheme configuration this yields the same account as the standard path.
+ */
+export function buildGuardedMultisigComponentFromLibrary(
+  config: MultisigConfig,
+): AccountComponent {
+  const standard = buildStandardGuardedMultisigComponent(
+    config,
+    config.signatureScheme ?? DEFAULT_SIGNATURE_SCHEME,
+  );
+  const library = standard.componentCode().asLibrary();
+  const slots = [...buildMultisigStorageSlots(config), ...buildGuardianStorageSlots(config)];
+  return AccountComponent.fromLibrary(library, slots).withSupportsAllTypes();
 }
 
 /**
@@ -138,9 +186,10 @@ export function validateMultisigConfig(config: MultisigConfig): void {
   if (config.signerCommitments.length === 0) {
     throw new Error("at least one signer commitment is required");
   }
+  resolveSignerSpecs(config);
 
   const signerCommitments = new Set<string>();
-  for (const signerCommitment of config.signerCommitments) {
+  for (const signerCommitment of signerCommitmentsOf(config.signerCommitments)) {
     const normalizedCommitment = normalizeSignerCommitment(signerCommitment);
     if (signerCommitments.has(normalizedCommitment)) {
       throw new Error(`duplicate signer commitment: ${normalizedCommitment}`);

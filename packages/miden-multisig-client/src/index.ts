@@ -185,6 +185,9 @@ export {
   buildGuardianStorageSlots,
   storageLayoutBuilder,
   StorageLayoutBuilder,
+  resolveSignerSpecs,
+  SignerSchemeMismatchError,
+  type SignerSchemeErrorCode,
 } from './account/index.js';
 
 export {
@@ -241,6 +244,8 @@ export type {
   MultisigConfig,
   CreateAccountResult,
   ProcedureThreshold,
+  SignerSpec,
+  SignerInput,
 
   // Proposal types
   Proposal,

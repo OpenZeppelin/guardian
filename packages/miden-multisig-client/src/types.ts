@@ -75,13 +75,33 @@ export interface ProcedureThreshold {
   threshold: number;
 }
 
+/**
+ * An approver together with the signature scheme the account verifies its
+ * signatures under.
+ */
+export interface SignerSpec {
+  commitment: string;
+  scheme: SignatureScheme;
+}
+
+/**
+ * An approver as a bare commitment, which takes the configuration's default
+ * scheme, or as a {@link SignerSpec} carrying its own scheme.
+ */
+export type SignerInput = string | SignerSpec;
+
 export interface MultisigConfig {
   threshold: number;
-  signerCommitments: string[];
+  /**
+   * Approvers in storage order. A bare commitment uses `signatureScheme`
+   * (default `'falcon'`); a {@link SignerSpec} sets that approver's scheme.
+   */
+  signerCommitments: SignerInput[];
   guardianCommitment: string;
   guardianPublicKey?: string;
   storageMode?: 'private' | 'public';
   procedureThresholds?: ProcedureThreshold[];
+  /** The GUARDIAN's scheme, and the scheme of every approver given as a bare commitment. */
   signatureScheme?: SignatureScheme;
   seed?: Uint8Array
 }
@@ -94,7 +114,7 @@ export interface CreateAccountResult {
 export type TransactionType =
   | { type: 'p2id'; recipient: string; faucetId: string; amount: bigint }
   | { type: 'consumeNotes'; noteIds: string[] }
-  | { type: 'updateSigners'; newThreshold: number; newSignerCommitments: string[] }
+  | { type: 'updateSigners'; newThreshold: number; newSignerCommitments: SignerInput[] }
   | { type: 'updateProcedureThreshold'; procedure: ProcedureName; threshold: number };
 
 export interface NoteAsset {

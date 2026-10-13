@@ -13,3 +13,9 @@ export {
   storageLayoutBuilder,
   StorageLayoutBuilder,
 } from './storage.js';
+
+export {
+  resolveSignerSpecs,
+  SignerSchemeMismatchError,
+  type SignerSchemeErrorCode,
+} from './signers.js';
