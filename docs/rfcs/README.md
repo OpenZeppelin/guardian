@@ -8,7 +8,7 @@ protocol partners, integrators, and anyone reading the repository publicly.
 | # | Title | Status | Feature |
 |---|---|---|---|
 | [0001](https://github.com/OpenZeppelin/guardian/blob/254-execution-impl/docs/rfcs/0001-server-side-transaction-execution.md) (on PR [#510](https://github.com/OpenZeppelin/guardian/pull/510) until it merges) | Guardian executes, proves and submits transactions | Accepted for implementation | [#254](https://github.com/OpenZeppelin/guardian/issues/254) |
-| [0002](./0002-guardian-modules.md) | Guardian modules, a hook pipeline for pluggable policy | Draft | [#251](https://github.com/OpenZeppelin/guardian/issues/251) |
+| [0002](./0002-guardian-modules.md) | Guardian modules, a hook pipeline for pluggable policy | Open for comment | [#251](https://github.com/OpenZeppelin/guardian/issues/251) |
 
 ## What belongs here
 
