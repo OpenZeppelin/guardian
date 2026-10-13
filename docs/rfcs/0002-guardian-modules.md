@@ -7,7 +7,7 @@
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
 | **Working artifacts** | `speckit/features/251-guardian-modules/` (created after this RFC is accepted) |
-| **Revision** | 18 (2026-10-13): eighth review round: first implementation split into M2a (stateless gates), M2b (stateful limits) and M2c (custom kinds), with protocol version 1 frozen at M2a (section 7); `http` kind deferred past M2; filesystem backend limited to gate hooks (section 3.3); circuit breaker and health probe per instance (section 4.4); `HookRequest` byte cap (section 3.4); default evaluation budget lowered to 1000 ms, sequential evaluation kept with the reason stated (section 4.3); `modules:disable` permission split out; `GET /dashboard/modules` with catalog drift (section 2.2); decision latency histogram; off-chain versus on-chain stated in the summary; declarative policy and parallel evaluation added to the alternatives; revision log moved to Appendix C |
+| **Revision** | 19 (2026-10-13): `before_proposal_created` gate hook in M2a, filtering proposals that the ack would refuse before they are stored, with its own module instances and a signer allowlist example (section 2.3); `before` and `after` account views (signers, threshold, scheme) and a verified `submitter` on every gate request, with the subjects reduced to hook-specific detail; verified `proposer` and `unverified_metadata` (replacing `unverified_hint`) in `TransactionSubject`; `submitter` and `proposer` in `CommitEvent` (section 3.2); signer allowlist and denylist in `basic-policy`; signer slot example corrected to `threshold_config`; review round on the revision: `submitter` and `proposer` in `pending`, the execution requester recorded on the reservation, `ProposalContext` lookup that separates absence from failure, first creator wins on both backends, account view extraction that fails instead of returning an empty view and reads the stored state at re-onboarding, `default_threshold` and `procedure_thresholds`, `signer_check`, acceptance cases; the advisory proposal hook withdrawn from future work; account lifecycle notify hooks (`after_account_released`, `after_account_registered`, `after_policy_changed`), conditional proposal lifecycle notify hooks (`after_proposal_closed`, `after_proposal_signed`), a proposal verdict on sign, and Miden proposal cancel and expiry added to future work (section 7) |
 | **Earlier revisions** | Appendix C |
 | **Code baseline** | `main` at `1224ef13`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510). Miden pins: protocol 0.17.0 |
 
@@ -96,11 +96,11 @@ First-party kinds, registered by the official binary (through `ServerBuilder::fr
 |---|---|---|---|
 | `grpc` | Remote | `endpoint = "grpc://host:port"` (TLS), `auth` | Calls a service implementing `guardian.module.v1.GuardianModule` |
 | `http` | Remote | `endpoint = "https://host[:port]"`, `auth` | Not in M2; added if operators ask for it (section 7). Same messages in the proto3 JSON mapping at `GET /v1/describe`, `POST /v1/validate-params`, `POST /v1/evaluate`, `POST /v1/notify`, `POST /v1/notify-gap`. HTTP 404 or 501 from `/v1/notify-gap` is treated like gRPC `UNIMPLEMENTED` (section 3.3) |
-| `basic-policy` | In process | none | Reference policy: recipient and asset allowlist, per-transaction amount cap. Stateless: subscribes to `before_transaction_approved` only |
+| `basic-policy` | In process | none | Reference policy: recipient and asset allowlist, per-transaction amount cap, signer allowlist and denylist. Stateless: supports `before_transaction_approved`, `before_proposal_created` and `before_account_registered` (section 2.3) |
 
 Operator-registered kinds run in process (section 2.5). The proto file is the single source of truth for both remote kinds, so there is one schema to version. A conformance suite in `guardian-module-sdk` runs the same cases against in-process and gRPC modules (and HTTP modules once that kind ships) and asserts identical decisions. Deferring `http` keeps the first suite free of the proto3 JSON mapping rules (base64 `bytes`, decimal-string `int64`, RFC 3339 timestamps); `grpc://` endpoints already meet R3's "registered by URL".
 
-`evaluate` must be free of side effects: clients retry `push_delta`, and an evaluation is not a commitment. State a module keeps (volume counters, recipient first-seen times) is updated from `notify`, which reports only what actually became canonical. Transactions the Guardian has signed but the module has not yet acknowledged through `notify` arrive with every `evaluate` request in `pending` (section 3.4), so a stateful module decides on its counters plus `pending` plus the transaction at hand, and never counts anything in `evaluate`.
+`evaluate` must be free of side effects: clients retry `push_delta`, the same transaction can be evaluated at `before_proposal_created` and again at `before_transaction_approved`, and an evaluation is not a commitment. State a module keeps (volume counters, recipient first-seen times) is updated from `notify`, which reports only what actually became canonical. Transactions the Guardian has signed but the module has not yet acknowledged through `notify` arrive with every `evaluate` request in `pending` (section 3.4), so a stateful module decides on its counters plus `pending` plus the transaction at hand, and never counts anything in `evaluate`.
 
 ### 2.2 Registration, assignment and order
 
@@ -257,14 +257,46 @@ Account self-service configuration is out of scope for this revision (section 7)
 | Hook | Kind | Attachment point |
 |---|---|---|
 | `before_transaction_approved` | Gate | Inside the single function that produces the Guardian ack. On `main` the only production ack is `push_delta` before `state.ack.ack_delta` (`crates/server/src/services/push_delta.rs:182`) **[READ]**. PR #510 (`254-execution-impl`) adds a second caller, the execution worker, and routes both through `ack_delta_internal::acknowledge_delta` (`push_delta.rs:145`, `execute_proposal/worker.rs:389`) **[READ]**; the pipeline runs inside that shared function, so no caller can ack around it. The pause and release check runs earlier (`push_delta.rs:35`, before the ack at `:182`) **[READ]**, so a paused or released account is refused before any module sees its transaction. A denial on the execution path does not reach a `push_delta` caller; it ends the execution with a typed abort the multisig SDKs read (section 4.1) |
+| `before_proposal_created` | Gate (filter) | `push_delta_proposal` (`crates/server/src/services/push_delta_proposal.rs:46`) after queue admission, the pending-proposal limit (`:172-185`), tail reconstruction, `verify_delta` (`:203-213`) and the proposer signature check (`:219-246`), and before the proposal is stored (`submit_delta_proposal`, `:268-272`) **[READ]**. The request has the same shape as at the ack: `before` is the tail the proposal is pinned to, `after` comes from applying the delta to that tail, as `push_delta` does (`push_delta.rs:144`) **[READ]**, done only when a module will be called, and `pending` is built as for the ack (section 3.4). `accounting_time` is the evaluation time and is not stored, since nothing is signed. A deny refuses the proposal with `GUARDIAN_MODULE_DENIED` and nothing is stored, so it takes no proposal slot. See "Proposal filtering" below |
 | `before_account_registered` | Gate | `configure_account` (`crates/server/src/services/configure_account.rs:32`) after the existing credential, canonical signer set and Guardian commitment checks **[READ]**. `configure_account` also serves existing accounts, including re-onboarding after a release (`existing.is_some()`, `configure_account.rs:158,256`) **[READ]**, and the two cases differ. **New account** (`existing.is_none()`): there is no assignment yet, so `scope = all` and `scope = default` modules run (the latter because they are about to apply to the account), each only if it declares this hook; on success the `default` modules are copied into the new assignment. Because `default` instances run here with catalog params, a down fail-closed `default` instance blocks new registrations. **Existing account**: the stored assignment is preserved and never replaced by catalog defaults, and the hook runs `scope = all` modules plus the stored assignment. Otherwise any cosigner, who can call `/configure` with their own key, could wipe a tighter policy an operator assigned |
 | `after_transaction_committed` | Notify | Outbox row written in the same storage write that makes the delta committed. In candidate mode that is `promote_candidate` on the Postgres backend (`crates/server/src/storage/postgres.rs:1786`) **[READ]**; the filesystem backend does not support this hook (section 3.3). With canonicalization disabled the delta commits at push time (`DeltaCommitStrategy::Optimistic`, `crates/server/src/services/delta_commit.rs:18-31`) **[READ]**, and the row is written in that commit |
 
 **Deliberately not hooked:**
 
 - **Leaving the Guardian.** `SwitchGuardian` is the one transaction type that executes on chain without a Guardian acknowledgement (`docs/QUALIFICATION.md:657`) **[READ]**, so the pipeline cannot block an account from switching away. The SDK's best-effort push of the switch delta to the old Guardian does pass through `push_delta` and can be denied by a module; the release sweep then detects the switch from chain instead (`services/release_on_switch.rs:21-31`) **[READ]**. The release sweep itself never acks: in production code it only checks whether a delta carries the current key (`jobs/release_sweep/sweep.rs:667`, `ack.acked_with_current_key`) **[READ]**. Revisions 1 to 5 said otherwise (Appendix B).
-- **Proposal create and sign.** The Guardian signs nothing there, so a gate would not be binding. An advisory "would this pass?" hook is future work.
+- **Proposal signing.** A cosigner adding a signature to a stored proposal is not evaluated. The proposal already holds its slot, and a verdict at that point could only warn (section 7).
 - **EVM proposals.** Feature-gated (`evm`), out of scope; the same pipeline can be attached to the EVM ack path later.
+
+**Proposal filtering.** The Guardian signs nothing at proposal creation, so `before_proposal_created` is not where policy is enforced; the ack is. The hook exists because a proposal the ack would refuse is not harmless. It counts against `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` for as long as its base stays the tail (`push_delta_proposal.rs:172-185`) **[READ]**, and it is never deleted: the server deletes a proposal only when its delta becomes canonical, leaves the candidate path, or is found executed by the release sweep (`jobs/canonicalization/processor.rs:1595,1885`, `jobs/release_sweep/sweep.rs:1361`) **[READ]**, and Miden proposals have no cancel endpoint (EVM has one, `api/evm.rs:399`) **[READ]**. Enough of them on an idle account fill the limit, and no new proposal can be created until the base moves. Every cosigner also signs before learning that the transaction cannot pass. Refusing such a proposal at creation keeps its slot free and tells the proposer why, through `meta.module` and `reason_code`.
+
+- **Separate instances per hook.** A hook runs the instances that list it in `hooks`; nothing is copied from one hook to another. An operator who wants the same rule at creation and at the ack lists both hooks on one instance. One who wants something different at creation, such as other params, a shorter timeout, `on_error = allow` so proposals can still be created during a vendor outage while the ack stays fail-closed, or a check that only makes sense as early feedback, declares a separate instance for `before_proposal_created`. Each instance is assigned, scoped and budgeted like any other (sections 2.2 and 4.3).
+- **Not a security boundary.** Cosigners can sign a transaction offline and send it straight to `push_delta`, skipping the proposal store. A rule that must hold therefore belongs on `before_transaction_approved`; an instance subscribed only to `before_proposal_created` is a filter for usability and slot protection, and the operator documentation says so.
+- **The verdict is current, not final.** For stateful modules the answer can change between creation and the ack: a window fills or resets. A proposal that passed can still be refused at the ack, and one that was refused can be created again later. Open proposals are not part of `pending`; counting them would let proposals nobody intends to execute reserve an account's budget. Two proposals that each fit the remaining budget can both be created, and the ack refuses the second.
+- **Disclosure.** Instances subscribed to this hook receive proposals that may never execute, which widens what a vendor sees (invariant 5).
+
+**Example: a signer allowlist.** An operator wants every account's signers drawn from a list of vetted keys. A signer change writes public key commitments into the multisig map slot `miden::standards::auth::multisig::approver_public_keys`, and the threshold lives in `miden::standards::auth::multisig::threshold_config` (`crates/contracts/tests/auth/multisig.rs:39-40`, `crates/server/src/delta_summary/projection.rs:429`) **[READ]**. The module does not parse those slots: the Guardian decodes them into `before` and `after` (section 3.2), so `basic-policy` runs one rule at every hook. Which signers it checks is a param, because both policies are useful:
+
+- `signer_check = "added"` checks the signers `after` adds, `after.signer_commitments` minus `before.signer_commitments` (all of them at registration, where `before` is absent). Signers that predate the list are kept and do not block unrelated transactions.
+- `signer_check = "all"` checks every signer in `after`, so once the list is in force an account whose current signers are not all on it can do nothing until its signers are replaced.
+
+Each checked signer is matched against `signer_allowlist` or `signer_denylist`. The module compares states, not the proposal type, so adding, replacing and updating signers are all covered whatever `unverified_metadata` claims. One instance subscribes to three hooks, because each closes a different path:
+
+```toml
+[[module]]
+id = "signer-policy"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved", "before_account_registered"]
+timeout_ms = 20
+on_error = "deny"
+params = { signer_check = "all", signer_allowlist = ["0x…", "0x…"] }
+```
+
+- `before_proposal_created` refuses the proposal before any cosigner signs it or it takes a slot.
+- `before_transaction_approved` enforces the rule for transactions signed offline and pushed without a stored proposal.
+- `before_account_registered` checks the initial signer set; without it, an account could register with an unlisted signer and never need a signer change.
+
+The lists hold commitments, not identities. An allowlist of vetted keys is the stronger form: a denylisted holder can generate a new key at no cost. Rules on the size of the signer set or on the threshold read the same two views and can be added to the same kind later: never fewer than N signers (`after.signer_commitments`), a threshold floor (`after.default_threshold` and every value in `after.procedure_thresholds`), never a lower threshold (the same fields in `after` against `before`).
 
 ### 2.4 Request flow
 
@@ -273,6 +305,8 @@ Account self-service configuration is out of scope for this revision (section 7)
 3. The pipeline builds one `HookRequest` (section 3) and calls each module in order under its timeout.
 4. All allow: ack and continue as today. Any deny: no ack, no candidate stored, typed error to the caller (section 4.1).
 5. When the delta becomes committed (promotion in candidate mode, the push itself in optimistic mode), a `module_events` row is written in the same storage write. The notifier delivers it to every module that subscribes to `after_transaction_committed`.
+
+A multisig transaction usually passes the pipeline twice: at `before_proposal_created`, when the proposer stores it, with the instances subscribed to that hook, and at `before_transaction_approved`, when it is pushed for the ack, with the instances subscribed to that one. Only the second decides whether the Guardian signs.
 
 ### 2.5 Extending the Guardian with custom kinds
 
@@ -401,6 +435,7 @@ enum Hook {
   HOOK_BEFORE_TRANSACTION_APPROVED = 1;
   HOOK_BEFORE_ACCOUNT_REGISTERED = 2;
   HOOK_AFTER_TRANSACTION_COMMITTED = 3;
+  HOOK_BEFORE_PROPOSAL_CREATED = 4;
 }
 
 message DescribeRequest {}
@@ -424,20 +459,38 @@ message HookRequest {
   string account_id = 4;
   bytes params = 5;                   // UTF-8 JSON, effective params for this account and module
   string instance_id = 6;             // catalog id of the instance being called
-  google.protobuf.Timestamp accounting_time = 7;  // recorded as signed_at if this transaction is signed (section 3.4)
-  oneof subject {
+  google.protobuf.Timestamp accounting_time = 7;  // recorded as signed_at if this transaction is signed (section 3.4); at before_proposal_created, the evaluation time, never recorded
+  string submitter = 8;               // signer commitment that authenticated this request; verified (section 3.2)
+  oneof subject {                     // hook-specific detail only
     TransactionSubject transaction = 10;
     RegistrationSubject registration = 11;
   }
+  optional AccountView before = 12;   // the account as the Guardian holds it; absent for a new registration (section 3.2)
+  AccountView after = 13;             // the account as it will be if every module allows (section 3.2)
+}
+
+message AccountView {
+  string commitment = 1;
+  string auth_scheme = 2;             // "falcon" or "ecdsa"
+  repeated string signer_commitments = 3;
+  reserved 4;                         // was threshold; renamed default_threshold
+  reserved "threshold";
+  optional uint32 default_threshold = 5;  // absent for single-key accounts
+  map<string, uint32> procedure_thresholds = 6;  // procedure root -> threshold overriding the default; empty when none
 }
 
 message TransactionSubject {
-  string prev_commitment = 1;
-  string new_commitment = 2;
+  reserved 1, 2;                      // were prev_commitment and new_commitment; now before.commitment and after.commitment
+  reserved "prev_commitment", "new_commitment";
   TxProjection projection = 3;        // the contract modules should rely on
   bytes raw_tx_summary = 4;           // serialized TransactionSummary; UNSTABLE across Miden protocol bumps
-  string unverified_hint = 5;         // proposer-asserted proposal_type; never authoritative
+  reserved 5;                         // was unverified_hint; replaced by unverified_metadata
+  reserved "unverified_hint";
   repeated PendingTransaction pending = 6;  // signed for this account, not yet acknowledged by this module (section 3.4)
+  reserved 7;                         // was submitter; now HookRequest.submitter
+  reserved "submitter";
+  string proposer = 8;                // signer commitment that created the matching proposal; verified; empty when there is none (section 3.2)
+  bytes unverified_metadata = 9;      // UTF-8 JSON, proposer-asserted proposal metadata; never authoritative; UNSTABLE across SDK releases (section 3.2)
 }
 
 message PendingTransaction {
@@ -447,6 +500,8 @@ message PendingTransaction {
   PendingState state = 4;
   uint64 nonce = 5;                   // account nonce after this transaction; compared with the module's watermark
   optional google.protobuf.Timestamp committed_at = 6;  // set when state = committed
+  string submitter = 7;               // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
+  string proposer = 8;                // as in TransactionSubject at that ack; empty when there was no matching proposal
 }
 enum PendingState {
   PENDING_STATE_UNSPECIFIED = 0;
@@ -455,10 +510,8 @@ enum PendingState {
 }
 
 message RegistrationSubject {
-  string auth_scheme = 1;
-  repeated string signer_commitments = 2;
-  optional uint32 threshold = 3;
-  string initial_state_commitment = 4;
+  reserved 1 to 4, 6;                 // auth_scheme, signer_commitments, threshold and initial_state_commitment moved to HookRequest.after; submitter to HookRequest.submitter
+  reserved "auth_scheme", "signer_commitments", "threshold", "initial_state_commitment", "submitter";
   AccountProjection initial_state = 5;  // vault and storage of the account about to be accepted
 }
 
@@ -506,7 +559,7 @@ enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVA
 message InputNote { string note_id = 1; repeated Asset assets = 2; }
 
 message StorageChange {
-  string slot_name = 1;               // StorageSlotName, e.g. "miden::standards::auth::multisig::config"
+  string slot_name = 1;               // StorageSlotName, e.g. "miden::standards::auth::multisig::threshold_config"
   StorageSlotKind kind = 2;
   StorageOp op = 3;
   string value = 4;                   // kind = value, op = create or update: the new value
@@ -533,6 +586,8 @@ message CommitEvent {
   uint64 nonce = 8;                   // account nonce after this transaction; the delivery watermark (section 3.3)
   google.protobuf.Timestamp signed_at = 9;   // the accounting clock, identical to the value the module saw in pending (section 3.4)
   string instance_id = 10;
+  string submitter = 11;              // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
+  string proposer = 12;               // as in TransactionSubject at that ack; empty when there was no matching proposal (section 3.2)
 }
 ```
 
@@ -540,7 +595,7 @@ message CommitEvent {
 
 **Encodings.** All string-typed values in the protocol follow one convention, normalized by the Guardian at the boundary (AGENTS.md section 12, Hex/Bytes Boundary Rule):
 
-- Words, digests, commitments and roots (`prev_commitment`, `new_commitment`, `note_id`, `recipient_digest`, `script_root`, `nft_id`, storage values, map keys and values): `0x` followed by 64 lowercase hex characters.
+- Words, digests, commitments and roots (`AccountView.commitment`, `signer_commitments`, `procedure_thresholds` keys, `prev_commitment`, `new_commitment`, `note_id`, `recipient_digest`, `script_root`, `nft_id`, storage values, map keys and values): `0x` followed by 64 lowercase hex characters.
 - Amounts and other single field elements (`fungible_amount`): unsigned decimal strings, so values above 2^53 survive JSON.
 - Account ids (`account_id`, `faucet_id`, `p2id_target`): the Guardian's canonical `0x` lowercase hex form of the account id.
 - Nonces (`nonce`, `resume_from_nonce`): `uint64`, which the proto3 JSON mapping renders as a decimal string, consistent with the amount rule.
@@ -555,9 +610,31 @@ message CommitEvent {
 
 `p2id_target` is set only when the note script root is a known P2ID or P2IDE script. Recipient-based policies are enforceable because `TransactionSummary.output_notes` is a collection of `RawOutputNote::Full(Note) | Partial(PartialNote)` (`miden-protocol-0.17.0/src/transaction/tx_summary.rs:31-39`, `outputs/notes.rs:190`) **[READ]**: a full note carries recipient, assets and script even when its type is private. A partial note exposes only the recipient digest, so it is marked `partial = true` and a recipient policy must decide what to do with an unknown recipient.
 
-### 3.2 The unverified hint
+### 3.2 Account views and proposal context
 
-The proposer's `proposal_type` label is forwarded as `unverified_hint` only. A proposer can label a vault drain `change_threshold` (#238, Q3), so a module must derive meaning from `projection` and use the hint at most for display or logging. The single-key `push_delta` path has no label and sends an empty hint.
+**One view of the account at every gate hook.** Rules about who controls an account (signer allowlists, a minimum signer count, a threshold floor) apply at registration and at every signer change, and a module should not need a code path per hook to evaluate them. `HookRequest` therefore carries, for every gate hook, the account before and after the request, decoded by the Guardian into `AccountView`: commitment, auth scheme, signer commitments, default threshold and per-procedure thresholds. The default threshold alone does not bound how many approvals a transaction needs: a procedure threshold overrides it for that procedure, so a threshold floor checks both.
+
+| Hook | `before` | `after` |
+|---|---|---|
+| `before_proposal_created` | The queue tail the proposal is pinned to | The tail with the delta applied |
+| `before_transaction_approved` | The base of the delta being acked (tail or canonical state) | The base with the delta applied |
+| `before_account_registered` | Absent for a new account; for re-onboarding, the stored state, read for this purpose | The submitted `initial_state` |
+
+**Building the views is new work.** The Guardian decodes signer sets today, but not the whole view. `account_auth_binding` (`crates/server/src/services/candidate_chain.rs:316`) returns `AuthBinding { signers, guardian }`, with no threshold and no scheme (`crates/server/src/network/mod.rs:247-250`); its Miden implementation returns the signers it extracts even when the list is empty (`crates/server/src/network/miden/mod.rs:802-805`), and `should_update_auth` maps an empty list to "nothing to update" (`:820-821`) **[READ]**. An empty signer set read as a successful view would make every signer rule pass: nothing is added, nothing is checked. The implementation therefore adds one extraction that reads the signer, threshold and procedure-threshold slots and the scheme, and that returns an error for auth state it does not support or cannot decode, never an empty view. A failed extraction is treated as an error for every module called at that hook, so each module's `on_error` applies (section 4.2). At the transaction hooks both states are in hand: the base the delta is checked against and the result of applying it. At re-onboarding they are not: `configure_account` reads only the account metadata (`configure_account.rs:58`) **[READ]**, so building `before` adds a read of the stored state, made only when a module subscribed to `before_account_registered` will be called. Modules that need the raw layout still have `TxProjection.storage_changes`, and vault effects stay in `TransactionSubject`: amount and recipient rules apply only to transactions, and a full vault view on every request would be large.
+
+**Proposal context.** `HookRequest.submitter` and the `TransactionSubject` fields below carry who acted on the transaction and what the proposer said about it. The two are trusted differently.
+
+**Verified identities.** Both are signer commitments taken from request authentication (`ResolvedAccount.signer_commitment`, `crates/server/src/services/mod.rs:112`) **[READ]**, never from the payload.
+
+- `submitter` is the cosigner whose request is being evaluated: the proposer at `before_proposal_created`, the cosigner calling `push_delta` at `before_transaction_approved`. On the execution path it is the cosigner whose authenticated request created the execution attempt (RFC 0001). At the cited execution baseline that identity is not kept: the service authenticates the requester (`execute_proposal/service.rs:131` at `29c722b4`) but `ExecutionJob` holds no requester (`worker.rs:27-40`) **[READ]**. The implementation records the authenticated requester when it creates an attempt, stores it on the durable reservation so a worker resumed after a restart still has it, and carries it through the ack and into the stored delta. A repeated request for an attempt already active keeps the original requester.
+- `proposer` is the cosigner that created the proposal for this exact transaction. At `before_proposal_created` it equals `submitter`. At the ack it comes from the matching proposal, found by the proposal id derived from the transaction (`lookup_matching_proposal_payload`, `push_delta.rs:230`) **[READ]**, and is empty when there is none: a single-key account, a transaction signed offline and pushed without a stored proposal, or a proposal already deleted. That helper returns only the payload, and returns nothing on a storage error as well as on absence (`push_delta.rs:252-277`) **[READ]**, which is acceptable for dashboard metadata but not for policy: a storage fault would read as "no proposer". The pipeline instead uses a lookup returning `Result<Option<ProposalContext>>`, where `ProposalContext` holds the proposer and the metadata together. `Ok(None)` is absence and yields an empty `proposer`; an error is treated as an error for every module called, so `on_error` applies.
+- **The first creator stays the proposer.** The proposal id is derived from the transaction, so two cosigners can create the same proposal. Postgres keeps the first (`on_conflict(..).do_nothing()`, `storage/postgres.rs:1400-1404`), while the filesystem backend overwrites the stored file (`storage/filesystem.rs:704-718`) **[READ]**, which would hand attribution to the last creator. Both backends keep the first proposal and its proposer; a later create of the same id does not replace them. The filesystem backend changes to create-if-absent so modules developed against it see the same attribution as in production.
+
+At `before_account_registered`, `submitter` is the cosigner whose credential `configure_account` verified (`crates/server/src/services/configure_account.rs:138-140`) **[READ]**, for a new account and for re-onboarding alike, so a rule such as "only vetted keys may register accounts" needs no trust in the payload. `CommitEvent` repeats `submitter` and `proposer` exactly as they were at the ack that signed the transaction; they are stored with the delta, like `accounting_time`, so an audit module learns who started a committed transaction without keeping state from `evaluate`.
+
+The verified identities allow rules the projection cannot express: only named cosigners may propose withdrawals or signer changes, limits per proposer, an audit trail of who started a transaction. A rule on `proposer` that must hold treats an empty value at the ack as an unknown proposer and denies; otherwise cosigners bypass it by not storing the proposal.
+
+**Unverified metadata.** `unverified_metadata` is the proposal metadata the proposer submitted (`ProposalMetadata`, `crates/server/src/delta_summary/mod.rs:132`) **[READ]**: `proposal_type`, `description`, and the type-specific fields such as `recipient_id`, `amount` or `signer_commitments`, as UTF-8 JSON. It is empty when there is no matching proposal. A proposer chooses every value in it and can label a vault drain `change_threshold` (#238, Q3), so a module derives what a transaction does only from `projection` (R6, invariant 2). The Guardian deliberately sends no typed copies of these fields: a typed `amount` next to the projection would invite module authors to trust the proposer's number. Legitimate uses are display (showing `description` to a human reviewer in a vendor's case tool), logging, and checks of label against effect, such as denying a transaction labelled `change_threshold` whose projection moves funds. The JSON follows the multisig SDKs' metadata schema, which changes with SDK releases rather than with `protocol_version`, so a module that parses it tolerates unknown and missing fields. `description` is free text and may contain personal data, which invariant 5 covers.
 
 ### 3.3 Notify delivery
 
@@ -621,8 +698,9 @@ Limits:
 
 - **Backlog cap.** Applies only to modules that subscribe to `after_transaction_committed`. The committed part grows while such a module is unreachable. Above `GUARDIAN_MODULE_PENDING_MAX` entries for an account (default 256), that module's `evaluate` for the account is treated as an error without being called and `on_error` applies. The candidate part is bounded by the candidate queue depth.
 - **Request size cap.** `pending` bounds the entry count, not the bytes: one projection can carry many notes, and 256 of them can exceed the 4 MiB message limit most gRPC stacks apply by default (tonic's default receive limit) **[INFERRED]**. The Guardian encodes each `HookRequest` before sending it, and one larger than `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (default 2 MiB) is treated as an error for that module without the call being made, so `on_error` applies, with `guardian_module_request_oversize_total{module}`. The same cap applies to registration requests, whose `initial_state` can be large. Module authors raise their server's receive limit to at least the cap; the conformance suite sends a request at the cap.
-- **Projections are stored, not recomputed.** The projection is computed once when the delta is signed and stored with the candidate and with the `module_events` row.
+- **Projections are stored, not recomputed.** The projection is computed once when the delta is signed and stored with the candidate and with the `module_events` row, together with the ack's `submitter` and `proposer`. The account views are not stored: they are rebuilt for each evaluation from states the Guardian holds anyway.
 - **No counting in `evaluate`.** Module authors keep state only from `notify`. The conformance suite evaluates the same request twice and checks that the module's state does not change.
+- **Attribution in `pending`.** Each entry carries the `submitter` and `proposer` stored with its delta, so a limit per proposer or per submitter counts transactions signed but not yet notified. The conformance suite includes a per-proposer limit evaluated while notify is delayed, and asserts that the proposer's pending transactions are counted.
 - **Conformance cases for counting.** The suite drives each interleaving in the table above against the module under test: an evaluation between the module applying an event and the Guardian storing the acknowledgement, a dropped `NotifyAck` followed by an evaluation and the redelivery, a candidate promoted and delivered between snapshot and evaluation, and `evaluate` running concurrently with `notify` under a randomized schedule. Each case asserts that the counted total equals the sum of signed transactions. A failover test sends a pre-gap `Notify` from a replica that has lost the lease after the new leader's `NotifyGap`, and asserts that the module discards it.
 
 ---
@@ -638,13 +716,13 @@ Both use the `{ code, message, meta }` envelope.
 | `GUARDIAN_MODULE_DENIED` | 403 | `PERMISSION_DENIED` | no | `{ module, reason_code }` |
 | `GUARDIAN_MODULE_UNAVAILABLE` | 503 | `UNAVAILABLE` | yes | `{ module }` |
 
-On a deny, `reason_code` must match `[a-z0-9_]{1,64}`; a deny without a conforming code is a protocol error and follows `on_error`. On an allow, `reason_code` is ignored and may be empty, so an allow is never turned into an error by a missing code. The module's free-text `message` is logged but not forwarded to clients: a module may be a third party and should not place arbitrary text in front of end users. `meta.module` is the instance `id` from the catalog, which the operator chooses: an operator who does not want to reveal which vendor screens its traffic names the instance neutrally (for example `compliance-1`), and the vendor's kind name never reaches clients. The Rust and TypeScript SDKs expose both as typed errors with the same retry classification. On the execution path (PR #510) a denial ends the execution with a typed abort reason `module_denied` carrying the same `{ module, reason_code }`, and module unavailability with `module_unavailable`; both multisig SDKs read these from the execution status.
+On a deny, `reason_code` must match `[a-z0-9_]{1,64}`; a deny without a conforming code is a protocol error and follows `on_error`. On an allow, `reason_code` is ignored and may be empty, so an allow is never turned into an error by a missing code. The module's free-text `message` is logged but not forwarded to clients: a module may be a third party and should not place arbitrary text in front of end users. `meta.module` is the instance `id` from the catalog, which the operator chooses: an operator who does not want to reveal which vendor screens its traffic names the instance neutrally (for example `compliance-1`), and the vendor's kind name never reaches clients. The Rust and TypeScript SDKs expose both as typed errors with the same retry classification. A denial at `before_proposal_created` uses the same codes on the proposal creation call, and the proposal is not stored; both SDKs surface it from proposal creation with the same typed error, so a proposer sees the refusal before any cosigner signs. On the execution path (PR #510) a denial ends the execution with a typed abort reason `module_denied` carrying the same `{ module, reason_code }`, and module unavailability with `module_unavailable`; both multisig SDKs read these from the execution status.
 
 ### 4.2 Module failures
 
 | Situation | `on_error = deny` | `on_error = allow` |
 |---|---|---|
-| Timeout, transport error, malformed decision, unknown protocol version, stale state, pending backlog over the cap, request over the size cap, circuit open (section 4.4) | `GUARDIAN_MODULE_UNAVAILABLE` | Continue; WARN log; `guardian_module_fail_open_total{module}` |
+| Timeout, transport error, malformed decision, unknown protocol version, stale state, pending backlog over the cap, request over the size cap, circuit open (section 4.4), account view extraction or proposal lookup failed (section 3.2) | `GUARDIAN_MODULE_UNAVAILABLE` | Continue; WARN log; `guardian_module_fail_open_total{module}` |
 | `resync_required` set for the account (section 3.3) | `GUARDIAN_MODULE_UNAVAILABLE` | Continue; WARN log; `guardian_module_fail_open_total{module}` |
 | Notify failure | Never affects requests; retried; `guardian_module_notify_lag_seconds{module}` drives an alarm | same |
 
@@ -679,10 +757,10 @@ The health probe is a `Describe` call every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` 
 ### 5.1 Invariants
 
 1. **Monotonic restriction for remote modules.** The pipeline runs after all existing checks and can only turn an ack into a refusal. No module input reaches the signed message, so a compromised remote module can deny service but cannot cause a signature. In-process kinds are outside this guarantee: they run with the Guardian's privileges and are trusted code (section 2.5). First-party in-process kinds are reviewed as part of the Guardian; operator-registered ones are the operator's responsibility.
-2. **No trusted labels.** Modules receive proposer metadata only as `unverified_hint`.
+2. **No trusted labels.** Modules receive proposer metadata only as `unverified_metadata`. The only verified proposal context is `submitter` and `proposer`, which come from request authentication (section 3.2).
 3. **Exit is never gated.** `SwitchGuardian` executes on chain without a Guardian acknowledgement, so no module can keep an account from leaving. A module may deny the best-effort push of the switch delta to the old Guardian; the release sweep then detects the switch from chain.
 4. **Registration is reviewed.** Only the catalog file, applied by a deploy, adds, removes or reconfigures module instances. Operator sessions assign and parameterize `default` and `assigned` modules, cannot remove `scope = all` modules or change their params, may enable any declared instance, can disable only instances the catalog marks `operator_can_disable`, and can resync a module for accounts in `resync_required`, accepting the dropped history; every one of these writes is audited.
-5. **Disclosure.** Every external module receives the full transaction details of each account it applies to. This is a change to the trust boundary in `docs/CONCEPTS.md` and operators must treat module vendors as data processors.
+5. **Disclosure.** Every external module receives the full transaction details of each account it applies to, including, for instances subscribed to `before_proposal_created`, proposals that are never executed, and the proposer's free-text `description` in `unverified_metadata`. This is a change to the trust boundary in `docs/CONCEPTS.md` and operators must treat module vendors as data processors.
 
 ### 5.2 Transport authentication
 
@@ -718,15 +796,17 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 
 **M2a: stateless gates.**
 
-- Gate hooks `before_transaction_approved` and `before_account_registered` (section 2.3), the pipeline, and the catalog with kinds and instances, `enabled`, `operator_can_disable`, `account_params` and secret references.
+- Gate hooks `before_transaction_approved`, `before_proposal_created` and `before_account_registered` (section 2.3), the pipeline, and the catalog with kinds and instances, `enabled`, `operator_can_disable`, `account_params` and secret references.
 - The `grpc` kind, and first-party in-process kinds registered by the official binary.
 - `guardian-module-sdk`: `Module`, `ModuleFactory`, protocol types, the `serve` harness over gRPC with per-instance credentials, and the conformance suite for stateless behaviour (identical decisions across transports, no state change in `evaluate`, params validation, request at the size cap).
 - Operator API on `/dashboard/*`: assignment and per-account params under `policies:write`, runtime enable and disable (disable also under `modules:disable`), `GET /dashboard/modules` with drift, every write with a reason and an audit record. No operator dashboard page.
 - `packages/guardian-operator-client` and its tests updated for the new `/dashboard/*` module endpoints in the same change, as AGENTS.md section 8 requires for dashboard changes.
 - Catalog hash metric, in `/dashboard/info`, and recorded with each signed delta.
 - Evaluation budget (`GUARDIAN_MODULE_EVALUATION_BUDGET_MS`) with the startup checks in section 4.3, circuit breaker and health probe (section 4.4), request size cap (section 3.4), and the module metrics.
-- `GUARDIAN_MODULE_DENIED` and `GUARDIAN_MODULE_UNAVAILABLE` in the server and both SDKs.
-- Reference module `basic-policy` (recipient and asset allowlist, per-transaction amount cap), shipped as a first-party in-process kind and, through the `serve` harness, as a standalone gRPC service in `examples/policy-module/`.
+- `GUARDIAN_MODULE_DENIED` and `GUARDIAN_MODULE_UNAVAILABLE` in the server and both SDKs, on proposal creation as well as on the ack.
+- Reference module `basic-policy` (recipient and asset allowlist, per-transaction amount cap, signer allowlist and denylist with `signer_check`), shipped as a first-party in-process kind and, through the `serve` harness, as a standalone gRPC service in `examples/policy-module/`.
+- Account view extraction with explicit errors for unsupported auth state, the `ProposalContext` lookup, first-creator-wins proposal storage on both backends, and the requester recorded on execution reservations (section 3.2).
+- Acceptance cases: a denial at proposal creation stores nothing and takes no slot; a proposal that passes creation and is denied at the ack; a transaction signed offline and pushed without a stored proposal is enforced at the ack; forged `unverified_metadata` does not change a decision; a failed account view extraction applies `on_error`. Creation denials are exercised through `guardian-client` (Rust and TypeScript) and both multisig SDKs.
 - Docs: configuration, trust boundary in concepts, troubleshooting codes, and a module author guide for remote modules.
 
 **M2b: stateful limits.** Unblocks the stateful policies of #182.
@@ -750,7 +830,15 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 - A small registry of well-known `reason_code` values (for example `sanctioned_counterparty`, `limit_exceeded`) that SDKs can map to user-facing messages; until then codes are meaningful only together with `meta.module`.
 - Bulk assignment through the operator API (for example "assign module X with these params to every account that lacks it"), to backfill a `default` module onto accounts registered before it was added.
 - Account self-service module configuration, with removal or loosening gated by a threshold proposal.
-- Advisory hook at proposal creation.
+- A current verdict on proposal signing and in proposal listings: re-evaluate the `before_proposal_created` instances and return the result as a warning, never a refusal, so cosigners see that a stateful policy has turned against a stored proposal before they sign it.
+- Proposal cancel and expiry for Miden accounts, so proposals that pass creation and are later refused or abandoned stop occupying storage. Independent of modules, which make such proposals more common.
+- Account lifecycle notify hooks. Each is delivered through the `module_events` outbox, written in the same storage write as the event it reports, and none can block anything (invariant 3). These events carry no account nonce, so they need an event message beside `CommitEvent` and their own ordering with respect to the delivery watermark (section 3.3); reserving room for that in `guardian.module.v1` before protocol version 1 freezes at M2a avoids a breaking change later.
+  - `after_account_released`: the release sweep has detected that the account switched away (`services/release_on_switch.rs:21-31`) **[READ]**. A module cannot learn this otherwise, since `SwitchGuardian` executes without a Guardian ack and the SDK's push of the switch delta to the old Guardian is best-effort (section 2.3). Stateful modules use it to drop the counters, watermarks and records they hold for the account.
+  - `after_account_registered`: the account registration is stored. A pass at `before_account_registered` does not guarantee that, since later steps of `configure_account` can still fail, so a module that keeps its own account registry or seeds a baseline currently has no confirmed signal before the account's first `CommitEvent`.
+  - `after_policy_changed`: an operator changed the account's module assignment or per-account params, or paused or unpaused the account, carrying the operator identity and the required reason from the audit record (section 2.2). Compliance modules keep an external audit trail of who loosened a limit and when, and stateful modules learn that their params changed or that they were removed and assigned again, instead of evaluating against state built under the old params.
+- Proposal lifecycle notify hooks, each added only when its trigger exists. Both are notify-only: gating a signature or a cancel would add nothing the ack does not already enforce, and a gated cancel would let a module keep a proposal in its slot. Proposals are optional (offline signing skips the store), so a module may use these events for information but never for correctness, and they use the same nonce-free event message as the account lifecycle hooks above.
+  - `after_proposal_closed`, once Miden proposals can be cancelled or expire: one hook with an outcome (`executed`, `discarded`, `cancelled`, `expired`) rather than one hook per outcome. Today a proposal is deleted when its delta becomes canonical or leaves the candidate path, or when the release sweep finds it executed (`jobs/canonicalization/processor.rs:1595,1885`, `jobs/release_sweep/sweep.rs:1361`) **[READ]**, and an abandoned proposal produces no event at all. Compliance modules keep an audit trail of attempted transactions, including refused and abandoned ones. A module cannot start work for a proposal from `evaluate`, which is free of side effects; work tied to a stored proposal (asynchronous screening, a manual review request) would need its own notify event after the proposal is stored, which nothing needs yet.
+  - `after_proposal_signed`, with `require_additional_approval` or external approvers: a cosigner signature was added to a stored proposal (`services/sign_delta_proposal.rs`) **[READ]**. Without one of those features nothing consumes it.
 - EVM hooks.
 - TEE tiers from section 6.
 - More first-party kinds in the official image, so fewer operators need remote modules or custom builds. Candidates from #238: rolling volume caps, velocity limits, new-recipient cooldown, emergency mode (withdrawals only to recovery addresses). The stateful ones build on `notify` and are delivered by #182.
@@ -812,6 +900,7 @@ None. Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
+| 18 | 2026-10-13 | eighth review round: first implementation split into M2a (stateless gates), M2b (stateful limits) and M2c (custom kinds), with protocol version 1 frozen at M2a (section 7); `http` kind deferred past M2; filesystem backend limited to gate hooks (section 3.3); circuit breaker and health probe per instance (section 4.4); `HookRequest` byte cap (section 3.4); default evaluation budget lowered to 1000 ms, sequential evaluation kept with the reason stated (section 4.3); `modules:disable` permission split out; `GET /dashboard/modules` with catalog drift (section 2.2); decision latency histogram; off-chain versus on-chain stated in the summary; declarative policy and parallel evaluation added to the alternatives; revision log moved to Appendix C |
 | 17 | 2026-10-11 | seventh review round: `pending` reconciled with module state through a per-account nonce watermark applied atomically with the counters, and a consistent Guardian snapshot (section 3.4); remote delivery fenced across resync on the module side by the same watermark and `Gap.resume_from_nonce` (section 3.3); `instance_id` in every request, so one remote service can back several instances (section 2.1); one accounting clock, `signed_at`, carried in `CommitEvent` and fixed before evaluation as `HookRequest.accounting_time` (section 3.4); storage projections keyed by `StorageSlotName` with explicit create, update and remove operations, matching Miden 0.17; RFC 0001 linked at its reviewable location; baseline moved to `main` at `1224ef13` |
 | 16 | 2026-10-09 | sixth review round: `notify_gap` trait method (default no-op) and `POST /v1/notify-gap`; transport byte mapping stated; budget enforcement restated with startup over-budget report; notify delivery on the coordination leadership lease with fenced cursor writes; catalog removal of an instance with unacknowledged events sets `resync_required`; `resync_required` row in the failure table; resync in invariant 4; citations re-pinned (`sweep.rs:667`, `worker.rs:389` at `29c722b4`); `reserved "version"`; `validate_params` on unresolved params; `GET` under `dashboard:read` |
 | 15 | 2026-10-09 | fifth review round: resync machinery added to M2 scope; resync listed under `policies:write` and in the operator capability table; `NotifyGap` failures non-fatal within protocol version 1; `Gap.dropped_before` defined as the restart position; in-process `HookRequest.params` carry unresolved secret references; orphaned entry in the `GET` example |
