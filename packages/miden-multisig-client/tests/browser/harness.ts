@@ -109,6 +109,11 @@ async function run(): Promise<void> {
     )
       .root()
       .toHex(),
+    updateGuardianEcdsa: (
+      await buildUpdateGuardianScript(client, GUARDIAN_COMMITMENT, 'ecdsa', delta)
+    )
+      .root()
+      .toHex(),
   };
 
   window.__result = {
