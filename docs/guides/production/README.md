@@ -60,11 +60,13 @@ least-travelled configuration.
 | Decision | Production choice |
 |---|---|
 | **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenTestnet`, `MidenDevnet`, or `MidenLocal`. The server refuses to start when it is unset or unrecognized; there is no fallback network. |
-| **Image version** | Pin an explicit release tag, **later than `v0.17.0`**. This guide depends on server features that v0.17.0 does not have: `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults. An older server does not fail on the unknown variables: it boots, stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. The tell is the startup banner: the `ack signers` line carries `account_schemes` only on a new enough image, and `smoke.sh` fails at its first step on an old one. Guardian 0.17.x runs on Miden 0.16; check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.16](../../PRODUCTION.md#upgrading-to-miden-016) if you are moving an existing deployment. Never run `latest` in production. |
+| **Image version** | Pin an explicit release tag, **`v0.18.0` or later**. This guide depends on server features that v0.17.x does not have: `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults. An older server does not fail on the unknown variables: it boots, stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. The tell is the startup banner: the `ack signers` line carries `account_schemes` only on a new enough image, and `smoke.sh` fails at its first step on an old one. Guardian 0.18.x runs on Miden 0.17 and needs a node on 0.17.0, so the release and `GUARDIAN_NETWORK_TYPE` must agree: a network still on Miden 0.16 needs Guardian 0.17.x, which this guide does not cover. Check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.17](../../PRODUCTION.md#upgrading-to-miden-017) if you are moving an existing deployment: the first 0.18.x start irreversibly deletes stored Miden account data. Never run `latest` in production. |
 | **Server features** | The published `ghcr.io/openzeppelin/guardian` image is built with the `postgres` feature, which is the production storage backend; that is the image every track in this guide runs. |
 | **Storage backend** | Postgres, always. The filesystem backend is dev-only and refused at startup in the prod stage. |
 | **Account signature scheme** | Set `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` on a new deployment, and treat it as required on the AWS tracks (A and C): only ECDSA has a hosted signer (KMS), so an ECDSA-only fleet is the only one whose account-facing ACK key never enters the process. Falcon has no remote signer, so every Falcon account is acked by a key that has to be loaded into memory from Secrets Manager; Falcon is second-class ([`PRODUCTION.md`](../../PRODUCTION.md#account-signature-scheme)). The gate applies to **new** registrations only, so it is safe on a fleet that already has Falcon accounts, and it has no effect on which ACK keys the server needs: the Falcon ACK key is still required today, so bootstrap and protect it exactly as below. Rejected registrations get `signature_scheme_not_allowed`; `GET /dashboard/info` shows `accounts_by_auth_method` if you want to check what exists before tightening. All three templates carry the variable. |
 | **ECDSA ACK signer backend** | AWS KMS where AWS is available (tracks A and C): the private key never enters the process. Track B keeps it in a `0600` file. Whichever you choose, the ACK keys **are Guardian's identity**: changing them later is a `SwitchGuardian` migration for every existing account, not a routine rotation ([`runbooks/secrets.md`](../../runbooks/secrets.md#ack-signing-keys)). |
+| **Alerting** | Decide who is told when an alarm fires before going live. Track A builds the CloudWatch alarms, but they notify nobody until you route them: a managed SNS topic delivered to Slack, your own SNS topics, or both (A2). On tracks B and C alerting is yours to build on the metrics endpoint (B6). |
+| **Release sweep** | On by default on every track. A background task walks unreleased Miden accounts against the chain and releases those whose `SwitchGuardian` never reached this server; it makes up to `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND` (default `5`) account visits per second against your Miden node, each at least one `GetAccount`. Lower the rate if you run your own node with little headroom, or set `GUARDIAN_RELEASE_SWEEP_ENABLED=false` to rely on the push path alone ([`CONFIGURATION.md`](../../CONFIGURATION.md#runtime--server-identity-and-storage)). |
 | **Storage encryption** | Recommended. It is opt-in by key-source presence and must be enabled against an **empty** store; the server refuses to mix plaintext and ciphertext once a marker is written ([`PRODUCTION.md`](../../PRODUCTION.md#storage-encryption)). The same `{active, keys}` key document works from Secrets Manager (tracks A and C) or from a mounted file (track B), with multi-key rotation on both. |
 
 ## Track A: AWS ECS/Fargate (reference deployment)
@@ -184,7 +186,8 @@ rather than overriding them:
 | `GUARDIAN_DB_POOL_MAX_SIZE`, canonicalization concurrency | `32` and `50`. |
 | RDS | `db.r6g.large`, 50 GiB with autoscaling to 200 GiB, 7-day backup retention, deletion protection on, final snapshot on destroy, storage encrypted. Multi-AZ is **off**: set `TF_VAR_rds_multi_az=true` if you want standby failover ([`PRODUCTION.md` → Durability](../../PRODUCTION.md#durability-and-recovery)). |
 | RDS Proxy, autoscaling 2 to 6 tasks | Connection pooling and HA. |
-| Metrics | `GUARDIAN_METRICS_ENABLED=true` bound to loopback inside the task, scraped by the ADOT sidecar into CloudWatch (namespace `<Stack>/Server`) with a dashboard and alarms. No bearer token is involved because nothing outside the task can reach the port. Set `TF_VAR_alarm_actions` to an SNS topic ARN or the alarms notify nobody. |
+| Metrics | `GUARDIAN_METRICS_ENABLED=true` bound to loopback inside the task, scraped by the ADOT sidecar into CloudWatch (namespace `<Stack>/Server`) with a dashboard and alarms, plus an ERROR-log alarm that does not depend on the metrics pipeline. No bearer token is involved because nothing outside the task can reach the port. The alarms notify nobody until you route them (below). |
+| Release sweep | On, at the server defaults: a 6 h rotation target, at most 5 account visits per second (a fleet too large for that rate takes longer, and a visit to an account whose chain state moved costs more than one node read). Tune with `TF_VAR_guardian_release_sweep_*`. |
 | `GUARDIAN_LOG_FORMAT=json` | For CloudWatch Logs Insights. |
 
 What **you** provide in `.env.aws-ecs`:
@@ -200,7 +203,9 @@ What **you** provide in `.env.aws-ecs`:
 | `TF_VAR_rds_ca_bundle_secret_arn` | From A1; turns verified DB TLS on. |
 | `GUARDIAN_OPERATOR_PUBLIC_KEYS_JSON` or `..._SECRET_ARN` | From A1, if the dashboard is used. |
 | `DOMAIN_NAME`, `SUBDOMAIN`, `ACM_CERTIFICATE_ARN`, plus `ROUTE53_ZONE_ID` or `CLOUDFLARE_*` | The public hostname and what is built for it. Terraform defaults the hostname to `guardian.openzeppelin.com` when these are unset **or empty** in the shell, so set your own. DNS records are created only when a zone id is set; HTTPS, and gRPC through the ALB on `:443`, only when the certificate ARN is set ([HTTPS and gRPC](../../SERVER_AWS_DEPLOY.md#https-and-grpc)). Without a certificate the ALB serves plain HTTP on its raw DNS name and does not route gRPC. |
-| `TF_VAR_alarm_actions`, `TF_VAR_rds_multi_az` | Alerting destination and standby failover, as above. |
+| `TF_VAR_alarm_notifications_enabled`, `TF_VAR_alarm_slack_workspace_id`, `TF_VAR_alarm_slack_channel_id` | Alarm delivery: the managed `<stack>-alarms` SNS topic, routed to a Slack channel through Amazon Q Developer in chat applications (formerly AWS Chatbot). The Slack workspace must be authorized once per AWS account in the console first; Terraform cannot do that step ([Slack setup](../../SERVER_AWS_DEPLOY.md#slack-setup-once-per-aws-account-and-workspace)). |
+| `TF_VAR_alarm_actions` | Your own SNS topic ARNs (email, paging), notified in addition to the managed topic ([Alarm notifications](../../SERVER_AWS_DEPLOY.md#alarm-notifications)). |
+| `TF_VAR_rds_multi_az` | Standby failover, as above. |
 
 Any Terraform variable can be overridden through `TF_VAR_*`; the full list and
 the stage defaults are in
@@ -254,8 +259,11 @@ Record both commitments. Then read the startup banner in the logs
 
 Then, outside the server:
 
-- Metrics are arriving in CloudWatch and the dashboard populates
+- Metrics are arriving in CloudWatch and the dashboard populates, and a forced
+  test alarm reaches your Slack channel or `alarm_actions` targets, followed by
+  its OK message
   ([Verify metrics after a deploy](../../SERVER_AWS_DEPLOY.md#verify-metrics-after-a-deploy)).
+  An alerting path that has never delivered a message is not an alerting path.
 - The RDS instance shows 7-day backups, deletion protection, and encryption;
   do a restore drill before you need one ([`runbooks/backup-restore.md`](../../runbooks/backup-restore.md#verify-backups-do-this-now-not-during-an-incident)).
 - On a staging stack, verify rate-limit keying on the gRPC path as the
@@ -276,7 +284,14 @@ Then, outside the server:
   attestation and rolls only the image
   ([Deploying a published image from GitHub Actions](../../SERVER_AWS_DEPLOY.md#deploying-a-published-image-from-github-actions)).
   When a release changes the task definition (new env vars, secrets, IAM),
-  apply that release's Terraform with `scripts/aws-deploy.sh` first.
+  apply that release's Terraform with `scripts/aws-deploy.sh` first. The
+  workflow assumes IAM roles through GitHub OIDC, which are off by default;
+  create them once per account with `github_oidc_enabled`
+  ([GitHub OIDC deploy roles](../../runbooks/github-oidc-deploy-roles.md)).
+- **Protocol-line upgrades** (a Guardian release that moves to a new Miden
+  line) are not routine: they run an irreversible reset of stored Miden data
+  and need the server deployed before the SDKs. Follow the matching section of
+  [`PRODUCTION.md`](../../PRODUCTION.md#upgrading-to-miden-017).
 - **Secrets**: replacement, rotation, and compromise response per category in
   [`runbooks/secrets.md`](../../runbooks/secrets.md). ACK key replacement is an
   identity change.
@@ -314,7 +329,7 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/ack-keys:/out" \
   ghcr.io/openzeppelin/guardian:<version> /app/ack-keygen --out-dir /out
 ```
 
-Use the same tag you will put in `.env` (later than `v0.17.0`, see
+Use the same tag you will put in `.env` (`v0.18.0` or later, see
 [Decisions](#decisions-every-track-shares)). It writes
 `ack-keys/ack-falcon-secret-key` and `ack-keys/ack-ecdsa-secret-key` as `0600`
 files owned by you (the `--user` flag), and refuses to overwrite files that
@@ -347,7 +362,7 @@ Fill in `.env`. Each value maps to a checklist item:
 
 | Set | Why |
 |---|---|
-| `GUARDIAN_VERSION` | An explicit release later than `v0.17.0` (see [Decisions](#decisions-every-track-shares)), never `latest`. The template leaves it blank so Compose refuses to start until you choose one. |
+| `GUARDIAN_VERSION` | An explicit release, `v0.18.0` or later (see [Decisions](#decisions-every-track-shares)), never `latest`. The template leaves it blank so Compose refuses to start until you choose one. |
 | `GUARDIAN_NETWORK_TYPE` | Required; the server refuses to start without it. |
 | `DATABASE_URL` | Your production Postgres with `sslmode=verify-full&sslrootcert=/etc/guardian/tls/ca.pem` (B3). The template's `POSTGRES_PASSWORD` is for the bundled smoke-only database. |
 | `storage-encryption-keys.json` | The `{ "active": kid, "keys": { kid: base64-32-bytes } }` key document, mounted as a Compose secret and read through `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`. Its presence turns encryption on. It is the same document Secrets Manager holds on tracks A and C, so rotation works the same way: add a key, repoint `active`, keep the old key ([`runbooks/secrets.md` → Rotation](../../runbooks/secrets.md#rotation)). Keep it `0600` (the server refuses anything wider) and keep a copy with your database backups; ciphertext is unrecoverable without it ([nonce budget](../../runbooks/secrets.md#nonce-budget) if you write at very high volume). |
@@ -642,7 +657,9 @@ item is satisfied, per track:
 | Pinned `GUARDIAN_DASHBOARD_CURSOR_SECRET` | A1 bootstrap, injected by Terraform | B2 | `.env.aws-no-ecs` |
 | `GUARDIAN_MAX_REPLICAS` for HA rate partitioning | A2 (profile) | B7 | B7 |
 | Rate limits sized for HTTP + gRPC; keying verified on staging | A2, A4 | B2 tuning, B5 probes | same |
-| Metrics protected | A2 (loopback + ADOT, CloudWatch alarms with `alarm_actions`) | B2 + B6 (loopback publish + bearer token) | same |
+| Metrics protected | A2 (loopback + ADOT into CloudWatch) | B2 + B6 (loopback publish + bearer token) | same |
+| Alarms reach a person | A2 (managed SNS topic to Slack and/or `alarm_actions`), A4 test alarm | yours, on the B6 metrics endpoint | same as B |
+| Release sweep sized for your node | A2 (server defaults, `TF_VAR_guardian_release_sweep_*`) | Decisions (`GUARDIAN_RELEASE_SWEEP_*`) | same as B |
 | Validate `/`, `/pubkey`, smoke path | A4 | B6 / `smoke.sh` | C3 |
 
 ## Troubleshooting
