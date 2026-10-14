@@ -1,0 +1,176 @@
+// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 19).
+// The RFC is the source of truth; regenerate this file when the RFC changes.
+// Protocol version 1 is frozen when M2a ships.
+
+syntax = "proto3";
+package guardian.module.v1;
+
+import "google/protobuf/timestamp.proto";
+
+service GuardianModule {
+  rpc Describe(DescribeRequest) returns (ModuleInfo);
+  rpc ValidateParams(ValidateParamsRequest) returns (ParamsVerdict);
+  rpc Evaluate(HookRequest) returns (Decision);
+  rpc Notify(CommitEvent) returns (NotifyAck);
+  rpc NotifyGap(Gap) returns (NotifyAck);
+}
+
+enum Hook {
+  HOOK_UNSPECIFIED = 0;
+  HOOK_BEFORE_TRANSACTION_APPROVED = 1;
+  HOOK_BEFORE_ACCOUNT_REGISTERED = 2;
+  HOOK_AFTER_TRANSACTION_COMMITTED = 3;
+  HOOK_BEFORE_PROPOSAL_CREATED = 4;
+}
+
+message DescribeRequest {}
+message ModuleInfo { string name = 1; string version = 2; uint32 protocol_version = 3; repeated Hook hooks = 4; }
+message ValidateParamsRequest { bytes params = 1; string instance_id = 2; }  // params: UTF-8 JSON
+message ParamsVerdict { bool ok = 1; string message = 2; }
+message NotifyAck {}
+
+message Gap {
+  string account_id = 1;
+  string network = 2;
+  google.protobuf.Timestamp dropped_before = 3;  // restart position: events for the account committed before this and not acknowledged may be missing
+  string instance_id = 4;
+  uint64 resume_from_nonce = 5;       // first nonce delivered after the gap; the module's watermark becomes resume_from_nonce - 1 (section 3.3)
+}
+
+message HookRequest {
+  string request_id = 1;
+  Hook hook = 2;
+  string network = 3;                 // "miden"
+  string account_id = 4;
+  bytes params = 5;                   // UTF-8 JSON, effective params for this account and module
+  string instance_id = 6;             // catalog id of the instance being called
+  google.protobuf.Timestamp accounting_time = 7;  // recorded as signed_at if this transaction is signed (section 3.4); at before_proposal_created, the evaluation time, never recorded
+  string submitter = 8;               // signer commitment that authenticated this request; verified (section 3.2)
+  oneof subject {                     // hook-specific detail only
+    TransactionSubject transaction = 10;
+    RegistrationSubject registration = 11;
+  }
+  optional AccountView before = 12;   // the account as the Guardian holds it; absent for a new registration (section 3.2)
+  AccountView after = 13;             // the account as it will be if every module allows (section 3.2)
+}
+
+message AccountView {
+  string commitment = 1;
+  string auth_scheme = 2;             // "falcon" or "ecdsa"
+  repeated string signer_commitments = 3;
+  reserved 4;                         // was threshold; renamed default_threshold
+  reserved "threshold";
+  optional uint32 default_threshold = 5;  // absent for single-key accounts
+  map<string, uint32> procedure_thresholds = 6;  // procedure root -> threshold overriding the default; empty when none
+}
+
+message TransactionSubject {
+  reserved 1, 2;                      // were prev_commitment and new_commitment; now before.commitment and after.commitment
+  reserved "prev_commitment", "new_commitment";
+  TxProjection projection = 3;        // the contract modules should rely on
+  bytes raw_tx_summary = 4;           // serialized TransactionSummary; UNSTABLE across Miden protocol bumps
+  reserved 5;                         // was unverified_hint; replaced by unverified_metadata
+  reserved "unverified_hint";
+  repeated PendingTransaction pending = 6;  // signed for this account, not yet acknowledged by this module (section 3.4)
+  reserved 7;                         // was submitter; now HookRequest.submitter
+  reserved "submitter";
+  string proposer = 8;                // signer commitment that created the matching proposal; verified; empty when there is none (section 3.2)
+  bytes unverified_metadata = 9;      // UTF-8 JSON, proposer-asserted proposal metadata; never authoritative; UNSTABLE across SDK releases (section 3.2)
+}
+
+message PendingTransaction {
+  string new_commitment = 1;          // = event_id once committed
+  TxProjection projection = 2;
+  google.protobuf.Timestamp signed_at = 3;      // the accounting clock (section 3.4)
+  PendingState state = 4;
+  uint64 nonce = 5;                   // account nonce after this transaction; compared with the module's watermark
+  optional google.protobuf.Timestamp committed_at = 6;  // set when state = committed
+  string submitter = 7;               // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
+  string proposer = 8;                // as in TransactionSubject at that ack; empty when there was no matching proposal
+}
+enum PendingState {
+  PENDING_STATE_UNSPECIFIED = 0;
+  PENDING_STATE_CANDIDATE = 1;        // signed, waiting to become committed
+  PENDING_STATE_COMMITTED = 2;        // committed, notify not yet acknowledged by this module
+}
+
+message RegistrationSubject {
+  reserved 1 to 4, 6;                 // auth_scheme, signer_commitments, threshold and initial_state_commitment moved to HookRequest.after; submitter to HookRequest.submitter
+  reserved "auth_scheme", "signer_commitments", "threshold", "initial_state_commitment", "submitter";
+  AccountProjection initial_state = 5;  // vault and storage of the account about to be accepted
+}
+
+message Decision {
+  bool allow = 1;
+  string reason_code = 2;             // required when allow = false; ignored when allow = true
+  string message = 3;                 // logged, never forwarded to clients
+}
+
+message TxProjection {
+  reserved 1;                         // was version; protocol_version covers the projection
+  reserved "version";                 // the JSON name cannot be reused either (matters for the proto3 JSON mapping)
+  int64 nonce_delta = 2;
+  uint32 expiration_block = 3;
+  repeated VaultChange vault_changes = 4;
+  repeated OutputNote output_notes = 5;
+  repeated InputNote input_notes = 6;
+  repeated StorageChange storage_changes = 7;
+}
+
+message AccountProjection {
+  repeated Asset vault = 1;
+  repeated StorageSlot storage = 2;
+}
+
+message Asset {
+  string faucet_id = 1;
+  oneof value { string fungible_amount = 2; string nft_id = 3; }  // amounts as decimal strings
+}
+
+message VaultChange { Asset asset = 1; Direction direction = 2; }
+enum Direction { DIRECTION_UNSPECIFIED = 0; DIRECTION_IN = 1; DIRECTION_OUT = 2; }
+
+message OutputNote {
+  string note_id = 1;
+  NoteType note_type = 2;
+  bool partial = 3;                   // only the recipient digest is known
+  string recipient_digest = 4;
+  repeated Asset assets = 5;
+  string script_root = 6;
+  optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
+}
+enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
+
+message InputNote { string note_id = 1; repeated Asset assets = 2; }
+
+message StorageChange {
+  string slot_name = 1;               // StorageSlotName, e.g. "miden::standards::auth::multisig::threshold_config"
+  StorageSlotKind kind = 2;
+  StorageOp op = 3;
+  string value = 4;                   // kind = value, op = create or update: the new value
+  MapChanges map = 5;                 // kind = map, op = create: initial entries; op = update: changed entries
+}
+enum StorageSlotKind { STORAGE_SLOT_KIND_UNSPECIFIED = 0; STORAGE_SLOT_KIND_VALUE = 1; STORAGE_SLOT_KIND_MAP = 2; }
+enum StorageOp { STORAGE_OP_UNSPECIFIED = 0; STORAGE_OP_CREATE = 1; STORAGE_OP_UPDATE = 2; STORAGE_OP_REMOVE = 3; }
+message MapChanges { repeated MapEntry entries = 1; }
+message MapEntry { string key = 1; string value = 2; }  // value = empty word: the entry was removed
+message StorageSlot {
+  string slot_name = 1;
+  StorageSlotKind kind = 2;
+  oneof content { string value = 3; MapChanges map = 4; }
+}
+
+message CommitEvent {
+  string event_id = 1;                // = new_commitment; stable across redelivery
+  string account_id = 2;
+  string prev_commitment = 3;
+  string new_commitment = 4;
+  TxProjection projection = 5;
+  google.protobuf.Timestamp committed_at = 6;
+  string network = 7;                 // "miden", as in HookRequest
+  uint64 nonce = 8;                   // account nonce after this transaction; the delivery watermark (section 3.3)
+  google.protobuf.Timestamp signed_at = 9;   // the accounting clock, identical to the value the module saw in pending (section 3.4)
+  string instance_id = 10;
+  string submitter = 11;              // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
+  string proposer = 12;               // as in TransactionSubject at that ack; empty when there was no matching proposal (section 3.2)
+}
