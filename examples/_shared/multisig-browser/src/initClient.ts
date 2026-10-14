@@ -96,6 +96,17 @@ export async function createMidenClient(
     return MidenClient.createTestnet({ rpcUrl, storeName, useWorker: false });
   }
 
+  if (normalizedRpcUrl === 'mainnet' || normalizedRpcUrl === 'https://rpc.mainnet.miden.io') {
+    return MidenClient.create({
+      rpcUrl: 'https://rpc.mainnet.miden.io',
+      noteTransportUrl: 'https://transport.mainnet.miden.io',
+      proverUrl: useLocalProver ? 'local' : 'https://tx-prover.mainnet.miden.io',
+      storeName,
+      autoSync: true,
+      useWorker: false,
+    });
+  }
+
   return MidenClient.create({
     rpcUrl,
     proverUrl:

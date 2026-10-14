@@ -58,8 +58,8 @@ const client = new MultisigClient(midenClient, {
 // Both endpoints are required; construction throws when either is omitted.
 // midenRpcEndpoint must point at the same network as the injected MidenClient.
 
-// 2. Get GUARDIAN server public key
-const guardianCommitment = await client.guardianClient.getPubkey();
+// 2. Get GUARDIAN's ACK commitment for the account's signature scheme
+const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
 
 // 3. Create 1-of-3 multisig account
 const config = {
@@ -234,9 +234,12 @@ The Guardian server exposes the same policy for its own node reads via
 
 Private notes are relayed through a note transport service that is separate
 from the node RPC. On the testnet and devnet presets both SDKs derive the
-transport endpoint automatically; a custom node endpoint has no derivable
-transport service, so it must be set explicitly — otherwise private-note
-relay is disabled.
+transport endpoint automatically, and the Rust SDK also derives it for the
+mainnet preset (`Endpoint::mainnet()`). The web SDK has no mainnet preset or
+`'mainnet'` shorthand yet, so a browser client on mainnet passes
+`https://transport.mainnet.miden.io` explicitly. A custom node endpoint has
+no derivable transport service, so it must be set explicitly; otherwise
+private-note relay is disabled.
 
 In Rust the endpoint lives on the builder, next to the node endpoint:
 
@@ -611,11 +614,41 @@ the upstream status in
 [MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#open-upstream-items). Node.js
 clients have no worker and are unaffected.
 
+#### Mainnet
+
+`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl`, so a
+mainnet client names its endpoints explicitly:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.mainnet.miden.io',
+  proverUrl: 'https://tx-prover.mainnet.miden.io',
+  noteTransportUrl: 'https://transport.mainnet.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.mainnet.miden.io',
+  prover: {
+    retry: { maxAttempts: 4 },
+  },
+});
+```
+
+`createTestnet` and `createDevnet` set exactly these three endpoints plus
+`autoSync`, so the explicit form is equivalent. Without `noteTransportUrl`,
+private notes cannot be relayed between cosigners. Leave `prover.url` unset so
+the SDK keeps the mainnet prover injected into the `MidenClient`; a `url`
+there overrides it.
+
 ### Creating Accounts
 
 ```typescript
-// Get GUARDIAN server's public key commitment
-const guardianCommitment = await client.guardianClient.getPubkey();
+// Get GUARDIAN's ACK commitment for the account's signature scheme
+const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
 
 // Define multisig configuration
 const config: MultisigConfig = {
@@ -638,6 +671,13 @@ console.log('Account ID:', multisig.accountId);
 console.log('Threshold:', multisig.threshold);
 console.log('Signers:', multisig.signerCommitments);
 ```
+
+`getPubkey` returns `{ commitment, pubkey }` for one signature scheme and
+defaults to Falcon when no scheme is passed, including on a Guardian that only
+admits ECDSA accounts (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`): both ACK keys
+stay loaded for existing accounts. Always pass the scheme of the account you
+are creating, usually `signer.scheme`. A Falcon commitment in an ECDSA account
+is refused at registration with an authorization error, not a scheme mismatch.
 
 ### Loading Existing Accounts
 

@@ -79,8 +79,8 @@ approval prompts: the wallet still signs every transaction summary.
   - `origin`: the website that asked for the grant, e.g. `https://app.example`, at most 256 bytes; empty for clients outside a browser. The page writes it, so it is unverified; wallets display it, and Guardian does not check it against requests;
   - `issued_at` and `expires_at` (Unix seconds), plus `expires`, the canonical readable form of `expires_at` (`YYYY-MM-DD HH:MM:SS UTC`);
   - the scope, a fixed text every v1 grant states: *Every account this signer cosigns on this Guardian, now or later, until this grant expires*;
-  - `guardian_commitment`: this Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey`);
-  - `network`: the status `environment`, exactly `local`, `devnet` or `testnet` (not a bech32 HRP: local and devnet share `mdev`).
+  - `guardian_commitment`: this Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey?scheme=<scheme>`);
+  - `network`: the status `environment`, exactly `local`, `devnet`, `testnet` or `mainnet` (not a bech32 HRP: local and devnet share `mdev`).
 
   `expires` and the scope are derived by Guardian, never sent: a wallet that
   displayed anything else signed a different digest and is rejected.
@@ -472,7 +472,7 @@ component schemas.
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/nonce` | signed headers | Nonce and commitment of the latest canonical state (sync pre-check) |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
-| client | `GET /pubkey` | public | ACK public key / commitment |
+| client | `GET /pubkey` | public | ACK public key / commitment for `?scheme=falcon\|ecdsa` (default `falcon`) |
 | client | `GET /status` | public | Server liveness, version, environment, uptime |
 | client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |

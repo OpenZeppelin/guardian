@@ -133,8 +133,8 @@ Most startup failures are environment misconfiguration. Check in order:
    `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
    (or `contains non-Unicode data` / `has unrecognized value "..."` for
    malformed values and typos like `tesnet`). There is no fallback network.
-   Replace the variable with `MidenLocal`, `MidenTestnet`, or
-   `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
+   Replace the variable with `MidenLocal`, `MidenMainnet`, `MidenTestnet`,
+   or `MidenDevnet` (short forms `local`/`mainnet`/`testnet`/`devnet` work,
    case-insensitive).
 2. **Miden node unreachable or Miden RPC settings invalid.** The initial
    node connection retries transient failures for ≈35 seconds (5 attempts

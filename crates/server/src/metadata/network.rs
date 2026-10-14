@@ -22,6 +22,7 @@ pub enum MidenNetworkType {
     Local,
     Devnet,
     Testnet,
+    Mainnet,
 }
 
 impl MidenNetworkType {
@@ -34,6 +35,7 @@ impl MidenNetworkType {
         match self {
             Self::Local | Self::Devnet => NetworkId::Devnet,
             Self::Testnet => NetworkId::Testnet,
+            Self::Mainnet => NetworkId::Mainnet,
         }
     }
 }
@@ -94,6 +96,7 @@ impl From<NetworkType> for MidenNetworkType {
             NetworkType::MidenLocal => Self::Local,
             NetworkType::MidenDevnet => Self::Devnet,
             NetworkType::MidenTestnet => Self::Testnet,
+            NetworkType::MidenMainnet => Self::Mainnet,
         }
     }
 }
@@ -104,6 +107,7 @@ impl From<MidenNetworkType> for NetworkType {
             MidenNetworkType::Local => Self::MidenLocal,
             MidenNetworkType::Devnet => Self::MidenDevnet,
             MidenNetworkType::Testnet => Self::MidenTestnet,
+            MidenNetworkType::Mainnet => Self::MidenMainnet,
         }
     }
 }
@@ -114,6 +118,7 @@ impl std::fmt::Display for MidenNetworkType {
             Self::Local => f.write_str("local"),
             Self::Devnet => f.write_str("devnet"),
             Self::Testnet => f.write_str("testnet"),
+            Self::Mainnet => f.write_str("mainnet"),
         }
     }
 }
@@ -128,6 +133,7 @@ impl TryFrom<guardian::NetworkConfig> for NetworkConfig {
                     "local" | "midenlocal" => MidenNetworkType::Local,
                     "devnet" | "midendevnet" => MidenNetworkType::Devnet,
                     "testnet" | "midentestnet" => MidenNetworkType::Testnet,
+                    "mainnet" | "midenmainnet" => MidenNetworkType::Mainnet,
                     other => return Err(format!("unsupported Miden network_type: {other}")),
                 };
                 Ok(Self::Miden { network_type })

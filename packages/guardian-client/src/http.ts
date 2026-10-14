@@ -409,6 +409,11 @@ export class GuardianHttpClient {
     return data.revoked;
   }
 
+  /**
+   * Guardian's ACK commitment for one signature scheme (`GET /pubkey`).
+   * Omitting `scheme` returns the Falcon key even on a server that admits only
+   * ECDSA accounts, so pass the scheme of the account the commitment is for.
+   */
   async getPubkey(scheme?: SignatureScheme): Promise<PubkeyResponse> {
     const query = scheme ? `?scheme=${scheme}` : '';
     const response = await this.fetch(`/pubkey${query}`, { method: 'GET' });

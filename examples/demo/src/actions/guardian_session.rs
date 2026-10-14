@@ -49,12 +49,13 @@ fn print_session_menu() {
 async fn start_session(state: &mut SessionState, editor: &mut DefaultEditor) -> Result<(), String> {
     print_section("Start Guardian Session");
     let default_network = match state.network_id() {
+        NetworkId::Mainnet => "mainnet",
         NetworkId::Testnet => "testnet",
         _ => "devnet",
     };
     let network = prompt_input(
         editor,
-        &format!("Guardian network (local/devnet/testnet) [{default_network}]: "),
+        &format!("Guardian network (local/devnet/testnet/mainnet) [{default_network}]: "),
     )?;
     let network = if network.is_empty() {
         default_network.to_string()

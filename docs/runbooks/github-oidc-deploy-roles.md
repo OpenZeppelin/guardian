@@ -53,8 +53,8 @@ obtain the environment's AWS identity.
 | Managing stack (`github_oidc_enabled = true`) | `guardian-prod` (state `infra/terraform.guardian-prod.prod.tfstate`) |
 | Bootstrap role | `github-actions-solutions-account-guardian-oidc-role` in the root account |
 | Deploy role | `GithubOIDCGuardianRole` in the stacks account |
-| Admitted subject claims (`github_oidc_subjects`) | `repo:OpenZeppelin/guardian:environment:devnet`, `repo:OpenZeppelin/guardian:environment:testnet` |
-| Deployable stacks (`github_deploy_stack_names`) | `guardian` (devnet), `guardian-prod` (testnet) |
+| Admitted subject claims (`github_oidc_subjects`) | `repo:OpenZeppelin/guardian:environment:devnet`, `repo:OpenZeppelin/guardian:environment:testnet`, `repo:OpenZeppelin/guardian:environment:mainnet` |
+| Deployable stacks (`github_deploy_stack_names`) | `guardian` (devnet), `guardian-prod` (testnet), `guardian-mainnet` (mainnet) |
 
 Export these before running `scripts/aws-deploy.sh plan` / `deploy` for the
 `guardian-prod` stack (the script passes `TF_VAR_*` through to Terraform):
@@ -143,7 +143,7 @@ Then, with the `TF_VAR_*` exports above:
 
 ## Adding an environment or a stack
 
-- **New GitHub environment** (for example `mainnet`): create the environment
+- **New GitHub environment**: create the environment
   with the workflow's variables, restrict its deployment branches to `main`,
   add `repo:OpenZeppelin/guardian:environment:<name>` to
   `github_oidc_subjects`, add the name to the workflow's `environment` choice

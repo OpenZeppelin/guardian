@@ -32,7 +32,8 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!("    [1] Local (http://localhost:57291)");
     println!("    [2] Devnet (https://rpc.devnet.miden.io)");
     println!("    [3] Testnet (https://rpc.testnet.miden.io)");
-    println!("    [4] Custom URL");
+    println!("    [4] Mainnet (https://rpc.mainnet.miden.io)");
+    println!("    [5] Custom URL");
     println!();
 
     let network_choice = prompt_input(editor, "Network [1]: ")?;
@@ -53,16 +54,25 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
             ),
             NetworkId::Testnet,
         ),
-        "4" => {
+        "4" => (
+            Endpoint::new(
+                "https".to_string(),
+                "rpc.mainnet.miden.io".to_string(),
+                None,
+            ),
+            NetworkId::Mainnet,
+        ),
+        "5" => {
             let custom_url = prompt_input(editor, "Enter Miden Node URL: ")?;
             let endpoint = parse_miden_endpoint(&custom_url)?;
             let network = prompt_input(
                 editor,
-                "Network of this endpoint ([1] devnet, [2] testnet) [1]: ",
+                "Network of this endpoint ([1] devnet, [2] testnet, [3] mainnet) [1]: ",
             )?;
             let network_id = match network.trim() {
                 "" | "1" => NetworkId::Devnet,
                 "2" => NetworkId::Testnet,
+                "3" => NetworkId::Mainnet,
                 _ => {
                     println!("  Invalid choice, using devnet");
                     NetworkId::Devnet

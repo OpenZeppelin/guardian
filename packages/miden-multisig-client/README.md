@@ -94,6 +94,36 @@ symptoms and recovery are in
 [TROUBLESHOOTING.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
 Node.js has no worker and is unaffected.
 
+### Mainnet
+
+`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl`, so a
+mainnet client names its endpoints explicitly:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.mainnet.miden.io',
+  proverUrl: 'https://tx-prover.mainnet.miden.io',
+  noteTransportUrl: 'https://transport.mainnet.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.mainnet.miden.io',
+  prover: {
+    retry: { maxAttempts: 4 },
+  },
+});
+```
+
+`createTestnet` and `createDevnet` set exactly these three endpoints plus
+`autoSync`, so the explicit form is equivalent. Without `noteTransportUrl`,
+private notes cannot be relayed between cosigners. Leave `prover.url` unset so
+the SDK keeps the mainnet prover injected into the `MidenClient`; a `url`
+there overrides it.
+
 For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
 `Eip712Signer.connect(provider)` once to select the Ethereum address and
 recover its secp256k1 public key from a dedicated key-discovery signature.
@@ -184,11 +214,19 @@ The full cross-SDK reference, including the Rust equivalents, is
 
 ### Get GUARDIAN Public Key
 
-Before creating a multisig, get the GUARDIAN server's public key commitment:
+Before creating a multisig, get the GUARDIAN server's ACK commitment for the
+account's signature scheme:
 
 ```typescript
-const guardianCommitment = await client.guardianClient.getPubkey();
+const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
 ```
+
+`getPubkey` returns `{ commitment, pubkey }` for one signature scheme and
+defaults to Falcon when no scheme is passed, including on a Guardian that only
+admits ECDSA accounts (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`): both ACK keys
+stay loaded for existing accounts. Always pass the scheme of the account you
+are creating, usually `signer.scheme`. A Falcon commitment in an ECDSA account
+is refused at registration with an authorization error, not a scheme mismatch.
 
 ### Create a Multisig Account
 

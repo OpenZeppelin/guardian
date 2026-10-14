@@ -5,12 +5,14 @@ use std::sync::Arc;
 
 use miden_client::builder::ClientBuilder;
 use miden_client::grpc_support::{
-    DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT,
+    DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, MAINNET_PROVER_ENDPOINT,
+    TESTNET_PROVER_ENDPOINT,
 };
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::note_transport::{
-    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
+    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
 };
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
 use miden_client::store::Store;
@@ -57,7 +59,9 @@ pub(crate) fn configured_node_rpc_client(
 }
 
 fn preset_note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
-    if endpoint == &Endpoint::testnet() {
+    if endpoint == &Endpoint::mainnet() {
+        Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
+    } else if endpoint == &Endpoint::testnet() {
         Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
     } else if endpoint == &Endpoint::devnet() {
         Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
@@ -95,6 +99,8 @@ fn configured_client_builder(
         ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
         ClientBuilder::<FilesystemKeyStore>::for_testnet()
+    } else if endpoint == &Endpoint::mainnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_mainnet()
     } else if endpoint == &Endpoint::localhost() {
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
@@ -122,6 +128,8 @@ fn configured_client_builder(
         Some(DEVNET_PROVER_ENDPOINT)
     } else if endpoint == &Endpoint::testnet() {
         Some(TESTNET_PROVER_ENDPOINT)
+    } else if endpoint == &Endpoint::mainnet() {
+        Some(MAINNET_PROVER_ENDPOINT)
     } else {
         None
     };
@@ -199,7 +207,7 @@ impl MultisigClientBuilder {
     /// Sets the note transport service endpoint used for private note relay.
     ///
     /// Overrides the default derived from the Miden endpoint (the public
-    /// transport services for the testnet and devnet presets). A custom
+    /// transport services for the mainnet, testnet and devnet presets). A custom
     /// Miden node endpoint has no derivable transport service, so this is
     /// the only way to enable note transport there.
     pub fn note_transport_endpoint(mut self, endpoint: impl Into<String>) -> Self {
@@ -378,6 +386,10 @@ mod tests {
 
     #[test]
     fn note_transport_endpoints_exist_only_for_public_presets() {
+        assert_eq!(
+            preset_note_transport_endpoint(&Endpoint::mainnet()),
+            Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
+        );
         assert_eq!(
             preset_note_transport_endpoint(&Endpoint::testnet()),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)

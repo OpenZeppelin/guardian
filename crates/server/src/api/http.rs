@@ -639,6 +639,8 @@ pub struct DeltaProposalResponse {
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct PubkeyQuery {
+    /// `falcon` or `ecdsa`. Omitted or unrecognized values return the Falcon key, whichever
+    /// schemes the server admits for new accounts.
     pub scheme: Option<String>,
 }
 

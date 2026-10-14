@@ -38,7 +38,7 @@ variable "server_image_uri" {
 }
 
 variable "server_network_type" {
-  description = "Miden network for the GUARDIAN server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
+  description = "Miden network for the GUARDIAN server runtime (MidenMainnet, MidenTestnet, MidenDevnet, or MidenLocal)"
   type        = string
   default     = "MidenTestnet"
 }
@@ -900,11 +900,12 @@ variable "github_oidc_subjects" {
   default = [
     "repo:OpenZeppelin/guardian:environment:devnet",
     "repo:OpenZeppelin/guardian:environment:testnet",
+    "repo:OpenZeppelin/guardian:environment:mainnet",
   ]
 }
 
 variable "github_deploy_stack_names" {
   description = "Stacks (stack_name values) the AWS Deploy workflow may roll out; scopes the deploy role to their ECR repositories, ECS services, task definitions, and task roles under the default resource naming"
   type        = list(string)
-  default     = ["guardian", "guardian-prod"]
+  default     = ["guardian", "guardian-prod", "guardian-mainnet"]
 }

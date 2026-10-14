@@ -3405,6 +3405,7 @@
           {
             "name": "scheme",
             "in": "query",
+            "description": "`falcon` or `ecdsa`. Omitted or unrecognized values return the Falcon key, whichever\nschemes the server admits for new accounts.",
             "required": false,
             "schema": {
               "type": "string"
@@ -6474,7 +6475,8 @@
         "enum": [
           "local",
           "devnet",
-          "testnet"
+          "testnet",
+          "mainnet"
         ]
       },
       "NetworkConfig": {

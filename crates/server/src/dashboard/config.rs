@@ -128,6 +128,7 @@ impl DashboardConfig {
 
 fn environment_for_network(network_type: NetworkType) -> &'static str {
     match network_type {
+        NetworkType::MidenMainnet => "mainnet",
         NetworkType::MidenTestnet => "testnet",
         NetworkType::MidenDevnet => "devnet",
         NetworkType::MidenLocal => "local",
@@ -330,6 +331,12 @@ mod tests {
     #[test]
     fn environment_is_derived_from_network_type() {
         let _cursor = EnvVarGuard::remove("GUARDIAN_DASHBOARD_CURSOR_SECRET");
+        assert_eq!(
+            DashboardConfig::from_env_for_network(NetworkType::MidenMainnet)
+                .unwrap()
+                .environment(),
+            "mainnet"
+        );
         assert_eq!(
             DashboardConfig::from_env_for_network(NetworkType::MidenTestnet)
                 .unwrap()

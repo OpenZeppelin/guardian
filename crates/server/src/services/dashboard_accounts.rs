@@ -384,6 +384,13 @@ mod tests {
             "testnet HRP expected, got '{bech32}'",
         );
 
+        let bech32_mainnet = bech32_for_account(&meta, NetworkType::MidenMainnet)
+            .expect("bech32 encodes for valid miden id");
+        assert!(
+            bech32_mainnet.starts_with("mm1"),
+            "mainnet HRP expected, got '{bech32_mainnet}'",
+        );
+
         let bech32_local =
             bech32_for_account(&meta, NetworkType::MidenLocal).expect("local maps to devnet HRP");
         assert!(
