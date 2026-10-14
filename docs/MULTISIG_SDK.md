@@ -233,11 +233,11 @@ The Guardian server exposes the same policy for its own node reads via
 ### Note transport endpoint
 
 Private notes are relayed through a note transport service that is separate
-from the node RPC. On the testnet and devnet presets both SDKs derive the
-transport endpoint automatically, and the Rust SDK also derives it for the
-mainnet preset (`Endpoint::mainnet()`). The web SDK has no mainnet preset or
-`'mainnet'` shorthand yet, so a browser client on mainnet passes
-`https://transport.mainnet.miden.io` explicitly. A custom node endpoint has
+from the node RPC. On the devnet and testnet presets both SDKs derive the
+transport endpoint automatically, and the Rust SDK also derives it for Cedar
+(`MidenCedar::endpoint()`) and mainnet (`Endpoint::mainnet()`). The web SDK
+has no Cedar or mainnet preset or shorthand yet, so a browser client on either
+network passes its transport URL explicitly. A custom node endpoint has
 no derivable transport service, so it must be set explicitly; otherwise
 private-note relay is disabled.
 
@@ -614,11 +614,38 @@ the upstream status in
 [MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#open-upstream-items). Node.js
 clients have no worker and are unaffected.
 
+#### Cedar (pre-mainnet)
+
+Cedar is Miden's pre-mainnet network. `@miden-sdk/miden-sdk` 0.17.3 has no
+Cedar preset and no `'cedar'` shorthand, so a Cedar client names its endpoints
+explicitly:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.cedar.miden.io',
+  proverUrl: 'https://tx-prover.cedar.miden.io',
+  noteTransportUrl: 'https://transport.cedar.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.cedar.miden.io',
+});
+```
+
+Cedar addresses use the `mm` prefix, today the same as mainnet's. In Rust,
+`MidenCedar::endpoint()` selects the Cedar prover and note transport automatically. miden-client does
+not know Cedar, so its `Client::network_id()` returns the generic custom id
+`mcst` for a Cedar endpoint; encode Cedar addresses with
+`MidenCedar::network_id()` (`mm`) instead.
+
 #### Mainnet
 
 `@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
-`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl`, so a
-mainnet client names its endpoints explicitly:
+`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
+so a mainnet client names its endpoints the same way:
 
 ```typescript
 const midenClient = await MidenClient.create({
@@ -639,10 +666,10 @@ const client = new MultisigClient(midenClient, {
 ```
 
 `createTestnet` and `createDevnet` set exactly these three endpoints plus
-`autoSync`, so the explicit form is equivalent. Without `noteTransportUrl`,
-private notes cannot be relayed between cosigners. Leave `prover.url` unset so
-the SDK keeps the mainnet prover injected into the `MidenClient`; a `url`
-there overrides it.
+`autoSync`, so the explicit Cedar and mainnet forms are equivalent. Without
+`noteTransportUrl`, private notes cannot be relayed between cosigners. Leave
+`prover.url` unset so the SDK keeps the Cedar or mainnet prover injected into
+the `MidenClient`; a `url` there overrides it.
 
 ### Creating Accounts
 

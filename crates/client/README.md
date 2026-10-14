@@ -195,7 +195,7 @@ use guardian_client::StartSessionOptions;
 
 let info = client
     .start_session(StartSessionOptions {
-        network: "devnet".to_string(), // the Guardian's network: local, devnet or testnet
+        network: "devnet".to_string(), // the Guardian's /status environment: local, devnet, testnet, cedar or mainnet
         ttl: Duration::from_secs(3600), // more than 5 minutes, at most the Guardian's maximum (8 hours by default)
     })
     .await?;

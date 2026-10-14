@@ -79,11 +79,10 @@ the environment name:
 |---|---|---|---|---|
 | `devnet` | MidenDevnet | `guardian` | dev | `guardian-devnet.openzeppelin.com` |
 | `testnet` | MidenTestnet | `guardian-prod` | prod | `guardian-testnet.openzeppelin.com` |
-| `mainnet` | MidenMainnet | `guardian-mainnet` | prod | `guardian-mainnet.openzeppelin.com` (not provisioned yet, see [Provisioning the mainnet stack](#provisioning-the-mainnet-stack)) |
 
 Run it from the Actions tab with:
 
-- `environment`: `devnet`, `testnet`, or `mainnet`
+- `environment`: `devnet` or `testnet`
 - `version`: a published tag such as `v1.2.3`. Only `devnet` accepts
   pre-releases like `v1.2.3-rc.1`; every other environment is release-only.
 
@@ -121,11 +120,10 @@ release images are built with the `postgres` feature only.
 
 One-time setup per target (infra):
 
-- A GitHub environment named after the network (`devnet` / `testnet` /
-  `mainnet`) with variables `AWS_REGION`, `ROLE_FOR_OIDC` (role trusted for
-  GitHub OIDC), `ROLE_TO_ASSUME` (deploy role reached via role chaining), and
-  `STACK_NAME` (`guardian` / `guardian-prod` / `guardian-mainnet`). Add
-  required reviewers on `testnet` and `mainnet`.
+- A GitHub environment named after the network (`devnet` / `testnet`) with
+  variables `AWS_REGION`, `ROLE_FOR_OIDC` (role trusted for GitHub OIDC),
+  `ROLE_TO_ASSUME` (deploy role reached via role chaining), and `STACK_NAME`
+  (`guardian` / `guardian-prod`). Add required reviewers on `testnet`.
 - Each environment must restrict **deployment branches** to `main`. Without
   that, anyone able to dispatch the workflow could run an edited copy of it
   from a feature branch and obtain the environment's AWS OIDC identity.
@@ -135,69 +133,6 @@ One-time setup per target (infra):
   for setup and for adding environments or stacks.
 - The ECR repository must already exist; `scripts/aws-deploy.sh build` creates
   it on a new stack.
-
-### Provisioning the mainnet stack
-
-The `mainnet` choice of the AWS Deploy workflow targets the `guardian-mainnet`
-stack, which does not exist yet. The server connects to the Miden node before
-it binds its listeners, so the stack cannot start until Miden mainnet
-(`https://rpc.mainnet.miden.io`) is reachable. Confirm the node, prover, and
-note transport endpoints with the Miden team before the first deploy.
-
-Until every step below is done, a dispatch to `mainnet` fails at the AWS
-credentials step: the environment has no role variables and the bootstrap
-role's trust policy does not admit it. Do the GitHub environment step before
-applying the trust policy change, so the environment is protected before it
-can obtain an AWS identity.
-
-1. **GitHub environment.** Create `mainnet` with required reviewers,
-   deployment branches restricted to `main`, and the variables `AWS_REGION`,
-   `ROLE_FOR_OIDC`, `ROLE_TO_ASSUME`, and `STACK_NAME=guardian-mainnet`.
-2. **Stack identity.** Export it for every command that follows:
-
-   ```bash
-   export DEPLOY_STAGE=prod
-   export STACK_NAME=guardian-mainnet
-   export SUBDOMAIN=guardian-mainnet
-   export GUARDIAN_NETWORK_TYPE=MidenMainnet
-   ```
-
-3. **Keys and secrets.** Use the KMS-backed ECDSA ACK signer, so the key never
-   leaves KMS, then create the remaining prod secrets:
-
-   ```bash
-   ./scripts/aws-deploy.sh bootstrap-kms-ecdsa-key   # prints the ARN to export
-   export TF_VAR_guardian_ack_ecdsa_kms_key_arn=<printed ARN>
-   ./scripts/aws-deploy.sh bootstrap-ack-keys        # Falcon only when KMS is set
-   ./scripts/aws-deploy.sh bootstrap-storage-encryption-key
-   export GUARDIAN_STORAGE_ENCRYPTION_SECRET_NAME=guardian-mainnet/server/storage-encryption-key
-   ./scripts/aws-deploy.sh bootstrap-dashboard-cursor-secret
-   ```
-
-4. **Alarms.** Route alarms to a dedicated channel; a stack whose alarms
-   notify nobody is not ready for mainnet:
-
-   ```bash
-   export TF_VAR_alarm_notifications_enabled=true
-   export TF_VAR_alarm_slack_workspace_id=<T...>
-   export TF_VAR_alarm_slack_channel_id=<C... for #guardian-alerts-mainnet>
-   ```
-
-5. **DNS and TLS.** Issue the certificate and records for
-   `guardian-mainnet.openzeppelin.com` following
-   [the domain migration runbook](./runbooks/guardian-domain-migration.md)
-   (parent-zone CNAME plus Cloudflare SSL).
-6. **First deploy.** `./scripts/aws-deploy.sh deploy` builds the image, creates
-   the ECR repository, and applies the stack.
-7. **Admit the environment.** Apply the managing stack (`guardian-prod`, see
-   the [GitHub OIDC deploy roles runbook](./runbooks/github-oidc-deploy-roles.md))
-   so the trust policy picks up the `mainnet` subject and the deploy role
-   covers `guardian-mainnet`. Later releases then go through the AWS Deploy
-   workflow.
-8. **Smoke.** Check `/pubkey?scheme=ecdsa` (plain `/pubkey` returns the
-   Falcon key whatever schemes are admitted) and run one create, propose,
-   sign, and execute round trip with a small amount before announcing the
-   endpoint.
 
 ## Prerequisites
 

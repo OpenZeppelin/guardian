@@ -96,6 +96,17 @@ export async function createMidenClient(
     return MidenClient.createTestnet({ rpcUrl, storeName, useWorker: false });
   }
 
+  if (normalizedRpcUrl === 'cedar' || normalizedRpcUrl === 'https://rpc.cedar.miden.io') {
+    return MidenClient.create({
+      rpcUrl: 'https://rpc.cedar.miden.io',
+      noteTransportUrl: 'https://transport.cedar.miden.io',
+      proverUrl: useLocalProver ? 'local' : 'https://tx-prover.cedar.miden.io',
+      storeName,
+      autoSync: true,
+      useWorker: false,
+    });
+  }
+
   if (normalizedRpcUrl === 'mainnet' || normalizedRpcUrl === 'https://rpc.mainnet.miden.io') {
     return MidenClient.create({
       rpcUrl: 'https://rpc.mainnet.miden.io',

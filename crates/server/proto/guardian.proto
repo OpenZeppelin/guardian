@@ -107,7 +107,7 @@ message NetworkConfig {
 
 // Miden account network config
 message MidenNetworkConfig {
-  string network_type = 1; // "local", "devnet", or "testnet"
+  string network_type = 1; // "local", "devnet", "testnet", "cedar", or "mainnet"
 }
 
 // EVM account network config

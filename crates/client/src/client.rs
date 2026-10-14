@@ -56,7 +56,7 @@ pub struct GuardianClient {
 /// Parameters of a session grant the wallet signs.
 #[derive(Debug, Clone)]
 pub struct StartSessionOptions {
-    /// The Guardian's Miden network label: `local`, `devnet`, `testnet` or `mainnet`.
+    /// The Guardian's Miden network label: `local`, `devnet`, `testnet`, `cedar` or `mainnet`.
     pub network: String,
     /// Session lifetime: more than [`MIN_SESSION_TTL`] and at most the
     /// Guardian's configured maximum (8 hours by default).

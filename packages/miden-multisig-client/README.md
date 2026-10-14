@@ -94,11 +94,35 @@ symptoms and recovery are in
 [TROUBLESHOOTING.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
 Node.js has no worker and is unaffected.
 
+### Cedar (pre-mainnet)
+
+Cedar is Miden's pre-mainnet network. `@miden-sdk/miden-sdk` 0.17.3 has no
+Cedar preset and no `'cedar'` shorthand, so a Cedar client names its endpoints
+explicitly:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.cedar.miden.io',
+  proverUrl: 'https://tx-prover.cedar.miden.io',
+  noteTransportUrl: 'https://transport.cedar.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.cedar.miden.io',
+});
+```
+
+Cedar addresses use the `mm` prefix, today the same as mainnet's. In Rust,
+`MidenCedar::endpoint()` selects the Cedar prover and note transport automatically.
+
 ### Mainnet
 
 `@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
-`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl`, so a
-mainnet client names its endpoints explicitly:
+`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
+so a mainnet client names its endpoints the same way:
 
 ```typescript
 const midenClient = await MidenClient.create({
@@ -119,10 +143,10 @@ const client = new MultisigClient(midenClient, {
 ```
 
 `createTestnet` and `createDevnet` set exactly these three endpoints plus
-`autoSync`, so the explicit form is equivalent. Without `noteTransportUrl`,
-private notes cannot be relayed between cosigners. Leave `prover.url` unset so
-the SDK keeps the mainnet prover injected into the `MidenClient`; a `url`
-there overrides it.
+`autoSync`, so the explicit Cedar and mainnet forms are equivalent. Without
+`noteTransportUrl`, private notes cannot be relayed between cosigners. Leave
+`prover.url` unset so the SDK keeps the Cedar or mainnet prover injected into
+the `MidenClient`; a `url` there overrides it.
 
 For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
 `Eip712Signer.connect(provider)` once to select the Ethereum address and

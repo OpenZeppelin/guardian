@@ -24,6 +24,7 @@ use crate::MidenSdkClient;
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
+use crate::networks::MidenCedar;
 use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
 use crate::rpc::{
     RetryingNodeRpcClient, RpcConfig, RpcSelection, configured_note_transport_client,
@@ -58,21 +59,30 @@ pub(crate) fn configured_node_rpc_client(
     }
 }
 
+fn has_upstream_preset(endpoint: &Endpoint) -> bool {
+    endpoint == &Endpoint::devnet()
+        || endpoint == &Endpoint::testnet()
+        || endpoint == &Endpoint::mainnet()
+}
+
 fn preset_note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
-    if endpoint == &Endpoint::mainnet() {
-        Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
+    if endpoint == &Endpoint::devnet() {
+        Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
     } else if endpoint == &Endpoint::testnet() {
         Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
-    } else if endpoint == &Endpoint::devnet() {
-        Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+    } else if MidenCedar::matches(endpoint) {
+        Some(MidenCedar::NOTE_TRANSPORT_ENDPOINT)
+    } else if endpoint == &Endpoint::mainnet() {
+        Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
     } else {
         None
     }
 }
 
-/// An explicit endpoint always wires the transport; the preset endpoint is
-/// wired only when the RPC config is customized, so a passthrough build
-/// keeps the upstream miden-client transport defaults.
+/// An explicit endpoint always wires the transport. A preset miden-client
+/// already covers is wired only when the RPC config is customized, so a
+/// passthrough build keeps the upstream transport defaults; an SDK-only
+/// preset such as Cedar has no upstream default and is always wired.
 fn resolved_note_transport_endpoint(
     endpoint: &Endpoint,
     note_transport_endpoint: Option<&str>,
@@ -82,8 +92,8 @@ fn resolved_note_transport_endpoint(
         return Some(url.to_string());
     }
     match selection {
-        RpcSelection::Passthrough => None,
-        RpcSelection::Configured { .. } => {
+        RpcSelection::Passthrough if has_upstream_preset(endpoint) => None,
+        RpcSelection::Passthrough | RpcSelection::Configured { .. } => {
             preset_note_transport_endpoint(endpoint).map(str::to_string)
         }
     }
@@ -128,6 +138,8 @@ fn configured_client_builder(
         Some(DEVNET_PROVER_ENDPOINT)
     } else if endpoint == &Endpoint::testnet() {
         Some(TESTNET_PROVER_ENDPOINT)
+    } else if MidenCedar::matches(endpoint) {
+        Some(MidenCedar::PROVER_ENDPOINT)
     } else if endpoint == &Endpoint::mainnet() {
         Some(MAINNET_PROVER_ENDPOINT)
     } else {
@@ -207,7 +219,7 @@ impl MultisigClientBuilder {
     /// Sets the note transport service endpoint used for private note relay.
     ///
     /// Overrides the default derived from the Miden endpoint (the public
-    /// transport services for the mainnet, testnet and devnet presets). A custom
+    /// transport services for the devnet, testnet, Cedar and mainnet presets). A custom
     /// Miden node endpoint has no derivable transport service, so this is
     /// the only way to enable note transport there.
     pub fn note_transport_endpoint(mut self, endpoint: impl Into<String>) -> Self {
@@ -387,16 +399,20 @@ mod tests {
     #[test]
     fn note_transport_endpoints_exist_only_for_public_presets() {
         assert_eq!(
-            preset_note_transport_endpoint(&Endpoint::mainnet()),
-            Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
+            preset_note_transport_endpoint(&Endpoint::devnet()),
+            Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
         );
         assert_eq!(
             preset_note_transport_endpoint(&Endpoint::testnet()),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
         );
         assert_eq!(
-            preset_note_transport_endpoint(&Endpoint::devnet()),
-            Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+            preset_note_transport_endpoint(&MidenCedar::endpoint()),
+            Some(MidenCedar::NOTE_TRANSPORT_ENDPOINT)
+        );
+        assert_eq!(
+            preset_note_transport_endpoint(&Endpoint::mainnet()),
+            Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
         );
         assert_eq!(preset_note_transport_endpoint(&Endpoint::localhost()), None);
         assert_eq!(preset_note_transport_endpoint(&custom_endpoint()), None);
@@ -445,6 +461,20 @@ mod tests {
             resolved_note_transport_endpoint(&Endpoint::testnet(), None, &selection(&timeout_only)),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
         );
+    }
+
+    #[test]
+    fn cedar_note_transport_wires_even_for_passthrough_rpc_config() {
+        for rpc_config in [RpcConfig::new(), single_attempt_config()] {
+            assert_eq!(
+                resolved_note_transport_endpoint(
+                    &MidenCedar::endpoint(),
+                    None,
+                    &selection(&rpc_config)
+                ),
+                Some(MidenCedar::NOTE_TRANSPORT_ENDPOINT.to_string())
+            );
+        }
     }
 
     #[test]

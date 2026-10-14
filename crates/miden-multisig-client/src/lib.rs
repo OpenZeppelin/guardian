@@ -51,6 +51,7 @@ mod execution;
 mod export;
 mod guardian_endpoint;
 mod keystore;
+mod networks;
 mod payload;
 mod procedures;
 mod proposal;
@@ -98,6 +99,7 @@ pub use keystore::{
 // Proposals
 pub use execution::{SignatureAdvice, build_transfer_asset};
 pub use miden_standards::account::auth::MultisigAuthArgs;
+pub use networks::MidenCedar;
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,

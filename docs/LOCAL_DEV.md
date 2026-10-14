@@ -85,7 +85,7 @@ Useful env:
 | `GUARDIAN_METADATA_PATH` | Local path for accounts, auth, network. Defaults to `/var/guardian/metadata`. |
 | `GUARDIAN_KEYSTORE_PATH` | ACK key files, auto-generated on first run. Defaults to `/var/guardian/keystore`. |
 | `RUST_LOG` (`info`) | `info`, `debug`, or e.g. `server::jobs::canonicalization=debug`. |
-| `GUARDIAN_NETWORK_TYPE` (**required**) | Miden network name: `MidenLocal`, `MidenMainnet`, `MidenTestnet`, or `MidenDevnet`. The server refuses to start when it is unset or unrecognized. |
+| `GUARDIAN_NETWORK_TYPE` (**required**) | Miden network name: `MidenLocal`, `MidenDevnet`, `MidenTestnet`, `MidenCedar`, or `MidenMainnet`. The server refuses to start when it is unset or unrecognized. |
 
 At startup the server emits a warning that audit events will **not** be
 persisted — that's expected for filesystem mode

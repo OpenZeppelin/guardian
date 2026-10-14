@@ -4,7 +4,6 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use miden_multisig_client::{SessionInfo, StartSessionOptions};
-use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
 use crate::display::{print_error, print_full_hex, print_info, print_section, print_success};
@@ -48,14 +47,10 @@ fn print_session_menu() {
 
 async fn start_session(state: &mut SessionState, editor: &mut DefaultEditor) -> Result<(), String> {
     print_section("Start Guardian Session");
-    let default_network = match state.network_id() {
-        NetworkId::Mainnet => "mainnet",
-        NetworkId::Testnet => "testnet",
-        _ => "devnet",
-    };
+    let default_network = state.network().guardian_environment();
     let network = prompt_input(
         editor,
-        &format!("Guardian network (local/devnet/testnet/mainnet) [{default_network}]: "),
+        &format!("Guardian network (local/devnet/testnet/cedar/mainnet) [{default_network}]: "),
     )?;
     let network = if network.is_empty() {
         default_network.to_string()

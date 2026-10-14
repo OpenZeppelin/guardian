@@ -6476,6 +6476,7 @@
           "local",
           "devnet",
           "testnet",
+          "cedar",
           "mainnet"
         ]
       },

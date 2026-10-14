@@ -80,7 +80,7 @@ approval prompts: the wallet still signs every transaction summary.
   - `issued_at` and `expires_at` (Unix seconds), plus `expires`, the canonical readable form of `expires_at` (`YYYY-MM-DD HH:MM:SS UTC`);
   - the scope, a fixed text every v1 grant states: *Every account this signer cosigns on this Guardian, now or later, until this grant expires*;
   - `guardian_commitment`: this Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey?scheme=<scheme>`);
-  - `network`: the status `environment`, exactly `local`, `devnet`, `testnet` or `mainnet` (not a bech32 HRP: local and devnet share `mdev`).
+  - `network`: the status `environment`, exactly `local`, `devnet`, `testnet`, `cedar` or `mainnet`. It is not a bech32 HRP and cannot be derived from one: local and devnet share `mdev`, and Cedar and mainnet share `mm`, so a wallet must display this field rather than infer the network from an address.
 
   `expires` and the scope are derived by Guardian, never sent: a wallet that
   displayed anything else signed a different digest and is rejected.
