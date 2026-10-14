@@ -32,7 +32,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!("    [1] Local (http://localhost:57291)");
     println!("    [2] Devnet (https://rpc.devnet.miden.io)");
     println!("    [3] Testnet (https://rpc.testnet.miden.io)");
-    println!("    [4] Cedar pre-mainnet (https://rpc.cedar.miden.io)");
+    println!("    [4] Cedar (https://rpc.cedar.miden.io)");
     println!("    [5] Mainnet (https://rpc.mainnet.miden.io)");
     println!("    [6] Custom URL");
     println!();

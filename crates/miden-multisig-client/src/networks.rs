@@ -4,7 +4,7 @@
 use miden_client::rpc::Endpoint;
 use miden_protocol::address::NetworkId;
 
-/// Miden Cedar, the pre-mainnet network. miden-client ships no preset for it,
+/// The Miden Cedar network. miden-client ships no preset for it,
 /// so [`crate::MultisigClientBuilder`] derives the remote prover and note
 /// transport from these endpoints when given [`MidenCedar::endpoint`].
 ///

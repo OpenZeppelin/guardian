@@ -35,8 +35,8 @@ impl MidenNetworkType {
     /// Map to the Miden protocol's [`NetworkId`] used by
     /// `AccountId::to_bech32` / `from_bech32`. `Local` maps to
     /// `Devnet` since Miden's bech32 HRP set has no dedicated local
-    /// variant; local accounts share Devnet's `mdev` prefix. `Cedar`, the
-    /// pre-mainnet network, uses [`Self::CEDAR_ADDRESS_PREFIX`].
+    /// variant; local accounts share Devnet's `mdev` prefix. `Cedar` uses
+    /// [`Self::CEDAR_ADDRESS_PREFIX`].
     pub fn to_miden_network_id(self) -> miden_protocol::address::NetworkId {
         use miden_protocol::address::NetworkId;
         match self {

@@ -310,7 +310,7 @@ impl DashboardAccountDetail {
 /// Miden `AccountId` (data drift). The HRP set is fixed by the Miden
 /// protocol: `mdev` for devnet, `mtst` for testnet, `mm` for mainnet
 /// (Local is folded into Devnet — Miden has no separate Local HRP).
-/// Cedar, the pre-mainnet network, shares mainnet's `mm`.
+/// Cedar uses `mm`, today the same string as mainnet's.
 fn bech32_for_account(metadata: &AccountMetadata, network_type: NetworkType) -> Option<String> {
     use crate::metadata::MidenNetworkType;
     use miden_protocol::account::AccountId;

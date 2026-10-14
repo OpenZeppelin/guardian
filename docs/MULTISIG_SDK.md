@@ -614,11 +614,10 @@ the upstream status in
 [MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#open-upstream-items). Node.js
 clients have no worker and are unaffected.
 
-#### Cedar (pre-mainnet)
+#### Cedar
 
-Cedar is Miden's pre-mainnet network. `@miden-sdk/miden-sdk` 0.17.3 has no
-Cedar preset and no `'cedar'` shorthand, so a Cedar client names its endpoints
-explicitly:
+`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+so a Cedar client names its endpoints explicitly:
 
 ```typescript
 const midenClient = await MidenClient.create({

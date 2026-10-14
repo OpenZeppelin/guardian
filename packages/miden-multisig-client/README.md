@@ -94,11 +94,10 @@ symptoms and recovery are in
 [TROUBLESHOOTING.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
 Node.js has no worker and is unaffected.
 
-### Cedar (pre-mainnet)
+### Cedar
 
-Cedar is Miden's pre-mainnet network. `@miden-sdk/miden-sdk` 0.17.3 has no
-Cedar preset and no `'cedar'` shorthand, so a Cedar client names its endpoints
-explicitly:
+`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+so a Cedar client names its endpoints explicitly:
 
 ```typescript
 const midenClient = await MidenClient.create({
