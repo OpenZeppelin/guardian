@@ -56,6 +56,26 @@ function prefersLocalProver(): boolean {
   return prover?.trim().toLowerCase() === 'local';
 }
 
+const MIDEN_RPC_SHORTHANDS: Record<string, string> = {
+  local: 'http://localhost:57291',
+  localhost: 'http://localhost:57291',
+  devnet: 'https://rpc.devnet.miden.io',
+  testnet: 'https://rpc.testnet.miden.io',
+  cedar: 'https://rpc.cedar.miden.io',
+  mainnet: 'https://rpc.mainnet.miden.io',
+};
+
+/**
+ * Resolves a network shorthand (`local`, `devnet`, `testnet`, `cedar`,
+ * `mainnet`) to the node's full RPC URL; any other value is returned trimmed.
+ * Resolve once and pass the result to both `createMidenClient` and the
+ * multisig SDK, whose direct chain reads need a full URL.
+ */
+export function resolveMidenRpcUrl(rpcUrl: string): string {
+  const trimmed = rpcUrl.trim();
+  return MIDEN_RPC_SHORTHANDS[trimmed.toLowerCase()] ?? trimmed;
+}
+
 /**
  * Creates the Miden client with `useWorker: false`: in worker mode, transactions
  * execute and apply in a Web Worker that never sees the account state the
@@ -66,12 +86,13 @@ export async function createMidenClient(
   rpcUrl: string,
   storeName = 'MidenClientDB',
 ): Promise<MidenClient> {
-  const normalizedRpcUrl = rpcUrl.trim().toLowerCase();
+  const resolvedRpcUrl = resolveMidenRpcUrl(rpcUrl);
+  const normalizedRpcUrl = resolvedRpcUrl.toLowerCase();
   const useLocalProver = prefersLocalProver();
-  if (normalizedRpcUrl === 'devnet' || normalizedRpcUrl === 'https://rpc.devnet.miden.io') {
+  if (normalizedRpcUrl === MIDEN_RPC_SHORTHANDS.devnet) {
     if (useLocalProver) {
       return MidenClient.create({
-        rpcUrl,
+        rpcUrl: resolvedRpcUrl,
         noteTransportUrl: 'devnet',
         proverUrl: 'local',
         storeName,
@@ -79,13 +100,13 @@ export async function createMidenClient(
         useWorker: false,
       });
     }
-    return MidenClient.createDevnet({ rpcUrl, storeName, useWorker: false });
+    return MidenClient.createDevnet({ rpcUrl: resolvedRpcUrl, storeName, useWorker: false });
   }
 
-  if (normalizedRpcUrl === 'testnet' || normalizedRpcUrl === 'https://rpc.testnet.miden.io') {
+  if (normalizedRpcUrl === MIDEN_RPC_SHORTHANDS.testnet) {
     if (useLocalProver) {
       return MidenClient.create({
-        rpcUrl,
+        rpcUrl: resolvedRpcUrl,
         noteTransportUrl: 'testnet',
         proverUrl: 'local',
         storeName,
@@ -93,12 +114,12 @@ export async function createMidenClient(
         useWorker: false,
       });
     }
-    return MidenClient.createTestnet({ rpcUrl, storeName, useWorker: false });
+    return MidenClient.createTestnet({ rpcUrl: resolvedRpcUrl, storeName, useWorker: false });
   }
 
-  if (normalizedRpcUrl === 'cedar' || normalizedRpcUrl === 'https://rpc.cedar.miden.io') {
+  if (normalizedRpcUrl === MIDEN_RPC_SHORTHANDS.cedar) {
     return MidenClient.create({
-      rpcUrl: 'https://rpc.cedar.miden.io',
+      rpcUrl: resolvedRpcUrl,
       noteTransportUrl: 'https://transport.cedar.miden.io',
       proverUrl: useLocalProver ? 'local' : 'https://tx-prover.cedar.miden.io',
       storeName,
@@ -107,9 +128,9 @@ export async function createMidenClient(
     });
   }
 
-  if (normalizedRpcUrl === 'mainnet' || normalizedRpcUrl === 'https://rpc.mainnet.miden.io') {
+  if (normalizedRpcUrl === MIDEN_RPC_SHORTHANDS.mainnet) {
     return MidenClient.create({
-      rpcUrl: 'https://rpc.mainnet.miden.io',
+      rpcUrl: resolvedRpcUrl,
       noteTransportUrl: 'https://transport.mainnet.miden.io',
       proverUrl: useLocalProver ? 'local' : 'https://tx-prover.mainnet.miden.io',
       storeName,
@@ -119,13 +140,8 @@ export async function createMidenClient(
   }
 
   return MidenClient.create({
-    rpcUrl,
-    proverUrl:
-      normalizedRpcUrl === 'local' ||
-      normalizedRpcUrl === 'localhost' ||
-      normalizedRpcUrl === 'http://localhost:57291'
-        ? 'local'
-        : undefined,
+    rpcUrl: resolvedRpcUrl,
+    proverUrl: normalizedRpcUrl === MIDEN_RPC_SHORTHANDS.local ? 'local' : undefined,
     storeName,
     autoSync: true,
     useWorker: false,
