@@ -1,12 +1,13 @@
 use crate::delta_object::DeltaObject;
 use crate::error::GuardianError;
 use crate::metadata::NetworkConfig;
-use crate::metadata::auth::{Auth, AuthHeader, Credentials};
+use crate::metadata::auth::{Auth, AuthHeader, Credentials, RequestAuthFormat};
 use crate::services::{
     self, AbandonCandidateParams, CanonicalNonceResponse, ConfigureAccountParams,
-    GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams, GetDeltaProposalParams,
-    GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams, LookupAccountParams,
-    PushDeltaParams, PushDeltaProposalParams, SignDeltaProposalParams,
+    CreateSessionParams, GetCanonicalNonceParams, GetDeltaHistoryParams, GetDeltaParams,
+    GetDeltaProposalParams, GetDeltaProposalsParams, GetDeltaSinceParams, GetStateParams,
+    LookupAccountParams, PushDeltaParams, PushDeltaProposalParams, RevokeAllSessionsParams,
+    RevokeSessionParams, SignDeltaProposalParams,
 };
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -437,6 +438,186 @@ pub async fn lookup(
     }))
 }
 
+/// Fields of a session grant, in the order the wallet displays them. The
+/// scope is not sent: every v1 grant states the same fixed text, which the
+/// server supplies.
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct SessionGrantRequest {
+    /// Hex commitment of the wallet public key that signs the grant.
+    pub signer_commitment: String,
+    /// Hex SEC1-compressed P-256 delegated-signer public key (33 bytes).
+    pub session_public_key: String,
+    /// The website that asked for the grant, e.g. `https://multisig.example`,
+    /// shown to the user by the wallet; empty for clients outside a browser.
+    /// At most 256 bytes. Guardian does not check it against requests.
+    #[serde(default)]
+    pub origin: String,
+    /// Unix seconds; within the request timestamp skew window of server time.
+    pub issued_at: u64,
+    /// Unix seconds; more than the skew window and at most
+    /// `sessions.max_ttl_seconds` after server time.
+    pub expires_at: u64,
+    /// Hex commitment of this Guardian's ACK key for `scheme` (`GET /pubkey`).
+    pub guardian_commitment: String,
+    /// Must equal `environment` from `GET /status`.
+    pub network: String,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct CreateSessionRequest {
+    /// Wallet signature scheme: `falcon` or `ecdsa`.
+    pub scheme: SignatureScheme,
+    /// `raw` (default) or `eip712` (ECDSA only; readable `GuardianSession`
+    /// typed data).
+    #[serde(default)]
+    pub auth_format: Option<String>,
+    /// Hex wallet public key; required for ECDSA, ignored for Falcon.
+    #[serde(default)]
+    pub public_key: Option<String>,
+    /// Hex wallet signature over the grant.
+    pub signature: String,
+    pub grant: SessionGrantRequest,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct CreateSessionResponse {
+    pub signer_commitment: String,
+    /// RFC 3339 UTC.
+    pub expires_at: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RevokeSessionResponse {
+    /// Whether an active session existed; logout is idempotent.
+    pub revoked: bool,
+}
+
+/// Register a wallet-authorized P-256 delegated signer.
+///
+/// The wallet signs a session grant once; afterwards the delegated signer
+/// signs per-account requests with `x-auth-format: session`. Wallet-only
+/// routes (`POST /delta`, `/delta/candidate/abandon`, `/configure`,
+/// `/state/lookup`, `/session/revoke-all`) reject session credentials with
+/// `wallet_signature_required`. Re-submitting the grant of a live session
+/// succeeds.
+#[utoipa::path(
+    post,
+    path = "/session",
+    tag = "client",
+    request_body = CreateSessionRequest,
+    responses(
+        (status = 200, description = "Session registered", body = CreateSessionResponse),
+        (status = 400, description = "Grant does not match this Guardian, its lifetime is invalid, its origin is too long, or it is malformed", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Invalid signature, stale grant, or session key registered with another grant or revoked", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Signer is not a cosigner of any account (`authorization_failed`)", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn create_session(
+    State(state): State<AppState>,
+    Json(request): Json<CreateSessionRequest>,
+) -> Result<Json<CreateSessionResponse>, GuardianError> {
+    let auth_format = RequestAuthFormat::parse(request.auth_format.as_deref())
+        .map_err(GuardianError::InvalidInput)?;
+    let grant = request.grant;
+    let result = services::create_session(
+        &state,
+        CreateSessionParams {
+            scheme: request.scheme,
+            auth_format,
+            public_key: request.public_key,
+            signature: request.signature,
+            signer_commitment: grant.signer_commitment,
+            session_public_key: grant.session_public_key,
+            origin: grant.origin,
+            issued_at: grant.issued_at,
+            expires_at: grant.expires_at,
+            guardian_commitment: grant.guardian_commitment,
+            network: grant.network,
+        },
+    )
+    .await?;
+    Ok(Json(CreateSessionResponse {
+        signer_commitment: result.signer_commitment,
+        expires_at: result.expires_at.to_rfc3339(),
+    }))
+}
+
+/// Revoke the session whose key signs this request.
+///
+/// `x-pubkey` is the session public key, `x-signature` the session-key
+/// signature over `SessionLogoutMessage(x-pubkey, x-timestamp)`.
+#[utoipa::path(
+    post,
+    path = "/session/logout",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    responses(
+        (status = 200, description = "Session revoked (idempotent)", body = RevokeSessionResponse),
+        (status = 401, description = "Malformed or invalid session key or signature, or stale timestamp", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+) -> Result<Json<RevokeSessionResponse>, GuardianError> {
+    let result = services::revoke_session(&state, RevokeSessionParams { credentials }).await?;
+    Ok(Json(RevokeSessionResponse {
+        revoked: result.revoked,
+    }))
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct RevokeAllSessionsRequest {
+    /// Hex commitment of the wallet key whose sessions end; it must be the
+    /// key that signs this request.
+    pub signer_commitment: String,
+}
+
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct RevokeAllSessionsResponse {
+    /// How many active sessions were revoked; zero when none existed.
+    pub revoked: u64,
+}
+
+/// Revoke every session of the wallet key signing this request.
+///
+/// Wallet-only: `x-signature` is the wallet's signature over
+/// `SessionRevokeAllMessage(signer_commitment, x-timestamp)`, raw or as
+/// EIP-712 typed data (`x-auth-format: eip712`). Idempotent.
+#[utoipa::path(
+    post,
+    path = "/session/revoke-all",
+    tag = "client",
+    request_body = RevokeAllSessionsRequest,
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    responses(
+        (status = 200, description = "Sessions revoked (idempotent)", body = RevokeAllSessionsResponse),
+        (status = 400, description = "Malformed signer commitment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "Invalid signature, stale timestamp, or signature by another key", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Signed by a delegated signer (`wallet_signature_required`)", body = crate::openapi::ApiErrorResponse),
+        (status = 500, description = "Storage error", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn revoke_all_sessions(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(request): Json<RevokeAllSessionsRequest>,
+) -> Result<Json<RevokeAllSessionsResponse>, GuardianError> {
+    let result = services::revoke_all_sessions(
+        &state,
+        RevokeAllSessionsParams {
+            signer_commitment: request.signer_commitment,
+            credentials,
+        },
+    )
+    .await?;
+    Ok(Json(RevokeAllSessionsResponse {
+        revoked: result.revoked,
+    }))
+}
+
 #[derive(Serialize, utoipa::ToSchema)]
 pub struct PubkeyResponse {
     pub commitment: String,
@@ -478,6 +659,9 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
         state.dashboard.environment(),
         state.dashboard.started_at(),
         state.clock.now(),
+        crate::services::SessionsStatus {
+            max_ttl_seconds: state.miden_sessions.config().max_ttl_seconds(),
+        },
     ))
 }
 

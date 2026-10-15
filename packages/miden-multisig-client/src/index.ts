@@ -57,6 +57,30 @@ export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
 export {
+  SESSION_GRANT_SCOPE,
+  describeSessionGrant,
+  sessionGrantDigest,
+  sessionLogoutDigest,
+  sessionRevokeAllDigest,
+} from './session/grant.js';
+export {
+  GuardianSession,
+  IndexedDbSessionKeyStore,
+  type GuardianSessionOptions,
+  WebCryptoSessionKey,
+  type SessionKeyStore,
+  type StoredSessionKey,
+} from './session/key.js';
+export {
+  GuardianSessionsUnsupportedError,
+  SessionGrantDeclinedError,
+  endGuardianSession,
+  resumeGuardianSession,
+  revokeAllGuardianSessions,
+  startGuardianSession,
+  type StartSessionOptions,
+} from './session/manager.js';
+export {
   Multisig,
   type AccountState,
   type SyncStateResult,

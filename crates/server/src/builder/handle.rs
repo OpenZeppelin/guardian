@@ -25,9 +25,10 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, get_canonical_nonce, get_delta, get_delta_history,
-    get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey, get_state, lookup,
-    push_delta, push_delta_proposal, sign_delta_proposal, status, status_root,
+    abandon_candidate, configure, create_session, get_canonical_nonce, get_delta,
+    get_delta_history, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
+    get_state, lookup, push_delta, push_delta_proposal, revoke_all_sessions, revoke_session,
+    sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -413,6 +414,9 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/state", get(get_state))
         .route("/state/nonce", get(get_canonical_nonce))
         .route("/state/lookup", get(lookup))
+        .route("/session", post(create_session))
+        .route("/session/logout", post(revoke_session))
+        .route("/session/revoke-all", post(revoke_all_sessions))
         .route("/pubkey", get(get_pubkey))
         .route("/status", get(status))
         .route("/auth/challenge", get(challenge_operator_login))
@@ -545,6 +549,9 @@ mod tests {
             ("GET", "/state/lookup"),
             ("GET", "/pubkey"),
             ("GET", "/status"),
+            ("POST", "/session"),
+            ("POST", "/session/logout"),
+            ("POST", "/session/revoke-all"),
             ("GET", "/auth/challenge"),
             ("POST", "/auth/verify"),
             ("POST", "/auth/logout"),
@@ -639,7 +646,7 @@ mod tests {
 
 const SESSION_SWEEP_INTERVAL_SECS: u64 = 60;
 
-/// Periodically reclaim expired operator sessions/challenges from the
+/// Periodically reclaim expired operator, Miden and EVM sessions from the
 /// coordination store. Expiry is enforced on read regardless; this only frees
 /// rows (Postgres) or memory (in-memory).
 fn start_session_sweep_worker(state: AppState) {
@@ -653,6 +660,24 @@ fn start_session_sweep_worker(state: AppState) {
                     target: "dashboard.session_sweep",
                     %error,
                     "operator session/challenge sweep failed",
+                );
+            }
+            if let Err(error) = state.miden_sessions.sweep_expired(state.clock.now()).await {
+                tracing::warn!(
+                    target: "session.sweep",
+                    %error,
+                    "Miden session sweep failed",
+                );
+            }
+            let floor_cutoff_ms = crate::session::stale_floor_cutoff_ms(
+                state.clock.now().timestamp_millis(),
+                state.miden_sessions.config().max_ttl_seconds(),
+            );
+            if let Err(error) = state.metadata.purge_session_floors(floor_cutoff_ms).await {
+                tracing::warn!(
+                    target: "session.sweep",
+                    %error,
+                    "Miden session replay-floor purge failed",
                 );
             }
             #[cfg(feature = "evm")]

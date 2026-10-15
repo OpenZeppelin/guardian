@@ -90,6 +90,39 @@ error, not a silent fall-through to the full fetch, so the GUARDIAN server must
 serve `GetCanonicalNonce` (issue #191) before this SDK version is rolled out
 against it.
 
+### Signing Guardian requests with a session
+
+The key manager signs every Guardian request unless a session is active.
+`start_session` has it sign one session grant instead; a delegated P-256 key
+then signs the state and delta reads and the proposal list, get, create and
+sign requests of every later operation:
+
+```rust
+use std::time::Duration;
+use miden_multisig_client::StartSessionOptions;
+
+let info = client
+    .start_session(StartSessionOptions {
+        network: "devnet".to_string(), // the Guardian's network: local, devnet or testnet
+        ttl: Duration::from_secs(3600), // more than 5 minutes, at most the Guardian's maximum
+    })
+    .await?;
+
+client.sync().await?; // the GUARDIAN step is signed by the session key
+
+client.end_session().await?; // log this session out
+client.revoke_all_sessions().await?; // every session of this key, signed by the key manager
+```
+
+Account registration, delta pushes, candidate abandons, account lookup and
+transaction approvals keep using the key manager. A session Guardian ends or
+no longer accepts is dropped by the operation that learns of it, after which
+`session()` returns `None` and the key manager signs again. Starting a session
+logs out the one it replaces, and `set_guardian_endpoint` drops the session.
+`revoke_all_sessions` ends the sessions already registered; a grant signed but
+not yet registered can still be registered for about 10 minutes, so run it
+again 10 minutes later when a key may be compromised.
+
 ## Configuration
 
 Beyond the endpoints and the account directory, the builder carries three
@@ -527,10 +560,11 @@ local store) becomes a `RecoveryStepProblem` entry instead of aborting the
 flow, and `retryable: true` means rerunning the flow — which is idempotent —
 can plausibly recover more. In brief:
 
-- **Transport drain** — rescans the full private-note transport backlog for
-  every tracked tag, regardless of the stored cursor (and without ever
-  regressing it). Bounded by the transport service's retention: a
-  best-effort rescan, **not** a backup.
+- **Transport drain** — fetches the private-note transport backlog for
+  every tracked tag until a fetch moves no tag's cursor. A recovered account's
+  tag has no transport cursor yet, so its whole retained backlog is fetched.
+  Bounded by the transport service's retention: a best-effort rescan,
+  **not** a backup.
 - **Proposal import** — rebuilds importable notes from the bytes v2
   consume-notes proposals embed (validated against the proposals' declared
   note ids) plus node-fetched inclusion proofs, so it works for private
