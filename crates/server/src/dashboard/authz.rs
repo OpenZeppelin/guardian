@@ -36,6 +36,8 @@ pub type RequiredPermissions = &'static [Permission];
 pub struct AuthzState {
     pub app_state: AppState,
     pub required: RequiredPermissions,
+    /// When true, holding any one of `required` is enough.
+    pub any_of: bool,
 }
 
 impl AuthzState {
@@ -43,6 +45,16 @@ impl AuthzState {
         Self {
             app_state,
             required,
+            any_of: false,
+        }
+    }
+
+    /// The route accepts an operator holding at least one of `required`.
+    pub fn any_of(app_state: AppState, required: RequiredPermissions) -> Self {
+        Self {
+            app_state,
+            required,
+            any_of: true,
         }
     }
 }
@@ -64,6 +76,7 @@ pub async fn enforce(
     let AuthzState {
         app_state: state,
         required,
+        any_of,
     } = state;
     // The session middleware (`require_dashboard_session`) runs first,
     // so `AuthenticatedOperator` MUST be present. If it's missing we
@@ -81,7 +94,12 @@ pub async fn enforce(
         })?;
 
     let missing = missing_permissions(&operator.effective_permissions, required);
-    if missing.is_empty() {
+    let satisfied = if any_of {
+        missing.len() < required.len()
+    } else {
+        missing.is_empty()
+    };
+    if satisfied {
         return Ok(next.run(request).await);
     }
 
@@ -141,6 +159,16 @@ mod tests {
 
     fn held(perms: &[Permission]) -> Arc<BTreeSet<Permission>> {
         Arc::new(perms.iter().copied().collect())
+    }
+
+    #[test]
+    fn any_of_is_satisfied_by_one_held_permission() {
+        let required: RequiredPermissions =
+            &[Permission::PoliciesWrite, Permission::ModulesDisable];
+        let missing = missing_permissions(&held(&[Permission::ModulesDisable]), required);
+        assert!(missing.len() < required.len());
+        let missing = missing_permissions(&held(&[Permission::DashboardRead]), required);
+        assert_eq!(missing.len(), required.len());
     }
 
     #[test]

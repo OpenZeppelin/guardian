@@ -15,6 +15,27 @@ pub const SESSION_EXPIRED_CODE: &str = "session_expired";
 pub const SESSION_REVOKED_CODE: &str = "session_revoked";
 const AUTHENTICATION_FAILED_CODE: &str = "authentication_failed";
 
+/// A policy module refused the request.
+pub const MODULE_DENIED_CODE: &str = "GUARDIAN_MODULE_DENIED";
+
+/// A fail-closed policy module could not decide; retryable.
+pub const MODULE_UNAVAILABLE_CODE: &str = "GUARDIAN_MODULE_UNAVAILABLE";
+
+/// A refusal by one of the Guardian's policy modules. `module` is the operator-chosen
+/// instance id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleRefusal {
+    Denied {
+        module: String,
+        reason_code: String,
+        /// `global` or `account`: which parameter layer denied, when the server says.
+        layer: Option<String>,
+    },
+    Unavailable {
+        module: String,
+    },
+}
+
 /// Errors that can occur when using the GUARDIAN client.
 #[derive(Debug, Error)]
 pub enum ClientError {
@@ -141,6 +162,25 @@ impl ClientError {
         )
     }
 
+    /// The policy module refusal this error carries, if any. A denial is final; an
+    /// unavailable module is retryable ([`Self::is_retryable`]).
+    pub fn module_refusal(&self) -> Option<ModuleRefusal> {
+        let code = self.guardian_code()?;
+        let meta = self.guardian_meta()?;
+        let field = |name: &str| meta.get(name)?.as_str().map(str::to_owned);
+        match code.as_str() {
+            MODULE_DENIED_CODE => Some(ModuleRefusal::Denied {
+                module: field("module")?,
+                reason_code: field("reason_code")?,
+                layer: field("layer"),
+            }),
+            MODULE_UNAVAILABLE_CODE => Some(ModuleRefusal::Unavailable {
+                module: field("module")?,
+            }),
+            _ => None,
+        }
+    }
+
     /// Server-provided backoff hint: the `retry-after` status metadata
     /// (decimal seconds), falling back to `meta.retry_after_secs`.
     /// Unparseable values mean no hint; classification is unaffected.
@@ -187,6 +227,56 @@ mod tests {
         );
         assert_eq!(err.guardian_meta().unwrap()["retryable"], false);
         assert!(!err.is_not_found());
+    }
+
+    fn module_status(code: tonic::Code, details: serde_json::Value) -> ClientError {
+        tonic::Status::with_details(code, "refused", details.to_string().into_bytes().into()).into()
+    }
+
+    #[test]
+    fn module_denial_is_typed_and_final() {
+        let err = module_status(
+            tonic::Code::PermissionDenied,
+            serde_json::json!({
+                "code": "GUARDIAN_MODULE_DENIED",
+                "message": "This Guardian's policy doesn't allow this request.",
+                "meta": { "retryable": false, "module": "caps", "reason_code": "amount_cap_exceeded", "layer": "account" }
+            }),
+        );
+        assert_eq!(
+            err.module_refusal(),
+            Some(ModuleRefusal::Denied {
+                module: "caps".into(),
+                reason_code: "amount_cap_exceeded".into(),
+                layer: Some("account".into()),
+            })
+        );
+        assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn module_unavailable_is_typed_and_retryable() {
+        let err = module_status(
+            tonic::Code::Unavailable,
+            serde_json::json!({
+                "code": "GUARDIAN_MODULE_UNAVAILABLE",
+                "message": "A policy check is unavailable right now. Please try again shortly.",
+                "meta": { "retryable": true, "module": "sanctions" }
+            }),
+        );
+        assert_eq!(
+            err.module_refusal(),
+            Some(ModuleRefusal::Unavailable {
+                module: "sanctions".into()
+            })
+        );
+        assert!(err.is_retryable());
+    }
+
+    #[test]
+    fn other_errors_are_not_module_refusals() {
+        let err: ClientError = guardian_status().into();
+        assert_eq!(err.module_refusal(), None);
     }
 
     #[test]

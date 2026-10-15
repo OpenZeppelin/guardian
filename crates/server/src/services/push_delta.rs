@@ -5,6 +5,8 @@ use std::sync::Arc;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
+use crate::modules::HookName;
+use crate::modules::request::{self, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
@@ -170,6 +172,48 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     )
     .await;
 
+    let plan = match state.modules.as_deref() {
+        Some(modules) => {
+            modules
+                .plan(
+                    HookName::BeforeTransactionApproved,
+                    &params.delta.account_id,
+                )
+                .await?
+        }
+        None => None,
+    };
+    let approval = match plan {
+        Some(plan) => {
+            let proposal = request::proposal_context(
+                state,
+                &params.delta.account_id,
+                params.delta.nonce,
+                &params.delta.delta_payload,
+            )
+            .await
+            .map_err(|e| e.to_string());
+            plan.run(|| {
+                request::transaction_request(
+                    state.network_client.as_ref(),
+                    TransactionInput {
+                        account_id: &params.delta.account_id,
+                        submitter: &resolved.signer_commitment,
+                        auth: &resolved.metadata.auth,
+                        before_state: &tail.state_json,
+                        after_state: &applied.state_json,
+                        tx_summary: &params.delta.delta_payload,
+                        proposal: proposal?,
+                        accounting_time: state.clock.now(),
+                    },
+                )
+            })
+            .await
+            .map(Some)?
+        }
+        None => None,
+    };
+
     let derived_metadata = crate::delta_summary::build_metadata(
         &params.delta.delta_payload,
         matching_proposal_payload.as_ref(),
@@ -178,6 +222,16 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let mut result_delta = params.delta.clone();
     result_delta.new_commitment = Some(applied.commitment.clone());
     result_delta.metadata = derived_metadata;
+    match (result_delta.metadata.as_mut(), approval) {
+        (Some(metadata), approval) => metadata.modules = approval,
+        (None, Some(approval)) => tracing::warn!(
+            account_id = %params.delta.account_id,
+            catalog_hash = %approval.catalog_hash,
+            params_version = approval.params_version,
+            "Delta has no metadata to record its module approval in"
+        ),
+        (None, None) => {}
+    }
     let scheme = resolved.metadata.auth.scheme();
     result_delta = state.ack.ack_delta(result_delta, &scheme).await?;
     result_delta.ack_pubkey = state.ack.pubkey(&scheme);
@@ -1120,5 +1174,119 @@ mod tests {
             ),
             "{result:?}"
         );
+    }
+
+    async fn push_with_modules(
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        use crate::delta_object::DeltaStatus;
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{instance, pipeline};
+        use crate::state_object::StateObject;
+        use crate::testing::helpers::create_test_delta_payload;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(StateObject {
+                account_id: account_id.clone(),
+                state_json: serde_json::json!({}),
+                commitment: "0xprev".into(),
+                nonce: None,
+                created_at: "2026-05-25T08:00:00Z".into(),
+                updated_at: "2026-05-25T08:00:00Z".into(),
+                auth_scheme: String::new(),
+            }))
+            .with_pull_deltas_after(Ok(Vec::new()))
+            .with_pull_delta_proposal(Err("proposal not found".to_string()))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new_state": true}),
+                "0xnew".to_string(),
+            )))
+            .with_module_views(
+                guardian_module_sdk::AccountView {
+                    signer_commitments: vec![signer_commitment.clone()],
+                    ..Default::default()
+                },
+                guardian_module_sdk::TxProjection::default(),
+            );
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer_commitment.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        })));
+        let mut state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+        state.modules = Some(pipeline(vec![instance(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            module,
+        )]));
+        let params = PushDeltaParams {
+            delta: DeltaObject {
+                account_id: account_id.clone(),
+                nonce: 1,
+                prev_commitment: "0xprev".into(),
+                new_commitment: None,
+                delta_payload: create_test_delta_payload(&account_id),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: DeltaStatus::default(),
+                metadata: None,
+            },
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
+        };
+        (push_delta(&state, params).await, storage, signer_commitment)
+    }
+
+    #[tokio::test]
+    async fn module_denial_refuses_the_ack_and_stores_nothing() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (result, storage, _) = push_with_modules(module.clone()).await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleDenied { module, reason_code, .. })
+                if module == "caps" && reason_code == "amount_cap_exceeded"
+        ));
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert_eq!(module.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn module_allow_acks_and_receives_the_submitter_and_views() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, signer) = push_with_modules(module.clone()).await;
+        let pushed = result.expect("allowed push succeeds");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        let approval = pushed
+            .delta
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .expect("the approving module configuration is recorded");
+        assert_eq!(approval.params_version, 0);
+        assert!(approval.failed_open.is_empty());
+        let request = module.last_request().expect("module was called");
+        assert_eq!(request.submitter, signer);
+        assert_eq!(request.after.unwrap().signer_commitments, vec![signer]);
+        assert!(request.before.is_some());
     }
 }

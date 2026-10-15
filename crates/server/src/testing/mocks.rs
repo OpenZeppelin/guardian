@@ -49,6 +49,8 @@ pub struct MockNetworkClient {
     /// `(account_id, final_state_commitment, from_block)` per search.
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
+    pub module_account_view: Arc<StdMutex<Option<guardian_module_sdk::AccountView>>>,
+    pub module_projection: Arc<StdMutex<Option<guardian_module_sdk::TxProjection>>>,
 }
 
 impl MockNetworkClient {
@@ -82,6 +84,17 @@ impl MockNetworkClient {
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    /// Every state decodes to `view` and every delta to `projection`.
+    pub fn with_module_views(
+        self,
+        view: guardian_module_sdk::AccountView,
+        projection: guardian_module_sdk::TxProjection,
+    ) -> Self {
+        *self.module_account_view.lock().unwrap() = Some(view);
+        *self.module_projection.lock().unwrap() = Some(projection);
         self
     }
 
@@ -203,6 +216,33 @@ impl MockNetworkClient {
 
 #[async_trait]
 impl NetworkClient for MockNetworkClient {
+    fn module_account_view(
+        &self,
+        _state_json: &serde_json::Value,
+    ) -> StdResult<guardian_module_sdk::AccountView, String> {
+        self.module_account_view
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "no module account view configured".to_string())
+    }
+
+    fn module_transaction(
+        &self,
+        tx_summary: &serde_json::Value,
+    ) -> StdResult<crate::network::ModuleTransaction, String> {
+        let projection = self
+            .module_projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| "no module projection configured".to_string())?;
+        Ok(crate::network::ModuleTransaction {
+            projection,
+            raw_tx_summary: serde_json::to_vec(tx_summary).map_err(|e| e.to_string())?,
+        })
+    }
+
     fn get_state_head(
         &self,
         account_id: &str,

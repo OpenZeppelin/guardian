@@ -1,0 +1,805 @@
+//! Ordered evaluation of an account's modules at one hook.
+
+use guardian_module_sdk::{HookRequest, is_valid_reason_code};
+
+use super::catalog::{Catalog, HookName, OnError, Scope};
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+
+use super::registry::{Instance, Registry};
+use super::store::{ModuleStore, ParamsKind};
+use crate::delta_summary::{FailedOpen, ModuleApproval};
+use crate::error::GuardianError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layer {
+    Global,
+    Account,
+}
+
+impl Layer {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Layer::Global => "global",
+            Layer::Account => "account",
+        }
+    }
+}
+
+pub struct ModulePipeline {
+    instances: Vec<Instance>,
+    store: Arc<dyn ModuleStore>,
+    cache: RwLock<Cache>,
+    pub catalog_hash: String,
+}
+
+/// The `module_instances` rows as of one params version.
+type Rows = Arc<HashMap<String, (serde_json::Value, bool)>>;
+
+#[derive(Default)]
+struct Cache {
+    version: Option<u64>,
+    rows: Rows,
+}
+
+/// The modules one request runs through, resolved once with a single store read.
+pub struct Plan<'a> {
+    hook: HookName,
+    account_id: String,
+    modules: Vec<(&'a Instance, serde_json::Value, Layer)>,
+    catalog_hash: String,
+    params_version: u64,
+}
+
+enum Failure {
+    Error(String),
+    Timeout,
+    InvalidDecision(String),
+    RequestUnavailable(String),
+}
+
+impl Failure {
+    fn kind(&self) -> &'static str {
+        match self {
+            Failure::Error(_) => "error",
+            Failure::Timeout => "timeout",
+            Failure::InvalidDecision(_) => "invalid_decision",
+            Failure::RequestUnavailable(_) => "request_unavailable",
+        }
+    }
+}
+
+impl std::fmt::Display for Failure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Failure::Error(message) => write!(f, "{message}"),
+            Failure::Timeout => write!(f, "timed out"),
+            Failure::InvalidDecision(code) => write!(f, "invalid reason code {code:?}"),
+            Failure::RequestUnavailable(message) => write!(f, "request unavailable: {message}"),
+        }
+    }
+}
+
+impl ModulePipeline {
+    pub async fn new(
+        mut catalog: Catalog,
+        registry: &Registry,
+        store: Arc<dyn ModuleStore>,
+        now: String,
+    ) -> Result<Self, String> {
+        let stored: HashMap<String, (serde_json::Value, bool)> = store
+            .instances()
+            .await?
+            .into_iter()
+            .map(|row| (row.module_id, (row.global_params, row.enabled)))
+            .collect();
+        let mut effective = HashMap::new();
+        for config in &mut catalog.instances {
+            let Some((params, enabled)) = stored.get(&config.id) else {
+                continue;
+            };
+            if *enabled != config.catalog_enabled {
+                tracing::warn!(module = %config.id, enabled, "Catalog `enabled` differs from the stored runtime flag; the stored flag applies");
+            }
+            config.enabled = *enabled;
+            if !config.file_managed_params && *params != config.params {
+                tracing::warn!(module = %config.id, "Catalog params differ from the operator-managed global params; the stored params apply");
+                effective.insert(config.id.clone(), params.clone());
+            }
+        }
+        let instances = registry.instantiate(&catalog, &effective).await?;
+        for config in catalog
+            .instances
+            .iter()
+            .filter(|config| !stored.contains_key(&config.id))
+        {
+            let seed = if config.file_managed_params {
+                serde_json::json!({})
+            } else {
+                config.params.clone()
+            };
+            store
+                .seed_instance(&config.id, config.enabled, &seed, &now)
+                .await?;
+        }
+        Ok(Self {
+            instances,
+            store,
+            cache: RwLock::new(Cache::default()),
+            catalog_hash: catalog.hash,
+        })
+    }
+
+    #[cfg(test)]
+    pub fn from_instances(instances: Vec<Instance>) -> Self {
+        Self {
+            instances,
+            store: Arc::new(super::store::FsModuleStore::in_memory()),
+            cache: RwLock::new(Cache::default()),
+            catalog_hash: String::new(),
+        }
+    }
+
+    pub fn instances(&self) -> &[Instance] {
+        &self.instances
+    }
+
+    pub fn instance(&self, module_id: &str) -> Option<&Instance> {
+        self.instances
+            .iter()
+            .find(|instance| instance.config.id == module_id)
+    }
+
+    pub fn store(&self) -> &dyn ModuleStore {
+        self.store.as_ref()
+    }
+
+    fn store_error(error: String) -> GuardianError {
+        GuardianError::StorageError(format!("module state unavailable: {error}"))
+    }
+
+    /// The stored `(global params, enabled)` rows, cached per replica and refreshed when the
+    /// params version moves. One version read per call.
+    async fn rows(&self) -> Result<Rows, GuardianError> {
+        Ok(self.versioned_rows().await?.1)
+    }
+
+    async fn versioned_rows(&self) -> Result<(u64, Rows), GuardianError> {
+        let version = self.store.version().await.map_err(Self::store_error)?;
+        if let Ok(cache) = self.cache.read()
+            && cache.version == Some(version)
+        {
+            return Ok((version, cache.rows.clone()));
+        }
+        let rows: Rows = Arc::new(
+            self.store
+                .instances()
+                .await
+                .map_err(Self::store_error)?
+                .into_iter()
+                .map(|row| (row.module_id, (row.global_params, row.enabled)))
+                .collect(),
+        );
+        if let Ok(mut cache) = self.cache.write() {
+            *cache = Cache {
+                version: Some(version),
+                rows: rows.clone(),
+            };
+        }
+        Ok((version, rows))
+    }
+
+    fn global_params_in(rows: &Rows, instance: &Instance) -> serde_json::Value {
+        if instance.config.file_managed_params {
+            return instance.config.params.clone();
+        }
+        rows.get(&instance.config.id).map_or_else(
+            || instance.config.params.clone(),
+            |(params, _)| params.clone(),
+        )
+    }
+
+    fn enabled_in(rows: &Rows, instance: &Instance) -> bool {
+        rows.get(&instance.config.id)
+            .map_or(instance.config.enabled, |(_, enabled)| *enabled)
+    }
+
+    /// The instance's global params: the stored ones, or the catalog's when they are
+    /// file-managed or not seeded yet.
+    pub async fn global_params(
+        &self,
+        instance: &Instance,
+    ) -> Result<serde_json::Value, GuardianError> {
+        Ok(Self::global_params_in(&self.rows().await?, instance))
+    }
+
+    /// Whether the instance is switched on: the stored runtime flag, or the startup flag for an
+    /// instance without a row yet.
+    pub async fn enabled(&self, instance: &Instance) -> Result<bool, GuardianError> {
+        Ok(Self::enabled_in(&self.rows().await?, instance))
+    }
+
+    /// The modules that run for this account at this hook, or `None` when there are none, so a
+    /// caller skips building the request.
+    pub async fn plan(
+        &self,
+        hook: HookName,
+        account_id: &str,
+    ) -> Result<Option<Plan<'_>>, GuardianError> {
+        let account_id = account_id.to_ascii_lowercase();
+        let (params_version, rows) = self.versioned_rows().await?;
+        let active: Vec<&Instance> = self
+            .instances
+            .iter()
+            .filter(|instance| {
+                instance.config.hooks.contains(&hook) && Self::enabled_in(&rows, instance)
+            })
+            .collect();
+        if active.is_empty() {
+            return Ok(None);
+        }
+        let account_rows = self
+            .store
+            .account_params(&account_id)
+            .await
+            .map_err(Self::store_error)?;
+        let mut modules = Vec::new();
+        for instance in active
+            .iter()
+            .filter(|instance| instance.config.scope == Scope::All)
+        {
+            modules.push((
+                *instance,
+                Self::global_params_in(&rows, instance),
+                Layer::Global,
+            ));
+            if let Some(layer) = account_rows
+                .iter()
+                .find(|row| row.kind == ParamsKind::Layer && row.module_id == instance.config.id)
+            {
+                modules.push((*instance, layer.params.clone(), Layer::Account));
+            }
+        }
+        for row in account_rows
+            .iter()
+            .filter(|row| row.kind == ParamsKind::Assignment)
+        {
+            if let Some(instance) = active.iter().find(|instance| {
+                instance.config.id == row.module_id && instance.config.scope != Scope::All
+            }) {
+                modules.push((*instance, row.params.clone(), Layer::Account));
+            }
+        }
+        Ok((!modules.is_empty()).then_some(Plan {
+            hook,
+            account_id,
+            modules,
+            catalog_hash: self.catalog_hash.clone(),
+            params_version,
+        }))
+    }
+
+    pub async fn applies(&self, hook: HookName, account_id: &str) -> Result<bool, GuardianError> {
+        Ok(self.plan(hook, account_id).await?.is_some())
+    }
+
+    /// Plans and runs the hook in one step.
+    pub async fn run(
+        &self,
+        hook: HookName,
+        account_id: &str,
+        build: impl FnOnce() -> Result<HookRequest, String>,
+    ) -> Result<(), GuardianError> {
+        match self.plan(hook, account_id).await? {
+            Some(plan) => plan.run(build).await.map(|_| ()),
+            None => Ok(()),
+        }
+    }
+}
+
+impl Plan<'_> {
+    /// Runs the planned modules in order and returns the configuration they ran with. If
+    /// `build` fails, every module counts as failed and its `on_error` applies.
+    pub async fn run(
+        self,
+        build: impl FnOnce() -> Result<HookRequest, String>,
+    ) -> Result<ModuleApproval, GuardianError> {
+        let Plan {
+            hook,
+            account_id,
+            modules,
+            catalog_hash,
+            params_version,
+        } = self;
+        let account_id = account_id.as_str();
+        let mut approval = ModuleApproval {
+            catalog_hash,
+            params_version,
+            failed_open: Vec::new(),
+        };
+        let base = match build() {
+            Ok(base) => base,
+            Err(error) => {
+                for (instance, _, layer) in &modules {
+                    let failure = Failure::RequestUnavailable(error.clone());
+                    approval
+                        .failed_open
+                        .extend(fail(instance, *layer, account_id, &failure)?);
+                }
+                return Ok(approval);
+            }
+        };
+
+        for (instance, params, layer) in modules {
+            let mut request = base.clone();
+            request.hook = hook.proto() as i32;
+            request.instance_id = instance.config.id.clone();
+            request.params = serde_json::to_vec(&params).unwrap_or_default();
+
+            let outcome =
+                tokio::time::timeout(instance.config.timeout, instance.module.evaluate(&request))
+                    .await;
+            let failure = match outcome {
+                Ok(Ok(decision)) if decision.allow => continue,
+                Ok(Ok(decision)) if is_valid_reason_code(&decision.reason_code) => {
+                    tracing::info!(
+                        module = %instance.config.id,
+                        account_id,
+                        ?hook,
+                        reason_code = %decision.reason_code,
+                        layer = layer.as_str(),
+                        message = %decision.message,
+                        "Policy module denied the request"
+                    );
+                    return Err(GuardianError::ModuleDenied {
+                        module: instance.config.id.clone(),
+                        reason_code: decision.reason_code,
+                        layer: layer.as_str().to_string(),
+                    });
+                }
+                Ok(Ok(decision)) => Failure::InvalidDecision(decision.reason_code),
+                Ok(Err(error)) => Failure::Error(error.to_string()),
+                Err(_) => Failure::Timeout,
+            };
+            approval
+                .failed_open
+                .extend(fail(instance, layer, account_id, &failure)?);
+        }
+        Ok(approval)
+    }
+}
+
+/// Applies the instance's `on_error`: a refusal for `deny`, the failed-open record for `allow`.
+fn fail(
+    instance: &Instance,
+    layer: Layer,
+    account_id: &str,
+    failure: &Failure,
+) -> Result<Option<FailedOpen>, GuardianError> {
+    match instance.config.on_error {
+        OnError::Deny => {
+            tracing::warn!(module = %instance.config.id, account_id, %failure, "Policy module failed; refusing");
+            Err(GuardianError::ModuleUnavailable {
+                module: instance.config.id.clone(),
+            })
+        }
+        OnError::Allow => {
+            tracing::warn!(module = %instance.config.id, account_id, %failure, "Policy module failed; continuing (fail-open)");
+            Ok(Some(FailedOpen {
+                module_id: instance.config.id.clone(),
+                layer: layer.as_str().to_string(),
+                failure: failure.kind().to_string(),
+            }))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::modules::testing::{Behaviour, StubModule, instance, pipeline};
+    use guardian_module_sdk::Decision;
+
+    const HOOK: HookName = HookName::BeforeTransactionApproved;
+
+    async fn run(pipeline: &ModulePipeline) -> Result<(), GuardianError> {
+        pipeline
+            .run(HOOK, "0xacc", || Ok(HookRequest::default()))
+            .await
+    }
+
+    fn caps_catalog(params: &str) -> Catalog {
+        Catalog::parse(
+            &format!(
+                r#"
+[[module]]
+id = "caps"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+params = {params}
+"#
+            ),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn invalid_catalog_params_stop_startup_without_seeding_them() {
+        let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
+        let registry = Registry::first_party();
+        let now = "2026-10-15T00:00:00Z".to_string();
+        let started = ModulePipeline::new(
+            caps_catalog(r#"{ max_amount_per_txx = {} }"#),
+            &registry,
+            store.clone(),
+            now.clone(),
+        )
+        .await;
+        assert!(started.is_err());
+        assert!(store.instances().await.unwrap().is_empty());
+
+        let fixed = caps_catalog(r#"{ max_amount_per_tx = { "0xaa" = "5" } }"#);
+        let started = ModulePipeline::new(fixed, &registry, store.clone(), now)
+            .await
+            .expect("the corrected catalog starts");
+        assert!(
+            started.instances()[0]
+                .build
+                .as_deref()
+                .is_some_and(|build| build.starts_with("basic-policy"))
+        );
+        assert_eq!(store.instances().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn stored_params_not_the_stale_catalog_seed_are_checked_at_startup() {
+        let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
+        let registry = Registry::first_party();
+        let now = "2026-10-15T00:00:00Z".to_string();
+        store
+            .seed_instance(
+                "caps",
+                true,
+                &serde_json::json!({ "max_amount_per_tx": {} }),
+                &now,
+            )
+            .await
+            .unwrap();
+        ModulePipeline::new(
+            caps_catalog(r#"{ max_amount_per_txx = {} }"#),
+            &registry,
+            store.clone(),
+            now.clone(),
+        )
+        .await
+        .expect("the stored params apply, so the stale seed is not checked");
+
+        store
+            .set_global(
+                "caps",
+                serde_json::json!({ "unknown": true }),
+                &super::super::store::Change {
+                    operator: "0xop",
+                    reason: "test",
+                    at: now.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        let valid_seed = caps_catalog(r#"{ max_amount_per_tx = {} }"#);
+        assert!(
+            ModulePipeline::new(valid_seed, &registry, store, now)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_closed_timeout_refuses_as_unavailable() {
+        let pipeline = pipeline(vec![instance(
+            "slow",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Hang),
+        )]);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleUnavailable { module }) if module == "slow"
+        ));
+    }
+
+    #[tokio::test]
+    async fn fail_open_failure_continues_to_the_next_module() {
+        let denier = StubModule::denying("limit_exceeded");
+        let pipeline = pipeline(vec![
+            instance(
+                "down",
+                &[HOOK],
+                OnError::Allow,
+                StubModule::new(Behaviour::Fail),
+            ),
+            instance("caps", &[HOOK], OnError::Deny, denier.clone()),
+        ]);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleDenied { module, reason_code, .. })
+                if module == "caps" && reason_code == "limit_exceeded"
+        ));
+        assert_eq!(denier.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn fail_open_timeout_alone_allows() {
+        let pipeline = pipeline(vec![instance(
+            "slow",
+            &[HOOK],
+            OnError::Allow,
+            StubModule::new(Behaviour::Hang),
+        )]);
+        assert!(run(&pipeline).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn the_trace_keeps_only_what_failed_open() {
+        let pipeline = pipeline(vec![
+            instance("caps", &[HOOK], OnError::Deny, StubModule::allowing()),
+            instance(
+                "risk",
+                &[HOOK],
+                OnError::Allow,
+                StubModule::new(Behaviour::Hang),
+            ),
+        ]);
+        let plan = || async { pipeline.plan(HOOK, "0xacc").await.unwrap().unwrap() };
+        let approval = plan()
+            .await
+            .run(|| Ok(HookRequest::default()))
+            .await
+            .unwrap();
+        assert_eq!(
+            approval.failed_open,
+            vec![FailedOpen {
+                module_id: "risk".into(),
+                layer: "global".into(),
+                failure: "timeout".into(),
+            }]
+        );
+
+        let unbuilt = plan().await.run(|| Err("no state".to_string())).await;
+        assert!(unbuilt.is_err(), "caps fails closed without a request");
+    }
+
+    #[tokio::test]
+    async fn a_deny_stops_evaluation() {
+        let later = StubModule::allowing();
+        let pipeline = pipeline(vec![
+            instance("first", &[HOOK], OnError::Deny, StubModule::denying("no")),
+            instance("second", &[HOOK], OnError::Deny, later.clone()),
+        ]);
+        assert!(run(&pipeline).await.is_err());
+        assert_eq!(later.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn malformed_reason_code_is_a_failure() {
+        let pipeline = pipeline(vec![instance(
+            "bad",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Decide(Decision::deny("Not Valid!", ""))),
+        )]);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleUnavailable { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn request_build_failure_applies_each_failure_mode() {
+        let closed = pipeline(vec![instance(
+            "caps",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::allowing(),
+        )]);
+        let result = closed
+            .run(HOOK, "0xacc", || Err("view failed".into()))
+            .await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleUnavailable { .. })
+        ));
+
+        let open = pipeline(vec![instance(
+            "caps",
+            &[HOOK],
+            OnError::Allow,
+            StubModule::allowing(),
+        )]);
+        assert!(
+            open.run(HOOK, "0xacc", || Err("view failed".into()))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn modules_not_subscribed_to_the_hook_are_not_called() {
+        let other = StubModule::denying("no");
+        let pipeline = pipeline(vec![instance(
+            "registration-only",
+            &[HookName::BeforeAccountRegistered],
+            OnError::Deny,
+            other.clone(),
+        )]);
+        assert!(!pipeline.applies(HOOK, "0xacc").await.unwrap());
+        assert!(run(&pipeline).await.is_ok());
+        assert_eq!(other.calls(), 0);
+    }
+
+    mod layers {
+        use super::*;
+        use crate::modules::store::Change;
+        use crate::modules::testing::instance_with_params;
+        use guardian_module_sdk::basic_policy::BasicPolicy;
+        use guardian_module_sdk::proto::hook_request;
+        use guardian_module_sdk::{OutputNote, TransactionSubject, TxProjection};
+        use serde_json::json;
+
+        fn pay(recipient: &str) -> HookRequest {
+            HookRequest {
+                subject: Some(hook_request::Subject::Transaction(TransactionSubject {
+                    projection: Some(TxProjection {
+                        output_notes: vec![OutputNote {
+                            note_id: "0xn".into(),
+                            p2id_target: Some(recipient.into()),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+        }
+
+        fn blocklist() -> ModulePipeline {
+            ModulePipeline::from_instances(vec![instance_with_params(
+                "blocklist",
+                &[HOOK],
+                std::sync::Arc::new(BasicPolicy),
+                json!({ "recipient_denylist": ["0xaaa"] }),
+            )])
+        }
+
+        fn change() -> Change<'static> {
+            Change {
+                operator: "0xop",
+                reason: "test",
+                at: "t".into(),
+            }
+        }
+
+        async fn layer_of(
+            pipeline: &ModulePipeline,
+            account: &str,
+            recipient: &str,
+        ) -> Option<String> {
+            match pipeline.run(HOOK, account, || Ok(pay(recipient))).await {
+                Ok(()) => None,
+                Err(GuardianError::ModuleDenied { layer, .. }) => Some(layer),
+                Err(other) => panic!("unexpected {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn account_layer_extends_the_global_rule() {
+            let pipeline = blocklist();
+            pipeline
+                .store()
+                .set_layer(
+                    "0xacc",
+                    "blocklist",
+                    Some(json!({ "recipient_denylist": ["0xccc"] })),
+                    &change(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                Some("global")
+            );
+            assert_eq!(
+                layer_of(&pipeline, "0xacc", "0xccc").await.as_deref(),
+                Some("account")
+            );
+            assert_eq!(layer_of(&pipeline, "0xacc", "0xbbb").await, None);
+            assert_eq!(layer_of(&pipeline, "0xother", "0xccc").await, None);
+            assert_eq!(
+                layer_of(&pipeline, "0xother", "0xaaa").await.as_deref(),
+                Some("global")
+            );
+        }
+
+        #[tokio::test]
+        async fn an_account_layer_cannot_loosen_the_global_rule() {
+            let pipeline = blocklist();
+            pipeline
+                .store()
+                .set_layer("0xacc", "blocklist", Some(json!({})), &change())
+                .await
+                .unwrap();
+            assert_eq!(
+                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                Some("global")
+            );
+        }
+
+        #[tokio::test]
+        async fn global_params_changed_at_runtime_apply_to_the_next_evaluation() {
+            let pipeline = blocklist();
+            pipeline
+                .store()
+                .seed_instance(
+                    "blocklist",
+                    true,
+                    &json!({ "recipient_denylist": ["0xaaa"] }),
+                    "t0",
+                )
+                .await
+                .unwrap();
+            pipeline
+                .store()
+                .set_global(
+                    "blocklist",
+                    json!({ "recipient_denylist": ["0xaaa", "0xddd"] }),
+                    &change(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                layer_of(&pipeline, "0xany", "0xddd").await.as_deref(),
+                Some("global")
+            );
+        }
+
+        #[tokio::test]
+        async fn a_module_disabled_at_runtime_is_skipped_until_enabled_again() {
+            let pipeline = blocklist();
+            pipeline
+                .store()
+                .seed_instance(
+                    "blocklist",
+                    true,
+                    &json!({ "recipient_denylist": ["0xaaa"] }),
+                    "t0",
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                Some("global")
+            );
+            pipeline
+                .store()
+                .set_enabled("blocklist", false, &change())
+                .await
+                .unwrap();
+            assert_eq!(layer_of(&pipeline, "0xacc", "0xaaa").await, None);
+            assert!(!pipeline.applies(HOOK, "0xacc").await.unwrap());
+            pipeline
+                .store()
+                .set_enabled("blocklist", true, &change())
+                .await
+                .unwrap();
+            assert_eq!(
+                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                Some("global")
+            );
+        }
+    }
+}

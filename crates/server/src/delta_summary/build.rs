@@ -47,6 +47,7 @@ pub fn build_metadata(
                 counterparty: counterparty_from_proposal(&proposal),
                 note_counts: Default::default(),
                 proposal: Some(proposal),
+                modules: None,
             })
         }
     }
@@ -96,6 +97,7 @@ fn assemble(summary: &TransactionSummary, proposal: Option<ProposalMetadata>) ->
         counterparty,
         note_counts,
         proposal,
+        modules: None,
     }
 }
 
@@ -388,6 +390,7 @@ mod tests {
                 amount: Some("100".to_string()),
                 ..ProposalMetadata::default()
             }),
+            modules: None,
         };
         let value = metadata_to_value(&original);
         let round_tripped = metadata_from_value(value).expect("metadata parses");

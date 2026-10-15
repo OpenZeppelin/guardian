@@ -351,9 +351,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -454,9 +452,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -567,9 +563,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -666,9 +660,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -780,9 +772,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         // Clone notes for the runtime TransactionType; metadata keeps its own copy.
         let notes_for_tx_type = metadata.consume_notes_notes.clone();
@@ -879,9 +869,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -955,9 +943,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         let proposal = Proposal::new(
             tx_summary,

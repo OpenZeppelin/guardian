@@ -482,6 +482,9 @@ impl ServerBuilder {
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let coordination = self.coordination;
+        let module_store = coordination
+            .as_ref()
+            .and_then(|handles| handles.module_store.clone());
         // Fail closed before anything else: the Postgres backend must never fall
         // back to per-process coordination (AlwaysLeader + in-memory sessions),
         // which would let every replica run canonicalization and split auth
@@ -643,6 +646,9 @@ impl ServerBuilder {
             );
         }
 
+        let modules =
+            crate::modules::from_env(chrono::Utc::now().to_rfc3339(), module_store).await?;
+
         let app_state = AppState {
             storage,
             metadata,
@@ -654,6 +660,7 @@ impl ServerBuilder {
             dashboard,
             auditor,
             miden_sessions,
+            modules,
             #[cfg(feature = "evm")]
             evm,
         };

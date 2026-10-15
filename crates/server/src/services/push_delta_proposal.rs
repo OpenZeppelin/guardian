@@ -2,6 +2,8 @@ use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
+use crate::modules::HookName;
+use crate::modules::request::{self, ProposalContext, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
@@ -245,6 +247,49 @@ pub async fn push_delta_proposal(
         });
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
+
+    let plan = match state.modules.as_deref() {
+        Some(modules) => {
+            modules
+                .plan(HookName::BeforeProposalCreated, &account_id)
+                .await?
+        }
+        None => None,
+    };
+    if let Some(plan) = plan {
+        let after_state = {
+            let client = state.network_client.clone();
+            let tail_state_json = tail.state_json.clone();
+            let tx_summary = tx_summary.clone();
+            crate::network::reconstructor()
+                .run(move || client.apply_delta(&tail_state_json, &tx_summary))
+                .await?
+                .state_json
+        };
+        let proposal = ProposalContext {
+            proposer: proposer_id.clone(),
+            metadata: delta_payload
+                .get("metadata")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        };
+        plan.run(|| {
+            request::transaction_request(
+                state.network_client.as_ref(),
+                TransactionInput {
+                    account_id: &account_id,
+                    submitter: &proposer_id,
+                    auth: &resolved.metadata.auth,
+                    before_state: &tail.state_json,
+                    after_state: &after_state,
+                    tx_summary,
+                    proposal: Some(proposal),
+                    accounting_time: state.clock.now(),
+                },
+            )
+        })
+        .await?;
+    }
     // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
@@ -1945,5 +1990,100 @@ mod tests {
                 .is_empty(),
             "judged on the replayed tail"
         );
+    }
+
+    async fn propose_with_module(
+        module: Arc<crate::modules::testing::StubModule>,
+        hook: HookName,
+    ) -> (Result<PushDeltaProposalResult>, MockStorageBackend, String) {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{instance, pipeline};
+
+        let (mut state, storage, network, metadata) = create_test_state();
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(fixtures::DELTA_1_JSON).unwrap();
+        let account_id = delta_fixture["account_id"].as_str().unwrap().to_string();
+        let (pubkey, commitment, signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let _ = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment.clone()],
+            },
+        ))));
+        let storage = storage.with_pull_state(Ok(create_state_object(
+            account_id.clone(),
+            "0x780aa2edb983c1baab3c81edcfe400bc54b516d5cb51f2a7cec4690667329392".into(),
+            account_json,
+        )));
+        let _ = network
+            .with_verify_delta(Ok(()))
+            .with_validate_credential(Ok(()))
+            .with_apply_delta(Ok((serde_json::json!({ "after": true }), "0xafter".into())))
+            .with_module_views(
+                guardian_module_sdk::AccountView::default(),
+                guardian_module_sdk::TxProjection::default(),
+            );
+        state.modules = Some(pipeline(vec![instance(
+            "caps",
+            &[hook],
+            OnError::Deny,
+            module,
+        )]));
+
+        let params = PushDeltaProposalParams {
+            account_id,
+            nonce: 1,
+            delta_payload: serde_json::json!({
+                "tx_summary": delta_fixture["delta_payload"].clone(),
+                "signatures": [],
+                "metadata": { "proposal_type": "p2id", "description": "pay rent" }
+            }),
+            credentials: Credentials::signature(pubkey, signature, timestamp),
+        };
+        (
+            push_delta_proposal(&state, params).await,
+            storage,
+            commitment,
+        )
+    }
+
+    #[tokio::test]
+    async fn module_denial_at_creation_stores_no_proposal() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (result, storage, _) =
+            propose_with_module(module, HookName::BeforeProposalCreated).await;
+        assert!(matches!(result, Err(GuardianError::ModuleDenied { .. })));
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn creation_passes_the_proposer_and_untrusted_metadata() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, proposer) =
+            propose_with_module(module.clone(), HookName::BeforeProposalCreated).await;
+        result.expect("proposal is created");
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+        let request = module.last_request().expect("module was called");
+        assert_eq!(request.submitter, proposer);
+        let Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(tx)) =
+            request.subject
+        else {
+            panic!("transaction subject expected");
+        };
+        assert_eq!(tx.proposer, proposer);
+        let metadata: serde_json::Value = serde_json::from_slice(&tx.unverified_metadata).unwrap();
+        assert_eq!(metadata["description"], "pay rent");
+    }
+
+    #[tokio::test]
+    async fn approval_only_module_is_not_called_at_creation() {
+        let module = crate::modules::testing::StubModule::denying("no");
+        let (result, _, _) =
+            propose_with_module(module.clone(), HookName::BeforeTransactionApproved).await;
+        result.expect("creation is not evaluated by an approval-only module");
+        assert_eq!(module.calls(), 0);
     }
 }

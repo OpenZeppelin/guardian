@@ -253,9 +253,7 @@ impl MultisigClient {
         let sign_response = guardian_client
             .sign_delta_proposal(&account_id, proposal_id, signature)
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to sign proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to sign proposal", e))?;
 
         let updated_raw = sign_response
             .delta
@@ -501,9 +499,7 @@ impl MultisigClient {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
 
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
 
