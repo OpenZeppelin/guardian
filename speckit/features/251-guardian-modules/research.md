@@ -149,7 +149,16 @@ Built on `251-guardian-modules-rfc` (local only, not pushed): `crates/guardian-m
 - The multisig SDK used to flatten every Guardian error into a string. It now has `ModuleDenied` and `ModuleUnavailable`; the TypeScript SDK needs the same for parity (constitution principle II).
 - Token files in the catalog resolve relative to the catalog file.
 
+### Found in the live run (2026-10-15)
+
+- **The fee is an output note.** Miden 0.17 `pay_fee` creates a public `TX_FEE` note funded from the vault (`miden-standards` `account/auth/singlesig.rs:45`). The prototype counted it as a payment, so a cap on the fee asset refused every transaction (a consume-notes proposal on devnet was refused at creation), and a recipient allowlist would refuse every transaction too. Fixed: `OutputNote.tx_fee` marks the fee note, and `basic-policy` excludes it from the cap, the recipient allowlist and the asset allowlist; the asset allowlist now covers assets sent in payment notes and received in input notes, since vault changes cannot tell a fee from a payment.
+- **Review of the prototype (2026-10-15).** Fixed: bearer tokens held as `SecretString` (redacted, zeroized) in the catalog and the SDK factory config; a disabled instance whose kind is unknown or whose endpoint is malformed no longer blocks startup; the expiration height uses checked addition and an overflow is a module failure, not a panic; the asset allowlist covers consumed notes. Open for M2a: request assembly is not yet inside the reconstruction bound (revision 20 item 8).
+- **The multisig SDK flattened refusals in its call sites.** Proposal push, delta push and account configuration wrapped Guardian errors into strings before the typed conversion ran, so the demo showed the generic message without the module or reason code. Those ten sites now keep `ModuleDenied` and `ModuleUnavailable`.
+
 ### Changes for RFC revision 20
+
+All applied in RFC 0002 revision 20 (2026-10-15). The prototype still differs from it on four points, all M2a work: single-key accounts fail view extraction instead of getting a view from the registered signer (item 2); `raw_tx_summary` carries the JSON payload, not the binary serialization (item 3); there is no `tls` catalog field and `grpc://` is plaintext (item 4); request assembly runs on the request task (item 8).
+
 
 1. `AccountView.auth_scheme` source (or per-signer schemes).
 2. Single-key accounts and account views.
@@ -157,3 +166,5 @@ Built on `251-guardian-modules-rfc` (local only, not pushed): `crates/guardian-m
 4. TLS fields for remote kinds.
 5. `notify` default no-op; SDK helper list; `serve` token argument.
 6. Registration hook runs before the replay timestamp is consumed.
+7. `OutputNote.tx_fee`, and the fee rule stated in terms of it.
+8. Request assembly runs inside the bounded reconstruction task. The prototype decodes the account views and projection inline on the request task: an error already becomes a module failure under `on_error`, but a slow or heavy decode is not bounded the way `apply_delta` is (`network::reconstructor()`). M2a moves the view and projection building into the same CPU-bounded task, and the RFC states that request assembly shares the reconstruction bound (section 4.3).

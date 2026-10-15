@@ -138,6 +138,7 @@ message OutputNote {
   repeated Asset assets = 5;
   string script_root = 6;
   optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
+  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment
 }
 enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
 
