@@ -27,8 +27,7 @@ timeout_ms = 20                       # required
 on_error = "deny"                     # deny (default) | allow
 enabled = true                        # seed only
 operator_can_disable = false
-params = { signer_check = "all", signer_allowlist = ["0x…"] }
-account_params = { "0x7bfb…a1" = { signer_allowlist = ["0x…", "0x…"] } }
+params = { signer_check = "all", signer_allowlist = ["0x…"] }  # seed for the global params
 
 [[module]]
 id = "risk-vendor"
@@ -46,9 +45,13 @@ auth = { token_secret = "guardian/modules/risk-vendor-token" }
 | Param | Type | Effect |
 |---|---|---|
 | `max_amount_per_tx` | map faucet id to decimal string | For each listed faucet, deny if the gross amount sent exceeds it: the sum of that faucet's fungible amounts over every output note, full or partial. Input notes consumed in the same transaction do not offset it, the fee note (`tx_fee`) is not counted, faucets not listed are uncapped, non-fungible assets are not counted (use `asset_allowlist`) |
-| `recipient_allowlist` | list of account ids | Deny an output note whose `p2id_target` is not listed; partial or non-P2ID notes deny |
+| `recipient_allowlist` | list of account ids | Deny a payment note whose `p2id_target` is not listed; partial or non-P2ID notes deny |
+| `recipient_denylist` | list of account ids | Deny a payment note whose `p2id_target` is listed |
+| `deny_unknown_recipients` | bool, default `false` | With `recipient_denylist`, also deny partial and non-P2ID payment notes, whose recipient cannot be checked |
 | `asset_allowlist` | list of faucet ids | Deny an unlisted faucet among assets sent in payment notes or received in input notes; the fee note (`tx_fee`) is not checked |
 | `signer_allowlist` / `signer_denylist` | list of signer commitments | Check signers per `signer_check`; at most one of the two |
 | `signer_check` | `added` (default) or `all` | `added`: signers in `after` not in `before`; `all`: every signer in `after` |
+
+`params` in the file seed the global params once (section "Layered parameters" of RFC 0002 section 2.2); afterwards they are changed through the operator API, and a changed file value is reported as drift. Per-account settings never live in this file.
 
 Unknown params fail `validate_params`. Hooks supported: `before_transaction_approved`, `before_proposal_created`, `before_account_registered`; transaction-only params are ignored at registration.

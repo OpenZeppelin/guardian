@@ -46,7 +46,33 @@ cargo run -p guardian-module-sdk --example basic-policy-serve -- --listen 127.0.
 
 Point a second instance of kind `grpc` at it with `on_error = "deny"`, repeat step 2, then stop the module: pushes return `GUARDIAN_MODULE_UNAVAILABLE`; after five failures they return without waiting for the timeout; `guardian_module_up` drops to 0. Switch to `on_error = "allow"`: pushes proceed and `guardian_module_fail_open_total` increases. (US4, US6)
 
-## 4. Validation matrix
+## 4. Global and per-account rules from the operator API (prototype)
+
+```bash
+# once: an operator key and an allowlist entry with the module permissions
+cargo run -p guardian-server --example modules_admin -- keygen .guardian/operator.key
+#   paste the printed entry into a JSON array in .guardian/operators.json
+
+GUARDIAN_MODULES_CONFIG=.guardian/modules.toml \
+GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=.guardian/operators.json \
+  cargo run -p guardian-server --bin server
+
+ADMIN="cargo run -q -p guardian-server --example modules_admin -- --key .guardian/operator.key"
+$ADMIN GET /modules
+$ADMIN PUT /modules/blocklist/params '{"params":{"recipient_denylist":["0xaaa","0xddd"]},"reason":"extend global list"}'
+$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"recipient_denylist":["0xccc"]},"reason":"customer block"}'
+$ADMIN GET /accounts/0xACCOUNT/modules
+$ADMIN GET /modules/blocklist/params/history
+$ADMIN DELETE /accounts/0xACCOUNT/modules/blocklist/params '{"reason":"lift customer block"}'
+
+# runtime switch (disable needs operator_can_disable = true in the catalog entry)
+$ADMIN POST /modules/blocklist/disable '{"reason":"emergency stop"}'
+$ADMIN POST /modules/blocklist/enable '{"reason":"back on"}'
+```
+
+A payment to `0xddd` is then refused for every account (`layer: global`), one to `0xccc` only for `0xACCOUNT` (`layer: account`). Params persist in the module tables (on the filesystem backend one file, `<GUARDIAN_METADATA_PATH>/modules/module_state.json`, written atomically; on Postgres the tables `module_instances`, `module_account_params` and `module_params_history`) and survive restarts; editing `params` in the catalog afterwards shows as drift and does not apply.
+
+## 5. Validation matrix
 
 | Slice | Command | Proves |
 |---|---|---|

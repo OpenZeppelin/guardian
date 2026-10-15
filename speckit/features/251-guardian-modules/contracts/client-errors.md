@@ -4,7 +4,7 @@
 
 | Code | HTTP | gRPC | Retryable | `meta` | Returned by |
 |---|---|---|---|---|---|
-| `GUARDIAN_MODULE_DENIED` | 403 | `PERMISSION_DENIED` | no | `{ module, reason_code }` | Proposal creation, `push_delta`, `/configure` |
+| `GUARDIAN_MODULE_DENIED` | 403 | `PERMISSION_DENIED` | no | `{ module, reason_code, layer }` (`layer`: `global` or `account`) | Proposal creation, `push_delta`, `/configure` |
 | `GUARDIAN_MODULE_UNAVAILABLE` | 503 | `UNAVAILABLE` | yes | `{ module }` | Same |
 
 - `module` is the operator-chosen instance `id`; the module kind never reaches clients.

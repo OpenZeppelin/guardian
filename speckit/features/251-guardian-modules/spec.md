@@ -112,24 +112,30 @@ A module can be slow, down or broken. For each instance the operator decides whe
 
 ### User Story 5 - Tune policy per account without a deploy (Priority: P2, M2a)
 
-Most accounts share defaults, but some need different limits, and some need optional modules. An operator assigns modules to an account, sets its parameters, reorders them, and switches eligible instances on or off, all at runtime through the operator interface, with a reason recorded for every change. Mandatory modules cannot be removed or loosened this way.
+Most accounts share defaults, but some need different limits, and some need optional modules. Instances are registered in configuration; everything about their parameters is managed at runtime through the operator interface: the global rules every account shares (for example extending a global blocklist), extra restrictions for one account on top of a mandatory rule, and the parameters of optional modules per account. An account's additions to a mandatory rule only add restrictions, so the global rule always holds. Every change carries a reason, an audit record and a history entry.
 
 **Why this priority**: Real deployments have exceptions, and a deploy for every per-account limit is impractical. It is P2 because a single mandatory policy (Story 1) already delivers value.
 
-**Independent Test**: Assign an optional module with custom parameters to one account, verify it applies there and nowhere else, attempt to remove a mandatory module, and read the audit trail.
+**Independent Test**: Extend a mandatory blocklist globally and add an extra blocked address for one account, verify which accounts each blocks, attempt to remove the mandatory module from an account, and read the params history.
 
 **Acceptance Scenarios**:
 
 1. **Given** a module declared as "default", **When** a new account registers, **Then** the module is copied into its assignment with the default parameters, and existing accounts are unaffected.
 2. **Given** a mandatory and a default module that both evaluate registration, **When** a new account registers before it has any assignment, **Then** both are evaluated with their configuration parameters, and a denial by either leaves no records.
 3. **Given** an account, **When** an operator assigns an optional module with parameters and a reason, **Then** the module applies to that account only, and the change is audited with the operator identity and reason.
-4. **Given** a mandatory module, **When** an operator tries to remove it from an account or change its parameters there, **Then** the request is refused.
+4. **Given** a mandatory module, **When** an operator tries to remove it from an account, **Then** the request is refused.
 5. **Given** an instance not marked as operator-disableable, **When** an operator tries to disable it, **Then** the request is refused; enabling a declared instance is always allowed.
 6. **Given** an operator holding only the narrow disable permission, **When** it disables a disableable instance, **Then** the request succeeds; **When** it tries to enable an instance or change an assignment, **Then** the request is refused, since both require the general policy permission.
 7. **Given** a paused account, **When** a cosigner reconfigures it and every module allows, **Then** the reconfiguration succeeds and the account stays paused; **When** a module denies, **Then** nothing changes.
 8. **Given** a released account, **When** a cosigner re-onboards it and every module allows, **Then** it is reactivated with its stored assignment; **When** a module denies, **Then** it stays released and unchanged.
 9. **Given** an invalid parameter value, **When** an operator assigns it, **Then** it is refused at assignment time, not at the next transaction.
 10. **Given** an account that re-registers, **When** registration succeeds, **Then** its stored assignment is preserved and never reset to catalog defaults by a cosigner.
+11. **Given** a mandatory blocklist of A and B, **When** an operator adds C globally, **Then** every account is checked against A, B and C, on every replica, without a deploy.
+12. **Given** the same blocklist, **When** an operator adds D for one account only, **Then** that account is checked against A, B, C and D, and every other account only against A, B and C.
+13. **Given** a mandatory cap of 10,000 and an account layer of 50,000 for one account, **When** that account sends 20,000, **Then** it is refused by the global layer: an account layer cannot loosen a mandatory rule. **When** the account needs a higher limit, **Then** the rule belongs in an optional (default) module whose parameters the account can replace.
+14. **Given** a denial, **When** the client and the operator inspect it, **Then** it names the instance, the reason code and whether the global or the account layer denied.
+15. **Given** any parameter change, **When** an operator reads the history, **Then** it shows the previous and new parameters, the operator, the reason and the time, and each signed transaction records the parameter version it was checked against.
+16. **Given** an operator holding only the per-account policy permission, **When** it tries to change global parameters, **Then** the request is refused.
 
 ---
 
@@ -222,17 +228,19 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-010** [M2a]: Module instances MUST be declared only in server configuration loaded at startup; an operator session MUST NOT be able to add an instance or change its kind, endpoint, authentication, hooks, timeout or failure mode.
 - **FR-011** [M2a]: Each instance MUST have a scope: mandatory for every account, default (copied into new accounts and removable per account), or assigned (only where an operator assigns it).
 - **FR-012** [M2a]: Default modules MUST NOT be applied retroactively to existing accounts, and later changes to default parameters MUST NOT change parameters already copied into accounts.
-- **FR-013** [M2a]: Per-account exceptions for mandatory modules MUST be expressible only in configuration, and each request MUST carry only the effective parameters of the account being evaluated.
+- **FR-013** [M2a]: Instances MUST be registered only in configuration, which also seeds each instance's global parameters the first time it is seen; afterwards global parameters MUST be managed only through the operator interface, and a configuration change to them MUST be reported as drift, not applied. Each request MUST carry only the parameters of the layer being evaluated, never another account's.
 - **FR-014** [M2a]: At startup the Guardian MUST verify that each instance supports its configured hooks, speaks a supported protocol version, and accepts its parameters. In production mode a failure of an enabled instance MUST stop startup; a disabled instance that fails is logged and stays disabled, so an unavailable module can be staged without blocking a deploy, and enabling it MUST run the same checks first and refuse on failure.
 - **FR-015** [M2a]: Secret references MUST be allowed only in the configuration of in-process instances and MUST be rejected in remote-instance parameters, in per-account exceptions and through the operator interface. The Guardian resolves them when it creates the instance and supplies the resolved values to the in-process module at creation. Resolved values MUST never appear in any request sent to a module; an in-process module receives its parameters with the references unresolved.
 - **FR-016** [M2a]: Each replica MUST expose a fingerprint of the configuration it loaded, and every signed transaction MUST record the fingerprint that approved it.
 
 ### Per-account administration
 
-- **FR-020** [M2a]: Operators MUST be able to read an account's effective module set and replace its assigned and default modules with an ordered list and parameters, with a required reason, recorded in the audit log with the operator identity.
-- **FR-021** [M2a]: The operator interface MUST refuse removing a mandatory module, changing its parameters per account, and assignments whose combined timeouts exceed the evaluation budget.
-- **FR-022** [M2a]: Parameters MUST be validated by the module when assigned.
+- **FR-020** [M2a]: Operators MUST be able to read an account's effective module set (each mandatory module's global parameters and the account's layer, and each optional module's parameters), replace its assigned and default modules with an ordered list and parameters, change any instance's global parameters, and set or remove an account's layer on a mandatory module, each with a required reason, recorded in the audit log with the operator identity.
+- **FR-021** [M2a]: An account's layer on a mandatory module MUST be evaluated as a second pass after the global parameters, and the transaction MUST pass only if both allow, so a layer can only add restrictions. The operator interface MUST refuse removing a mandatory module from an account, parameters containing secret references, changes to parameters the configuration holds with secret references, and assignments or layers whose combined timeouts exceed the evaluation budget.
+- **FR-022** [M2a]: Parameters MUST be validated by the module when they are written, each layer on its own.
 - **FR-023** [M2a]: Operators MUST be able to enable any declared instance, under the general policy permission only, and disable only instances the configuration marks as disableable, under either the general policy permission or a dedicated narrow disable permission that grants nothing else; a disabled instance MUST keep receiving commit notifications.
+- **FR-026** [M2a]: Every parameter write MUST append to a history (previous and new parameters, operator, reason, time); the parameter store MUST carry a version that increases with every write, and every signed transaction MUST record it next to the configuration fingerprint.
+- **FR-027** [M2a]: Changing global parameters MUST require a separate permission from per-account policy changes.
 - **FR-024** [M2a]: Operators MUST be able to list all instances with their runtime state, including differences between configuration and runtime switches and the circuit state.
 - **FR-025** [M2a]: Re-registration of an existing account MUST preserve its stored assignment.
 
@@ -251,7 +259,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 ### Decisions and errors
 
 - **FR-040** [M2a]: A denial MUST carry a machine-readable reason code; a denial without a valid code is a module failure.
-- **FR-041** [M2a]: Clients MUST receive a non-retryable policy-denied error naming the operator-chosen instance identifier and the reason code, and a retryable policy-unavailable error naming the instance; the module's free-text message MUST NOT reach clients.
+- **FR-041** [M2a]: Clients MUST receive a non-retryable policy-denied error naming the operator-chosen instance identifier, the reason code and the layer (global or account) that denied, and a retryable policy-unavailable error naming the instance; the module's free-text message MUST NOT reach clients.
 - **FR-042** [M2a]: Both errors MUST be returned on proposal creation and on approval, and on the execution path as typed execution outcomes.
 - **FR-043** [M2a]: The Rust and TypeScript clients and both multisig SDKs MUST expose these errors as typed errors with identical retry classification.
 
@@ -280,7 +288,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 
 ### Extensibility
 
-- **FR-080** [M2a]: First-party in-process modules MUST be included in the official image and usable by configuration alone, including the reference policy: recipient and asset allowlists, a per-transaction amount cap per asset over the total amount sent in the transaction (not offset by amounts received, fee excluded), and signer allowlist and denylist with a choice between checking added signers and all signers.
+- **FR-080** [M2a]: First-party in-process modules MUST be included in the official image and usable by configuration alone, including the reference policy: recipient allowlist and denylist (with an option to refuse notes whose recipient cannot be determined), asset allowlist, a per-transaction amount cap per asset over the total amount sent in the transaction (not offset by amounts received, fee excluded), and signer allowlist and denylist with a choice between checking added signers and all signers.
 - **FR-081** [M2a]: A published module SDK MUST provide the module interface, protocol types, a serving harness for remote modules, and a conformance suite that runs the same cases against in-process and remote modules.
 - **FR-082** [M2c]: Operators MUST be able to register their own module kinds in a custom build from a published template that pins the release's dependency lock; the registration interface is versioned public API.
 - **FR-083** [M2a]: Module kinds MUST NOT be loadable at runtime.
@@ -301,6 +309,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **Module kind**: an implementation of the module interface, registered under a name when the server is built.
 - **Module instance**: a configuration entry naming a kind, with scope, hooks, timeout, failure mode, credentials, default parameters and per-account exceptions.
 - **Account assignment**: the ordered list of default and assigned instances for one account, with their parameters, written only through the operator interface.
+- **Parameter layers**: an instance's global parameters (seeded from configuration, then operator-managed) and, on a mandatory instance, an account's layer that only adds restrictions; each write recorded in a versioned history.
 - **Hook request**: what a module receives at a gate point: identity of the call, effective parameters, submitter, account views before and after, and either a transaction or a registration subject.
 - **Account view**: the Guardian-decoded authorization state of an account: commitment, scheme, signers, default and per-procedure thresholds.
 - **Proposal context**: the verified proposer and untrusted metadata of the matching stored proposal.
@@ -321,7 +330,8 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **SC-006**: One in-process module adds no more than 10 ms to approval latency at the 99th percentile; the measured overhead for an in-process and a remote module is recorded in the plan and the default budget revisited against it.
 - **SC-007**: When a fail-closed module's circuit is open, refusals are returned without waiting for the module's timeout; when a fail-open module is down, approvals proceed with no more added latency than its timeout until the circuit opens.
 - **SC-008** [M2b]: Under concurrent pushes, delayed notifications, duplicate deliveries, acknowledgements recorded after the module applied a notification, and a leadership change, a daily volume cap is never exceeded in candidate mode across the conformance and qualification runs, for a module that is reachable and not awaiting resync.
-- **SC-009**: 100% of operator changes to module assignments, parameters, enablement and resync carry a reason and an audit record with the operator identity.
+- **SC-009**: 100% of operator changes to module assignments, global parameters, account layers, enablement and resync carry a reason, an audit record with the operator identity and, for parameters, a history entry.
+- **SC-012**: An operator can extend a global blocklist, or add a blocked address for one account, through the operator interface in under one minute, and the change applies on every replica to the next evaluation, without a deploy.
 - **SC-010**: The Rust and TypeScript SDKs classify every module error identically, verified by matching test cases in both.
 - **SC-011**: A module author can build a working remote module from the SDK and example in under one day without reading Guardian server code.
 

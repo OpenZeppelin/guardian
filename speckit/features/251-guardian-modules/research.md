@@ -95,6 +95,18 @@ This plan is written before the prototype on `251-modules-prototype`. Decisions 
 - **Decision**: the authenticated requester is stored on the durable execution reservation when an attempt is created, kept on repeated requests for an active attempt, and carried into `acknowledge_delta` and the stored delta.
 - **Rationale**: spec FR-033; restart safety.
 
+### D12. Module state in its own tables
+
+- **Decision**: three tables, `module_instances`, `module_account_params` (layers and assignments, by `kind`) and `module_params_history`, on both backends (files per table on the filesystem backend). Instance definitions stay in the catalog file.
+- **Rationale**: `configure_account` rewrites the account metadata row in full and any cosigner can call it, so policy stored there would need a carry-forward on every rewrite; separate rows keep cosigner and operator writes, their compare-and-set updates and audit trails apart; metadata is read on every request, module state only when a module is called; cross-account queries need an index on the module id; history is naturally an append-only table whose sequence is the params version.
+- **Alternatives**: module config as a JSON field in account metadata (rejected for the reasons above); one table per entity (instance flags, layers, assignments separately; merged because layers and assignments share key, shape and read path).
+
+### D11. Layered parameters (RFC revision 21)
+
+- **Decision**: the catalog registers instances and seeds global params once; global params, account layers and per-account assignments are operator-managed in the metadata store with history and a version. An account layer on an `all` instance is evaluated as a second pass that must also allow, so it only adds restrictions; loosening exceptions use `default` instances. `account_params` is removed.
+- **Rationale**: operators manage per-account and global rules without deploys (blocklists change often); layering keeps every global rule in force for every account without module-specific merge code, and a mistake on one account cannot weaken the global rule.
+- **Alternatives**: per-account exceptions in the catalog (revision 8 to 20; rejected as unworkable for operators); sending global and account params separately for the module to combine (rejected: every module would need correct merge code); tighten-only edits judged by the module (kept as future work if loosening global params needs a second operator).
+
 ### D10. Delivery order
 
 - **Decision**: M2a, M2b and M2c ship in order, each behind no feature flag beyond configuration: a server with no `GUARDIAN_MODULES_CONFIG` runs no pipeline.
@@ -157,7 +169,25 @@ Built on `251-guardian-modules-rfc` (local only, not pushed): `crates/guardian-m
 
 ### Changes for RFC revision 20
 
-All applied in RFC 0002 revision 20 (2026-10-15). The prototype still differs from it on four points, all M2a work: single-key accounts fail view extraction instead of getting a view from the registered signer (item 2); `raw_tx_summary` carries the JSON payload, not the binary serialization (item 3); there is no `tls` catalog field and `grpc://` is plaintext (item 4); request assembly runs on the request task (item 8).
+All applied in RFC 0002 revision 20 (2026-10-15). After the fleet review the prototype differs from it on two points: request assembly runs on the request task (item 8), and the TLS client certificate and key are file paths (`tls.client_cert_file`, `tls.client_key_file`) like `auth.token_file`, not secret references, because the prototype has no secrets backend.
+
+### Fleet review (2026-10-15)
+
+Four reviewers over the uncommitted prototype. Fixed (tasks T051 to T060):
+
+- **Modules judged a different summary than the one signed.** The projection decoder preferred a `tx_summary` key over the top-level `data` that `verify_delta`, `apply_delta` and `ack_delta` read, so a push carrying both had the Guardian sign one transaction while caps and allowlists judged another. Modules now decode exactly the signed summary, refusing wrappers; the proposal hook passes the extracted `tx_summary` (it also passed the wrapper with the proposer's signature and unverified metadata into `raw_tx_summary`); `raw_tx_summary` is the binary serialization. The dashboard metadata decoder had the same precedence and now prefers `data`.
+- **Postgres params version.** `MAX(version)` over a sequence misses a slow commit with a lower number, so a replica could cache a stale `enabled` flag or params indefinitely. Writes now serialize on a one-row version lock, which also stops two concurrent assignment replacements from producing their union.
+- **First start with invalid catalog params** seeded them before validation, and the server could not start again even after the catalog was fixed. Startup now checks the params that will apply (stored, else the catalog seed) and seeds only after every instance passed. Enable checks the stored params too.
+- **Two resolves per request** with a version read per instance: now one plan per request with one version read.
+- **Signed deltas did not record** the catalog hash and params version: recorded in `DeltaMetadata.modules` (a JSON field, so no migration; the RFC's columns remain the target).
+- **Filesystem tables** were three separate renames: now one file, synced and renamed.
+- **Single-key accounts** failed view extraction: now viewed with the registered signer.
+- **Plain text remote modules** were allowed to any host: now only `grpc+insecure://` to loopback, and never in prod, where `auth` is also required. TLS uses tonic with `tls-ring`; a handshake against a TLS module server is not yet covered by a test, since the `serve` harness has no TLS option.
+- **The TypeScript drift guard** failed on the four new codes.
+
+Added after the review (T061, T062): a signed delta records `catalog_hash`, `params_version` and the evaluations that failed open; module builds are logged at startup and shown in the catalog view. Configuration snapshots, a request hash, `accounting_time`, `proposer` and an evaluation count were tried and removed: nothing consumes them until the replay tool (T063), and size was never the constraint (a Falcon ack signature alone is about 1.3 KB per delta). What is lost meanwhile is a durable record of which remote module build was live for an older delta. A remote module redeployed without a Guardian restart is not noticed until the probe re-reads `describe` (M2a).
+
+Deferred to M2a, as scoped by `tasks.md`: the evaluation budget and request size cap (an `all` instance with an account layer runs twice, each with a full timeout), typed module errors in the TypeScript SDKs and the operator client, the `default` scope and the registration subject's `initial_state`.
 
 
 1. `AccountView.auth_scheme` source (or per-signer schemes).

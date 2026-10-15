@@ -20,43 +20,58 @@ One `[[module]]` entry of the catalog file ([contracts/catalog-config.md](./cont
 | `timeout_ms` | Required, 1 to `GUARDIAN_MODULE_TIMEOUT_MAX_MS` |
 | `on_error` | `deny` (default) or `allow` |
 | `auth` | Remote kinds; mandatory in prod; secret reference for the bearer token, optional mTLS |
-| `params` | JSON object; `$secret` references only for in-process kinds; validated by `validate_params` |
-| `account_params` | `scope = all` only; map account id to JSON object, shallow-merged over `params`; no `$secret` |
+| `params` | Seed for the instance's global params, written to the metadata store the first time the id is seen; JSON object; `$secret` references only for in-process kinds (such an instance's global params stay file-managed); validated by `validate_params` |
 | `require_fresh_state_ms` | Optional (M2b) |
 | `enabled` | Seed value, read only the first time the id is seen |
 | `operator_can_disable` | Default `false` |
 
 **Catalog**: the ordered list of instances plus its `catalog_hash` (hash of the canonical file content), exported per replica and recorded on each signed delta.
 
-**Startup validation**: every enabled instance is created, described and its params validated (instance and every `account_params` entry); failure of an enabled instance stops a prod start; a disabled instance that fails is logged and stays disabled. Budget checks per hook over `all` and `default` instances, enabled or not. Over-budget stored assignments are reported, not fatal.
+**Startup validation**: every enabled instance is created, described and its stored global params validated; failure of an enabled instance stops a prod start; a disabled instance that fails is logged and stays disabled. Budget checks per hook over `all` and `default` instances, enabled or not. Over-budget stored assignments are reported, not fatal.
 
 ## Stored state
 
-### ModuleInstanceFlag (metadata store, both backends)
+### Tables
 
-| Field | Rules |
+Module state lives in three tables of its own, never in the account metadata row (research D12). The filesystem backend keeps one file per table under `<metadata path>/modules/`.
+
+#### `module_instances`
+
+| Column | Rules |
 |---|---|
-| `module_id` | Primary key |
-| `enabled` | Written from the catalog seed on first sight, then only through the operator API |
-| `updated_at`, `updated_by`, `reason` | From the last operator change |
+| `module_id` | Primary key; a catalog instance id |
+| `enabled` | Seeded from the catalog on first sight; then changed only through the operator API |
+| `global_params` | JSON object; seeded from the catalog on first sight; replaced through `PUT /dashboard/modules/{id}/params` (`policies:write_global`); never `$secret` |
+| `seeded_params` | Catalog params at seeding, for drift reporting |
+| `updated_at`, `updated_by` | Last write |
 
-Transitions: `enabled -> disabled` only if the catalog entry has `operator_can_disable = true`, under `policies:write` or `modules:disable`; `disabled -> enabled` always allowed under `policies:write`, after re-running startup validation. Removing an instance from the catalog keeps its flag.
+Transitions of `enabled`: `enabled -> disabled` only if the catalog entry has `operator_can_disable = true`; `disabled -> enabled` always, after re-running startup validation. Removing an instance from the catalog keeps its row.
 
-### AccountModuleAssignment (metadata store, both backends)
+#### `module_account_params`
 
-| Field | Rules |
+| Column | Rules |
 |---|---|
-| `account_id` | Key |
-| `entries` | Ordered list of `{ module_id, params }`; `default` and `assigned` instances only; never an `all` instance |
-| `updated_at`, `updated_by`, `reason` | From the last operator change |
+| `account_id`, `module_id` | Primary key; index on `module_id` |
+| `kind` | `layer` (on a `scope = all` instance; evaluated as a second pass, so it only adds restrictions) or `assignment` (a `default` or `assigned` instance, params replace the global ones for that account) |
+| `position` | Evaluation order among an account's assignments; 0 for layers |
+| `params` | JSON object, validated on its own; never `$secret` |
+| `updated_at`, `updated_by` | Last write |
 
-Created in the same write that creates a new account, holding the copied `default` instances in catalog order. Replaced only through `PUT /dashboard/accounts/{id}/modules`. Preserved on re-onboarding. Entries naming an id no longer in the catalog are **orphaned**: kept, skipped, reported.
+Assignments are created for `default` instances in the same write that creates a new account, preserved on re-onboarding, and replaced only through `PUT /dashboard/accounts/{id}/modules`; layers through `PUT`/`DELETE /dashboard/accounts/{id}/modules/{module_id}/params`. A row naming an instance no longer in the catalog is orphaned: kept, skipped, reported.
+
+#### `module_params_history`
+
+Append-only: `id` (primary key), `version`, `module_id`, `account_id` (null for global), `previous`, `new`, `operator`, `reason`, `at`. Rows of one write share its `version`.
+
+#### `module_state_version`
+
+One row holding the params version. Every write takes its lock first, increments it, updates its rows and appends the history in one transaction, so writes serialize and the version moves in commit order; replicas key their cache on it. On the filesystem backend all tables are one file, `module_state.json`, replaced atomically.
 
 ### Delta additions (both backends)
 
 | Field | Set when | Notes |
 |---|---|---|
-| `module_catalog_hash` | The Guardian signs the delta | Dashboard detail only, not in the client API |
+| `modules` (evaluation trace) | The Guardian signs the delta after modules ran | Dashboard detail only. `catalog_hash`, `params_version`, `failed_open` (module, layer, failure kind; omitted when empty). Allowed evaluations are derived from the catalog, not stored. Prototype: `metadata.modules` |
 | `signed_at` | Fixed before the pipeline runs | The accounting clock; repeated in `pending` and `CommitEvent` |
 | `submitter` | At signing | Verified signer commitment of the request being acked |
 | `proposer` | At signing | From `ProposalContext`; empty when no matching proposal |
@@ -127,6 +142,6 @@ A deny is an answer and resets the failure count. `guardian_module_circuit_open{
 | `AccountView before/after` | Account state decode (gate G1) | At least one module will be called |
 | `TxProjection` | Transaction summary (gate G2) | At least one module will be called; stored when M2b subscribers exist |
 | `pending` | Candidate queue and unacknowledged events in one repeatable-read snapshot (M2b) | Only for modules subscribed to `after_transaction_committed` |
-| `params` | Assignment or catalog, `account_params` merged | Per module |
+| `params` | The layer being evaluated: global params, then the account layer of an `all` instance as a second pass, or the account's own params for `default`/`assigned` | Per module and layer |
 | `submitter` | Request authentication (`ResolvedAccount.signer_commitment`) or the execution reservation | Always |
 | `proposer`, `unverified_metadata` | `ProposalContext` | Transaction hooks |

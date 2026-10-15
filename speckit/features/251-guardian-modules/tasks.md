@@ -133,6 +133,47 @@
 
 ---
 
+## Phase 10: Layered parameters (RFC revision 21)
+
+**Goal**: operator-managed params from the dashboard API: global params seeded from the catalog, account layers that only add restrictions, assignments, history and version. The catalog keeps instance registration only.
+
+**Storage** (research D12): module state lives in its own tables, `module_instances`, `module_account_params` and `module_params_history`, on Postgres through a migration (plus the one-row `module_state_version` lock) and on the filesystem backend as one atomically replaced file, `<GUARDIAN_METADATA_PATH>/modules/module_state.json` (`GUARDIAN_MODULES_STATE` overrides the directory).
+
+- [X] T039 [US5] Add `recipient_denylist` and `deny_unknown_recipients` to `crates/guardian-module-sdk/src/basic_policy.rs`, reason code `recipient_blocked`, with tests
+- [X] T040 [US5] Implement the params store (global params with the seed rule, account layers, assignments, history, version, file persistence) in `crates/server/src/modules/params.rs`, with tests
+- [X] T041 [US5] Remove `account_params` and the `[[assignment]]` table from `crates/server/src/modules/catalog.rs`; mark params holding secret references as file-managed
+- [X] T042 [US5] Evaluate an `all` instance's account layer as a second pass in `crates/server/src/modules/pipeline.rs`; `layer` on `GuardianError::ModuleDenied` and in `meta`; validate stored global params at startup; tests for extension, no loosening and runtime global changes
+- [X] T043 [US5] Implement the operator operations (validation, history, audit kinds `modules.params.global`, `modules.params.account`, `modules.assignment`) in `crates/server/src/modules/admin.rs`, `GuardianError::ModuleNotFound`, permission `policies:write_global`, with tests
+- [X] T044 [US5] Add the routes in `crates/server/src/api/dashboard_modules.rs` and `crates/server/src/builder/handle.rs`, with a router test for permission gating, global writes, drift and history
+- [X] T045 [US5] Carry `layer` through `ModuleRefusal` in `crates/client` and `MultisigError::ModuleDenied`
+- [X] T046 [US5] Add the operator CLI `crates/server/examples/modules_admin.rs` (keygen, login, call)
+- [X] T048 [US5] Replace the single-file params store with the `ModuleStore` trait over the three tables in `crates/server/src/modules/store.rs` (filesystem: one file per table), make evaluation read the account's rows with one query and cache global params per replica by params version, and fail closed with a storage error when the tables are unreadable
+- [X] T049 [US5] Add the migration `crates/server/migrations/2026-10-15-000001_guardian_modules` and `PgModuleStore` in `crates/server/src/modules/postgres_store.rs` (each write and its history row in one transaction), wired through `CoordinationHandles`, with a Postgres test across two replicas
+- [X] T050 [US5] Runtime enable and disable: `operator_can_disable` in the catalog, `set_enabled` on both stores (recorded in the history so the version moves), the pipeline and startup reading the stored flag, `POST /dashboard/modules/{id}/enable` (`policies:write`, re-runs the startup checks) and `/disable` (`policies:write` or `modules:disable` through a new any-of authz mode; `GUARDIAN_MODULE_NOT_DISABLEABLE` when the catalog forbids it), audit kinds `modules.enable` and `modules.disable`, with tests on every layer
+- [X] T047 [US5] Walk the blocklist scenario against a running server with the CLI (quickstart section 4); a refused real payment is still to be shown from the demo
+
+## Phase 11: Review fixes (fleet review 2026-10-15)
+
+- [X] T051 Decode the projection and `raw_tx_summary` (Miden binary) from exactly the summary the Guardian signs: `NetworkClient::module_transaction` takes the bare summary, the proposal path passes `tx_summary`, the decoder refuses wrappers; `decode_transaction_summary` prefers a top-level `data` for the dashboard metadata
+- [X] T052 Move the params version to the one-row `module_state_version` lock in the migration and `crates/server/src/modules/postgres_store.rs`; read the previous assignment inside the write transaction; Postgres test for concurrent replacements
+- [X] T053 Check the effective params (stored global params, else the catalog seed) at startup and before enable, and seed new instances only after every instance passed its checks, in `crates/server/src/modules/pipeline.rs`, `registry.rs` and `admin.rs`
+- [X] T054 Resolve a request's modules once with one version read (`ModulePipeline::plan`, `Plan::run`) and use it in the three services
+- [X] T055 Record `catalog_hash` and `params_version` on the signed delta (`DeltaMetadata.modules`)
+- [X] T056 Report the runtime flag for assigned modules in the account view
+- [X] T057 Persist the filesystem module tables as one file, synced and renamed
+- [X] T058 Single-key accounts: a view without signers and `default_threshold` from the state, the signer and scheme from the registered auth configuration
+- [X] T059 TLS for remote modules: `grpc://` is TLS (system roots or `tls.ca_file`, optional client certificate), plain text only through `grpc+insecure://` to a loopback host, prod stage refuses plain text and requires `auth`
+- [X] T060 Add the four `GUARDIAN_MODULE_*` codes to `packages/guardian-client/src/error-codes.ts`
+
+## Phase 12: Replayable approvals
+
+- [X] T061 Module builds (`name version` from `describe`) in the startup log and in `GET /dashboard/modules`
+- [X] T062 Evaluation trace on the signed delta (`DeltaMetadata.modules`): `catalog_hash`, `params_version`, `failed_open`
+- [ ] T063 Replay command: rebuild a delta's request at its `params_version`, re-run the modules and diff against the trace; adds what it needs: configuration snapshots with module builds, the request hash (ordered proto maps), `accounting_time`, `proposer` (M2a)
+- [ ] T064 Decision log for denials and proposal-time evaluations, same trace shape (M2a)
+
+---
+
 ## Dependencies & Execution Order
 
 - **Setup (T001 to T003)** before everything.
