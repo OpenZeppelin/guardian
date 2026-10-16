@@ -37,7 +37,7 @@ One `[[module]]` entry of the catalog file ([contracts/catalog-config.md](./cont
 
 ### Tables
 
-Module state lives in three tables of its own, never in the account metadata row (research D12). The filesystem backend keeps one file per table under `<metadata path>/modules/`.
+Module state lives in three tables of its own, never in the account metadata row (research D12). The filesystem backend keeps all of them in one file, `<metadata path>/modules/module_state.json`, replaced atomically, so a write and its history land together.
 
 #### `module_instances`
 
@@ -45,7 +45,7 @@ Module state lives in three tables of its own, never in the account metadata row
 |---|---|
 | `module_id` | Primary key; a catalog instance id |
 | `enabled` | Seeded from the catalog on first sight; then changed only through the operator API |
-| `global_params` | JSON object; seeded from the catalog on first sight; replaced through `PUT /dashboard/modules/{id}/params` (`policies:write_global`); never `$secret` |
+| `global_params` | JSON object; seeded from the catalog on first sight; replaced through `PUT /dashboard/modules/{id}/params` (`policies:write_global`); never `$secret`: an instance whose catalog params hold secret references is file-managed, its row stores `{}` and evaluation reads the params from the catalog, so neither a reference nor a resolved secret is stored |
 | `seeded_params` | Catalog params at seeding, for drift reporting |
 | `updated_at`, `updated_by` | Last write |
 

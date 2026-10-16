@@ -5,7 +5,7 @@
 **Status**: Draft
 **Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), revision 19. The RFC holds the wire protocol, configuration format and code citations; this spec states what the feature must achieve and how that is verified. Where the two differ, the RFC is corrected first and this spec follows.
 **Input**: Issue #251 ("Modularization: middleware architecture and pluggable modules"), first consumer #182 (policy evaluation), later consumer #252 (x402 facilitator).
-**Planning note**: `plan.md` is a pre-prototype plan whose open questions (account view extraction effort, projection reuse, added latency, module author ergonomics, placement relative to PR #510) are prototype gates in `research.md`. `tasks.md` is deferred until the prototype on branch `251-modules-prototype` closes those gates and RFC revision 20 records the results.
+**Planning note**: `plan.md` records the pre-prototype plan and its prototype findings; the gates (account view extraction effort, projection reuse, added latency, module author ergonomics, placement relative to PR #510) and their results are in `research.md`. `tasks.md` holds the P0 prototype tasks and the follow-on phases generated since. The quickstart walk-through and an end-to-end run against a local node remain open.
 
 ## Context *(why this feature exists)*
 
