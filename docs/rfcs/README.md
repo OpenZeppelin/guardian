@@ -40,7 +40,7 @@ is opened for review and never reused or renumbered.
 
 **Claim tags.** Where an RFC asserts something about upstream or our own code,
 tag how far it was verified — **[RAN]** (verified by executing code), **[READ]**
-(verified against dependency source), **[INFERRED]** (reasoned, not directly
+(verified by reading source, ours or a dependency's), **[INFERRED]** (reasoned, not directly
 verified) — and cite `file:line` so a reviewer can check it independently. Pin
 the dependency versions the claims are made against; upstream moves.
 
