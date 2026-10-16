@@ -42,6 +42,15 @@ auth = { token_secret = "guardian/modules/risk-vendor-token" }
 tls = { ca_file = "risk-ca.pem" }     # optional; client_cert / client_key secret references add mTLS
 ```
 
+## Disclosure (RFC 0002 section 2.7)
+
+| Field | Values | Effect |
+|---|---|---|
+| `disclosure` | `none` (default), `summary`, `params` | What the policy summary shows the account's cosigners |
+| `description` | Text, at most 500 characters | Required unless `disclosure = "none"` |
+| `client_reason` | `full` (default), `generic` | `generic`: denials carry only `reason_code = "policy_denied"` |
+| `dry_run` | `true` (default), `false` | Whether the dry-run check may call the instance |
+
 ## Remote transport
 
 | Endpoint | Transport | Allowed |

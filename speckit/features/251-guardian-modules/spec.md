@@ -232,6 +232,9 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-014** [M2a]: At startup the Guardian MUST verify that each instance supports its configured hooks, speaks a supported protocol version, and accepts its parameters. In production mode a failure of an enabled instance MUST stop startup; a disabled instance that fails is logged and stays disabled, so an unavailable module can be staged without blocking a deploy, and enabling it MUST run the same checks first and refuse on failure.
 - **FR-015** [M2a]: Secret references MUST be allowed only in the configuration of in-process instances and MUST be rejected in remote-instance parameters, in per-account exceptions and through the operator interface. The Guardian resolves them when it creates the instance and supplies the resolved values to the in-process module at creation. Resolved values MUST never appear in any request sent to a module; an in-process module receives its parameters with the references unresolved.
 - **FR-016** [M2a]: Each replica MUST expose a fingerprint of the configuration it loaded, and every signed transaction MUST record the fingerprint that approved it.
+- **FR-017** [M2a]: The Guardian and each module MUST exchange their protocol versions and capabilities when the module is described. The Guardian MUST accept its current protocol version and, once a newer one exists, the previous one for one release, warning about the older one; it MUST refuse an enabled instance outside that range or one that requires a capability the Guardian lacks. Within a protocol version, changes MUST be additive only.
+- **FR-018** [M2a]: A decision MUST state its effect explicitly, with decisions that predate the field read from their allow flag; an effect the Guardian does not recognise MUST count as a module failure, never as an allow.
+- **FR-019** [M2a]: A module MUST be able to return its parameters in its current shape when validating them; the Guardian MUST store that shape for operator writes, and at startup and before enabling MUST store migrated global parameters with a history entry attributed to the module.
 
 ### Per-account administration
 
@@ -270,6 +273,10 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-052** [M2a]: Each replica MUST keep a circuit breaker per instance that stops calling a failing module and applies its failure mode immediately, and a periodic health check that reports availability and detects protocol changes.
 - **FR-053** [M2a]: Evaluation MUST be sequential: a module is called only after every earlier module either allowed or failed with a failure mode that lets the transaction proceed. A denial, or a failure of a fail-closed module, stops evaluation.
 - **FR-054** [M2a]: Module evaluation MUST be free of side effects, since the same transaction is evaluated at creation and at approval and clients retry; module state MUST change only from notifications (M2b). The conformance suite MUST evaluate the same request repeatedly and verify the module's state is unchanged.
+- **FR-055** [M2a]: Each instance MUST declare what an account's cosigners may learn about it (nothing, a description, or the description and its effective params), defaulting to nothing; disclosing anything MUST require an operator-written description.
+- **FR-056** [M2a]: An instance MUST be able to deny generically: the client learns that a policy refused and nothing about which module, layer or reason, while the operator's log keeps the full decision.
+- **FR-057** [M2a]: A module MAY return a message for the requester; the Guardian MUST forward it only for instances that deny with full reasons, as plain text of at most 256 characters.
+- **FR-058** [M2a]: The account's cosigners MUST be able to list the policies that apply to the account, filtered by disclosure, and to check a proposal without storing it or taking a slot; the check MUST be rate limited per account and signer, logged, skip instances that opt out (reported as an incomplete check without naming them), and be advisory only.
 
 ### Stateful limits
 

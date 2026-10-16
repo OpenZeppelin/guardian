@@ -179,6 +179,22 @@
 - [X] T067 Policy modules guide `docs/guides/policy-modules/` (built-in, remote, custom over gRPC and in process) with catalog templates loaded by a test; `CONFIGURATION.md` and `DASHBOARD.md` reference entries
 - [ ] T068 `ServerBuilder::from_env` so a custom build does not copy `main.rs` (M2c)
 
+## Phase 14: Protocol evolution (RFC revision 22)
+
+- [X] T069 Protocol: `DescribeRequest` with the Guardian's protocol range and capabilities, `ModuleInfo.required_capabilities`, `Decision.effect`, `ParamsVerdict.normalized_params` in `crates/guardian-module-sdk/proto/guardian_module_v1.proto`; `Module::describe` takes the request; `capability` constants and `ParamsVerdict::normalized` in the SDK
+- [X] T070 SDK source compatibility: `ModuleInstanceConfig`, `ModuleTls`, `ClientIdentity` and `ModuleError` `#[non_exhaustive]`, with constructors
+- [X] T071 Guardian: supported protocol range (`MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`, warning below current), required-capability check, `Decision.effect` with unknown effects as failures, normalized params stored on operator writes and migrated at startup and before enable with a history entry by `module:<name> <version>`, with tests on every path
+- [ ] T072 Deprecation window when protocol version 2 exists: build the older request shape for previous-version modules and export `guardian_module_protocol_deprecated{module}` (M2a once a second version exists)
+- [ ] T073 Migrate account layers and assignments that a module normalizes (today they migrate when next written) (M2a)
+
+## Phase 15: Policy discovery and disclosure (RFC revision 22)
+
+- [X] T074 Catalog fields `disclosure`, `description` (required unless `none`, at most 500 characters), `client_reason` and `dry_run` in `crates/server/src/modules/catalog.rs`, shown in the operator view
+- [X] T075 Generic denials (`GuardianError::ModuleDeniedGeneric`, `meta = { reason_code: "policy_denied" }`) and `Decision.client_message` (cleaned, at most 256 characters, forwarded only under full reasons) in the server; `module` and `layer` optional and `client_message` carried in `guardian-client` and `miden-multisig-client`
+- [ ] T076 Policy summary `GET /accounts/{account_id}/policies` and `GetPolicies` (contracts/policy-discovery.md)
+- [ ] T077 Dry-run check `POST /proposals/check` and `CheckProposal`, with the per-account and per-signer rate limit and logging
+- [ ] T078 `getPolicies` and `checkProposal` in both multisig SDKs; TypeScript parity for generic denials and `client_message`
+
 ---
 
 ## Dependencies & Execution Order

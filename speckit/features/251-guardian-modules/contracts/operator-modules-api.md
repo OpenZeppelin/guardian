@@ -43,6 +43,10 @@ ModuleInstanceView {
   params_drift: bool,           // catalog params differ from the stored global params
   file_managed_params: bool,    // params hold secret references, so only the file changes them
   build?: string,               // "name version" from describe at startup; absent if the checks failed
+  disclosure: "none" | "summary" | "params",
+  description?: string,
+  client_reason: "full" | "generic",
+  dry_run: bool,
   circuit: "closed" | "open" | "half_open"   // on the replica that answered (M2a, not in the prototype)
 }
 ModuleCatalogView     { catalog_hash: string, params_version: number, modules: ModuleInstanceView[] }
