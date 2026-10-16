@@ -16,7 +16,7 @@ PolicyEntry {
   module_id: string,
   hooks: string[],
   description: string,          // disclosure = summary or params
-  params?: object,              // disclosure = params: the effective global params
+  params?: object,              // disclosure = params: the global params for scope = all, the account's own params for an assigned instance
   account_layer?: object        // disclosure = params, scope = all: this account's layer, when set
 }
 PoliciesView  { account_id: string, policies: PolicyEntry[] }   // evaluation order; instances with disclosure = none are absent

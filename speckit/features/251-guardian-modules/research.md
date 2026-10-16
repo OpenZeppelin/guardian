@@ -1,10 +1,10 @@
 # Research: Guardian Modules
 
-**Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md) revision 19
+**Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19, findings applied through revision 22
 
-This plan is written before the prototype on `251-modules-prototype`. Decisions the RFC settled through nineteen revisions are recorded as decisions. Questions only running code can answer are recorded as **open items with a prototype gate**: each states what the prototype must show, the default the plan assumes until then, and what changes if the default fails. `tasks.md` is generated only after every gate is closed or explicitly accepted.
+This research was written before the prototype on `251-modules-prototype` and now records what it found. Decisions the RFC settled through nineteen revisions are recorded as decisions. Questions only running code could answer were recorded as gates, each stating what the prototype had to show, the default assumed until then, and what changes if the default fails; their results are in the findings sections below. `tasks.md` holds the P0 prototype tasks and the follow-on phases. Still open: the quickstart walk-through and an end-to-end run against a local node.
 
-## Prototype gates (open)
+## Prototype gates (results in the findings below)
 
 ### G1. Account view extraction effort
 

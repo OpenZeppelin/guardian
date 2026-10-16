@@ -59,7 +59,7 @@ speckit/features/251-guardian-modules/
 │   ├── operator-modules-api.md
 │   └── client-errors.md
 ├── checklists/requirements.md
-└── tasks.md                        # not yet: after the prototype gates
+└── tasks.md                        # P0 prototype tasks and the follow-on phases
 ```
 
 ### Source Code (repository root)

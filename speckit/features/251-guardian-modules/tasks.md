@@ -3,7 +3,7 @@
 **Input**: Design documents from `speckit/features/251-guardian-modules/`
 **Prerequisites**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md), [data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md)
 
-**Scope**: phase P0 of the plan only. These tasks build enough of M2a to close the prototype gates G1 to G5 in [research.md](./research.md) and to try the feature end to end. M2a, M2b and M2c tasks are generated after the gates close and RFC revision 20 records the results.
+**Scope**: phases 1 to 9 are P0 of the plan: enough of M2a to evaluate the prototype gates G1 to G5 in [research.md](./research.md) and to try the feature end to end. Later phases record the follow-on work done on the prototype since (layered params, storage, review fixes, protocol evolution, disclosure). The remaining M2a, M2b and M2c tasks are generated once the RFC is accepted.
 
 **Branch**: the code lives on `251-modules-prototype` (draft PR #554, based on the RFC branch); `251-guardian-modules-rfc` (PR #544) stays doc-only.
 

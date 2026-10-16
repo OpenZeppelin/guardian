@@ -41,10 +41,22 @@ With `examples/demo` against the local server:
 ## 3. Remote module and failure modes (M2a)
 
 ```bash
-cargo run -p guardian-module-sdk --example basic-policy-serve -- --listen 127.0.0.1:7443
+openssl rand -hex 32 > .guardian/caps.token
+cargo run -p guardian-module-sdk --example basic-policy-serve -- \
+  --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
-Point a second instance of kind `grpc` at it with `on_error = "deny"`, repeat step 2, then stop the module: pushes return `GUARDIAN_MODULE_UNAVAILABLE`; after five failures they return without waiting for the timeout; `guardian_module_up` drops to 0. Switch to `on_error = "allow"`: pushes proceed and `guardian_module_fail_open_total` increases. (US4, US6)
+The harness speaks plain text, so the catalog entry uses the loopback scheme and the same token (relative to the catalog file):
+
+```toml
+[[module]]
+id = "caps-remote"
+kind = "grpc"
+endpoint = "grpc+insecure://127.0.0.1:7443"
+auth = { token_file = "caps.token" }
+```
+
+Point this second instance of kind `grpc` at it with `on_error = "deny"`, repeat step 2, then stop the module: pushes return `GUARDIAN_MODULE_UNAVAILABLE`; after five failures they return without waiting for the timeout; `guardian_module_up` drops to 0. Switch to `on_error = "allow"`: pushes proceed and `guardian_module_fail_open_total` increases. (US4, US6)
 
 ## 4. Global and per-account rules from the operator API (prototype)
 
