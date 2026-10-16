@@ -24,6 +24,10 @@ One `[[module]]` entry of the catalog file ([contracts/catalog-config.md](./cont
 | `require_fresh_state_ms` | Optional (M2b) |
 | `enabled` | Seed value, read only the first time the id is seen |
 | `operator_can_disable` | Default `false` |
+| `disclosure` | `none` (default), `summary` or `params` (RFC 0002 section 2.7) |
+| `description` | Required unless `disclosure = "none"`; at most 500 characters |
+| `client_reason` | `full` (default) or `generic` |
+| `dry_run` | Default `true` |
 
 **Catalog**: the ordered list of instances plus its `catalog_hash` (hash of the canonical file content), exported per replica and recorded on each signed delta.
 

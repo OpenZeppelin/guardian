@@ -95,10 +95,24 @@ This plan is written before the prototype on `251-modules-prototype`. Decisions 
 - **Decision**: the authenticated requester is stored on the durable execution reservation when an attempt is created, kept on repeated requests for an active attempt, and carried into `acknowledge_delta` and the stored delta.
 - **Rationale**: spec FR-033; restart safety.
 
+### D14. Policy discovery and disclosure (RFC revision 22)
+
+- **Decision**: per-instance `disclosure` (default `none`), `description`, `client_reason` (`full` or `generic`) and `dry_run`; a policy summary and an advisory dry-run check for the account's cosigners, rate limited and logged; generic denials that name nothing; `Decision.client_message` forwarded only under full reasons, cleaned to plain text of at most 256 characters.
+- **Rationale**: users should learn the rules before trying, but some rules must stay internal: telling a user that a recipient is sanctioned, or that their account is restricted, can itself be prohibited (tipping off), and disclosed thresholds invite structuring and probing. Disclosure therefore defaults to nothing and is decided per instance, and it never changes what the Guardian signs.
+- **Alternatives**: disclosing every rule (leaks compliance data and model thresholds); no discovery at all (users find rules by trying, and successful tries take proposal slots); module-written descriptions (the operator, not a vendor, decides what customers see).
+- **Prototype**: the catalog fields, generic denials and `client_message` (server and both Rust clients, which now treat `module` and `layer` as optional). The summary and check routes and the SDK methods are not built.
+
+### D13. Protocol evolution (RFC revision 22)
+
+- **Decision**: `Describe` carries both sides (the Guardian's protocol range and capabilities, the module's version, hooks and required capabilities); the Guardian accepts its current protocol version and, once one exists, the previous one for one release; `Decision.effect` with unknown effects treated as module failures; `ParamsVerdict.normalized_params` so modules migrate their own params, stored with a history entry by `module:<name> <version>`; additive-only changes within a protocol version; SDK-owned types `#[non_exhaustive]` with constructors.
+- **Rationale**: remote modules upgrade on their own schedule, so an exact version match would turn every Guardian release into a coordinated outage; negotiation must exist before version 1 freezes, since adding it later would itself need a new version. An explicit effect leaves room for later outcomes without a new version, and failing closed on an unknown effect keeps a newer module from loosening policy on an older Guardian. Params belong to the module, so the module, not the Guardian, migrates them, and the history records it.
+- **Alternatives**: exact version match (lockstep upgrades); a params schema in `Describe` for the dashboard (left out until something consumes it); migrating every account layer and assignment at startup (a scan of all accounts; they migrate when next written, and modules keep accepting their previous shapes).
+- **Prototype**: all of the above except the deprecation metric and building older request shapes, which need a second protocol version to exist.
+
 ### D12. Module state in its own tables
 
-- **Decision**: three tables, `module_instances`, `module_account_params` (layers and assignments, by `kind`) and `module_params_history`, on both backends (files per table on the filesystem backend). Instance definitions stay in the catalog file.
-- **Rationale**: `configure_account` rewrites the account metadata row in full and any cosigner can call it, so policy stored there would need a carry-forward on every rewrite; separate rows keep cosigner and operator writes, their compare-and-set updates and audit trails apart; metadata is read on every request, module state only when a module is called; cross-account queries need an index on the module id; history is naturally an append-only table whose sequence is the params version.
+- **Decision**: three tables, `module_instances`, `module_account_params` (layers and assignments, by `kind`) and `module_params_history`, plus a one-row `module_state_version` lock on Postgres; on the filesystem backend all of it is one file replaced atomically. Instance definitions stay in the catalog file.
+- **Rationale**: `configure_account` rewrites the account metadata row in full and any cosigner can call it, so policy stored there would need a carry-forward on every rewrite; separate rows keep cosigner and operator writes, their compare-and-set updates and audit trails apart; metadata is read on every request, module state only when a module is called; cross-account queries need an index on the module id; history is naturally an append-only table. The params version comes from the lock row, not a sequence, so it moves in commit order (fleet review F-001).
 - **Alternatives**: module config as a JSON field in account metadata (rejected for the reasons above); one table per entity (instance flags, layers, assignments separately; merged because layers and assignments share key, shape and read path).
 
 ### D11. Layered parameters (RFC revision 21)
