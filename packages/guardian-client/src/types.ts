@@ -329,6 +329,29 @@ export interface DeltaProposalResponse {
   commitment: string;
 }
 
+/**
+ * The answer of a proposal check that passed: the Guardian's policy modules
+ * would let the proposal be created. A refusal is thrown as the same error
+ * creation returns.
+ */
+export interface CheckProposalResult {
+  allowed: true;
+  /** False when a module that opts out of checks was skipped. */
+  complete: boolean;
+}
+
+/** A policy the Guardian applies to the account, as far as its operator discloses it. */
+export interface Policy {
+  moduleId: string;
+  /** Where it runs, for example `before_proposal_created`. */
+  hooks: string[];
+  description: string;
+  /** The rule's parameters, where disclosed. */
+  params?: Record<string, unknown>;
+  /** This account's own stricter layer on the rule, where disclosed. */
+  accountLayer?: Record<string, unknown>;
+}
+
 export interface ProposalsResponse {
   proposals: DeltaObject[];
 }

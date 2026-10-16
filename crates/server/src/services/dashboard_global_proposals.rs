@@ -280,6 +280,7 @@ mod tests {
 
         AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -324,6 +325,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         let state = AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

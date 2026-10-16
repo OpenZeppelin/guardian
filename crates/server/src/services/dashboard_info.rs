@@ -335,6 +335,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -405,6 +406,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         let state = AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(
                 MockMetadataStore::new().with_list(Err("metadata store unreachable".into())),

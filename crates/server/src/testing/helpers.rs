@@ -333,6 +333,7 @@ pub async fn create_test_app_state() -> AppState {
 
     AppState {
         miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+        modules: None,
         storage: storage_backend,
         metadata: Arc::new(metadata),
         network_client: Arc::new(mock_client),
@@ -830,6 +831,7 @@ pub fn create_test_app_state_with_mocks(
 
     AppState {
         miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+        modules: None,
         storage: storage_backend,
         metadata,
         network_client,

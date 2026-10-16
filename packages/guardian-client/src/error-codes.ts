@@ -2,9 +2,10 @@
  * Typed vocabulary of Guardian's stable, machine-readable error codes
  * (issue #318). Mirrors `GuardianError::code()` in
  * `crates/server/src/error.rs` — a drift-guard test asserts the two stay in
- * sync. The four codes the server emits in SCREAMING_SNAKE wire form
+ * sync. The codes the server emits in SCREAMING_SNAKE wire form
  * (`GUARDIAN_ACCOUNT_PAUSED`, `GUARDIAN_ACCOUNT_RELEASED`,
- * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`, `GUARDIAN_CANDIDATE_LANDED`)
+ * `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`, `GUARDIAN_CANDIDATE_LANDED`
+ * and the four `GUARDIAN_MODULE_*` codes)
  * are normalized to snake_case here so the union has one consistent shape; use
  * {@link normalizeGuardianErrorCode} at the wire boundary.
  */
@@ -37,6 +38,10 @@ export const GUARDIAN_ERROR_CODES = [
   'invalid_proposal_signature',
   'invalid_status_filter',
   'invalid_timestamp',
+  'module_denied',
+  'module_not_disableable',
+  'module_not_found',
+  'module_unavailable',
   'network_error',
   'pending_proposals_limit',
   'proposal_already_signed',
@@ -75,6 +80,10 @@ const WIRE_ALIASES: Readonly<Record<string, GuardianErrorCode>> = {
   GUARDIAN_ACCOUNT_RELEASED: 'account_released',
   GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION: 'insufficient_operator_permission',
   GUARDIAN_CANDIDATE_LANDED: 'candidate_landed',
+  GUARDIAN_MODULE_DENIED: 'module_denied',
+  GUARDIAN_MODULE_UNAVAILABLE: 'module_unavailable',
+  GUARDIAN_MODULE_NOT_FOUND: 'module_not_found',
+  GUARDIAN_MODULE_NOT_DISABLEABLE: 'module_not_disableable',
 };
 
 /** Type guard narrowing an arbitrary string to {@link GuardianErrorCode}. */

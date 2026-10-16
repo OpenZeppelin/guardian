@@ -17,6 +17,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         })
         .unwrap_or_else(|| "unknown".to_string());
+    // Declaring any rerun-if-changed below replaces Cargo's default, so the proto must be
+    // listed too or edits to it compile against stale generated code.
+    println!("cargo:rerun-if-changed=proto/guardian.proto");
     println!("cargo:rustc-env=GUARDIAN_GIT_SHA={git_sha}");
     println!("cargo:rerun-if-env-changed=GUARDIAN_GIT_SHA");
     println!("cargo:rerun-if-changed=../../.git/HEAD");

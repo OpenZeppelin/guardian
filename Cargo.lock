@@ -3471,6 +3471,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "guardian-module-sdk"
+version = "0.18.1"
+dependencies = [
+ "async-trait",
+ "prost",
+ "prost-types",
+ "secrecy",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "tonic",
+ "tonic-prost",
+ "tonic-prost-build",
+]
+
+[[package]]
 name = "guardian-prod-benchmarks"
 version = "0.1.0"
 dependencies = [
@@ -3560,6 +3577,7 @@ dependencies = [
  "dotenvy",
  "futures",
  "futures-util",
+ "guardian-module-sdk",
  "guardian-shared",
  "hex",
  "hmac 0.12.1",
@@ -3582,6 +3600,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "rcgen",
+ "reqwest 0.12.28",
  "rustls 0.23.45",
  "rustls-pemfile",
  "secrecy",
@@ -3596,6 +3615,7 @@ dependencies = [
  "tokio-postgres",
  "tokio-postgres-rustls",
  "tokio-util",
+ "toml 0.8.23",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

@@ -1,0 +1,15 @@
+# Custom module: note-policy, written against guardian-module-sdk and served over gRPC.
+# Copy to .guardian/custom.toml, put the bearer token in .guardian/note-policy.token,
+# and start the module before the Guardian (see custom.md).
+
+[[module]]
+id = "note-policy"
+kind = "grpc"
+endpoint = "grpc+insecure://127.0.0.1:7444"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 200
+on_error = "deny"
+operator_can_disable = true
+auth = { token_file = "note-policy.token" }
+params = { max_payment_notes = 1, deny_private_notes = true }

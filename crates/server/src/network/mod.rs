@@ -249,6 +249,14 @@ pub struct AuthBinding {
     pub guardian: Option<String>,
 }
 
+/// What a policy module receives about one transaction: the projection and the summary's
+/// binary encoding, both decoded from the same bytes the Guardian signs.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModuleTransaction {
+    pub projection: guardian_module_sdk::MidenTransaction,
+    pub raw_tx_summary: Vec<u8>,
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Commitment (hex) and nonce of the account encoded in `state_json`,
@@ -405,6 +413,26 @@ pub trait NetworkClient: Send + Sync {
     ) -> Result<Option<AuthBinding>, String> {
         let _ = state_json;
         Ok(None)
+    }
+
+    /// The account's signers and thresholds as policy modules see them. Errors on auth state
+    /// this network cannot interpret; an empty view is never returned.
+    fn module_account_view(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<guardian_module_sdk::AccountView, String> {
+        let _ = state_json;
+        Err("policy modules are not supported on this network".into())
+    }
+
+    /// The decoded effects of a transaction as policy modules see them. `tx_summary` is the
+    /// bare summary the Guardian verifies and signs, never a proposal wrapper.
+    fn module_transaction(
+        &self,
+        tx_summary: &serde_json::Value,
+    ) -> Result<ModuleTransaction, String> {
+        let _ = tx_summary;
+        Err("policy modules are not supported on this network".into())
     }
 
     /// Determine if account auth should be updated given the state

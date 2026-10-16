@@ -5,6 +5,7 @@ import {
 import type {
   AbandonCandidateResponse,
   AbandonStatus,
+  CheckProposalResult,
   ConfigureRequest,
   ConfigureResponse,
   CreateSessionRequest,
@@ -16,6 +17,7 @@ import type {
   HistoryOptions,
   HistoryPage,
   LookupResponse,
+  Policy,
   PubkeyResponse,
   PushDeltaResponse,
   SessionEndReason,
@@ -32,10 +34,12 @@ import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
   ServerCanonicalNonceResponse,
+  ServerCheckProposalResponse,
   ServerDeltaObject,
   ServerDeltaProposalResponse,
   ServerHistoryPage,
   ServerLookupResponse,
+  ServerPoliciesResponse,
   ServerProposalsResponse,
   ServerPubkeyResponse,
   ServerStateObject,
@@ -54,6 +58,7 @@ import {
   fromServerDeltaObject,
   fromServerHistoryPage,
   fromServerLookupResponse,
+  fromServerPolicy,
   fromServerStateObject,
   toServerConfigureRequest,
   toServerCreateSessionRequest,
@@ -525,6 +530,40 @@ export class GuardianHttpClient {
       delta: fromServerDeltaObject(server.delta),
       commitment: server.commitment,
     };
+  }
+
+  /**
+   * Dry run of {@link pushDeltaProposal}: the same checks and proposal-creation
+   * policy modules, without storing a proposal or taking a slot
+   * (`POST /delta/proposal/check`). A refusal throws the same
+   * `GUARDIAN_MODULE_DENIED` / `GUARDIAN_MODULE_UNAVAILABLE` error creation
+   * would. Advisory: approval still decides. Rate limited per account and signer.
+   */
+  async checkDeltaProposal(request: DeltaProposalRequest): Promise<CheckProposalResult> {
+    const serverRequest = toServerDeltaProposalRequest(request);
+    const response = await this.fetchAuthenticated('/delta/proposal/check', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, request.accountId, serverRequest, 'session');
+    const server = (await response.json()) as ServerCheckProposalResponse;
+    if (server.allowed !== true) {
+      throw new Error('Invalid proposal check response: a passing check must be allowed');
+    }
+    return { allowed: true, complete: server.complete };
+  }
+
+  /**
+   * The policies the Guardian applies to the account, as far as its operator
+   * discloses them, in evaluation order (`GET /policies`).
+   */
+  async getPolicies(accountId: string): Promise<Policy[]> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/policies?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery, 'session');
+    const server = (await response.json()) as ServerPoliciesResponse;
+    return server.policies.map(fromServerPolicy);
   }
 
   /**

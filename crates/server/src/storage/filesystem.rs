@@ -700,29 +700,16 @@ impl StorageBackend for FilesystemService {
         proposal: &DeltaObject,
     ) -> Result<(), String> {
         let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        let temp_path = write_proposal_temp(&path, proposal).await?;
 
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
+        // The first creator wins, as on Postgres: linking fails when the proposal exists.
+        let linked = fs::hard_link(&temp_path, &path).await;
+        let _ = fs::remove_file(&temp_path).await;
+        match linked {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(format!("Failed to finalize proposal file: {e}")),
         }
-
-        // Write to temp file first
-        let temp_path = path.with_extension("tmp");
-        let json = serde_json::to_string_pretty(&proposal)
-            .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
-
-        fs::write(&temp_path, json)
-            .await
-            .map_err(|e| format!("Failed to write proposal file: {e}"))?;
-
-        // Atomic rename
-        fs::rename(&temp_path, &path)
-            .await
-            .map_err(|e| format!("Failed to finalize proposal file: {e}"))?;
-
-        Ok(())
     }
 
     async fn pull_delta_proposal(
@@ -764,8 +751,17 @@ impl StorageBackend for FilesystemService {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        // For filesystem, update is the same as submit
-        self.submit_delta_proposal(commitment, proposal).await
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        if !fs::try_exists(&path)
+            .await
+            .map_err(|e| format!("Failed to check proposal file: {e}"))?
+        {
+            return Err(format!("Proposal {commitment} not found"));
+        }
+        let temp_path = write_proposal_temp(&path, proposal).await?;
+        fs::rename(&temp_path, &path)
+            .await
+            .map_err(|e| format!("Failed to finalize proposal file: {e}"))
     }
 
     async fn delete_delta_proposal(
@@ -1453,6 +1449,24 @@ fn parse_status_timestamp(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+async fn write_proposal_temp(
+    path: &std::path::Path,
+    proposal: &DeltaObject,
+) -> Result<std::path::PathBuf, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
+    }
+    let temp_path = path.with_extension(format!("{:016x}.tmp", rand::random::<u64>()));
+    let json = serde_json::to_string_pretty(proposal)
+        .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
+    fs::write(&temp_path, json)
+        .await
+        .map_err(|e| format!("Failed to write proposal file: {e}"))?;
+    Ok(temp_path)
 }
 
 #[cfg(test)]
@@ -2766,6 +2780,106 @@ mod tests {
         assert!(result.is_err(), "Pull should fail after delete");
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    fn pending_from(proposer: &str, signers: &[&str]) -> DeltaObject {
+        let mut proposal = create_test_delta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1);
+        proposal.status = DeltaStatus::Pending {
+            timestamp: "2026-10-13T00:00:00Z".into(),
+            proposer_id: proposer.into(),
+            cosigner_sigs: signers
+                .iter()
+                .map(|signer| crate::delta_object::CosignerSignature {
+                    signature: guardian_shared::ProposalSignature::from_scheme(
+                        guardian_shared::SignatureScheme::Falcon,
+                        "0xsig".into(),
+                        None,
+                    ),
+                    timestamp: "2026-10-13T00:00:00Z".into(),
+                    signer_id: (*signer).into(),
+                })
+                .collect(),
+        };
+        proposal
+    }
+
+    fn proposer_of(proposal: &DeltaObject) -> (&str, usize) {
+        match &proposal.status {
+            DeltaStatus::Pending {
+                proposer_id,
+                cosigner_sigs,
+                ..
+            } => (proposer_id, cosigner_sigs.len()),
+            other => panic!("expected a pending proposal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn duplicate_proposal_creation_keeps_the_first_proposer() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+
+        storage
+            .submit_delta_proposal("0xabc", &pending_from("0xfirst", &[]))
+            .await
+            .unwrap();
+        storage
+            .submit_delta_proposal("0xabc", &pending_from("0xsecond", &[]))
+            .await
+            .unwrap();
+
+        let stored = storage
+            .pull_delta_proposal(account_id, "0xabc")
+            .await
+            .unwrap();
+        assert_eq!(proposer_of(&stored).0, "0xfirst");
+        assert_eq!(
+            storage
+                .pull_all_delta_proposals(account_id)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn signature_update_after_creation_is_kept_on_reload() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        {
+            let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+            storage
+                .submit_delta_proposal("0xabc", &pending_from("0xfirst", &[]))
+                .await
+                .unwrap();
+            storage
+                .update_delta_proposal("0xabc", &pending_from("0xfirst", &["0xcosigner"]))
+                .await
+                .unwrap();
+        }
+        let reloaded = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        let stored = reloaded
+            .pull_delta_proposal(account_id, "0xabc")
+            .await
+            .unwrap();
+        assert_eq!(proposer_of(&stored), ("0xfirst", 1));
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn updating_a_missing_proposal_fails() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        assert!(
+            storage
+                .update_delta_proposal("0xmissing", &pending_from("0xfirst", &[]))
+                .await
+                .is_err()
+        );
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

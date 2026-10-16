@@ -1,16 +1,17 @@
 use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
-    AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
-    ConfigureResponse, CreateSessionRequest, CreateSessionResponse,
-    DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
-    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
-    GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
-    GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
-    GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
-    PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest, RevokeAllSessionsResponse,
-    RevokeSessionRequest, RevokeSessionResponse, SignDeltaProposalRequest,
-    SignDeltaProposalResponse,
+    AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState,
+    CheckDeltaProposalRequest, CheckDeltaProposalResponse, ConfigureRequest, ConfigureResponse,
+    CreateSessionRequest, CreateSessionResponse, DeltaObject as ProtoDeltaObject,
+    GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest,
+    GetCanonicalNonceResponse, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalRequest, GetDeltaProposalResponse, GetDeltaProposalsRequest,
+    GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse, GetDeltaSinceRequest,
+    GetDeltaSinceResponse, GetPoliciesRequest, GetPoliciesResponse, GetPubkeyRequest,
+    GetStateRequest, GetStateResponse, PolicyEntry, PushDeltaProposalRequest,
+    PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest,
+    RevokeAllSessionsResponse, RevokeSessionRequest, RevokeSessionResponse,
+    SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
 use guardian_shared::FromJson;
 use miden_protocol::account::Account;
@@ -579,6 +580,54 @@ impl Guardian for MockGuardianService {
             });
 
         response.map(Response::new)
+    }
+
+    async fn check_delta_proposal(
+        &self,
+        request: Request<CheckDeltaProposalRequest>,
+    ) -> Result<Response<CheckDeltaProposalResponse>, Status> {
+        self.record_call("check_delta_proposal");
+        if request.get_ref().nonce == 0 {
+            return Err(Status::with_details(
+                tonic::Code::PermissionDenied,
+                "refused",
+                serde_json::json!({
+                    "code": "GUARDIAN_MODULE_DENIED",
+                    "message": "This Guardian's policy doesn't allow this request.",
+                    "meta": { "retryable": false, "reason_code": "policy_denied" }
+                })
+                .to_string()
+                .into_bytes()
+                .into(),
+            ));
+        }
+        Ok(Response::new(CheckDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            allowed: true,
+            complete: false,
+            error_code: String::new(),
+        }))
+    }
+
+    async fn get_policies(
+        &self,
+        request: Request<GetPoliciesRequest>,
+    ) -> Result<Response<GetPoliciesResponse>, Status> {
+        self.record_call("get_policies");
+        Ok(Response::new(GetPoliciesResponse {
+            success: true,
+            message: String::new(),
+            account_id: request.into_inner().account_id,
+            policies: vec![PolicyEntry {
+                module_id: "caps".into(),
+                hooks: vec!["before_transaction_approved".into()],
+                description: "At most 5 per transaction".into(),
+                params: Some(r#"{"max_amount_per_tx":{"0xaa":"5"}}"#.into()),
+                account_layer: None,
+            }],
+            error_code: String::new(),
+        }))
     }
 
     async fn get_canonical_nonce(

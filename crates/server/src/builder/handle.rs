@@ -25,10 +25,10 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, create_session, get_canonical_nonce, get_delta,
-    get_delta_history, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
-    get_state, lookup, push_delta, push_delta_proposal, revoke_all_sessions, revoke_session,
-    sign_delta_proposal, status, status_root,
+    abandon_candidate, check_delta_proposal, configure, create_session, get_canonical_nonce,
+    get_delta, get_delta_history, get_delta_proposal, get_delta_proposals, get_delta_since,
+    get_policies, get_pubkey, get_state, lookup, push_delta, push_delta_proposal,
+    revoke_all_sessions, revoke_session, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -366,6 +366,70 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         dashboard_routes.merge(pause_router)
     };
 
+    // Policy modules: reads under `dashboard:read`, per-account writes under `policies:write`,
+    // global params under their own `policies:write_global`.
+    let dashboard_routes = {
+        use crate::api::dashboard_modules as modules;
+        use axum::routing::{delete, put};
+        let read_authz = AuthzState::new(state.clone(), &[Permission::DashboardRead]);
+        let write_authz = AuthzState::new(state.clone(), &[Permission::PoliciesWrite]);
+        let global_authz = AuthzState::new(state.clone(), &[Permission::PoliciesWriteGlobal]);
+        let read = Router::new()
+            .route("/modules", get(modules::list_modules))
+            .route(
+                "/modules/{module_id}/params/history",
+                get(modules::params_history),
+            )
+            .route(
+                "/accounts/{account_id}/modules",
+                get(modules::account_modules),
+            )
+            .route_layer(from_fn_with_state(read_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let write = Router::new()
+            .route(
+                "/accounts/{account_id}/modules",
+                put(modules::set_assignment),
+            )
+            .route(
+                "/accounts/{account_id}/modules/{module_id}/params",
+                put(modules::set_account_layer).merge(delete(modules::remove_account_layer)),
+            )
+            .route_layer(from_fn_with_state(write_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let disable_authz = AuthzState::any_of(
+            state.clone(),
+            &[Permission::PoliciesWrite, Permission::ModulesDisable],
+        );
+        let enable = Router::new()
+            .route("/modules/{module_id}/enable", post(modules::enable_module))
+            .route_layer(from_fn_with_state(
+                AuthzState::new(state.clone(), &[Permission::PoliciesWrite]),
+                enforce_authz,
+            ))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let disable = Router::new()
+            .route(
+                "/modules/{module_id}/disable",
+                post(modules::disable_module),
+            )
+            .route_layer(from_fn_with_state(disable_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        let global = Router::new()
+            .route(
+                "/modules/{module_id}/params",
+                put(modules::set_global_params),
+            )
+            .route_layer(from_fn_with_state(global_authz, enforce_authz))
+            .route_layer(from_fn_with_state(state.clone(), require_dashboard_session));
+        dashboard_routes
+            .merge(read)
+            .merge(write)
+            .merge(global)
+            .merge(enable)
+            .merge(disable)
+    };
+
     // Issue #371: operator-triggered refresh of the /dashboard/stats
     // aggregate, gated by its own `stats:refresh` permission.
     let dashboard_routes = {
@@ -408,6 +472,8 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta/proposal", post(push_delta_proposal))
         .route("/delta/proposal", get(get_delta_proposals))
         .route("/delta/proposal/single", get(get_delta_proposal))
+        .route("/delta/proposal/check", post(check_delta_proposal))
+        .route("/policies", get(get_policies))
         .route("/delta/proposal", put(sign_delta_proposal))
         .route("/delta/candidate/abandon", post(abandon_candidate))
         .route("/configure", post(configure))

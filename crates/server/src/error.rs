@@ -5,6 +5,9 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::fmt;
 
+/// The reason code a generic denial reports, whichever module refused.
+pub const GENERIC_REASON_CODE: &str = "policy_denied";
+
 /// Primary error type for GUARDIAN operations
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GuardianError {
@@ -121,6 +124,33 @@ pub enum GuardianError {
         paused_at: DateTime<Utc>,
         paused_reason: Option<String>,
     },
+    /// A policy module refused the request. Stable code `GUARDIAN_MODULE_DENIED`, HTTP 403,
+    /// gRPC `PERMISSION_DENIED`; `module` is the operator-chosen instance id.
+    ModuleDenied {
+        module: String,
+        reason_code: String,
+        layer: String,
+        /// The module's text for the requester, already checked; only for instances with
+        /// `client_reason = "full"`.
+        client_message: Option<String>,
+    },
+    /// A denial from an instance with `client_reason = "generic"`: same code and status as
+    /// [`GuardianError::ModuleDenied`], but nothing about which module refused or why.
+    ModuleDeniedGeneric,
+    /// A fail-closed policy module could not decide. Stable code
+    /// `GUARDIAN_MODULE_UNAVAILABLE`, HTTP 503, gRPC `UNAVAILABLE`, retryable.
+    ModuleUnavailable {
+        module: String,
+    },
+    /// No policy module instance with this id. Stable code `GUARDIAN_MODULE_NOT_FOUND`, HTTP 404.
+    ModuleNotFound {
+        module: String,
+    },
+    /// The instance's catalog entry does not allow operators to disable it. Stable code
+    /// `GUARDIAN_MODULE_NOT_DISABLEABLE`, HTTP 409.
+    ModuleNotDisableable {
+        module: String,
+    },
     /// A new account asked to register with a signature scheme this Guardian
     /// does not accept (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`). Stable code
     /// `signature_scheme_not_allowed`, HTTP 403 Forbidden, gRPC
@@ -210,6 +240,12 @@ impl GuardianError {
             GuardianError::DataUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             GuardianError::AccountPaused { .. } => StatusCode::CONFLICT,
             GuardianError::SignatureSchemeNotAllowed { .. } => StatusCode::FORBIDDEN,
+            GuardianError::ModuleDenied { .. } | GuardianError::ModuleDeniedGeneric => {
+                StatusCode::FORBIDDEN
+            }
+            GuardianError::ModuleUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,
+            GuardianError::ModuleNotFound { .. } => StatusCode::NOT_FOUND,
+            GuardianError::ModuleNotDisableable { .. } => StatusCode::CONFLICT,
             GuardianError::AccountReleased { .. } => StatusCode::CONFLICT,
             GuardianError::CandidateLanded { .. } => StatusCode::CONFLICT,
         }
@@ -263,6 +299,12 @@ impl GuardianError {
             GuardianError::DataUnavailable(_) => tonic::Code::Unavailable,
             GuardianError::AccountPaused { .. } => tonic::Code::FailedPrecondition,
             GuardianError::SignatureSchemeNotAllowed { .. } => tonic::Code::PermissionDenied,
+            GuardianError::ModuleDenied { .. } | GuardianError::ModuleDeniedGeneric => {
+                tonic::Code::PermissionDenied
+            }
+            GuardianError::ModuleUnavailable { .. } => tonic::Code::Unavailable,
+            GuardianError::ModuleNotFound { .. } => tonic::Code::NotFound,
+            GuardianError::ModuleNotDisableable { .. } => tonic::Code::FailedPrecondition,
             GuardianError::AccountReleased { .. } => tonic::Code::FailedPrecondition,
             GuardianError::CandidateLanded { .. } => tonic::Code::FailedPrecondition,
         }
@@ -315,6 +357,12 @@ impl GuardianError {
             GuardianError::DataUnavailable(_) => "data_unavailable",
             GuardianError::AccountPaused { .. } => "GUARDIAN_ACCOUNT_PAUSED",
             GuardianError::SignatureSchemeNotAllowed { .. } => "signature_scheme_not_allowed",
+            GuardianError::ModuleDenied { .. } | GuardianError::ModuleDeniedGeneric => {
+                "GUARDIAN_MODULE_DENIED"
+            }
+            GuardianError::ModuleUnavailable { .. } => "GUARDIAN_MODULE_UNAVAILABLE",
+            GuardianError::ModuleNotFound { .. } => "GUARDIAN_MODULE_NOT_FOUND",
+            GuardianError::ModuleNotDisableable { .. } => "GUARDIAN_MODULE_NOT_DISABLEABLE",
             GuardianError::AccountReleased { .. } => "GUARDIAN_ACCOUNT_RELEASED",
             GuardianError::CandidateLanded { .. } => "GUARDIAN_CANDIDATE_LANDED",
         }
@@ -401,6 +449,16 @@ impl GuardianError {
             GuardianError::AccountPaused { .. } => {
                 "This account is paused and can't approve transactions right now."
             }
+            GuardianError::ModuleDenied { .. } | GuardianError::ModuleDeniedGeneric => {
+                "This Guardian's policy doesn't allow this request."
+            }
+            GuardianError::ModuleUnavailable { .. } => {
+                "A policy check is unavailable right now. Please try again shortly."
+            }
+            GuardianError::ModuleNotFound { .. } => "That policy module doesn't exist.",
+            GuardianError::ModuleNotDisableable { .. } => {
+                "That policy module can't be switched off from the dashboard."
+            }
             GuardianError::SignatureSchemeNotAllowed { .. } => {
                 "This Guardian doesn't accept new accounts with that signature scheme."
             }
@@ -447,6 +505,7 @@ impl GuardianError {
                 | GuardianError::RpcValidationFailed(_)
                 | GuardianError::RateLimitExceeded { .. }
                 | GuardianError::DataUnavailable(_)
+                | GuardianError::ModuleUnavailable { .. }
         )
     }
 }
@@ -562,6 +621,30 @@ impl fmt::Display for GuardianError {
                 Some(reason) => write!(f, "Account is paused: {reason}"),
                 None => write!(f, "Account is paused"),
             },
+            GuardianError::ModuleDenied {
+                module,
+                reason_code,
+                layer,
+                ..
+            } => write!(
+                f,
+                "Policy module '{module}' denied the request ({layer} layer): {reason_code}"
+            ),
+            GuardianError::ModuleDeniedGeneric => {
+                write!(f, "A policy module denied the request (generic denial)")
+            }
+            GuardianError::ModuleUnavailable { module } => {
+                write!(f, "Policy module '{module}' is unavailable")
+            }
+            GuardianError::ModuleNotFound { module } => {
+                write!(f, "Policy module '{module}' not found")
+            }
+            GuardianError::ModuleNotDisableable { module } => {
+                write!(
+                    f,
+                    "Policy module '{module}' cannot be disabled by an operator"
+                )
+            }
             GuardianError::SignatureSchemeNotAllowed {
                 scheme,
                 allowed_schemes,
@@ -642,6 +725,19 @@ struct ErrorMeta {
     /// `signature_scheme_not_allowed`.
     #[serde(skip_serializing_if = "Option::is_none")]
     allowed_schemes: Option<Vec<String>>,
+    /// Policy module instance id. Populated only for `GUARDIAN_MODULE_DENIED` and
+    /// `GUARDIAN_MODULE_UNAVAILABLE`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module: Option<String>,
+    /// Machine-readable denial reason. Populated only for `GUARDIAN_MODULE_DENIED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason_code: Option<String>,
+    /// `global` or `account`: which parameter layer denied. Only for `GUARDIAN_MODULE_DENIED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layer: Option<String>,
+    /// The denying module's text for the requester. Only for a full `GUARDIAN_MODULE_DENIED`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    client_message: Option<String>,
     /// RFC 3339 UTC timestamp of the guardian-switch release. Populated
     /// only for `GUARDIAN_ACCOUNT_RELEASED`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -705,6 +801,27 @@ impl GuardianError {
             } => (Some(scheme.clone()), Some(allowed_schemes.clone())),
             _ => (None, None),
         };
+        let client_message = match self {
+            GuardianError::ModuleDenied { client_message, .. } => client_message.clone(),
+            _ => None,
+        };
+        let (module, reason_code, layer) = match self {
+            GuardianError::ModuleDenied {
+                module,
+                reason_code,
+                layer,
+                ..
+            } => (
+                Some(module.clone()),
+                Some(reason_code.clone()),
+                Some(layer.clone()),
+            ),
+            GuardianError::ModuleDeniedGeneric => (None, Some(GENERIC_REASON_CODE.into()), None),
+            GuardianError::ModuleUnavailable { module } => (Some(module.clone()), None, None),
+            GuardianError::ModuleNotFound { module } => (Some(module.clone()), None, None),
+            GuardianError::ModuleNotDisableable { module } => (Some(module.clone()), None, None),
+            _ => (None, None, None),
+        };
         ErrorMeta {
             retryable: self.retryable(),
             retry_after_secs,
@@ -714,6 +831,10 @@ impl GuardianError {
             scheme,
             allowed_schemes,
             released_at,
+            module,
+            reason_code,
+            layer,
+            client_message,
         }
     }
 
@@ -1037,6 +1158,30 @@ mod tests {
         assert_eq!(err.code(), "signature_scheme_not_allowed");
         assert!(!err.retryable());
         assert!(!err.user_message().contains("falcon"));
+    }
+
+    #[test]
+    fn a_generic_module_denial_names_nothing_but_the_generic_reason() {
+        let body = serde_json::to_value(GuardianError::ModuleDeniedGeneric.error_body()).unwrap();
+        assert_eq!(body["code"], "GUARDIAN_MODULE_DENIED");
+        assert_eq!(
+            body["meta"],
+            serde_json::json!({ "retryable": false, "reason_code": "policy_denied" })
+        );
+        assert_eq!(
+            GuardianError::ModuleDeniedGeneric.http_status(),
+            StatusCode::FORBIDDEN
+        );
+
+        let full = GuardianError::ModuleDenied {
+            module: "caps".into(),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: "account".into(),
+            client_message: Some("Ask your treasury admin.".into()),
+        };
+        let body = serde_json::to_value(full.error_body()).unwrap();
+        assert_eq!(body["meta"]["module"], "caps");
+        assert_eq!(body["meta"]["client_message"], "Ask your treasury admin.");
     }
 
     #[test]
