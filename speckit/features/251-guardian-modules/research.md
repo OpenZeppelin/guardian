@@ -95,6 +95,10 @@ This plan is written before the prototype on `251-modules-prototype`. Decisions 
 - **Decision**: the authenticated requester is stored on the durable execution reservation when an attempt is created, kept on repeated requests for an active attempt, and carried into `acknowledge_delta` and the stored delta.
 - **Rationale**: spec FR-033; restart safety.
 
+### Network-tagged projections (2026-10-16)
+
+The module request was Miden-shaped (`TxProjection`, `raw_tx_summary`), so supporting another network's transactions in modules would have needed a new protocol version after the freeze. The network-specific parts now sit behind `oneof network` wrappers with Miden as the only variant, and the raw transaction names its encoding; adding a network later is an additive variant. Deliberately not added yet: variants for other networks, `ModuleInfo.networks`, and a network-neutral transfer summary; all are additive and wait for a second network. Network support itself (verifying and signing another chain's transactions) is not a module concern: it needs a trusted in-process network adapter, a separate design.
+
 ### Review: concurrency and throttling (2026-10-16)
 
 A review reproduced two races. An evaluation read global params and the account's rows separately, so a global change and a layer removal committing between the two reads let a 500-unit payment pass while every committed configuration capped it at 100. A startup migration replaced an operator's newer cap of 100 with its stale migrated value of 1,000. Evaluations now read one params version (recheck and retry), and migrations write conditionally; each race has an acceptance test that fails without its fix. The dry-run limiter also skipped checks when no catalog was configured, although a check still rebuilds and verifies state; it is now process-wide and independent of the catalog.
