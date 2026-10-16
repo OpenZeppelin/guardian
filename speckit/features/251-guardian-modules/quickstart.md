@@ -93,4 +93,4 @@ A payment to `0xddd` is then refused for every account (`layer: global`), one to
 | M2b | `cargo test -p guardian-module-sdk stateful` | Counting interleavings, delayed notify with per-proposer limits, failover discard |
 | M2b | Deployment test: first stateful instance added while a candidate is queued; stateful module assigned to an account later | Activation fence applies, then lifts; later assignment needs no fence |
 | M2b | Qualification scenario with a daily volume module | SC-008 |
-| M2c | Build `examples/custom-guardian` with `--locked` | Custom kind registered and usable (US8) |
+| M2c | Build `examples/custom-guardian` with `--locked` (the prototype's equivalent is `cargo run -p guardian-server --example custom_module_server`) | Custom kind registered and usable (US8) |

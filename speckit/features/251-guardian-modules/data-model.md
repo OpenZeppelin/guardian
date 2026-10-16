@@ -14,7 +14,7 @@ One `[[module]]` entry of the catalog file ([contracts/catalog-config.md](./cont
 |---|---|
 | `id` | Unique in the catalog; `[a-z0-9_-]{1,64}`; used in errors, metrics, operator API |
 | `kind` | Must name a registered kind, else startup fails |
-| `endpoint` | Remote kinds only; `grpc://`; TLS required except loopback outside prod |
+| `endpoint` | Remote kinds only: `grpc://` (TLS) or `grpc+insecure://` (plain text, loopback hosts only, never in prod) |
 | `scope` | `all`, `default` or `assigned` |
 | `hooks` | Non-empty subset of the gate and notify hooks; each must be in the module's `describe` |
 | `timeout_ms` | Required, 1 to `GUARDIAN_MODULE_TIMEOUT_MAX_MS` |

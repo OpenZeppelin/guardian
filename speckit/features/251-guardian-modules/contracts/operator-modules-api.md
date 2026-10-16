@@ -19,6 +19,8 @@
 
 Enable and disable are idempotent: enabling an enabled instance or disabling a disabled one returns 200 with the unchanged view and writes an audit record.
 
+`resync` belongs to the stateful slice (RFC 0002 sections 3.3 and 3.4), not to configuration: when undelivered commit events for a module are dropped (retention) or the catalog removes an instance with pending events, the affected account and module pairs move to `resync_required` and the Guardian calls the module's `NotifyGap`. The module rebuilds its own state (for example from chain history); the operator then calls `resync` to clear the pairs, accepting the gap, and notification resumes. It never reads the catalog file, which is only loaded at startup.
+
 ## Schemas
 
 ```text
@@ -32,22 +34,24 @@ ModuleInstanceView {
   kind: string,
   scope: "all" | "default" | "assigned",
   hooks: string[],
-  declared: bool,               // false: a stored flag the catalog no longer declares
+  declared: bool,               // false: a stored flag the catalog no longer declares (M2a, not in the prototype)
   catalog_enabled?: bool,       // seed value from the file; absent when declared = false
   enabled: bool,                // runtime flag
-  drift: bool,                  // catalog_enabled != enabled
+  enabled_drift: bool,          // catalog_enabled != enabled
   operator_can_disable: bool,
   params: object,               // current global params; secret references unresolved
   params_drift: bool,           // catalog params differ from the stored global params
-  circuit: "closed" | "open" | "half_open"   // on the replica that answered
+  file_managed_params: bool,    // params hold secret references, so only the file changes them
+  build?: string,               // "name version" from describe at startup; absent if the checks failed
+  circuit: "closed" | "open" | "half_open"   // on the replica that answered (M2a, not in the prototype)
 }
-ModuleCatalogView     { catalog_hash: string, modules: ModuleInstanceView[] }
+ModuleCatalogView     { catalog_hash: string, params_version: number, modules: ModuleInstanceView[] }
 
 AccountModuleEntry {
   module_id: string,
   scope: "all" | "default" | "assigned",
   enabled: bool,
-  orphaned: bool,               // stored entry naming an instance the catalog no longer declares
+  orphaned: bool,               // stored entry naming an instance the catalog no longer declares (M2a, not in the prototype)
   global_params?: object,       // scope = all: the instance's global params
   account_layer?: object,       // scope = all: this account's layer, when set
   params?: object               // default / assigned: this account's own params
@@ -65,6 +69,7 @@ All errors use the `{ code, message, meta }` envelope.
 | Condition | HTTP | `code` | `meta` |
 |---|---|---|---|
 | Operator lacks a required permission | 403 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` (existing) | `{ missing_permissions: string[] }` |
+| No catalog configured (`GUARDIAN_MODULES_CONFIG` unset) | 400 | `invalid_input` (existing) | none |
 | Missing or empty `reason` | 400 | `invalid_input` (existing) | none |
 | Account layer on an instance that is not `scope = all` | 400 | `invalid_input` | none |
 | Global params change on an instance whose catalog params hold secret references | 400 | `invalid_input` | none |
@@ -78,3 +83,7 @@ All errors use the `{ code, message, meta }` envelope.
 | Resync of a pair not in `resync_required` | 200 | none; the pair is omitted from `ResyncResult.account_ids` | |
 
 Contract tests in `crates/server` and `packages/guardian-operator-client` pin every row.
+
+## Prototype status (#554)
+
+All M2a routes exist and match the shapes above, except the fields marked "not in the prototype". Not built yet: `resync` (M2b), the budget check on `PUT`, the operator client, and the OpenAPI entries.
