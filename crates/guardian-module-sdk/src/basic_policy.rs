@@ -150,8 +150,8 @@ impl Policy {
     }
 
     fn evaluate_transaction(&self, tx: &TransactionSubject) -> Decision {
-        let Some(projection) = &tx.projection else {
-            return Decision::deny("projection_missing", "transaction has no projection");
+        let Some(projection) = tx.miden() else {
+            return Decision::deny("projection_missing", "transaction has no Miden projection");
         };
 
         let payments = || projection.output_notes.iter().filter(|note| !note.tx_fee);
@@ -275,7 +275,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{Asset, OutputNote, RegistrationSubject, TxProjection, VaultChange};
+    use crate::{
+        Asset, MidenTransaction, OutputNote, RegistrationSubject, TransactionProjection,
+        VaultChange,
+    };
 
     const USDC: &str = "0xaa00";
     const ETH: &str = "0xbb00";
@@ -303,13 +306,13 @@ mod tests {
         }
     }
 
-    fn tx_request(params: serde_json::Value, projection: TxProjection) -> HookRequest {
+    fn tx_request(params: serde_json::Value, projection: MidenTransaction) -> HookRequest {
         HookRequest {
             params: serde_json::to_vec(&params).unwrap(),
             before: Some(view(&["0xs1"])),
             after: Some(view(&["0xs1"])),
             subject: Some(hook_request::Subject::Transaction(TransactionSubject {
-                projection: Some(projection),
+                projection: Some(TransactionProjection::miden(projection)),
                 ..Default::default()
             })),
             ..Default::default()
@@ -326,7 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn allows_a_payment_under_the_cap() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![p2id("0xr1", vec![fungible(USDC, 500)])],
             ..Default::default()
         };
@@ -335,7 +338,7 @@ mod tests {
 
     #[tokio::test]
     async fn sums_split_payments_against_the_cap() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![
                 p2id("0xr1", vec![fungible(USDC, 600)]),
                 p2id("0xr2", vec![fungible(USDC, 600)]),
@@ -349,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn incoming_amounts_do_not_offset_outgoing() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             vault_changes: vec![VaultChange {
                 asset: Some(fungible(USDC, 500)),
                 direction: crate::Direction::Out as i32,
@@ -370,7 +373,7 @@ mod tests {
             faucet_id: USDC.into(),
             value: Some(asset::Value::NftId("0xnft".into())),
         };
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![p2id("0xr1", vec![fungible(ETH, 5000), nft])],
             ..Default::default()
         };
@@ -388,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_fee_note_is_not_a_payment() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![fee_note(5000), p2id("0xr1", vec![fungible(USDC, 500)])],
             ..Default::default()
         };
@@ -397,7 +400,7 @@ mod tests {
         let params = json!({ "recipient_allowlist": ["0xr1"], "asset_allowlist": [ETH, USDC] });
         assert!(decide(&tx_request(params, projection)).await.allow);
 
-        let only_fee = TxProjection {
+        let only_fee = MidenTransaction {
             output_notes: vec![fee_note(5000)],
             ..Default::default()
         };
@@ -411,7 +414,7 @@ mod tests {
     #[tokio::test]
     async fn recipient_allowlist_denies_partial_and_unlisted_notes() {
         let params = json!({ "recipient_allowlist": ["0xr1"] });
-        let listed = TxProjection {
+        let listed = MidenTransaction {
             output_notes: vec![p2id("0xR1", vec![fungible(USDC, 1)])],
             ..Default::default()
         };
@@ -419,7 +422,7 @@ mod tests {
 
         let mut partial_note = p2id("0xr1", vec![fungible(USDC, 1)]);
         partial_note.partial = true;
-        let partial = TxProjection {
+        let partial = MidenTransaction {
             output_notes: vec![partial_note],
             ..Default::default()
         };
@@ -430,7 +433,7 @@ mod tests {
             "recipient_not_allowed"
         );
 
-        let unlisted = TxProjection {
+        let unlisted = MidenTransaction {
             output_notes: vec![p2id("0xr9", vec![fungible(USDC, 1)])],
             ..Default::default()
         };
@@ -440,7 +443,7 @@ mod tests {
     #[tokio::test]
     async fn asset_allowlist_covers_sent_and_received_assets() {
         let params = json!({ "asset_allowlist": [USDC] });
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![p2id("0xr1", vec![fungible(ETH, 1)])],
             ..Default::default()
         };
@@ -453,7 +456,7 @@ mod tests {
     #[tokio::test]
     async fn recipient_denylist_blocks_listed_recipients_only() {
         let params = json!({ "recipient_denylist": ["0xBAD"] });
-        let blocked = TxProjection {
+        let blocked = MidenTransaction {
             output_notes: vec![fee_note(1), p2id("0xbad", vec![fungible(USDC, 1)])],
             ..Default::default()
         };
@@ -466,7 +469,7 @@ mod tests {
 
         let mut partial = p2id("0xr1", vec![fungible(USDC, 1)]);
         partial.partial = true;
-        let unknown = TxProjection {
+        let unknown = MidenTransaction {
             output_notes: vec![p2id("0xr1", vec![fungible(USDC, 1)]), partial],
             ..Default::default()
         };
@@ -481,7 +484,7 @@ mod tests {
 
     #[tokio::test]
     async fn asset_allowlist_covers_consumed_notes() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             input_notes: vec![crate::InputNote {
                 note_id: "0xin".into(),
                 assets: vec![fungible(ETH, 1)],
@@ -501,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn forged_metadata_does_not_change_the_decision() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![p2id("0xr1", vec![fungible(USDC, 5000)])],
             ..Default::default()
         };
@@ -578,7 +581,7 @@ mod tests {
 
     #[tokio::test]
     async fn evaluating_twice_gives_the_same_decision() {
-        let projection = TxProjection {
+        let projection = MidenTransaction {
             output_notes: vec![p2id("0xr1", vec![fungible(USDC, 900)])],
             ..Default::default()
         };

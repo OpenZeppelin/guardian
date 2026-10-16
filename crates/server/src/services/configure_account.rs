@@ -1415,7 +1415,7 @@ mod tests {
                     signer_commitments: vec![commitment_hex.clone()],
                     ..Default::default()
                 },
-                guardian_module_sdk::TxProjection::default(),
+                guardian_module_sdk::MidenTransaction::default(),
             );
         let storage = MockStorageBackend::new()
             .with_submit_state(Ok(()))

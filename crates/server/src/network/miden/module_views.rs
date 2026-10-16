@@ -2,8 +2,8 @@
 
 use guardian_module_sdk::proto::{MapChanges, MapEntry, asset};
 use guardian_module_sdk::{
-    AccountView, Asset as ModuleAsset, Direction, InputNote, NoteType, OutputNote, StorageChange,
-    StorageOp, StorageSlotKind, TxProjection, VaultChange,
+    AccountView, Asset as ModuleAsset, Direction, InputNote, MidenTransaction, NoteType,
+    OutputNote, StorageChange, StorageOp, StorageSlotKind, VaultChange,
 };
 use guardian_shared::FromJson;
 use miden_protocol::Word;
@@ -170,7 +170,7 @@ fn expiration_block(block_number: u32, expiration_delta: u16) -> Result<u32, Str
         .ok_or_else(|| format!("expiration overflows: block {block_number} + {expiration_delta}"))
 }
 
-fn projection_from_summary(summary: &TransactionSummary) -> Result<TxProjection, String> {
+fn projection_from_summary(summary: &TransactionSummary) -> Result<MidenTransaction, String> {
     let delta = summary.account_delta();
     let vault = delta.vault();
     let vault_changes = vault
@@ -216,7 +216,7 @@ fn projection_from_summary(summary: &TransactionSummary) -> Result<TxProjection,
         }),
     }));
 
-    Ok(TxProjection {
+    Ok(MidenTransaction {
         nonce_delta: delta.nonce_delta().as_canonical_u64() as i64,
         expiration_block: expiration_block(
             summary.block_number().as_u32(),

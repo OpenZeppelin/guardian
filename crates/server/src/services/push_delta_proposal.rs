@@ -2119,7 +2119,7 @@ mod tests {
             .with_apply_delta(Ok((serde_json::json!({ "after": true }), "0xafter".into())))
             .with_module_views(
                 guardian_module_sdk::AccountView::default(),
-                guardian_module_sdk::TxProjection::default(),
+                guardian_module_sdk::MidenTransaction::default(),
             );
         let mut configured = instance("caps", &[hook], OnError::Deny, module);
         configure(&mut configured);

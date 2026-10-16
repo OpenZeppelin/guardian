@@ -50,7 +50,7 @@ pub struct MockNetworkClient {
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
     pub module_account_view: Arc<StdMutex<Option<guardian_module_sdk::AccountView>>>,
-    pub module_projection: Arc<StdMutex<Option<guardian_module_sdk::TxProjection>>>,
+    pub module_projection: Arc<StdMutex<Option<guardian_module_sdk::MidenTransaction>>>,
 }
 
 impl MockNetworkClient {
@@ -91,7 +91,7 @@ impl MockNetworkClient {
     pub fn with_module_views(
         self,
         view: guardian_module_sdk::AccountView,
-        projection: guardian_module_sdk::TxProjection,
+        projection: guardian_module_sdk::MidenTransaction,
     ) -> Self {
         *self.module_account_view.lock().unwrap() = Some(view);
         *self.module_projection.lock().unwrap() = Some(projection);

@@ -253,7 +253,7 @@ pub struct AuthBinding {
 /// binary encoding, both decoded from the same bytes the Guardian signs.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModuleTransaction {
-    pub projection: guardian_module_sdk::TxProjection,
+    pub projection: guardian_module_sdk::MidenTransaction,
     pub raw_tx_summary: Vec<u8>,
 }
 

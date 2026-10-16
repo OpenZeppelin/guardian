@@ -1239,7 +1239,7 @@ mod tests {
                     signer_commitments: vec![signer_commitment.clone()],
                     ..Default::default()
                 },
-                guardian_module_sdk::TxProjection::default(),
+                guardian_module_sdk::MidenTransaction::default(),
             );
         let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
             account_id: account_id.clone(),
@@ -1382,6 +1382,19 @@ mod tests {
         assert!(approval.failed_open.is_empty());
         let request = module.last_request().expect("module was called");
         assert_eq!(request.submitter, signer);
+        let Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) =
+            &request.subject
+        else {
+            panic!("transaction subject expected");
+        };
+        assert!(
+            subject.miden().is_some(),
+            "the projection is tagged as Miden"
+        );
+        assert_eq!(
+            subject.raw.as_ref().map(|raw| raw.encoding.as_str()),
+            Some(guardian_module_sdk::RawTransaction::MIDEN_TRANSACTION_SUMMARY)
+        );
         assert_eq!(request.after.unwrap().signer_commitments, vec![signer]);
         assert!(request.before.is_some());
     }

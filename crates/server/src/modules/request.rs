@@ -157,8 +157,13 @@ pub fn transaction_request(
         before: Some(view(network, views, input.before, input.auth)?),
         after: Some(view(network, views, input.after, input.auth)?),
         subject: Some(hook_request::Subject::Transaction(TransactionSubject {
-            projection: Some(transaction.projection),
-            raw_tx_summary: transaction.raw_tx_summary,
+            projection: Some(guardian_module_sdk::TransactionProjection::miden(
+                transaction.projection,
+            )),
+            raw: Some(guardian_module_sdk::RawTransaction {
+                encoding: guardian_module_sdk::RawTransaction::MIDEN_TRANSACTION_SUMMARY.into(),
+                data: transaction.raw_tx_summary,
+            }),
             proposer,
             unverified_metadata,
             ..Default::default()

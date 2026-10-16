@@ -56,14 +56,19 @@ The rules are in [RFC 0002 section 3.5](../../rfcs/0002-guardian-modules.md#35-p
 | Field | Use it for |
 |---|---|
 | `params` | The params to apply, as JSON bytes: the global ones, or an account's layer on its second pass |
-| `subject.transaction.projection` | The decoded transaction: vault changes, output notes (amount, faucet, `note_type`, `p2id_target`, `tx_fee`), input notes, storage changes |
+| `subject.miden()` (the Miden variant of `subject.transaction.projection`) | The decoded transaction: vault changes, output notes (amount, faucet, `note_type`, `p2id_target`, `tx_fee`), input notes, storage changes |
 | `before`, `after` | Account views: signer commitments, `default_threshold` (absent for single-key accounts), procedure thresholds, auth scheme |
 | `submitter`, `subject.transaction.proposer` | Verified signer commitments |
 | `subject.transaction.unverified_metadata` | What the proposer claimed; never base a decision on it alone |
-| `subject.transaction.raw_tx_summary` | The Miden binary summary, for modules that decode it themselves; tied to the Guardian's Miden version |
+| `subject.transaction.raw` | The transaction in its network's own encoding (`encoding = "miden.transaction_summary"`), for modules that decode it themselves; tied to the Guardian's Miden version |
 
 Skip the fee note (`tx_fee = true`) when counting payments: every transaction
 pays its fee through an output note.
+
+Projections are tagged by network (`TransactionProjection`, `oneof network`).
+Miden is the only network today; read it with `subject.miden()` and return a
+`ModuleError` when it is absent, so a module never judges a transaction it
+does not understand.
 
 ## Run it over gRPC
 

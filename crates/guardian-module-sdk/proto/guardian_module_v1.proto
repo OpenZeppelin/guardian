@@ -77,8 +77,10 @@ message AccountView {
 message TransactionSubject {
   reserved 1, 2;                      // were prev_commitment and new_commitment; now before.commitment and after.commitment
   reserved "prev_commitment", "new_commitment";
-  TxProjection projection = 3;        // the contract modules should rely on
-  bytes raw_tx_summary = 4;           // serialized TransactionSummary; UNSTABLE across Miden protocol bumps
+  reserved 3, 4;                      // were the Miden-only projection and raw_tx_summary; now the network-tagged fields below
+  reserved "raw_tx_summary";
+  TransactionProjection projection = 10;  // the contract modules should rely on, per network
+  RawTransaction raw = 11;            // the network's own encoding; UNSTABLE across that network's protocol bumps
   reserved 5;                         // was unverified_hint; replaced by unverified_metadata
   reserved "unverified_hint";
   repeated PendingTransaction pending = 6;  // signed for this account, not yet acknowledged by this module (section 3.4)
@@ -90,7 +92,8 @@ message TransactionSubject {
 
 message PendingTransaction {
   string new_commitment = 1;          // = event_id once committed
-  TxProjection projection = 2;
+  reserved 2;                         // was the Miden-only projection
+  TransactionProjection projection = 9;
   google.protobuf.Timestamp signed_at = 3;      // the accounting clock (section 3.4)
   PendingState state = 4;
   uint64 nonce = 5;                   // account nonce after this transaction; compared with the module's watermark
@@ -107,7 +110,8 @@ enum PendingState {
 message RegistrationSubject {
   reserved 1 to 4, 6;                 // auth_scheme, signer_commitments, threshold and initial_state_commitment moved to HookRequest.after; submitter to HookRequest.submitter
   reserved "auth_scheme", "signer_commitments", "threshold", "initial_state_commitment", "submitter";
-  AccountProjection initial_state = 5;  // vault and storage of the account about to be accepted
+  reserved 5;                         // was the Miden-only initial_state
+  AccountStateProjection initial_state = 7;  // the account about to be accepted, per network
 }
 
 enum Effect {
@@ -124,7 +128,28 @@ message Decision {
   string client_message = 5;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it
 }
 
-message TxProjection {
+// A transaction as its network describes it. One variant per network; a module reads the
+// variant for the networks it supports.
+message TransactionProjection {
+  oneof network {
+    MidenTransaction miden = 1;
+  }
+}
+
+// An account's state as its network describes it.
+message AccountStateProjection {
+  oneof network {
+    MidenAccountState miden = 1;
+  }
+}
+
+// A transaction in its network's own serialization, for modules that decode it themselves.
+message RawTransaction {
+  string encoding = 1;                // names the format and its version line, for example "miden.transaction_summary"
+  bytes data = 2;
+}
+
+message MidenTransaction {
   reserved 1;                         // was version; protocol_version covers the projection
   reserved "version";                 // the JSON name cannot be reused either (matters for the proto3 JSON mapping)
   int64 nonce_delta = 2;
@@ -135,7 +160,7 @@ message TxProjection {
   repeated StorageChange storage_changes = 7;
 }
 
-message AccountProjection {
+message MidenAccountState {
   repeated Asset vault = 1;
   repeated StorageSlot storage = 2;
 }
@@ -184,7 +209,8 @@ message CommitEvent {
   string account_id = 2;
   string prev_commitment = 3;
   string new_commitment = 4;
-  TxProjection projection = 5;
+  reserved 5;                         // was the Miden-only projection
+  TransactionProjection projection = 13;
   google.protobuf.Timestamp committed_at = 6;
   string network = 7;                 // "miden", as in HookRequest
   uint64 nonce = 8;                   // account nonce after this transaction; the delivery watermark (section 3.3)

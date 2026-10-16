@@ -3,7 +3,8 @@ use guardian_module_sdk::proto::guardian_module_client::GuardianModuleClient;
 use guardian_module_sdk::proto::{asset, hook_request};
 use guardian_module_sdk::serve::serve;
 use guardian_module_sdk::{
-    AccountView, Asset, HookRequest, Module, OutputNote, TransactionSubject, TxProjection,
+    AccountView, Asset, HookRequest, MidenTransaction, Module, OutputNote, TransactionProjection,
+    TransactionSubject,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -61,10 +62,10 @@ fn payment(amounts: &[u64], params: serde_json::Value) -> HookRequest {
         params: serde_json::to_vec(&params).unwrap(),
         after: Some(AccountView::default()),
         subject: Some(hook_request::Subject::Transaction(TransactionSubject {
-            projection: Some(TxProjection {
+            projection: Some(TransactionProjection::miden(MidenTransaction {
                 output_notes: notes,
                 ..Default::default()
-            }),
+            })),
             ..Default::default()
         })),
         ..Default::default()

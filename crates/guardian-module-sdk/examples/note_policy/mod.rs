@@ -62,9 +62,9 @@ impl Module for NotePolicy {
         let Some(hook_request::Subject::Transaction(subject)) = &request.subject else {
             return Ok(Decision::allow());
         };
-        let Some(projection) = &subject.projection else {
+        let Some(projection) = subject.miden() else {
             return Err(ModuleError::InvalidRequest(
-                "transaction without projection".into(),
+                "not a Miden transaction".into(),
             ));
         };
         let payments: Vec<_> = projection
@@ -106,7 +106,9 @@ impl ModuleFactory for NotePolicyFactory {
 
 #[cfg(test)]
 mod tests {
-    use guardian_module_sdk::{OutputNote, TransactionSubject, TxProjection};
+    use guardian_module_sdk::{
+        MidenTransaction, OutputNote, TransactionProjection, TransactionSubject,
+    };
 
     use super::*;
 
@@ -114,10 +116,10 @@ mod tests {
         HookRequest {
             params: serde_json::to_vec(&params).unwrap(),
             subject: Some(hook_request::Subject::Transaction(TransactionSubject {
-                projection: Some(TxProjection {
+                projection: Some(TransactionProjection::miden(MidenTransaction {
                     output_notes: notes,
                     ..Default::default()
-                }),
+                })),
                 ..Default::default()
             })),
             ..Default::default()

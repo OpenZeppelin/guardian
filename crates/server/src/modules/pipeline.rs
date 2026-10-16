@@ -1103,20 +1103,22 @@ params = { old_name = 1000 }
         use crate::modules::testing::instance_with_params;
         use guardian_module_sdk::basic_policy::BasicPolicy;
         use guardian_module_sdk::proto::hook_request;
-        use guardian_module_sdk::{OutputNote, TransactionSubject, TxProjection};
+        use guardian_module_sdk::{
+            MidenTransaction, OutputNote, TransactionProjection, TransactionSubject,
+        };
         use serde_json::json;
 
         fn pay(recipient: &str) -> HookRequest {
             HookRequest {
                 subject: Some(hook_request::Subject::Transaction(TransactionSubject {
-                    projection: Some(TxProjection {
+                    projection: Some(TransactionProjection::miden(MidenTransaction {
                         output_notes: vec![OutputNote {
                             note_id: "0xn".into(),
                             p2id_target: Some(recipient.into()),
                             ..Default::default()
                         }],
                         ..Default::default()
-                    }),
+                    })),
                     ..Default::default()
                 })),
                 ..Default::default()

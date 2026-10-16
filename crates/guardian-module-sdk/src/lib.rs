@@ -15,10 +15,11 @@ pub mod proto {
 }
 
 pub use proto::{
-    AccountProjection, AccountView, Asset, CommitEvent, Decision, DescribeRequest, Direction,
-    Effect, Gap, Hook, HookRequest, InputNote, ModuleInfo, NoteType, OutputNote, ParamsVerdict,
-    PendingTransaction, RegistrationSubject, StorageChange, StorageOp, StorageSlotKind,
-    TransactionSubject, TxProjection, ValidateParamsRequest, VaultChange,
+    AccountStateProjection, AccountView, Asset, CommitEvent, Decision, DescribeRequest, Direction,
+    Effect, Gap, Hook, HookRequest, InputNote, MidenAccountState, MidenTransaction, ModuleInfo,
+    NoteType, OutputNote, ParamsVerdict, PendingTransaction, RawTransaction, RegistrationSubject,
+    StorageChange, StorageOp, StorageSlotKind, TransactionProjection, TransactionSubject,
+    ValidateParamsRequest, VaultChange,
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -145,6 +146,63 @@ pub trait ModuleFactory: Send + Sync {
     fn create(&self, instance: &ModuleInstanceConfig) -> Result<Arc<dyn Module>, ModuleError>;
 }
 
+impl TransactionProjection {
+    pub fn miden(transaction: MidenTransaction) -> Self {
+        Self {
+            network: Some(proto::transaction_projection::Network::Miden(transaction)),
+        }
+    }
+}
+
+impl AccountStateProjection {
+    pub fn miden(state: MidenAccountState) -> Self {
+        Self {
+            network: Some(proto::account_state_projection::Network::Miden(state)),
+        }
+    }
+}
+
+impl RawTransaction {
+    /// `encoding` of a Miden `TransactionSummary` in Miden's binary serialization.
+    pub const MIDEN_TRANSACTION_SUMMARY: &str = "miden.transaction_summary";
+}
+
+fn miden_transaction(projection: &Option<TransactionProjection>) -> Option<&MidenTransaction> {
+    match projection.as_ref()?.network.as_ref()? {
+        proto::transaction_projection::Network::Miden(transaction) => Some(transaction),
+    }
+}
+
+impl TransactionSubject {
+    /// The Miden projection, when this is a Miden transaction.
+    pub fn miden(&self) -> Option<&MidenTransaction> {
+        miden_transaction(&self.projection)
+    }
+}
+
+impl PendingTransaction {
+    /// The Miden projection, when this is a Miden transaction.
+    pub fn miden(&self) -> Option<&MidenTransaction> {
+        miden_transaction(&self.projection)
+    }
+}
+
+impl CommitEvent {
+    /// The Miden projection, when this is a Miden transaction.
+    pub fn miden(&self) -> Option<&MidenTransaction> {
+        miden_transaction(&self.projection)
+    }
+}
+
+impl RegistrationSubject {
+    /// The Miden account state, when this is a Miden account.
+    pub fn miden(&self) -> Option<&MidenAccountState> {
+        match self.initial_state.as_ref()?.network.as_ref()? {
+            proto::account_state_projection::Network::Miden(state) => Some(state),
+        }
+    }
+}
+
 impl Decision {
     pub fn allow() -> Self {
         Self {
@@ -233,5 +291,23 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains("very-secret-token"));
         assert!(!debug.contains("very-secret-key"));
+    }
+
+    #[test]
+    fn the_miden_accessors_read_only_the_miden_variant() {
+        assert!(TransactionSubject::default().miden().is_none());
+        let subject = TransactionSubject {
+            projection: Some(TransactionProjection::miden(MidenTransaction {
+                nonce_delta: 1,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert_eq!(subject.miden().map(|miden| miden.nonce_delta), Some(1));
+        assert!(RegistrationSubject::default().miden().is_none());
+        let registration = RegistrationSubject {
+            initial_state: Some(AccountStateProjection::miden(MidenAccountState::default())),
+        };
+        assert!(registration.miden().is_some());
     }
 }
