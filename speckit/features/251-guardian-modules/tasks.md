@@ -5,11 +5,11 @@
 
 **Scope**: phase P0 of the plan only. These tasks build enough of M2a to close the prototype gates G1 to G5 in [research.md](./research.md) and to try the feature end to end. M2a, M2b and M2c tasks are generated after the gates close and RFC revision 20 records the results.
 
-**Branch**: implemented on `251-guardian-modules-rfc`. Code commits are **never pushed** while they live on this branch (it backs the doc-only PR #544); code is moved to its own branch before any push.
+**Branch**: the code lives on `251-modules-prototype` (draft PR #554, based on the RFC branch); `251-guardian-modules-rfc` (PR #544) stays doc-only.
 
 **Excluded from P0**: the operator API (Story 5), `default` scope, evaluation budget, circuit breaker and health probe, request size cap, metrics, M2b (Story 7), M2c (Story 8), TypeScript parity, the execution path (PR #510 not merged).
 
-**Prototype shortcuts** (not the M2a design): per-account assignments for `scope = "assigned"` come from an `[[assignment]]` table in the catalog file instead of the metadata store; remote modules may use plaintext gRPC on loopback.
+**Prototype shortcuts** (not the M2a design): secrets are read from files (`token_file`, `tls.*_file`) instead of the secrets backend; the approval record lives in delta metadata instead of delta columns. Per-account assignments started in the catalog file and moved to the operator API with Phase 10 (T041).
 
 **Tests**: included, because the spec's acceptance scenarios are the evidence that closes the gates (constitution principle V).
 

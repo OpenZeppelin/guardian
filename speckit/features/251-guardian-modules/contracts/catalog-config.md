@@ -7,6 +7,7 @@
 | Variable | Default | Slice | Meaning |
 |---|---|---|---|
 | `GUARDIAN_MODULES_CONFIG` | unset | M2a | Path to the catalog TOML; unset disables the feature |
+| `GUARDIAN_MODULES_STATE` | `<GUARDIAN_METADATA_PATH>/modules` | M2a | Filesystem backend only: directory of the module state file; Postgres keeps module state in its tables |
 | `GUARDIAN_MODULE_TIMEOUT_MAX_MS` | `1000` | M2a | Upper bound for any instance `timeout_ms` |
 | `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` | `1000` | M2a | Total module time per hook invocation |
 | `GUARDIAN_MODULE_REQUEST_MAX_BYTES` | `2097152` | M2a | Encoded request size cap |
@@ -38,7 +39,23 @@ hooks = ["before_transaction_approved"]
 timeout_ms = 300
 on_error = "allow"
 auth = { token_secret = "guardian/modules/risk-vendor-token" }
+tls = { ca_file = "risk-ca.pem" }     # optional; client_cert / client_key secret references add mTLS
 ```
+
+## Remote transport
+
+| Endpoint | Transport | Allowed |
+|---|---|---|
+| `grpc://host:port` | TLS, verified against the system roots or `tls.ca_file` | Always |
+| `grpc+insecure://host:port` | Plain text | Loopback hosts only (`localhost`, `127.0.0.1`, `::1`), never in the prod stage |
+
+Plain text needs its own scheme so a missing letter cannot turn TLS off. In the prod stage every remote instance must use `grpc://` and set `auth`, or startup stops. `auth` and `tls` are allowed only on remote kinds.
+
+The prototype (#554) reads secrets from files instead of the secrets backend: `auth = { token_file = "..." }` and `tls = { ca_file, client_cert_file, client_key_file }`, paths relative to the catalog file.
+
+## Kinds
+
+`basic-policy` (in process) and `grpc` (remote) ship with the Guardian. A custom build registers more in-process kinds with `ServerBuilder::with_module_kind(name, factory)` (M2c, prototyped in #554); a catalog entry names one in `kind`, with no `endpoint`. A kind name is taken once, and the first-party names cannot be replaced. The stock binary refuses a catalog that names a kind it does not know.
 
 ## `basic-policy` params (M2a)
 
