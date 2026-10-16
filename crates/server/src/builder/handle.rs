@@ -25,10 +25,10 @@ use crate::api::grpc::GuardianService;
 use crate::api::grpc::guardian::FILE_DESCRIPTOR_SET;
 use crate::api::grpc::guardian::guardian_server::GuardianServer;
 use crate::api::http::{
-    abandon_candidate, configure, create_session, get_canonical_nonce, get_delta,
-    get_delta_history, get_delta_proposal, get_delta_proposals, get_delta_since, get_pubkey,
-    get_state, lookup, push_delta, push_delta_proposal, revoke_all_sessions, revoke_session,
-    sign_delta_proposal, status, status_root,
+    abandon_candidate, check_delta_proposal, configure, create_session, get_canonical_nonce,
+    get_delta, get_delta_history, get_delta_proposal, get_delta_proposals, get_delta_since,
+    get_policies, get_pubkey, get_state, lookup, push_delta, push_delta_proposal,
+    revoke_all_sessions, revoke_session, sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
 use crate::dashboard::require_dashboard_session;
@@ -472,6 +472,8 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/delta/proposal", post(push_delta_proposal))
         .route("/delta/proposal", get(get_delta_proposals))
         .route("/delta/proposal/single", get(get_delta_proposal))
+        .route("/delta/proposal/check", post(check_delta_proposal))
+        .route("/policies", get(get_policies))
         .route("/delta/proposal", put(sign_delta_proposal))
         .route("/delta/candidate/abandon", post(abandon_candidate))
         .route("/configure", post(configure))

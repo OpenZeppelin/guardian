@@ -34,21 +34,64 @@ pub struct PushDeltaProposalResult {
     pub commitment: String,
 }
 
+/// The answer of a dry-run check that passed. A denial or an unavailable module is the same
+/// error proposal creation returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckProposalResult {
+    /// False when an instance that opts out of dry runs was skipped.
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Create,
+    DryRun,
+}
+
+enum Outcome {
+    Created(Box<PushDeltaProposalResult>),
+    Checked(CheckProposalResult),
+}
+
+pub async fn push_delta_proposal(
+    state: &AppState,
+    params: PushDeltaProposalParams,
+) -> Result<PushDeltaProposalResult> {
+    match propose(state, params, Mode::Create).await? {
+        Outcome::Created(result) => Ok(*result),
+        Outcome::Checked(_) => Err(GuardianError::StorageError(
+            "proposal creation ended as a check".into(),
+        )),
+    }
+}
+
+/// Runs proposal creation up to the `before_proposal_created` modules without storing
+/// anything (RFC 0002 section 2.7). Advisory: approval still decides.
+pub async fn check_proposal(
+    state: &AppState,
+    params: PushDeltaProposalParams,
+) -> Result<CheckProposalResult> {
+    match propose(state, params, Mode::DryRun).await? {
+        Outcome::Checked(result) => Ok(result),
+        Outcome::Created(_) => Err(GuardianError::StorageError(
+            "a proposal check stored a proposal".into(),
+        )),
+    }
+}
+
 #[tracing::instrument(
     level = "info",
     skip(state, params),
     fields(
         account_id = %params.account_id,
         nonce = params.nonce,
+        ?mode,
         proposer_id = tracing::field::Empty,
         commitment = tracing::field::Empty,
         signer_count = tracing::field::Empty
     )
 )]
-pub async fn push_delta_proposal(
-    state: &AppState,
-    params: PushDeltaProposalParams,
-) -> Result<PushDeltaProposalResult> {
+async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) -> Result<Outcome> {
     tracing::debug!("Pushing delta proposal");
 
     if crate::metadata::network::is_evm_account_id(&params.account_id)
@@ -75,6 +118,20 @@ pub async fn push_delta_proposal(
 
     let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
+    // A dry run is admitted against its rate limit before any reconstruction work, whether
+    // or not modules are configured.
+    if mode == Mode::DryRun {
+        crate::modules::check_limit::admit(&account_id, &resolved.signer_commitment)?;
+    }
+    let dry_run = match (mode, state.modules.as_deref()) {
+        (Mode::DryRun, Some(modules)) => Some(
+            modules
+                .plan_dry_run(HookName::BeforeProposalCreated, &account_id)
+                .await?,
+        ),
+        (Mode::DryRun, None) => Some((None, true)),
+        (Mode::Create, _) => None,
+    };
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),
@@ -248,13 +305,15 @@ pub async fn push_delta_proposal(
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
-    let plan = match state.modules.as_deref() {
-        Some(modules) => {
+    let (plan, complete) = match (dry_run, state.modules.as_deref()) {
+        (Some(planned), _) => planned,
+        (None, Some(modules)) => (
             modules
                 .plan(HookName::BeforeProposalCreated, &account_id)
-                .await?
-        }
-        None => None,
+                .await?,
+            true,
+        ),
+        (None, None) => (None, true),
     };
     if let Some(plan) = plan {
         let after = {
@@ -297,6 +356,15 @@ pub async fn push_delta_proposal(
         })
         .await?;
     }
+    if mode == Mode::DryRun {
+        tracing::info!(
+            account_id = %account_id,
+            signer = %proposer_id,
+            complete,
+            "Proposal dry-run check passed"
+        );
+        return Ok(Outcome::Checked(CheckProposalResult { complete }));
+    }
     // Create delta object with Pending status including any provided signatures
     let timestamp = state.clock.now_rfc3339();
     let delta_proposal = DeltaObject {
@@ -330,10 +398,10 @@ pub async fn push_delta_proposal(
     .increment(1);
     tracing::info!("Delta proposal created");
 
-    Ok(PushDeltaProposalResult {
+    Ok(Outcome::Created(Box::new(PushDeltaProposalResult {
         delta: delta_proposal.clone(),
         commitment: commitment.clone(),
-    })
+    })))
 }
 
 #[cfg(test)]
@@ -2003,6 +2071,26 @@ mod tests {
         module: Arc<crate::modules::testing::StubModule>,
         hook: HookName,
     ) -> (Result<PushDeltaProposalResult>, MockStorageBackend, String) {
+        let (state, storage, params, commitment) = module_setup(module, hook, |_| {});
+        (
+            push_delta_proposal(&state, params).await,
+            storage,
+            commitment,
+        )
+    }
+
+    /// State, storage, request and proposer for one module at `hook`, after `configure` adjusts
+    /// the instance.
+    fn module_setup(
+        module: Arc<crate::modules::testing::StubModule>,
+        hook: HookName,
+        configure: impl FnOnce(&mut crate::modules::registry::Instance),
+    ) -> (
+        AppState,
+        MockStorageBackend,
+        PushDeltaProposalParams,
+        String,
+    ) {
         use crate::modules::catalog::OnError;
         use crate::modules::testing::{instance, pipeline};
 
@@ -2033,12 +2121,9 @@ mod tests {
                 guardian_module_sdk::AccountView::default(),
                 guardian_module_sdk::TxProjection::default(),
             );
-        state.modules = Some(pipeline(vec![instance(
-            "caps",
-            &[hook],
-            OnError::Deny,
-            module,
-        )]));
+        let mut configured = instance("caps", &[hook], OnError::Deny, module);
+        configure(&mut configured);
+        state.modules = Some(pipeline(vec![configured]));
 
         let params = PushDeltaProposalParams {
             account_id,
@@ -2050,11 +2135,54 @@ mod tests {
             }),
             credentials: Credentials::signature(pubkey, signature, timestamp),
         };
-        (
-            push_delta_proposal(&state, params).await,
-            storage,
-            commitment,
-        )
+        (state, storage, params, commitment)
+    }
+
+    #[tokio::test]
+    async fn a_check_runs_the_creation_modules_and_stores_nothing() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, storage, params, _) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(result.complete);
+        assert_eq!(module.calls(), 1);
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (state, storage, params, _) =
+            module_setup(module, HookName::BeforeProposalCreated, |_| {});
+        assert!(matches!(
+            check_proposal(&state, params).await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_module_that_opts_out_is_skipped_and_the_check_is_incomplete() {
+        let module = crate::modules::testing::StubModule::denying("would_deny");
+        let (state, _, params, _) = module_setup(
+            module.clone(),
+            HookName::BeforeProposalCreated,
+            |instance| {
+                instance.config.dry_run = false;
+            },
+        );
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(!result.complete, "the skip is reported, not hidden");
+        assert_eq!(module.calls(), 0);
+
+        let (state, _, params, _) =
+            module_setup(module, HookName::BeforeProposalCreated, |instance| {
+                instance.config.dry_run = false;
+            });
+        assert!(
+            matches!(
+                push_delta_proposal(&state, params).await,
+                Err(GuardianError::ModuleDenied { .. })
+            ),
+            "creation still runs it"
+        );
     }
 
     #[tokio::test]

@@ -63,7 +63,7 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 
 // Main client
 pub use builder::MultisigClientBuilder;
-pub use client::{AbandonRequestState, AbandonStatus};
+pub use client::{AbandonRequestState, AbandonStatus, Policy};
 pub use client::{
     BlockRange, ConsumableNote, HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning,
     HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset, HistoryNoteTag,
@@ -106,9 +106,9 @@ pub use proposal::{
 pub use prover::{ProverConfig, ProverRetryPolicy};
 pub use rpc::{RpcConfig, RpcRetryPolicy};
 pub use transaction::{
-    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalOptions, TransactionRequestBuilderExt,
-    build_p2id_transaction_request, deserialize_transaction_request, generate_salt,
-    multisig_auth_args, proposal_auth_args, proposer_auth_args,
+    MAX_APPROVAL_EXPIRATION_DELTA, ProposalBuilder, ProposalCheck, ProposalOptions,
+    TransactionRequestBuilderExt, build_p2id_transaction_request, deserialize_transaction_request,
+    generate_salt, multisig_auth_args, proposal_auth_args, proposer_auth_args,
     summary_approval_expiration_block_num, summary_salt, synced_fee_faucet_id,
 };
 

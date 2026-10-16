@@ -71,6 +71,17 @@ service Guardian {
   // x-timestamp), raw or as EIP-712 typed data (`x-auth-format: eip712`).
   // Wallet-only. Mirror of HTTP POST /session/revoke-all.
   rpc RevokeAllSessions(RevokeAllSessionsRequest) returns (RevokeAllSessionsResponse);
+
+  // The policy modules that apply to the account, as far as each instance's
+  // catalog entry discloses them (RFC 0002 section 2.7). Mirror of HTTP
+  // GET /policies.
+  rpc GetPolicies(GetPoliciesRequest) returns (GetPoliciesResponse);
+
+  // Dry run of PushDeltaProposal: the same checks and proposal-creation
+  // modules, nothing stored, no proposal slot taken. Advisory; approval still
+  // decides. Rate limited per account and signer. Mirror of HTTP
+  // POST /delta/proposal/check.
+  rpc CheckDeltaProposal(CheckDeltaProposalRequest) returns (CheckDeltaProposalResponse);
 }
 
 // Auth configuration - one of the auth types
@@ -295,6 +306,40 @@ message PushDeltaProposalResponse {
   string message = 2;
   DeltaObject delta = 3;
   string commitment = 4;
+  string error_code = 5;
+}
+
+message CheckDeltaProposalRequest {
+  string account_id = 1;
+  uint64 nonce = 2;
+  string delta_payload = 3; // JSON string, as for PushDeltaProposal
+}
+
+message CheckDeltaProposalResponse {
+  bool success = 1;
+  string message = 2;
+  bool allowed = 3;  // true on success; a refusal is returned as an error status
+  bool complete = 4; // false when an instance that opts out of dry runs was skipped
+  string error_code = 5;
+}
+
+message GetPoliciesRequest {
+  string account_id = 1;
+}
+
+message PolicyEntry {
+  string module_id = 1;
+  repeated string hooks = 2;
+  string description = 3;
+  optional string params = 4;        // JSON object; only where the instance discloses params
+  optional string account_layer = 5; // JSON object; this account's layer, where disclosed
+}
+
+message GetPoliciesResponse {
+  bool success = 1;
+  string message = 2;
+  string account_id = 3;
+  repeated PolicyEntry policies = 4; // evaluation order
   string error_code = 5;
 }
 

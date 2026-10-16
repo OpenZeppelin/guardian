@@ -864,6 +864,128 @@
         ]
       }
     },
+    "/delta/proposal/check": {
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Dry run of `POST /delta/proposal`: the same checks and proposal-creation\npolicy modules, without storing a proposal or taking a slot. A refusal is\nthe same error proposal creation returns; `complete` is false when a module\nthat opts out of dry runs was skipped. Advisory: approval still decides.\nRate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`).",
+        "operationId": "check_delta_proposal",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeltaProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Proposal creation would pass",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckProposalResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid proposal payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "A policy module refused (GUARDIAN_MODULE_DENIED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflicting / too many pending proposals",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many checks for this account and signer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A policy module is unavailable (GUARDIAN_MODULE_UNAVAILABLE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/delta/proposal/single": {
       "get": {
         "tags": [
@@ -1024,6 +1146,86 @@
           },
           "404": {
             "description": "No deltas found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/policies": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "The policy modules that apply to the account, as far as each module's\ncatalog entry discloses them (RFC 0002 section 2.7), in evaluation order.\nEmpty when the Guardian has no modules or discloses none.",
+        "operationId": "get_policies",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Disclosed policies",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PoliciesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -1975,6 +2177,23 @@
           }
         }
       },
+      "CheckProposalResponse": {
+        "type": "object",
+        "required": [
+          "allowed",
+          "complete"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "Always true: a refusal is returned as an error."
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "False when a module that opts out of dry runs was skipped."
+          }
+        }
+      },
       "ConfigureRequest": {
         "type": "object",
         "required": [
@@ -2258,6 +2477,17 @@
               }
             ]
           },
+          "modules": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModuleApproval",
+                "description": "The policy module configuration that approved this delta. Absent when no module ran."
+              }
+            ]
+          },
           "note_counts": {
             "$ref": "#/components/schemas/NoteCounts"
           },
@@ -2537,6 +2767,26 @@
           "eip712"
         ]
       },
+      "FailedOpen": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "layer",
+          "failure"
+        ],
+        "properties": {
+          "failure": {
+            "type": "string",
+            "description": "`timeout`, `error`, `invalid_decision` or `request_unavailable`; the detail is logged."
+          },
+          "layer": {
+            "type": "string"
+          },
+          "module_id": {
+            "type": "string"
+          }
+        }
+      },
       "HistoryEntry": {
         "type": "object",
         "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
@@ -2629,6 +2879,31 @@
           "devnet",
           "testnet"
         ]
+      },
+      "ModuleApproval": {
+        "type": "object",
+        "description": "What the policy modules ran with. Allowed evaluations are not listed: the catalog, params\nversion and account determine which modules ran, so only failures let through by\n`on_error = allow` are kept.",
+        "required": [
+          "catalog_hash",
+          "params_version"
+        ],
+        "properties": {
+          "catalog_hash": {
+            "type": "string",
+            "description": "SHA-256 of the catalog file the approving replica loaded."
+          },
+          "failed_open": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FailedOpen"
+            }
+          },
+          "params_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "NetworkConfig": {
         "oneOf": [
@@ -2781,6 +3056,61 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "PoliciesResponse": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "policies"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "policies": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PolicyEntry"
+            }
+          }
+        }
+      },
+      "PolicyEntry": {
+        "type": "object",
+        "description": "One policy as the account's cosigners see it.",
+        "required": [
+          "module_id",
+          "hooks",
+          "description"
+        ],
+        "properties": {
+          "account_layer": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "`disclosure = \"params\"` on a `scope = all` instance: this account's layer, when set."
+          },
+          "description": {
+            "type": "string"
+          },
+          "hooks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "params": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "`disclosure = \"params\"`: the instance's global params, or the account's own params for\nan assigned instance."
           }
         }
       },

@@ -62,10 +62,27 @@ Each instance decides how much the account's cosigners learn
 | `description` | Text, at most 500 characters | Shown to cosigners, for example "At most 5 per transaction". |
 | `dry_run` | `true` (default), `false` | Whether a dry-run check may call the instance. |
 
-The prototype applies `client_reason` and forwards `client_message` (plain
-text, at most 256 characters). The policy summary and the dry-run check are
-not built yet; `disclosure`, `description` and `dry_run` are validated and
-shown in `GET /modules` so operators can set them now. In
+Cosigners use two client endpoints:
+
+- `GET /policies?account_id=…` lists the disclosed policies (Rust
+  `get_policies`, TypeScript `getPolicies`).
+- `POST /delta/proposal/check` runs proposal creation without storing
+  anything: it answers `{ "allowed": true, "complete": … }` or the error
+  creation would return. At most `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` (30)
+  checks per account and signer per minute.
+
+The Rust multisig SDK wraps both (`get_policies`, and `check_transaction`,
+which builds the transaction exactly as `propose_transaction` does). The
+TypeScript multisig SDK does not yet: until the next
+`@openzeppelin/guardian-client` release, TypeScript callers use
+`getPolicies` and `checkDeltaProposal` on the base `GuardianHttpClient` and
+pass the proposal payload themselves.
+
+An instance whose catalog params contain secret references cannot use
+`disclosure = "params"`: the server refuses to start, since the reference
+would show cosigners the secret's name.
+
+In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and
 `blocklist` denies generically.
 

@@ -198,3 +198,144 @@ impl guardian_module_sdk::ModuleFactory for FixedFactory {
         Ok(self.0.clone())
     }
 }
+
+/// An operator write a [`RacingStore`] commits at a chosen moment.
+pub enum RacingWrite {
+    Global(&'static str, serde_json::Value),
+    Layer(&'static str, &'static str, Option<serde_json::Value>),
+}
+
+/// A module store that commits operator writes just before a chosen read or write of the
+/// caller, to reproduce writes racing with an evaluation or a migration.
+pub struct RacingStore {
+    pub inner: super::store::FsModuleStore,
+    pub before_account_params: std::sync::Mutex<Vec<RacingWrite>>,
+    pub before_set_global_if: std::sync::Mutex<Vec<RacingWrite>>,
+}
+
+impl RacingStore {
+    pub fn new() -> Self {
+        Self {
+            inner: super::store::FsModuleStore::in_memory(),
+            before_account_params: Default::default(),
+            before_set_global_if: Default::default(),
+        }
+    }
+
+    async fn commit(&self, writes: Vec<RacingWrite>) -> Result<(), String> {
+        use super::store::ModuleStore;
+        let change = super::store::Change {
+            operator: "0xracing-operator",
+            reason: "concurrent write",
+            at: "2026-10-16T00:00:01Z".into(),
+        };
+        for write in writes {
+            match write {
+                RacingWrite::Global(module, params) => {
+                    self.inner.set_global(module, params, &change).await?
+                }
+                RacingWrite::Layer(account, module, params) => {
+                    self.inner
+                        .set_layer(account, module, params, &change)
+                        .await?
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for RacingStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait]
+impl super::store::ModuleStore for RacingStore {
+    async fn seed_instance(
+        &self,
+        module_id: &str,
+        enabled: bool,
+        params: &serde_json::Value,
+        at: &str,
+    ) -> Result<(), String> {
+        self.inner
+            .seed_instance(module_id, enabled, params, at)
+            .await
+    }
+
+    async fn instances(&self) -> Result<Vec<super::store::InstanceRow>, String> {
+        self.inner.instances().await
+    }
+
+    async fn set_enabled(
+        &self,
+        module_id: &str,
+        enabled: bool,
+        change: &super::store::Change<'_>,
+    ) -> Result<(), String> {
+        self.inner.set_enabled(module_id, enabled, change).await
+    }
+
+    async fn set_global(
+        &self,
+        module_id: &str,
+        params: serde_json::Value,
+        change: &super::store::Change<'_>,
+    ) -> Result<(), String> {
+        self.inner.set_global(module_id, params, change).await
+    }
+
+    async fn set_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &super::store::Change<'_>,
+    ) -> Result<bool, String> {
+        let writes = std::mem::take(&mut *self.before_set_global_if.lock().unwrap());
+        self.commit(writes).await?;
+        self.inner
+            .set_global_if(module_id, expected, params, change)
+            .await
+    }
+
+    async fn account_params(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<super::store::AccountParamsRow>, String> {
+        let writes = std::mem::take(&mut *self.before_account_params.lock().unwrap());
+        self.commit(writes).await?;
+        self.inner.account_params(account_id).await
+    }
+
+    async fn set_layer(
+        &self,
+        account_id: &str,
+        module_id: &str,
+        params: Option<serde_json::Value>,
+        change: &super::store::Change<'_>,
+    ) -> Result<(), String> {
+        self.inner
+            .set_layer(account_id, module_id, params, change)
+            .await
+    }
+
+    async fn set_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<super::store::Assigned>,
+        change: &super::store::Change<'_>,
+    ) -> Result<(), String> {
+        self.inner.set_assignment(account_id, modules, change).await
+    }
+
+    async fn history(&self, module_id: &str) -> Result<Vec<super::store::HistoryEntry>, String> {
+        self.inner.history(module_id).await
+    }
+
+    async fn version(&self) -> Result<u64, String> {
+        self.inner.version().await
+    }
+}

@@ -206,6 +206,8 @@ impl Modify for CommonResponsesAddon {
         crate::api::http::status,
         crate::api::http::status_root,
         crate::api::http::push_delta_proposal,
+        crate::api::http::check_delta_proposal,
+        crate::api::http::get_policies,
         crate::api::http::get_delta_proposals,
         crate::api::http::get_delta_proposal,
         crate::api::http::sign_delta_proposal,

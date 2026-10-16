@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
-use super::store::{ModuleStore, ParamsKind};
+use super::store::{AccountParamsRow, ModuleStore, ParamsKind};
 use crate::delta_summary::{FailedOpen, ModuleApproval};
 use crate::error::GuardianError;
 
@@ -36,7 +36,9 @@ pub struct ModulePipeline {
 }
 
 /// The `module_instances` rows as of one params version.
-type Rows = Arc<HashMap<String, (serde_json::Value, bool)>>;
+const SNAPSHOT_ATTEMPTS: usize = 3;
+
+pub(super) type Rows = Arc<HashMap<String, (serde_json::Value, bool)>>;
 
 #[derive(Default)]
 struct Cache {
@@ -131,20 +133,24 @@ impl ModulePipeline {
                 .seed_instance(&config.id, config.enabled, &seed, &now)
                 .await?;
         }
-        for instance in instances.iter().filter(|instance| {
-            stored.contains_key(&instance.config.id) && !instance.config.file_managed_params
-        }) {
-            let Some(params) = normalized.get(&instance.config.id) else {
+        for instance in instances
+            .iter()
+            .filter(|instance| !instance.config.file_managed_params)
+        {
+            let (Some(params), Some((read, _))) = (
+                normalized.get(&instance.config.id),
+                stored.get(&instance.config.id),
+            ) else {
                 continue;
             };
             let operator = format!(
                 "module:{}",
                 instance.build.as_deref().unwrap_or(&instance.config.kind)
             );
-            tracing::info!(module = %instance.config.id, %operator, "Module normalized its stored global params; storing the migrated form");
-            store
-                .set_global(
+            let migrated = store
+                .set_global_if(
                     &instance.config.id,
+                    read,
                     params.clone(),
                     &super::store::Change {
                         operator: &operator,
@@ -153,6 +159,11 @@ impl ModulePipeline {
                     },
                 )
                 .await?;
+            if migrated {
+                tracing::info!(module = %instance.config.id, %operator, "Module normalized its stored global params; stored the migrated form");
+            } else {
+                tracing::warn!(module = %instance.config.id, "Global params changed while the module migrated them; kept the newer value, migration retries next start");
+            }
         }
         Ok(Self {
             instances,
@@ -165,9 +176,20 @@ impl ModulePipeline {
 
     #[cfg(test)]
     pub fn from_instances(instances: Vec<Instance>) -> Self {
+        Self::from_instances_with_store(
+            instances,
+            Arc::new(super::store::FsModuleStore::in_memory()),
+        )
+    }
+
+    #[cfg(test)]
+    pub fn from_instances_with_store(
+        instances: Vec<Instance>,
+        store: Arc<dyn ModuleStore>,
+    ) -> Self {
         Self {
             instances,
-            store: Arc::new(super::store::FsModuleStore::in_memory()),
+            store,
             cache: RwLock::new(Cache::default()),
             views: Arc::default(),
             catalog_hash: String::new(),
@@ -194,7 +216,7 @@ impl ModulePipeline {
 
     /// The stored `(global params, enabled)` rows, cached per replica and refreshed when the
     /// params version moves. One version read per call.
-    async fn rows(&self) -> Result<Rows, GuardianError> {
+    pub(super) async fn rows(&self) -> Result<Rows, GuardianError> {
         Ok(self.versioned_rows().await?.1)
     }
 
@@ -223,7 +245,32 @@ impl ModulePipeline {
         Ok((version, rows))
     }
 
-    fn global_params_in(rows: &Rows, instance: &Instance) -> serde_json::Value {
+    /// The global rows and one account's rows as of a single params version. Every module write
+    /// moves the version in the same transaction, so an unchanged version across the reads
+    /// means no write committed between them; otherwise the reads are retried. Without this a
+    /// request could combine a new global rule with an old account layer, a combination no
+    /// operator ever configured.
+    pub(super) async fn snapshot(
+        &self,
+        account_id: &str,
+    ) -> Result<(u64, Rows, Vec<AccountParamsRow>), GuardianError> {
+        for _ in 0..SNAPSHOT_ATTEMPTS {
+            let (version, rows) = self.versioned_rows().await?;
+            let account_rows = self
+                .store
+                .account_params(account_id)
+                .await
+                .map_err(Self::store_error)?;
+            if self.store.version().await.map_err(Self::store_error)? == version {
+                return Ok((version, rows, account_rows));
+            }
+        }
+        Err(Self::store_error(
+            "module state kept changing while it was read".into(),
+        ))
+    }
+
+    pub(super) fn global_params_in(rows: &Rows, instance: &Instance) -> serde_json::Value {
         if instance.config.file_managed_params {
             return instance.config.params.clone();
         }
@@ -233,7 +280,7 @@ impl ModulePipeline {
         )
     }
 
-    fn enabled_in(rows: &Rows, instance: &Instance) -> bool {
+    pub(super) fn enabled_in(rows: &Rows, instance: &Instance) -> bool {
         rows.get(&instance.config.id)
             .map_or(instance.config.enabled, |(_, enabled)| *enabled)
     }
@@ -261,22 +308,26 @@ impl ModulePipeline {
         account_id: &str,
     ) -> Result<Option<Plan<'_>>, GuardianError> {
         let account_id = account_id.to_ascii_lowercase();
-        let (params_version, rows) = self.versioned_rows().await?;
+        let subscribed = |rows: &Rows, instance: &&Instance| {
+            instance.config.hooks.contains(&hook) && Self::enabled_in(rows, instance)
+        };
+        let (_, rows) = self.versioned_rows().await?;
+        if !self
+            .instances
+            .iter()
+            .any(|instance| subscribed(&rows, &instance))
+        {
+            return Ok(None);
+        }
+        let (params_version, rows, account_rows) = self.snapshot(&account_id).await?;
         let active: Vec<&Instance> = self
             .instances
             .iter()
-            .filter(|instance| {
-                instance.config.hooks.contains(&hook) && Self::enabled_in(&rows, instance)
-            })
+            .filter(|instance| subscribed(&rows, instance))
             .collect();
         if active.is_empty() {
             return Ok(None);
         }
-        let account_rows = self
-            .store
-            .account_params(&account_id)
-            .await
-            .map_err(Self::store_error)?;
         let mut modules = Vec::new();
         for instance in active
             .iter()
@@ -312,6 +363,23 @@ impl ModulePipeline {
             params_version,
             views: self.views.clone(),
         }))
+    }
+
+    /// The plan for a dry-run check: instances with `dry_run = false` are skipped, and
+    /// `complete` is false when any was.
+    pub async fn plan_dry_run(
+        &self,
+        hook: HookName,
+        account_id: &str,
+    ) -> Result<(Option<Plan<'_>>, bool), GuardianError> {
+        let Some(mut plan) = self.plan(hook, account_id).await? else {
+            return Ok((None, true));
+        };
+        let planned = plan.modules.len();
+        plan.modules
+            .retain(|(instance, _, _)| instance.config.dry_run);
+        let complete = plan.modules.len() == planned;
+        Ok(((!plan.modules.is_empty()).then_some(plan), complete))
     }
 
     pub async fn applies(&self, hook: HookName, account_id: &str) -> Result<bool, GuardianError> {
@@ -842,6 +910,123 @@ params = { old_name = 5 }
             other => panic!("unexpected {other:?}"),
         }
         assert_eq!(client_message("  \n "), None);
+    }
+
+    #[tokio::test]
+    async fn a_request_never_mixes_a_global_rule_and_an_account_layer_from_different_versions() {
+        use super::super::store::Change;
+        use crate::modules::testing::{RacingStore, RacingWrite};
+        let store = Arc::new(RacingStore::new());
+        let change = Change {
+            operator: "0xop",
+            reason: "setup",
+            at: "2026-10-16T00:00:00Z".into(),
+        };
+        store
+            .inner
+            .seed_instance(
+                "caps",
+                true,
+                &serde_json::json!({ "cap": 1000 }),
+                "2026-10-16T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        store
+            .inner
+            .set_layer(
+                "0xacc",
+                "caps",
+                Some(serde_json::json!({ "cap": 100 })),
+                &change,
+            )
+            .await
+            .unwrap();
+        *store.before_account_params.lock().unwrap() = vec![
+            RacingWrite::Global("caps", serde_json::json!({ "cap": 100 })),
+            RacingWrite::Layer("0xacc", "caps", None),
+        ];
+        let pipeline = ModulePipeline::from_instances_with_store(
+            vec![instance(
+                "caps",
+                &[HOOK],
+                OnError::Deny,
+                StubModule::allowing(),
+            )],
+            store,
+        );
+
+        let plan = pipeline.plan(HOOK, "0xacc").await.unwrap().unwrap();
+        let params: Vec<_> = plan
+            .modules
+            .iter()
+            .map(|(_, params, _)| params.clone())
+            .collect();
+        assert_eq!(
+            params,
+            vec![serde_json::json!({ "cap": 100 })],
+            "the version moved during the read, so the plan was rebuilt from one version"
+        );
+    }
+
+    /// An operator lowers the stored params while the module is migrating them at startup;
+    /// the migration must not replace the operator's newer value with its stale result.
+    #[tokio::test]
+    async fn a_startup_migration_never_overwrites_a_newer_operator_write() {
+        use crate::modules::testing::{FixedFactory, ProtocolStub, RacingStore, RacingWrite};
+        let catalog = Catalog::parse(
+            r#"
+[[module]]
+id = "migrating"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+params = { old_name = 1000 }
+"#,
+            None,
+        )
+        .unwrap();
+        let mut stub = ProtocolStub::new();
+        stub.normalized = Some(serde_json::json!({ "new_name": 1000 }));
+        let mut registry = Registry::first_party();
+        registry
+            .register("protocol-stub", Arc::new(FixedFactory(Arc::new(stub))))
+            .unwrap();
+        let store = Arc::new(RacingStore::new());
+        store
+            .inner
+            .seed_instance(
+                "migrating",
+                true,
+                &serde_json::json!({ "old_name": 1000 }),
+                "2026-10-16T00:00:00Z",
+            )
+            .await
+            .unwrap();
+        *store.before_set_global_if.lock().unwrap() = vec![RacingWrite::Global(
+            "migrating",
+            serde_json::json!({ "new_name": 100 }),
+        )];
+
+        ModulePipeline::new(
+            catalog,
+            &registry,
+            store.clone(),
+            "2026-10-16T00:00:02Z".into(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            store.instances().await.unwrap()[0].global_params,
+            serde_json::json!({ "new_name": 100 }),
+            "the operator's cap of 100 stays"
+        );
+        let last = store.history("migrating").await.unwrap().pop().unwrap();
+        assert_eq!(
+            last.operator, "0xracing-operator",
+            "no migration entry after it"
+        );
     }
 
     #[tokio::test]

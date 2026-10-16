@@ -332,6 +332,59 @@ impl ModuleStore for PgModuleStore {
         .map_err(|e| format!("set global params: {e}"))
     }
 
+    async fn set_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<bool, String> {
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let (module_id, expected) = (module_id.to_string(), expected.clone());
+        let written = conn
+            .transaction::<(), diesel::result::Error, _>(|conn| {
+                async move {
+                    let version = bump(conn).await?;
+                    let current: Vec<ParamsSql> = diesel::sql_query(
+                        "SELECT global_params AS params FROM module_instances \
+                         WHERE module_id = $1 FOR UPDATE",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .load(conn)
+                    .await?;
+                    let Some(previous) = current.into_iter().next().map(|row| row.params) else {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    };
+                    if previous != expected {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    }
+                    diesel::sql_query(
+                        "UPDATE module_instances SET global_params = $2, updated_at = $3, \
+                         updated_by = $4 WHERE module_id = $1",
+                    )
+                    .bind::<Text, _>(&module_id)
+                    .bind::<Jsonb, _>(&params)
+                    .bind::<Timestamptz, _>(changed_at)
+                    .bind::<Text, _>(change.operator)
+                    .execute(conn)
+                    .await?;
+                    append(
+                        conn, version, &module_id, None, &previous, &params, change, changed_at,
+                    )
+                    .await?;
+                    Ok(())
+                }
+                .scope_boxed()
+            })
+            .await;
+        match written {
+            Ok(()) => Ok(true),
+            Err(diesel::result::Error::RollbackTransaction) => Ok(false),
+            Err(e) => Err(format!("set global params: {e}")),
+        }
+    }
+
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
         let mut conn = self.conn().await?;
         let rows: Vec<AccountParamsSql> = diesel::sql_query(
@@ -672,5 +725,59 @@ mod tests {
         let rows = store.account_params(&account).await.unwrap();
         assert_eq!(rows.len(), 1, "one replacement wins, never a union");
         assert!(store.version().await.unwrap() >= before + 8);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_conditional_write_only_replaces_the_value_it_expects() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let module = format!("cas-{}", rand::random::<u32>());
+        let t0 = "2026-10-16T00:00:00Z";
+        store
+            .seed_instance(&module, true, &json!({ "old_name": 1000 }), t0)
+            .await
+            .unwrap();
+        store
+            .set_global(&module, json!({ "new_name": 100 }), &change(t0))
+            .await
+            .unwrap();
+        let before = store.version().await.unwrap();
+        assert!(
+            !store
+                .set_global_if(
+                    &module,
+                    &json!({ "old_name": 1000 }),
+                    json!({ "new_name": 1000 }),
+                    &change(t0)
+                )
+                .await
+                .unwrap(),
+            "the stale expectation does not write"
+        );
+        assert_eq!(
+            store.version().await.unwrap(),
+            before,
+            "and does not move the version"
+        );
+        assert!(
+            store
+                .set_global_if(
+                    &module,
+                    &json!({ "new_name": 100 }),
+                    json!({ "new_name": 50 }),
+                    &change(t0)
+                )
+                .await
+                .unwrap()
+        );
+        let row = store
+            .instances()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(row.global_params, json!({ "new_name": 50 }));
     }
 }

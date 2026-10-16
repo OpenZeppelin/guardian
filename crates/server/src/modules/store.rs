@@ -109,6 +109,17 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<(), String>;
 
+    /// Replaces the global params only while they still equal `expected`, and returns whether
+    /// it wrote. For writes derived from a value read earlier (a module migrating params), so
+    /// an operator's newer write is never overwritten.
+    async fn set_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<bool, String>;
+
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String>;
 
     async fn set_layer(
@@ -357,6 +368,29 @@ impl ModuleStore for FsModuleStore {
             row.updated_by = change.operator.to_string();
             tables.append(module_id, None, previous, params, change);
             Ok(())
+        })
+    }
+
+    async fn set_global_if(
+        &self,
+        module_id: &str,
+        expected: &serde_json::Value,
+        params: serde_json::Value,
+        change: &Change<'_>,
+    ) -> Result<bool, String> {
+        self.write(|tables| {
+            let Some(row) = tables
+                .instances
+                .get_mut(module_id)
+                .filter(|row| row.global_params == *expected)
+            else {
+                return Ok(false);
+            };
+            let previous = std::mem::replace(&mut row.global_params, params.clone());
+            row.updated_at = change.at.clone();
+            row.updated_by = change.operator.to_string();
+            tables.append(module_id, None, previous, params, change);
+            Ok(true)
         })
     }
 

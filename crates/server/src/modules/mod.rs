@@ -2,6 +2,8 @@
 
 pub mod admin;
 pub mod catalog;
+pub mod check_limit;
+pub mod disclosure;
 pub mod grpc_kind;
 pub mod pipeline;
 #[cfg(feature = "postgres")]

@@ -151,6 +151,24 @@ export interface ServerDeltaProposalResponse {
   commitment: string;
 }
 
+export interface ServerCheckProposalResponse {
+  allowed: boolean;
+  complete: boolean;
+}
+
+export interface ServerPolicyEntry {
+  module_id: string;
+  hooks: string[];
+  description: string;
+  params?: Record<string, unknown>;
+  account_layer?: Record<string, unknown>;
+}
+
+export interface ServerPoliciesResponse {
+  account_id: string;
+  policies: ServerPolicyEntry[];
+}
+
 export interface ServerProposalsResponse {
   proposals: ServerDeltaObject[];
 }

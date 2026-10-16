@@ -334,6 +334,7 @@ modules guide](./guides/policy-modules/README.md).
 | Variable | Default | Notes |
 |---|---|---|
 | `GUARDIAN_MODULES_CONFIG` | _unset_ (no modules) | Path of the module catalog (TOML). Read once at startup; it declares every instance and seeds its global params on first start, after which params are managed through the [operator API](./DASHBOARD.md#policy-modules). A relative path resolves against the working directory; relative `auth.token_file` and `tls.*_file` paths in the catalog resolve against the catalog's directory. An enabled instance that fails its startup checks stops startup. In the prod stage remote instances must use TLS (`grpc://`) and set `auth`. |
+| `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` | `30` | Dry-run proposal checks (`POST /delta/proposal/check`) one signer may make for one account per minute; excess returns `rate_limit_exceeded`. Per replica. A value that is not a positive integer refuses startup. |
 | `GUARDIAN_MODULES_STATE` | `<GUARDIAN_METADATA_PATH>/modules` | Filesystem builds only: directory of the module state file (`module_state.json`). Postgres builds keep module state in the database. |
 
 ## Runtime — EVM (feature-gated)

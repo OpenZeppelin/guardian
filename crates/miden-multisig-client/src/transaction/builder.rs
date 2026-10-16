@@ -42,6 +42,18 @@ use super::{
 pub struct ProposalBuilder {
     transaction_type: TransactionType,
     approval_expiration_delta: Option<NonZeroU32>,
+    /// Set by [`ProposalBuilder::check`]: the proposal is checked on GUARDIAN, not created.
+    dry_run: bool,
+    checked: Arc<std::sync::Mutex<Option<ProposalCheck>>>,
+}
+
+/// The answer of a proposal check that passed: GUARDIAN's policy modules would let the
+/// proposal be created. A refusal is the same error creating it returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProposalCheck {
+    /// False when a module that opts out of checks was skipped, so creation could still be
+    /// refused.
+    pub complete: bool,
 }
 
 /// Per-proposal settings a caller may set when proposing a transaction.
@@ -132,6 +144,8 @@ impl ProposalBuilder {
         Self {
             transaction_type,
             approval_expiration_delta: None,
+            dry_run: false,
+            checked: Arc::default(),
         }
     }
 
@@ -139,6 +153,68 @@ impl ProposalBuilder {
     pub fn with_options(mut self, options: ProposalOptions) -> Self {
         self.approval_expiration_delta = options.approval_expiration_delta;
         self
+    }
+
+    /// Builds the proposal exactly as [`Self::build`] would and asks GUARDIAN whether it
+    /// would be created, without storing it. Advisory: approval still decides.
+    pub async fn check(
+        mut self,
+        miden_client: &mut MidenSdkClient,
+        node_rpc: &Arc<dyn NodeRpcClient>,
+        guardian_client: &mut GuardianClient,
+        account: &MultisigAccount,
+        key_manager: &dyn KeyManager,
+    ) -> Result<ProposalCheck> {
+        self.dry_run = true;
+        let checked = self.checked.clone();
+        self.build(
+            miden_client,
+            node_rpc,
+            guardian_client,
+            account,
+            key_manager,
+        )
+        .await?;
+        let result = checked.lock().ok().and_then(|mut checked| checked.take());
+        result.ok_or_else(|| {
+            MultisigError::GuardianServer("GUARDIAN did not answer the proposal check".into())
+        })
+    }
+
+    /// Creates the proposal on GUARDIAN, or only checks it in a dry run. Returns the
+    /// commitment GUARDIAN reports for a created proposal, none for a check.
+    async fn send(
+        &self,
+        guardian_client: &mut GuardianClient,
+        account_id: &AccountId,
+        nonce: u64,
+        payload: &serde_json::Value,
+    ) -> Result<Option<String>> {
+        if self.dry_run {
+            let response = guardian_client
+                .check_delta_proposal(account_id, nonce, payload)
+                .await
+                .map_err(|e| MultisigError::guardian("failed to check proposal", e))?;
+            if let Ok(mut checked) = self.checked.lock() {
+                *checked = Some(ProposalCheck {
+                    complete: response.complete,
+                });
+            }
+            return Ok(None);
+        }
+        let response = guardian_client
+            .push_delta_proposal(account_id, nonce, payload)
+            .await
+            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        Ok(Some(response.commitment))
+    }
+
+    /// Checks GUARDIAN's commitment for a created proposal; a check has none.
+    fn confirm(&self, proposal: &Proposal, response_commitment: Option<&str>) -> Result<()> {
+        match response_commitment {
+            Some(commitment) => Self::ensure_response_commitment(proposal, commitment),
+            None => Ok(()),
+        }
     }
 
     /// Builds and submits the proposal to GUARDIAN.
@@ -348,10 +424,9 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -360,7 +435,7 @@ impl ProposalBuilder {
             TransactionType::AddCosigner { new_commitment },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }
@@ -449,10 +524,9 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -463,7 +537,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }
@@ -560,10 +634,9 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -574,7 +647,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }
@@ -657,10 +730,9 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -675,7 +747,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }
@@ -769,10 +841,9 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         // Clone notes for the runtime TransactionType; metadata keeps its own copy.
         let notes_for_tx_type = metadata.consume_notes_notes.clone();
@@ -786,7 +857,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }
@@ -866,10 +937,9 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -881,7 +951,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }
@@ -940,10 +1010,9 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(|e| MultisigError::guardian("failed to push proposal", e))?;
+        let response_commitment = self
+            .send(guardian_client, &account_id, nonce, &payload.to_json())
+            .await?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -954,7 +1023,7 @@ impl ProposalBuilder {
             },
             metadata,
         );
-        Self::ensure_response_commitment(&proposal, &response.commitment)?;
+        self.confirm(&proposal, response_commitment.as_deref())?;
 
         Ok(proposal)
     }

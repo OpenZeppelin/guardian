@@ -667,6 +667,7 @@ impl ServerBuilder {
             );
         }
 
+        crate::modules::check_limit::init_from_env()?;
         let mut module_registry = crate::modules::Registry::first_party();
         for (kind, factory) in self.module_kinds {
             module_registry.register(kind, factory)?;

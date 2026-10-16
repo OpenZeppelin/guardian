@@ -523,6 +523,94 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('policy discovery', () => {
+    const accountId = '0x' + 'a'.repeat(30);
+
+    it('lists the disclosed policies over a signed query', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: accountId,
+          policies: [
+            {
+              module_id: 'caps',
+              hooks: ['before_transaction_approved'],
+              description: 'At most 5 per transaction',
+              params: { max_amount_per_tx: { '0xaa': '5' } },
+              account_layer: { max_amount_per_tx: { '0xaa': '2' } },
+            },
+            { module_id: 'screening', hooks: ['before_proposal_created'], description: 'Screened' },
+          ],
+        }),
+      });
+
+      const policies = await client.getPolicies(accountId);
+
+      expect(policies).toEqual([
+        {
+          moduleId: 'caps',
+          hooks: ['before_transaction_approved'],
+          description: 'At most 5 per transaction',
+          params: { max_amount_per_tx: { '0xaa': '5' } },
+          accountLayer: { max_amount_per_tx: { '0xaa': '2' } },
+        },
+        { moduleId: 'screening', hooks: ['before_proposal_created'], description: 'Screened' },
+      ]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/policies?account_id='),
+        expect.objectContaining({
+          method: 'GET',
+          headers: expect.objectContaining({ 'x-signature': expect.any(String) }),
+        })
+      );
+    });
+
+    it('checks a proposal without creating it', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ allowed: true, complete: false }),
+      });
+
+      const result = await client.checkDeltaProposal({
+        accountId,
+        nonce: 1,
+        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+      });
+
+      expect(result).toEqual({ allowed: true, complete: false });
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('/delta/proposal/check'),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+
+    it('surfaces a policy refusal from the check as the creation error', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_MODULE_DENIED',
+            message: "This Guardian's policy doesn't allow this request.",
+            meta: { retryable: false, reason_code: 'policy_denied' },
+          }),
+      });
+
+      await expect(
+        client.checkDeltaProposal({
+          accountId,
+          nonce: 1,
+          deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+        })
+      ).rejects.toMatchObject({ code: 'module_denied', status: 403 });
+    });
+  });
+
   describe('pushDeltaProposal', () => {
     it('lets an EIP-712 signer create an unsigned proposal', async () => {
       const signer: Signer = {

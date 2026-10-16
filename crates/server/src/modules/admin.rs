@@ -183,10 +183,7 @@ async fn instance_view(
             .config
             .hooks
             .iter()
-            .map(|hook| {
-                let name = hook.proto().as_str_name().to_ascii_lowercase();
-                name.strip_prefix("hook_").unwrap_or(&name).to_string()
-            })
+            .map(|hook| hook.as_str().to_string())
             .collect(),
         enabled,
         catalog_enabled: instance.config.catalog_enabled,
@@ -306,10 +303,11 @@ pub async fn enable(
                 "module:{}",
                 instance.build.as_deref().unwrap_or(&instance.config.kind)
             );
-            pipeline
+            let migrated = pipeline
                 .store()
-                .set_global(
+                .set_global_if(
                     module_id,
+                    &params,
                     checked.params,
                     &Change {
                         operator: &migrator,
@@ -319,6 +317,9 @@ pub async fn enable(
                 )
                 .await
                 .map_err(GuardianError::StorageError)?;
+            if !migrated {
+                tracing::warn!(module = %module_id, "Global params changed while the module migrated them; kept the newer value");
+            }
         }
         pipeline
             .store()

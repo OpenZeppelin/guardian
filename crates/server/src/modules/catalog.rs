@@ -35,6 +35,15 @@ pub enum HookName {
 }
 
 impl HookName {
+    /// The catalog spelling, for example `before_transaction_approved`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HookName::BeforeTransactionApproved => "before_transaction_approved",
+            HookName::BeforeProposalCreated => "before_proposal_created",
+            HookName::BeforeAccountRegistered => "before_account_registered",
+        }
+    }
+
     pub fn proto(self) -> Hook {
         match self {
             HookName::BeforeTransactionApproved => Hook::BeforeTransactionApproved,
@@ -298,6 +307,11 @@ impl Catalog {
             if remote && contains_secret_reference(&params) {
                 return Err(format!(
                     "module {id}: secret references are not allowed in remote module params"
+                ));
+            }
+            if entry.disclosure == Disclosure::Params && contains_secret_reference(&params) {
+                return Err(format!(
+                    "module {id}: disclosure = \"params\" would show cosigners the secret references in its params; use \"summary\" or \"none\""
                 ));
             }
             let auth_token = entry
@@ -595,5 +609,30 @@ timeout_ms = 20
             ),
         );
         assert!(parse(&long).unwrap_err().contains("longer than"));
+    }
+
+    #[test]
+    fn params_holding_secret_references_cannot_be_disclosed() {
+        let catalog = |disclosure: &str| {
+            format!(
+                r#"
+[[module]]
+id = "vendor"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 20
+disclosure = "{disclosure}"
+description = "Vendor screening"
+params = {{ api_key = {{ "$secret" = "vendor-key" }} }}
+"#
+            )
+        };
+        assert!(
+            parse(&catalog("params"))
+                .unwrap_err()
+                .contains("secret references")
+        );
+        assert!(parse(&catalog("summary")).is_ok());
     }
 }
