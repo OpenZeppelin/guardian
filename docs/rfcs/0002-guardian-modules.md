@@ -7,7 +7,7 @@
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
 | **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; plan and tasks follow the prototype |
-| **Revision** | 21 (2026-10-15): layered parameters (section 2.2): the catalog file registers instances and seeds their global params; global params and per-account params are then managed through the operator API; on a `scope = all` instance an account layer only adds restrictions, evaluated as a second pass that must also allow, so a global rule always holds; `account_params` removed from the catalog; `policies:write_global` permission; params history and a params version recorded with each signed delta; `meta.layer` on denials; `recipient_denylist` in `basic-policy`; invariant 4 and D2 restated; module state in its own tables (`module_instances`, `module_account_params`, `module_params_history`, plus a one-row `module_state_version` lock so the params version moves in commit order), not in account metadata; each signed delta records `catalog_hash`, `params_version` and the evaluations that failed open; runtime enable and disable; modules decode the exact summary the Guardian signs (the bare summary, never the proposal wrapper); `grpc+insecure://` for loopback plain text; account views cached by state commitment, with end-to-end latency results (sections 3.2, 4.3) |
+| **Revision** | 22 (2026-10-16): protocol evolution (section 3.5): `Describe` carries the Guardian's protocol range and capabilities and the module's required capabilities; the Guardian accepts its current protocol version and, once a newer one exists, the previous one for one release; `Decision.effect` with unknown effects treated as module failures; `ParamsVerdict.normalized_params` so modules migrate their own params, recorded in the history; additive-only rules within a protocol version; `#[non_exhaustive]` SDK types with constructors; policy discovery and disclosure (sections 2.7, 4.1, 5.3): per-instance `disclosure`, `description`, `client_reason` and `dry_run`, a policy summary and a dry-run check for cosigners, generic denials, `Decision.client_message`, and the disclosure risks with their mitigations |
 | **Earlier revisions** | Appendix C |
 | **Code baseline** | `main` at `1224ef13`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510). Miden pins: protocol 0.17.0. Prototype findings (2026-10-13 to 2026-10-15) in `speckit/features/251-guardian-modules/research.md` |
 
@@ -72,7 +72,7 @@ Two concepts are kept apart:
 ```rust
 #[async_trait]
 pub trait Module: Send + Sync {
-    async fn describe(&self) -> Result<ModuleInfo, ModuleError>;
+    async fn describe(&self, guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError>;
     async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError>;
     async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError>;
     async fn notify(&self, event: &CommitEvent) -> Result<(), ModuleError> {
@@ -126,6 +126,7 @@ Each catalog entry:
 | `params` | Initial global parameters as a JSON object, written to the metadata store the first time the instance id is seen and managed through the operator API afterwards (see layered parameters below) (TOML tables in the catalog are converted to JSON). Modules receive params as UTF-8 JSON bytes in RFC 8785 canonical form (JCS). The decoded bytes are identical on every transport: in process and over gRPC they arrive as raw bytes, while over `http` (once it ships) the proto3 JSON mapping carries them as a base64 string that decodes to the same bytes (likewise `int64` fields arrive as decimal strings and `Timestamp` fields as RFC 3339 strings, per the standard mapping). See "Parameters and secrets" below |
 | `require_fresh_state_ms` | Optional maximum notify lag in milliseconds (section 3.3) |
 | `enabled` | Default `true`. A one-time seed, read only the first time an instance id is seen; afterwards the runtime flag in the metadata store governs and later edits of this field have no effect (see runtime changes below) |
+| `disclosure`, `description`, `client_reason`, `dry_run` | What the account's cosigners may learn about the instance: the policy summary, generic or full denials, and the dry-run check (section 2.7). Defaults disclose nothing beyond today's denials |
 | `operator_can_disable` | Default `false`. When `true`, the operator API may disable this instance at runtime. Enabling is always allowed (see runtime changes below) |
 
 ```toml
@@ -455,6 +456,27 @@ x402 uses HTTP `402 Payment Required` for machine payments: a resource server an
 
 **What this RFC does not cover.** A facilitator drives a flow: it receives a payment request, starts settlement and waits for it. Allow/deny hooks cannot express "Guardian, execute this pre-authorized payment now". That needs a hook in the other direction, possibly through the Guardian execution path of [RFC 0001](https://github.com/OpenZeppelin/guardian/blob/254-execution-impl/docs/rfcs/0001-server-side-transaction-execution.md), and is future work (section 7).
 
+### 2.7 Policy discovery and disclosure
+
+A cosigner learns that a module refuses a transaction when the proposal is created: before anyone signs, but only by trying, and a proposal that passes takes one of the account's slots. Wallets need to know earlier which rules apply and whether a transaction would pass. Some rules can be shown freely, such as a treasury's own spending cap. Others must never be shown: revealing that a recipient is on a sanctions list, or that an account carries an extra restriction, can itself be prohibited (tipping off). Disclosure is therefore a per-instance operator decision, and the default discloses nothing. Disclosure only changes what users learn, never what the Guardian signs.
+
+**Catalog settings.** Four per-instance fields (section 2.2):
+
+| Field | Values | Effect |
+|---|---|---|
+| `disclosure` | `none` (default), `summary`, `params` | `none`: the instance is not listed in the policy summary. `summary`: listed with its `description`. `params`: also with its effective params for the account, global and the account's layer. |
+| `description` | Text, required unless `disclosure = "none"` | Operator-written, shown to the account's cosigners, for example "At most 10,000 USDC per transaction". |
+| `client_reason` | `full` (default), `generic` | `generic`: a denial reaches the client without the module, reason code or layer (section 4.1). Use it for screening and other rules whose reasons must stay internal. |
+| `dry_run` | `true` (default), `false` | `false`: the instance is skipped by the dry-run check below, for modules that must not be probed or that charge per call. |
+
+**Policy summary.** `GET /accounts/{account_id}/policies` on the client API (HTTP, and `GetPolicies` over gRPC) lists, for the account's cosigners under the same authentication as other account reads, the instances that apply to the account at each hook, in evaluation order, filtered by `disclosure`. An account layer is shown only for an instance with `disclosure = "params"`; a restriction an operator places on one account confidentially belongs on an instance with `disclosure = "none"`.
+
+**Dry-run check.** `POST /proposals/check` (HTTP, and `CheckProposal` over gRPC) takes the same body as proposal creation, without signatures, and runs the `before_proposal_created` instances on it exactly as creation would, with the evaluation time as `accounting_time`. It stores nothing, takes no proposal slot and records no decision. It returns `200 { "allowed": true, "complete": <bool> }` or the same `GUARDIAN_MODULE_DENIED` and `GUARDIAN_MODULE_UNAVAILABLE` errors as creation. `complete` is `false` when an instance was skipped because of `dry_run = false`, without naming it. The answer is advisory: params can change before approval, and `before_transaction_approved` remains the enforcement point. Only the account's cosigners may call it, and it is rate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`, default 30) and logged.
+
+**Client message.** A module may set `Decision.client_message` (plain text, at most 256 characters) for the person who sent the request, in addition to the logged `message`. The Guardian forwards it in `meta.client_message` only for an instance with `client_reason = "full"`, and drops it otherwise.
+
+**Client SDKs.** Both multisig SDKs expose the summary and the check (`getPolicies`, `checkProposal`), so a wallet can show the rules in the form and check a transaction before the user submits it.
+
 ---
 
 ## 3. Module protocol (`guardian.module.v1`)
@@ -481,10 +503,24 @@ enum Hook {
   HOOK_BEFORE_PROPOSAL_CREATED = 4;
 }
 
-message DescribeRequest {}
-message ModuleInfo { string name = 1; string version = 2; uint32 protocol_version = 3; repeated Hook hooks = 4; }
+message DescribeRequest {
+  uint32 guardian_protocol_version = 1;      // the newest protocol version the Guardian speaks
+  uint32 guardian_min_protocol_version = 2;  // the oldest it still accepts (section 3.5)
+  repeated string guardian_capabilities = 3; // optional features this Guardian provides
+}
+message ModuleInfo {
+  string name = 1;
+  string version = 2;
+  uint32 protocol_version = 3;               // must lie in the Guardian's supported range
+  repeated Hook hooks = 4;
+  repeated string required_capabilities = 5; // startup fails if the Guardian lacks one
+}
 message ValidateParamsRequest { bytes params = 1; string instance_id = 2; }  // params: UTF-8 JSON
-message ParamsVerdict { bool ok = 1; string message = 2; }
+message ParamsVerdict {
+  bool ok = 1;
+  string message = 2;
+  bytes normalized_params = 3;               // UTF-8 JSON; empty: store the params as sent (section 3.5)
+}
 message NotifyAck {}
 
 message Gap {
@@ -558,10 +594,18 @@ message RegistrationSubject {
   AccountProjection initial_state = 5;  // vault and storage of the account about to be accepted
 }
 
+enum Effect {
+  EFFECT_UNSPECIFIED = 0;             // a module that predates `effect`: `allow` decides
+  EFFECT_ALLOW = 1;
+  EFFECT_DENY = 2;
+}
+
 message Decision {
-  bool allow = 1;
-  string reason_code = 2;             // required when allow = false; ignored when allow = true
+  bool allow = 1;                     // read only when effect is unspecified
+  string reason_code = 2;             // required on a deny; ignored on an allow
   string message = 3;                 // logged, never forwarded to clients
+  Effect effect = 4;                  // wins over allow when set; a value the Guardian does not know is a module failure
+  string client_message = 5;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it (section 2.7)
 }
 
 message TxProjection {
@@ -646,7 +690,7 @@ message CommitEvent {
 - Storage slots: the slot's `StorageSlotName` as its string form, which is stable across accounts and protocol bumps and is what the dashboard projector already emits (`crates/server/src/delta_summary/projection.rs:301`) **[READ]**. Miden 0.17 identifies slots by name and records each changed slot as a value or map patch with a create, update or remove operation (`miden-protocol-0.17.0/src/account/patch/storage/slot_patch.rs:27-30`, `value_patch.rs:18-26`, `map_patch.rs:20-33`) **[READ]**; `StorageChange` carries exactly that. A removed slot has `op = remove` and no content. A removed map entry has the empty word as its value, as in the existing projector.
 - Timestamps: `google.protobuf.Timestamp`, RFC 3339 in UTC in the JSON mapping, always taken from the Guardian's clock.
 
-**Versioning.** `ModuleInfo.protocol_version` versions the whole wire contract, `TxProjection` and `AccountProjection` included; there is no separate projection version. Adding fields stays within a protocol version (proto3 readers ignore unknown fields). A breaking change, including a breaking projection change, increments it. The Guardian supports a range of protocol versions, and a module whose `describe` reports a version outside that range is refused at startup.
+**Versioning.** `ModuleInfo.protocol_version` versions the whole wire contract, `TxProjection` and `AccountProjection` included; there is no separate projection version. How the contract evolves, and which module versions a Guardian accepts, is section 3.5.
 
 **Registration cost.** `RegistrationSubject.initial_state` is built from the account `configure_account` already decodes to read its state head (`crates/server/src/services/configure_account.rs:150-153`) **[READ]**. Building the vault and storage projection from it is new work on the registration path, and the implementation should build it only when a module that declares `before_account_registered` will be called.
 
@@ -756,6 +800,27 @@ Limits:
 
 ---
 
+### 3.5 Protocol evolution and compatibility
+
+Remote modules are run by other teams and vendors and upgrade on their own schedule, so neither side can assume the other runs the same version. In-process kinds are compiled into the same build and always match; the rules below matter for remote modules and for module source compatibility across SDK releases.
+
+**What a protocol version may change.** Within one protocol version, changes are additive only: new fields, new messages, new enum values, new hooks and new capabilities. A field is never removed, renumbered or given a new meaning; retired numbers and names are `reserved`. Readers ignore fields they do not know (proto3). A change that needs either side to behave differently is either a capability or a new protocol version.
+
+**Negotiation.** `Describe` carries both sides. The Guardian sends the protocol range it accepts and the capabilities it provides; the module answers with its protocol version, the hooks it supports and the capabilities it requires. Startup refuses an enabled instance whose version is outside the range, that requires a capability the Guardian lacks, or that does not support a hook its catalog entry lists; a disabled instance stays disabled. A module can use the Guardian's capabilities to adapt, for example to rely on `pending` only where the Guardian provides it.
+
+| Capability | Meaning |
+|---|---|
+| `decision.effect` | The Guardian reads `Decision.effect` |
+| `params.normalization` | The Guardian stores `ParamsVerdict.normalized_params` |
+
+**Supported range.** A Guardian accepts its current protocol version and, once a newer major exists, the previous one for a deprecation window of one Guardian release. For a module on the previous version it builds that version's request shape, logs a warning at startup and exports `guardian_module_protocol_deprecated{module}`, so operators see which modules to upgrade before the window closes. Two or more versions behind, or ahead of the Guardian, is refused. Version 1 is the only version until M2a freezes it, so the range is a single version for now.
+
+**Decisions.** `Decision.effect` makes the outcome explicit, so later effects (for example a request for additional approval, section 7) can be added without a new protocol version. A module that predates the field leaves it unspecified and `allow` decides. An effect the Guardian does not recognise is a module failure, so `on_error` applies: a newer module cannot loosen policy on an older Guardian by returning something the Guardian does not understand.
+
+**Parameter migration.** Params belong to the module, which changes their shape between its own releases. `ValidateParams` may return `normalized_params`: the params in the module's current shape. The Guardian stores what the module returns. At startup and before enabling an instance, when the module normalizes the stored global params, the Guardian writes them with a history entry by `module:<name> <version>` and reason "params migrated by the module", so an upgrade is a recorded data change instead of a startup failure. Operator writes store the normalized form too, and the response shows what was stored. Account layers and assignments are migrated when they are next written; until then the module receives them in the shape they were stored in, so a module must keep accepting the shapes of its previous release. Normalized params are subject to the same rules as the input: a JSON object, and no secret references through the operator API.
+
+**SDK compatibility.** `guardian-module-sdk` follows semantic versioning, and a protocol version change is a major SDK release. Types the SDK owns are `#[non_exhaustive]` with constructors (`ModuleInstanceConfig::new(..).with_endpoint(..)`, `ModuleTls::new`, `ClientIdentity::new`), so new fields do not break module code. Generated protocol types grow with new fields; module code builds them with `..Default::default()` or the SDK helpers (`Decision::allow`, `Decision::deny`, `ParamsVerdict::ok`, `ParamsVerdict::invalid`, `ParamsVerdict::normalized`). New trait methods get default bodies, as `notify` and `notify_gap` have.
+
 ## 4. Errors and failure handling
 
 ### 4.1 Client-visible errors
@@ -768,6 +833,8 @@ Both use the `{ code, message, meta }` envelope.
 | `GUARDIAN_MODULE_UNAVAILABLE` | 503 | `UNAVAILABLE` | yes | `{ module }` |
 
 On a deny, `reason_code` must match `[a-z0-9_]{1,64}`; a deny without a conforming code is a protocol error and follows `on_error`. On an allow, `reason_code` is ignored and may be empty, so an allow is never turned into an error by a missing code. The module's free-text `message` is logged but not forwarded to clients: a module may be a third party and should not place arbitrary text in front of end users. `meta.module` is the instance `id` from the catalog, which the operator chooses: an operator who does not want to reveal which vendor screens its traffic names the instance neutrally (for example `compliance-1`), and the vendor's kind name never reaches clients. The Rust and TypeScript SDKs expose both as typed errors with the same retry classification. A denial at `before_proposal_created` uses the same codes on the proposal creation call, and the proposal is not stored; both SDKs surface it from proposal creation with the same typed error, so a proposer sees the refusal before any cosigner signs. On the execution path (PR #510) a denial ends the execution with a typed abort reason `module_denied` carrying the same `{ module, reason_code, layer }`, and module unavailability with `module_unavailable`; both multisig SDKs read these from the execution status.
+
+**Generic denials.** For an instance with `client_reason = "generic"` (section 2.7), a denial reaches the client as `GUARDIAN_MODULE_DENIED` with `meta = { reason_code: "policy_denied" }`: no module, no module reason code, no layer, and no `client_message`. The full decision is logged and recorded as for any other denial, so operators still see which module refused and why. A client cannot tell a generic denial from one module from a generic denial from another.
 
 ### 4.2 Module failures
 
@@ -825,6 +892,21 @@ The health probe is a `Describe` call every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` 
 - No Guardian signing key is reused for module authentication.
 - Replaying a captured `CommitEvent` cannot change a module's state: its nonce is at or below the module's watermark, so it is acknowledged without effect (section 3.3). Forging a new event requires the bearer token. Signing each request body with a timestamp (the Standard Webhooks pattern) was considered; with a shared secret it adds only that the secret itself is never sent, which mTLS already provides for operators who need it.
 
+### 5.3 Disclosure and probing
+
+Policy discovery (section 2.7) changes what users learn, never what the Guardian signs, so it cannot weaken enforcement. Its risks are leaking information and making rules easier to probe.
+
+| Risk | Example | Mitigation |
+|---|---|---|
+| Tipping off | A cosigner learns that a recipient is on a sanctions list, or that an operator restricted their account | `disclosure = "none"` and `client_reason = "generic"` for screening and per-customer restrictions; account layers are disclosed only under `disclosure = "params"` |
+| Structuring | A disclosed per-transaction cap of 10,000 invites payments of 9,999 | Disclose exact params only for limits an account sets for itself; rolling limits (section 3.4) make splitting pointless |
+| Enumeration through the dry-run | Checking many recipients to map a denylist, or many amounts to find a risk model's threshold | Cosigners of the account only, a per-account and per-signer rate limit, logging, generic reasons, and `dry_run = false` per instance |
+| Vendor model leakage | Detailed reason codes reveal a risk vendor's features or thresholds | The module chooses its reason codes; `client_reason = "generic"` hides them |
+| Stale answers | A check passes, then an operator tightens the rule before approval | The check is advisory; the approval hook decides |
+| Cost | Dry-runs reach remote modules, which may charge per call | The same rate limit, the evaluation budget, and `dry_run = false` |
+
+`client_message` is text from a module, possibly a third party, shown to users. It is plain text with a length cap, forwarded only where the operator allows it, and never interpreted by the Guardian.
+
 ---
 
 ## 6. TEE model
@@ -857,6 +939,7 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 - Catalog hash metric, in `/dashboard/info`, and recorded with each signed delta.
 - Evaluation budget (`GUARDIAN_MODULE_EVALUATION_BUDGET_MS`) with the startup checks in section 4.3, circuit breaker and health probe (section 4.4), request size cap (section 3.4), and the module metrics.
 - `GUARDIAN_MODULE_DENIED` and `GUARDIAN_MODULE_UNAVAILABLE` in the server and both SDKs, on proposal creation as well as on the ack.
+- Policy discovery (section 2.7): the `disclosure`, `description`, `client_reason` and `dry_run` catalog fields, generic denials, `Decision.client_message`, the policy summary and dry-run check on the client API with their rate limit, and `getPolicies` and `checkProposal` in both multisig SDKs. The error contract and the protocol field must land before version 1 freezes; the two endpoints may follow in an M2a point release.
 - Reference module `basic-policy` (recipient and asset allowlist, per-transaction amount cap, signer allowlist and denylist with `signer_check`), shipped as a first-party in-process kind and, through the `serve` harness, as a standalone gRPC service in `examples/policy-module/`.
 - Account view extraction with explicit errors for unsupported auth state, the `ProposalContext` lookup, first-creator-wins proposal storage on both backends, and the requester recorded on execution reservations (section 3.2).
 - Acceptance cases: a denial at proposal creation stores nothing and takes no slot; a proposal that passes creation and is denied at the ack; a transaction signed offline and pushed without a stored proposal is enforced at the ack; forged `unverified_metadata` does not change a decision; a failed account view extraction applies `on_error`. Creation denials are exercised through `guardian-client` (Rust and TypeScript) and both multisig SDKs.
@@ -953,6 +1036,7 @@ None. Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
+| 22 | 2026-10-16 | protocol evolution (section 3.5): `Describe` carries the Guardian's protocol range and capabilities and the module's required capabilities; the Guardian accepts its current protocol version and, once a newer one exists, the previous one for one release; `Decision.effect` with unknown effects treated as module failures; `ParamsVerdict.normalized_params` so modules migrate their own params, recorded in the history; additive-only rules within a protocol version; `#[non_exhaustive]` SDK types with constructors; policy discovery and disclosure (sections 2.7, 4.1, 5.3): per-instance `disclosure`, `description`, `client_reason` and `dry_run`, a policy summary and a dry-run check for cosigners, generic denials, `Decision.client_message`, and the disclosure risks with their mitigations |
 | 21 | 2026-10-15 | layered parameters (section 2.2): the catalog file registers instances and seeds their global params; global params and per-account params are then managed through the operator API; on a `scope = all` instance an account layer only adds restrictions, evaluated as a second pass that must also allow, so a global rule always holds; `account_params` removed from the catalog; `policies:write_global` permission; params history and a params version recorded with each signed delta; `meta.layer` on denials; `recipient_denylist` in `basic-policy`; invariant 4 and D2 restated; module state in its own tables (`module_instances`, `module_account_params`, `module_params_history`, plus a one-row `module_state_version` lock so the params version moves in commit order), not in account metadata; each signed delta records `catalog_hash`, `params_version` and the evaluations that failed open; runtime enable and disable; modules decode the exact summary the Guardian signs (the bare summary, never the proposal wrapper); `grpc+insecure://` for loopback plain text; account views cached by state commitment, with end-to-end latency results (sections 3.2, 4.3) |
 | 20 | 2026-10-15 | prototype findings applied (`speckit/features/251-guardian-modules/research.md`): the transaction fee is an output note, marked `OutputNote.tx_fee` and excluded by `basic-policy` (section 3.1); account views take the scheme from the registered auth configuration and cover single-key accounts (section 3.2); request assembly runs inside the bounded reconstruction task (sections 3.2, 4.3); `raw_tx_summary` is Miden binary serialization; `tls` catalog field for remote kinds (sections 2.2, 5.2); a disabled instance whose kind is unknown or whose factory fails no longer blocks startup (section 2.2); the registration hook runs before the replay timestamp is consumed (section 2.3); `notify` has a default no-op and the SDK helpers are listed (section 2.1); `serve` takes the token value (section 2.5) |
 | 19 | 2026-10-13 | `before_proposal_created` gate hook in M2a, filtering proposals that the ack would refuse before they are stored, with its own module instances and a signer allowlist example (section 2.3); `before` and `after` account views (signers, threshold, scheme) and a verified `submitter` on every gate request, with the subjects reduced to hook-specific detail; verified `proposer` and `unverified_metadata` (replacing `unverified_hint`) in `TransactionSubject`; `submitter` and `proposer` in `CommitEvent` (section 3.2); signer allowlist and denylist in `basic-policy`; signer slot example corrected to `threshold_config`; review round on the revision: `submitter` and `proposer` in `pending`, the execution requester recorded on the reservation, `ProposalContext` lookup that separates absence from failure, first creator wins on both backends, account view extraction that fails instead of returning an empty view and reads the stored state at re-onboarding, `default_threshold` and `procedure_thresholds`, `signer_check`, acceptance cases; alignment with the feature specification and plan: registration behaviour for paused and released accounts and on denial, a dedicated `TxProjection` builder, and `basic-policy` denying unknown recipients under a recipient allowlist; second plan review: `max_amount_per_tx` per asset over gross outgoing amounts, module data stored on every signed delta once a stateful instance exists, with an activation fence for older candidates, proposal creation separated from signature updates, and operator API refusal codes; the advisory proposal hook withdrawn from future work; account lifecycle notify hooks (`after_account_released`, `after_account_registered`, `after_policy_changed`), conditional proposal lifecycle notify hooks (`after_proposal_closed`, `after_proposal_signed`), a proposal verdict on sign, and Miden proposal cancel and expiry added to future work (section 7) |
