@@ -159,6 +159,10 @@ At concurrency 8 (3 rounds x 1,600 pushes) the server is saturated at about 89 p
 - Fixed (2026-10-16): account views are cached per replica by the state commitment the Guardian computed (stored tail, applied state, registration head; never a client value), bounded at 4,096 entries. A chained push reuses the previous push's `after` view, and a proposal's approval push reuses both views built at its creation. `push_delta` reads the matching proposal once for metadata and modules; a storage failure still reaches modules as a failure, not as "no proposer".
 - Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes, which needs a `NetworkClient` change; re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after.
 
+### In-process custom kinds (2026-10-16)
+
+`ServerBuilder::with_module_kind` is about thirty lines on top of the existing `Registry`: the catalog, pipeline, params API and history already work for any kind. The cost is elsewhere. In process, a module shares the process that holds the acknowledgement keys, so "a module can only refuse" holds by review, not isolation; a panic would unwind through the request handler; and a timeout only fires at await points, so a blocking module ignored `timeout_ms`. Every module call now runs on its own task: a panic is a module failure under `on_error`, and the timeout holds while other runtime workers are free (a module that blocks still occupies a worker until it returns). The per-call cost is one task spawn. Open for M2c: `ServerBuilder::from_env`, so a custom build does not copy `main.rs`, and the semver commitment of publishing `guardian-server` as a library.
+
 ### G4 closed, with SDK changes
 
 - The trait in RFC section 2.1 works as written. `notify` gets a default no-op like `notify_gap`, so a stateless module implements three methods.
