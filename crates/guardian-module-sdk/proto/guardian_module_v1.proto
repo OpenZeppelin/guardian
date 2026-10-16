@@ -52,7 +52,7 @@ message HookRequest {
   Hook hook = 2;
   string network = 3;                 // "miden"
   string account_id = 4;
-  bytes params = 5;                   // UTF-8 JSON, effective params for this account and module
+  bytes params = 5;                   // UTF-8 JSON, params of the layer being evaluated (global, account layer, or the account's own for default/assigned)
   string instance_id = 6;             // catalog id of the instance being called
   google.protobuf.Timestamp accounting_time = 7;  // recorded as signed_at if this transaction is signed (section 3.4); at before_proposal_created, the evaluation time, never recorded
   string submitter = 8;               // signer commitment that authenticated this request; verified (section 3.2)
