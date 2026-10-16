@@ -329,7 +329,9 @@ load time so a typo surfaces explicitly
 |---|---|
 | `dashboard:read` | Read access to all `/dashboard/*` read endpoints. |
 | `accounts:pause` | Pause/unpause accounts. |
-| `policies:write` | Reserved for future policy writes — no endpoint currently requires it. |
+| `policies:write` | Policy module writes for one account (account layers, assignments) and enabling or disabling module instances ([Policy modules](#policy-modules)). |
+| `policies:write_global` | Policy module global params, which apply to every account. |
+| `modules:disable` | Disabling a module instance that the catalog marks `operator_can_disable`, without any other policy write. |
 | `stats:refresh` | Request an out-of-cycle refresh of the `/dashboard/stats` aggregate (`POST /dashboard/stats/refresh`, issue #371). |
 
 Wire strings are **case-sensitive** and **must not contain whitespace** —
@@ -337,9 +339,36 @@ the parser rejects both.
 
 > **Current scope:** `dashboard:read` gates all read endpoints.
 > `accounts:pause` gates the pause/unpause endpoints (see [Account
-> pausing](#account-pausing) below). `policies:write` is reserved
-> vocabulary — accepted by the allowlist parser but no endpoint requires
-> it yet.
+> pausing](#account-pausing) below). `policies:write`,
+> `policies:write_global` and `modules:disable` gate the policy module
+> writes (see [Policy modules](#policy-modules) below).
+
+## Policy modules
+
+Prototype (RFC 0002, issue #251); not in a release yet. The endpoints
+manage the module instances the catalog file declares
+([`GUARDIAN_MODULES_CONFIG`](./CONFIGURATION.md#runtime-policy-modules));
+they cannot add, remove or reconfigure an instance. Every write takes a
+`reason`, is validated by the module before it is stored, and is recorded
+in the params history and the audit log. A walkthrough is in the
+[policy modules guide](./guides/policy-modules/README.md).
+
+| Endpoint | Permission | Body |
+|---|---|---|
+| `GET /dashboard/modules` | `dashboard:read` | |
+| `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | |
+| `GET /dashboard/accounts/{account_id}/modules` | `dashboard:read` | |
+| `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | `{"params": {...}, "reason": "..."}` |
+| `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "..."}` |
+| `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"reason": "..."}` |
+| `PUT /dashboard/accounts/{account_id}/modules` | `policies:write` | `{"modules": [{"module_id": "...", "params": {...}}], "reason": "..."}` |
+| `POST /dashboard/modules/{module_id}/enable` | `policies:write` | `{"reason": "..."}` |
+| `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | `{"reason": "..."}` |
+
+On a `scope = all` instance the per-account params are a layer evaluated
+after the global params, and both must allow, so a layer only adds
+restrictions. Disabling an instance the catalog does not mark
+`operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
 
 ## Account pausing
 

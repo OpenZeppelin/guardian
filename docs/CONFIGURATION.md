@@ -326,6 +326,16 @@ closed** (rejected, never bypassed) and recovers automatically. See the
 Allowlist payload shapes and enrollment flow:
 [`docs/DASHBOARD.md`](./DASHBOARD.md).
 
+## Runtime: policy modules
+
+Prototype (RFC 0002, issue #251); not in a release yet. See the [policy
+modules guide](./guides/policy-modules/README.md).
+
+| Variable | Default | Notes |
+|---|---|---|
+| `GUARDIAN_MODULES_CONFIG` | _unset_ (no modules) | Path of the module catalog (TOML). Read once at startup; it declares every instance and seeds its global params on first start, after which params are managed through the [operator API](./DASHBOARD.md#policy-modules). A relative path resolves against the working directory; relative `auth.token_file` and `tls.*_file` paths in the catalog resolve against the catalog's directory. An enabled instance that fails its startup checks stops startup. In the prod stage remote instances must use TLS (`grpc://`) and set `auth`. |
+| `GUARDIAN_MODULES_STATE` | `<GUARDIAN_METADATA_PATH>/modules` | Filesystem builds only: directory of the module state file (`module_state.json`). Postgres builds keep module state in the database. |
+
 ## Runtime — EVM (feature-gated)
 
 These take effect only when the server is built with `--features evm`.
