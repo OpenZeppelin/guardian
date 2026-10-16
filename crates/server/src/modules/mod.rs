@@ -40,6 +40,7 @@ fn filesystem_store(catalog_path: &std::path::Path) -> Result<store::FsModuleSto
 pub async fn from_env(
     now: String,
     store: Option<Arc<dyn store::ModuleStore>>,
+    registry: &Registry,
 ) -> Result<Option<Arc<ModulePipeline>>, String> {
     let Some(path) = std::env::var_os(CONFIG_ENV).filter(|value| !value.is_empty()) else {
         return Ok(None);
@@ -56,7 +57,7 @@ pub async fn from_env(
         Some(store) => store,
         None => Arc::new(filesystem_store(&catalog_path)?),
     };
-    let pipeline = ModulePipeline::new(catalog, &Registry::first_party(), store, now).await?;
+    let pipeline = ModulePipeline::new(catalog, registry, store, now).await?;
     let version = pipeline.store().version().await?;
     let builds = pipeline
         .instances()

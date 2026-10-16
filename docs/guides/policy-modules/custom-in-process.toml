@@ -1,0 +1,14 @@
+# Custom module compiled into the server: `note-policy` runs in the Guardian process.
+# Start the server with the custom_module_server example (see custom.md), not the
+# stock binary, which does not know the `note-policy` kind and would refuse to start.
+# Copy to .guardian/custom-in-process.toml.
+
+[[module]]
+id = "note-policy"
+kind = "note-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+params = { max_payment_notes = 1, deny_private_notes = true }

@@ -16,6 +16,9 @@ pub enum Behaviour {
     Decide(Decision),
     Fail,
     Hang,
+    Panic,
+    /// Blocks its thread instead of awaiting, like a module doing synchronous work.
+    Block(Duration),
 }
 
 pub struct StubModule {
@@ -73,6 +76,11 @@ impl Module for StubModule {
             Behaviour::Fail => Err(ModuleError::Unavailable("stub down".into())),
             Behaviour::Hang => {
                 tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(Decision::allow())
+            }
+            Behaviour::Panic => panic!("stub module panicked"),
+            Behaviour::Block(duration) => {
+                std::thread::sleep(*duration);
                 Ok(Decision::allow())
             }
         }

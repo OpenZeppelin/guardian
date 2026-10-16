@@ -587,9 +587,7 @@ fn scenario_op_count(config: &RunConfig, account_count: usize) -> usize {
         | Scenario::StateWrite
         | Scenario::Mixed
         | Scenario::StateSync
-        | Scenario::StatePush => {
-            usize::try_from(config.ops_per_user).unwrap_or(0)
-        }
+        | Scenario::StatePush => usize::try_from(config.ops_per_user).unwrap_or(0),
     }
 }
 

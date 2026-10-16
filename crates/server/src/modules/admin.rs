@@ -100,7 +100,7 @@ async fn validated(instance: &Instance, params: &serde_json::Value) -> Result<()
             "secret references cannot be set through the operator API".into(),
         ));
     }
-    validate_params(instance.module.as_ref(), params, instance.config.timeout)
+    validate_params(&instance.module, params, instance.config.timeout)
         .await
         .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))
 }
@@ -275,7 +275,7 @@ pub async fn enable(
     let instance = instance(pipeline, module_id)?;
     if !pipeline.enabled(instance).await? {
         let params = pipeline.global_params(instance).await?;
-        super::registry::check(&instance.config, instance.module.as_ref(), &params)
+        super::registry::check(&instance.config, &instance.module, &params)
             .await
             .map(|_| ())
             .map_err(|error| {

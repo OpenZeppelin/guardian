@@ -6,7 +6,7 @@ use super::catalog::{Catalog, HookName, OnError, Scope};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-use super::registry::{Instance, Registry};
+use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
 use super::store::{ModuleStore, ParamsKind};
 use crate::delta_summary::{FailedOpen, ModuleApproval};
@@ -348,12 +348,14 @@ impl Plan<'_> {
             request.instance_id = instance.config.id.clone();
             request.params = serde_json::to_vec(&params).unwrap_or_default();
 
-            let outcome =
-                tokio::time::timeout(instance.config.timeout, instance.module.evaluate(&request))
-                    .await;
+            let module = instance.module.clone();
+            let outcome = isolated(instance.config.timeout, async move {
+                module.evaluate(&request).await
+            })
+            .await;
             let failure = match outcome {
-                Ok(Ok(decision)) if decision.allow => continue,
-                Ok(Ok(decision)) if is_valid_reason_code(&decision.reason_code) => {
+                Ok(decision) if decision.allow => continue,
+                Ok(decision) if is_valid_reason_code(&decision.reason_code) => {
                     tracing::info!(
                         module = %instance.config.id,
                         account_id,
@@ -369,9 +371,12 @@ impl Plan<'_> {
                         layer: layer.as_str().to_string(),
                     });
                 }
-                Ok(Ok(decision)) => Failure::InvalidDecision(decision.reason_code),
-                Ok(Err(error)) => Failure::Error(error.to_string()),
-                Err(_) => Failure::Timeout,
+                Ok(decision) => Failure::InvalidDecision(decision.reason_code),
+                Err(CallError::Module(error)) => Failure::Error(error.to_string()),
+                Err(CallError::Panicked(message)) => {
+                    Failure::Error(format!("module panicked: {message}"))
+                }
+                Err(CallError::Timeout) => Failure::Timeout,
             };
             approval
                 .failed_open
@@ -408,6 +413,8 @@ fn fail(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::modules::testing::{Behaviour, StubModule, instance, pipeline};
     use guardian_module_sdk::Decision;
@@ -582,6 +589,54 @@ params = {params}
 
         let unbuilt = plan().await.run(|| Err("no state".to_string())).await;
         assert!(unbuilt.is_err(), "caps fails closed without a request");
+    }
+
+    #[tokio::test]
+    async fn a_panicking_module_is_a_module_failure() {
+        let pipeline = pipeline(vec![instance(
+            "buggy",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Panic),
+        )]);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleUnavailable { module }) if module == "buggy"
+        ));
+
+        let pipeline = pipeline_with(OnError::Allow, Behaviour::Panic);
+        let approval = pipeline
+            .plan(HOOK, "0xacc")
+            .await
+            .unwrap()
+            .unwrap()
+            .run(|| Ok(HookRequest::default()))
+            .await
+            .unwrap();
+        assert_eq!(approval.failed_open[0].failure, "error");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_timeout_holds_when_a_module_blocks() {
+        let pipeline = pipeline_with(OnError::Deny, Behaviour::Block(Duration::from_secs(2)));
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleUnavailable { .. })
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "answered at the timeout, not when the module returned"
+        );
+    }
+
+    fn pipeline_with(on_error: OnError, behaviour: Behaviour) -> Arc<ModulePipeline> {
+        pipeline(vec![instance(
+            "stub",
+            &[HOOK],
+            on_error,
+            StubModule::new(behaviour),
+        )])
     }
 
     #[tokio::test]

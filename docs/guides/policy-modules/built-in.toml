@@ -1,0 +1,44 @@
+# Built-in modules: basic-policy runs inside the Guardian process.
+# Copy to .guardian/built-in.toml and replace the placeholders.
+# `params` seed the global params on first start; change them later through the operator API.
+
+# Spending cap for every account: at most 5 base units of one asset per transaction.
+[[module]]
+id = "caps"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+params = { max_amount_per_tx = { "0xREPLACE_WITH_FAUCET_ID" = "5" } }
+
+# Recipient blocklist for every account; extend it globally or per account at runtime.
+[[module]]
+id = "blocklist"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+params = { recipient_denylist = [] }
+
+# Signer rule: no account may add this signer. Protected: operators cannot disable it.
+[[module]]
+id = "signers"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_account_registered", "before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+params = { signer_check = "added", signer_denylist = ["0xdededededededededededededededededededededededededededededededede"] }
+
+# Opt-in module: applies only to accounts an operator assigns it to, with their own params.
+[[module]]
+id = "treasury-allowlist"
+kind = "basic-policy"
+scope = "assigned"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
