@@ -82,7 +82,7 @@ crates/server/src/
 │   ├── pipeline.rs                      # ordered evaluation, budget, first-deny
 │   ├── request.rs                       # HookRequest assembly, ProposalContext, size cap
 │   ├── account_view.rs                  # AccountView extraction (gate G1)
-│   ├── projection.rs                    # TxProjection builder (gate G2)
+│   ├── projection.rs                    # MidenTransaction builder (gate G2)
 │   ├── grpc_kind.rs                     # remote kind client, TLS, auth
 │   ├── breaker.rs                       # circuit breaker and health probe
 │   ├── basic_policy.rs                  # first-party reference kind
@@ -134,7 +134,7 @@ Per AGENTS.md, published crates and packages document new public API in their ow
 Both are now recorded in RFC 0002 revision 19 (section 3.1):
 
 - `basic-policy` recipient allowlist denies partial and non-P2ID output notes, since their recipient is unknown ([contracts/catalog-config.md](./contracts/catalog-config.md)).
-- `TxProjection` gets its own builder sharing helpers with the dashboard projector rather than reusing dashboard types (research G2 default).
+- `MidenTransaction` (the Miden variant of the network-tagged `TransactionProjection`) gets its own builder sharing helpers with the dashboard projector rather than reusing dashboard types (research G2 default).
 
 ## Complexity Tracking
 

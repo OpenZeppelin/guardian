@@ -201,6 +201,11 @@
 - [X] T079 Consistent policy snapshot: `ModulePipeline::snapshot` reads the version, the global rows and the account's rows, rechecks the version and retries, used by `plan` and `disclosed`; acceptance test reproducing a global change and a layer removal racing an evaluation
 - [X] T080 Conditional migration writes: `ModuleStore::set_global_if` on both backends (filesystem under the write lock, Postgres under the row lock with the version untouched on a miss), used by startup migration and enable; acceptance test reproducing an operator write racing a migration; Postgres test
 - [X] T081 Dry-run limiter independent of the catalog (`crates/server/src/modules/check_limit.rs`), installed at startup, applied to every check before reconstruction; spec FR-041 made conditional on full reasons; FR-028 and FR-029
+
+## Phase 17: Network-tagged projections (RFC revision 22)
+
+- [X] T082 `TransactionProjection`, `AccountStateProjection` (`oneof network`, Miden only) and `RawTransaction` (named `encoding`) replace the Miden-only fields in `TransactionSubject`, `PendingTransaction`, `CommitEvent` and `RegistrationSubject`, with new field numbers and the old ones reserved; `TxProjection` and `AccountProjection` renamed `MidenTransaction` and `MidenAccountState`; SDK accessors (`subject.miden()`), `basic-policy`, `note-policy`, tests and the guide updated
+- [ ] T083 `ModuleInfo.networks` and the Guardian's check that a mandatory instance can judge the account's network, when a second network gets a variant
 ---
 
 ## Dependencies & Execution Order
