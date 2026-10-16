@@ -3,7 +3,7 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::modules::HookName;
-use crate::modules::request::{self, ProposalContext, TransactionInput};
+use crate::modules::request::{self, ProposalContext, StateRef, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
@@ -257,14 +257,13 @@ pub async fn push_delta_proposal(
         None => None,
     };
     if let Some(plan) = plan {
-        let after_state = {
+        let after = {
             let client = state.network_client.clone();
             let tail_state_json = tail.state_json.clone();
             let tx_summary = tx_summary.clone();
             crate::network::reconstructor()
                 .run(move || client.apply_delta(&tail_state_json, &tx_summary))
                 .await?
-                .state_json
         };
         let proposal = ProposalContext {
             proposer: proposer_id.clone(),
@@ -273,15 +272,23 @@ pub async fn push_delta_proposal(
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         };
+        let views = plan.views();
         plan.run(|| {
             request::transaction_request(
                 state.network_client.as_ref(),
+                &views,
                 TransactionInput {
                     account_id: &account_id,
                     submitter: &proposer_id,
                     auth: &resolved.metadata.auth,
-                    before_state: &tail.state_json,
-                    after_state: &after_state,
+                    before: StateRef {
+                        commitment: &tail.commitment,
+                        json: &tail.state_json,
+                    },
+                    after: StateRef {
+                        commitment: &after.commitment,
+                        json: &after.state_json,
+                    },
                     tx_summary,
                     proposal: Some(proposal),
                     accounting_time: state.clock.now(),

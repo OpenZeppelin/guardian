@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use super::registry::{Instance, Registry};
+use super::request::ViewCache;
 use super::store::{ModuleStore, ParamsKind};
 use crate::delta_summary::{FailedOpen, ModuleApproval};
 use crate::error::GuardianError;
@@ -30,6 +31,7 @@ pub struct ModulePipeline {
     instances: Vec<Instance>,
     store: Arc<dyn ModuleStore>,
     cache: RwLock<Cache>,
+    views: Arc<ViewCache>,
     pub catalog_hash: String,
 }
 
@@ -49,6 +51,7 @@ pub struct Plan<'a> {
     modules: Vec<(&'a Instance, serde_json::Value, Layer)>,
     catalog_hash: String,
     params_version: u64,
+    views: Arc<ViewCache>,
 }
 
 enum Failure {
@@ -126,6 +129,7 @@ impl ModulePipeline {
             instances,
             store,
             cache: RwLock::new(Cache::default()),
+            views: Arc::default(),
             catalog_hash: catalog.hash,
         })
     }
@@ -136,6 +140,7 @@ impl ModulePipeline {
             instances,
             store: Arc::new(super::store::FsModuleStore::in_memory()),
             cache: RwLock::new(Cache::default()),
+            views: Arc::default(),
             catalog_hash: String::new(),
         }
     }
@@ -276,6 +281,7 @@ impl ModulePipeline {
             modules,
             catalog_hash: self.catalog_hash.clone(),
             params_version,
+            views: self.views.clone(),
         }))
     }
 
@@ -298,6 +304,11 @@ impl ModulePipeline {
 }
 
 impl Plan<'_> {
+    /// The replica's account view cache, for building this plan's request.
+    pub fn views(&self) -> Arc<ViewCache> {
+        self.views.clone()
+    }
+
     /// Runs the planned modules in order and returns the configuration they ran with. If
     /// `build` fails, every module counts as failed and its `on_error` applies.
     pub async fn run(
@@ -310,6 +321,7 @@ impl Plan<'_> {
             modules,
             catalog_hash,
             params_version,
+            views: _,
         } = self;
         let account_id = account_id.as_str();
         let mut approval = ModuleApproval {

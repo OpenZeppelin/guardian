@@ -6,7 +6,7 @@ use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::modules::HookName;
-use crate::modules::request::{self, TransactionInput};
+use crate::modules::request::{self, StateRef, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
@@ -162,15 +162,20 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
 
     // Unconditional lookup: for multisig pushes this lifts the
     // matching proposal's metadata so `build_metadata` can preserve
-    // operator intent. For single-key pushes the lookup misses and
-    // returns `None`; the cost is one extra storage read per push.
-    let matching_proposal_payload = lookup_matching_proposal_payload(
+    // operator intent, and gives modules the proposer. For single-key
+    // pushes the lookup misses; the cost is one storage read per push.
+    let matching_proposal = lookup_matching_proposal(
         state,
         &params.delta.account_id,
         params.delta.nonce,
         &params.delta.delta_payload,
     )
     .await;
+    let matching_proposal_payload = matching_proposal
+        .as_ref()
+        .ok()
+        .and_then(|proposal| proposal.as_ref())
+        .map(|proposal| proposal.delta_payload.clone());
 
     let plan = match state.modules.as_deref() {
         Some(modules) => {
@@ -185,23 +190,27 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     };
     let approval = match plan {
         Some(plan) => {
-            let proposal = request::proposal_context(
-                state,
-                &params.delta.account_id,
-                params.delta.nonce,
-                &params.delta.delta_payload,
-            )
-            .await
-            .map_err(|e| e.to_string());
+            let proposal = matching_proposal
+                .as_ref()
+                .map(|proposal| proposal.as_ref().and_then(request::proposal_context))
+                .map_err(|e| format!("proposal lookup failed: {e}"));
+            let views = plan.views();
             plan.run(|| {
                 request::transaction_request(
                     state.network_client.as_ref(),
+                    &views,
                     TransactionInput {
                         account_id: &params.delta.account_id,
                         submitter: &resolved.signer_commitment,
                         auth: &resolved.metadata.auth,
-                        before_state: &tail.state_json,
-                        after_state: &applied.state_json,
+                        before: StateRef {
+                            commitment: &tail.commitment,
+                            json: &tail.state_json,
+                        },
+                        after: StateRef {
+                            commitment: &applied.commitment,
+                            json: &applied.state_json,
+                        },
                         tx_summary: &params.delta.delta_payload,
                         proposal: proposal?,
                         accounting_time: state.clock.now(),
@@ -255,9 +264,10 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             applied,
         )
         .await?;
-    // Caveat: `lookup_matching_proposal_payload` swallows storage
-    // errors to `None` (non-fatal by design), so under storage faults
-    // a proposal commit can be labeled `direct`. Acceptable skew — the
+    // Caveat: the metadata path treats a failed proposal lookup as no
+    // match (non-fatal by design; `lookup_matching_proposal` returns the
+    // error and `matching_proposal_payload` drops it), so under storage
+    // faults a proposal commit can be labeled `direct`. Acceptable skew — the
     // underlying fault is visible via
     // storage_operations_total{outcome="error"}.
     let kind = if matching_proposal_payload.is_some() {
@@ -276,17 +286,18 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     })
 }
 
-/// Look up the matching `delta_proposals` row's `delta_payload` for
-/// the delta being pushed. Returns `None` when no proposal matches.
-/// All failure paths are non-fatal so the push proceeds; the
-/// "no match" cases log at `debug`, real storage errors log at `warn`
-/// so silent metadata loss stays detectable in production.
-async fn lookup_matching_proposal_payload(
+/// Look up the matching `delta_proposals` row for the delta being
+/// pushed. `Ok(None)` when no proposal matches; a storage failure is
+/// returned so policy modules never read it as "no proposer", while
+/// metadata derivation treats it as no match. The "no match" cases log
+/// at `debug`, real storage errors log at `warn` so silent metadata
+/// loss stays detectable in production.
+async fn lookup_matching_proposal(
     state: &AppState,
     account_id: &str,
     nonce: u64,
     delta_payload: &Value,
-) -> Option<Value> {
+) -> std::result::Result<Option<DeltaObject>, String> {
     let proposal_id = {
         let client = &state.network_client;
         match client.delta_proposal_id(account_id, nonce, delta_payload) {
@@ -299,7 +310,7 @@ async fn lookup_matching_proposal_payload(
                     "delta_proposal_id could not compute an id for this payload; \
                      persisting metadata without proposal block (EVM / malformed payload)"
                 );
-                return None;
+                return Ok(None);
             }
         }
     };
@@ -308,7 +319,7 @@ async fn lookup_matching_proposal_payload(
         .pull_delta_proposal(account_id, &proposal_id)
         .await
     {
-        Ok(proposal) => Some(proposal.delta_payload),
+        Ok(proposal) => Ok(Some(proposal)),
         Err(err) => {
             if crate::storage::is_storage_not_found(&err) {
                 tracing::debug!(
@@ -317,6 +328,7 @@ async fn lookup_matching_proposal_payload(
                     proposal_id = %proposal_id,
                     "no matching delta_proposal row (single-key push or unrelated payload)"
                 );
+                Ok(None)
             } else {
                 tracing::warn!(
                     account_id = %account_id,
@@ -327,8 +339,8 @@ async fn lookup_matching_proposal_payload(
                      persisting metadata without proposal block (operator-stated intent lost \
                      until storage recovers — investigate storage backend)"
                 );
+                Err(err.to_string())
             }
-            None
         }
     }
 }
@@ -1179,8 +1191,21 @@ mod tests {
     async fn push_with_modules(
         module: Arc<crate::modules::testing::StubModule>,
     ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        push_with_modules_when(
+            module,
+            |_| Err("proposal not found".to_string()),
+            crate::modules::catalog::OnError::Deny,
+        )
+        .await
+    }
+
+    /// `proposal` builds the proposal lookup's result from the account id.
+    async fn push_with_modules_when(
+        module: Arc<crate::modules::testing::StubModule>,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+        on_error: crate::modules::catalog::OnError,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
         use crate::delta_object::DeltaStatus;
-        use crate::modules::catalog::OnError;
         use crate::modules::testing::{instance, pipeline};
         use crate::state_object::StateObject;
         use crate::testing::helpers::create_test_delta_payload;
@@ -1199,7 +1224,7 @@ mod tests {
                 auth_scheme: String::new(),
             }))
             .with_pull_deltas_after(Ok(Vec::new()))
-            .with_pull_delta_proposal(Err("proposal not found".to_string()))
+            .with_pull_delta_proposal(proposal(&account_id))
             .with_submit_state(Ok(()))
             .with_submit_delta(Ok(()));
         let network = MockNetworkClient::new()
@@ -1237,7 +1262,7 @@ mod tests {
         state.modules = Some(pipeline(vec![instance(
             "caps",
             &[HookName::BeforeTransactionApproved],
-            OnError::Deny,
+            on_error,
             module,
         )]));
         let params = PushDeltaParams {
@@ -1256,6 +1281,77 @@ mod tests {
             credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
         };
         (push_delta(&state, params).await, storage, signer_commitment)
+    }
+
+    #[tokio::test]
+    async fn a_failed_proposal_lookup_is_a_module_failure_not_an_empty_proposer() {
+        use crate::modules::catalog::OnError;
+        let lookup_fails = |_: &str| Err("connection reset by peer".to_string());
+
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, _) =
+            push_with_modules_when(module.clone(), lookup_fails, OnError::Deny).await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleUnavailable { module }) if module == "caps"
+        ));
+        assert_eq!(
+            module.calls(),
+            0,
+            "the module never sees a request without its proposer"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, _) =
+            push_with_modules_when(module.clone(), lookup_fails, OnError::Allow).await;
+        let approval = result
+            .expect("fail-open lets the push through")
+            .delta
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .expect("the approval is recorded");
+        assert_eq!(module.calls(), 0);
+        assert_eq!(approval.failed_open.len(), 1);
+        assert_eq!(approval.failed_open[0].failure, "request_unavailable");
+    }
+
+    #[tokio::test]
+    async fn the_one_proposal_read_gives_modules_the_proposer() {
+        use crate::delta_object::DeltaStatus;
+        let module = crate::modules::testing::StubModule::allowing();
+        let pending = |account_id: &str| {
+            Ok(DeltaObject {
+                account_id: account_id.to_string(),
+                nonce: 1,
+                status: DeltaStatus::Pending {
+                    timestamp: "2026-05-25T08:00:00Z".into(),
+                    proposer_id: "0xproposer".into(),
+                    cosigner_sigs: Vec::new(),
+                },
+                delta_payload: serde_json::json!({ "metadata": { "proposal_type": "p2id" } }),
+                ..Default::default()
+            })
+        };
+        let (result, storage, _) = push_with_modules_when(
+            module.clone(),
+            pending,
+            crate::modules::catalog::OnError::Deny,
+        )
+        .await;
+        result.expect("allowed push succeeds");
+        assert_eq!(
+            storage.get_pull_delta_proposal_calls().len(),
+            2,
+            "one read for metadata and modules, one by the optimistic commit to delete the proposal"
+        );
+        let request = module.last_request().expect("module was called");
+        match request.subject {
+            Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) => {
+                assert_eq!(subject.proposer, "0xproposer");
+            }
+            other => panic!("unexpected subject {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@ use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::metadata::{AccountMetadata, ClearTransition};
 use crate::modules::HookName;
-use crate::modules::request::{self, RegistrationInput};
+use crate::modules::request::{self, RegistrationInput, StateRef};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -178,20 +178,28 @@ pub async fn configure_account(
                     .storage
                     .pull_state(&params.account_id)
                     .await
-                    .map(|stored| stored.state_json)
                     .map_err(|e| format!("stored state unavailable: {e}")),
             ),
             None => None,
         };
+        let views = plan.views();
         plan.run(|| {
+            let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
             request::registration_request(
                 state.network_client.as_ref(),
+                &views,
                 RegistrationInput {
                     account_id: &params.account_id,
                     submitter: &signer_commitment,
                     auth: &params.auth,
-                    stored_state: stored_state.as_ref().map(|r| r.as_ref()).transpose()?,
-                    initial_state: &params.initial_state,
+                    stored_state: stored_state.map(|stored| StateRef {
+                        commitment: &stored.commitment,
+                        json: &stored.state_json,
+                    }),
+                    initial_state: StateRef {
+                        commitment: &head.commitment,
+                        json: &params.initial_state,
+                    },
                     accounting_time: state.clock.now(),
                 },
             )
