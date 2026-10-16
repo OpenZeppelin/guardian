@@ -244,6 +244,8 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-023** [M2a]: Operators MUST be able to enable any declared instance, under the general policy permission only, and disable only instances the configuration marks as disableable, under either the general policy permission or a dedicated narrow disable permission that grants nothing else; a disabled instance MUST keep receiving commit notifications.
 - **FR-026** [M2a]: Every parameter write MUST append to a history (previous and new parameters, operator, reason, time); the parameter store MUST carry a version that increases with every write, and every signed transaction MUST record it next to the configuration fingerprint.
 - **FR-027** [M2a]: Changing global parameters MUST require a separate permission from per-account policy changes.
+- **FR-028** [M2a]: Each evaluation MUST use global parameters, enabled flags and the account's parameters from a single parameter version: a request MUST NOT combine values from configurations that were never committed together, even while operators write concurrently.
+- **FR-029** [M2a]: A write derived from an earlier read (a module migrating stored parameters at startup or before enabling) MUST apply only if the stored value is still the one read, so it never overwrites a newer operator write.
 - **FR-024** [M2a]: Operators MUST be able to list all instances with their runtime state, including differences between configuration and runtime switches and the circuit state.
 - **FR-025** [M2a]: Re-registration of an existing account MUST preserve its stored assignment.
 
@@ -262,7 +264,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 ### Decisions and errors
 
 - **FR-040** [M2a]: A denial MUST carry a machine-readable reason code; a denial without a valid code is a module failure.
-- **FR-041** [M2a]: Clients MUST receive a non-retryable policy-denied error naming the operator-chosen instance identifier, the reason code and the layer (global or account) that denied, and a retryable policy-unavailable error naming the instance; the module's free-text message MUST NOT reach clients.
+- **FR-041** [M2a]: Clients MUST receive a non-retryable policy-denied error and a retryable policy-unavailable error naming the instance. For an instance that denies with full reasons, the denial MUST name the operator-chosen instance identifier, the reason code and the layer (global or account) that denied; for an instance that denies generically, it MUST carry none of them (FR-056). The module's free-text message MUST NOT reach clients.
 - **FR-042** [M2a]: Both errors MUST be returned on proposal creation and on approval, and on the execution path as typed execution outcomes.
 - **FR-043** [M2a]: The Rust and TypeScript clients and both multisig SDKs MUST expose these errors as typed errors with identical retry classification.
 

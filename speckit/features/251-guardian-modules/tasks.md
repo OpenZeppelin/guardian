@@ -191,10 +191,16 @@
 
 - [X] T074 Catalog fields `disclosure`, `description` (required unless `none`, at most 500 characters), `client_reason` and `dry_run` in `crates/server/src/modules/catalog.rs`, shown in the operator view
 - [X] T075 Generic denials (`GuardianError::ModuleDeniedGeneric`, `meta = { reason_code: "policy_denied" }`) and `Decision.client_message` (cleaned, at most 256 characters, forwarded only under full reasons) in the server; `module` and `layer` optional and `client_message` carried in `guardian-client` and `miden-multisig-client`
-- [ ] T076 Policy summary `GET /accounts/{account_id}/policies` and `GetPolicies` (contracts/policy-discovery.md)
-- [ ] T077 Dry-run check `POST /proposals/check` and `CheckProposal`, with the per-account and per-signer rate limit and logging
-- [ ] T078 `getPolicies` and `checkProposal` in both multisig SDKs; TypeScript parity for generic denials and `client_message`
+- [X] T076 Policy summary `GET /policies` and `GetPolicies`: `ModulePipeline::disclosed` in `crates/server/src/modules/disclosure.rs`, `services::get_policies`, HTTP and gRPC handlers, OpenAPI regenerated
+- [X] T077 Dry-run check `POST /delta/proposal/check` and `CheckDeltaProposal`: proposal creation in a dry-run mode (`services::check_proposal`), `ModulePipeline::plan_dry_run` with the per-account and per-signer limiter (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`), logging; `guardian-client` (Rust and TypeScript) methods; Rust multisig `get_policies` and `check_transaction`
+- [ ] T078 TypeScript multisig `getPolicies` and `checkTransaction` (after a `@openzeppelin/guardian-client` release), and TypeScript parsing of generic denials and `client_message`
 
+
+## Phase 16: Review fixes (concurrency and throttling)
+
+- [X] T079 Consistent policy snapshot: `ModulePipeline::snapshot` reads the version, the global rows and the account's rows, rechecks the version and retries, used by `plan` and `disclosed`; acceptance test reproducing a global change and a layer removal racing an evaluation
+- [X] T080 Conditional migration writes: `ModuleStore::set_global_if` on both backends (filesystem under the write lock, Postgres under the row lock with the version untouched on a miss), used by startup migration and enable; acceptance test reproducing an operator write racing a migration; Postgres test
+- [X] T081 Dry-run limiter independent of the catalog (`crates/server/src/modules/check_limit.rs`), installed at startup, applied to every check before reconstruction; spec FR-041 made conditional on full reasons; FR-028 and FR-029
 ---
 
 ## Dependencies & Execution Order

@@ -46,7 +46,7 @@ tls = { ca_file = "risk-ca.pem" }     # optional; client_cert / client_key secre
 
 | Field | Values | Effect |
 |---|---|---|
-| `disclosure` | `none` (default), `summary`, `params` | What the policy summary shows the account's cosigners |
+| `disclosure` | `none` (default), `summary`, `params` | What the policy summary shows the account's cosigners; `params` is refused for an instance whose params contain secret references |
 | `description` | Text, at most 500 characters | Required unless `disclosure = "none"` |
 | `client_reason` | `full` (default), `generic` | `generic`: denials carry only `reason_code = "policy_denied"` |
 | `dry_run` | `true` (default), `false` | Whether the dry-run check may call the instance |

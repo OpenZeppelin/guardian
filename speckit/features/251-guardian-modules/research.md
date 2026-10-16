@@ -95,12 +95,16 @@ This plan is written before the prototype on `251-modules-prototype`. Decisions 
 - **Decision**: the authenticated requester is stored on the durable execution reservation when an attempt is created, kept on repeated requests for an active attempt, and carried into `acknowledge_delta` and the stored delta.
 - **Rationale**: spec FR-033; restart safety.
 
+### Review: concurrency and throttling (2026-10-16)
+
+A review reproduced two races. An evaluation read global params and the account's rows separately, so a global change and a layer removal committing between the two reads let a 500-unit payment pass while every committed configuration capped it at 100. A startup migration replaced an operator's newer cap of 100 with its stale migrated value of 1,000. Evaluations now read one params version (recheck and retry), and migrations write conditionally; each race has an acceptance test that fails without its fix. The dry-run limiter also skipped checks when no catalog was configured, although a check still rebuilds and verifies state; it is now process-wide and independent of the catalog.
+
 ### D14. Policy discovery and disclosure (RFC revision 22)
 
 - **Decision**: per-instance `disclosure` (default `none`), `description`, `client_reason` (`full` or `generic`) and `dry_run`; a policy summary and an advisory dry-run check for the account's cosigners, rate limited and logged; generic denials that name nothing; `Decision.client_message` forwarded only under full reasons, cleaned to plain text of at most 256 characters.
 - **Rationale**: users should learn the rules before trying, but some rules must stay internal: telling a user that a recipient is sanctioned, or that their account is restricted, can itself be prohibited (tipping off), and disclosed thresholds invite structuring and probing. Disclosure therefore defaults to nothing and is decided per instance, and it never changes what the Guardian signs.
 - **Alternatives**: disclosing every rule (leaks compliance data and model thresholds); no discovery at all (users find rules by trying, and successful tries take proposal slots); module-written descriptions (the operator, not a vendor, decides what customers see).
-- **Prototype**: the catalog fields, generic denials and `client_message` (server and both Rust clients, which now treat `module` and `layer` as optional). The summary and check routes and the SDK methods are not built.
+- **Prototype**: the catalog fields, generic denials and `client_message` (server and both Rust clients, which now treat `module` and `layer` as optional); the summary and check routes on HTTP and gRPC, the base clients in Rust and TypeScript, and the Rust multisig SDK. The check reuses proposal creation in a dry-run mode, so it applies creation's own refusals too (queue admission, pending-proposal limit, delta verification) and a pass means creation would pass at that moment. The TypeScript multisig methods wait for a guardian-client release, since that package resolves the client from npm; until then the two SDKs differ there, which the guide states. Review fixes: a malformed `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` refuses startup, test pipelines use the default limit rather than the environment, and `disclosure = "params"` is refused for params holding secret references.
 
 ### D13. Protocol evolution (RFC revision 22)
 
