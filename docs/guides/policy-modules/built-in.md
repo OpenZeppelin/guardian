@@ -26,8 +26,8 @@ rules (caps, assets, recipients) apply to proposals and approvals.
 
 | Instance | Scope | Rule |
 |---|---|---|
-| `caps` | all | At most 5 of one asset per transaction; can be switched off |
-| `blocklist` | all | Recipient denylist, empty until you fill it |
+| `caps` | all | At most 5 of one asset per transaction; can be switched off; discloses its params to cosigners |
+| `blocklist` | all | Recipient denylist, empty until you fill it; denies generically |
 | `signers` | all | One signer may never be added; the catalog protects it from being switched off |
 | `treasury-allowlist` | assigned | Opt-in: applies only to accounts you assign it to |
 
@@ -46,7 +46,10 @@ proposal is created: `GUARDIAN_MODULE_DENIED`, module `caps`, reason
 admin PUT /modules/blocklist/params '{"params":{"recipient_denylist":["RECIPIENT"]},"reason":"test"}'
 ```
 
-A payment to it is refused with `recipient_blocked`.
+A payment to it is refused, but the client only sees
+`reason_code: "policy_denied"`: `blocklist` sets `client_reason = "generic"`,
+so neither the module nor `recipient_blocked` reaches the user. The server log
+has both.
 
 **A stricter rule for one account.** Add a lower cap for one account only:
 

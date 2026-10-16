@@ -23,13 +23,33 @@ A stateless module implements three methods:
 
 | Method | Returns | Notes |
 |---|---|---|
-| `describe` | `ModuleInfo`: name, version, `PROTOCOL_VERSION`, supported hooks | The Guardian refuses an instance subscribed to a hook the module does not list. |
-| `validate_params` | `ParamsVerdict::ok()` or `ParamsVerdict::invalid(message)` | Called at startup and on every params write. Reject unknown fields (`#[serde(deny_unknown_fields)]`) so a typo fails here, not silently at evaluation. |
+| `describe(guardian)` | `ModuleInfo`: name, version, `PROTOCOL_VERSION`, supported hooks, required capabilities | `guardian` carries the Guardian's protocol range and capabilities. The Guardian refuses an instance subscribed to a hook the module does not list, a protocol version outside its range, or a capability it lacks. |
+| `validate_params` | `ParamsVerdict::ok()`, `ParamsVerdict::invalid(message)` or `ParamsVerdict::normalized(params)` | Called at startup and on every params write. Reject unknown fields (`#[serde(deny_unknown_fields)]`) so a typo fails here, not silently at evaluation. Return `normalized` to have the Guardian store the params in your current shape. |
 | `evaluate` | `Decision::allow()` or `Decision::deny(reason_code, message)` | Must be free of side effects: the same transaction is evaluated at proposal creation and again at approval, and clients retry. |
 
 A reason code is lowercase `snake_case`; anything else counts as a module
 failure. Return `ModuleError` for a request you cannot judge; the instance's
-`on_error` then decides.
+`on_error` then decides. `Decision::allow` and `Decision::deny` set the
+decision's `effect`; a Guardian treats an effect it does not know as a
+failure, never as an allow.
+
+## Changing your module across releases
+
+- **Params.** When you rename or restructure a param, keep accepting the
+  previous shape for at least one release (serde aliases and defaults) and
+  return `ParamsVerdict::normalized` with the new shape. At startup the
+  Guardian stores the migrated global params, with a history entry by
+  `module:<name> <version>`; account layers move to the new shape when they
+  are next written. Never reuse a param name with a different meaning.
+- **Protocol.** Within a protocol version the Guardian only adds fields,
+  hooks and capabilities, so a module keeps working across Guardian releases.
+  When a new protocol version ships, the Guardian keeps accepting the previous
+  one for one release.
+- **Rust API.** Build protocol types with `..Default::default()` or the SDK
+  helpers, and SDK-owned types with their constructors
+  (`ModuleInstanceConfig::new(..)`), so new fields do not break your build.
+
+The rules are in [RFC 0002 section 3.5](../../rfcs/0002-guardian-modules.md#35-protocol-evolution-and-compatibility).
 
 ## What a request carries
 

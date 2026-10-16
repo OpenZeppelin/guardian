@@ -10,7 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use guardian_module_sdk::proto::hook_request;
 use guardian_module_sdk::{
-    Decision, Hook, HookRequest, Module, ModuleError, ModuleFactory, ModuleInfo,
+    Decision, DescribeRequest, Hook, HookRequest, Module, ModuleError, ModuleFactory, ModuleInfo,
     ModuleInstanceConfig, NoteType, PROTOCOL_VERSION, ParamsVerdict,
 };
 use serde::Deserialize;
@@ -37,7 +37,7 @@ pub struct NotePolicy;
 
 #[async_trait]
 impl Module for NotePolicy {
-    async fn describe(&self) -> Result<ModuleInfo, ModuleError> {
+    async fn describe(&self, _guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
         Ok(ModuleInfo {
             name: KIND.into(),
             version: VERSION.into(),
@@ -46,6 +46,7 @@ impl Module for NotePolicy {
                 Hook::BeforeProposalCreated as i32,
                 Hook::BeforeTransactionApproved as i32,
             ],
+            ..Default::default()
         })
     }
 

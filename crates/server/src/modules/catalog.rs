@@ -73,6 +73,13 @@ struct InstanceEntry {
     enabled: bool,
     #[serde(default)]
     operator_can_disable: bool,
+    #[serde(default)]
+    disclosure: Disclosure,
+    description: Option<String>,
+    #[serde(default)]
+    client_reason: ClientReason,
+    #[serde(default = "enabled_default")]
+    dry_run: bool,
     auth: Option<AuthEntry>,
     tls: Option<TlsEntry>,
     #[serde(default)]
@@ -82,6 +89,27 @@ struct InstanceEntry {
 fn enabled_default() -> bool {
     true
 }
+
+/// What an account's cosigners may learn about an instance (RFC 0002 section 2.7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Disclosure {
+    #[default]
+    None,
+    Summary,
+    Params,
+}
+
+/// How a denial from an instance reaches the client (RFC 0002 section 4.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClientReason {
+    #[default]
+    Full,
+    Generic,
+}
+
+const DESCRIPTION_MAX_CHARS: usize = 500;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,6 +132,11 @@ pub struct InstanceConfig {
     /// The catalog's `enabled`, a seed only; kept to report drift.
     pub catalog_enabled: bool,
     pub operator_can_disable: bool,
+    pub disclosure: Disclosure,
+    pub description: Option<String>,
+    pub client_reason: ClientReason,
+    /// Whether the dry-run check may call the instance.
+    pub dry_run: bool,
     pub auth_token: Option<guardian_module_sdk::secrecy::SecretString>,
     pub tls: Option<guardian_module_sdk::ModuleTls>,
     /// Seed for the instance's global params; operator-managed after the first start.
@@ -235,6 +268,23 @@ impl Catalog {
                     "module {id}: endpoint is required for kind grpc and only allowed for it"
                 ));
             }
+            let description = entry
+                .description
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty());
+            if entry.disclosure != Disclosure::None && description.is_none() {
+                return Err(format!(
+                    "module {id}: a description is required unless disclosure = \"none\""
+                ));
+            }
+            if description
+                .as_ref()
+                .is_some_and(|text| text.chars().count() > DESCRIPTION_MAX_CHARS)
+            {
+                return Err(format!(
+                    "module {id}: description is longer than {DESCRIPTION_MAX_CHARS} characters"
+                ));
+            }
             if !remote && (entry.auth.is_some() || entry.tls.is_some()) {
                 return Err(format!(
                     "module {id}: auth and tls are only allowed for remote kinds"
@@ -279,10 +329,10 @@ impl Catalog {
                             let key = zeroize::Zeroizing::new(read(key, "client key")?);
                             let key = String::from_utf8(key.to_vec())
                                 .map_err(|_| format!("module {id}: client key is not PEM"))?;
-                            Some(guardian_module_sdk::ClientIdentity {
-                                cert_pem: read(cert, "client certificate")?,
-                                key_pem: guardian_module_sdk::secrecy::SecretString::from(key),
-                            })
+                            Some(guardian_module_sdk::ClientIdentity::new(
+                                read(cert, "client certificate")?,
+                                guardian_module_sdk::secrecy::SecretString::from(key),
+                            ))
                         }
                         (None, None) => None,
                         _ => {
@@ -291,14 +341,13 @@ impl Catalog {
                             ));
                         }
                     };
-                    Ok(guardian_module_sdk::ModuleTls {
-                        ca_pem: tls
-                            .ca_file
+                    Ok(guardian_module_sdk::ModuleTls::new(
+                        tls.ca_file
                             .as_ref()
                             .map(|ca| read(ca, "CA file"))
                             .transpose()?,
                         client_identity,
-                    })
+                    ))
                 })
                 .transpose()?;
             instances.push(InstanceConfig {
@@ -312,6 +361,10 @@ impl Catalog {
                 enabled: entry.enabled,
                 catalog_enabled: entry.enabled,
                 operator_can_disable: entry.operator_can_disable,
+                disclosure: entry.disclosure,
+                description,
+                client_reason: entry.client_reason,
+                dry_run: entry.dry_run,
                 auth_token,
                 tls,
                 file_managed_params: contains_secret_reference(&params),
@@ -501,5 +554,46 @@ timeout_ms = 20
             r#"tls = { client_cert_file = "cert.pem" }"#,
         );
         assert!(parse(&text).unwrap_err().contains("go together"));
+    }
+
+    #[test]
+    fn disclosure_defaults_to_nothing_and_needs_a_description_to_open_up() {
+        let base = remote("grpc+insecure://127.0.0.1:7443", "");
+        let module = &parse(&base).unwrap().instances[0];
+        assert_eq!(module.disclosure, Disclosure::None);
+        assert_eq!(module.client_reason, ClientReason::Full);
+        assert!(module.dry_run);
+
+        let without = remote(
+            "grpc+insecure://127.0.0.1:7443",
+            r#"disclosure = "summary""#,
+        );
+        assert!(
+            parse(&without)
+                .unwrap_err()
+                .contains("description is required")
+        );
+
+        let with = remote(
+            "grpc+insecure://127.0.0.1:7443",
+            "disclosure = \"params\"\ndescription = \"At most 5 per transaction\"\nclient_reason = \"generic\"\ndry_run = false",
+        );
+        let module = &parse(&with).unwrap().instances[0];
+        assert_eq!(module.disclosure, Disclosure::Params);
+        assert_eq!(
+            module.description.as_deref(),
+            Some("At most 5 per transaction")
+        );
+        assert_eq!(module.client_reason, ClientReason::Generic);
+        assert!(!module.dry_run);
+
+        let long = remote(
+            "grpc+insecure://127.0.0.1:7443",
+            &format!(
+                "disclosure = \"summary\"\ndescription = \"{}\"",
+                "x".repeat(501)
+            ),
+        );
+        assert!(parse(&long).unwrap_err().contains("longer than"));
     }
 }

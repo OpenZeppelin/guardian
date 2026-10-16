@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use guardian_module_sdk::basic_policy::{self, BasicPolicy};
 use guardian_module_sdk::{
-    Module, ModuleError, ModuleFactory, ModuleInstanceConfig, PROTOCOL_VERSION,
+    DescribeRequest, Module, ModuleError, ModuleFactory, ModuleInfo, ModuleInstanceConfig,
+    PROTOCOL_VERSION, capability,
 };
 
 use super::catalog::{Catalog, InstanceConfig};
@@ -24,6 +25,13 @@ impl ModuleFactory for BasicPolicyFactory {
     fn create(&self, _instance: &ModuleInstanceConfig) -> Result<Arc<dyn Module>, ModuleError> {
         Ok(Arc::new(BasicPolicy))
     }
+}
+
+/// The created instances, and the params each module normalized at its startup check (only
+/// the instances whose normalized params differ from the ones checked).
+pub struct Instantiated {
+    pub instances: Vec<Instance>,
+    pub normalized: HashMap<String, serde_json::Value>,
 }
 
 pub struct Registry {
@@ -67,20 +75,29 @@ impl Registry {
         &self,
         catalog: &Catalog,
         effective: &HashMap<String, serde_json::Value>,
-    ) -> Result<Vec<Instance>, String> {
+    ) -> Result<Instantiated, String> {
         let mut instances = Vec::with_capacity(catalog.instances.len());
+        let mut normalized = HashMap::new();
         for config in &catalog.instances {
             let mut config = config.clone();
             let params = effective.get(&config.id).unwrap_or(&config.params);
             let ready = match self.create(&config) {
                 Ok(module) => check(&config, &module, params)
                     .await
-                    .map(|info| (module.clone(), info))
+                    .map(|checked| (module.clone(), checked))
                     .map_err(|error| (error, Some(module))),
                 Err(error) => Err((error, None)),
             };
             let (module, build) = match ready {
-                Ok((module, info)) => (module, Some(format!("{} {}", info.name, info.version))),
+                Ok((module, checked)) => {
+                    if checked.params != *params {
+                        normalized.insert(config.id.clone(), checked.params);
+                    }
+                    (
+                        module,
+                        Some(format!("{} {}", checked.info.name, checked.info.version)),
+                    )
+                }
                 Err((error, _)) if config.enabled => {
                     return Err(format!("module {}: {error}", config.id));
                 }
@@ -96,7 +113,10 @@ impl Registry {
                 build,
             });
         }
-        Ok(instances)
+        Ok(Instantiated {
+            instances,
+            normalized,
+        })
     }
 
     fn create(&self, config: &InstanceConfig) -> Result<Arc<dyn Module>, String> {
@@ -104,15 +124,15 @@ impl Registry {
             .factories
             .get(&config.kind)
             .ok_or_else(|| format!("unknown kind {}", config.kind))?;
-        let instance = ModuleInstanceConfig {
-            id: config.id.clone(),
-            kind: config.kind.clone(),
-            endpoint: config.endpoint.clone(),
-            auth_token: config.auth_token.clone(),
-            tls: config.tls.clone(),
-            timeout: config.timeout,
-            params: config.params.clone(),
-        };
+        let instance = ModuleInstanceConfig::new(
+            config.id.clone(),
+            config.kind.clone(),
+            config.timeout,
+            config.params.clone(),
+        )
+        .with_endpoint(config.endpoint.clone())
+        .with_auth_token(config.auth_token.clone())
+        .with_tls(config.tls.clone());
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factory.create(&instance)))
             .map_err(|_| "module factory panicked".to_string())?
             .map_err(|e| e.to_string())
@@ -124,7 +144,10 @@ struct Unavailable(String);
 
 #[async_trait::async_trait]
 impl Module for Unavailable {
-    async fn describe(&self) -> Result<guardian_module_sdk::ModuleInfo, ModuleError> {
+    async fn describe(
+        &self,
+        _guardian: &guardian_module_sdk::DescribeRequest,
+    ) -> Result<guardian_module_sdk::ModuleInfo, ModuleError> {
         Err(ModuleError::Unavailable(self.0.clone()))
     }
 
@@ -187,21 +210,62 @@ pub async fn isolated<T: Send + 'static>(
     }
 }
 
-/// Startup checks: protocol version, hook support and the params that will apply. Also run
-/// before enabling.
+/// The oldest module protocol version this Guardian accepts. It equals `PROTOCOL_VERSION`
+/// until a second major version exists; from then on the previous major stays accepted for a
+/// deprecation window (RFC 0002 section 3.5).
+pub const MIN_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION;
+
+/// Optional protocol features this Guardian provides.
+pub const CAPABILITIES: &[&str] = &[
+    capability::DECISION_EFFECT,
+    capability::PARAMS_NORMALIZATION,
+];
+
+/// What the Guardian tells a module in `Describe`.
+pub fn describe_request() -> DescribeRequest {
+    DescribeRequest {
+        guardian_protocol_version: PROTOCOL_VERSION,
+        guardian_min_protocol_version: MIN_PROTOCOL_VERSION,
+        guardian_capabilities: CAPABILITIES.iter().map(|c| c.to_string()).collect(),
+    }
+}
+
+/// A module that passed its startup checks, and the params to store for it (the module's
+/// normalized form when it returned one).
+pub struct Checked {
+    pub info: ModuleInfo,
+    pub params: serde_json::Value,
+}
+
+/// Startup checks: protocol version, required capabilities, hook support and the params that
+/// will apply. Also run before enabling.
 pub async fn check(
     config: &InstanceConfig,
     module: &Arc<dyn Module>,
     params: &serde_json::Value,
-) -> Result<guardian_module_sdk::ModuleInfo, String> {
+) -> Result<Checked, String> {
     let describing = module.clone();
-    let info = isolated(config.timeout, async move { describing.describe().await })
-        .await
-        .map_err(|e| format!("describe {e}"))?;
-    if info.protocol_version != PROTOCOL_VERSION {
+    let info = isolated(config.timeout, async move {
+        describing.describe(&describe_request()).await
+    })
+    .await
+    .map_err(|e| format!("describe {e}"))?;
+    if !(MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&info.protocol_version) {
         return Err(format!(
-            "unsupported protocol version {}",
+            "unsupported protocol version {}; this Guardian accepts {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}",
             info.protocol_version
+        ));
+    }
+    if info.protocol_version < PROTOCOL_VERSION {
+        tracing::warn!(module = %config.id, protocol_version = info.protocol_version, current = PROTOCOL_VERSION, "Module speaks a deprecated protocol version");
+    }
+    if let Some(missing) = info
+        .required_capabilities
+        .iter()
+        .find(|required| !CAPABILITIES.contains(&required.as_str()))
+    {
+        return Err(format!(
+            "module requires capability {missing}, which this Guardian does not provide"
         ));
     }
     for hook in &config.hooks {
@@ -210,16 +274,18 @@ pub async fn check(
         }
     }
 
-    validate_params(module, params, config.timeout).await?;
-    Ok(info)
+    let params = validate_params(module, params, config.timeout).await?;
+    Ok(Checked { info, params })
 }
 
 /// Asks the module whether `params` are valid; used at startup and for every params write.
+/// Returns the params to store: the module's normalized form when it sent one, otherwise
+/// `params` unchanged.
 pub async fn validate_params(
     module: &Arc<dyn Module>,
     params: &serde_json::Value,
     timeout: std::time::Duration,
-) -> Result<(), String> {
+) -> Result<serde_json::Value, String> {
     let bytes = serde_json::to_vec(params).map_err(|e| e.to_string())?;
     let validating = module.clone();
     let verdict = isolated(
@@ -228,10 +294,15 @@ pub async fn validate_params(
     )
     .await
     .map_err(|e| format!("validate_params {e}"))?;
-    if verdict.ok {
-        Ok(())
-    } else {
-        Err(format!("invalid params: {}", verdict.message))
+    if !verdict.ok {
+        return Err(format!("invalid params: {}", verdict.message));
+    }
+    if verdict.normalized_params.is_empty() {
+        return Ok(params.clone());
+    }
+    match serde_json::from_slice::<serde_json::Value>(&verdict.normalized_params) {
+        Ok(normalized) if normalized.is_object() => Ok(normalized),
+        _ => Err("normalized params are not a JSON object".into()),
     }
 }
 
@@ -273,7 +344,8 @@ enabled = ENABLED
                     &HashMap::new(),
                 )
                 .await
-                .expect("a disabled instance does not block startup");
+                .expect("a disabled instance does not block startup")
+                .instances;
             assert_eq!(instances.len(), 1);
             assert!(!instances[0].config.enabled);
         }
@@ -308,7 +380,8 @@ enabled = ENABLED
         let instances = Registry::first_party()
             .instantiate(&catalog(built_in), &HashMap::new())
             .await
-            .expect("the built-in guide catalog passes the startup checks");
+            .expect("the built-in guide catalog passes the startup checks")
+            .instances;
         assert!(instances.iter().all(|instance| instance.config.enabled));
     }
 
@@ -346,7 +419,8 @@ timeout_ms = 50
         let instances = registry
             .instantiate(&catalog(CUSTOM), &HashMap::new())
             .await
-            .unwrap();
+            .unwrap()
+            .instances;
         assert_eq!(instances[0].config.kind, "house-policy");
         assert!(instances[0].config.enabled);
         assert!(
@@ -399,6 +473,93 @@ timeout_ms = 50
         let formatted = isolated::<()>(timeout, async move { panic!("instance {id} broke") }).await;
         assert!(
             matches!(formatted, Err(CallError::Panicked(message)) if message == "instance 7 broke")
+        );
+    }
+
+    const PROTOCOL_CATALOG: &str = r#"
+[[module]]
+id = "negotiated"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+params = { old_name = 5 }
+"#;
+
+    async fn load(stub: crate::modules::testing::ProtocolStub) -> Result<Instantiated, String> {
+        let mut registry = Registry::first_party();
+        registry
+            .register(
+                "protocol-stub",
+                Arc::new(crate::modules::testing::FixedFactory(Arc::new(stub))),
+            )
+            .unwrap();
+        registry
+            .instantiate(&catalog(PROTOCOL_CATALOG), &HashMap::new())
+            .await
+    }
+
+    #[tokio::test]
+    async fn describe_tells_the_module_what_this_guardian_speaks() {
+        let stub = Arc::new(crate::modules::testing::ProtocolStub::new());
+        let mut registry = Registry::first_party();
+        registry
+            .register(
+                "protocol-stub",
+                Arc::new(crate::modules::testing::FixedFactory(stub.clone())),
+            )
+            .unwrap();
+        registry
+            .instantiate(&catalog(PROTOCOL_CATALOG), &HashMap::new())
+            .await
+            .unwrap();
+        let sent = stub.described_with.lock().unwrap().clone().unwrap();
+        assert_eq!(sent.guardian_protocol_version, PROTOCOL_VERSION);
+        assert_eq!(sent.guardian_min_protocol_version, MIN_PROTOCOL_VERSION);
+        assert!(
+            sent.guardian_capabilities
+                .contains(&capability::PARAMS_NORMALIZATION.to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_protocol_version_outside_the_supported_range_is_refused() {
+        for version in [MIN_PROTOCOL_VERSION - 1, PROTOCOL_VERSION + 1] {
+            let mut stub = crate::modules::testing::ProtocolStub::new();
+            stub.protocol_version = version;
+            let error = load(stub).await.err().unwrap();
+            assert!(error.contains("unsupported protocol version"), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_capability_this_guardian_lacks_is_refused() {
+        let mut stub = crate::modules::testing::ProtocolStub::new();
+        stub.required_capabilities = vec!["pending.v2".into()];
+        let error = load(stub).await.err().unwrap();
+        assert!(error.contains("requires capability pending.v2"), "{error}");
+
+        let mut stub = crate::modules::testing::ProtocolStub::new();
+        stub.required_capabilities = vec![capability::DECISION_EFFECT.into()];
+        assert!(load(stub).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn normalized_params_come_back_from_the_startup_check() {
+        let mut stub = crate::modules::testing::ProtocolStub::new();
+        stub.normalized = Some(serde_json::json!({ "new_name": 5 }));
+        let loaded = load(stub).await.unwrap();
+        assert_eq!(
+            loaded.normalized.get("negotiated"),
+            Some(&serde_json::json!({ "new_name": 5 }))
+        );
+        assert!(
+            load(crate::modules::testing::ProtocolStub::new())
+                .await
+                .unwrap()
+                .normalized
+                .is_empty(),
+            "a module that returns nothing changes nothing"
         );
     }
 }

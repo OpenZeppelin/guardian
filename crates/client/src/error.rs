@@ -25,11 +25,15 @@ pub const MODULE_UNAVAILABLE_CODE: &str = "GUARDIAN_MODULE_UNAVAILABLE";
 /// instance id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleRefusal {
+    /// A generic denial (an instance with `client_reason = "generic"`) carries only the reason
+    /// code `policy_denied`: no module, no layer and no message.
     Denied {
-        module: String,
+        module: Option<String>,
         reason_code: String,
         /// `global` or `account`: which parameter layer denied, when the server says.
         layer: Option<String>,
+        /// The module's text for the requester, when the instance allows it.
+        client_message: Option<String>,
     },
     Unavailable {
         module: String,
@@ -170,9 +174,10 @@ impl ClientError {
         let field = |name: &str| meta.get(name)?.as_str().map(str::to_owned);
         match code.as_str() {
             MODULE_DENIED_CODE => Some(ModuleRefusal::Denied {
-                module: field("module")?,
+                module: field("module"),
                 reason_code: field("reason_code")?,
                 layer: field("layer"),
+                client_message: field("client_message"),
             }),
             MODULE_UNAVAILABLE_CODE => Some(ModuleRefusal::Unavailable {
                 module: field("module")?,
@@ -246,12 +251,34 @@ mod tests {
         assert_eq!(
             err.module_refusal(),
             Some(ModuleRefusal::Denied {
-                module: "caps".into(),
+                module: Some("caps".into()),
                 reason_code: "amount_cap_exceeded".into(),
                 layer: Some("account".into()),
+                client_message: None,
             })
         );
         assert!(!err.is_retryable());
+    }
+
+    #[test]
+    fn generic_denial_is_typed_without_details() {
+        let err = module_status(
+            tonic::Code::PermissionDenied,
+            serde_json::json!({
+                "code": "GUARDIAN_MODULE_DENIED",
+                "message": "This Guardian's policy doesn't allow this request.",
+                "meta": { "retryable": false, "reason_code": "policy_denied" }
+            }),
+        );
+        assert_eq!(
+            err.module_refusal(),
+            Some(ModuleRefusal::Denied {
+                module: None,
+                reason_code: "policy_denied".into(),
+                layer: None,
+                client_message: None,
+            })
+        );
     }
 
     #[test]

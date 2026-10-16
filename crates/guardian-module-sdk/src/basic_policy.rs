@@ -7,8 +7,8 @@ use serde::Deserialize;
 
 use crate::proto::{asset, hook_request};
 use crate::{
-    AccountView, Decision, Hook, HookRequest, Module, ModuleError, ModuleInfo, PROTOCOL_VERSION,
-    ParamsVerdict, TransactionSubject,
+    AccountView, Decision, DescribeRequest, Hook, HookRequest, Module, ModuleError, ModuleInfo,
+    PROTOCOL_VERSION, ParamsVerdict, TransactionSubject,
 };
 
 pub const KIND: &str = "basic-policy";
@@ -242,7 +242,7 @@ pub struct BasicPolicy;
 
 #[async_trait]
 impl Module for BasicPolicy {
-    async fn describe(&self) -> Result<ModuleInfo, ModuleError> {
+    async fn describe(&self, _guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
         Ok(ModuleInfo {
             name: KIND.into(),
             version: env!("CARGO_PKG_VERSION").into(),
@@ -252,6 +252,7 @@ impl Module for BasicPolicy {
                 Hook::BeforeProposalCreated as i32,
                 Hook::BeforeAccountRegistered as i32,
             ],
+            ..Default::default()
         })
     }
 

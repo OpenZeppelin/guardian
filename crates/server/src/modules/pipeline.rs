@@ -1,8 +1,8 @@
 //! Ordered evaluation of an account's modules at one hook.
 
-use guardian_module_sdk::{HookRequest, is_valid_reason_code};
+use guardian_module_sdk::{Decision, Effect, HookRequest, is_valid_reason_code};
 
-use super::catalog::{Catalog, HookName, OnError, Scope};
+use super::catalog::{Catalog, ClientReason, HookName, OnError, Scope};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
@@ -58,6 +58,8 @@ enum Failure {
     Error(String),
     Timeout,
     InvalidDecision(String),
+    /// An `effect` value this Guardian does not know: never read as an allow.
+    UnknownEffect(i32),
     RequestUnavailable(String),
 }
 
@@ -66,7 +68,7 @@ impl Failure {
         match self {
             Failure::Error(_) => "error",
             Failure::Timeout => "timeout",
-            Failure::InvalidDecision(_) => "invalid_decision",
+            Failure::InvalidDecision(_) | Failure::UnknownEffect(_) => "invalid_decision",
             Failure::RequestUnavailable(_) => "request_unavailable",
         }
     }
@@ -78,6 +80,7 @@ impl std::fmt::Display for Failure {
             Failure::Error(message) => write!(f, "{message}"),
             Failure::Timeout => write!(f, "timed out"),
             Failure::InvalidDecision(code) => write!(f, "invalid reason code {code:?}"),
+            Failure::UnknownEffect(value) => write!(f, "unknown decision effect {value}"),
             Failure::RequestUnavailable(message) => write!(f, "request unavailable: {message}"),
         }
     }
@@ -110,7 +113,10 @@ impl ModulePipeline {
                 effective.insert(config.id.clone(), params.clone());
             }
         }
-        let instances = registry.instantiate(&catalog, &effective).await?;
+        let super::registry::Instantiated {
+            instances,
+            normalized,
+        } = registry.instantiate(&catalog, &effective).await?;
         for config in catalog
             .instances
             .iter()
@@ -119,10 +125,33 @@ impl ModulePipeline {
             let seed = if config.file_managed_params {
                 serde_json::json!({})
             } else {
-                config.params.clone()
+                normalized.get(&config.id).unwrap_or(&config.params).clone()
             };
             store
                 .seed_instance(&config.id, config.enabled, &seed, &now)
+                .await?;
+        }
+        for instance in instances.iter().filter(|instance| {
+            stored.contains_key(&instance.config.id) && !instance.config.file_managed_params
+        }) {
+            let Some(params) = normalized.get(&instance.config.id) else {
+                continue;
+            };
+            let operator = format!(
+                "module:{}",
+                instance.build.as_deref().unwrap_or(&instance.config.kind)
+            );
+            tracing::info!(module = %instance.config.id, %operator, "Module normalized its stored global params; storing the migrated form");
+            store
+                .set_global(
+                    &instance.config.id,
+                    params.clone(),
+                    &super::store::Change {
+                        operator: &operator,
+                        reason: "params migrated by the module",
+                        at: now.clone(),
+                    },
+                )
                 .await?;
         }
         Ok(Self {
@@ -353,9 +382,11 @@ impl Plan<'_> {
                 module.evaluate(&request).await
             })
             .await;
-            let failure = match outcome {
-                Ok(decision) if decision.allow => continue,
-                Ok(decision) if is_valid_reason_code(&decision.reason_code) => {
+            let failure = match outcome.map(|decision| (effect(&decision), decision)) {
+                Ok((Some(Effect::Allow), _)) => continue,
+                Ok((Some(Effect::Deny), decision))
+                    if is_valid_reason_code(&decision.reason_code) =>
+                {
                     tracing::info!(
                         module = %instance.config.id,
                         account_id,
@@ -363,15 +394,21 @@ impl Plan<'_> {
                         reason_code = %decision.reason_code,
                         layer = layer.as_str(),
                         message = %decision.message,
+                        client_reason = ?instance.config.client_reason,
                         "Policy module denied the request"
                     );
-                    return Err(GuardianError::ModuleDenied {
-                        module: instance.config.id.clone(),
-                        reason_code: decision.reason_code,
-                        layer: layer.as_str().to_string(),
+                    return Err(match instance.config.client_reason {
+                        ClientReason::Generic => GuardianError::ModuleDeniedGeneric,
+                        ClientReason::Full => GuardianError::ModuleDenied {
+                            module: instance.config.id.clone(),
+                            reason_code: decision.reason_code,
+                            layer: layer.as_str().to_string(),
+                            client_message: client_message(&decision.client_message),
+                        },
                     });
                 }
-                Ok(decision) => Failure::InvalidDecision(decision.reason_code),
+                Ok((Some(_), decision)) => Failure::InvalidDecision(decision.reason_code),
+                Ok((None, decision)) => Failure::UnknownEffect(decision.effect),
                 Err(CallError::Module(error)) => Failure::Error(error.to_string()),
                 Err(CallError::Panicked(message)) => {
                     Failure::Error(format!("module panicked: {message}"))
@@ -383,6 +420,33 @@ impl Plan<'_> {
                 .extend(fail(instance, layer, account_id, &failure)?);
         }
         Ok(approval)
+    }
+}
+
+const CLIENT_MESSAGE_MAX_CHARS: usize = 256;
+
+/// A module's text for the requester as plain text: control characters dropped, whitespace
+/// collapsed, at most 256 characters, and none when empty.
+fn client_message(text: &str) -> Option<String> {
+    let plain: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let capped: String = plain.chars().take(CLIENT_MESSAGE_MAX_CHARS).collect();
+    (!capped.is_empty()).then_some(capped)
+}
+
+/// What a decision asks for. A module that predates `effect` leaves it unspecified and the
+/// legacy `allow` decides; a value this Guardian does not know is `None`.
+fn effect(decision: &Decision) -> Option<Effect> {
+    match Effect::try_from(decision.effect) {
+        Ok(Effect::Unspecified) if decision.allow => Some(Effect::Allow),
+        Ok(Effect::Unspecified) => Some(Effect::Deny),
+        Ok(effect) => Some(effect),
+        Err(_) => None,
     }
 }
 
@@ -637,6 +701,147 @@ params = {params}
             on_error,
             StubModule::new(behaviour),
         )])
+    }
+
+    fn decision(allow: bool, reason_code: &str, effect: i32) -> Behaviour {
+        Behaviour::Decide(Decision {
+            allow,
+            reason_code: reason_code.into(),
+            effect,
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn the_effect_decides_and_an_unknown_one_is_a_failure() {
+        let denied = |behaviour| async {
+            matches!(
+                run(&pipeline_with(OnError::Deny, behaviour)).await,
+                Err(GuardianError::ModuleDenied { .. })
+            )
+        };
+        assert!(
+            denied(decision(false, "legacy_deny", Effect::Unspecified as i32)).await,
+            "a module without effect: allow = false still denies"
+        );
+        assert!(
+            denied(decision(true, "explicit_deny", Effect::Deny as i32)).await,
+            "effect wins over allow"
+        );
+        assert!(
+            run(&pipeline_with(
+                OnError::Deny,
+                decision(false, "", Effect::Allow as i32)
+            ))
+            .await
+            .is_ok()
+        );
+        assert!(
+            matches!(
+                run(&pipeline_with(OnError::Deny, decision(true, "", 99))).await,
+                Err(GuardianError::ModuleUnavailable { .. })
+            ),
+            "an effect this Guardian does not know is never read as an allow"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_stores_params_the_module_migrated() {
+        use crate::modules::testing::{FixedFactory, ProtocolStub};
+        let catalog = || {
+            Catalog::parse(
+                r#"
+[[module]]
+id = "migrating"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+params = { old_name = 5 }
+"#,
+                None,
+            )
+            .unwrap()
+        };
+        let mut stub = ProtocolStub::new();
+        stub.normalized = Some(serde_json::json!({ "new_name": 5 }));
+        let mut registry = Registry::first_party();
+        registry
+            .register("protocol-stub", Arc::new(FixedFactory(Arc::new(stub))))
+            .unwrap();
+        let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
+        let now = "2026-10-16T00:00:00Z".to_string();
+
+        ModulePipeline::new(catalog(), &registry, store.clone(), now.clone())
+            .await
+            .unwrap();
+        let seeded = store.instances().await.unwrap();
+        assert_eq!(
+            seeded[0].global_params,
+            serde_json::json!({ "new_name": 5 }),
+            "a new instance is seeded in the migrated shape"
+        );
+
+        store
+            .set_global(
+                "migrating",
+                serde_json::json!({ "old_name": 7 }),
+                &super::super::store::Change {
+                    operator: "0xop",
+                    reason: "old shape",
+                    at: now.clone(),
+                },
+            )
+            .await
+            .unwrap();
+        ModulePipeline::new(catalog(), &registry, store.clone(), now)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.instances().await.unwrap()[0].global_params,
+            serde_json::json!({ "new_name": 5 })
+        );
+        let last = store.history("migrating").await.unwrap().pop().unwrap();
+        assert_eq!(last.operator, "module:protocol-stub 1");
+        assert_eq!(last.reason, "params migrated by the module");
+        assert_eq!(last.previous, serde_json::json!({ "old_name": 7 }));
+    }
+
+    #[tokio::test]
+    async fn a_generic_instance_denies_without_details() {
+        let deny = Behaviour::Decide(
+            Decision::deny("recipient_sanctioned", "on list X")
+                .with_client_message("contact support"),
+        );
+        let mut instance = instance("screening", &[HOOK], OnError::Deny, StubModule::new(deny));
+        instance.config.client_reason = ClientReason::Generic;
+        assert!(matches!(
+            run(&pipeline(vec![instance])).await,
+            Err(GuardianError::ModuleDeniedGeneric)
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_full_denial_forwards_a_cleaned_client_message() {
+        let text = format!(
+            "Limit reached.\n\tAsk your\u{7} treasury admin. {}",
+            "x".repeat(400)
+        );
+        let deny = Behaviour::Decide(
+            Decision::deny("amount_cap_exceeded", "internal").with_client_message(text),
+        );
+        match run(&pipeline_with(OnError::Deny, deny)).await {
+            Err(GuardianError::ModuleDenied {
+                client_message: Some(message),
+                ..
+            }) => {
+                assert!(message.starts_with("Limit reached. Ask your treasury admin."));
+                assert_eq!(message.chars().count(), 256);
+                assert!(!message.chars().any(char::is_control));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(client_message("  \n "), None);
     }
 
     #[tokio::test]

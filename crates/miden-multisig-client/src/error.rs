@@ -30,11 +30,14 @@ pub enum MultisigError {
 
     /// A GUARDIAN policy module refused the request. Final: retrying the same request
     /// gets the same answer.
-    #[error("GUARDIAN policy module {module} denied the request: {reason_code}{}", layer.as_deref().map(|layer| format!(" ({layer} layer)")).unwrap_or_default())]
+    #[error("GUARDIAN policy {}denied the request: {reason_code}{}", module.as_deref().map(|module| format!("module {module} ")).unwrap_or_default(), layer.as_deref().map(|layer| format!(" ({layer} layer)")).unwrap_or_default())]
     ModuleDenied {
-        module: String,
+        /// Absent for a generic denial, which reports only `policy_denied`.
+        module: Option<String>,
         reason_code: String,
         layer: Option<String>,
+        /// The module's text for the requester, when the instance allows it.
+        client_message: Option<String>,
     },
 
     /// A fail-closed GUARDIAN policy module could not decide. Retryable.
@@ -329,10 +332,12 @@ impl From<guardian_client::ClientError> for MultisigError {
                 module,
                 reason_code,
                 layer,
+                client_message,
             }) => MultisigError::ModuleDenied {
                 module,
                 reason_code,
                 layer,
+                client_message,
             },
             Some(guardian_client::ModuleRefusal::Unavailable { module }) => {
                 MultisigError::ModuleUnavailable { module }
@@ -412,7 +417,7 @@ mod tests {
         assert!(matches!(
             denied,
             MultisigError::ModuleDenied { ref module, ref reason_code, .. }
-                if module == "caps" && reason_code == "amount_cap_exceeded"
+                if module.as_deref() == Some("caps") && reason_code == "amount_cap_exceeded"
         ));
 
         let unavailable = MultisigError::from(guardian_status(

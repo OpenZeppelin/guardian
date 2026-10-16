@@ -2,7 +2,7 @@
 
 use serde::Serialize;
 
-use super::catalog::{Scope, contains_secret_reference};
+use super::catalog::{ClientReason, Disclosure, Scope, contains_secret_reference};
 use super::pipeline::ModulePipeline;
 use super::registry::{Instance, validate_params};
 use super::store::{Assigned, Change, HistoryEntry, ParamsKind};
@@ -26,6 +26,11 @@ pub struct ModuleInstanceView {
     pub file_managed_params: bool,
     /// `name version` from `describe` at startup; absent when the startup checks failed.
     pub build: Option<String>,
+    pub disclosure: Disclosure,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub client_reason: ClientReason,
+    pub dry_run: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -89,7 +94,9 @@ fn require_reason(reason: &str) -> Result<()> {
     Ok(())
 }
 
-async fn validated(instance: &Instance, params: &serde_json::Value) -> Result<()> {
+/// Validates operator-supplied params and returns what to store: the module's normalized form
+/// when it sent one.
+async fn validated(instance: &Instance, params: &serde_json::Value) -> Result<serde_json::Value> {
     if !params.is_object() {
         return Err(GuardianError::InvalidInput(
             "params must be a JSON object".into(),
@@ -100,9 +107,16 @@ async fn validated(instance: &Instance, params: &serde_json::Value) -> Result<()
             "secret references cannot be set through the operator API".into(),
         ));
     }
-    validate_params(&instance.module, params, instance.config.timeout)
+    let stored = validate_params(&instance.module, params, instance.config.timeout)
         .await
-        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))
+        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
+    if contains_secret_reference(&stored) {
+        return Err(GuardianError::InvalidInput(format!(
+            "module {}: normalized params contain a secret reference",
+            instance.config.id
+        )));
+    }
+    Ok(stored)
 }
 
 async fn existing_account(state: &AppState, account_id: &str) -> Result<String> {
@@ -182,6 +196,10 @@ async fn instance_view(
         params,
         file_managed_params: instance.config.file_managed_params,
         build: instance.build.clone(),
+        disclosure: instance.config.disclosure,
+        description: instance.config.description.clone(),
+        client_reason: instance.config.client_reason,
+        dry_run: instance.config.dry_run,
     })
 }
 
@@ -275,15 +293,33 @@ pub async fn enable(
     let instance = instance(pipeline, module_id)?;
     if !pipeline.enabled(instance).await? {
         let params = pipeline.global_params(instance).await?;
-        super::registry::check(&instance.config, &instance.module, &params)
+        let checked = super::registry::check(&instance.config, &instance.module, &params)
             .await
-            .map(|_| ())
             .map_err(|error| {
                 tracing::warn!(module = %module_id, %error, "Module failed its checks; not enabled");
                 GuardianError::ModuleUnavailable {
                     module: module_id.to_string(),
                 }
             })?;
+        if checked.params != params && !instance.config.file_managed_params {
+            let migrator = format!(
+                "module:{}",
+                instance.build.as_deref().unwrap_or(&instance.config.kind)
+            );
+            pipeline
+                .store()
+                .set_global(
+                    module_id,
+                    checked.params,
+                    &Change {
+                        operator: &migrator,
+                        reason: "params migrated by the module",
+                        at: state.clock.now_rfc3339(),
+                    },
+                )
+                .await
+                .map_err(GuardianError::StorageError)?;
+        }
         pipeline
             .store()
             .set_enabled(module_id, true, &change(state, operator, reason))
@@ -353,7 +389,7 @@ pub async fn set_global(
             "module {module_id}: params with secret references are managed in the catalog file"
         )));
     }
-    validated(instance, &params).await?;
+    let params = validated(instance, &params).await?;
     pipeline
         .store()
         .set_global(module_id, params, &change(state, operator, reason))
@@ -389,9 +425,10 @@ pub async fn set_layer(
             "module {module_id}: account layers apply only to scope = \"all\" instances; assign it instead"
         )));
     }
-    if let Some(params) = &params {
-        validated(instance, params).await?;
-    }
+    let params = match params {
+        Some(params) => Some(validated(instance, &params).await?),
+        None => None,
+    };
     pipeline
         .store()
         .set_layer(
@@ -425,6 +462,7 @@ pub async fn set_assignment(
     require_reason(reason)?;
     let pipeline = pipeline(state)?;
     let account_id = existing_account(state, account_id).await?;
+    let mut to_store = Vec::with_capacity(modules.len());
     for (index, assigned) in modules.iter().enumerate() {
         let instance = instance(pipeline, &assigned.module_id)?;
         if instance.config.scope == Scope::All {
@@ -442,11 +480,14 @@ pub async fn set_assignment(
                 assigned.module_id
             )));
         }
-        validated(instance, &assigned.params).await?;
+        to_store.push(Assigned {
+            module_id: assigned.module_id.clone(),
+            params: validated(instance, &assigned.params).await?,
+        });
     }
     pipeline
         .store()
-        .set_assignment(&account_id, modules, &change(state, operator, reason))
+        .set_assignment(&account_id, to_store, &change(state, operator, reason))
         .await
         .map_err(GuardianError::StorageError)?;
     let payload =
@@ -524,6 +565,45 @@ mod tests {
             secret,
         ]));
         state
+    }
+
+    #[tokio::test]
+    async fn operator_writes_store_the_shape_the_module_normalized() {
+        let mut stub = crate::modules::testing::ProtocolStub::new();
+        stub.normalized = Some(json!({ "new_name": 5 }));
+        let mut state = state();
+        state.modules = Some(pipeline(vec![instance(
+            "migrating",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            Arc::new(stub),
+        )]));
+        let view = set_global(
+            &state,
+            &operator(),
+            "migrating",
+            json!({ "old_name": 5 }),
+            "OP-93",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(view.params, json!({ "new_name": 5 }));
+        let view = set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "migrating",
+            Some(json!({ "old_name": 1 })),
+            "OP-94",
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            view.modules[0].account_layer,
+            Some(json!({ "new_name": 5 }))
+        );
     }
 
     #[tokio::test]

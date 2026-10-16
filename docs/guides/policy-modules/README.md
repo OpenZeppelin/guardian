@@ -46,8 +46,28 @@ operator endpoints and permissions.
   default) refuses with `503 GUARDIAN_MODULE_UNAVAILABLE`; `"allow"` continues
   and records the failure on the signed delta.
 - **Refusal.** A deny returns `403 GUARDIAN_MODULE_DENIED` with `module`,
-  `reason_code` and `layer` (`global` or `account`) in `meta`. The Rust clients
-  surface it as a typed error.
+  `reason_code` and `layer` (`global` or `account`) in `meta`, plus the
+  module's `client_message` when it sets one. The Rust clients surface it as a
+  typed error.
+
+## What users see
+
+Each instance decides how much the account's cosigners learn
+([RFC 0002 section 2.7](../../rfcs/0002-guardian-modules.md#27-policy-discovery-and-disclosure)):
+
+| Catalog field | Values | Effect |
+|---|---|---|
+| `client_reason` | `full` (default), `generic` | `generic` turns a denial into `meta = { reason_code: "policy_denied" }`: no module, layer or message. Use it for screening, where telling a user why could itself be prohibited. The server log still has the full decision. |
+| `disclosure` | `none` (default), `summary`, `params` | What a policy summary for cosigners will show. `summary` and `params` need a `description`. |
+| `description` | Text, at most 500 characters | Shown to cosigners, for example "At most 5 per transaction". |
+| `dry_run` | `true` (default), `false` | Whether a dry-run check may call the instance. |
+
+The prototype applies `client_reason` and forwards `client_message` (plain
+text, at most 256 characters). The policy summary and the dry-run check are
+not built yet; `disclosure`, `description` and `dry_run` are validated and
+shown in `GET /modules` so operators can set them now. In
+[`built-in.toml`](./built-in.toml), `caps` discloses its params and
+`blocklist` denies generically.
 
 ## Setup
 

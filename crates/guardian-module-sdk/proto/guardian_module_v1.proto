@@ -19,10 +19,24 @@ enum Hook {
   HOOK_BEFORE_PROPOSAL_CREATED = 4;
 }
 
-message DescribeRequest {}
-message ModuleInfo { string name = 1; string version = 2; uint32 protocol_version = 3; repeated Hook hooks = 4; }
+message DescribeRequest {
+  uint32 guardian_protocol_version = 1;      // the newest protocol version the Guardian speaks
+  uint32 guardian_min_protocol_version = 2;  // the oldest it still accepts (section 3.5)
+  repeated string guardian_capabilities = 3; // optional features this Guardian provides
+}
+message ModuleInfo {
+  string name = 1;
+  string version = 2;
+  uint32 protocol_version = 3;               // must lie in the Guardian's supported range
+  repeated Hook hooks = 4;
+  repeated string required_capabilities = 5; // startup fails if the Guardian lacks one
+}
 message ValidateParamsRequest { bytes params = 1; string instance_id = 2; }  // params: UTF-8 JSON
-message ParamsVerdict { bool ok = 1; string message = 2; }
+message ParamsVerdict {
+  bool ok = 1;
+  string message = 2;
+  bytes normalized_params = 3;               // UTF-8 JSON; empty: store the params as sent. Lets a module migrate params it still accepts to its current shape
+}
 message NotifyAck {}
 
 message Gap {
@@ -96,10 +110,18 @@ message RegistrationSubject {
   AccountProjection initial_state = 5;  // vault and storage of the account about to be accepted
 }
 
+enum Effect {
+  EFFECT_UNSPECIFIED = 0;             // a module that predates `effect`: `allow` decides
+  EFFECT_ALLOW = 1;
+  EFFECT_DENY = 2;
+}
+
 message Decision {
-  bool allow = 1;
-  string reason_code = 2;             // required when allow = false; ignored when allow = true
+  bool allow = 1;                     // read only when effect is unspecified
+  string reason_code = 2;             // required on a deny; ignored on an allow
   string message = 3;                 // logged, never forwarded to clients
+  Effect effect = 4;                  // wins over allow when set; a value the Guardian does not know is a module failure
+  string client_message = 5;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it
 }
 
 message TxProjection {

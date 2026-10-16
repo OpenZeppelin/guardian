@@ -101,10 +101,10 @@ fn module_error(status: tonic::Status) -> ModuleError {
 
 #[async_trait]
 impl Module for GrpcModule {
-    async fn describe(&self) -> Result<ModuleInfo, ModuleError> {
+    async fn describe(&self, guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
         self.client
             .clone()
-            .describe(self.request(DescribeRequest {}))
+            .describe(self.request(guardian.clone()))
             .await
             .map(tonic::Response::into_inner)
             .map_err(module_error)

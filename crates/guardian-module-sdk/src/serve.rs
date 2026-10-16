@@ -94,7 +94,7 @@ impl<M: Module + 'static> GuardianModule for Harness<M> {
     ) -> Result<Response<ModuleInfo>, Status> {
         self.authorize(&request, None)?;
         self.module
-            .describe()
+            .describe(request.get_ref())
             .await
             .map(Response::new)
             .map_err(status)
