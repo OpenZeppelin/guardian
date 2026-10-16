@@ -139,7 +139,25 @@ Built on `251-guardian-modules-rfc` (local only, not pushed): `crates/guardian-m
 - Remote module over loopback gRPC: p50 43 µs, p99 102 µs per evaluation. In-process `basic-policy`: 0.2 µs.
 - Estimated added latency for a gated push: about 2.3 ms plus the module round trips, within SC-006 (10 ms). The default budget of 1,000 ms is unchanged.
 - SC-001 holds by construction: with no catalog the pipeline is one `Option` check, and with a catalog but no module for the account and hook no request is built. The full server suite passes unchanged.
-- Open for M2a: the end-to-end p50 and p99 A/B against a local node.
+- End-to-end A/B: see "G3 end to end" below.
+
+### G3 end to end (2026-10-16)
+
+`push_delta` over gRPC with Falcon auth, measured by the loadgen `state-push` scenario (one chained delta per operation) against `examples/bench_server` (the server as `main` builds it, release build, filesystem backend, canonicalization off so pushes commit optimistically and never wait on a node). Three configurations: no catalog; one in-process `basic-policy` on `before_transaction_approved` (cap and signer rule); the same served by `basic-policy-serve` over loopback gRPC (plain text, bearer token). Every module-run delta carried `metadata.modules`, so each push was evaluated. Laptop, noisy: rounds were interleaved and medians are reported.
+
+| Concurrency 1 | p50 none | p50 in-process | p50 remote | p99 none | p99 in-process | p99 remote |
+|---|---|---|---|---|---|---|
+| 3 rounds x 400 pushes | 21.0 ms | 24.1 ms (+3.1) | 25.0 ms (+4.1) | 28.2 ms | 43.4 ms | 52.4 ms |
+| 2 rounds x 2,000 pushes | 32.7 ms | 38.0 ms (+5.3) | 38.0 ms (+5.3) | 57.2 ms | 68.5 ms (+11.3) | 71.7 ms (+14.5) |
+| 2 rounds x 2,000 pushes, after the fixes below | 32.0 ms | 35.7 ms (+3.7) | 34.8 ms (+2.8) | 64.1 ms | 65.2 ms (+1.1) | 68.4 ms (+4.3) |
+
+At concurrency 8 (3 rounds x 1,600 pushes) the server is saturated at about 89 pushes per second in every configuration (none 89.0, in-process 87.1, remote 90.4) with p50 near 90 ms; the module work is not measurable there, since view and projection building runs on the request task outside the reconstruction gate. Latency rises over a long run in all three configurations alike, so it does not bias the comparison.
+
+- **SC-001** holds: no catalog is the baseline path (one `Option` check).
+- **SC-006** (at most 10 ms added at p99 for one in-process module) was borderline before the fixes (p99 +11 ms on the long runs) and holds after them (+1 to +4 ms, within noise). The remote module costs no more than in-process at p50 over loopback.
+- The cost is the request, not the module (an in-process evaluation is 0.2 µs). A release-build profile of the builders: `account_view` 1.3 ms per call, almost all of it decoding the account; the projection 2.4 µs. Each request built two views and repeated a proposal storage read.
+- Fixed (2026-10-16): account views are cached per replica by the state commitment the Guardian computed (stored tail, applied state, registration head; never a client value), bounded at 4,096 entries. A chained push reuses the previous push's `after` view, and a proposal's approval push reuses both views built at its creation. `push_delta` reads the matching proposal once for metadata and modules; a storage failure still reaches modules as a failure, not as "no proposer".
+- Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes, which needs a `NetworkClient` change; re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after.
 
 ### G4 closed, with SDK changes
 
