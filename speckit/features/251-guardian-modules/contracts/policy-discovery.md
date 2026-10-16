@@ -6,8 +6,8 @@
 
 | HTTP | gRPC | Slice | Success |
 |---|---|---|---|
-| `GET /accounts/{account_id}/policies` | `GetPolicies` | M2a | 200 `PoliciesView` |
-| `POST /proposals/check` | `CheckProposal` | M2a | 200 `CheckResult`, or the denial and unavailability errors of [client-errors.md](./client-errors.md) |
+| `GET /policies?account_id=…` | `GetPolicies` | M2a | 200 `PoliciesView` |
+| `POST /delta/proposal/check` | `CheckDeltaProposal` | M2a | 200 `CheckResult`, or the errors proposal creation returns (including those of [client-errors.md](./client-errors.md)), or `rate_limit_exceeded` |
 
 ## Schemas
 
@@ -21,21 +21,23 @@ PolicyEntry {
 }
 PoliciesView  { account_id: string, policies: PolicyEntry[] }   // evaluation order; instances with disclosure = none are absent
 
-CheckProposal request: the proposal creation body without signatures
+CheckDeltaProposal request: the proposal creation body (`DeltaProposalRequest`)
 CheckResult   { allowed: true, complete: bool }   // complete = false when an instance with dry_run = false was skipped; never names it
 ```
 
 ## Rules
 
-- The check runs the `before_proposal_created` instances exactly as creation would, with the evaluation time as `accounting_time`, stores nothing, takes no proposal slot and records no decision.
+- The check runs creation's own checks (authentication, queue admission, the pending-proposal limit, delta verification) and the `before_proposal_created` instances, with the evaluation time as `accounting_time`; it stores nothing, takes no proposal slot and records no decision. The rate limit is admitted before the state is rebuilt.
+- gRPC carries `params` and `account_layer` as JSON strings; HTTP as JSON objects.
 - Rate limit per account and signer: `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` (default 30); excess returns the existing `rate_limit_exceeded`.
 - Every check is logged with the account and signer.
 - The answer is advisory; `before_transaction_approved` stays the enforcement point.
 
 ## Clients
 
-`getPolicies` and `checkProposal` in both multisig SDKs (Rust and TypeScript), with the same typed errors as proposal creation.
+- `guardian-client` (Rust): `get_policies`, `check_delta_proposal`. `@openzeppelin/guardian-client` (TypeScript): `getPolicies`, `checkDeltaProposal`.
+- Multisig SDKs: Rust `get_policies` and `check_transaction` (`check_transaction_with_options`), building the transaction exactly as `propose_transaction` does; TypeScript `getPolicies` and `checkTransaction`, with the same typed errors as proposal creation.
 
 ## Prototype status (#554)
 
-Not built. The catalog fields these routes read (`disclosure`, `description`, `dry_run`) are parsed, validated and shown in the operator view.
+Both routes, both transports, the Rust and TypeScript base clients and the Rust multisig SDK are built and tested. The TypeScript multisig SDK methods wait for a `@openzeppelin/guardian-client` release: that package resolves the client from npm, so calling unpublished methods would break its build.
