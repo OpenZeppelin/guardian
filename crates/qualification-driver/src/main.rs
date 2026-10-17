@@ -443,6 +443,12 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
         }
         Command::TreasuryBootstrap { network, data_dir } => {
             let network: NetworkName = network.into();
+            // Under the same lock as every other treasury transaction: a
+            // consume beside a funding transfer would build both on one nonce.
+            let _lock = guardian_qualification_driver::funding::lock::TreasuryLock::acquire(
+                &data_dir,
+                network.as_str(),
+            )?;
             let treasury = guardian_qualification_driver::funding::Treasury::from_env(network)?;
             let mut client =
                 guardian_qualification_driver::funding::network::connect(network, &data_dir)
