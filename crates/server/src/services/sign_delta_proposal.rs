@@ -90,41 +90,59 @@ pub async fn sign_delta_proposal(
         }
     };
 
-    let signer_commitment_hex = resolved.signer_commitment.clone();
-    tracing::Span::current().record(
-        "signer_commitment",
-        tracing::field::display(&signer_commitment_hex),
-    );
-
-    // Check if already signed by this signer
-    if cosigner_sigs
-        .iter()
-        .any(|sig| sig.signer_id.eq_ignore_ascii_case(&signer_commitment_hex))
-    {
-        return Err(GuardianError::ProposalAlreadySigned {
-            signer_id: signer_commitment_hex.clone(),
-        });
-    }
-
+    // The approval's signer is whoever the signature cryptographically
+    // verifies for, never the caller: a cosigner who signed the summary
+    // off channel (an exported proposal signed on another machine) has
+    // authorized the transaction whoever relays the document, exactly as
+    // on chain, where the executed transaction carries every collected
+    // signature. The request itself is still authenticated above, so only
+    // a configured signer can relay, and the approval must belong to one
+    // of the account's cosigners.
     let tx_summary = proposal_tx_summary(&delta_proposal.delta_payload)?;
     let approval_signer = verify_proposal_signature(&tx_summary, &signature)?;
-    if !approval_signer.eq_ignore_ascii_case(&signer_commitment_hex) {
+    tracing::Span::current().record(
+        "signer_commitment",
+        tracing::field::display(&approval_signer),
+    );
+    if !resolved
+        .metadata
+        .auth
+        .cosigner_commitments()
+        .iter()
+        .any(|cosigner| cosigner.eq_ignore_ascii_case(&approval_signer))
+    {
         return Err(GuardianError::InvalidProposalSignature(
-            "Approval signer differs from request signer".to_string(),
+            "Approval signer is not a cosigner of this account".to_string(),
         ));
+    }
+    if !approval_signer.eq_ignore_ascii_case(&resolved.signer_commitment) {
+        tracing::info!(
+            relayer = %resolved.signer_commitment,
+            "Proposal approval relayed on behalf of another cosigner"
+        );
+    }
+
+    // Check if already signed by the approval's signer
+    if cosigner_sigs
+        .iter()
+        .any(|sig| sig.signer_id.eq_ignore_ascii_case(&approval_signer))
+    {
+        return Err(GuardianError::ProposalAlreadySigned {
+            signer_id: approval_signer.clone(),
+        });
     }
 
     // Add the new signature
     let new_signature = CosignerSignature {
         signature,
         timestamp: state.clock.now_rfc3339(),
-        signer_id: signer_commitment_hex.clone(),
+        signer_id: approval_signer.clone(),
     };
     cosigner_sigs.push(new_signature);
     tracing::Span::current().record("total_signatures", cosigner_sigs.len());
 
     let new_sig = DeltaSignature {
-        signer_id: signer_commitment_hex.clone(),
+        signer_id: approval_signer.clone(),
         signature: cosigner_sigs.last().expect("just pushed").signature.clone(),
     };
     if let Some(signatures) = delta_proposal
@@ -666,13 +684,43 @@ mod tests {
         }
     }
 
+    /// A cosigner who signed the summary off channel has authorized the
+    /// transaction no matter who relays the document (issue #524's gate
+    /// counts stored approvals, so the off-channel execute flow relays
+    /// them here first). The approval is credited to the cosigner the
+    /// signature verifies for, not to the relaying caller.
     #[tokio::test]
-    async fn test_sign_delta_proposal_rejects_approval_from_another_cosigner() {
+    async fn test_sign_delta_proposal_accepts_a_relayed_cosigner_approval() {
         let signer = TestSigner::new();
         let proposer = TestSigner::new();
         let (summary, _commitment) = proposal_summary("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b");
         let signature = ProposalSignature::Falcon {
             signature: proposer.sign_word(summary.to_commitment()),
+        };
+
+        let (result, storage) = sign_as(&signer, &proposer, signature).await;
+
+        let result = result.expect("a relayed cosigner approval is accepted");
+        match &result.delta.status {
+            DeltaStatus::Pending { cosigner_sigs, .. } => {
+                assert_eq!(cosigner_sigs.len(), 1);
+                assert_eq!(cosigner_sigs[0].signer_id, proposer.commitment_hex);
+            }
+            _ => panic!("Expected Pending status"),
+        }
+        assert_eq!(storage.get_update_delta_proposal_calls().len(), 1);
+    }
+
+    /// A valid signature from a key outside the account's cosigner set
+    /// buys nothing, whoever relays it.
+    #[tokio::test]
+    async fn test_sign_delta_proposal_rejects_an_approval_from_a_non_cosigner() {
+        let signer = TestSigner::new();
+        let proposer = TestSigner::new();
+        let outsider = TestSigner::new();
+        let (summary, _commitment) = proposal_summary("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b");
+        let signature = ProposalSignature::Falcon {
+            signature: outsider.sign_word(summary.to_commitment()),
         };
 
         let (result, storage) = sign_as(&signer, &proposer, signature).await;
@@ -734,43 +782,48 @@ mod tests {
         let (state, storage, _network, metadata) = create_test_state();
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
-        let commitment =
-            "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".to_string();
+        let (summary, commitment) = proposal_summary(&account_id);
 
-        let (_proposer_pubkey, proposer_commitment, _proposer_signature, _proposer_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
-        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
-            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let proposer = TestSigner::new();
+        let signer = TestSigner::new();
 
         let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
             account_id.clone(),
             Auth::MidenFalconRpo {
-                cosigner_commitments: vec![proposer_commitment.clone(), signer_commitment.clone()],
+                cosigner_commitments: vec![
+                    proposer.commitment_hex.clone(),
+                    signer.commitment_hex.clone(),
+                ],
             },
         ))));
 
-        let existing_sig = format!("0x{}", "a".repeat(666));
         let pending_proposal = create_pending_proposal(
             account_id.clone(),
             1,
-            proposer_commitment.clone(),
+            proposer.commitment_hex.clone(),
             vec![CosignerSignature {
                 signature: ProposalSignature::Falcon {
-                    signature: existing_sig,
+                    signature: signer.sign_word(summary.to_commitment()),
                 },
                 timestamp: "2024-11-14T12:00:00Z".to_string(),
-                signer_id: signer_commitment.clone(),
+                signer_id: signer.commitment_hex.clone(),
             }],
         );
 
         let _storage = storage.with_pull_delta_proposal(Ok(pending_proposal.clone()));
 
-        let new_sig = format!("0x{}", "b".repeat(666));
+        let (request_signature, timestamp) = signer.sign(&account_id);
         let params = SignDeltaProposalParams {
             account_id: account_id.clone(),
             commitment: commitment.clone(),
-            signature: ProposalSignature::Falcon { signature: new_sig },
-            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
+            signature: ProposalSignature::Falcon {
+                signature: signer.sign_word(summary.to_commitment()),
+            },
+            credentials: Credentials::signature(
+                signer.pubkey_hex.clone(),
+                request_signature,
+                timestamp,
+            ),
         };
 
         let result = sign_delta_proposal(&state, params).await;
@@ -778,7 +831,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             GuardianError::ProposalAlreadySigned { signer_id } => {
-                assert_eq!(signer_id, signer_commitment);
+                assert_eq!(signer_id, signer.commitment_hex);
             }
             e => panic!("Expected ProposalAlreadySigned error, got: {:?}", e),
         }

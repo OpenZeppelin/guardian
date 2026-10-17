@@ -291,8 +291,14 @@ impl MultisigClient {
         // from GUARDIAN, exactly as on the online path. Without this the
         // document could only ever execute a guardian switch, the one type that
         // needs no acknowledgement, which is what tied off-channel signature
-        // collection to that single type.
+        // collection to that single type. GUARDIAN acknowledges a multisig
+        // delta only when its stored proposal carries a threshold of verified
+        // approvals (issue #524), and approvals collected off channel exist
+        // only in the document, so they are relayed to the stored proposal
+        // before the acknowledgement is requested.
         if proposal.transaction_type.requires_guardian_ack() {
+            self.relay_collected_approvals(&proposal.id, &exported.signatures)
+                .await?;
             let guardian_advice = self
                 .get_guardian_ack_signature(
                     &account,
@@ -342,5 +348,49 @@ impl MultisigClient {
 
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
+    }
+
+    /// Relays the document's collected approvals to GUARDIAN's stored
+    /// proposal. The signing endpoint credits each approval to the cosigner
+    /// its signature cryptographically verifies for, so any configured
+    /// signer may relay them; an approval GUARDIAN already holds answers
+    /// with `proposal_already_signed` and is skipped.
+    async fn relay_collected_approvals(
+        &mut self,
+        proposal_id: &str,
+        signatures: &[ExportedSignature],
+    ) -> Result<()> {
+        let account_id = self.require_account()?.id();
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        for collected in signatures {
+            let signature = match collected.scheme {
+                guardian_shared::SignatureScheme::Falcon => {
+                    guardian_shared::ProposalSignature::Falcon {
+                        signature: collected.signature.clone(),
+                    }
+                }
+                guardian_shared::SignatureScheme::Ecdsa => {
+                    guardian_shared::ProposalSignature::Ecdsa {
+                        signature: collected.signature.clone(),
+                        public_key: collected.public_key_hex.clone(),
+                        message_format: collected.message_format,
+                    }
+                }
+            };
+            match guardian_client
+                .sign_delta_proposal(&account_id, proposal_id, signature)
+                .await
+            {
+                Ok(_) => {}
+                Err(error)
+                    if error.guardian_code().as_deref() == Some("proposal_already_signed") => {}
+                Err(error) => {
+                    return Err(MultisigError::GuardianServer(format!(
+                        "failed to relay a collected approval to GUARDIAN: {error}"
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 }
