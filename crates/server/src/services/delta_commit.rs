@@ -192,7 +192,7 @@ impl DeltaCommitStrategy {
                 crate::services::release_on_switch::release_if_guardian_switched(
                     ctx.state,
                     &ctx.resolved.metadata,
-                    &new_state.state_json,
+                    applied.guardian_commitment.as_deref(),
                     delta.nonce,
                     &new_state.commitment,
                 )
@@ -245,6 +245,8 @@ mod tests {
             state_json: serde_json::json!({"new": "state"}),
             commitment: "new_commitment".to_string(),
             nonce: Some(2),
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }
     }
 
