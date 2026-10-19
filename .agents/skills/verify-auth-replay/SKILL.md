@@ -77,7 +77,7 @@ From the repo root:
 ```
 
 A FAIL verdict names the property TLC reports violated
-(`FAIL:QueuedAccountIsListed`; any temporal property is `FAIL:temporal`),
+(`FAIL:AcceptedAtMostOnce`; any temporal property is `FAIL:temporal`),
 and an expected failure in `expected.txt` must name it too, so a
 different violation in a cell that is expected to fail still shows as a
 `DIFF`. `--cell` exits 0 on PASS, 1 on FAIL and 2 on ERROR.
@@ -86,8 +86,7 @@ different violation in a cell that is expected to fail still shows as a
 TLC's worker threads (default: all cores).
 
 It needs `java` and `python3`. TLC 1.7.4 is downloaded to
-`~/.cache/guardian-tla/` and SHA-256 checked. Set `TLC_WORKERS` to change
-the worker count (default 4).
+`~/.cache/guardian-tla/` and SHA-256 checked.
 
 Each cell prints `ok` or `DIFF` against `expected.txt`. Exit 0 means
 every cell matched and nothing drifted, 1 means a cell changed verdict,
@@ -156,6 +155,13 @@ Paths are relative to `crates/server/src/`.
   `revoke_all_sessions` are out of scope. The two revoke routes
   deliberately consume no floor and are idempotent within the skew
   window.
+- Storage failures are not modeled. A first configuration that claims the
+  account and then fails before storing its state leaves metadata with no
+  state; `configure_account` treats a retry of that account as finishing
+  the first configuration (new-account scheme policy, counted as a
+  creation), and filesystem `create` rolls its in-memory insert back when
+  the write fails. Neither changes the claim, consume, write order the
+  model checks.
 - Account deletion does not exist in the code. If it is added,
   `ON DELETE CASCADE` drops the account's floors and this model needs
   that action.

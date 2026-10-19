@@ -69,8 +69,33 @@ pub async fn configure_account(
         );
         GuardianError::StorageError(format!("Failed to check existing account: {e}"))
     })?;
+    // Metadata without a stored state is a first configuration that claimed
+    // the account below and then failed before writing its state (a storage
+    // error after the claim). Its retry finishes that first configuration:
+    // it is held to the scheme policy for new accounts and counted as a
+    // creation. A failed state read keeps the reconfiguration treatment, so
+    // it can never block an account that does have state.
+    let unfinished_claim = match &existing {
+        Some(_) => match state
+            .storage
+            .pull_state_commitment(&params.account_id)
+            .await
+        {
+            Ok(_) => false,
+            Err(e) if crate::storage::is_storage_not_found(&e) => true,
+            Err(e) => {
+                tracing::warn!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Could not check for a stored state; treating the account as configured"
+                );
+                false
+            }
+        },
+        None => false,
+    };
     let scheme = params.auth.scheme();
-    if existing.is_none() {
+    if existing.is_none() || unfinished_claim {
         reject_disallowed_scheme(state, scheme)?;
     }
 
@@ -322,8 +347,10 @@ pub async fn configure_account(
         }
     }
 
-    // Count only first-time creations — /configure also serves
-    // reconfiguration of existing accounts.
+    // Count only first-time creations, including the retry that finishes an
+    // unfinished claim: /configure also serves reconfiguration of existing
+    // accounts.
+    let created = created || unfinished_claim;
     if created {
         metrics::counter!(
             crate::metrics::names::ACCOUNTS_CREATED_TOTAL,
@@ -576,6 +603,60 @@ mod tests {
             result.is_ok(),
             "existing Falcon account must reconfigure: {result:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn retry_of_an_unfinished_first_configuration_is_held_to_the_new_account_scheme_policy() {
+        use crate::config::account_schemes::AllowedAccountSchemes;
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+
+        let claimed_metadata = AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+        let storage_backend = MockStorageBackend::new()
+            .with_pull_state(Err("Failed to pull state: Record not found".to_string()));
+        let metadata_store = MockMetadataStore::new().with_get(Ok(Some(claimed_metadata)));
+
+        let mut state =
+            create_test_app_state(MockNetworkClient::new(), storage_backend, metadata_store).await;
+        state.ack = state
+            .ack
+            .clone()
+            .with_account_schemes(AllowedAccountSchemes::parse("ecdsa").unwrap());
+
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({}),
+            credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+        };
+
+        match configure_account(&state, params).await {
+            Err(GuardianError::SignatureSchemeNotAllowed { scheme, .. }) => {
+                assert_eq!(scheme, "falcon");
+            }
+            other => panic!(
+                "metadata without a stored state is an unfinished first configuration, \
+                 held to the new-account scheme policy: got {other:?}"
+            ),
+        }
     }
 
     #[tokio::test]
