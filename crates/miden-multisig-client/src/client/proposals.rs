@@ -7,6 +7,7 @@ use std::collections::HashSet;
 
 use guardian_shared::{ProposalSignature, ToJson};
 use miden_client::transaction::TransactionRequest;
+use miden_protocol::Word;
 
 use super::{MultisigClient, ProposalResult};
 
@@ -46,11 +47,12 @@ pub enum AbandonStatus {
     /// The delta is missing or in a state no abandon flow produces.
     Unexpected,
 }
+use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::execution::{
     SignatureAdvice, SignatureInput, build_final_transaction_request, collect_signature_advice,
 };
-use crate::keystore::proposal_public_key_hex;
+use crate::keystore::{proposal_public_key_hex, word_from_hex};
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
 use crate::transaction::{
     ProposalBuilder, ProposalOptions, deserialize_transaction_request, execute_for_summary_at_tip,
@@ -63,6 +65,18 @@ impl MultisigClient {
         account_id: &miden_protocol::account::AccountId,
         proposal_id: &str,
     ) -> Result<Proposal> {
+        self.get_pinned_proposal(account_id, proposal_id)
+            .await
+            .map(|(proposal, _)| proposal)
+    }
+
+    /// Fetches a proposal together with the account state GUARDIAN pinned it
+    /// to (the delta proposal's `prev_commitment`).
+    async fn get_pinned_proposal(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<(Proposal, Word)> {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
             .get_delta_proposal(account_id, proposal_id)
@@ -73,9 +87,36 @@ impl MultisigClient {
             .proposal
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
         Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
+        let pinned_base =
+            word_from_hex(&raw_proposal.prev_commitment).map_err(MultisigError::HexDecode)?;
         let mut proposal = Proposal::from(&raw_proposal)?;
         self.verify_proposal_summary_binding(&mut proposal).await?;
-        Ok(proposal)
+        Ok((proposal, pinned_base))
+    }
+
+    /// Refuses to execute a proposal GUARDIAN pinned to a state other than
+    /// the one this client holds, as the TypeScript SDK's
+    /// `assertExecutesOnPinnedBase` does. The transaction executes on this
+    /// client's own record of the account, and the execution push names that
+    /// record as its base, so a proposal made for another state would run on
+    /// a state its signers never approved it for: one pinned to a state the
+    /// account has since left would apply its intent again, and one pinned
+    /// to a queued candidate's post-state this client does not hold would
+    /// land without that candidate.
+    fn ensure_executes_on_pinned_base(
+        account: &MultisigAccount,
+        proposal_id: &str,
+        pinned_base: Word,
+    ) -> Result<()> {
+        let local = account.commitment();
+        if local != pinned_base {
+            return Err(MultisigError::ProposalBaseMismatch {
+                proposal_id: proposal_id.to_string(),
+                pinned: word_to_hex(&pinned_base),
+                local: word_to_hex(&local),
+            });
+        }
+        Ok(())
     }
 
     /// Lists pending proposals for the current account.
@@ -300,7 +341,7 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        let proposal = self.get_proposal(&account_id, proposal_id).await?;
+        let (proposal, pinned_base) = self.get_pinned_proposal(&account_id, proposal_id).await?;
 
         if proposal.nonce <= account.nonce() {
             return Err(MultisigError::InvalidConfig(format!(
@@ -330,6 +371,8 @@ impl MultisigClient {
                     .to_string(),
             ));
         }
+
+        Self::ensure_executes_on_pinned_base(&account, proposal_id, pinned_base)?;
 
         self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
             .await?;
@@ -541,7 +584,7 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        let proposal = self.get_proposal(&account_id, proposal_id).await?;
+        let (proposal, pinned_base) = self.get_pinned_proposal(&account_id, proposal_id).await?;
 
         if !matches!(proposal.transaction_type, TransactionType::Custom) {
             return Err(MultisigError::UnsupportedTransactionType(
@@ -558,6 +601,8 @@ impl MultisigClient {
                 required,
             });
         }
+
+        Self::ensure_executes_on_pinned_base(&account, proposal_id, pinned_base)?;
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 

@@ -826,6 +826,34 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
         .expect("the cosigner signs");
     assert!(signed.status.is_ready(), "2-of-2 met: {:?}", signed.status);
 
+    // A proposal GUARDIAN pinned to a state the producer does not hold is
+    // refused before any acknowledgement is requested, as execute_proposal
+    // refuses it.
+    let foreign_base = word_to_hex(&Word::from([7u32, 7, 7, 7]));
+    handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+        success: true,
+        message: String::new(),
+        proposal: Some(ProtoDeltaObject {
+            prev_commitment: foreign_base.clone(),
+            ..signed_delta.clone()
+        }),
+    });
+    let refused = proposer
+        .prepare_custom_execution(&expected_id, &request_bytes)
+        .await
+        .expect_err("a proposal pinned to another state must not be prepared");
+    assert!(
+        matches!(
+            &refused,
+            crate::error::MultisigError::ProposalBaseMismatch { pinned, .. } if *pinned == foreign_base
+        ),
+        "unexpected error: {refused}"
+    );
+    assert!(
+        !handle.calls().iter().any(|call| call == "push_delta"),
+        "no acknowledgement is requested for a refused proposal"
+    );
+
     // The producer assembles the advice, gets the GUARDIAN ack and submits.
     handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
         success: true,
