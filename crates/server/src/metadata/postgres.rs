@@ -389,9 +389,15 @@ impl MetadataStore for PostgresMetadataStore {
         }
     }
 
-    /// Atomic override of the trait default: the candidate-row check and the
-    /// flag write run in one statement against one snapshot, so a raced-in
-    /// submission's flag can never be clobbered (see the trait doc).
+    /// Override of the trait default that can never clobber a raced-in
+    /// submission's flag (see the trait doc). One transaction locks the
+    /// metadata row first, the lock every candidate submission holds until
+    /// it commits, and only then runs the conditional clear. A lone
+    /// `UPDATE ... WHERE NOT EXISTS (candidate)` is not enough under READ
+    /// COMMITTED: when it waits on a submission's row lock it re-checks
+    /// only the row's own columns afterwards, while the `NOT EXISTS`
+    /// subquery keeps the statement's original snapshot and misses the
+    /// candidate that submission just committed.
     async fn clear_pending_candidate_if_none(
         &self,
         account_id: &str,
@@ -407,25 +413,41 @@ impl MetadataStore for PostgresMetadataStore {
             .parse()
             .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
 
-        diesel::update(account_metadata::table)
-            .filter(account_metadata::account_id.eq(account_id))
-            .filter(account_metadata::has_pending_candidate.eq(true))
-            .filter(diesel::dsl::not(diesel::dsl::exists(
-                crate::schema::deltas::table
-                    .filter(crate::schema::deltas::account_id.eq(account_id))
-                    .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
-                        "status->>'status' = 'candidate'",
-                    )),
-            )))
-            .set((
-                account_metadata::has_pending_candidate.eq(false),
-                account_metadata::updated_at.eq(updated_at),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| format!("Failed to clear pending-candidate flag: {e}"))?;
-
-        Ok(())
+        let account = account_id.to_string();
+        conn.transaction::<(), diesel::result::Error, _>(|conn| {
+            async move {
+                let locked: Option<String> = account_metadata::table
+                    .filter(account_metadata::account_id.eq(&account))
+                    .select(account_metadata::account_id)
+                    .for_update()
+                    .first(conn)
+                    .await
+                    .optional()?;
+                if locked.is_none() {
+                    return Ok(());
+                }
+                diesel::update(account_metadata::table)
+                    .filter(account_metadata::account_id.eq(&account))
+                    .filter(account_metadata::has_pending_candidate.eq(true))
+                    .filter(diesel::dsl::not(diesel::dsl::exists(
+                        crate::schema::deltas::table
+                            .filter(crate::schema::deltas::account_id.eq(&account))
+                            .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                                "status->>'status' = 'candidate'",
+                            )),
+                    )))
+                    .set((
+                        account_metadata::has_pending_candidate.eq(false),
+                        account_metadata::updated_at.eq(updated_at),
+                    ))
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to clear pending-candidate flag: {e}"))
     }
 
     /// First-writer-wins pause via `COALESCE` — re-pausing a paused
@@ -1776,6 +1798,33 @@ mod tests {
         }
     }
 
+    /// Poll `pg_stat_activity` until another backend is waiting on a lock in
+    /// a statement against `account_metadata`, panicking after 10 seconds.
+    async fn wait_until_blocked_on_account_metadata(store: &PostgresMetadataStore) {
+        let mut conn = store.pool.get().await.expect("observer conn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let blocked: i64 = diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "(SELECT count(*) FROM pg_stat_activity \
+                  WHERE datname = current_database() \
+                    AND pid <> pg_backend_pid() \
+                    AND wait_event_type = 'Lock' \
+                    AND query ILIKE '%account_metadata%')",
+            ))
+            .get_result(&mut conn)
+            .await
+            .expect("pg_stat_activity read");
+            if blocked > 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the clear never blocked on the submission's row lock"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     async fn flag(store: &PostgresMetadataStore, account_id: &str) -> bool {
         let mut conn = store.pool.get().await.expect("conn");
         account_metadata::table
@@ -1895,6 +1944,95 @@ mod tests {
         );
 
         let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn clear_pending_candidate_waits_for_an_in_flight_submission() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PostgresMetadataStore::new(&url, 4).await.expect("store"));
+        let account_id = format!("0xclearrace{}", Utc::now().timestamp_micros());
+        let now = Utc::now().to_rfc3339();
+
+        // The state a retained candidate leaves behind: flag still set, no
+        // candidate row.
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), true)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata");
+
+        // A submission in the shape of `submit_candidate`: lock the metadata
+        // row, insert the candidate, set the flag, and hold the transaction
+        // open while the worker's clear runs against it.
+        let clear_store = store.clone();
+        let observer = store.clone();
+        let clear_account = account_id.clone();
+        let clear_now = now.clone();
+        let txn_account = account_id.clone();
+        let clear = conn
+            .transaction::<_, diesel::result::Error, _>(|conn| {
+                async move {
+                    account_metadata::table
+                        .filter(account_metadata::account_id.eq(&txn_account))
+                        .select(account_metadata::account_id)
+                        .for_update()
+                        .first::<String>(conn)
+                        .await?;
+                    diesel::sql_query(
+                        "INSERT INTO deltas \
+                         (account_id, nonce, prev_commitment, delta_payload, status, status_kind, status_timestamp) \
+                         VALUES ($1, 1, '0x0', '{}'::jsonb, '{\"status\":\"candidate\"}'::jsonb, 'candidate', now())",
+                    )
+                    .bind::<Text, _>(&txn_account)
+                    .execute(conn)
+                    .await?;
+                    diesel::update(account_metadata::table)
+                        .filter(account_metadata::account_id.eq(&txn_account))
+                        .set(account_metadata::has_pending_candidate.eq(true))
+                        .execute(conn)
+                        .await?;
+                    let clear = tokio::spawn(async move {
+                        clear_store
+                            .clear_pending_candidate_if_none(&clear_account, &clear_now)
+                            .await
+                    });
+                    // Commit only once the clear is observably waiting on
+                    // this transaction's row lock: a clear that started
+                    // after the commit would pass against the old
+                    // single-statement implementation too.
+                    wait_until_blocked_on_account_metadata(&observer).await;
+                    Ok(clear)
+                }
+                .scope_boxed()
+            })
+            .await
+            .expect("submission commits");
+        clear
+            .await
+            .expect("clear task")
+            .expect("clear after the submission");
+
+        assert!(
+            flag(&store, &account_id).await,
+            "a clear that raced the submission must not unset its flag",
+        );
+
+        diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup deltas");
         diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
