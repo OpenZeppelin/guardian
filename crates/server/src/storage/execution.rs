@@ -124,6 +124,9 @@ pub struct NewExecutionReservation {
     pub lease_expires_at: DateTime<Utc>,
     pub ignored_signatures: u32,
     pub now: DateTime<Utc>,
+    /// Client-abandoned discards at or after this instant are still recoverable (see
+    /// [`crate::storage::abandoned_cutoff`]); one on the account's state refuses the reservation.
+    pub recoverable_since: DateTime<Utc>,
 }
 
 /// What the execution will reconcile against, recorded before the send. Its
@@ -259,6 +262,8 @@ pub struct CandidateAdmission {
     pub delta: DeltaObject,
     pub evidence: SubmissionEvidence,
     pub now: DateTime<Utc>,
+    /// As [`NewExecutionReservation::recoverable_since`].
+    pub recoverable_since: DateTime<Utc>,
 }
 
 impl CandidateAdmission {
@@ -306,6 +311,10 @@ pub enum ReservationWrite {
         proposal_id: String,
     },
     CandidateExists,
+    /// A retained or recently client-abandoned delta built on the account's current state can
+    /// still land. Executing on the same state would race it, and Guardian would lose track of
+    /// the account if that delta won, so nothing is reserved until reconciliation settles it.
+    RecoverableDeltaPending,
     /// The proposal left storage after the request read it, for example because an earlier
     /// attempt's submission was definitely rejected. Nothing is reserved.
     ProposalGone,
@@ -339,6 +348,9 @@ pub enum AdmissionWrite {
     /// The caller is not the active reservation's owner for this attempt.
     NotAuthorized,
     CandidateExists,
+    /// As [`ReservationWrite::RecoverableDeltaPending`], checked again under the admission's
+    /// lock like the reservation's other conditions.
+    RecoverableDeltaPending,
     /// A settled delta already occupies the candidate's nonce.
     NonceOccupied,
     /// The stored state no longer sits at the candidate's base commitment.
