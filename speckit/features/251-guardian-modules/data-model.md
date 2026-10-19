@@ -111,15 +111,19 @@ Written in the same storage write that commits the delta (promotion in candidate
 | `acked_nonce` | Highest acknowledged event nonce; advanced only by the lease holder with its fence token |
 | `resync_required` | Set when unacknowledged events are dropped (retention lapse, or removal and return of the instance) |
 | `started_at_nonce` | Delivery starts at the latest event when the pair is first seen |
+| `gap_resume_from_nonce` | Set by a resync, in the same fenced write that moves `acked_nonce` past the dropped events: one above the last skipped event's nonce. While set, no replica sends an event for the pair, only `NotifyGap`; read in the same statement as `acked_nonce`. Cleared by the lease holder, fenced, once the module acknowledges the Gap (or answers `UNIMPLEMENTED`) |
 
 ```
-            deliver ok                    retention lapse / dropped events
- delivering ──────────► delivering ─────────────────────────────► resync_required
-     ▲                                                                   │
-     └──────────── operator resync (reason, audited) + NotifyGap ────────┘
+            deliver ok                 retention lapse / dropped events
+ delivering ──────────► delivering ──────────────────────────► resync_required
+     ▲                                                                │
+     │                                     operator resync (reason, audited):
+     │                                     cursor moved, gap_resume_from_nonce set
+     │                                                                ▼
+     └──────────── NotifyGap acknowledged (or UNIMPLEMENTED) ───── gap_pending
 ```
 
-While `resync_required` is set the module is not called for that account and its `on_error` applies.
+While the pair is in `resync_required` or `gap_pending` the module is not called for that account and its `on_error` applies. A failed `NotifyGap` is retried with backoff; the pair stays in `gap_pending` meanwhile (RFC 0002 section 3.3, revision 23).
 
 **Activation fence** (derived, not stored): for an account, true while any queued candidate lacks module data. While true, every subscribed module's evaluation for that account counts as an error and its `on_error` applies; it clears when those candidates are promoted or discarded.
 

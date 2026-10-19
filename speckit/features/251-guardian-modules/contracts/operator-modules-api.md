@@ -19,7 +19,7 @@
 
 Enable and disable are idempotent: enabling an enabled instance or disabling a disabled one returns 200 with the unchanged view and writes an audit record.
 
-`resync` belongs to the stateful slice (RFC 0002 sections 3.3 and 3.4), not to configuration: when undelivered commit events for a module are dropped (retention) or the catalog removes an instance with pending events, the affected account and module pairs move to `resync_required` and the Guardian calls the module's `NotifyGap`. The module rebuilds its own state (for example from chain history); the operator then calls `resync` to clear the pairs, accepting the gap, and notification resumes. It never reads the catalog file, which is only loaded at startup.
+`resync` belongs to the stateful slice (RFC 0002 sections 3.3 and 3.4), not to configuration: when undelivered commit events for a module are dropped (retention) or the catalog removes an instance with pending events, the affected account and module pairs move to `resync_required`. The operator calls `resync`, accepting the gap: delivery moves past the dropped events and the Guardian calls the module's `NotifyGap`, which lets the module reset or rebuild its own state (for example from chain history). The pairs stay refused until the module acknowledges `NotifyGap`; then evaluation and notification resume (RFC 0002 section 3.3). It never reads the catalog file, which is only loaded at startup.
 
 ## Schemas
 
