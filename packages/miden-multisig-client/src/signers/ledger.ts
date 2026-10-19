@@ -1,14 +1,17 @@
 import { secp256k1 } from '@noble/curves/secp256k1';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import type { RequestAuthPayload, Signer } from '@openzeppelin/guardian-client';
+import type { RequestAuthPayload, SessionGrantFields, Signer } from '@openzeppelin/guardian-client';
 import { AuthDigest } from '../utils/digest.js';
 import { lookupAuthDigest } from '../lookupAuth.js';
 import { EcdsaFormat } from '../utils/ecdsa.js';
 import { bytesToHex, hexToBytes } from '../utils/encoding.js';
 import {
+  type GuardianTypedData,
   guardianKeyDiscoveryTypedData,
   guardianLookupTypedData,
   guardianRequestTypedData,
+  guardianSessionRevokeAllTypedData,
+  guardianSessionTypedData,
   midenTransactionTypedData,
   typedDataDigest,
 } from '../utils/eip712.js';
@@ -99,7 +102,21 @@ export class Eip712Signer implements Signer {
     return this.signTypedData(midenTransactionTypedData(wordToBytes(commitment)));
   }
 
-  private async signTypedData(data: ReturnType<typeof guardianRequestTypedData>): Promise<string> {
+  /**
+   * Sign a session grant as readable `GuardianSession` typed
+   * data, so the device shows the Guardian, network and expiry rather than a
+   * hash. Devices without registered display metadata need "Verbose EIP-712".
+   */
+  async signSessionGrant(grant: SessionGrantFields): Promise<string> {
+    return this.signTypedData(guardianSessionTypedData(grant));
+  }
+
+  /** Sign a session revoke-all as readable `GuardianSessionRevokeAll` typed data. */
+  async signSessionRevokeAll(signerCommitment: string, timestampMs: number): Promise<string> {
+    return this.signTypedData(guardianSessionRevokeAllTypedData(signerCommitment, timestampMs));
+  }
+
+  private async signTypedData(data: GuardianTypedData): Promise<string> {
     const result = await this.provider.request({
       method: 'eth_signTypedData_v4',
       params: [this.address, JSON.stringify(data)],
