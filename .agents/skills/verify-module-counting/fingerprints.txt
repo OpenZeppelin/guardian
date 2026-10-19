@@ -1,0 +1,13 @@
+docs/rfcs/0002-guardian-modules.md 3.3 9f760f07762f1ecd
+docs/rfcs/0002-guardian-modules.md 3.4 285f90b0ba171cf0
+crates/server/src/services/push_delta.rs push_delta 54b60bb855977653
+crates/server/src/storage/mod.rs gate_candidate_submission 99785be2d52ca367
+crates/server/src/storage/mod.rs classify_chain_position ebe38e956458a637
+crates/server/src/storage/mod.rs first_unchained_candidate 3708394aa8e3541c
+crates/server/src/storage/postgres.rs submit_candidate 7afed2b7a0c8a186
+crates/server/src/storage/postgres.rs promote_candidate e198deeb1cbcd95d
+crates/server/src/storage/postgres.rs update_candidate_status 3ee992cfd204ab19
+crates/server/src/jobs/canonicalization/processor.rs retain_candidate 813bb75dd428ee39
+crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance 29b83278a35d3d6f
+crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path 7a132b53248e9701
+crates/server/src/coordination/postgres/lease.rs try_acquire acd5be995d0ebf4f
