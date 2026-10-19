@@ -250,6 +250,7 @@ mod tests {
 
         AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -356,6 +357,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         let state = AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -408,6 +410,7 @@ mod tests {
                 output: 1,
             },
             proposal: None,
+            modules: None,
         });
         let d = canonical_with_metadata("0xacc1", 1, metadata);
         let entry = entry_from(&d, "0xacc1").expect("canonical delta maps");

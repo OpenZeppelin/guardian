@@ -2,6 +2,8 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::metadata::{AccountMetadata, ClearTransition};
+use crate::modules::HookName;
+use crate::modules::request::{self, RegistrationInput, StateRef};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
 use crate::state_object::StateObject;
@@ -160,6 +162,50 @@ pub async fn configure_account(
             .map_err(GuardianError::NetworkError)?;
         (head, signer_commitment)
     };
+
+    let plan = match state.modules.as_deref() {
+        Some(modules) => {
+            modules
+                .plan(HookName::BeforeAccountRegistered, &params.account_id)
+                .await?
+        }
+        None => None,
+    };
+    if let Some(plan) = plan {
+        let stored_state = match &existing {
+            Some(_) => Some(
+                state
+                    .storage
+                    .pull_state(&params.account_id)
+                    .await
+                    .map_err(|e| format!("stored state unavailable: {e}")),
+            ),
+            None => None,
+        };
+        let views = plan.views();
+        plan.run(|| {
+            let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
+            request::registration_request(
+                state.network_client.as_ref(),
+                &views,
+                RegistrationInput {
+                    account_id: &params.account_id,
+                    submitter: &signer_commitment,
+                    auth: &params.auth,
+                    stored_state: stored_state.map(|stored| StateRef {
+                        commitment: &stored.commitment,
+                        json: &stored.state_json,
+                    }),
+                    initial_state: StateRef {
+                        commitment: &head.commitment,
+                        json: &params.initial_state,
+                    },
+                    accounting_time: state.clock.now(),
+                },
+            )
+        })
+        .await?;
+    }
 
     if existing.is_some() {
         consume_auth_timestamp(
@@ -330,6 +376,7 @@ fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result
 mod tests {
     use super::*;
     use crate::ack::AckRegistry;
+    use crate::modules::testing::StubModule;
     use crate::state_object::StateHead;
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
@@ -360,6 +407,7 @@ mod tests {
 
         AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage,
             metadata: Arc::new(metadata_store),
             network_client: Arc::new(network_client),
@@ -1335,5 +1383,155 @@ mod tests {
         let result = configure_account(&state, params).await;
 
         assert!(result.is_ok(), "got: {result:?}");
+    }
+
+    struct ModuleRun {
+        result: Result<ConfigureAccountResult>,
+        storage: MockStorageBackend,
+        metadata: MockMetadataStore,
+        module: Arc<crate::modules::testing::StubModule>,
+    }
+
+    async fn configure_with_module(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> ModuleRun {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{instance, pipeline};
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let existing = existing(commitment_hex.clone());
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let initial_state: serde_json::Value = serde_json::from_str(account_json).unwrap();
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_head(Ok(head("0x5678", 3)))
+            .with_module_views(
+                guardian_module_sdk::AccountView {
+                    signer_commitments: vec![commitment_hex.clone()],
+                    ..Default::default()
+                },
+                guardian_module_sdk::MidenTransaction::default(),
+            );
+        let storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_pull_state(Ok(crate::state_object::StateObject {
+                account_id: account_id_hex.into(),
+                state_json: initial_state.clone(),
+                commitment: "0x5678".into(),
+                nonce: Some(3),
+                created_at: "2024-01-01T00:00:00Z".into(),
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                auth_scheme: "falcon".into(),
+            }));
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(existing))
+            .with_set(Ok(()));
+        let mut state =
+            create_test_app_state(network_client, storage.clone(), metadata.clone()).await;
+        state.modules = Some(pipeline(vec![instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            OnError::Deny,
+            module.clone(),
+        )]));
+
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment_hex],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state,
+                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+            },
+        )
+        .await;
+        ModuleRun {
+            result,
+            storage,
+            metadata,
+            module,
+        }
+    }
+
+    fn existing_account(
+        paused: bool,
+        released: bool,
+    ) -> impl FnOnce(String) -> Option<AccountMetadata> {
+        use chrono::TimeZone;
+        move |commitment| {
+            let at = chrono::Utc
+                .with_ymd_and_hms(2026, 5, 19, 14, 30, 0)
+                .unwrap();
+            Some(AccountMetadata {
+                account_id: "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d".into(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                created_at: "2024-01-01T00:00:00Z".into(),
+                updated_at: "2024-01-01T00:00:00Z".into(),
+                has_pending_candidate: false,
+                paused_at: paused.then_some(at),
+                paused_reason: paused.then(|| "compliance".to_string()),
+                released_at: released.then_some(at),
+            })
+        }
+    }
+
+    fn assert_nothing_written(run: &ModuleRun) {
+        assert!(matches!(
+            run.result,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert!(run.storage.get_submit_state_calls().is_empty());
+        assert!(run.metadata.get_set_calls().is_empty());
+        assert!(run.metadata.clear_released_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn denied_new_registration_writes_nothing_and_has_no_before_view() {
+        let run = configure_with_module(|_| None, StubModule::denying("signer_not_allowed")).await;
+        assert_nothing_written(&run);
+        let request = run.module.last_request().expect("module was called");
+        assert!(request.before.is_none());
+        assert!(request.after.is_some());
+    }
+
+    #[tokio::test]
+    async fn allowed_reconfiguration_keeps_the_pause_and_sees_the_stored_state() {
+        let run =
+            configure_with_module(existing_account(true, false), StubModule::allowing()).await;
+        run.result.expect("reconfiguration succeeds");
+        let set_calls = run.metadata.get_set_calls();
+        assert_eq!(set_calls.len(), 1);
+        assert!(set_calls[0].paused_at.is_some());
+        assert!(run.module.last_request().unwrap().before.is_some());
+    }
+
+    #[tokio::test]
+    async fn denied_reconfiguration_of_a_paused_account_changes_nothing() {
+        let run =
+            configure_with_module(existing_account(true, false), StubModule::denying("no")).await;
+        assert_nothing_written(&run);
+    }
+
+    #[tokio::test]
+    async fn released_account_is_reactivated_only_when_modules_allow() {
+        let run =
+            configure_with_module(existing_account(false, true), StubModule::allowing()).await;
+        run.result.expect("re-onboarding succeeds");
+        assert_eq!(run.metadata.clear_released_calls.lock().unwrap().len(), 1);
+
+        let run =
+            configure_with_module(existing_account(false, true), StubModule::denying("no")).await;
+        assert_nothing_written(&run);
     }
 }

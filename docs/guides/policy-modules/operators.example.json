@@ -1,0 +1,6 @@
+[
+  {
+    "public_key": "0xPASTE_THE_PUBLIC_KEY_FROM_modules_admin_keygen",
+    "permissions": ["dashboard:read", "policies:write", "policies:write_global", "modules:disable"]
+  }
+]

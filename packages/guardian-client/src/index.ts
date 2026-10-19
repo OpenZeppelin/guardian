@@ -19,6 +19,8 @@ export type {
   CosignerSignature,
   AuthConfig,
   CanonicalNonce,
+  CheckProposalResult,
+  Policy,
   DeltaStatus,
   DeltaObject,
   ExecutionDelta,

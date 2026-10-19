@@ -42,7 +42,7 @@ zeroize = { version = "1.7", features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-tonic = { workspace = true }
+tonic = { workspace = true, features = ["tls-ring", "tls-native-roots"] }
 tonic-prost = { workspace = true }
 tonic-reflection = "0.14"
 prost = { workspace = true }
@@ -55,6 +55,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 miden-protocol = { workspace = true, features = ["testing"] }
 miden-standards = { workspace = true }
 futures = "0.3"
+guardian-module-sdk = { path = "../guardian-module-sdk" }
+toml = "0.8"
 futures-util = { version = "0.3", optional = true }
 rustls = { version = "0.23", optional = true }
 rustls-pemfile = { version = "2", optional = true }
@@ -82,6 +84,7 @@ tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
 bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 futures = "0.3"
 miden-protocol = { workspace = true, features = ["testing"] }
 tokio = { workspace = true, features = ["full", "test-util"] }

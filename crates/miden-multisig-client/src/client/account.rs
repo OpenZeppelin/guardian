@@ -224,9 +224,7 @@ impl MultisigClient {
         guardian_client
             .configure(&account_id, auth_config, initial_state)
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to configure account: {}", e))
-            })?;
+            .map_err(|e| MultisigError::guardian("failed to configure account", e))?;
 
         Ok(())
     }

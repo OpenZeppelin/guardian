@@ -50,6 +50,7 @@ pub struct ServerBuilder {
     rate_limit_config: Option<RateLimitConfig>,
     body_limit_config: Option<BodyLimitConfig>,
     metrics_config: Option<MetricsConfig>,
+    module_kinds: Vec<(String, Arc<dyn guardian_module_sdk::ModuleFactory>)>,
     http_enabled: bool,
     http_port: u16,
     grpc_enabled: bool,
@@ -75,6 +76,7 @@ impl ServerBuilder {
             rate_limit_config: None,
             body_limit_config: None,
             metrics_config: None,
+            module_kinds: Vec::new(),
             http_enabled: true,
             http_port: 3000,
             grpc_enabled: true,
@@ -417,6 +419,25 @@ impl ServerBuilder {
         self
     }
 
+    /// Registers a policy module kind that runs in this process, so catalog entries
+    /// (`GUARDIAN_MODULES_CONFIG`) can name it in `kind`. The module shares the process that
+    /// holds the acknowledgement keys, so register only code you have reviewed. `build` fails
+    /// if the name is already taken, including by the first-party `basic-policy` and `grpc`.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let builder = ServerBuilder::new()
+    ///     .with_module_kind("note-policy", Arc::new(NotePolicyFactory));
+    /// ```
+    pub fn with_module_kind(
+        mut self,
+        kind: impl Into<String>,
+        factory: Arc<dyn guardian_module_sdk::ModuleFactory>,
+    ) -> Self {
+        self.module_kinds.push((kind.into(), factory));
+        self
+    }
+
     /// Build the server handle
     ///
     /// Validates that all required components are configured and returns
@@ -482,6 +503,9 @@ impl ServerBuilder {
 
         let ack = self.ack.ok_or("AckRegistry not set. Use .ack(...)")?;
         let coordination = self.coordination;
+        let module_store = coordination
+            .as_ref()
+            .and_then(|handles| handles.module_store.clone());
         // Fail closed before anything else: the Postgres backend must never fall
         // back to per-process coordination (AlwaysLeader + in-memory sessions),
         // which would let every replica run canonicalization and split auth
@@ -643,6 +667,18 @@ impl ServerBuilder {
             );
         }
 
+        crate::modules::check_limit::init_from_env()?;
+        let mut module_registry = crate::modules::Registry::first_party();
+        for (kind, factory) in self.module_kinds {
+            module_registry.register(kind, factory)?;
+        }
+        let modules = crate::modules::from_env(
+            chrono::Utc::now().to_rfc3339(),
+            module_store,
+            &module_registry,
+        )
+        .await?;
+
         let app_state = AppState {
             storage,
             metadata,
@@ -654,6 +690,7 @@ impl ServerBuilder {
             dashboard,
             auditor,
             miden_sessions,
+            modules,
             #[cfg(feature = "evm")]
             evm,
         };

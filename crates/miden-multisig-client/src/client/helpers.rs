@@ -152,7 +152,7 @@ impl MultisigClient {
         let push_response = guardian_client
             .push_delta(&account_id, nonce, &prev_commitment, &delta_payload)
             .await
-            .map_err(|e| MultisigError::GuardianServer(format!("failed to push delta: {}", e)))?;
+            .map_err(|e| MultisigError::guardian("failed to push delta", e))?;
 
         // Get GUARDIAN ack signature
         let ack_sig = push_response.ack_sig.ok_or_else(|| {

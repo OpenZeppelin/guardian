@@ -307,6 +307,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -498,6 +499,7 @@ mod tests {
             counterparty: None,
             note_counts: crate::delta_summary::NoteCounts::default(),
             proposal: None,
+            modules: None,
         });
         let state = build_state(Ok(Some(falcon_metadata())), Ok(delta.clone())).await;
         let detail =
@@ -616,6 +618,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         let state = AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

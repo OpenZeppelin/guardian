@@ -63,6 +63,8 @@ pub struct CoordinationHandles {
     pub stats_store: Arc<dyn StatsStore>,
     /// Miden account sessions.
     pub miden_sessions: Arc<dyn SessionStore>,
+    /// Policy module tables on the shared database; `None` keeps them as files.
+    pub module_store: Option<Arc<dyn crate::modules::store::ModuleStore>>,
     #[cfg(feature = "evm")]
     pub evm_sessions: Arc<dyn SessionStore>,
     #[cfg(feature = "evm")]
@@ -83,6 +85,7 @@ impl CoordinationHandles {
             )),
             stats_store: Arc::new(InMemoryStatsStore::new()),
             miden_sessions: Arc::new(InMemorySessionStore::new()),
+            module_store: None,
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(InMemorySessionStore::new()),
             #[cfg(feature = "evm")]
@@ -122,6 +125,9 @@ impl CoordinationHandles {
             )),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),
             miden_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Miden)),
+            module_store: Some(Arc::new(
+                crate::modules::postgres_store::PgModuleStore::new(pool.clone()),
+            )),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),
             #[cfg(feature = "evm")]

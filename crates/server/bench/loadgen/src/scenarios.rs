@@ -549,6 +549,7 @@ async fn run_worker(config: &RunConfig, user: &mut UserContext) -> WorkerMetrics
                     run_read_operation(user, op_index, account_count).await
                 }
             }
+            Scenario::StatePush => run_push_state_operation(user, op_index, account_count).await,
             Scenario::Canonicalization => {
                 run_canonicalization_operation(config, user, op_index, account_count).await
             }
@@ -582,9 +583,11 @@ async fn run_worker(config: &RunConfig, user: &mut UserContext) -> WorkerMetrics
 fn scenario_op_count(config: &RunConfig, account_count: usize) -> usize {
     match config.scenario {
         Scenario::Canonicalization => account_count,
-        Scenario::StateRead | Scenario::StateWrite | Scenario::Mixed | Scenario::StateSync => {
-            usize::try_from(config.ops_per_user).unwrap_or(0)
-        }
+        Scenario::StateRead
+        | Scenario::StateWrite
+        | Scenario::Mixed
+        | Scenario::StateSync
+        | Scenario::StatePush => usize::try_from(config.ops_per_user).unwrap_or(0),
     }
 }
 

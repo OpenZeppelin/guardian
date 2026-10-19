@@ -531,6 +531,8 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "CreateSession"),
     ("guardian.Guardian", "RevokeSession"),
     ("guardian.Guardian", "RevokeAllSessions"),
+    ("guardian.Guardian", "GetPolicies"),
+    ("guardian.Guardian", "CheckDeltaProposal"),
     // Served alongside Guardian via tonic-reflection (v1 and v1alpha).
     (
         "grpc.reflection.v1.ServerReflection",

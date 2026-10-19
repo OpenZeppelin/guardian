@@ -28,6 +28,22 @@ pub enum MultisigError {
     #[error("GUARDIAN server error: {0}")]
     GuardianServer(String),
 
+    /// A GUARDIAN policy module refused the request. Final: retrying the same request
+    /// gets the same answer.
+    #[error("GUARDIAN policy {}denied the request: {reason_code}{}", module.as_deref().map(|module| format!("module {module} ")).unwrap_or_default(), layer.as_deref().map(|layer| format!(" ({layer} layer)")).unwrap_or_default())]
+    ModuleDenied {
+        /// Absent for a generic denial, which reports only `policy_denied`.
+        module: Option<String>,
+        reason_code: String,
+        layer: Option<String>,
+        /// The module's text for the requester, when the instance allows it.
+        client_message: Option<String>,
+    },
+
+    /// A fail-closed GUARDIAN policy module could not decide. Retryable.
+    #[error("GUARDIAN policy module {module} is unavailable; try again shortly")]
+    ModuleUnavailable { module: String },
+
     /// Miden client error.
     #[error("miden client error: {0}")]
     MidenClient(String),
@@ -298,9 +314,36 @@ pub(crate) fn rpc_kind(error: &RpcError) -> Option<&GrpcError> {
     }
 }
 
+impl MultisigError {
+    /// A GUARDIAN call failure with `context`; a policy module refusal keeps its typed variant.
+    pub(crate) fn guardian(context: &str, err: guardian_client::ClientError) -> Self {
+        if err.module_refusal().is_some() {
+            Self::from(err)
+        } else {
+            Self::GuardianServer(format!("{context}: {err}"))
+        }
+    }
+}
+
 impl From<guardian_client::ClientError> for MultisigError {
     fn from(err: guardian_client::ClientError) -> Self {
-        MultisigError::GuardianServer(err.to_string())
+        match err.module_refusal() {
+            Some(guardian_client::ModuleRefusal::Denied {
+                module,
+                reason_code,
+                layer,
+                client_message,
+            }) => MultisigError::ModuleDenied {
+                module,
+                reason_code,
+                layer,
+                client_message,
+            },
+            Some(guardian_client::ModuleRefusal::Unavailable { module }) => {
+                MultisigError::ModuleUnavailable { module }
+            }
+            None => MultisigError::GuardianServer(err.to_string()),
+        }
     }
 }
 
@@ -352,6 +395,43 @@ mod tests {
             source: None,
         }
         .into()
+    }
+
+    fn guardian_status(
+        code: tonic::Code,
+        details: serde_json::Value,
+    ) -> guardian_client::ClientError {
+        tonic::Status::with_details(code, "refused", details.to_string().into_bytes().into()).into()
+    }
+
+    #[test]
+    fn guardian_module_refusals_keep_module_and_reason() {
+        let denied = MultisigError::from(guardian_status(
+            tonic::Code::PermissionDenied,
+            serde_json::json!({
+                "code": "GUARDIAN_MODULE_DENIED",
+                "message": "denied",
+                "meta": { "retryable": false, "module": "caps", "reason_code": "amount_cap_exceeded" }
+            }),
+        ));
+        assert!(matches!(
+            denied,
+            MultisigError::ModuleDenied { ref module, ref reason_code, .. }
+                if module.as_deref() == Some("caps") && reason_code == "amount_cap_exceeded"
+        ));
+
+        let unavailable = MultisigError::from(guardian_status(
+            tonic::Code::Unavailable,
+            serde_json::json!({
+                "code": "GUARDIAN_MODULE_UNAVAILABLE",
+                "message": "unavailable",
+                "meta": { "retryable": true, "module": "sanctions" }
+            }),
+        ));
+        assert!(matches!(
+            unavailable,
+            MultisigError::ModuleUnavailable { ref module } if module == "sanctions"
+        ));
     }
 
     #[test]

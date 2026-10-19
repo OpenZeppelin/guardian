@@ -258,6 +258,7 @@ mod tests {
             .expect("ack");
         let state = AppState {
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(MockMetadataStore::new()),
             network_client: Arc::new(MockNetworkClient::new()),

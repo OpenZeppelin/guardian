@@ -1,0 +1,23 @@
+# tier cell max_tx cap amounts depth requests resync mutation expected invariants
+#
+# counting*: no retention drop. resync*: retention drop and operator resync
+# (RFC 0002 revision 23). A cell expected to FAIL checks one invariant so
+# its verdict names it.
+#
+# recoverable is expected to fail: Retained and client-abandoned rows are
+# outside pending by design (RFC 3.4, "Recoverable rows"); NoOvershoot in
+# the counting cells is what shows that is safe.
+quick counting       3 2 {1}   2 {q1,q2} FALSE none PASS NoDoubleApply,NoOvershoot,NoDoubleCount,CountsQueueAndCommitted
+quick recoverable    3 2 {1}   2 {q1,q2} FALSE none FAIL:CountsRecoverable CountsRecoverable
+quick resync         3 2 {1}   2 {q1,q2} TRUE  none PASS NoDoubleApply,NoOvershoot,NoDoubleCount,CountsQueueAndCommitted
+deep  counting-4     4 3 {1}   2 {q1,q2} FALSE none PASS NoDoubleApply,NoOvershoot,NoDoubleCount,CountsQueueAndCommitted
+deep  counting-amt   4 3 {1,2} 2 {q1,q2} FALSE none PASS NoDoubleApply,NoOvershoot,NoDoubleCount,CountsQueueAndCommitted
+deep  resync-4       4 3 {1}   2 {q1,q2} TRUE  none PASS NoDoubleApply,NoOvershoot,NoDoubleCount,CountsQueueAndCommitted
+deep  resync-amt     4 3 {1,2} 2 {q1}    TRUE  none PASS NoDoubleApply,NoOvershoot,NoDoubleCount,CountsQueueAndCommitted
+mutation m1          3 2 {1}   2 {q1,q2} FALSE m1   FAIL:NoDoubleCount NoDoubleCount
+mutation m2          3 2 {1}   2 {q1,q2} TRUE  m2   FAIL:NoOvershoot NoOvershoot
+mutation m3          3 2 {1}   2 {q1,q2} FALSE m3   FAIL:NoOvershoot NoOvershoot
+mutation m4          3 2 {1}   2 {q1,q2} FALSE m4   FAIL:NoDoubleApply NoDoubleApply
+mutation m5          3 2 {1}   2 {q1,q2} FALSE m5   FAIL:NoOvershoot NoOvershoot
+mutation m6          3 2 {1}   2 {q1,q2} TRUE  m6   FAIL:NoOvershoot NoOvershoot
+mutation m7          3 2 {1}   2 {q1,q2} TRUE  m7   FAIL:NoOvershoot NoOvershoot

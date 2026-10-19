@@ -611,6 +611,46 @@ async fn terminal_authentication_failure_is_not_retried() {
 }
 
 #[tokio::test]
+async fn policies_and_proposal_checks_round_trip() {
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    let account_id = create_test_account_id();
+
+    let policies = client.get_policies(&account_id).await.unwrap();
+    assert_eq!(policies.policies[0].module_id, "caps");
+    assert!(policies.policies[0].params.is_some());
+
+    let passed = client
+        .check_delta_proposal(&account_id, 1, serde_json::json!({ "tx_summary": {} }))
+        .await
+        .unwrap();
+    assert!(passed.allowed);
+    assert!(!passed.complete);
+
+    let refused = client
+        .check_delta_proposal(&account_id, 0, serde_json::json!({ "tx_summary": {} }))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        refused.module_refusal(),
+        Some(crate::ModuleRefusal::Denied { module: None, ref reason_code, .. }) if reason_code == "policy_denied"
+    ));
+    assert_eq!(
+        handle.calls(),
+        vec![
+            "get_policies",
+            "check_delta_proposal",
+            "check_delta_proposal"
+        ]
+    );
+}
+
+#[tokio::test]
 async fn test_get_canonical_nonce_success() {
     let service =
         MockGuardianService::default().with_get_canonical_nonce(Ok(GetCanonicalNonceResponse {
