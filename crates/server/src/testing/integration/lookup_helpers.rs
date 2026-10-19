@@ -68,7 +68,7 @@ pub async fn seed(state: &AppState, metadata: AccountMetadata) {
         .expect("seed metadata.set succeeds");
 }
 
-fn lookup_digest(key_commitment_hex: &str, timestamp_ms: i64) -> Word {
+pub fn lookup_digest(key_commitment_hex: &str, timestamp_ms: i64) -> Word {
     let key_commitment_word =
         Word::from_hex(key_commitment_hex).expect("test key_commitment must be valid hex");
     LookupAuthMessage::new(timestamp_ms, key_commitment_word).to_word()

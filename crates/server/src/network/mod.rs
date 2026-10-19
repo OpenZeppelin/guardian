@@ -435,15 +435,16 @@ pub trait NetworkClient: Send + Sync {
 /// Network type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum NetworkType {
-    MidenTestnet,
-    MidenDevnet,
     #[default]
     MidenLocal,
+    MidenDevnet,
+    MidenTestnet,
+    MidenCedar,
+    MidenMainnet,
 }
 
 impl NetworkType {
-    const ACCEPTED_VALUES: &str =
-        "MidenLocal (local), MidenTestnet (testnet), MidenDevnet (devnet); case-insensitive";
+    const ACCEPTED_VALUES: &str = "MidenLocal (local), MidenDevnet (devnet), MidenTestnet (testnet), MidenCedar (cedar), MidenMainnet (mainnet); case-insensitive";
 
     pub fn from_env(var_name: &str) -> Result<Self, String> {
         match std::env::var(var_name) {
@@ -467,17 +468,21 @@ impl NetworkType {
     pub fn from_name(value: &str) -> Option<Self> {
         match value.to_ascii_lowercase().as_str() {
             "midenlocal" | "local" => Some(Self::MidenLocal),
-            "midentestnet" | "testnet" => Some(Self::MidenTestnet),
             "midendevnet" | "devnet" => Some(Self::MidenDevnet),
+            "midentestnet" | "testnet" => Some(Self::MidenTestnet),
+            "midencedar" | "cedar" => Some(Self::MidenCedar),
+            "midenmainnet" | "mainnet" => Some(Self::MidenMainnet),
             _ => None,
         }
     }
 
     pub fn rpc_endpoint(&self) -> &str {
         match self {
-            NetworkType::MidenTestnet => "https://rpc.testnet.miden.io",
-            NetworkType::MidenDevnet => "https://rpc.devnet.miden.io",
             NetworkType::MidenLocal => "http://localhost:57291",
+            NetworkType::MidenDevnet => "https://rpc.devnet.miden.io",
+            NetworkType::MidenTestnet => "https://rpc.testnet.miden.io",
+            NetworkType::MidenCedar => "https://rpc.cedar.miden.io",
+            NetworkType::MidenMainnet => "https://rpc.mainnet.miden.io",
         }
     }
 }
@@ -501,9 +506,11 @@ impl RpcSettings {
     /// settings family; a future network type extends it here.
     pub fn from_env(network: NetworkType) -> Result<Self, String> {
         match network {
-            NetworkType::MidenTestnet | NetworkType::MidenDevnet | NetworkType::MidenLocal => {
-                Ok(Self::Miden(MidenRpcSettings::from_env(network)?))
-            }
+            NetworkType::MidenLocal
+            | NetworkType::MidenDevnet
+            | NetworkType::MidenTestnet
+            | NetworkType::MidenCedar
+            | NetworkType::MidenMainnet => Ok(Self::Miden(MidenRpcSettings::from_env(network)?)),
         }
     }
 
@@ -669,7 +676,10 @@ impl MidenRpcSettings {
         self.endpoint_overridden
             && matches!(
                 self.network,
-                NetworkType::MidenTestnet | NetworkType::MidenDevnet
+                NetworkType::MidenDevnet
+                    | NetworkType::MidenTestnet
+                    | NetworkType::MidenCedar
+                    | NetworkType::MidenMainnet
             )
     }
 }
@@ -695,9 +705,11 @@ fn validate_rpc_endpoint(value: &str) -> Result<(), String> {
 impl std::fmt::Display for NetworkType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NetworkType::MidenTestnet => write!(f, "MidenTestnet"),
-            NetworkType::MidenDevnet => write!(f, "MidenDevnet"),
             NetworkType::MidenLocal => write!(f, "MidenLocal"),
+            NetworkType::MidenDevnet => write!(f, "MidenDevnet"),
+            NetworkType::MidenTestnet => write!(f, "MidenTestnet"),
+            NetworkType::MidenCedar => write!(f, "MidenCedar"),
+            NetworkType::MidenMainnet => write!(f, "MidenMainnet"),
         }
     }
 }
@@ -978,8 +990,10 @@ mod tests {
 
         assert!(error.contains(var_name));
         assert!(error.contains("MidenLocal"));
-        assert!(error.contains("MidenTestnet"));
         assert!(error.contains("MidenDevnet"));
+        assert!(error.contains("MidenTestnet"));
+        assert!(error.contains("MidenCedar"));
+        assert!(error.contains("MidenMainnet"));
     }
 
     #[test]
@@ -1013,6 +1027,7 @@ mod tests {
         assert!(error.contains(var_name));
         assert!(error.contains("tesnet"));
         assert!(error.contains("MidenTestnet"));
+        assert!(error.contains("MidenMainnet"));
         unsafe { std::env::remove_var(var_name) };
     }
 
@@ -1039,11 +1054,15 @@ mod tests {
             ("MidenLocal", NetworkType::MidenLocal),
             ("local", NetworkType::MidenLocal),
             ("LOCAL", NetworkType::MidenLocal),
-            ("MidenTestnet", NetworkType::MidenTestnet),
-            ("testnet", NetworkType::MidenTestnet),
             ("MidenDevnet", NetworkType::MidenDevnet),
             ("devnet", NetworkType::MidenDevnet),
             ("DEVNET", NetworkType::MidenDevnet),
+            ("MidenTestnet", NetworkType::MidenTestnet),
+            ("testnet", NetworkType::MidenTestnet),
+            ("MidenCedar", NetworkType::MidenCedar),
+            ("cedar", NetworkType::MidenCedar),
+            ("MidenMainnet", NetworkType::MidenMainnet),
+            ("mainnet", NetworkType::MidenMainnet),
         ];
 
         let var_name = "GUARDIAN_NETWORK_TYPE_TEST_PRESENT";
@@ -1111,7 +1130,12 @@ mod tests {
 
     #[test]
     fn rpc_settings_flag_public_network_overrides() {
-        for network in [NetworkType::MidenTestnet, NetworkType::MidenDevnet] {
+        for network in [
+            NetworkType::MidenDevnet,
+            NetworkType::MidenTestnet,
+            NetworkType::MidenCedar,
+            NetworkType::MidenMainnet,
+        ] {
             let settings = MidenRpcSettings::resolve(
                 network,
                 Some(crate::secret::CredentialUrl::new(
@@ -1226,8 +1250,10 @@ mod tests {
         let _lock = ENV_LOCK.lock().unwrap();
         for network in [
             NetworkType::MidenLocal,
-            NetworkType::MidenTestnet,
             NetworkType::MidenDevnet,
+            NetworkType::MidenTestnet,
+            NetworkType::MidenCedar,
+            NetworkType::MidenMainnet,
         ] {
             let settings = super::RpcSettings::from_env(network).unwrap();
             let super::RpcSettings::Miden(miden) = settings;

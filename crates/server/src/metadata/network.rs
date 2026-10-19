@@ -22,18 +22,29 @@ pub enum MidenNetworkType {
     Local,
     Devnet,
     Testnet,
+    Cedar,
+    Mainnet,
 }
 
 impl MidenNetworkType {
+    /// Bech32 human-readable prefix of Cedar addresses. Today the same string
+    /// as the protocol's mainnet prefix, kept separate so Cedar stays on `mm`
+    /// if mainnet moves.
+    const CEDAR_ADDRESS_PREFIX: &'static str = "mm";
+
     /// Map to the Miden protocol's [`NetworkId`] used by
     /// `AccountId::to_bech32` / `from_bech32`. `Local` maps to
     /// `Devnet` since Miden's bech32 HRP set has no dedicated local
-    /// variant — local accounts share Devnet's `mdev` prefix.
+    /// variant; local accounts share Devnet's `mdev` prefix. `Cedar` uses
+    /// [`Self::CEDAR_ADDRESS_PREFIX`].
     pub fn to_miden_network_id(self) -> miden_protocol::address::NetworkId {
         use miden_protocol::address::NetworkId;
         match self {
             Self::Local | Self::Devnet => NetworkId::Devnet,
             Self::Testnet => NetworkId::Testnet,
+            Self::Cedar => NetworkId::new(Self::CEDAR_ADDRESS_PREFIX)
+                .expect("Cedar address prefix is a valid network ID"),
+            Self::Mainnet => NetworkId::Mainnet,
         }
     }
 }
@@ -94,6 +105,8 @@ impl From<NetworkType> for MidenNetworkType {
             NetworkType::MidenLocal => Self::Local,
             NetworkType::MidenDevnet => Self::Devnet,
             NetworkType::MidenTestnet => Self::Testnet,
+            NetworkType::MidenCedar => Self::Cedar,
+            NetworkType::MidenMainnet => Self::Mainnet,
         }
     }
 }
@@ -104,6 +117,8 @@ impl From<MidenNetworkType> for NetworkType {
             MidenNetworkType::Local => Self::MidenLocal,
             MidenNetworkType::Devnet => Self::MidenDevnet,
             MidenNetworkType::Testnet => Self::MidenTestnet,
+            MidenNetworkType::Cedar => Self::MidenCedar,
+            MidenNetworkType::Mainnet => Self::MidenMainnet,
         }
     }
 }
@@ -114,6 +129,8 @@ impl std::fmt::Display for MidenNetworkType {
             Self::Local => f.write_str("local"),
             Self::Devnet => f.write_str("devnet"),
             Self::Testnet => f.write_str("testnet"),
+            Self::Cedar => f.write_str("cedar"),
+            Self::Mainnet => f.write_str("mainnet"),
         }
     }
 }
@@ -128,6 +145,8 @@ impl TryFrom<guardian::NetworkConfig> for NetworkConfig {
                     "local" | "midenlocal" => MidenNetworkType::Local,
                     "devnet" | "midendevnet" => MidenNetworkType::Devnet,
                     "testnet" | "midentestnet" => MidenNetworkType::Testnet,
+                    "cedar" | "midencedar" => MidenNetworkType::Cedar,
+                    "mainnet" | "midenmainnet" => MidenNetworkType::Mainnet,
                     other => return Err(format!("unsupported Miden network_type: {other}")),
                 };
                 Ok(Self::Miden { network_type })

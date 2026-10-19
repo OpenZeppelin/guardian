@@ -59,7 +59,7 @@ least-travelled configuration.
 
 | Decision | Production choice |
 |---|---|
-| **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenTestnet`, `MidenDevnet`, or `MidenLocal`. The server refuses to start when it is unset or unrecognized; there is no fallback network. |
+| **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenLocal`, `MidenDevnet`, `MidenTestnet`, `MidenCedar`, or `MidenMainnet`. The server refuses to start when it is unset or unrecognized; there is no fallback network. |
 | **Image version** | Pin an explicit release tag, **later than `v0.17.0`**. This guide depends on server features that v0.17.0 does not have: `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults. An older server does not fail on the unknown variables: it boots, stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. The tell is the startup banner: the `ack signers` line carries `account_schemes` only on a new enough image, and `smoke.sh` fails at its first step on an old one. Guardian 0.17.x runs on Miden 0.16; check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.16](../../PRODUCTION.md#upgrading-to-miden-016) if you are moving an existing deployment. Never run `latest` in production. |
 | **Server features** | The published `ghcr.io/openzeppelin/guardian` image is built with the `postgres` feature, which is the production storage backend; that is the image every track in this guide runs. |
 | **Storage backend** | Postgres, always. The filesystem backend is dev-only and refused at startup in the prod stage. |
@@ -232,8 +232,8 @@ between `plan` and `deploy --skip-build`. Reference:
 ./scripts/aws-deploy.sh status          # raw Terraform outputs: alb_url (raw ALB) and, with a domain, the custom hostname
 url=https://guardian.example.com        # your hostname: the certificate is issued for it, not for the ALB name
 curl -sf --max-time 10 "$url/"                                # liveness
-curl -sf --max-time 10 "$url/pubkey" | jq .                   # Falcon commitment
 curl -sf --max-time 10 "$url/pubkey?scheme=ecdsa" | jq .      # ECDSA commitment + pubkey (derived from the KMS key)
+curl -sf --max-time 10 "$url/pubkey?scheme=falcon" | jq .     # Falcon commitment
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.example.com:443 guardian.Guardian/GetPubkey
 ```
 
@@ -488,8 +488,8 @@ By hand, against your real stack:
 
 ```bash
 set -a; source .env; set +a                                    # for the token below
-curl -sf 127.0.0.1:3000/pubkey | jq .                          # Falcon commitment
 curl -sf "127.0.0.1:3000/pubkey?scheme=ecdsa" | jq .           # ECDSA commitment + pubkey
+curl -sf "127.0.0.1:3000/pubkey?scheme=falcon" | jq .          # Falcon commitment
 docker compose logs server | grep -E 'coordination|ack signers|storage backend|listeners'
 curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:9464/metrics                          # 401
 curl -sf -H "Authorization: Bearer $GUARDIAN_METRICS_BEARER_TOKEN" 127.0.0.1:9464/metrics | head

@@ -6,7 +6,7 @@ use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
-use crate::services::{normalize_payload, resolve_account};
+use crate::services::{normalize_payload, resolve_account_allowing_session};
 use crate::storage::{ProposalAdmission, ProposalWrite};
 use guardian_shared::DeltaSignature;
 use serde::Deserialize;
@@ -93,7 +93,7 @@ pub async fn push_delta_proposal(
 
     let delta_payload = normalize_payload(delta_payload)?;
 
-    let resolved = resolve_account(state, &account_id, &credentials).await?;
+    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
