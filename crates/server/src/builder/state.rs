@@ -8,6 +8,7 @@ use crate::evm::EvmAppState;
 use crate::metadata::MetadataStore;
 use crate::network::NetworkClient;
 use crate::release_sweep::ReleaseSweepConfig;
+use crate::session::MidenSessions;
 use crate::storage::StorageBackend;
 use std::sync::Arc;
 
@@ -31,6 +32,8 @@ pub struct AppState {
     /// Guardian execution of threshold-met proposals (issue #254). Offers nothing unless a
     /// prover is configured and the build includes proving.
     pub execution: crate::services::execute_proposal::ExecutionState,
+    /// Miden account sessions.
+    pub miden_sessions: Arc<MidenSessions>,
     #[cfg(feature = "evm")]
     pub evm: Arc<EvmAppState>,
 }

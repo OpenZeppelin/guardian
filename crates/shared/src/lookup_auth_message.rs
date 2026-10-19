@@ -15,17 +15,7 @@ const DOMAIN_TAG_BYTES: &[u8] = b"guardian.lookup.v1";
 /// Cached 4-felt domain-tag word, computed once on first use.
 fn domain_tag() -> Word {
     static TAG: OnceLock<Word> = OnceLock::new();
-    *TAG.get_or_init(|| {
-        let mut elements = Vec::with_capacity(DOMAIN_TAG_BYTES.len().div_ceil(8));
-        for chunk in DOMAIN_TAG_BYTES.chunks(8) {
-            let mut chunk_bytes = [0u8; 8];
-            chunk_bytes[..chunk.len()].copy_from_slice(chunk);
-            elements.push(crate::felt::felt_from_u64_reduced(u64::from_le_bytes(
-                chunk_bytes,
-            )));
-        }
-        Rpo256::hash_elements(&elements)
-    })
+    *TAG.get_or_init(|| crate::felt::domain_tag_word(DOMAIN_TAG_BYTES))
 }
 
 /// Account-less, replay-protected message format used to sign requests against

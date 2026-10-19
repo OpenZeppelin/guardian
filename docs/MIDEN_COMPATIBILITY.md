@@ -20,6 +20,8 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
+| 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
@@ -27,6 +29,12 @@ elsewhere and link here:
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
+
+0.18.2 keeps the 0.18.1 pins.
+
+0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
+`miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
+Rust pins are 0.17.1 for the protocol crates and 0.17.3 for the client crates.
 
 0.18.0 builds on the stable Miden 0.17 release. `@miden-sdk/miden-sdk` 0.17.0 embeds
 `miden-client` 0.17.0 and `miden-protocol` / `miden-standards` 0.17.0, so every Rust pin
@@ -116,10 +124,58 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
-**Moving past 0.18.0: TypeScript proposals are labelled with the account's next
-nonce** keeps the protocol pins, stored data and server contracts, but changes a
-TypeScript SDK default and two admission rules of a server that queues chained
-candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
+**Upgrading from 0.18.1 to 0.18.2: Cedar and mainnet network labels.** The Miden pins,
+the `auth_tx` procedure root, stored data and existing contracts are unchanged, so
+accounts and stores carry over. The release only adds:
+
+- **Two Miden network types.** `GUARDIAN_NETWORK_TYPE` accepts `MidenCedar` and
+  `MidenMainnet`, and the `network_type` field of a Miden `NetworkConfig` (gRPC and
+  HTTP) accepts `cedar` and `mainnet` next to `local`, `devnet` and `testnet`. A
+  server on either reports that label in `/status` and session grants. Cedar
+  addresses use the `mm` prefix. Older servers reject the new labels with
+  `unsupported Miden network_type`, so deploy the server before configuring
+  clients for Cedar or mainnet.
+- **Rust SDK presets.** `MidenCedar::endpoint()` makes `MultisigClientBuilder` wire
+  the Cedar prover and note transport, and `Endpoint::mainnet()` now wires the
+  mainnet prover and note transport. `MidenCedar::network_id()` encodes Cedar
+  addresses; miden-client's own `network_id()` returns the generic `mcst` id for
+  Cedar.
+- **TypeScript.** `@miden-sdk/miden-sdk` 0.17.3 has no Cedar or mainnet preset, so
+  a browser client names the RPC, prover and note transport URLs explicitly (see
+  the `@openzeppelin/miden-multisig-client` README).
+- **`/pubkey` without `scheme` returns the Falcon key**, whichever schemes the
+  server admits. This was already the behavior; it is now documented, and the
+  examples pass the account's scheme.
+
+**Upgrading from 0.18.0 to 0.18.1: Miden 0.17 patch pins.** 0.18.1 moves to
+`miden-protocol` / `miden-standards` 0.17.1, `miden-client` 0.17.3 and
+`@miden-sdk/miden-sdk` 0.17.3. The `auth_tx` procedure root and the stored
+account data are unchanged, so accounts carry over. Upstream changes that reach
+the SDKs:
+
+- **Note transport keeps one cursor per tag** (miden-client 0.17.1). A tag
+  without a cursor, such as a recovered account's, is served from the first
+  retained note, and each fetch reads a bounded number of pages. Upstream does
+  not carry the 0.17.0 global cursor over, so a store upgraded from 0.18.0
+  restarts every tag from the first retained note: its first syncs re-walk
+  transport history it already holds (imports dedupe) before they reach newer
+  notes. The transport drain of the recovery flow keeps fetching until a fetch
+  moves no tag's cursor instead of clearing the covered-tags bookkeeping, so
+  it reaches those notes in one call, and pages fetched before a failed one
+  stay imported. Upstream deprecated the covered-tags setting, the global
+  transport cursor and `NoteTransportError::PaginationDidNotTerminate`.
+- **The relay outbox is gone** (miden-client 0.17.2). Private notes are sent
+  directly; upstream's store migration drops the stale outbox row.
+- **`NodeRpcClient` gained `is_invitation_code_valid`** (miden-client 0.17.3).
+  A custom `NodeRpcClient` implementation must add it.
+- **Browser clients sharing a store name share one IndexedDB connection** while
+  any of them is alive. Release a `MidenClient` with
+  `await client[Symbol.asyncDispose]()` before deleting or reopening its store.
+
+**Upgrading from 0.18.0 to 0.18.1: TypeScript proposals are labelled with the account's next
+nonce.** Apart from the patch pins above, this keeps stored data and server
+contracts, but changes a TypeScript SDK default and two admission rules of a
+server that queues chained candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
 
 - **`create*Proposal` defaults `nonce` to the store account's nonce plus one**, the
   nonce the executed transaction will have, as the Rust SDK has since #72. Through
@@ -219,12 +275,12 @@ Guardian 0.18.x adds server-side execution of Guardian-executable proposals on t
 stored request declaring a protocol line other than `0.17` is refused before it is decoded.
 Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
 release candidates changed it, so the SDK that created a proposal and the server should run the
-same `miden-client`: this build pins the stable 0.17.0 client in the server and the Rust SDK and
-web SDK 0.17.0 in the TypeScript SDK. A request from a different client either fails to decode
+same `miden-client`: this build pins client 0.17.3 in the server and the Rust SDK and web SDK
+0.17.3 in the TypeScript SDK. A request from a different client either fails to decode
 (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
 (`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
 scenarios (`live-guardian-execute-*`) passed by hand on devnet (node 0.17.0) on 2026-10-06 with
-these stable pins, on both SDKs; the qualification matrix requires them on testnet and excludes
+the 0.17.0 pins, on both SDKs; the qualification matrix requires them on testnet and excludes
 them from devnet runs, whose step budget they exceed.
 
 Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators upgrading:
@@ -298,9 +354,9 @@ Server behavior that changes for every client:
   settling in-flight executions while execution is switched off. Only then roll back, for the same
   reason as above: an older replica cannot release a reservation.
 
-### Proposals name their bound block (after 0.18.0)
+### Proposals name their bound block (0.18.1)
 
-The release after 0.18.0 changes the proposal metadata both SDKs write. It is a
+0.18.1 changes the proposal metadata both SDKs write. It is a
 breaking SDK change and needs no server change.
 
 - **Proposals no longer carry `chain_anchor`.** Proposal creation captured an
@@ -338,13 +394,15 @@ breaking SDK change and needs no server change.
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-06.
+Last checked 2026-10-12.
 
 - **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
   live qualification, including the `live-guardian-execute-*` scenarios, passed
-  there on both SDKs on 2026-10-06. The manual devnet run described next is a
-  separate, earlier run on the Miden 0.17 release candidates and has not been
-  repeated on 0.17.0. There, this build's protocol
+  there on both SDKs on 2026-10-06, and on 2026-10-12 it answered requests whose
+  accept header named client 0.17.3 (and 0.17.0), and refused 0.18.0 and
+  0.17.0-rc.5. The manual devnet run described next is a separate, earlier run
+  on the Miden 0.17 release candidates and has not been repeated on 0.17.0.
+  There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
   block headers, so the transaction kernels matched. A guarded 2-of-2 multisig
   ran two proposals there end to end, a first consume-notes
@@ -360,7 +418,7 @@ Last checked 2026-10-06.
   reports every account as already allowed. Testnet runs Miden 0.16, so
   on testnet the examples need a local `miden-node` from the pinned line until
   it upgrades.
-- **miden-client fee path.** miden-client (still in 0.17.0) commits the
+- **miden-client fee path.** miden-client (still in 0.17.3) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
@@ -383,8 +441,8 @@ Last checked 2026-10-06.
   and recovery are in
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
-- **Pins.** The workspace pins the stable 0.17.0 protocol and client crates and
-  web SDK 0.17.0 (see the matrix). The protocol pin follows the client and web
+- **Pins.** The workspace pins protocol crates 0.17.1, client crates 0.17.3 and
+  web SDK 0.17.3 (see the matrix). The protocol pin follows the client and web
   SDK releases, not the protocol tags, because both SDKs must embed the same
   kernel.
 

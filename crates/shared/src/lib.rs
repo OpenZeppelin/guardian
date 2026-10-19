@@ -20,6 +20,8 @@ pub mod hex;
 pub mod lookup_auth_message;
 pub mod request_envelope;
 pub mod retry;
+pub mod session_grant;
+pub mod session_key;
 
 use crate::hex::FromHex;
 

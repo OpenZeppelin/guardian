@@ -12,8 +12,8 @@ The compose file sets the container paths it needs, but you must choose a
 network explicitly — `GUARDIAN_NETWORK_TYPE` has no default and the server
 refuses to start without it (there is no fallback network). Set it in a
 local `.env` file or export it in your shell; accepted values are
-`MidenLocal`, `MidenTestnet`, and `MidenDevnet`. The same requirement
-applies when you run the server directly with `cargo run`; see
+`MidenLocal`, `MidenDevnet`, `MidenTestnet`, `MidenCedar`, and `MidenMainnet`. The same
+requirement applies when you run the server directly with `cargo run`; see
 [`LOCAL_DEV.md`](./LOCAL_DEV.md#environment-file).
 
 ## Run
@@ -30,11 +30,13 @@ This launches the server with the filesystem backend. HTTP binds on
 
 ```bash
 curl http://localhost:3000/                   # liveness — same body as /status, expect 200 OK
-curl http://localhost:3000/pubkey             # expect { "commitment": "0x..." }
+curl 'http://localhost:3000/pubkey?scheme=ecdsa'   # expect { "commitment": "0x...", "pubkey": "0x..." }
+curl 'http://localhost:3000/pubkey?scheme=falcon'  # expect { "commitment": "0x..." }
 ```
 
-If both succeed, Guardian is running. The commitment you see is the ACK
-key commitment clients will pin.
+If these succeed, Guardian is running. The commitments you see are the ACK
+key commitments clients will pin, one per signature scheme. Plain `/pubkey`
+always returns the Falcon one, even when only ECDSA accounts are admitted.
 
 ## Stop
 

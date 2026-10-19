@@ -133,8 +133,9 @@ Most startup failures are environment misconfiguration. Check in order:
    `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
    (or `contains non-Unicode data` / `has unrecognized value "..."` for
    malformed values and typos like `tesnet`). There is no fallback network.
-   Replace the variable with `MidenLocal`, `MidenTestnet`, or
-   `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
+   Replace the variable with `MidenLocal`, `MidenDevnet`, `MidenTestnet`,
+   `MidenCedar`, or `MidenMainnet` (short forms
+   `local`/`devnet`/`testnet`/`cedar`/`mainnet` work,
    case-insensitive).
 2. **Miden node unreachable or Miden RPC settings invalid.** The initial
    node connection retries transient failures for ≈35 seconds (5 attempts
@@ -296,7 +297,7 @@ Common benign causes:
 This section covers the auth-middleware verdicts, `401` with
 `code: authentication_failed` or `code: authentication_replay`. If your
 request was *authenticated* but still rejected (e.g.
-`403 authorization_failed`, `403 signer_not_authorized`,
+`403 authorization_failed`, `403 signer_not_authorized`, `403 wallet_signature_required`,
 `400 commitment_mismatch`, `409 conflict_pending_*`), jump straight to
 the [error code reference](#error-code-reference): the signature was
 fine, the service layer rejected the operation.
@@ -739,6 +740,9 @@ come from
 | `authentication_replay` | 401 | Correctly signed but the timestamp lost the per-signer replay CAS. `retryable: true`; SDK clients retry it automatically with a fresh timestamp and signature. See [the auth-layer section](#signed-requests-are-rejected-at-the-auth-layer). |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
+| `wallet_signature_required` | 403 | A wallet-only route (delta push, candidate abandon, configure, lookup, revoke-all) was called with session (delegated-signer) credentials. Sign it with the wallet. |
+| `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
+| `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
 | `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already in this Guardian's metadata are never rejected this way; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 

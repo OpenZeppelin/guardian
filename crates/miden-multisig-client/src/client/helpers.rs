@@ -47,10 +47,13 @@ impl MultisigClient {
             .map_err(|e| MultisigError::GuardianConnection(e.to_string()))
     }
 
-    /// Creates an authenticated GUARDIAN client.
+    /// Creates an authenticated GUARDIAN client that shares this client's
+    /// Guardian session, if one is active.
     pub(crate) async fn create_authenticated_guardian_client(&self) -> Result<GuardianClient> {
         let client = self.create_guardian_client().await?;
-        Ok(client.with_signer(self.key_manager.clone()))
+        Ok(client
+            .with_signer(self.key_manager.clone())
+            .with_session_slot(self.guardian_session.clone()))
     }
 
     pub(crate) async fn get_on_chain_account_commitment(
@@ -629,7 +632,7 @@ impl MultisigClient {
 
     /// Resets the miden-client by creating a new instance with a fresh database.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        self.miden_client = create_miden_client(
+        let (miden_client, miden_store) = create_miden_client(
             &self.account_dir,
             &self.miden_endpoint,
             self.note_transport_endpoint.as_deref(),
@@ -637,6 +640,8 @@ impl MultisigClient {
             &self.rpc_config,
         )
         .await?;
+        self.miden_client = miden_client;
+        self.miden_store = miden_store;
         Ok(())
     }
 
