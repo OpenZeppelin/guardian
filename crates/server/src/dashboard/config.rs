@@ -128,9 +128,11 @@ impl DashboardConfig {
 
 fn environment_for_network(network_type: NetworkType) -> &'static str {
     match network_type {
-        NetworkType::MidenTestnet => "testnet",
-        NetworkType::MidenDevnet => "devnet",
         NetworkType::MidenLocal => "local",
+        NetworkType::MidenDevnet => "devnet",
+        NetworkType::MidenTestnet => "testnet",
+        NetworkType::MidenCedar => "cedar",
+        NetworkType::MidenMainnet => "mainnet",
     }
 }
 
@@ -330,23 +332,19 @@ mod tests {
     #[test]
     fn environment_is_derived_from_network_type() {
         let _cursor = EnvVarGuard::remove("GUARDIAN_DASHBOARD_CURSOR_SECRET");
-        assert_eq!(
-            DashboardConfig::from_env_for_network(NetworkType::MidenTestnet)
-                .unwrap()
-                .environment(),
-            "testnet"
-        );
-        assert_eq!(
-            DashboardConfig::from_env_for_network(NetworkType::MidenDevnet)
-                .unwrap()
-                .environment(),
-            "devnet"
-        );
-        assert_eq!(
-            DashboardConfig::from_env_for_network(NetworkType::MidenLocal)
-                .unwrap()
-                .environment(),
-            "local"
-        );
+        for (network, environment) in [
+            (NetworkType::MidenLocal, "local"),
+            (NetworkType::MidenDevnet, "devnet"),
+            (NetworkType::MidenTestnet, "testnet"),
+            (NetworkType::MidenCedar, "cedar"),
+            (NetworkType::MidenMainnet, "mainnet"),
+        ] {
+            assert_eq!(
+                DashboardConfig::from_env_for_network(network)
+                    .unwrap()
+                    .environment(),
+                environment
+            );
+        }
     }
 }

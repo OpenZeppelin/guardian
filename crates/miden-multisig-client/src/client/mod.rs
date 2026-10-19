@@ -9,6 +9,7 @@
 //! - `notes` - Note filtering and listing
 //! - `recovery` - Recovery primitives (transport backlog drain)
 //! - `io` - Export/import functionality
+//! - `session` - Guardian sessions (delegated signer)
 //! - `proposal_note_import` - Recovery primitive: proposal-embedded note import
 //! - `public_note_backfill` - Recovery primitive: historical public-note backfill by tag
 //! - `helpers` - Internal GUARDIAN client helpers
@@ -30,6 +31,9 @@ mod proposal_note_import;
 mod proposals;
 mod public_note_backfill;
 mod recovery;
+mod session;
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod switch_recovery_tests;
 #[cfg(test)]
@@ -50,8 +54,9 @@ use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use guardian_client::GetStateResponse;
+use guardian_client::{GetStateResponse, SessionSlot};
 use miden_client::rpc::Endpoint;
+use miden_client::store::Store;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::BlockNumber;
@@ -118,6 +123,9 @@ pub struct StateVerificationResult {
 /// ```
 pub struct MultisigClient {
     pub(crate) miden_client: MidenSdkClient,
+    /// The store `miden_client` was built on, for the client-owned settings
+    /// the public settings API does not reach (the note-transport cursors).
+    pub(crate) miden_store: Arc<dyn Store>,
     pub(crate) key_manager: Arc<dyn KeyManager>,
     /// Guardian server endpoint.
     pub(crate) guardian_endpoint: String,
@@ -136,6 +144,8 @@ pub struct MultisigClient {
     pub(crate) prover_config: ProverConfig,
     /// Node RPC timeout and read-retry configuration (for recovery).
     pub(crate) rpc_config: RpcConfig,
+    /// The Guardian session every per-operation client shares.
+    pub(crate) guardian_session: SessionSlot,
 }
 
 impl MultisigClient {
@@ -148,6 +158,7 @@ impl MultisigClient {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         miden_client: MidenSdkClient,
+        miden_store: Arc<dyn Store>,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,
@@ -160,6 +171,7 @@ impl MultisigClient {
             crate::builder::configured_node_rpc_client(&miden_endpoint, &rpc_config);
         Self {
             miden_client,
+            miden_store,
             key_manager,
             guardian_endpoint,
             account: None,
@@ -169,6 +181,7 @@ impl MultisigClient {
             node_rpc_client,
             prover_config,
             rpc_config,
+            guardian_session: SessionSlot::default(),
         }
     }
 

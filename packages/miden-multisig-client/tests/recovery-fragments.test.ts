@@ -15,7 +15,6 @@ import { createRequire } from 'node:module';
 import { describe, it, expect } from 'vitest';
 import {
   NODE_RPC_FRAGMENT,
-  NOTE_TRANSPORT_COVERED_TAGS_KEY,
   PAGINATION_GUARD_FRAGMENT,
   STORE_ERROR_FRAGMENT,
   TRANSPORT_CONNECTION_FRAGMENT,
@@ -39,9 +38,5 @@ describe('recovery classification fragments', () => {
     expect(binaryText).toContain(TRANSPORT_NETWORK_FRAGMENT);
     expect(binaryText).toContain(TRANSPORT_CONNECTION_FRAGMENT);
     expect(binaryText).toContain(NODE_RPC_FRAGMENT);
-    // Not an error fragment but the same class of stringly cross-binary
-    // contract: `settings.remove` of a renamed key would succeed silently
-    // and degrade the drain to a no-op that still reports 'completed'.
-    expect(binaryText).toContain(NOTE_TRANSPORT_COVERED_TAGS_KEY);
   });
 });

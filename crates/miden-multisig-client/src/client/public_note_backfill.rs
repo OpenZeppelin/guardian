@@ -817,6 +817,13 @@ mod tests {
             unimplemented!("not exercised by the backfill tests")
         }
 
+        async fn is_invitation_code_valid(
+            &self,
+            _invitation_code: &str,
+        ) -> std::result::Result<bool, RpcError> {
+            unimplemented!("not exercised by the backfill tests")
+        }
+
         async fn get_account(
             &self,
             _account_id: AccountId,

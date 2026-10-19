@@ -107,6 +107,22 @@ export interface SerializedSignerInfo {
 
 export type SmokeBootStatus = 'idle' | 'initializing' | 'ready' | 'error';
 
+/**
+ * Signatures the harness's wallet signer produced, by kind. Under a Guardian
+ * session, reads and proposal requests add no `request` signatures.
+ */
+export interface WalletSignatureCounts {
+  request: number;
+  lookup: number;
+  grant: number;
+  revokeAll: number;
+  approval: number;
+}
+
+export function emptyWalletSignatureCounts(): WalletSignatureCounts {
+  return { request: 0, lookup: 0, grant: 0, revokeAll: 0, approval: 0 };
+}
+
 export interface BrowserSessionSnapshot {
   browserLabel: string | null;
   initialized: boolean;
@@ -133,6 +149,8 @@ export interface BrowserSessionSnapshot {
   consumableNotes: SerializedConsumableNote[];
   lastError: string | null;
   busyAction: string | null;
+  walletSignatures: WalletSignatureCounts;
+  guardianSession: { publicKey: string; expiresAt: number } | null;
 }
 
 export type SmokeEventOutcome = 'succeeded' | 'failed';
