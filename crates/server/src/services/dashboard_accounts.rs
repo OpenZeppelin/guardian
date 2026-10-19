@@ -308,8 +308,9 @@ impl DashboardAccountDetail {
 /// default, mislabeling accounts on testnet/devnet servers. Returns
 /// `None` for EVM accounts and for any hex that fails to parse as a
 /// Miden `AccountId` (data drift). The HRP set is fixed by the Miden
-/// protocol: `mm` for mainnet, `mtst` for testnet, `mdev` for devnet
+/// protocol: `mdev` for devnet, `mtst` for testnet, `mm` for mainnet
 /// (Local is folded into Devnet — Miden has no separate Local HRP).
+/// Cedar uses `mm`, today the same string as mainnet's.
 fn bech32_for_account(metadata: &AccountMetadata, network_type: NetworkType) -> Option<String> {
     use crate::metadata::MidenNetworkType;
     use miden_protocol::account::AccountId;
@@ -382,6 +383,20 @@ mod tests {
         assert!(
             bech32.starts_with("mtst1"),
             "testnet HRP expected, got '{bech32}'",
+        );
+
+        let bech32_cedar = bech32_for_account(&meta, NetworkType::MidenCedar)
+            .expect("bech32 encodes for valid miden id");
+        assert!(
+            bech32_cedar.starts_with("mm1"),
+            "cedar shares the mainnet HRP, got '{bech32_cedar}'",
+        );
+
+        let bech32_mainnet = bech32_for_account(&meta, NetworkType::MidenMainnet)
+            .expect("bech32 encodes for valid miden id");
+        assert!(
+            bech32_mainnet.starts_with("mm1"),
+            "mainnet HRP expected, got '{bech32_mainnet}'",
         );
 
         let bech32_local =
@@ -483,6 +498,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         let state = AppState {
             execution: Default::default(),
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(svc),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),

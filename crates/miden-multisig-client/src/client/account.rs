@@ -566,6 +566,8 @@ impl MultisigClient {
     /// * `new_endpoint` - The new GUARDIAN server endpoint URL
     /// * `register` - If true, registers the current account on the new GUARDIAN server
     ///
+    /// A Guardian session belongs to the old endpoint, so this drops it.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -578,6 +580,7 @@ impl MultisigClient {
         register: bool,
     ) -> Result<()> {
         self.guardian_endpoint = new_endpoint.to_string();
+        self.guardian_session = guardian_client::SessionSlot::default();
 
         if register {
             self.register_on_guardian().await?;

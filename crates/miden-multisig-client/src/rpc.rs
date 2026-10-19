@@ -170,7 +170,10 @@ pub(crate) fn is_transient_multisig_error(error: &MultisigError) -> bool {
 
 /// `Connection` wraps endpoint parsing, TLS configuration, and actual
 /// connect failures indiscriminately; only the last class is worth another
-/// attempt, so the wrapped chain decides.
+/// attempt, so the wrapped chain decides. The match stays exhaustive, so it
+/// still names `PaginationDidNotTerminate`, deprecated since miden-client
+/// 0.17.1.
+#[allow(deprecated)]
 fn note_transport_link_evidence(cause: &(dyn Error + 'static)) -> StructuredEvidence {
     match cause.downcast_ref::<NoteTransportError>() {
         Some(NoteTransportError::Connection(inner)) => {
@@ -302,6 +305,14 @@ impl NodeRpcClient for RetryingNodeRpcClient {
         account_id: AccountId,
     ) -> std::result::Result<bool, RpcError> {
         self.execute(|| self.inner.is_account_allowed(account_id))
+            .await
+    }
+
+    async fn is_invitation_code_valid(
+        &self,
+        invitation_code: &str,
+    ) -> std::result::Result<bool, RpcError> {
+        self.execute(|| self.inner.is_invitation_code_valid(invitation_code))
             .await
     }
 
@@ -766,6 +777,9 @@ mod tests {
         async fn is_account_allowed(&self, _: AccountId) -> std::result::Result<bool, RpcError> {
             unimplemented!()
         }
+        async fn is_invitation_code_valid(&self, _: &str) -> std::result::Result<bool, RpcError> {
+            unimplemented!()
+        }
         async fn get_block_header_by_number(
             &self,
             _: Option<BlockNumber>,
@@ -1075,9 +1089,6 @@ mod tests {
         ));
         assert!(!is_transient_note_transport_error(
             &NoteTransportError::Network("note not recognized by relay".to_string())
-        ));
-        assert!(!is_transient_note_transport_error(
-            &NoteTransportError::PaginationDidNotTerminate(64)
         ));
     }
 

@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.0 @miden-sdk/miden-sdk@0.17.0
+npm install @openzeppelin/miden-multisig-client@0.18.2 @miden-sdk/miden-sdk@0.17.3
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
@@ -93,6 +93,59 @@ after `MultisigClient.load` or a `syncState()` import
 symptoms and recovery are in
 [TROUBLESHOOTING.md](https://github.com/OpenZeppelin/guardian/blob/main/docs/TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
 Node.js has no worker and is unaffected.
+
+### Cedar
+
+`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+so a Cedar client names its endpoints explicitly:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.cedar.miden.io',
+  proverUrl: 'https://tx-prover.cedar.miden.io',
+  noteTransportUrl: 'https://transport.cedar.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.cedar.miden.io',
+});
+```
+
+Cedar addresses use the `mm` prefix, today the same as mainnet's. In Rust,
+`MidenCedar::endpoint()` selects the Cedar prover and note transport automatically.
+
+### Mainnet
+
+`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
+so a mainnet client names its endpoints the same way:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.mainnet.miden.io',
+  proverUrl: 'https://tx-prover.mainnet.miden.io',
+  noteTransportUrl: 'https://transport.mainnet.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.mainnet.miden.io',
+  prover: {
+    retry: { maxAttempts: 4 },
+  },
+});
+```
+
+`createTestnet` and `createDevnet` set exactly these three endpoints plus
+`autoSync`, so the explicit Cedar and mainnet forms are equivalent. Without
+`noteTransportUrl`, private notes cannot be relayed between cosigners. Leave
+`prover.url` unset so the SDK keeps the Cedar or mainnet prover injected into
+the `MidenClient`; a `url` there overrides it.
 
 For an ECDSA cosigner using an EIP-1193 wallet (including Ledger), call
 `Eip712Signer.connect(provider)` once to select the Ethereum address and
@@ -184,11 +237,19 @@ The full cross-SDK reference, including the Rust equivalents, is
 
 ### Get GUARDIAN Public Key
 
-Before creating a multisig, get the GUARDIAN server's public key commitment:
+Before creating a multisig, get the GUARDIAN server's ACK commitment for the
+account's signature scheme:
 
 ```typescript
-const guardianCommitment = await client.guardianClient.getPubkey();
+const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
 ```
+
+`getPubkey` returns `{ commitment, pubkey }` for one signature scheme and
+defaults to Falcon when no scheme is passed, including on a Guardian that only
+admits ECDSA accounts (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`): both ACK keys
+stay loaded for existing accounts. Always pass the scheme of the account you
+are creating, usually `signer.scheme`. A Falcon commitment in an ECDSA account
+is refused at registration with an authorization error, not a scheme mismatch.
 
 ### Create a Multisig Account
 
@@ -213,6 +274,67 @@ After creating the account, register it on the GUARDIAN server:
 ```typescript
 await multisig.registerOnGuardian();
 ```
+
+### Sign Requests With a Session
+
+Every Guardian request is otherwise signed by the wallet, which on a hardware
+wallet means a prompt per request. When the Guardian supports sessions, the
+wallet signs one grant and a non-extractable WebCrypto P-256 key, the delegated
+signer, signs reads and proposal requests until the session ends:
+
+```typescript
+import {
+  IndexedDbSessionKeyStore,
+  describeSessionGrant,
+} from '@openzeppelin/miden-multisig-client';
+
+const store = new IndexedDbSessionKeyStore(); // optional: survive reloads
+// 'expired', 'revoked' or 'rejected': requests are wallet-signed again, so
+// offer a new session. 'logout': the app ended it itself.
+const onEnded = (reason) => console.info('Guardian session ended:', reason);
+const session =
+  (await client.resumeSession(signer, store, { onEnded })) ??
+  (await client.startSession(signer, {
+    store,
+    onEnded,
+    // Required for raw wallets, which only show a hash.
+    confirm: (grant) => showToUser(describeSessionGrant(grant)),
+  }));
+
+// ...sync, list proposals and create proposals without wallet prompts.
+// Approving a proposal still asks the wallet to sign the transaction.
+
+await client.endSession(store); // this session only
+await client.revokeAllSessions(signer, store); // every session of the signer, wallet-signed
+```
+
+The grant covers every account the signer cosigns on this Guardian, now or
+later, until it expires. It names the website that asked for it
+(`location.origin` by default). The page writes that field, so it is
+unverified: the trustworthy signal is the wallet's own indicator of the
+requesting site, and Guardian does not check it against requests. Ledger and
+other EIP-712 wallets sign the grant as readable typed data (`GuardianSession`:
+signer, session key, website, issued/expires, scope, Guardian key, network).
+Without registered display metadata, Ledger devices need "Verbose EIP-712"
+enabled. Raw (Falcon, raw ECDSA) wallets show only a hash, so `startSession`
+requires `confirm` for them; that shows the fields on an honest page but is
+no protection against a phishing page, which shows what it wants.
+Transaction approvals, account registration, delta pushes, candidate abandons
+and account lookup still use the wallet; the server rejects session
+credentials there with `wallet_signature_required`.
+
+The session ends when it expires, when it is logged out or revoked, or when
+Guardian no longer accepts it (for example after a Guardian restart without
+persistent sessions, or a Guardian key rotation). Requests then go back to the
+wallet, the stored key is forgotten, and `onEnded` is called once with the
+reason. Removing the signer from an account ends its delegated access to that
+account (`authorization_failed`, the session keeps working for the others);
+adding it back restores any unexpired grant.
+
+Page logout is not revocation: a script that stole the key keeps it, so use
+`revokeAllSessions` when in doubt, and run it again 10 minutes later.
+Revoke-all ends the sessions already registered with Guardian, and a page that
+got a grant signed can register it for up to about 10 minutes afterwards.
 
 ### Load an Existing Multisig
 
@@ -730,10 +852,11 @@ local store) becomes a `RecoveryStepProblem` entry instead of aborting the
 flow, and `retryable: true` means rerunning the flow — which is idempotent —
 can plausibly recover more. In brief:
 
-- **Transport drain** — rescans the full private-note transport backlog for
-  every tracked tag, regardless of the stored cursor (and without ever
-  regressing it). Bounded by the transport service's retention: a
-  best-effort rescan, **not** a backup.
+- **Transport drain** — fetches the private-note transport backlog for
+  every tracked tag until a fetch moves no tag's cursor. A recovered account's
+  tag has no transport cursor yet, so its whole retained backlog is fetched.
+  Bounded by the transport service's retention: a best-effort rescan,
+  **not** a backup.
 - **Proposal import** — rebuilds importable notes from the bytes v2
   consume-notes proposals embed (validated against the proposals' declared
   note ids) plus node-fetched inclusion proofs, so it works for private
