@@ -363,6 +363,7 @@ mod tests {
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
             execution: Default::default(),
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(MockMetadataStore::new()),
             network_client: Arc::new(MockNetworkClient::new()),

@@ -25,6 +25,10 @@ pub struct StatusResponse {
     pub uptime_seconds: u64,
     /// Whether this server accepts Guardian execution requests.
     pub execution: ExecutionStatus,
+    /// Session authentication for Miden accounts (issue #219). Present on
+    /// every Guardian that accepts session grants; SDKs treat its absence as
+    /// "no sessions".
+    pub sessions: SessionsStatus,
 }
 
 /// Whether `POST /delta/proposal/execution` is offered. It reflects configuration, the same
@@ -52,14 +56,22 @@ impl ExecutionStatus {
     }
 }
 
+/// Session parameters a client needs before it builds a grant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct SessionsStatus {
+    /// Grants may expire at most this many seconds after registration.
+    pub max_ttl_seconds: u64,
+}
+
 /// Assemble the status response. Pure so it is unit-testable without an
-/// `AppState`: the handler supplies `environment`, `started_at`, `now` and
-/// the execution capability.
+/// `AppState`: the handler supplies `environment`, `started_at`, `now`, the
+/// execution capability, and `sessions`.
 pub fn build_status(
     environment: &str,
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
     execution: ExecutionStatus,
+    sessions: SessionsStatus,
 ) -> StatusResponse {
     let uptime_seconds = (now - started_at).num_seconds().max(0) as u64;
     StatusResponse {
@@ -70,12 +82,19 @@ pub fn build_status(
         started_at: started_at.to_rfc3339(),
         uptime_seconds,
         execution,
+        sessions,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sessions() -> SessionsStatus {
+        SessionsStatus {
+            max_ttl_seconds: 28_800,
+        }
+    }
 
     fn at(ts: &str) -> DateTime<Utc> {
         DateTime::parse_from_rfc3339(ts)
@@ -87,7 +106,13 @@ mod tests {
     fn computes_uptime_and_carries_fields() {
         let started = at("2026-06-17T10:00:00Z");
         let now = at("2026-06-17T11:00:00Z");
-        let resp = build_status("devnet", started, now, ExecutionStatus::of(Ok(())));
+        let resp = build_status(
+            "devnet",
+            started,
+            now,
+            ExecutionStatus::of(Ok(())),
+            sessions(),
+        );
 
         assert_eq!(resp.status, "ok");
         assert_eq!(resp.version, crate::build_info::VERSION);
@@ -125,7 +150,13 @@ mod tests {
     fn negative_uptime_is_clamped_to_zero() {
         let started = at("2026-06-17T11:00:00Z");
         let now = at("2026-06-17T10:00:00Z");
-        let resp = build_status("local", started, now, ExecutionStatus::of(Ok(())));
+        let resp = build_status(
+            "local",
+            started,
+            now,
+            ExecutionStatus::of(Ok(())),
+            sessions(),
+        );
         assert_eq!(resp.uptime_seconds, 0);
     }
 
@@ -136,6 +167,7 @@ mod tests {
             at("2026-06-17T10:00:00Z"),
             at("2026-06-17T10:00:01Z"),
             ExecutionStatus::of(Ok(())),
+            sessions(),
         );
         let json = serde_json::to_value(&resp).unwrap();
         let obj = json.as_object().unwrap();
@@ -147,6 +179,7 @@ mod tests {
                 "environment",
                 "execution",
                 "git_commit",
+                "sessions",
                 "started_at",
                 "status",
                 "uptime_seconds",

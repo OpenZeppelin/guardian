@@ -1,27 +1,34 @@
-import { readFileSync } from 'node:fs';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GuardianHttpClient, GuardianHttpError } from './http.js';
-import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse } from './types.js';
+import { readFileSync } from "node:fs";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { GuardianHttpClient, GuardianHttpError } from "./http.js";
+import type {
+  Signer,
+  ConfigureResponse,
+  StateObject,
+  DeltaObject,
+  DeltaProposalResponse,
+  SessionRequestSigner,
+} from "./types.js";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
-vi.stubGlobal('fetch', mockFetch);
+vi.stubGlobal("fetch", mockFetch);
 
 // Mock signer for authenticated requests
 const mockSigner: Signer = {
-  commitment: '0x' + '1'.repeat(64),
-  publicKey: '0x' + '2'.repeat(64),
-  scheme: 'falcon',
-  signAccountIdWithTimestamp: vi.fn().mockResolvedValue('0x' + 'a'.repeat(128)),
-  signRequest: vi.fn().mockReturnValue('0x' + 'a'.repeat(128)),
-  signCommitment: vi.fn().mockReturnValue('0x' + 'b'.repeat(128)),
+  commitment: "0x" + "1".repeat(64),
+  publicKey: "0x" + "2".repeat(64),
+  scheme: "falcon",
+  signAccountIdWithTimestamp: vi.fn().mockResolvedValue("0x" + "a".repeat(128)),
+  signRequest: vi.fn().mockReturnValue("0x" + "a".repeat(128)),
+  signCommitment: vi.fn().mockReturnValue("0x" + "b".repeat(128)),
 };
 
-describe('GuardianHttpClient', () => {
+describe("GuardianHttpClient", () => {
   let client: GuardianHttpClient;
 
   beforeEach(() => {
-    client = new GuardianHttpClient('http://localhost:3000');
+    client = new GuardianHttpClient("http://localhost:3000");
     mockFetch.mockReset();
   });
 
@@ -29,16 +36,16 @@ describe('GuardianHttpClient', () => {
     vi.clearAllMocks();
   });
 
-  describe('constructor', () => {
-    it('should create client with baseUrl', () => {
-      const c = new GuardianHttpClient('http://example.com:8080');
+  describe("constructor", () => {
+    it("should create client with baseUrl", () => {
+      const c = new GuardianHttpClient("http://example.com:8080");
       expect(c).toBeInstanceOf(GuardianHttpClient);
     });
   });
 
-  describe('getPubkey', () => {
-    it('should return server public key', async () => {
-      const expectedPubkey = '0x' + 'abc123'.repeat(10);
+  describe("getPubkey", () => {
+    it("should return server public key", async () => {
+      const expectedPubkey = "0x" + "abc123".repeat(10);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ commitment: expectedPubkey }),
@@ -48,86 +55,88 @@ describe('GuardianHttpClient', () => {
 
       expect(pubkey).toEqual({ commitment: expectedPubkey, pubkey: undefined });
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/pubkey',
+        "http://localhost:3000/pubkey",
         expect.objectContaining({
-          method: 'GET',
+          method: "GET",
           headers: expect.objectContaining({
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           }),
-        })
+        }),
       );
     });
 
-    it('should throw GuardianHttpError on non-ok response', async () => {
+    it("should throw GuardianHttpError on non-ok response", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 500,
-        statusText: 'Internal Server Error',
-        text: async () => 'Server error message',
+        statusText: "Internal Server Error",
+        text: async () => "Server error message",
       });
 
       const error = await client.getPubkey().catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(500);
-      expect(error.statusText).toBe('Internal Server Error');
+      expect(error.statusText).toBe("Internal Server Error");
       // Non-JSON body: no typed envelope fields.
       expect(error.code).toBeNull();
       expect(error.releasedAt).toBeNull();
     });
 
-    it('exposes code and released_at from a GUARDIAN_ACCOUNT_RELEASED envelope', async () => {
+    it("exposes code and released_at from a GUARDIAN_ACCOUNT_RELEASED envelope", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_ACCOUNT_RELEASED',
-            message: 'This account has moved to a different guardian. Reconnect it to continue.',
-            meta: { retryable: false, released_at: '2026-07-06T10:00:00Z' },
+            code: "GUARDIAN_ACCOUNT_RELEASED",
+            message:
+              "This account has moved to a different guardian. Reconnect it to continue.",
+            meta: { retryable: false, released_at: "2026-07-06T10:00:00Z" },
           }),
       });
 
       const error = await client.getPubkey().catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(409);
-      expect(error.code).toBe('account_released');
-      expect(error.rawCode).toBe('GUARDIAN_ACCOUNT_RELEASED');
-      expect(error.releasedAt).toBe('2026-07-06T10:00:00Z');
+      expect(error.code).toBe("account_released");
+      expect(error.rawCode).toBe("GUARDIAN_ACCOUNT_RELEASED");
+      expect(error.releasedAt).toBe("2026-07-06T10:00:00Z");
     });
 
-    it('exposes code without releasedAt for other envelope errors', async () => {
+    it("exposes code without releasedAt for other envelope errors", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 404,
-        statusText: 'Not Found',
+        statusText: "Not Found",
         text: async () =>
           JSON.stringify({
-            code: 'account_not_found',
-            message: "We couldn't find that. It may have been completed or removed.",
+            code: "account_not_found",
+            message:
+              "We couldn't find that. It may have been completed or removed.",
             meta: { retryable: false },
           }),
       });
 
       const error = await client.getPubkey().catch((e) => e);
-      expect(error.code).toBe('account_not_found');
+      expect(error.code).toBe("account_not_found");
       expect(error.releasedAt).toBeNull();
     });
   });
 
-  describe('getStatus', () => {
-    it('maps the server status response to camelCase', async () => {
+  describe("getStatus", () => {
+    it("maps the server status response to camelCase", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          status: 'ok',
-          version: '0.1.0',
-          git_commit: 'abc123def456',
-          environment: 'devnet',
-          started_at: '2026-06-17T10:00:00Z',
+          status: "ok",
+          version: "0.1.0",
+          git_commit: "abc123def456",
+          environment: "devnet",
+          started_at: "2026-06-17T10:00:00Z",
           uptime_seconds: 3600,
           execution: { enabled: true },
         }),
@@ -136,70 +145,80 @@ describe('GuardianHttpClient', () => {
       const status = await client.getStatus();
 
       expect(status).toEqual({
-        status: 'ok',
-        version: '0.1.0',
-        gitCommit: 'abc123def456',
-        environment: 'devnet',
-        startedAt: '2026-06-17T10:00:00Z',
+        status: "ok",
+        version: "0.1.0",
+        gitCommit: "abc123def456",
+        environment: "devnet",
+        startedAt: "2026-06-17T10:00:00Z",
         uptimeSeconds: 3600,
         execution: { enabled: true },
       });
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/status',
+        "http://localhost:3000/status",
         expect.objectContaining({
-          method: 'GET',
+          method: "GET",
           headers: expect.objectContaining({
-            'Content-Type': 'application/json',
+            "Content-Type": "application/json",
           }),
-        })
+        }),
       );
     });
 
-    it('reports why the server does not offer execution', async () => {
+    it("reports why the server does not offer execution", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          status: 'ok',
-          version: '0.1.0',
-          git_commit: 'abc123def456',
-          environment: 'devnet',
-          started_at: '2026-06-17T10:00:00Z',
+          status: "ok",
+          version: "0.1.0",
+          git_commit: "abc123def456",
+          environment: "devnet",
+          started_at: "2026-06-17T10:00:00Z",
           uptime_seconds: 3600,
-          execution: { enabled: false, reason: 'prover_not_configured' },
+          execution: { enabled: false, reason: "prover_not_configured" },
         }),
       });
 
       const status = await client.getStatus();
 
-      expect(status.execution).toEqual({ enabled: false, reason: 'prover_not_configured' });
+      expect(status.execution).toEqual({
+        enabled: false,
+        reason: "prover_not_configured",
+      });
     });
 
-    it('refuses a status whose execution capability is missing or names an unknown reason', async () => {
+    it("refuses a status whose execution capability is missing or names an unknown reason", async () => {
       const base = {
-        status: 'ok',
-        version: '0.1.0',
-        git_commit: 'abc123def456',
-        environment: 'devnet',
-        started_at: '2026-06-17T10:00:00Z',
+        status: "ok",
+        version: "0.1.0",
+        git_commit: "abc123def456",
+        environment: "devnet",
+        started_at: "2026-06-17T10:00:00Z",
         uptime_seconds: 3600,
       };
       mockFetch.mockResolvedValueOnce({ ok: true, json: async () => base });
-      await expect(client.getStatus()).rejects.toThrow(/no execution capability/);
+      await expect(client.getStatus()).rejects.toThrow(
+        /no execution capability/,
+      );
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ ...base, execution: { enabled: false, reason: 'gone_fishing' } }),
+        json: async () => ({
+          ...base,
+          execution: { enabled: false, reason: "gone_fishing" },
+        }),
       });
-      await expect(client.getStatus()).rejects.toThrow(/unknown execution unavailable reason/);
+      await expect(client.getStatus()).rejects.toThrow(
+        /unknown execution unavailable reason/,
+      );
     });
 
-    it('should throw GuardianHttpError on non-ok response', async () => {
+    it("should throw GuardianHttpError on non-ok response", async () => {
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 503,
-        statusText: 'Service Unavailable',
-        text: async () => 'down',
+        statusText: "Service Unavailable",
+        text: async () => "down",
       });
 
       const error = await client.getStatus().catch((e) => e);
@@ -208,15 +227,15 @@ describe('GuardianHttpClient', () => {
     });
   });
 
-  describe('configure', () => {
-    it('should configure account with authentication', async () => {
+  describe("configure", () => {
+    it("should configure account with authentication", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverResponse = {
         success: true,
-        message: 'Account configured',
-        ack_pubkey: '0x' + 'c'.repeat(64),
+        message: "Account configured",
+        ack_pubkey: "0x" + "c".repeat(64),
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -226,13 +245,13 @@ describe('GuardianHttpClient', () => {
 
       // Client API uses camelCase
       const request = {
-        accountId: '0x' + 'd'.repeat(30),
+        accountId: "0x" + "d".repeat(30),
         auth: {
           MidenFalconRpo: {
-            cosigner_commitments: ['0x' + 'e'.repeat(64)],
+            cosigner_commitments: ["0x" + "e".repeat(64)],
           },
         },
-        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+        initialState: { data: "base64data", accountId: "0x" + "d".repeat(30) },
       };
 
       const response = await client.configure(request);
@@ -240,197 +259,211 @@ describe('GuardianHttpClient', () => {
       // Client returns camelCase
       const expectedResponse: ConfigureResponse = {
         success: true,
-        message: 'Account configured',
-        ackPubkey: '0x' + 'c'.repeat(64),
+        message: "Account configured",
+        ackPubkey: "0x" + "c".repeat(64),
       };
       expect(response).toEqual(expectedResponse);
 
       // Wire format is snake_case
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/configure',
+        "http://localhost:3000/configure",
         expect.objectContaining({
-          method: 'POST',
+          method: "POST",
           body: JSON.stringify({
-            account_id: '0x' + 'd'.repeat(30),
-            auth: { MidenFalconRpo: { cosigner_commitments: ['0x' + 'e'.repeat(64)] } },
-            initial_state: { data: 'base64data', account_id: '0x' + 'd'.repeat(30) },
+            account_id: "0x" + "d".repeat(30),
+            auth: {
+              MidenFalconRpo: { cosigner_commitments: ["0x" + "e".repeat(64)] },
+            },
+            initial_state: {
+              data: "base64data",
+              account_id: "0x" + "d".repeat(30),
+            },
           }),
           headers: expect.objectContaining({
-            'x-pubkey': mockSigner.publicKey,
-            'x-signature': expect.any(String),
+            "x-pubkey": mockSigner.publicKey,
+            "x-signature": expect.any(String),
           }),
-        })
+        }),
       );
     });
 
-    it('should throw error when no signer configured', async () => {
+    it("should throw error when no signer configured", async () => {
       const request = {
-        accountId: '0x' + 'd'.repeat(30),
+        accountId: "0x" + "d".repeat(30),
         auth: { MidenFalconRpo: { cosigner_commitments: [] } },
-        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+        initialState: { data: "base64data", accountId: "0x" + "d".repeat(30) },
       };
 
-      await expect(client.configure(request)).rejects.toThrow('No signer configured');
+      await expect(client.configure(request)).rejects.toThrow(
+        "No signer configured",
+      );
     });
 
-    it('retries a configure replay rejection with fresh authentication', async () => {
+    it("retries a configure replay rejection with fresh authentication", async () => {
       client.setSigner(mockSigner);
       const signRequest = mockSigner.signRequest;
       if (!signRequest) {
-        throw new Error('test signer must implement signRequest');
+        throw new Error("test signer must implement signRequest");
       }
       const signRequestMock = vi.mocked(signRequest);
       signRequestMock.mockImplementation(
-        (_accountId, timestamp) => `0x${timestamp.toString(16).padStart(128, '0')}`
+        (_accountId, timestamp) =>
+          `0x${timestamp.toString(16).padStart(128, "0")}`,
       );
       mockFetch
         .mockResolvedValueOnce({
           ok: false,
           headers: new Headers(),
           status: 401,
-          statusText: 'Unauthorized',
+          statusText: "Unauthorized",
           text: async () =>
             JSON.stringify({
-              code: 'authentication_replay',
-              message: 'Guardian received this request out of order. Please try again.',
+              code: "authentication_replay",
+              message:
+                "Guardian received this request out of order. Please try again.",
               meta: { retryable: true },
             }),
         })
         .mockResolvedValueOnce({
           ok: true,
-          json: async () => ({ success: true, message: 'Account configured' }),
+          json: async () => ({ success: true, message: "Account configured" }),
         });
 
       await client.configure({
-        accountId: '0x' + 'd'.repeat(30),
+        accountId: "0x" + "d".repeat(30),
         auth: {
           MidenFalconRpo: {
-            cosigner_commitments: ['0x' + 'e'.repeat(64)],
+            cosigner_commitments: ["0x" + "e".repeat(64)],
           },
         },
-        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+        initialState: { data: "base64data", accountId: "0x" + "d".repeat(30) },
       });
 
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const timestamps = mockFetch.mock.calls.map((call) =>
-        Number((call[1].headers as Record<string, string>)['x-timestamp'])
+        Number((call[1].headers as Record<string, string>)["x-timestamp"]),
       );
       expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
       expect(signRequestMock).toHaveBeenCalledTimes(2);
     });
   });
 
-  describe('getCanonicalNonce', () => {
-    it('should fetch the canonical nonce with authentication over the query', async () => {
+  describe("getCanonicalNonce", () => {
+    it("should fetch the canonical nonce with authentication over the query", async () => {
       client.setSigner(mockSigner);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          account_id: '0x' + 'a'.repeat(30),
+          account_id: "0x" + "a".repeat(30),
           nonce: 7,
-          commitment: '0x' + 'b'.repeat(64),
+          commitment: "0x" + "b".repeat(64),
         }),
       });
 
-      const accountId = '0x' + 'a'.repeat(30);
+      const accountId = "0x" + "a".repeat(30);
       const head = await client.getCanonicalNonce(accountId);
 
       expect(head).toEqual({
         accountId,
         nonce: 7,
-        commitment: '0x' + 'b'.repeat(64),
+        commitment: "0x" + "b".repeat(64),
       });
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/state/nonce?account_id='),
+        expect.stringContaining("/state/nonce?account_id="),
         expect.objectContaining({
-          method: 'GET',
+          method: "GET",
           headers: expect.objectContaining({
-            'x-pubkey': mockSigner.publicKey,
-            'x-signature': expect.any(String),
-            'x-timestamp': expect.any(String),
+            "x-pubkey": mockSigner.publicKey,
+            "x-signature": expect.any(String),
+            "x-timestamp": expect.any(String),
           }),
-        })
+        }),
       );
     });
 
-    it('should surface a structured server error', async () => {
+    it("should surface a structured server error", async () => {
       client.setSigner(mockSigner);
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 404,
-        statusText: 'Not Found',
+        statusText: "Not Found",
         text: async () =>
           JSON.stringify({
-            code: 'account_not_found',
-            message: 'Account not found',
+            code: "account_not_found",
+            message: "Account not found",
             meta: { retryable: false },
           }),
       });
 
-      const error = await client.getCanonicalNonce('0x' + 'a'.repeat(30)).catch((e) => e);
+      const error = await client
+        .getCanonicalNonce("0x" + "a".repeat(30))
+        .catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(404);
-      expect(error.code).toBe('account_not_found');
+      expect(error.code).toBe("account_not_found");
     });
 
-    it('should reject a nonce the client cannot represent', async () => {
+    it("should reject a nonce the client cannot represent", async () => {
       client.setSigner(mockSigner);
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          account_id: '0x' + 'a'.repeat(30),
+          account_id: "0x" + "a".repeat(30),
           nonce: 2 ** 53,
-          commitment: '0x' + 'b'.repeat(64),
+          commitment: "0x" + "b".repeat(64),
         }),
       });
 
-      await expect(client.getCanonicalNonce('0x' + 'a'.repeat(30))).rejects.toThrow(
-        'Invalid canonical nonce'
-      );
+      await expect(
+        client.getCanonicalNonce("0x" + "a".repeat(30)),
+      ).rejects.toThrow("Invalid canonical nonce");
     });
   });
 
-  describe('getState', () => {
-    it('uses the existing signed headers with an EIP-712 format selector', async () => {
+  describe("getState", () => {
+    it("uses the existing signed headers with an EIP-712 format selector", async () => {
       const signer: Signer = {
         ...mockSigner,
-        scheme: 'ecdsa',
-        requestAuthFormat: 'eip712',
+        scheme: "ecdsa",
+        requestAuthFormat: "eip712",
       };
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          account_id: '0x' + 'a'.repeat(30),
-          commitment: '0x' + 'b'.repeat(64),
-          state_json: { data: 'state' },
-          created_at: '2024-01-01T00:00:00Z',
-          updated_at: '2024-01-01T00:00:00Z',
+          account_id: "0x" + "a".repeat(30),
+          commitment: "0x" + "b".repeat(64),
+          state_json: { data: "state" },
+          created_at: "2024-01-01T00:00:00Z",
+          updated_at: "2024-01-01T00:00:00Z",
         }),
       });
 
-      await client.getState('0x' + 'a'.repeat(30));
-      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
-      expect(headers['x-pubkey']).toBe(signer.publicKey);
-      expect(headers['x-signature']).toMatch(/^0x/);
-      expect(headers['x-timestamp']).toMatch(/^\d+$/);
-      expect(headers['x-auth-format']).toBe('eip712');
+      await client.getState("0x" + "a".repeat(30));
+      const headers = mockFetch.mock.calls[0][1].headers as Record<
+        string,
+        string
+      >;
+      expect(headers["x-pubkey"]).toBe(signer.publicKey);
+      expect(headers["x-signature"]).toMatch(/^0x/);
+      expect(headers["x-timestamp"]).toMatch(/^\d+$/);
+      expect(headers["x-auth-format"]).toBe("eip712");
     });
 
-    it('should get account state with authentication', async () => {
+    it("should get account state with authentication", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverState = {
-        account_id: '0x' + 'a'.repeat(30),
-        commitment: '0x' + 'b'.repeat(64),
-        state_json: { data: 'base64state' },
-        created_at: '2024-01-01T00:00:00Z',
-        updated_at: '2024-01-02T00:00:00Z',
+        account_id: "0x" + "a".repeat(30),
+        commitment: "0x" + "b".repeat(64),
+        state_json: { data: "base64state" },
+        created_at: "2024-01-01T00:00:00Z",
+        updated_at: "2024-01-02T00:00:00Z",
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -438,49 +471,49 @@ describe('GuardianHttpClient', () => {
         json: async () => serverState,
       });
 
-      const accountId = '0x' + 'a'.repeat(30);
+      const accountId = "0x" + "a".repeat(30);
       const state = await client.getState(accountId);
 
       // Client returns camelCase
       const expectedState: StateObject = {
-        accountId: '0x' + 'a'.repeat(30),
-        commitment: '0x' + 'b'.repeat(64),
-        stateJson: { data: 'base64state' },
-        createdAt: '2024-01-01T00:00:00Z',
-        updatedAt: '2024-01-02T00:00:00Z',
+        accountId: "0x" + "a".repeat(30),
+        commitment: "0x" + "b".repeat(64),
+        stateJson: { data: "base64state" },
+        createdAt: "2024-01-01T00:00:00Z",
+        updatedAt: "2024-01-02T00:00:00Z",
       };
 
       expect(state).toEqual(expectedState);
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/state?'),
+        expect.stringContaining("/state?"),
         expect.objectContaining({
-          method: 'GET',
+          method: "GET",
           headers: expect.objectContaining({
-            'x-pubkey': mockSigner.publicKey,
+            "x-pubkey": mockSigner.publicKey,
           }),
-        })
+        }),
       );
     });
   });
 
-  describe('getDeltaProposals', () => {
-    it('should get delta proposals for account', async () => {
+  describe("getDeltaProposals", () => {
+    it("should get delta proposals for account", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverProposals = [
         {
-          account_id: '0x' + 'a'.repeat(30),
+          account_id: "0x" + "a".repeat(30),
           nonce: 1,
-          prev_commitment: '0x' + 'b'.repeat(64),
+          prev_commitment: "0x" + "b".repeat(64),
           delta_payload: {
-            tx_summary: { data: 'base64summary' },
+            tx_summary: { data: "base64summary" },
             signatures: [],
           },
           status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposer_id: '0x' + 'c'.repeat(64),
+            status: "pending",
+            timestamp: "2024-01-01T00:00:00Z",
+            proposer_id: "0x" + "c".repeat(64),
             cosigner_sigs: [],
           },
         },
@@ -491,26 +524,26 @@ describe('GuardianHttpClient', () => {
         json: async () => ({ proposals: serverProposals }),
       });
 
-      const accountId = '0x' + 'a'.repeat(30);
+      const accountId = "0x" + "a".repeat(30);
       const result = await client.getDeltaProposals(accountId);
 
       // Client returns camelCase
       const expectedProposals: DeltaObject[] = [
         {
-          accountId: '0x' + 'a'.repeat(30),
+          accountId: "0x" + "a".repeat(30),
           nonce: 1,
-          prevCommitment: '0x' + 'b'.repeat(64),
+          prevCommitment: "0x" + "b".repeat(64),
           newCommitment: undefined,
           deltaPayload: {
-            txSummary: { data: 'base64summary' },
+            txSummary: { data: "base64summary" },
             signatures: [],
             metadata: undefined,
           },
           ackSig: undefined,
           status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposerId: '0x' + 'c'.repeat(64),
+            status: "pending",
+            timestamp: "2024-01-01T00:00:00Z",
+            proposerId: "0x" + "c".repeat(64),
             cosignerSigs: [],
           },
         },
@@ -518,53 +551,69 @@ describe('GuardianHttpClient', () => {
 
       expect(result).toEqual(expectedProposals);
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/delta/proposal?'),
-        expect.objectContaining({ method: 'GET' })
+        expect.stringContaining("/delta/proposal?"),
+        expect.objectContaining({ method: "GET" }),
       );
     });
   });
 
-  describe('getDeltaProposal', () => {
-    it('keeps the stored transaction request of a Guardian-executable proposal', async () => {
+  describe("getDeltaProposal", () => {
+    it("keeps the stored transaction request of a Guardian-executable proposal", async () => {
       client.setSigner(mockSigner);
-      const envelope = { format_version: 1, protocol_line: '0.17', checksum: '0x' + 'd'.repeat(64), bytes: 'AQID' };
+      const envelope = {
+        format_version: 1,
+        protocol_line: "0.17",
+        checksum: "0x" + "d".repeat(64),
+        bytes: "AQID",
+      };
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          account_id: '0x' + 'a'.repeat(30),
+          account_id: "0x" + "a".repeat(30),
           nonce: 1,
-          prev_commitment: '0x' + 'b'.repeat(64),
-          delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [], transaction_request: envelope },
+          prev_commitment: "0x" + "b".repeat(64),
+          delta_payload: {
+            tx_summary: { data: "base64summary" },
+            signatures: [],
+            transaction_request: envelope,
+          },
           status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposer_id: '0x' + 'c'.repeat(64),
+            status: "pending",
+            timestamp: "2024-01-01T00:00:00Z",
+            proposer_id: "0x" + "c".repeat(64),
             cosigner_sigs: [],
           },
         }),
       });
 
-      const proposal = await client.getDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'e'.repeat(64));
+      const proposal = await client.getDeltaProposal(
+        "0x" + "a".repeat(30),
+        "0x" + "e".repeat(64),
+      );
 
       expect(proposal.deltaPayload.transactionRequest).toEqual(envelope);
     });
 
-    it('should get a single delta proposal by commitment', async () => {
+    it("should get a single delta proposal by commitment", async () => {
       client.setSigner(mockSigner);
 
       const serverProposal = {
-        account_id: '0x' + 'a'.repeat(30),
+        account_id: "0x" + "a".repeat(30),
         nonce: 1,
-        prev_commitment: '0x' + 'b'.repeat(64),
+        prev_commitment: "0x" + "b".repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: "base64summary" },
           signatures: [],
-          metadata: { proposal_type: 'change_threshold' as const, target_threshold: 2, signer_commitments: [] },
+          metadata: {
+            proposal_type: "change_threshold" as const,
+            target_threshold: 2,
+            signer_commitments: [],
+          },
         },
         status: {
-          status: 'pending' as const,
-          timestamp: '2024-01-01T00:00:00Z',
-          proposer_id: '0x' + 'c'.repeat(64),
+          status: "pending" as const,
+          timestamp: "2024-01-01T00:00:00Z",
+          proposer_id: "0x" + "c".repeat(64),
           cosigner_sigs: [],
         },
       };
@@ -574,86 +623,89 @@ describe('GuardianHttpClient', () => {
         json: async () => serverProposal,
       });
 
-      const accountId = '0x' + 'a'.repeat(30);
-      const commitment = '0x' + 'd'.repeat(64);
+      const accountId = "0x" + "a".repeat(30);
+      const commitment = "0x" + "d".repeat(64);
       const proposal = await client.getDeltaProposal(accountId, commitment);
 
       expect(proposal.accountId).toBe(accountId);
       expect(proposal.nonce).toBe(1);
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/delta/proposal/single?'),
-        expect.objectContaining({ method: 'GET' }),
+        expect.stringContaining("/delta/proposal/single?"),
+        expect.objectContaining({ method: "GET" }),
       );
     });
   });
 
-  describe('pushDeltaProposal', () => {
-    it('lets an EIP-712 signer create an unsigned proposal', async () => {
+  describe("pushDeltaProposal", () => {
+    it("lets an EIP-712 signer create an unsigned proposal", async () => {
       const signer: Signer = {
         ...mockSigner,
-        scheme: 'ecdsa',
-        requestAuthFormat: 'eip712',
+        scheme: "ecdsa",
+        requestAuthFormat: "eip712",
       };
       client.setSigner(signer);
-      const accountId = '0x' + 'a'.repeat(30);
+      const accountId = "0x" + "a".repeat(30);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           delta: {
             account_id: accountId,
             nonce: 1,
-            prev_commitment: '0x' + 'b'.repeat(64),
+            prev_commitment: "0x" + "b".repeat(64),
             delta_payload: {
-              tx_summary: { data: 'base64summary' },
+              tx_summary: { data: "base64summary" },
               signatures: [],
             },
             status: {
-              status: 'pending',
-              timestamp: '2024-01-01T00:00:00Z',
+              status: "pending",
+              timestamp: "2024-01-01T00:00:00Z",
               proposer_id: signer.commitment,
               cosigner_sigs: [],
             },
           },
-          commitment: '0x' + 'd'.repeat(64),
+          commitment: "0x" + "d".repeat(64),
         }),
       });
 
       const result = await client.pushDeltaProposal({
         accountId,
         nonce: 1,
-        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+        deltaPayload: { txSummary: { data: "base64summary" }, signatures: [] },
       });
 
-      expect(result.delta.status).toMatchObject({ proposerId: signer.commitment, cosignerSigs: [] });
+      expect(result.delta.status).toMatchObject({
+        proposerId: signer.commitment,
+        cosignerSigs: [],
+      });
       const request = mockFetch.mock.calls[0][1];
-      expect(request.headers['x-auth-format']).toBe('eip712');
-      expect(request.headers['x-pubkey']).toBe(signer.publicKey);
-      expect(request.headers['x-signature']).toMatch(/^0x/);
+      expect(request.headers["x-auth-format"]).toBe("eip712");
+      expect(request.headers["x-pubkey"]).toBe(signer.publicKey);
+      expect(request.headers["x-signature"]).toMatch(/^0x/);
       expect(JSON.parse(request.body).delta_payload.signatures).toEqual([]);
       expect(signer.signRequest).toHaveBeenCalledOnce();
     });
 
-    it('should push a new delta proposal', async () => {
+    it("should push a new delta proposal", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverResponse = {
         delta: {
-          account_id: '0x' + 'a'.repeat(30),
+          account_id: "0x" + "a".repeat(30),
           nonce: 1,
-          prev_commitment: '0x' + 'b'.repeat(64),
+          prev_commitment: "0x" + "b".repeat(64),
           delta_payload: {
-            tx_summary: { data: 'base64summary' },
+            tx_summary: { data: "base64summary" },
             signatures: [],
           },
           status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposer_id: '0x' + 'c'.repeat(64),
+            status: "pending",
+            timestamp: "2024-01-01T00:00:00Z",
+            proposer_id: "0x" + "c".repeat(64),
             cosigner_sigs: [],
           },
         },
-        commitment: '0x' + 'd'.repeat(64),
+        commitment: "0x" + "d".repeat(64),
       };
 
       mockFetch.mockResolvedValueOnce({
@@ -663,10 +715,10 @@ describe('GuardianHttpClient', () => {
 
       // Client API uses camelCase
       const request = {
-        accountId: '0x' + 'a'.repeat(30),
+        accountId: "0x" + "a".repeat(30),
         nonce: 1,
         deltaPayload: {
-          txSummary: { data: 'base64summary' },
+          txSummary: { data: "base64summary" },
           signatures: [],
         },
       };
@@ -676,264 +728,308 @@ describe('GuardianHttpClient', () => {
       // Client returns camelCase
       const expectedResponse: DeltaProposalResponse = {
         delta: {
-          accountId: '0x' + 'a'.repeat(30),
+          accountId: "0x" + "a".repeat(30),
           nonce: 1,
-          prevCommitment: '0x' + 'b'.repeat(64),
+          prevCommitment: "0x" + "b".repeat(64),
           newCommitment: undefined,
           deltaPayload: {
-            txSummary: { data: 'base64summary' },
+            txSummary: { data: "base64summary" },
             signatures: [],
             metadata: undefined,
           },
           ackSig: undefined,
           status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposerId: '0x' + 'c'.repeat(64),
+            status: "pending",
+            timestamp: "2024-01-01T00:00:00Z",
+            proposerId: "0x" + "c".repeat(64),
             cosignerSigs: [],
           },
         },
-        commitment: '0x' + 'd'.repeat(64),
+        commitment: "0x" + "d".repeat(64),
       };
 
       expect(result).toEqual(expectedResponse);
 
       // Wire format is snake_case
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta/proposal',
+        "http://localhost:3000/delta/proposal",
         expect.objectContaining({
-          method: 'POST',
+          method: "POST",
           body: JSON.stringify({
-            account_id: '0x' + 'a'.repeat(30),
+            account_id: "0x" + "a".repeat(30),
             nonce: 1,
             delta_payload: {
-              tx_summary: { data: 'base64summary' },
+              tx_summary: { data: "base64summary" },
               signatures: [],
             },
           }),
-        })
+        }),
       );
     });
   });
 
-  describe('Guardian execution', () => {
-    const account = '0x' + 'a'.repeat(30);
+  describe("Guardian execution", () => {
+    const account = "0x" + "a".repeat(30);
     const serverExecution = {
       account_id: account,
-      proposal_id: '0xproposal',
-      state: 'pending',
+      proposal_id: "0xproposal",
+      state: "pending",
       newly_accepted: true,
       proposal_exists: true,
       ignored_signatures: 1,
-      updated_at: '2026-09-30T12:00:00Z',
+      updated_at: "2026-09-30T12:00:00Z",
     };
 
-    it('requests execution with a snake_case body and maps the envelope', async () => {
+    it("requests execution with a snake_case body and maps the envelope", async () => {
       client.setSigner(mockSigner);
-      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => serverExecution,
+      });
 
-      const execution = await client.executeDeltaProposal(account, '0xproposal');
+      const execution = await client.executeDeltaProposal(
+        account,
+        "0xproposal",
+      );
 
       expect(execution).toEqual({
         accountId: account,
-        proposalId: '0xproposal',
-        state: 'pending',
+        proposalId: "0xproposal",
+        state: "pending",
         error: null,
         deltaNonce: null,
         newlyAccepted: true,
         proposalExists: true,
         ignoredSignatures: 1,
-        updatedAt: '2026-09-30T12:00:00Z',
+        updatedAt: "2026-09-30T12:00:00Z",
       });
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta/proposal/execution',
+        "http://localhost:3000/delta/proposal/execution",
         expect.objectContaining({
-          method: 'POST',
+          method: "POST",
           body: JSON.stringify({
             account_id: account,
-            proposal_id: '0xproposal',
+            proposal_id: "0xproposal",
             allow_private_note: false,
           }),
-        })
+        }),
       );
     });
 
-    it('sends and signs allow_private_note when the caller opts in', async () => {
+    it("sends and signs allow_private_note when the caller opts in", async () => {
       client.setSigner(mockSigner);
       const signRequest = vi.mocked(mockSigner.signRequest!);
       signRequest.mockClear();
-      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => serverExecution,
+      });
 
-      await client.executeDeltaProposal(account, '0xproposal', { allowPrivateNote: true });
+      await client.executeDeltaProposal(account, "0xproposal", {
+        allowPrivateNote: true,
+      });
 
-      const body = { account_id: account, proposal_id: '0xproposal', allow_private_note: true };
+      const body = {
+        account_id: account,
+        proposal_id: "0xproposal",
+        allow_private_note: true,
+      };
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta/proposal/execution',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify(body) })
+        "http://localhost:3000/delta/proposal/execution",
+        expect.objectContaining({ method: "POST", body: JSON.stringify(body) }),
       );
       const signed = signRequest.mock.calls[0][2];
       expect(signed.toCanonicalJson()).toBe(
-        '{"account_id":"' + account + '","allow_private_note":true,"proposal_id":"0xproposal"}'
+        '{"account_id":"' +
+          account +
+          '","allow_private_note":true,"proposal_id":"0xproposal"}',
       );
     });
 
-    it('reads an execution and the in-flight one by query', async () => {
+    it("reads an execution and the in-flight one by query", async () => {
       client.setSigner(mockSigner);
       mockFetch
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ ...serverExecution, state: 'submitted', delta_nonce: 3 }) })
-        .mockResolvedValueOnce({ ok: true, json: async () => ({ execution: null }) });
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            ...serverExecution,
+            state: "submitted",
+            delta_nonce: 3,
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ execution: null }),
+        });
 
-      const status = await client.getDeltaProposalExecution(account, '0xproposal');
-      expect(status.state).toBe('submitted');
+      const status = await client.getDeltaProposalExecution(
+        account,
+        "0xproposal",
+      );
+      expect(status.state).toBe("submitted");
       expect(status.deltaNonce).toBe(3);
       expect(await client.getCurrentExecution(account)).toBeNull();
 
       expect(mockFetch.mock.calls[0][0]).toBe(
-        `http://localhost:3000/delta/proposal/execution?account_id=${account}&proposal_id=0xproposal`
+        `http://localhost:3000/delta/proposal/execution?account_id=${account}&proposal_id=0xproposal`,
       );
       expect(mockFetch.mock.calls[1][0]).toBe(
-        `http://localhost:3000/delta/execution/current?account_id=${account}`
+        `http://localhost:3000/delta/execution/current?account_id=${account}`,
       );
     });
 
-    it('surfaces a synchronous refusal as a typed code', async () => {
+    it("surfaces a synchronous refusal as a typed code", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_NOT_READY',
-            message: 'This transaction still needs more signatures.',
-            meta: { retryable: false },
-          }),
-      });
-
-      const error = await client.executeDeltaProposal(account, '0xproposal').catch((e) => e);
-      expect(error).toBeInstanceOf(GuardianHttpError);
-      expect(error.code).toBe('proposal_not_ready');
-      expect(error.rawCode).toBe('GUARDIAN_PROPOSAL_NOT_READY');
-    });
-  });
-
-  describe('abandonCandidate', () => {
-    it('should record an abandon intent and map the response to camelCase', async () => {
-      client.setSigner(mockSigner);
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          account_id: '0x' + 'a'.repeat(30),
-          nonce: 7,
-          state: 'pending',
-          abandon_requested_at: '2026-07-14T12:00:00Z',
-        }),
-      });
-
-      const result = await client.abandonCandidate('0x' + 'a'.repeat(30), 7);
-
-      expect(result).toEqual({
-        accountId: '0x' + 'a'.repeat(30),
-        nonce: 7,
-        state: 'pending',
-        abandonRequestedAt: '2026-07-14T12:00:00Z',
-      });
-
-      // Wire format is snake_case
-      expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta/candidate/abandon',
-        expect.objectContaining({
-          method: 'POST',
-          body: JSON.stringify({
-            account_id: '0x' + 'a'.repeat(30),
-            nonce: 7,
-          }),
-        })
-      );
-    });
-
-    it('surfaces 409 GUARDIAN_CANDIDATE_LANDED with a parseable error envelope', async () => {
-      client.setSigner(mockSigner);
-
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        headers: new Headers(),
-        status: 409,
-        statusText: 'Conflict',
-        text: async () =>
-          JSON.stringify({
-            code: 'GUARDIAN_CANDIDATE_LANDED',
-            message: "This transaction already went through, so it can't be abandoned.",
+            code: "GUARDIAN_PROPOSAL_NOT_READY",
+            message: "This transaction still needs more signatures.",
             meta: { retryable: false },
           }),
       });
 
       const error = await client
-        .abandonCandidate('0x' + 'a'.repeat(30), 7)
+        .executeDeltaProposal(account, "0xproposal")
+        .catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.code).toBe("proposal_not_ready");
+      expect(error.rawCode).toBe("GUARDIAN_PROPOSAL_NOT_READY");
+    });
+  });
+
+  describe("abandonCandidate", () => {
+    it("should record an abandon intent and map the response to camelCase", async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: "0x" + "a".repeat(30),
+          nonce: 7,
+          state: "pending",
+          abandon_requested_at: "2026-07-14T12:00:00Z",
+        }),
+      });
+
+      const result = await client.abandonCandidate("0x" + "a".repeat(30), 7);
+
+      expect(result).toEqual({
+        accountId: "0x" + "a".repeat(30),
+        nonce: 7,
+        state: "pending",
+        abandonRequestedAt: "2026-07-14T12:00:00Z",
+      });
+
+      // Wire format is snake_case
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:3000/delta/candidate/abandon",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            account_id: "0x" + "a".repeat(30),
+            nonce: 7,
+          }),
+        }),
+      );
+    });
+
+    it("surfaces 409 GUARDIAN_CANDIDATE_LANDED with a parseable error envelope", async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: "Conflict",
+        text: async () =>
+          JSON.stringify({
+            code: "GUARDIAN_CANDIDATE_LANDED",
+            message:
+              "This transaction already went through, so it can't be abandoned.",
+            meta: { retryable: false },
+          }),
+      });
+
+      const error = await client
+        .abandonCandidate("0x" + "a".repeat(30), 7)
         .catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(409);
-      expect(error.code).toBe('candidate_landed');
-      expect(error.rawCode).toBe('GUARDIAN_CANDIDATE_LANDED');
+      expect(error.code).toBe("candidate_landed");
+      expect(error.rawCode).toBe("GUARDIAN_CANDIDATE_LANDED");
     });
 
-    it('surfaces 404 delta_not_found when no candidate exists at the nonce', async () => {
+    it("surfaces 404 delta_not_found when no candidate exists at the nonce", async () => {
       client.setSigner(mockSigner);
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 404,
-        statusText: 'Not Found',
+        statusText: "Not Found",
         text: async () =>
           JSON.stringify({
-            code: 'delta_not_found',
-            message: "We couldn't find that. It may have been completed or removed.",
+            code: "delta_not_found",
+            message:
+              "We couldn't find that. It may have been completed or removed.",
             meta: { retryable: false },
           }),
       });
 
       const error = await client
-        .abandonCandidate('0x' + 'a'.repeat(30), 7)
+        .abandonCandidate("0x" + "a".repeat(30), 7)
         .catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(404);
-      expect(error.code).toBe('delta_not_found');
+      expect(error.code).toBe("delta_not_found");
     });
   });
 
-  describe('abandonStatus', () => {
+  describe("abandonStatus", () => {
     const serverDelta = (status: object) => ({
-      account_id: '0x' + 'a'.repeat(30),
+      account_id: "0x" + "a".repeat(30),
       nonce: 7,
-      prev_commitment: '0x' + 'b'.repeat(64),
-      delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [] },
+      prev_commitment: "0x" + "b".repeat(64),
+      delta_payload: { tx_summary: { data: "base64summary" }, signatures: [] },
       status,
     });
 
-    it('classifies a still-pending candidate as waiting', async () => {
+    it("classifies a still-pending candidate as waiting", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          serverDelta({ status: 'candidate', timestamp: '2026-07-14T12:00:00Z' }),
+          serverDelta({
+            status: "candidate",
+            timestamp: "2026-07-14T12:00:00Z",
+          }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('waiting');
+      expect(await client.abandonStatus("0x" + "a".repeat(30), 7)).toBe(
+        "waiting",
+      );
     });
 
-    it('classifies a canonicalized delta as landed', async () => {
+    it("classifies a canonicalized delta as landed", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          serverDelta({ status: 'canonical', timestamp: '2026-07-14T12:00:00Z' }),
+          serverDelta({
+            status: "canonical",
+            timestamp: "2026-07-14T12:00:00Z",
+          }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
+      expect(await client.abandonStatus("0x" + "a".repeat(30), 7)).toBe(
+        "landed",
+      );
     });
 
-    it('classifies a retained delta as retained, not abandoned (issue #345)', async () => {
+    it("classifies a retained delta as retained, not abandoned (issue #345)", async () => {
       // The Guardian gave up verifying and released the account, but the
       // on-chain outcome is still uncertain: 'retained' means "unlocked
       // but unresolved" — reporting it as 'abandoned' would wrongly
@@ -943,75 +1039,98 @@ describe('GuardianHttpClient', () => {
         ok: true,
         json: async () =>
           serverDelta({
-            status: 'retained',
-            timestamp: '2026-07-14T12:00:00Z',
-            reason: 'retry_exhausted',
+            status: "retained",
+            timestamp: "2026-07-14T12:00:00Z",
+            reason: "retry_exhausted",
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('retained');
+      expect(await client.abandonStatus("0x" + "a".repeat(30), 7)).toBe(
+        "retained",
+      );
     });
 
-    it('classifies a client-abandoned discard as abandoned', async () => {
+    it("classifies a client-abandoned discard as abandoned", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () =>
           serverDelta({
-            status: 'discarded',
-            timestamp: '2026-07-14T12:00:00Z',
-            reason: 'client_abandoned',
+            status: "discarded",
+            timestamp: "2026-07-14T12:00:00Z",
+            reason: "client_abandoned",
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('abandoned');
+      expect(await client.abandonStatus("0x" + "a".repeat(30), 7)).toBe(
+        "abandoned",
+      );
     });
 
-    it('classifies a reasonless discard and a missing delta as unexpected', async () => {
+    it("classifies a reasonless discard and a missing delta as unexpected", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () =>
-          serverDelta({ status: 'discarded', timestamp: '2026-07-14T12:00:00Z' }),
+          serverDelta({
+            status: "discarded",
+            timestamp: "2026-07-14T12:00:00Z",
+          }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
+      expect(await client.abandonStatus("0x" + "a".repeat(30), 7)).toBe(
+        "unexpected",
+      );
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 404,
-        statusText: 'Not Found',
+        statusText: "Not Found",
         text: async () =>
           JSON.stringify({
-            code: 'delta_not_found',
-            message: "We couldn't find that. It may have been completed or removed.",
+            code: "delta_not_found",
+            message:
+              "We couldn't find that. It may have been completed or removed.",
             meta: { retryable: false },
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
+      expect(await client.abandonStatus("0x" + "a".repeat(30), 7)).toBe(
+        "unexpected",
+      );
     });
   });
 
-  describe('signDeltaProposal', () => {
-    it('should sign a delta proposal', async () => {
+  describe("signDeltaProposal", () => {
+    it("should sign a delta proposal", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverDelta = {
-        account_id: '0x' + 'a'.repeat(30),
+        account_id: "0x" + "a".repeat(30),
         nonce: 1,
-        prev_commitment: '0x' + 'b'.repeat(64),
+        prev_commitment: "0x" + "b".repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
-          signatures: [{ signer_id: '0x' + 'c'.repeat(64), signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) } }],
+          tx_summary: { data: "base64summary" },
+          signatures: [
+            {
+              signer_id: "0x" + "c".repeat(64),
+              signature: {
+                scheme: "falcon",
+                signature: "0x" + "d".repeat(128),
+              },
+            },
+          ],
         },
         status: {
-          status: 'pending',
-          timestamp: '2024-01-01T00:00:00Z',
-          proposer_id: '0x' + 'c'.repeat(64),
+          status: "pending",
+          timestamp: "2024-01-01T00:00:00Z",
+          proposer_id: "0x" + "c".repeat(64),
           cosigner_sigs: [
             {
-              signer_id: '0x' + 'c'.repeat(64),
-              signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) },
-              timestamp: '2024-01-01T00:00:00Z',
+              signer_id: "0x" + "c".repeat(64),
+              signature: {
+                scheme: "falcon",
+                signature: "0x" + "d".repeat(128),
+              },
+              timestamp: "2024-01-01T00:00:00Z",
             },
           ],
         },
@@ -1024,34 +1143,48 @@ describe('GuardianHttpClient', () => {
 
       // Client API uses camelCase
       const request = {
-        accountId: '0x' + 'a'.repeat(30),
-        commitment: '0x' + 'e'.repeat(64),
-        signature: { scheme: 'falcon' as const, signature: '0x' + 'd'.repeat(128) },
+        accountId: "0x" + "a".repeat(30),
+        commitment: "0x" + "e".repeat(64),
+        signature: {
+          scheme: "falcon" as const,
+          signature: "0x" + "d".repeat(128),
+        },
       };
 
       const result = await client.signDeltaProposal(request);
 
       // Client returns camelCase
       const expectedDelta: DeltaObject = {
-        accountId: '0x' + 'a'.repeat(30),
+        accountId: "0x" + "a".repeat(30),
         nonce: 1,
-        prevCommitment: '0x' + 'b'.repeat(64),
+        prevCommitment: "0x" + "b".repeat(64),
         newCommitment: undefined,
         deltaPayload: {
-          txSummary: { data: 'base64summary' },
-          signatures: [{ signerId: '0x' + 'c'.repeat(64), signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) } }],
+          txSummary: { data: "base64summary" },
+          signatures: [
+            {
+              signerId: "0x" + "c".repeat(64),
+              signature: {
+                scheme: "falcon",
+                signature: "0x" + "d".repeat(128),
+              },
+            },
+          ],
           metadata: undefined,
         },
         ackSig: undefined,
         status: {
-          status: 'pending',
-          timestamp: '2024-01-01T00:00:00Z',
-          proposerId: '0x' + 'c'.repeat(64),
+          status: "pending",
+          timestamp: "2024-01-01T00:00:00Z",
+          proposerId: "0x" + "c".repeat(64),
           cosignerSigs: [
             {
-              signerId: '0x' + 'c'.repeat(64),
-              signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) },
-              timestamp: '2024-01-01T00:00:00Z',
+              signerId: "0x" + "c".repeat(64),
+              signature: {
+                scheme: "falcon",
+                signature: "0x" + "d".repeat(128),
+              },
+              timestamp: "2024-01-01T00:00:00Z",
             },
           ],
         },
@@ -1061,34 +1194,34 @@ describe('GuardianHttpClient', () => {
 
       // Wire format is snake_case
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta/proposal',
+        "http://localhost:3000/delta/proposal",
         expect.objectContaining({
-          method: 'PUT',
+          method: "PUT",
           body: JSON.stringify({
-            account_id: '0x' + 'a'.repeat(30),
-            commitment: '0x' + 'e'.repeat(64),
-            signature: { scheme: 'falcon', signature: '0x' + 'd'.repeat(128) },
+            account_id: "0x" + "a".repeat(30),
+            commitment: "0x" + "e".repeat(64),
+            signature: { scheme: "falcon", signature: "0x" + "d".repeat(128) },
           }),
-        })
+        }),
       );
     });
   });
 
-  describe('pushDelta', () => {
-    it('should push a delta for execution and return ack signature', async () => {
+  describe("pushDelta", () => {
+    it("should push a delta for execution and return ack signature", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case - execution delta response has raw delta_payload
       const serverResponse = {
-        account_id: '0x' + 'a'.repeat(30),
+        account_id: "0x" + "a".repeat(30),
         nonce: 1,
-        prev_commitment: '0x' + 'b'.repeat(64),
-        new_commitment: '0x' + 'd'.repeat(64),
-        delta_payload: { data: 'base64summary' },
-        ack_sig: '0x' + 'f'.repeat(128),
+        prev_commitment: "0x" + "b".repeat(64),
+        new_commitment: "0x" + "d".repeat(64),
+        delta_payload: { data: "base64summary" },
+        ack_sig: "0x" + "f".repeat(128),
         status: {
-          status: 'candidate',
-          timestamp: '2024-01-01T00:00:00Z',
+          status: "candidate",
+          timestamp: "2024-01-01T00:00:00Z",
         },
       };
 
@@ -1099,14 +1232,14 @@ describe('GuardianHttpClient', () => {
 
       // Client API uses camelCase
       const executionDelta = {
-        accountId: '0x' + 'a'.repeat(30),
+        accountId: "0x" + "a".repeat(30),
         nonce: 1,
-        prevCommitment: '0x' + 'b'.repeat(64),
-        deltaPayload: { data: 'base64summary' },
+        prevCommitment: "0x" + "b".repeat(64),
+        deltaPayload: { data: "base64summary" },
         status: {
-          status: 'pending' as const,
-          timestamp: '2024-01-01T00:00:00Z',
-          proposerId: '0x' + 'c'.repeat(64),
+          status: "pending" as const,
+          timestamp: "2024-01-01T00:00:00Z",
+          proposerId: "0x" + "c".repeat(64),
           cosignerSigs: [],
         },
       };
@@ -1114,36 +1247,36 @@ describe('GuardianHttpClient', () => {
       const result = await client.pushDelta(executionDelta);
 
       // PushDeltaResponse only includes essential fields for execution
-      expect(result.accountId).toBe('0x' + 'a'.repeat(30));
+      expect(result.accountId).toBe("0x" + "a".repeat(30));
       expect(result.nonce).toBe(1);
-      expect(result.newCommitment).toBe('0x' + 'd'.repeat(64));
-      expect(result.ackSig).toBe('0x' + 'f'.repeat(128));
+      expect(result.newCommitment).toBe("0x" + "d".repeat(64));
+      expect(result.ackSig).toBe("0x" + "f".repeat(128));
 
       expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta',
+        "http://localhost:3000/delta",
         expect.objectContaining({
-          method: 'POST',
-        })
+          method: "POST",
+        }),
       );
     });
   });
 
-  describe('getDelta', () => {
-    it('should get a specific delta by nonce', async () => {
+  describe("getDelta", () => {
+    it("should get a specific delta by nonce", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverDelta = {
-        account_id: '0x' + 'a'.repeat(30),
+        account_id: "0x" + "a".repeat(30),
         nonce: 5,
-        prev_commitment: '0x' + 'b'.repeat(64),
+        prev_commitment: "0x" + "b".repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64summary' },
+          tx_summary: { data: "base64summary" },
           signatures: [],
         },
         status: {
-          status: 'canonical',
-          timestamp: '2024-01-01T00:00:00Z',
+          status: "canonical",
+          timestamp: "2024-01-01T00:00:00Z",
         },
       };
 
@@ -1152,37 +1285,37 @@ describe('GuardianHttpClient', () => {
         json: async () => serverDelta,
       });
 
-      const result = await client.getDelta('0x' + 'a'.repeat(30), 5);
+      const result = await client.getDelta("0x" + "a".repeat(30), 5);
 
       // Client returns camelCase
-      expect(result.accountId).toBe('0x' + 'a'.repeat(30));
+      expect(result.accountId).toBe("0x" + "a".repeat(30));
       expect(result.nonce).toBe(5);
-      expect(result.prevCommitment).toBe('0x' + 'b'.repeat(64));
-      expect(result.status.status).toBe('canonical');
+      expect(result.prevCommitment).toBe("0x" + "b".repeat(64));
+      expect(result.status.status).toBe("canonical");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/delta?'),
-        expect.objectContaining({ method: 'GET' })
+        expect.stringContaining("/delta?"),
+        expect.objectContaining({ method: "GET" }),
       );
     });
   });
 
-  describe('getDeltaSince', () => {
-    it('should get merged delta since a nonce', async () => {
+  describe("getDeltaSince", () => {
+    it("should get merged delta since a nonce", async () => {
       client.setSigner(mockSigner);
 
       // Server returns snake_case
       const serverDelta = {
-        account_id: '0x' + 'a'.repeat(30),
+        account_id: "0x" + "a".repeat(30),
         nonce: 10,
-        prev_commitment: '0x' + 'b'.repeat(64),
+        prev_commitment: "0x" + "b".repeat(64),
         delta_payload: {
-          tx_summary: { data: 'base64mergeddata' },
+          tx_summary: { data: "base64mergeddata" },
           signatures: [],
         },
         status: {
-          status: 'canonical',
-          timestamp: '2024-01-01T00:00:00Z',
+          status: "canonical",
+          timestamp: "2024-01-01T00:00:00Z",
         },
       };
 
@@ -1191,60 +1324,66 @@ describe('GuardianHttpClient', () => {
         json: async () => serverDelta,
       });
 
-      const result = await client.getDeltaSince('0x' + 'a'.repeat(30), 5);
+      const result = await client.getDeltaSince("0x" + "a".repeat(30), 5);
 
       // Client returns camelCase
-      expect(result.accountId).toBe('0x' + 'a'.repeat(30));
+      expect(result.accountId).toBe("0x" + "a".repeat(30));
       expect(result.nonce).toBe(10);
-      expect(result.deltaPayload.txSummary.data).toBe('base64mergeddata');
+      expect(result.deltaPayload.txSummary.data).toBe("base64mergeddata");
 
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('/delta/since?'),
-        expect.objectContaining({ method: 'GET' })
+        expect.stringContaining("/delta/since?"),
+        expect.objectContaining({ method: "GET" }),
       );
     });
   });
 
   // --- getDeltaHistory (issue #413) -----
 
-  describe('getDeltaHistory', () => {
-    const accountId = '0x' + 'a'.repeat(30);
+  describe("getDeltaHistory", () => {
+    const accountId = "0x" + "a".repeat(30);
 
     const serverPage = {
       items: [
         {
           nonce: 5,
-          status: 'canonical',
-          timestamp: '2026-08-01T12:00:05Z',
-          new_commitment: '0x' + 'c'.repeat(64),
+          status: "canonical",
+          timestamp: "2026-08-01T12:00:05Z",
+          new_commitment: "0x" + "c".repeat(64),
           input_notes: [],
           output_notes: [
             {
-              note_id: '0x' + 'd'.repeat(64),
-              tag: 'p2id',
-              note_type: 'public',
+              note_id: "0x" + "d".repeat(64),
+              tag: "p2id",
+              note_type: "public",
               assets: [
-                { asset_id: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' },
+                {
+                  asset_id: "0x" + "e".repeat(30),
+                  kind: "fungible",
+                  amount: "100",
+                },
               ],
               sender: accountId,
-              recipient: '0x' + 'f'.repeat(30),
+              recipient: "0x" + "f".repeat(30),
             },
           ],
         },
         {
           nonce: 4,
-          status: 'canonical',
-          timestamp: '2026-08-01T12:00:04Z',
+          status: "canonical",
+          timestamp: "2026-08-01T12:00:04Z",
           new_commitment: null,
           input_notes: [],
           output_notes: [],
-          decode_warnings: [{ section: 'tx_summary', reason: 'malformed_tx_summary' }],
+          decode_warnings: [
+            { section: "tx_summary", reason: "malformed_tx_summary" },
+          ],
         },
       ],
-      next_cursor: 'opaque-cursor',
+      next_cursor: "opaque-cursor",
     };
 
-    it('returns a camelCase page and maps notes and warnings', async () => {
+    it("returns a camelCase page and maps notes and warnings", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -1253,37 +1392,39 @@ describe('GuardianHttpClient', () => {
 
       const result = await client.getDeltaHistory(accountId, { limit: 2 });
 
-      expect(result.nextCursor).toBe('opaque-cursor');
+      expect(result.nextCursor).toBe("opaque-cursor");
       expect(result.entries).toHaveLength(2);
       expect(result.entries[0].nonce).toBe(5);
-      expect(result.entries[0].newCommitment).toBe('0x' + 'c'.repeat(64));
+      expect(result.entries[0].newCommitment).toBe("0x" + "c".repeat(64));
       expect(result.entries[0].decodeWarnings).toEqual([]);
-      expect(result.entries[0].status).toBe('canonical');
+      expect(result.entries[0].status).toBe("canonical");
       expect(result.entries[0].outputNotes[0]).toEqual({
-        noteId: '0x' + 'd'.repeat(64),
-        tag: 'p2id',
-        noteType: 'public',
-        assets: [{ assetId: '0x' + 'e'.repeat(30), kind: 'fungible', amount: '100' }],
+        noteId: "0x" + "d".repeat(64),
+        tag: "p2id",
+        noteType: "public",
+        assets: [
+          { assetId: "0x" + "e".repeat(30), kind: "fungible", amount: "100" },
+        ],
         sender: accountId,
-        recipient: '0x' + 'f'.repeat(30),
+        recipient: "0x" + "f".repeat(30),
       });
       expect(result.entries[1].newCommitment).toBeUndefined();
       expect(result.entries[1].decodeWarnings).toEqual([
-        { section: 'tx_summary', reason: 'malformed_tx_summary' },
+        { section: "tx_summary", reason: "malformed_tx_summary" },
       ]);
 
       expect(mockFetch).toHaveBeenCalledWith(
         `http://localhost:3000/delta/history?account_id=${accountId}&limit=2`,
         expect.objectContaining({
-          method: 'GET',
+          method: "GET",
           headers: expect.objectContaining({
-            'x-pubkey': mockSigner.publicKey,
+            "x-pubkey": mockSigner.publicKey,
           }),
-        })
+        }),
       );
     });
 
-    it('signs the same key set it sends: omitted options stay omitted', async () => {
+    it("signs the same key set it sends: omitted options stay omitted", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -1296,7 +1437,7 @@ describe('GuardianHttpClient', () => {
       expect(result.nextCursor).toBeUndefined();
       expect(mockFetch).toHaveBeenCalledWith(
         `http://localhost:3000/delta/history?account_id=${accountId}`,
-        expect.anything()
+        expect.anything(),
       );
       // The signed payload must byte-match the server's canonical JSON
       // of its query struct: only account_id when limit/cursor are
@@ -1304,76 +1445,85 @@ describe('GuardianHttpClient', () => {
       const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
       const lastCall = signRequest.mock.calls.at(-1);
       if (lastCall === undefined) {
-        throw new Error('Expected signRequest to be called');
+        throw new Error("Expected signRequest to be called");
       }
       const authPayload = lastCall[2];
-      expect(authPayload.toCanonicalJson()).toBe(JSON.stringify({ account_id: accountId }));
+      expect(authPayload.toCanonicalJson()).toBe(
+        JSON.stringify({ account_id: accountId }),
+      );
     });
 
-    it('passes the cursor through query and signed payload', async () => {
+    it("passes the cursor through query and signed payload", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ items: [], next_cursor: null }),
       });
 
-      await client.getDeltaHistory(accountId, { limit: 10, cursor: 'abc123' });
+      await client.getDeltaHistory(accountId, { limit: 10, cursor: "abc123" });
 
       expect(mockFetch).toHaveBeenCalledWith(
         `http://localhost:3000/delta/history?account_id=${accountId}&limit=10&cursor=abc123`,
-        expect.anything()
+        expect.anything(),
       );
       const signRequest = mockSigner.signRequest as ReturnType<typeof vi.fn>;
       const lastCall = signRequest.mock.calls.at(-1);
       if (lastCall === undefined) {
-        throw new Error('Expected signRequest to be called');
+        throw new Error("Expected signRequest to be called");
       }
       const authPayload = lastCall[2];
       expect(authPayload.toCanonicalJson()).toBe(
-        JSON.stringify({ account_id: accountId, cursor: 'abc123', limit: '10' })
+        JSON.stringify({
+          account_id: accountId,
+          cursor: "abc123",
+          limit: "10",
+        }),
       );
     });
   });
 
   // --- lookupAccountByKeyCommitment -----
 
-  describe('lookupAccountByKeyCommitment', () => {
-    const keyCommitmentHex = '0x' + 'aa'.repeat(32);
+  describe("lookupAccountByKeyCommitment", () => {
+    const keyCommitmentHex = "0x" + "aa".repeat(32);
 
     function makeLookupSigner() {
       return {
         commitment: keyCommitmentHex,
-        publicKey: '0x' + 'bb'.repeat(897),
-        scheme: 'falcon' as const,
+        publicKey: "0x" + "bb".repeat(897),
+        scheme: "falcon" as const,
         signAccountIdWithTimestamp: vi.fn(),
         signRequest: vi.fn(),
         signCommitment: vi.fn(),
-        signLookupMessage: vi.fn().mockResolvedValue('0x' + 'cc'.repeat(762)),
+        signLookupMessage: vi.fn().mockResolvedValue("0x" + "cc".repeat(762)),
       };
     }
 
-    it('returns the parsed accounts list on a happy path', async () => {
+    it("returns the parsed accounts list on a happy path", async () => {
       const signer = makeLookupSigner();
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          accounts: [{ account_id: '0x7bfb0f38b0fafa103f86a805594170' }],
+          accounts: [{ account_id: "0x7bfb0f38b0fafa103f86a805594170" }],
         }),
       });
 
-      const result = await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+      const result =
+        await client.lookupAccountByKeyCommitment(keyCommitmentHex);
 
       expect(result.accounts).toHaveLength(1);
-      expect(result.accounts[0].accountId).toBe('0x7bfb0f38b0fafa103f86a805594170');
+      expect(result.accounts[0].accountId).toBe(
+        "0x7bfb0f38b0fafa103f86a805594170",
+      );
       expect(signer.signLookupMessage).toHaveBeenCalledTimes(1);
       expect(signer.signLookupMessage).toHaveBeenCalledWith(
         keyCommitmentHex,
-        expect.any(Number)
+        expect.any(Number),
       );
     });
 
-    it('treats an empty list as a successful response, not an error', async () => {
+    it("treats an empty list as a successful response, not an error", async () => {
       const signer = makeLookupSigner();
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
@@ -1381,28 +1531,30 @@ describe('GuardianHttpClient', () => {
         json: async () => ({ accounts: [] }),
       });
 
-      const result = await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+      const result =
+        await client.lookupAccountByKeyCommitment(keyCommitmentHex);
       expect(result.accounts).toEqual([]);
     });
 
-    it('returns multi-match results in order', async () => {
+    it("returns multi-match results in order", async () => {
       const signer = makeLookupSigner();
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          accounts: [
-            { account_id: '0xaaa1' },
-            { account_id: '0xbbb2' },
-          ],
+          accounts: [{ account_id: "0xaaa1" }, { account_id: "0xbbb2" }],
         }),
       });
 
-      const result = await client.lookupAccountByKeyCommitment(keyCommitmentHex);
-      expect(result.accounts.map((a) => a.accountId)).toEqual(['0xaaa1', '0xbbb2']);
+      const result =
+        await client.lookupAccountByKeyCommitment(keyCommitmentHex);
+      expect(result.accounts.map((a) => a.accountId)).toEqual([
+        "0xaaa1",
+        "0xbbb2",
+      ]);
     });
 
-    it('attaches x-pubkey, x-signature, x-timestamp headers and uses /state/lookup with the query string', async () => {
+    it("attaches x-pubkey, x-signature, x-timestamp headers and uses /state/lookup with the query string", async () => {
       const signer = makeLookupSigner();
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
@@ -1415,51 +1567,59 @@ describe('GuardianHttpClient', () => {
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const [url, init] = mockFetch.mock.calls[0];
       expect(url).toBe(
-        `http://localhost:3000/state/lookup?key_commitment=${encodeURIComponent(keyCommitmentHex)}`
+        `http://localhost:3000/state/lookup?key_commitment=${encodeURIComponent(keyCommitmentHex)}`,
       );
-      expect(init.method).toBe('GET');
-      expect(init.headers['x-pubkey']).toBe(signer.publicKey);
-      expect(init.headers['x-signature']).toMatch(/^0x/);
-      expect(init.headers['x-timestamp']).toMatch(/^\d+$/);
+      expect(init.method).toBe("GET");
+      expect(init.headers["x-pubkey"]).toBe(signer.publicKey);
+      expect(init.headers["x-signature"]).toMatch(/^0x/);
+      expect(init.headers["x-timestamp"]).toMatch(/^\d+$/);
     });
 
-    it('sends the EIP-712 format header for typed lookup signers', async () => {
-      const signer = { ...makeLookupSigner(), requestAuthFormat: 'eip712' as const };
+    it("sends the EIP-712 format header for typed lookup signers", async () => {
+      const signer = {
+        ...makeLookupSigner(),
+        requestAuthFormat: "eip712" as const,
+      };
       client.setSigner(signer);
-      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ accounts: [] }) });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ accounts: [] }),
+      });
 
       await client.lookupAccountByKeyCommitment(keyCommitmentHex);
 
-      expect(mockFetch.mock.calls[0][1].headers['x-auth-format']).toBe('eip712');
+      expect(mockFetch.mock.calls[0][1].headers["x-auth-format"]).toBe(
+        "eip712",
+      );
     });
 
-    it('throws a clear error when no signer is configured', async () => {
+    it("throws a clear error when no signer is configured", async () => {
       // No setSigner() call.
       await expect(
-        client.lookupAccountByKeyCommitment(keyCommitmentHex)
+        client.lookupAccountByKeyCommitment(keyCommitmentHex),
       ).rejects.toThrow(/No signer configured/);
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('throws a clear error when the signer does not implement signLookupMessage', async () => {
+    it("throws a clear error when the signer does not implement signLookupMessage", async () => {
       // Default mockSigner from the outer describe does NOT implement
       // signLookupMessage — the HTTP client must reject up front rather than
       // sending a request the server will reject.
       client.setSigner(mockSigner);
       await expect(
-        client.lookupAccountByKeyCommitment(keyCommitmentHex)
+        client.lookupAccountByKeyCommitment(keyCommitmentHex),
       ).rejects.toThrow(/signLookupMessage/);
       expect(mockFetch).not.toHaveBeenCalled();
     });
 
-    it('propagates HTTP errors from the server through GuardianHttpError', async () => {
+    it("propagates HTTP errors from the server through GuardianHttpError", async () => {
       const signer = makeLookupSigner();
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 401,
-        statusText: 'Unauthorized',
+        statusText: "Unauthorized",
         text: async () => '{"code":"authentication_failed","error":"..."}',
       });
 
@@ -1470,7 +1630,7 @@ describe('GuardianHttpClient', () => {
       expect(err.status).toBe(401);
     });
 
-    it('rejects malformed server responses (missing accounts array)', async () => {
+    it("rejects malformed server responses (missing accounts array)", async () => {
       const signer = makeLookupSigner();
       client.setSigner(signer);
       mockFetch.mockResolvedValueOnce({
@@ -1479,48 +1639,54 @@ describe('GuardianHttpClient', () => {
       });
 
       await expect(
-        client.lookupAccountByKeyCommitment(keyCommitmentHex)
+        client.lookupAccountByKeyCommitment(keyCommitmentHex),
       ).rejects.toThrow(/Malformed/);
     });
   });
 });
 
-describe('GuardianHttpError', () => {
-  it('should create error with status, statusText, and body', () => {
-    const error = new GuardianHttpError(404, 'Not Found', 'Resource not found');
+describe("GuardianHttpError", () => {
+  it("should create error with status, statusText, and body", () => {
+    const error = new GuardianHttpError(404, "Not Found", "Resource not found");
 
     expect(error).toBeInstanceOf(Error);
     expect(error).toBeInstanceOf(GuardianHttpError);
     expect(error.status).toBe(404);
-    expect(error.statusText).toBe('Not Found');
-    expect(error.body).toBe('Resource not found');
-    expect(error.message).toContain('404');
-    expect(error.message).toContain('Not Found');
-    expect(error.name).toBe('GuardianHttpError');
+    expect(error.statusText).toBe("Not Found");
+    expect(error.body).toBe("Resource not found");
+    expect(error.message).toContain("404");
+    expect(error.message).toContain("Not Found");
+    expect(error.name).toBe("GuardianHttpError");
   });
 
-  it('parses a { code, message, meta } body into structured accessors (feature 009)', () => {
+  it("parses a { code, message, meta } body into structured accessors (feature 009)", () => {
     const body = JSON.stringify({
-      code: 'rate_limit_exceeded',
-      message: 'Too many requests — please try again shortly.',
+      code: "rate_limit_exceeded",
+      message: "Too many requests — please try again shortly.",
       meta: { retryable: true, retry_after_secs: 30 },
     });
-    const error = new GuardianHttpError(429, 'Too Many Requests', body);
-    expect(error.code).toBe('rate_limit_exceeded');
-    expect(error.userMessage).toBe('Too many requests — please try again shortly.');
+    const error = new GuardianHttpError(429, "Too Many Requests", body);
+    expect(error.code).toBe("rate_limit_exceeded");
+    expect(error.userMessage).toBe(
+      "Too many requests — please try again shortly.",
+    );
     expect(error.meta?.retryable).toBe(true);
     expect(error.meta?.retryAfterSecs).toBe(30); // snake_case → camelCase
   });
 
-  it('leaves accessors undefined for a non-JSON / non-conforming body', () => {
-    const plain = new GuardianHttpError(502, 'Bad Gateway', 'upstream exploded');
+  it("leaves accessors undefined for a non-JSON / non-conforming body", () => {
+    const plain = new GuardianHttpError(
+      502,
+      "Bad Gateway",
+      "upstream exploded",
+    );
     expect(plain.code).toBeNull();
     expect(plain.releasedAt).toBeNull();
     expect(plain.userMessage).toBeUndefined();
     expect(plain.meta).toBeUndefined();
   });
 
-  describe('retry classification (shared fixture)', () => {
+  describe("retry classification (shared fixture)", () => {
     interface FixtureCase {
       name: string;
       body: Record<string, unknown> | null;
@@ -1530,194 +1696,224 @@ describe('GuardianHttpError', () => {
 
     const fixture = JSON.parse(
       readFileSync(
-        new URL('../../../fixtures/guardian-client/rate-limit-policy.json', import.meta.url),
-        'utf-8'
-      )
+        new URL(
+          "../../../fixtures/guardian-client/rate-limit-policy.json",
+          import.meta.url,
+        ),
+        "utf-8",
+      ),
     ) as { cases: FixtureCase[] };
 
-    it.each(fixture.cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
-      const body = c.body === null ? 'plain failure' : JSON.stringify(c.body);
-      const error = new GuardianHttpError(
-        c.http.status,
-        'error',
-        body,
-        c.http.retryAfterHeader ?? null
-      );
+    it.each(fixture.cases.map((c) => [c.name, c] as const))(
+      "%s",
+      (_name, c) => {
+        const body = c.body === null ? "plain failure" : JSON.stringify(c.body);
+        const error = new GuardianHttpError(
+          c.http.status,
+          "error",
+          body,
+          c.http.retryAfterHeader ?? null,
+        );
 
-      expect(error.isRetryable()).toBe(c.expected.retryable);
-      expect(error.retryAfterSecs()).toBe(c.expected.retryAfterSecs ?? undefined);
-    });
+        expect(error.isRetryable()).toBe(c.expected.retryable);
+        expect(error.retryAfterSecs()).toBe(
+          c.expected.retryAfterSecs ?? undefined,
+        );
+      },
+    );
   });
 
-  describe('error envelope contract (account-paused path)', () => {
+  describe("error envelope contract (account-paused path)", () => {
     let client: GuardianHttpClient;
     beforeEach(() => {
-      client = new GuardianHttpClient('http://localhost:3000');
+      client = new GuardianHttpClient("http://localhost:3000");
       mockFetch.mockReset();
     });
 
-    it('surfaces 403 signature_scheme_not_allowed with meta.scheme and meta.allowedSchemes', async () => {
+    it("surfaces 403 signature_scheme_not_allowed with meta.scheme and meta.allowedSchemes", async () => {
       client.setSigner(mockSigner);
 
       const envelope = {
-        code: 'signature_scheme_not_allowed',
-        message: "This Guardian doesn't accept new accounts with that signature scheme.",
-        meta: { retryable: false, scheme: 'falcon', allowed_schemes: ['ecdsa'] },
+        code: "signature_scheme_not_allowed",
+        message:
+          "This Guardian doesn't accept new accounts with that signature scheme.",
+        meta: {
+          retryable: false,
+          scheme: "falcon",
+          allowed_schemes: ["ecdsa"],
+        },
       };
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 403,
-        statusText: 'Forbidden',
+        statusText: "Forbidden",
         text: async () => JSON.stringify(envelope),
       });
 
       const error = await client
         .pushDeltaProposal({
-          accountId: '0x' + 'a'.repeat(30),
+          accountId: "0x" + "a".repeat(30),
           nonce: 1,
-          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+          deltaPayload: { txSummary: { data: "" }, signatures: [] },
         })
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
       const e = error as GuardianHttpError;
       expect(e.status).toBe(403);
-      expect(e.code).toBe('signature_scheme_not_allowed');
+      expect(e.code).toBe("signature_scheme_not_allowed");
       expect(e.meta?.retryable).toBe(false);
-      expect(e.meta?.scheme).toBe('falcon');
-      expect(e.meta?.allowedSchemes).toEqual(['ecdsa']);
+      expect(e.meta?.scheme).toBe("falcon");
+      expect(e.meta?.allowedSchemes).toEqual(["ecdsa"]);
     });
 
-    it('surfaces the blocking proposal of an execution conflict as meta.blockingProposalId', async () => {
+    it("surfaces the blocking proposal of an execution conflict as meta.blockingProposalId", async () => {
       client.setSigner(mockSigner);
-      const blocking = '0x' + 'b'.repeat(64);
+      const blocking = "0x" + "b".repeat(64);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_EXECUTION_CONFLICT',
-            message: 'Another proposal is executing on this account.',
+            code: "GUARDIAN_EXECUTION_CONFLICT",
+            message: "Another proposal is executing on this account.",
             meta: { retryable: false, blocking_proposal_id: blocking },
           }),
       });
 
       const error = await client
-        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .executeDeltaProposal("0x" + "a".repeat(30), "0x" + "c".repeat(64))
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
       const e = error as GuardianHttpError;
-      expect(e.code).toBe('execution_conflict');
+      expect(e.code).toBe("execution_conflict");
       expect(e.isRetryable()).toBe(false);
       expect(e.meta?.blockingProposalId).toBe(blocking);
     });
 
-    it('surfaces a refused switch_guardian execution as proposal_executes_locally with meta.proposalType', async () => {
+    it("surfaces a refused switch_guardian execution as proposal_executes_locally with meta.proposalType", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
-            message: 'A guardian switch is executed by the wallet that finishes the handoff.',
-            meta: { retryable: false, proposal_type: 'switch_guardian', reason: 'switch_guardian' },
+            code: "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+            message:
+              "A guardian switch is executed by the wallet that finishes the handoff.",
+            meta: {
+              retryable: false,
+              proposal_type: "switch_guardian",
+              reason: "switch_guardian",
+            },
           }),
       });
 
       const error = await client
-        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .executeDeltaProposal("0x" + "a".repeat(30), "0x" + "c".repeat(64))
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
       const e = error as GuardianHttpError;
       expect(e.status).toBe(409);
-      expect(e.code).toBe('proposal_executes_locally');
-      expect(e.rawCode).toBe('GUARDIAN_PROPOSAL_EXECUTES_LOCALLY');
+      expect(e.code).toBe("proposal_executes_locally");
+      expect(e.rawCode).toBe("GUARDIAN_PROPOSAL_EXECUTES_LOCALLY");
       expect(e.isRetryable()).toBe(false);
-      expect(e.meta?.proposalType).toBe('switch_guardian');
-      expect(e.meta?.reason).toBe('switch_guardian');
+      expect(e.meta?.proposalType).toBe("switch_guardian");
+      expect(e.meta?.reason).toBe("switch_guardian");
     });
 
-    it('surfaces a refused private-note execution with meta.reason private_note', async () => {
+    it("surfaces a refused private-note execution with meta.reason private_note", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
-            message: 'This transaction creates a private note.',
-            meta: { retryable: false, proposal_type: 'p2id', reason: 'private_note' },
+            code: "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+            message: "This transaction creates a private note.",
+            meta: {
+              retryable: false,
+              proposal_type: "p2id",
+              reason: "private_note",
+            },
           }),
       });
 
       const e = (await client
-        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .executeDeltaProposal("0x" + "a".repeat(30), "0x" + "c".repeat(64))
         .catch((error) => error)) as GuardianHttpError;
 
-      expect(e.code).toBe('proposal_executes_locally');
-      expect(e.meta?.proposalType).toBe('p2id');
-      expect(e.meta?.reason).toBe('private_note');
+      expect(e.code).toBe("proposal_executes_locally");
+      expect(e.meta?.proposalType).toBe("p2id");
+      expect(e.meta?.reason).toBe("private_note");
     });
 
-    it('drops a meta.reason outside the known vocabulary', async () => {
+    it("drops a meta.reason outside the known vocabulary", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () =>
           JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
-            message: 'Execute it from your wallet instead.',
-            meta: { retryable: false, proposal_type: 'p2id', reason: 'something_else' },
+            code: "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+            message: "Execute it from your wallet instead.",
+            meta: {
+              retryable: false,
+              proposal_type: "p2id",
+              reason: "something_else",
+            },
           }),
       });
 
       const e = (await client
-        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .executeDeltaProposal("0x" + "a".repeat(30), "0x" + "c".repeat(64))
         .catch((error) => error)) as GuardianHttpError;
 
       expect(e.meta?.reason).toBeUndefined();
     });
 
-    it('omits meta.allowedSchemes rather than exposing a partial list when an element is malformed', async () => {
+    it("omits meta.allowedSchemes rather than exposing a partial list when an element is malformed", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: false,
         headers: new Headers(),
         status: 403,
-        statusText: 'Forbidden',
+        statusText: "Forbidden",
         text: async () =>
           JSON.stringify({
-            code: 'signature_scheme_not_allowed',
-            message: 'x',
-            meta: { retryable: false, scheme: 'falcon', allowed_schemes: ['ecdsa', 7] },
+            code: "signature_scheme_not_allowed",
+            message: "x",
+            meta: {
+              retryable: false,
+              scheme: "falcon",
+              allowed_schemes: ["ecdsa", 7],
+            },
           }),
       });
       const e = (await client
         .pushDeltaProposal({
-          accountId: '0x' + 'a'.repeat(30),
+          accountId: "0x" + "a".repeat(30),
           nonce: 1,
-          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+          deltaPayload: { txSummary: { data: "" }, signatures: [] },
         })
         .catch((err) => err)) as GuardianHttpError;
-      expect(e.code).toBe('signature_scheme_not_allowed');
-      expect(e.meta?.scheme).toBe('falcon');
+      expect(e.code).toBe("signature_scheme_not_allowed");
+      expect(e.meta?.scheme).toBe("falcon");
       expect(e.meta?.allowedSchemes).toBeUndefined();
     });
 
-    it('surfaces 409 GUARDIAN_ACCOUNT_PAUSED with a parseable error envelope on pushDeltaProposal', async () => {
+    it("surfaces 409 GUARDIAN_ACCOUNT_PAUSED with a parseable error envelope on pushDeltaProposal", async () => {
       client.setSigner(mockSigner);
 
       // The server's GuardianError::AccountPaused → IntoResponse contract,
@@ -1725,12 +1921,13 @@ describe('GuardianHttpError', () => {
       // in lockstep: a regression to the legacy { success, error, paused_* } or
       // "(400, {delta: {account_id: 'error text'}})" shape would break this.
       const envelope = {
-        code: 'GUARDIAN_ACCOUNT_PAUSED',
-        message: "This account is paused and can't approve transactions right now.",
+        code: "GUARDIAN_ACCOUNT_PAUSED",
+        message:
+          "This account is paused and can't approve transactions right now.",
         meta: {
           retryable: false,
-          paused_at: '2026-05-20T10:00:00Z',
-          paused_reason: 'compliance review',
+          paused_at: "2026-05-20T10:00:00Z",
+          paused_reason: "compliance review",
         },
       };
 
@@ -1738,14 +1935,14 @@ describe('GuardianHttpError', () => {
         ok: false,
         headers: new Headers(),
         status: 409,
-        statusText: 'Conflict',
+        statusText: "Conflict",
         text: async () => JSON.stringify(envelope),
       });
 
       const request = {
-        accountId: '0x' + 'a'.repeat(30),
+        accountId: "0x" + "a".repeat(30),
         nonce: 1,
-        deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        deltaPayload: { txSummary: { data: "" }, signatures: [] },
       };
 
       const error = await client
@@ -1757,13 +1954,13 @@ describe('GuardianHttpError', () => {
       expect(e.status).toBe(409);
 
       // Structured accessors parsed from { code, message, meta } (feature 009).
-      expect(e.code).toBe('account_paused');
-      expect(e.rawCode).toBe('GUARDIAN_ACCOUNT_PAUSED');
-      expect(typeof e.userMessage).toBe('string');
-      expect(e.userMessage).not.toContain('compliance review'); // sanitized
+      expect(e.code).toBe("account_paused");
+      expect(e.rawCode).toBe("GUARDIAN_ACCOUNT_PAUSED");
+      expect(typeof e.userMessage).toBe("string");
+      expect(e.userMessage).not.toContain("compliance review"); // sanitized
       expect(e.meta?.retryable).toBe(false);
-      expect(e.meta?.pausedAt).toBe('2026-05-20T10:00:00Z');
-      expect(e.meta?.pausedReason).toBe('compliance review');
+      expect(e.meta?.pausedAt).toBe("2026-05-20T10:00:00Z");
+      expect(e.meta?.pausedReason).toBe("compliance review");
 
       const parsed = JSON.parse(e.body);
       // Legacy fields gone; not a domain object.
@@ -1772,50 +1969,50 @@ describe('GuardianHttpError', () => {
       expect(parsed.delta).toBeUndefined();
     });
 
-    it('does not retry a terminal 401 authentication_failed rejection', async () => {
+    it("does not retry a terminal 401 authentication_failed rejection", async () => {
       client.setSigner(mockSigner);
       const envelope = {
-        code: 'authentication_failed',
-        message: 'Guardian could not authenticate this request.',
+        code: "authentication_failed",
+        message: "Guardian could not authenticate this request.",
         meta: { retryable: false },
       };
       mockFetch.mockResolvedValue({
         ok: false,
         headers: new Headers(),
         status: 401,
-        statusText: 'Unauthorized',
+        statusText: "Unauthorized",
         text: async () => JSON.stringify(envelope),
       });
 
       const error = await client
         .pushDeltaProposal({
-          accountId: '0x' + 'a'.repeat(30),
+          accountId: "0x" + "a".repeat(30),
           nonce: 1,
-          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+          deltaPayload: { txSummary: { data: "" }, signatures: [] },
         })
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
       const e = error as GuardianHttpError;
       expect(e.status).toBe(401);
-      expect(e.code).toBe('authentication_failed');
-      expect(typeof e.userMessage).toBe('string');
+      expect(e.code).toBe("authentication_failed");
+      expect(typeof e.userMessage).toBe("string");
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const parsed = JSON.parse(e.body);
       expect(parsed.success).toBeUndefined();
       expect(parsed.delta).toBeUndefined();
     });
 
-    it('retries an authentication_replay rejection with a fresh timestamp and signature', async () => {
+    it("retries an authentication_replay rejection with a fresh timestamp and signature", async () => {
       client.setSigner(mockSigner);
       const signRequest = mockSigner.signRequest;
       if (!signRequest) {
-        throw new Error('test signer must implement signRequest');
+        throw new Error("test signer must implement signRequest");
       }
       const signRequestMock = vi.mocked(signRequest);
       signRequestMock.mockClear();
       const signatureForTimestamp = (_accountId: string, timestamp: number) =>
-        `0x${timestamp.toString(16).padStart(128, '0')}`;
+        `0x${timestamp.toString(16).padStart(128, "0")}`;
       signRequestMock
         .mockImplementationOnce(signatureForTimestamp)
         .mockImplementationOnce(signatureForTimestamp);
@@ -1823,80 +2020,585 @@ describe('GuardianHttpError', () => {
         ok: false,
         headers: new Headers(),
         status: 401,
-        statusText: 'Unauthorized',
+        statusText: "Unauthorized",
         text: async () =>
           JSON.stringify({
-            code: 'authentication_replay',
-            message: 'Guardian received this request out of order. Please try again.',
+            code: "authentication_replay",
+            message:
+              "Guardian received this request out of order. Please try again.",
             meta: { retryable: true },
           }),
       };
       const serverResponse = {
         delta: {
-          account_id: '0x' + 'a'.repeat(30),
+          account_id: "0x" + "a".repeat(30),
           nonce: 1,
-          prev_commitment: '0x' + 'b'.repeat(64),
-          delta_payload: { tx_summary: { data: '' }, signatures: [] },
+          prev_commitment: "0x" + "b".repeat(64),
+          delta_payload: { tx_summary: { data: "" }, signatures: [] },
           status: {
-            status: 'pending',
-            timestamp: '2024-01-01T00:00:00Z',
-            proposer_id: '0x' + 'c'.repeat(64),
+            status: "pending",
+            timestamp: "2024-01-01T00:00:00Z",
+            proposer_id: "0x" + "c".repeat(64),
             cosigner_sigs: [],
           },
         },
-        commitment: '0x' + 'd'.repeat(64),
+        commitment: "0x" + "d".repeat(64),
       };
       mockFetch
         .mockResolvedValueOnce(replayResponse)
         .mockResolvedValueOnce({ ok: true, json: async () => serverResponse });
 
       const result = await client.pushDeltaProposal({
-        accountId: '0x' + 'a'.repeat(30),
+        accountId: "0x" + "a".repeat(30),
         nonce: 1,
-        deltaPayload: { txSummary: { data: '' }, signatures: [] },
+        deltaPayload: { txSummary: { data: "" }, signatures: [] },
       });
 
-      expect(result.commitment).toBe('0x' + 'd'.repeat(64));
+      expect(result.commitment).toBe("0x" + "d".repeat(64));
       expect(mockFetch).toHaveBeenCalledTimes(2);
       const timestamps = mockFetch.mock.calls.map((call) =>
-        Number((call[1].headers as Record<string, string>)['x-timestamp'])
+        Number((call[1].headers as Record<string, string>)["x-timestamp"]),
       );
       const signatures = mockFetch.mock.calls.map(
-        (call) => (call[1].headers as Record<string, string>)['x-signature']
+        (call) => (call[1].headers as Record<string, string>)["x-signature"],
       );
       expect(timestamps[1]).toBeGreaterThan(timestamps[0]);
       expect(signatures[1]).not.toBe(signatures[0]);
       expect(signRequestMock).toHaveBeenCalledTimes(2);
     });
 
-    it('gives up after exhausting the bounded replay retry budget', async () => {
+    it("gives up after exhausting the bounded replay retry budget", async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValue({
         ok: false,
         headers: new Headers(),
         status: 401,
-        statusText: 'Unauthorized',
+        statusText: "Unauthorized",
         text: async () =>
           JSON.stringify({
-            code: 'authentication_replay',
-            message: 'Guardian received this request out of order. Please try again.',
+            code: "authentication_replay",
+            message:
+              "Guardian received this request out of order. Please try again.",
             meta: { retryable: true },
           }),
       });
 
       const error = await client
         .pushDeltaProposal({
-          accountId: '0x' + 'a'.repeat(30),
+          accountId: "0x" + "a".repeat(30),
           nonce: 1,
-          deltaPayload: { txSummary: { data: '' }, signatures: [] },
+          deltaPayload: { txSummary: { data: "" }, signatures: [] },
         })
         .catch((e) => e as GuardianHttpError);
 
       expect(error).toBeInstanceOf(GuardianHttpError);
       const e = error as GuardianHttpError;
-      expect(e.code).toBe('authentication_replay');
+      expect(e.code).toBe("authentication_replay");
       expect(e.meta?.retryable).toBe(true);
       expect(mockFetch).toHaveBeenCalledTimes(3);
     });
+  });
+});
+
+describe("GuardianHttpClient sessions", () => {
+  const sessionPublicKey = "0x02" + "c".repeat(64);
+  const stateBody = {
+    account_id: "0xabc",
+    commitment: "0x" + "0".repeat(64),
+    state_json: { data: "AAAA" },
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+    auth_scheme: "falcon",
+  };
+  let client: GuardianHttpClient;
+  let session: SessionRequestSigner;
+
+  function sessionExpiringIn(seconds: number): SessionRequestSigner {
+    return {
+      publicKey: sessionPublicKey,
+      signerCommitment: mockSigner.commitment,
+      expiresAt: Math.floor(Date.now() / 1000) + seconds,
+      signRequest: vi.fn().mockReturnValue("0x" + "d".repeat(128)),
+      signLogout: vi.fn().mockReturnValue("0x" + "e".repeat(128)),
+      onEnded: vi.fn(),
+    };
+  }
+
+  function lastHeaders(): Record<string, string> {
+    return mockFetch.mock.calls.at(-1)![1].headers as Record<string, string>;
+  }
+
+  function rejectWith(code: string, status = 401): void {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      headers: new Headers(),
+      status,
+      statusText: "Unauthorized",
+      text: async () =>
+        JSON.stringify({ code, message: code, meta: { retryable: false } }),
+    });
+  }
+
+  beforeEach(() => {
+    client = new GuardianHttpClient("http://localhost:3000");
+    client.setSigner(mockSigner);
+    session = sessionExpiringIn(3600);
+    mockFetch.mockReset();
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("signs every session-eligible route with the session key", async () => {
+    client.setSession(session);
+    const accountId = "0xabc";
+    const calls: Array<[string, () => Promise<unknown>]> = [
+      ["getState", () => client.getState(accountId)],
+      ["getCanonicalNonce", () => client.getCanonicalNonce(accountId)],
+      ["getDelta", () => client.getDelta(accountId, 1)],
+      ["getDeltaSince", () => client.getDeltaSince(accountId, 1)],
+      ["getDeltaHistory", () => client.getDeltaHistory(accountId)],
+      ["getDeltaProposals", () => client.getDeltaProposals(accountId)],
+      [
+        "getDeltaProposal",
+        () => client.getDeltaProposal(accountId, "0x" + "e".repeat(64)),
+      ],
+      [
+        "pushDeltaProposal",
+        () =>
+          client.pushDeltaProposal({
+            accountId,
+            nonce: 1,
+            deltaPayload: { txSummary: { data: "AAAA" }, signatures: [] },
+          }),
+      ],
+      [
+        "signDeltaProposal",
+        () =>
+          client.signDeltaProposal({
+            accountId,
+            commitment: "0x" + "e".repeat(64),
+            signature: { scheme: "falcon", signature: "0x" + "d".repeat(128) },
+          }),
+      ],
+    ];
+
+    for (const [name, call] of calls) {
+      // Only the request headers matter; the empty body may fail to parse.
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      await call().catch(() => undefined);
+      expect(lastHeaders()["x-auth-format"], name).toBe("session");
+      expect(lastHeaders()["x-pubkey"], name).toBe(sessionPublicKey);
+    }
+    expect(session.signRequest).toHaveBeenCalledTimes(calls.length);
+    expect(mockSigner.signRequest).not.toHaveBeenCalled();
+  });
+
+  it("does not use a session without a wallet signer", () => {
+    const unsigned = new GuardianHttpClient("http://localhost:3000");
+    unsigned.setSession(session);
+    expect(unsigned.getSession()).toBeNull();
+  });
+
+  it("re-signs a replay-rejected request with the session", async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      headers: new Headers(),
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () =>
+        JSON.stringify({
+          code: "authentication_replay",
+          message: "replay",
+          meta: { retryable: true },
+        }),
+    });
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState("0xabc");
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [first, second] = mockFetch.mock.calls.map(
+      ([, init]) => init.headers,
+    );
+    expect(second["x-auth-format"]).toBe("session");
+    expect(second["x-timestamp"]).not.toBe(first["x-timestamp"]);
+    expect(session.signRequest).toHaveBeenCalledTimes(2);
+    expect(client.getSession()).toBe(session);
+  });
+
+  it("does not use a session granted by another wallet", async () => {
+    client.setSession({ ...session, signerCommitment: "0x" + "9".repeat(64) });
+    expect(client.getSession()).toBeNull();
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState("0xabc");
+
+    expect(lastHeaders()["x-pubkey"]).toBe(mockSigner.publicKey);
+    expect(session.signRequest).not.toHaveBeenCalled();
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it("signs per-account requests with the session key", async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState("0xabc");
+
+    expect(lastHeaders()).toMatchObject({
+      "x-pubkey": sessionPublicKey,
+      "x-signature": "0x" + "d".repeat(128),
+      "x-auth-format": "session",
+    });
+    expect(session.signRequest).toHaveBeenCalledOnce();
+    expect(mockSigner.signRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps configure on the wallet while a session is set", async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true, message: "ok", ack_pubkey: "0x01" }),
+    });
+
+    await client.configure({
+      accountId: "0xabc",
+      auth: { MidenFalconRpo: { cosigner_commitments: [] } },
+      initialState: { data: "AAAA", accountId: "0xabc" },
+    });
+
+    expect(lastHeaders()["x-pubkey"]).toBe(mockSigner.publicKey);
+    expect(lastHeaders()["x-auth-format"]).toBeUndefined();
+    expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps pushDelta and abandonCandidate on the wallet while a session is set", async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        account_id: "0xabc",
+        nonce: 1,
+        new_commitment: "0x" + "d".repeat(64),
+        ack_sig: "0x01",
+        ack_pubkey: "0x02",
+        ack_scheme: "falcon",
+      }),
+    });
+
+    await client.pushDelta({
+      accountId: "0xabc",
+      nonce: 1,
+      prevCommitment: "0x" + "b".repeat(64),
+      deltaPayload: { data: "base64summary" },
+      status: {
+        status: "pending" as const,
+        timestamp: "2024-01-01T00:00:00Z",
+        proposerId: "0x" + "c".repeat(64),
+        cosignerSigs: [],
+      },
+    });
+    expect(lastHeaders()["x-pubkey"]).toBe(mockSigner.publicKey);
+    expect(lastHeaders()["x-auth-format"]).toBeUndefined();
+
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        account_id: "0xabc",
+        nonce: 1,
+        state: "abandon_requested",
+        abandon_requested_at: "2024-01-01T00:00:00Z",
+      }),
+    });
+    await client.abandonCandidate("0xabc", 1);
+    expect(lastHeaders()["x-pubkey"]).toBe(mockSigner.publicKey);
+    expect(lastHeaders()["x-auth-format"]).toBeUndefined();
+    expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it("revokes every session with a wallet signature and stops using the session", async () => {
+    const wallet: Signer = {
+      ...mockSigner,
+      signSessionRevokeAll: vi.fn().mockReturnValue("0x" + "7".repeat(128)),
+    };
+    client.setSigner(wallet);
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ revoked: 2 }),
+    });
+
+    await expect(client.revokeAllSessions()).resolves.toBe(2);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:3000/session/revoke-all");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({
+      signer_commitment: mockSigner.commitment,
+    });
+    expect(init.headers).toMatchObject({
+      "x-pubkey": mockSigner.publicKey,
+      "x-signature": "0x" + "7".repeat(128),
+    });
+    expect(init.headers["x-auth-format"]).toBeUndefined();
+    const timestamp = Number(init.headers["x-timestamp"]);
+    expect(wallet.signSessionRevokeAll).toHaveBeenCalledWith(
+      mockSigner.commitment,
+      timestamp,
+    );
+    expect(client.getSession()).toBeNull();
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith("logout");
+    expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it("keeps a session started while revoke-all is in flight", async () => {
+    client.setSigner({
+      ...mockSigner,
+      signSessionRevokeAll: vi.fn().mockReturnValue("0x" + "7".repeat(128)),
+    });
+    client.setSession(session);
+    let respond!: (value: unknown) => void;
+    mockFetch.mockReturnValueOnce(
+      new Promise((resolve) => (respond = resolve)),
+    );
+    const pending = client.revokeAllSessions();
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledOnce());
+
+    const started = sessionExpiringIn(3600);
+    client.setSession(started);
+    respond({ ok: true, json: async () => ({ revoked: 1 }) });
+    await expect(pending).resolves.toBe(1);
+
+    expect(client.getSession()).toBe(started);
+    expect(started.onEnded).not.toHaveBeenCalled();
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith("logout");
+  });
+
+  it("keeps the session when revoke-all fails", async () => {
+    client.setSigner({
+      ...mockSigner,
+      signSessionRevokeAll: vi.fn().mockReturnValue("0x" + "7".repeat(128)),
+    });
+    client.setSession(session);
+    mockFetch.mockRejectedValueOnce(new TypeError("network down"));
+
+    await expect(client.revokeAllSessions()).rejects.toThrow();
+
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it("drops a session the server ended and lets the wallet sign the next request", async () => {
+    const reasons = {
+      session_revoked: "revoked",
+      session_expired: "expired",
+      authentication_failed: "rejected",
+    } as const;
+    for (const [code, reason] of Object.entries(reasons)) {
+      const current = sessionExpiringIn(3600);
+      client.setSession(current);
+      rejectWith(code);
+
+      await expect(client.getState("0xabc")).rejects.toMatchObject({ code });
+      expect(client.getSession()).toBeNull();
+      expect(current.onEnded).toHaveBeenCalledExactlyOnceWith(reason);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => stateBody,
+      });
+      await client.getState("0xabc");
+      expect(lastHeaders()["x-pubkey"]).toBe(mockSigner.publicKey);
+    }
+  });
+
+  it("keeps the session on errors that do not end it", async () => {
+    client.setSession(session);
+    // `authorization_failed`: the signer does not cosign this account, but the
+    // session still works for its other accounts.
+    for (const code of ["wallet_signature_required", "authorization_failed"]) {
+      rejectWith(code, 403);
+
+      await expect(client.getState("0xabc")).rejects.toMatchObject({ code });
+
+      expect(client.getSession()).toBe(session);
+    }
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it("a late rejection of an old session ends it but leaves the new one in use", async () => {
+    client.setSession(session);
+    let respond!: (value: unknown) => void;
+    mockFetch.mockReturnValueOnce(
+      new Promise((resolve) => (respond = resolve)),
+    );
+    const pending = client.getState("0xabc");
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledOnce());
+
+    const next = sessionExpiringIn(3600);
+    client.setSession(next);
+    respond({
+      ok: false,
+      headers: new Headers(),
+      status: 401,
+      statusText: "Unauthorized",
+      text: async () =>
+        JSON.stringify({
+          code: "session_revoked",
+          message: "ended",
+          meta: { retryable: false },
+        }),
+    });
+    await expect(pending).rejects.toMatchObject({ code: "session_revoked" });
+
+    expect(client.getSession()).toBe(next);
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith("revoked");
+    expect(next.onEnded).not.toHaveBeenCalled();
+  });
+
+  it("tells a session it ended only once", async () => {
+    client.setSession(session);
+    rejectWith("session_revoked");
+    rejectWith("session_revoked");
+
+    const results = await Promise.allSettled([
+      client.getState("0xabc"),
+      client.getState("0xabc"),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith("revoked");
+  });
+
+  it("falls back to the wallet when the session is about to expire", async () => {
+    const expiring = sessionExpiringIn(10);
+    client.setSession(expiring);
+    expect(client.getSession()).toBeNull();
+    expect(expiring.onEnded).toHaveBeenCalledExactlyOnceWith("expired");
+    mockFetch.mockResolvedValueOnce({ ok: true, json: async () => stateBody });
+
+    await client.getState("0xabc");
+
+    expect(lastHeaders()["x-pubkey"]).toBe(mockSigner.publicKey);
+    expect(lastHeaders()["x-auth-format"]).toBeUndefined();
+  });
+
+  it("posts a session grant in the server shape", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        signer_commitment: "0x11",
+        expires_at: "2026-10-06T18:00:00+00:00",
+      }),
+    });
+
+    const created = await client.createSession({
+      scheme: "ecdsa",
+      authFormat: "eip712",
+      publicKey: "0x03" + "f".repeat(64),
+      signature: "0x" + "9".repeat(130),
+      grant: {
+        signerCommitment: "0x11",
+        sessionPublicKey,
+        origin: "https://app.example",
+        issuedAt: 1791280800,
+        expiresAt: 1791309600,
+        guardianCommitment: "0x22",
+        network: "devnet",
+      },
+    });
+
+    expect(created).toEqual({
+      signerCommitment: "0x11",
+      expiresAt: "2026-10-06T18:00:00+00:00",
+    });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:3000/session");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({
+      scheme: "ecdsa",
+      auth_format: "eip712",
+      public_key: "0x03" + "f".repeat(64),
+      signature: "0x" + "9".repeat(130),
+      grant: {
+        signer_commitment: "0x11",
+        session_public_key: sessionPublicKey,
+        origin: "https://app.example",
+        issued_at: 1791280800,
+        expires_at: 1791309600,
+        guardian_commitment: "0x22",
+        network: "devnet",
+      },
+    });
+  });
+
+  it("revokes with a session-key-signed logout and stops using the session", async () => {
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ revoked: true }),
+    });
+
+    await expect(client.revokeSession()).resolves.toBe(true);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:3000/session/logout");
+    expect(init.headers).toMatchObject({
+      "x-pubkey": sessionPublicKey,
+      "x-signature": "0x" + "e".repeat(128),
+    });
+    const timestamp = Number(init.headers["x-timestamp"]);
+    expect(session.signLogout).toHaveBeenCalledWith(timestamp);
+    expect(client.getSession()).toBeNull();
+    expect(session.onEnded).toHaveBeenCalledExactlyOnceWith("logout");
+    await expect(client.revokeSession()).resolves.toBe(false);
+  });
+
+  it("keeps the session when logout fails", async () => {
+    client.setSession(session);
+    rejectWith("storage_error", 500);
+
+    await expect(client.revokeSession()).rejects.toMatchObject({
+      code: "storage_error",
+    });
+
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
+  it("logs out a given session without touching the current one", async () => {
+    const old = sessionExpiringIn(3600);
+    client.setSession(session);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ revoked: true }),
+    });
+
+    await expect(client.revokeSession(old)).resolves.toBe(true);
+
+    expect(old.signLogout).toHaveBeenCalledOnce();
+    expect(client.getSession()).toBe(session);
+  });
+
+  it("maps advertised session parameters from GET /status", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        status: "ok",
+        version: "0.18.0",
+        git_commit: "abc",
+        environment: "devnet",
+        started_at: "2026-10-06T00:00:00Z",
+        uptime_seconds: 1,
+        execution: { enabled: true },
+        sessions: { max_ttl_seconds: 28800 },
+      }),
+    });
+
+    const status = await client.getStatus();
+
+    expect(status.sessions).toEqual({ maxTtlSeconds: 28800 });
   });
 });

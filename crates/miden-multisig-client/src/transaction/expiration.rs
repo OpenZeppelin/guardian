@@ -118,7 +118,8 @@ mod tests {
     /// The vectors `packages/miden-multisig-client/tests/browser/execution-parity.spec.ts` checks
     /// the TypeScript SDK against: the Guardian-executable auth arguments for fixed inputs, the
     /// recipient of the P2ID note a payment from the browser-parity account creates under them,
-    /// and the roots of the three Guardian-owned scripts with the transaction expiration applied.
+    /// and the roots of the three Guardian-owned scripts with the transaction expiration applied,
+    /// the update-guardian script under both signature schemes.
     #[test]
     fn guardian_executable_vectors_the_typescript_sdk_must_reproduce() {
         use guardian_shared::SignatureScheme;
@@ -211,6 +212,13 @@ mod tests {
                     .root()
                     .to_hex(),
             ),
+            (
+                "updateGuardianEcdsa",
+                build_update_guardian_script(guardian, SignatureScheme::Ecdsa, delta)
+                    .unwrap()
+                    .root()
+                    .to_hex(),
+            ),
         ];
         assert_eq!(
             vectors,
@@ -238,6 +246,11 @@ mod tests {
                 (
                     "updateGuardian",
                     "0xf8c248ad4859a455a1ba0ad26501821fe1555e719972e0ad7eb487c983319d09"
+                        .to_string()
+                ),
+                (
+                    "updateGuardianEcdsa",
+                    "0xa4038d96fb21e00ec8eb374e290857f33f151909bfaaa9f0c76f2c57125829fb"
                         .to_string()
                 ),
             ]

@@ -52,6 +52,7 @@ mod export;
 mod guardian_endpoint;
 mod keystore;
 mod local_execution;
+mod networks;
 mod payload;
 mod procedures;
 mod proposal;
@@ -99,6 +100,7 @@ pub use keystore::{
 // Proposals
 pub use execution::{SignatureAdvice, build_transfer_asset};
 pub use miden_standards::account::auth::MultisigAuthArgs;
+pub use networks::MidenCedar;
 pub use payload::{ProposalMetadataPayload, ProposalPayload};
 pub use proposal::{
     CONSUME_NOTES_METADATA_VERSION_V2, MAX_CONSUME_NOTES_METADATA_BYTES, P2ideHeights, Proposal,
@@ -123,6 +125,7 @@ pub use local_execution::{GuardianExecutionRequest, LocalExecutionReason};
 
 // Errors
 pub use error::{MultisigError, Result};
+pub use guardian_client::{MAX_SESSION_TTL, MIN_SESSION_TTL, SessionInfo, StartSessionOptions};
 
 // Guardian execution
 pub use guardian_client::execution::{
