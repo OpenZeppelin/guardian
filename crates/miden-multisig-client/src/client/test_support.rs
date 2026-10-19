@@ -89,6 +89,7 @@ pub(crate) async fn offline_client_parts_with_keystore(
 
     let client = MultisigClient::new(
         miden_client,
+        store.clone(),
         keystore,
         "http://localhost:1".to_string(),
         dir.to_path_buf(),
