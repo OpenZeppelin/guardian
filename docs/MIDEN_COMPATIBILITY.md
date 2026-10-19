@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
@@ -28,6 +29,8 @@ elsewhere and link here:
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
+
+0.18.2 keeps the 0.18.1 pins.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
@@ -120,6 +123,29 @@ be reproduced: `TransactionRequest` serialization changed and the auth arg commi
 Execute or cancel every pending proposal on the rc version, have GUARDIAN drop any that
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
+
+**Upgrading from 0.18.1 to 0.18.2: Cedar and mainnet network labels.** The Miden pins,
+the `auth_tx` procedure root, stored data and existing contracts are unchanged, so
+accounts and stores carry over. The release only adds:
+
+- **Two Miden network types.** `GUARDIAN_NETWORK_TYPE` accepts `MidenCedar` and
+  `MidenMainnet`, and the `network_type` field of a Miden `NetworkConfig` (gRPC and
+  HTTP) accepts `cedar` and `mainnet` next to `local`, `devnet` and `testnet`. A
+  server on either reports that label in `/status` and session grants. Cedar
+  addresses use the `mm` prefix. Older servers reject the new labels with
+  `unsupported Miden network_type`, so deploy the server before configuring
+  clients for Cedar or mainnet.
+- **Rust SDK presets.** `MidenCedar::endpoint()` makes `MultisigClientBuilder` wire
+  the Cedar prover and note transport, and `Endpoint::mainnet()` now wires the
+  mainnet prover and note transport. `MidenCedar::network_id()` encodes Cedar
+  addresses; miden-client's own `network_id()` returns the generic `mcst` id for
+  Cedar.
+- **TypeScript.** `@miden-sdk/miden-sdk` 0.17.3 has no Cedar or mainnet preset, so
+  a browser client names the RPC, prover and note transport URLs explicitly (see
+  the `@openzeppelin/miden-multisig-client` README).
+- **`/pubkey` without `scheme` returns the Falcon key**, whichever schemes the
+  server admits. This was already the behavior; it is now documented, and the
+  examples pass the account's scheme.
 
 **Upgrading from 0.18.0 to 0.18.1: Miden 0.17 patch pins.** 0.18.1 moves to
 `miden-protocol` / `miden-standards` 0.17.1, `miden-client` 0.17.3 and

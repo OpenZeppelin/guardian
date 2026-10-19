@@ -92,7 +92,7 @@ For env-driven benchmark network/canonicalization settings, apply the runtime co
 GUARDIAN_NETWORK_TYPE=MidenTestnet cargo run --bin server
 ```
 
-`GUARDIAN_NETWORK_TYPE` (`MidenLocal`, `MidenTestnet`, or `MidenDevnet`) is
+`GUARDIAN_NETWORK_TYPE` (`MidenLocal`, `MidenDevnet`, `MidenTestnet`, `MidenCedar`, or `MidenMainnet`) is
 required — the server refuses to start without it. A root `.env` file works
 too; see [`docs/LOCAL_DEV.md`](docs/LOCAL_DEV.md#environment-file).
 

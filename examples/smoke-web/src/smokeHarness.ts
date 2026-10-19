@@ -43,6 +43,7 @@ import {
   loadMultisigAccount,
   normalizeCommitment,
   normalizeError,
+  resolveMidenRpcUrl,
   registerOnGuardian as registerOnlineAccount,
   registerOnGuardianWithState,
   resolveLocalSigner,
@@ -435,7 +436,7 @@ function requireWalletSource(source: WalletSource | undefined): WalletSource {
 function normalizeSessionInput(input: InitSessionInput): SessionConfig {
   return {
     guardianEndpoint: input.guardianEndpoint?.trim() || DEFAULT_GUARDIAN_ENDPOINT,
-    midenRpcEndpoint: input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL,
+    midenRpcEndpoint: resolveMidenRpcUrl(input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL),
     signerSource: requireWalletSource(input.signerSource),
     signatureScheme: input.signatureScheme ?? 'falcon',
     browserLabel: input.browserLabel?.trim() ?? DEFAULT_BROWSER_LABEL,

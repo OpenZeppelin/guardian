@@ -103,7 +103,7 @@ use miden_multisig_client::StartSessionOptions;
 
 let info = client
     .start_session(StartSessionOptions {
-        network: "devnet".to_string(), // the Guardian's network: local, devnet or testnet
+        network: "devnet".to_string(), // the Guardian's /status environment: local, devnet, testnet, cedar or mainnet
         ttl: Duration::from_secs(3600), // more than 5 minutes, at most the Guardian's maximum
     })
     .await?;
@@ -170,8 +170,8 @@ re-sends undelivered notes on later syncs).
 ### Note transport endpoint (`note_transport_endpoint`)
 
 Private notes are relayed through a note transport service that is separate
-from the node RPC. The testnet and devnet presets derive the transport
-endpoint automatically; a custom node endpoint has no derivable transport
+from the node RPC. The devnet, testnet, Cedar (`MidenCedar::endpoint()`) and
+mainnet presets derive the transport endpoint automatically; a custom node endpoint has no derivable transport
 service, so private-note relay stays disabled until this is set explicitly.
 
 ```rust
@@ -188,8 +188,8 @@ let mut client = MultisigClient::builder()
 ### Remote prover (`prover_config`)
 
 `ProverConfig` overrides the remote prover endpoint and the proof retry
-policy. Without it, the devnet and testnet presets use their public provers
-and every other endpoint proves locally. A custom URL must be absolute
+policy. Without it, the devnet, testnet, Cedar and mainnet presets use their public
+provers and every other endpoint proves locally. A custom URL must be absolute
 HTTP(S) and never falls back to a default endpoint. Remote proving gets two
 total attempts by default and local proving is never retried; retries apply
 only to transient proof failures, so transaction execution, submission, local

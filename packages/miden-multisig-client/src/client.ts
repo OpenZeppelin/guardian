@@ -107,8 +107,8 @@ export interface RecoveredAccount {
  *   },
  * });
  *
- * // Get GUARDIAN pubkey for config
- * const guardianCommitment = await client.guardianClient.getPubkey();
+ * // Get GUARDIAN's ACK commitment for the account's signature scheme
+ * const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
  *
  * // Create multisig
  * const config = { threshold: 2, signerCommitments: [...], guardianCommitment };

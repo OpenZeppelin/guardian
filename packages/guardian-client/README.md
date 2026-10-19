@@ -21,9 +21,13 @@ const client = new GuardianHttpClient('http://localhost:3000');
 ### Get Server Public Key (Unauthenticated)
 
 ```typescript
-const pubkey = await client.getPubkey();
-console.log('GUARDIAN pubkey:', pubkey);
+const { commitment, pubkey } = await client.getPubkey('ecdsa');
+console.log('GUARDIAN ECDSA commitment:', commitment, 'pubkey:', pubkey);
 ```
+
+The scheme defaults to `falcon` when omitted, whichever schemes the server
+admits for new accounts, so pass the scheme you need. `pubkey` is set only for
+`ecdsa`.
 
 ### Set Signer for Authenticated Requests
 
