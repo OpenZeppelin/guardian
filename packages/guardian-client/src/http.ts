@@ -1,12 +1,14 @@
 import {
   type GuardianErrorCode,
   normalizeGuardianErrorCode,
-} from './error-codes.js';
+} from "./error-codes.js";
 import type {
   AbandonCandidateResponse,
   AbandonStatus,
   ConfigureRequest,
   ConfigureResponse,
+  CreateSessionRequest,
+  CreateSessionResponse,
   DeltaObject,
   DeltaProposalRequest,
   DeltaProposalResponse,
@@ -16,20 +18,25 @@ import type {
   LookupResponse,
   PubkeyResponse,
   PushDeltaResponse,
+  SessionEndReason,
+  SessionRequestSigner,
   SignProposalRequest,
   SignatureScheme,
   Signer,
   StateObject,
   StatusResponse,
   CanonicalNonce,
-} from './types.js';
-import { RequestAuthPayload } from './auth-request.js';
-import { fromServerExecution, fromServerExecutionCapability } from './execution.js';
+} from "./types.js";
+import { RequestAuthPayload } from "./auth-request.js";
+import {
+  fromServerExecution,
+  fromServerExecutionCapability,
+} from "./execution.js";
 import type {
   ProposalExecution,
   ServerCurrentExecution,
   ServerProposalExecution,
-} from './execution.js';
+} from "./execution.js";
 import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
@@ -42,21 +49,27 @@ import type {
   ServerPubkeyResponse,
   ServerStateObject,
   ServerConfigureResponse,
+  ServerCreateSessionResponse,
   ServerPushDeltaResponse,
+  ServerRevokeAllSessionsRequest,
+  ServerRevokeAllSessionsResponse,
+  ServerRevokeSessionResponse,
   ServerStatusResponse,
-} from './server-types.js';
+} from "./server-types.js";
 import {
   fromServerCanonicalNonce,
   fromServerConfigureResponse,
+  fromServerCreateSessionResponse,
   fromServerDeltaObject,
   fromServerHistoryPage,
   fromServerLookupResponse,
   fromServerStateObject,
   toServerConfigureRequest,
+  toServerCreateSessionRequest,
   toServerDeltaProposalRequest,
   toServerExecutionDelta,
   toServerSignProposalRequest,
-} from './conversion.js';
+} from "./conversion.js";
 
 /**
  * Structured machine-readable side-data on a GUARDIAN error
@@ -100,7 +113,7 @@ export interface GuardianErrorMeta {
 }
 
 /** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
-export type LocalExecutionReason = 'switch_guardian' | 'private_note';
+export type LocalExecutionReason = "switch_guardian" | "private_note";
 
 /** Options of {@link GuardianHttpClient.executeDeltaProposal}. */
 export interface ExecuteDeltaProposalOptions {
@@ -112,10 +125,12 @@ export interface ExecuteDeltaProposalOptions {
   allowPrivateNote?: boolean;
 }
 
-function localExecutionReason(value: unknown): LocalExecutionReason | undefined {
+function localExecutionReason(
+  value: unknown,
+): LocalExecutionReason | undefined {
   switch (value) {
-    case 'switch_guardian':
-    case 'private_note':
+    case "switch_guardian":
+    case "private_note":
       return value;
     default:
       return undefined;
@@ -146,19 +161,24 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   } catch {
     return undefined;
   }
-  if (typeof json !== 'object' || json === null) return undefined;
+  if (typeof json !== "object" || json === null) return undefined;
   const obj = json as Record<string, unknown>;
-  if (typeof obj.code !== 'string' || typeof obj.message !== 'string') return undefined;
+  if (typeof obj.code !== "string" || typeof obj.message !== "string")
+    return undefined;
 
-  if (typeof obj.meta !== 'object' || obj.meta === null || Array.isArray(obj.meta)) {
+  if (
+    typeof obj.meta !== "object" ||
+    obj.meta === null ||
+    Array.isArray(obj.meta)
+  ) {
     return undefined;
   }
   const rawMeta = obj.meta as Record<string, unknown>;
-  if (typeof rawMeta.retryable !== 'boolean') return undefined;
+  if (typeof rawMeta.retryable !== "boolean") return undefined;
   const code = normalizeGuardianErrorCode(obj.code);
   const meta: GuardianErrorMeta = { retryable: rawMeta.retryable };
   if (
-    typeof rawMeta.retry_after_secs === 'number' &&
+    typeof rawMeta.retry_after_secs === "number" &&
     Number.isInteger(rawMeta.retry_after_secs) &&
     rawMeta.retry_after_secs >= 0
   ) {
@@ -166,25 +186,30 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   }
   if (Array.isArray(rawMeta.missing_permissions)) {
     meta.missingPermissions = rawMeta.missing_permissions.filter(
-      (x): x is string => typeof x === 'string'
+      (x): x is string => typeof x === "string",
     );
   }
-  if (typeof rawMeta.paused_at === 'string') meta.pausedAt = rawMeta.paused_at;
-  if (typeof rawMeta.released_at === 'string') meta.releasedAt = rawMeta.released_at;
-  if (typeof rawMeta.scheme === 'string') meta.scheme = rawMeta.scheme;
+  if (typeof rawMeta.paused_at === "string") meta.pausedAt = rawMeta.paused_at;
+  if (typeof rawMeta.released_at === "string")
+    meta.releasedAt = rawMeta.released_at;
+  if (typeof rawMeta.scheme === "string") meta.scheme = rawMeta.scheme;
   if (
     Array.isArray(rawMeta.allowed_schemes) &&
-    rawMeta.allowed_schemes.every((x): x is string => typeof x === 'string')
+    rawMeta.allowed_schemes.every((x): x is string => typeof x === "string")
   ) {
     meta.allowedSchemes = rawMeta.allowed_schemes;
   }
-  if (typeof rawMeta.blocking_proposal_id === 'string') {
+  if (typeof rawMeta.blocking_proposal_id === "string") {
     meta.blockingProposalId = rawMeta.blocking_proposal_id;
   }
-  if (typeof rawMeta.proposal_type === 'string') meta.proposalType = rawMeta.proposal_type;
+  if (typeof rawMeta.proposal_type === "string")
+    meta.proposalType = rawMeta.proposal_type;
   const reason = localExecutionReason(rawMeta.reason);
   if (reason !== undefined) meta.reason = reason;
-  if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
+  if (
+    typeof rawMeta.paused_reason === "string" ||
+    rawMeta.paused_reason === null
+  ) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }
   return { code, rawCode: obj.code, message: obj.message, meta };
@@ -232,14 +257,16 @@ export class GuardianHttpError extends Error {
     public readonly status: number,
     public readonly statusText: string,
     public readonly body: string,
-    retryAfterHeader?: string | null
+    retryAfterHeader?: string | null,
   ) {
     // Only the parsed, user-safe message is folded into Error.message; the
     // raw body (which may carry backend/proxy internals) stays on the `body`
     // field for diagnostics only.
     const parsed = parseGuardianErrorBody(body);
-    super(`GUARDIAN HTTP error ${status}: ${statusText}${parsed ? ` - ${parsed.message}` : ''}`);
-    this.name = 'GuardianHttpError';
+    super(
+      `GUARDIAN HTTP error ${status}: ${statusText}${parsed ? ` - ${parsed.message}` : ""}`,
+    );
+    this.name = "GuardianHttpError";
     this.code = parsed?.code ?? null;
     this.rawCode = parsed?.rawCode ?? null;
     this.userMessage = parsed?.message;
@@ -270,8 +297,10 @@ export class GuardianHttpError extends Error {
 
 // Decimal digits only, mirroring the Rust client's `parse::<u64>()`: no
 // signs, exponents, hex, or empty strings (`Number('')` is 0).
-function parseRetryAfterSeconds(header: string | null | undefined): number | undefined {
-  if (typeof header !== 'string') return undefined;
+function parseRetryAfterSeconds(
+  header: string | null | undefined,
+): number | undefined {
+  if (typeof header !== "string") return undefined;
   const trimmed = header.trim();
   if (!/^\d+$/.test(trimmed)) return undefined;
   const secs = Number(trimmed);
@@ -279,10 +308,45 @@ function parseRetryAfterSeconds(header: string | null | undefined): number | und
 }
 
 /**
+ * A session is set aside this long before it expires, so a request never
+ * reaches the server already expired; requests then fall back to the wallet.
+ */
+const SESSION_EXPIRY_MARGIN_MS = 30_000;
+
+/** Codes that end a session-signed request's session for good. */
+const SESSION_END_REASONS: Record<string, SessionEndReason> = {
+  session_expired: "expired",
+  session_revoked: "revoked",
+  authentication_failed: "rejected",
+};
+
+/**
+ * Which key signs a per-account request. Mirrors the server: requests are
+ * wallet-signed unless the route is session-eligible.
+ */
+type AuthMode = "session" | "wallet";
+
+function authHeaders(
+  publicKey: string,
+  signature: string,
+  timestamp: number,
+  format?: "eip712" | "session",
+): Record<string, string> {
+  return {
+    "x-pubkey": publicKey,
+    "x-signature": signature,
+    "x-timestamp": timestamp.toString(),
+    ...(format ? { "x-auth-format": format } : {}),
+  };
+}
+
+/**
  * Minimal HTTP client for GUARDIAN server.
  */
 export class GuardianHttpClient {
   private signer: Signer | null = null;
+  private session: SessionRequestSigner | null = null;
+  private readonly endedSessions = new WeakSet<SessionRequestSigner>();
   private readonly baseUrl: string;
   private lastTimestamp = 0;
 
@@ -306,9 +370,147 @@ export class GuardianHttpClient {
     this.signer = signer;
   }
 
+  /**
+   * Sign session-eligible requests (reads, proposal list/get, proposal
+   * create/sign) with a registered delegated signer instead of the wallet.
+   * Every other route, including `configure`, `pushDelta`,
+   * `abandonCandidate`, account lookup and `revokeAllSessions`, uses the
+   * wallet signer. Pass `null` to stop using the session.
+   */
+  setSession(session: SessionRequestSigner | null): void {
+    this.session = session;
+  }
+
+  /**
+   * The session in use, or `null` when none is set, no wallet signer is set,
+   * the session was granted by another wallet than the current signer, or it
+   * is about to expire. A session reaching its expiry margin is dropped and
+   * told so.
+   */
+  getSession(): SessionRequestSigner | null {
+    const session = this.session;
+    if (!session) {
+      return null;
+    }
+    if (session.expiresAt * 1000 - SESSION_EXPIRY_MARGIN_MS <= Date.now()) {
+      this.endSession(session, "expired");
+      return null;
+    }
+    if (
+      !this.signer ||
+      this.signer.commitment.toLowerCase() !==
+        session.signerCommitment.toLowerCase()
+    ) {
+      return null;
+    }
+    return session;
+  }
+
+  /**
+   * Stops using `session` if it is still the current one, and tells it why
+   * once. A newer session set meanwhile stays in use.
+   */
+  private endSession(
+    session: SessionRequestSigner,
+    reason: SessionEndReason,
+  ): void {
+    if (this.session === session) {
+      this.session = null;
+    }
+    if (!this.endedSessions.has(session)) {
+      this.endedSessions.add(session);
+      session.onEnded?.(reason);
+    }
+  }
+
+  /** Register a wallet-signed session grant (`POST /session`). */
+  async createSession(
+    request: CreateSessionRequest,
+  ): Promise<CreateSessionResponse> {
+    const response = await this.fetch("/session", {
+      method: "POST",
+      body: JSON.stringify(toServerCreateSessionRequest(request)),
+    });
+    return fromServerCreateSessionResponse(
+      (await response.json()) as ServerCreateSessionResponse,
+    );
+  }
+
+  /**
+   * Revoke a session on the server (`POST /session/logout`), the current one
+   * by default, and stop using it. Returns whether the server still had it
+   * active; `false` when there is none. On error the session stays in use.
+   */
+  async revokeSession(
+    session: SessionRequestSigner | null = this.session,
+  ): Promise<boolean> {
+    if (!session) {
+      return false;
+    }
+    const timestamp = this.nextTimestamp();
+    const signature = await session.signLogout(timestamp);
+    const response = await this.fetch("/session/logout", {
+      method: "POST",
+      headers: authHeaders(session.publicKey, signature, timestamp),
+    });
+    const data = (await response.json()) as ServerRevokeSessionResponse;
+    this.endSession(session, "logout");
+    return data.revoked;
+  }
+
+  /**
+   * Revoke every session of the wallet signer on the server
+   * (`POST /session/revoke-all`), including sessions started elsewhere, and
+   * stop using the session that was current when the call was made. A
+   * session started while the call is in flight was issued after it and
+   * stays in use. Signed by the wallet. Returns how many sessions the server
+   * revoked.
+   */
+  async revokeAllSessions(): Promise<number> {
+    const signer = this.signer;
+    if (!signer) {
+      throw new Error("No signer configured. Call setSigner() first.");
+    }
+    if (!signer.signSessionRevokeAll) {
+      throw new Error("This signer cannot sign Guardian session revocations");
+    }
+    const revoking = this.session;
+    const timestamp = this.nextTimestamp();
+    const signature = await signer.signSessionRevokeAll(
+      signer.commitment,
+      timestamp,
+    );
+    const body: ServerRevokeAllSessionsRequest = {
+      signer_commitment: signer.commitment,
+    };
+    const response = await this.fetch("/session/revoke-all", {
+      method: "POST",
+      headers: authHeaders(
+        signer.publicKey,
+        signature,
+        timestamp,
+        signer.requestAuthFormat,
+      ),
+      body: JSON.stringify(body),
+    });
+    const data = (await response.json()) as ServerRevokeAllSessionsResponse;
+    if (
+      revoking?.signerCommitment.toLowerCase() ===
+      signer.commitment.toLowerCase()
+    ) {
+      this.endSession(revoking, "logout");
+    }
+    return data.revoked;
+  }
+
+  /**
+   * Guardian's ACK commitment for one signature scheme (`GET /pubkey`).
+   * Omitting `scheme` returns the Falcon key even on a server that admits only
+   * ECDSA accounts, so pass the scheme of the account the commitment is for.
+   */
   async getPubkey(scheme?: SignatureScheme): Promise<PubkeyResponse> {
-    const query = scheme ? `?scheme=${scheme}` : '';
-    const response = await this.fetch(`/pubkey${query}`, { method: 'GET' });
+    const query = scheme ? `?scheme=${scheme}` : "";
+    const response = await this.fetch(`/pubkey${query}`, { method: "GET" });
     const data = (await response.json()) as ServerPubkeyResponse;
     return {
       commitment: data.commitment,
@@ -317,7 +519,7 @@ export class GuardianHttpClient {
   }
 
   async getStatus(): Promise<StatusResponse> {
-    const response = await this.fetch('/status', { method: 'GET' });
+    const response = await this.fetch("/status", { method: "GET" });
     const data = (await response.json()) as ServerStatusResponse;
     return {
       status: data.status,
@@ -327,15 +529,28 @@ export class GuardianHttpClient {
       startedAt: data.started_at,
       uptimeSeconds: data.uptime_seconds,
       execution: fromServerExecutionCapability(data.execution),
+      ...(data.sessions
+        ? {
+            sessions: {
+              maxTtlSeconds: data.sessions.max_ttl_seconds,
+            },
+          }
+        : {}),
     };
   }
 
   async configure(request: ConfigureRequest): Promise<ConfigureResponse> {
     const serverRequest = toServerConfigureRequest(request);
-    const response = await this.fetchAuthenticated('/configure', {
-      method: 'POST',
-      body: JSON.stringify(serverRequest),
-    }, request.accountId, serverRequest);
+    // Configuration changes who the account trusts: always the wallet.
+    const response = await this.fetchAuthenticated(
+      "/configure",
+      {
+        method: "POST",
+        body: JSON.stringify(serverRequest),
+      },
+      request.accountId,
+      serverRequest,
+    );
     const server = (await response.json()) as ServerConfigureResponse;
     return fromServerConfigureResponse(server);
   }
@@ -343,9 +558,15 @@ export class GuardianHttpClient {
   async getState(accountId: string): Promise<StateObject> {
     const requestQuery = { account_id: accountId };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/state?${params}`, {
-      method: 'GET',
-    }, accountId, requestQuery);
+    const response = await this.fetchAuthenticated(
+      `/state?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestQuery,
+      "session",
+    );
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
   }
@@ -360,9 +581,15 @@ export class GuardianHttpClient {
   async getCanonicalNonce(accountId: string): Promise<CanonicalNonce> {
     const requestQuery = { account_id: accountId };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/state/nonce?${params}`, {
-      method: 'GET',
-    }, accountId, requestQuery);
+    const response = await this.fetchAuthenticated(
+      `/state/nonce?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestQuery,
+      "session",
+    );
     const server = (await response.json()) as ServerCanonicalNonceResponse;
     return fromServerCanonicalNonce(server);
   }
@@ -374,42 +601,69 @@ export class GuardianHttpClient {
    * and implement `signLookupMessage`. Returns an empty list when the
    * commitment is not authorized for any account.
    */
-  async lookupAccountByKeyCommitment(keyCommitmentHex: string): Promise<LookupResponse> {
+  async lookupAccountByKeyCommitment(
+    keyCommitmentHex: string,
+  ): Promise<LookupResponse> {
     const params = new URLSearchParams({ key_commitment: keyCommitmentHex });
     const response = await this.fetchLookupAuthenticated(
       `/state/lookup?${params}`,
-      { method: 'GET' },
-      keyCommitmentHex
+      { method: "GET" },
+      keyCommitmentHex,
     );
-    return fromServerLookupResponse((await response.json()) as ServerLookupResponse);
+    return fromServerLookupResponse(
+      (await response.json()) as ServerLookupResponse,
+    );
   }
 
   async getDeltaProposals(accountId: string): Promise<DeltaObject[]> {
     const requestQuery = { account_id: accountId };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/delta/proposal?${params}`, {
-      method: 'GET',
-    }, accountId, requestQuery);
+    const response = await this.fetchAuthenticated(
+      `/delta/proposal?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestQuery,
+      "session",
+    );
     const data = (await response.json()) as ServerProposalsResponse;
     return data.proposals.map(fromServerDeltaObject);
   }
 
-  async getDeltaProposal(accountId: string, commitment: string): Promise<DeltaObject> {
+  async getDeltaProposal(
+    accountId: string,
+    commitment: string,
+  ): Promise<DeltaObject> {
     const requestQuery = { account_id: accountId, commitment };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/delta/proposal/single?${params}`, {
-      method: 'GET',
-    }, accountId, requestQuery);
+    const response = await this.fetchAuthenticated(
+      `/delta/proposal/single?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestQuery,
+      "session",
+    );
     const data = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(data);
   }
 
-  async pushDeltaProposal(request: DeltaProposalRequest): Promise<DeltaProposalResponse> {
+  async pushDeltaProposal(
+    request: DeltaProposalRequest,
+  ): Promise<DeltaProposalResponse> {
     const serverRequest = toServerDeltaProposalRequest(request);
-    const response = await this.fetchAuthenticated('/delta/proposal', {
-      method: 'POST',
-      body: JSON.stringify(serverRequest),
-    }, request.accountId, serverRequest);
+    const response = await this.fetchAuthenticated(
+      "/delta/proposal",
+      {
+        method: "POST",
+        body: JSON.stringify(serverRequest),
+      },
+      request.accountId,
+      serverRequest,
+      "session",
+    );
     const server = (await response.json()) as ServerDeltaProposalResponse;
     return {
       delta: fromServerDeltaObject(server.delta),
@@ -435,32 +689,58 @@ export class GuardianHttpClient {
       proposal_id: proposalId,
       allow_private_note: options?.allowPrivateNote ?? false,
     };
-    const response = await this.fetchAuthenticated('/delta/proposal/execution', {
-      method: 'POST',
-      body: JSON.stringify(serverRequest),
-    }, accountId, serverRequest);
-    return fromServerExecution((await response.json()) as ServerProposalExecution);
+    const response = await this.fetchAuthenticated(
+      "/delta/proposal/execution",
+      {
+        method: "POST",
+        body: JSON.stringify(serverRequest),
+      },
+      accountId,
+      serverRequest,
+    );
+    return fromServerExecution(
+      (await response.json()) as ServerProposalExecution,
+    );
   }
 
   /** The latest execution attempt of a proposal. */
-  async getDeltaProposalExecution(accountId: string, proposalId: string): Promise<ProposalExecution> {
+  async getDeltaProposalExecution(
+    accountId: string,
+    proposalId: string,
+  ): Promise<ProposalExecution> {
     const requestQuery = { account_id: accountId, proposal_id: proposalId };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/delta/proposal/execution?${params}`, {
-      method: 'GET',
-    }, accountId, requestQuery);
-    return fromServerExecution((await response.json()) as ServerProposalExecution);
+    const response = await this.fetchAuthenticated(
+      `/delta/proposal/execution?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestQuery,
+    );
+    return fromServerExecution(
+      (await response.json()) as ServerProposalExecution,
+    );
   }
 
   /** The account's in-flight execution, or `null`. A finished execution is not in flight. */
-  async getCurrentExecution(accountId: string): Promise<ProposalExecution | null> {
+  async getCurrentExecution(
+    accountId: string,
+  ): Promise<ProposalExecution | null> {
     const requestQuery = { account_id: accountId };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/delta/execution/current?${params}`, {
-      method: 'GET',
-    }, accountId, requestQuery);
+    const response = await this.fetchAuthenticated(
+      `/delta/execution/current?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestQuery,
+    );
     const server = (await response.json()) as ServerCurrentExecution;
-    return server.execution === null ? null : fromServerExecution(server.execution);
+    return server.execution === null
+      ? null
+      : fromServerExecution(server.execution);
   }
 
   /**
@@ -476,12 +756,24 @@ export class GuardianHttpClient {
    * when the transaction actually landed. Retries are idempotent and
    * preserve the original request timestamp.
    */
-  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
-    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
-    const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
-      method: 'POST',
-      body: JSON.stringify(serverRequest),
-    }, accountId, serverRequest);
+  async abandonCandidate(
+    accountId: string,
+    nonce: number,
+  ): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = {
+      account_id: accountId,
+      nonce,
+    };
+    // Abandoning changes the account's canonical chain: always the wallet.
+    const response = await this.fetchAuthenticated(
+      "/delta/candidate/abandon",
+      {
+        method: "POST",
+        body: JSON.stringify(serverRequest),
+      },
+      accountId,
+      serverRequest,
+    );
     const server = (await response.json()) as ServerAbandonCandidateResponse;
     return {
       accountId: server.account_id,
@@ -503,51 +795,67 @@ export class GuardianHttpClient {
    * replacing it), `'unexpected'` for any state no abandon flow
    * produces (including a missing delta).
    */
-  async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
+  async abandonStatus(
+    accountId: string,
+    nonce: number,
+  ): Promise<AbandonStatus> {
     let delta: DeltaObject;
     try {
       delta = await this.getDelta(accountId, nonce);
     } catch (e) {
-      if (e instanceof GuardianHttpError && e.code === 'delta_not_found') {
-        return 'unexpected';
+      if (e instanceof GuardianHttpError && e.code === "delta_not_found") {
+        return "unexpected";
       }
       throw e;
     }
     switch (delta.status.status) {
-      case 'candidate':
-        return 'waiting';
-      case 'canonical':
-        return 'landed';
+      case "candidate":
+        return "waiting";
+      case "canonical":
+        return "landed";
       // The Guardian gave up verifying and released the account (issue
       // #345): unlocked, but unresolved — deliberately distinct from
       // 'abandoned', which would wrongly imply the transaction did not
       // land.
-      case 'retained':
-        return 'retained';
-      case 'discarded':
-        return delta.status.reason === 'client_abandoned' ? 'abandoned' : 'unexpected';
+      case "retained":
+        return "retained";
+      case "discarded":
+        return delta.status.reason === "client_abandoned"
+          ? "abandoned"
+          : "unexpected";
       default:
-        return 'unexpected';
+        return "unexpected";
     }
   }
 
-
   async signDeltaProposal(request: SignProposalRequest): Promise<DeltaObject> {
     const serverRequest = toServerSignProposalRequest(request);
-    const response = await this.fetchAuthenticated('/delta/proposal', {
-      method: 'PUT',
-      body: JSON.stringify(serverRequest),
-    }, request.accountId, serverRequest);
+    const response = await this.fetchAuthenticated(
+      "/delta/proposal",
+      {
+        method: "PUT",
+        body: JSON.stringify(serverRequest),
+      },
+      request.accountId,
+      serverRequest,
+      "session",
+    );
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
 
   async pushDelta(delta: ExecutionDelta): Promise<PushDeltaResponse> {
     const serverDelta = toServerExecutionDelta(delta);
-    const response = await this.fetchAuthenticated('/delta', {
-      method: 'POST',
-      body: JSON.stringify(serverDelta),
-    }, delta.accountId, serverDelta);
+    // Guardian's ACK commits the account to this transition: always the wallet.
+    const response = await this.fetchAuthenticated(
+      "/delta",
+      {
+        method: "POST",
+        body: JSON.stringify(serverDelta),
+      },
+      delta.accountId,
+      serverDelta,
+    );
     const server = (await response.json()) as ServerPushDeltaResponse;
     return {
       accountId: server.account_id,
@@ -569,14 +877,23 @@ export class GuardianHttpClient {
       nonce: nonce.toString(),
     };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/delta?${params}`, {
-      method: 'GET',
-    }, accountId, requestPayload);
+    const response = await this.fetchAuthenticated(
+      `/delta?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestPayload,
+      "session",
+    );
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
 
-  async getDeltaSince(accountId: string, fromNonce: number): Promise<DeltaObject> {
+  async getDeltaSince(
+    accountId: string,
+    fromNonce: number,
+  ): Promise<DeltaObject> {
     const requestPayload = {
       account_id: accountId,
       nonce: fromNonce,
@@ -586,9 +903,15 @@ export class GuardianHttpClient {
       nonce: fromNonce.toString(),
     };
     const params = new URLSearchParams(requestQuery);
-    const response = await this.fetchAuthenticated(`/delta/since?${params}`, {
-      method: 'GET',
-    }, accountId, requestPayload);
+    const response = await this.fetchAuthenticated(
+      `/delta/since?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestPayload,
+      "session",
+    );
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
@@ -601,7 +924,10 @@ export class GuardianHttpClient {
    * the feed is exhausted. Read-only: served while the account is
    * paused. Only transactions pushed through Guardian appear.
    */
-  async getDeltaHistory(accountId: string, options: HistoryOptions = {}): Promise<HistoryPage> {
+  async getDeltaHistory(
+    accountId: string,
+    options: HistoryOptions = {},
+  ): Promise<HistoryPage> {
     // Signed payload and query string must carry the same values: the
     // server signs the canonical JSON of its query struct, where limit
     // stays a string and omitted parameters are omitted keys.
@@ -613,9 +939,15 @@ export class GuardianHttpClient {
       requestPayload.cursor = options.cursor;
     }
     const params = new URLSearchParams(requestPayload);
-    const response = await this.fetchAuthenticated(`/delta/history?${params}`, {
-      method: 'GET',
-    }, accountId, requestPayload);
+    const response = await this.fetchAuthenticated(
+      `/delta/history?${params}`,
+      {
+        method: "GET",
+      },
+      accountId,
+      requestPayload,
+      "session",
+    );
     const server = (await response.json()) as ServerHistoryPage;
     return fromServerHistoryPage(server);
   }
@@ -625,7 +957,7 @@ export class GuardianHttpClient {
     const response = await fetch(url, {
       ...init,
       headers: {
-        'Content-Type': 'application/json',
+        "Content-Type": "application/json",
         ...init.headers,
       },
     });
@@ -636,7 +968,7 @@ export class GuardianHttpClient {
         response.status,
         response.statusText,
         body,
-        response.headers.get('Retry-After')
+        response.headers.get("Retry-After"),
       );
     }
 
@@ -652,30 +984,35 @@ export class GuardianHttpClient {
   private async fetchLookupAuthenticated(
     path: string,
     init: RequestInit,
-    keyCommitmentHex: string
+    keyCommitmentHex: string,
   ): Promise<Response> {
     if (!this.signer) {
-      throw new Error('No signer configured. Call setSigner() first.');
+      throw new Error("No signer configured. Call setSigner() first.");
     }
     if (!this.signer.signLookupMessage) {
       throw new Error(
-        'Signer does not implement signLookupMessage. Account recovery by key requires a ' +
-          'signer that signs the lookup hash in raw or EIP-712 format; the canonical ' +
-          'lookup-hash helper lives in @openzeppelin/miden-multisig-client.'
+        "Signer does not implement signLookupMessage. Account recovery by key requires a " +
+          "signer that signs the lookup hash in raw or EIP-712 format; the canonical " +
+          "lookup-hash helper lives in @openzeppelin/miden-multisig-client.",
       );
     }
 
     const timestamp = this.nextTimestamp();
-    const signature = await this.signer.signLookupMessage(keyCommitmentHex, timestamp);
+    const signature = await this.signer.signLookupMessage(
+      keyCommitmentHex,
+      timestamp,
+    );
 
     return this.fetch(path, {
       ...init,
       headers: {
         ...init.headers,
-        'x-pubkey': this.signer.publicKey,
-        'x-signature': signature,
-        'x-timestamp': timestamp.toString(),
-        ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
+        ...authHeaders(
+          this.signer.publicKey,
+          signature,
+          timestamp,
+          this.signer.requestAuthFormat,
+        ),
       },
     });
   }
@@ -685,30 +1022,40 @@ export class GuardianHttpClient {
     init: RequestInit,
     accountId: string,
     requestPayload: unknown,
-    retries = 2
+    mode: AuthMode = "wallet",
+    retries = 2,
   ): Promise<Response> {
-    if (!this.signer) {
-      throw new Error('No signer configured. Call setSigner() first.');
-    }
-
     const timestamp = this.nextTimestamp();
     const authPayload = RequestAuthPayload.fromRequest(requestPayload);
-    const signature = this.signer.signRequest
-      ? await this.signer.signRequest(accountId, timestamp, authPayload)
-      : await this.signer.signAccountIdWithTimestamp(accountId, timestamp);
+    const session = mode === "session" ? this.getSession() : null;
+    const headers = session
+      ? authHeaders(
+          session.publicKey,
+          await session.signRequest(accountId, timestamp, authPayload),
+          timestamp,
+          "session",
+        )
+      : await this.walletAuthHeaders(accountId, timestamp, authPayload);
 
     try {
       return await this.fetch(path, {
         ...init,
         headers: {
           ...init.headers,
-          'x-pubkey': this.signer.publicKey,
-          'x-signature': signature,
-          'x-timestamp': timestamp.toString(),
-          ...(this.signer.requestAuthFormat ? { 'x-auth-format': this.signer.requestAuthFormat } : {}),
+          ...headers,
         },
       });
     } catch (err) {
+      // A session Guardian ended or no longer accepts (unknown key after a
+      // restart, rotated Guardian key or network) is dead for good: stop
+      // using it so the caller can start a new one; meanwhile the wallet
+      // signs again.
+      if (session && err instanceof GuardianHttpError) {
+        const reason = SESSION_END_REASONS[err.code ?? ""];
+        if (reason) {
+          this.endSession(session, reason);
+        }
+      }
       // Replay rejections are transient: the request was correctly signed
       // but lost the server's per-signer timestamp CAS. Retry with a fresh
       // timestamp and signature, branching only on the dedicated
@@ -718,12 +1065,38 @@ export class GuardianHttpClient {
       if (
         retries > 0 &&
         err instanceof GuardianHttpError &&
-        err.code === 'authentication_replay'
+        err.code === "authentication_replay"
       ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return this.fetchAuthenticated(path, init, accountId, requestPayload, retries - 1);
+        return this.fetchAuthenticated(
+          path,
+          init,
+          accountId,
+          requestPayload,
+          mode,
+          retries - 1,
+        );
       }
       throw err;
     }
+  }
+
+  private async walletAuthHeaders(
+    accountId: string,
+    timestamp: number,
+    authPayload: RequestAuthPayload,
+  ): Promise<Record<string, string>> {
+    if (!this.signer) {
+      throw new Error("No signer configured. Call setSigner() first.");
+    }
+    const signature = this.signer.signRequest
+      ? await this.signer.signRequest(accountId, timestamp, authPayload)
+      : await this.signer.signAccountIdWithTimestamp(accountId, timestamp);
+    return authHeaders(
+      this.signer.publicKey,
+      signature,
+      timestamp,
+      this.signer.requestAuthFormat,
+    );
   }
 }

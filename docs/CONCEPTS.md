@@ -174,7 +174,7 @@ flowchart LR
 
 | Boundary | Protected by |
 |---|---|
-| Client → Guardian | Per-account Falcon/ECDSA signatures, replay protection (±5 min timestamp window + monotonic per-key timestamps), rate limits, request size limits. |
+| Client → Guardian | Per-account Falcon/ECDSA signatures (or, on reads and proposal create/sign, a delegated P-256 session key the wallet authorized with a session grant), replay protection (±5 min timestamp window + monotonic per-key timestamps), rate limits, request size limits. |
 | Guardian → Client | The ACK signature on every accepted delta. Clients verify the ACK and the commitment chain before trusting returned state. |
 | Client → Miden | Miden's own ZK proof verification; Guardian is not in this path. |
 | Guardian → Miden | Read-only RPC; Miden does not trust Guardian for anything. |

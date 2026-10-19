@@ -1664,6 +1664,9 @@ mod filesystem {
                 .update_last_auth_timestamp_cas(account_id, signer_commitment, new_timestamp)
                 .await
         }
+        async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
+            self.0.purge_session_floors(before_ms).await
+        }
         async fn find_by_cosigner_commitment(
             &self,
             commitment: &str,

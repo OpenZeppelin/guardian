@@ -340,6 +340,24 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(rows_updated > 0)
     }
 
+    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let deleted = diesel::sql_query(
+            "DELETE FROM account_auth_state \
+             WHERE signer_commitment LIKE $1 AND last_auth_timestamp < $2",
+        )
+        .bind::<diesel::sql_types::Text, _>(format!("{}%", crate::session::SESSION_FLOOR_PREFIX))
+        .bind::<diesel::sql_types::BigInt, _>(before_ms)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| format!("Failed to purge session replay floors: {e}"))?;
+        Ok(deleted as u64)
+    }
+
     async fn set_has_pending_candidate(
         &self,
         account_id: &str,
@@ -1375,6 +1393,42 @@ mod tests {
             metadata_updated_at(&store, &account_id).await,
             before,
             "authentication must not advance updated_at"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn purge_removes_only_stale_session_floors() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xpurge{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+        let stale = crate::session::replay_floor_key(&[2; 33]);
+        let live = crate::session::replay_floor_key(&[3; 33]);
+        for (floor, timestamp) in [("0xaa", 100), (stale.as_str(), 100), (live.as_str(), 300)] {
+            assert!(
+                store
+                    .update_last_auth_timestamp_cas(&account_id, floor, timestamp)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        store.purge_session_floors(200).await.unwrap();
+
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id, "0xaa").await,
+            100,
+            "wallet floors are never purged"
+        );
+        assert_eq!(stored_auth_timestamp(&store, &account_id, &live).await, 300);
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, &stale, 50)
+                .await
+                .unwrap(),
+            "the stale session floor is gone"
         );
     }
 
