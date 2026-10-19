@@ -141,17 +141,15 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let tail = chain.reconstruct_tail(state, &current_state).await?;
     candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
-    let scheme = resolved.metadata.auth.scheme();
-    let acknowledged = crate::services::ack_delta_internal::acknowledge_delta(
+    let applied = crate::services::ack_delta_internal::apply_to_base(
         state,
-        &scheme,
         &tail.commitment,
         &tail.state_json,
         &params.delta,
     )
     .await?;
     if !chain.is_empty()
-        && let Some(applied_nonce) = acknowledged.applied.nonce
+        && let Some(applied_nonce) = applied.nonce
         && applied_nonce != params.delta.nonce
     {
         tracing::info!(
@@ -162,6 +160,14 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
+    let scheme = resolved.metadata.auth.scheme();
+    let acknowledged = crate::services::ack_delta_internal::acknowledge_applied(
+        state,
+        &scheme,
+        &params.delta,
+        applied,
+    )
+    .await?;
     let mut result_delta = acknowledged.delta;
     let applied = acknowledged.applied;
 

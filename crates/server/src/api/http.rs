@@ -860,8 +860,7 @@ pub struct CurrentExecutionResponse {
         (status = 200, description = "Execution already active", body = crate::services::execution_status::ExecutionEnvelope),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Not ready, not Guardian-executable, left to local execution, or the account is busy", body = crate::openapi::ApiErrorResponse),
-        (status = 503, description = "This server does not offer Guardian execution", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Not ready, not Guardian-executable, left to local execution, the account is busy, or this server does not offer Guardian execution", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn execute_delta_proposal(
@@ -960,7 +959,7 @@ pub async fn get_current_execution(
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(ProposalQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
-        (status = 200, description = "Pending proposals", body = ProposalsResponse),
+        (status = 200, description = "Pending proposals, each without its stored `transaction_request` (the single-proposal read returns it)", body = ProposalsResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
     )
 )]

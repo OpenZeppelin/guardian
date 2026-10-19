@@ -8,10 +8,10 @@ use super::session_helpers::{
 use crate::api::grpc::guardian::guardian_server::Guardian;
 use crate::api::grpc::guardian::{
     AbandonDeltaCandidateRequest, ConfigureRequest, CreateSessionRequest,
-    GetAccountByKeyCommitmentRequest, GetCanonicalNonceRequest, GetDeltaHistoryRequest,
-    GetDeltaProposalRequest, GetDeltaProposalsRequest, GetDeltaRequest, GetDeltaSinceRequest,
-    GetStateRequest, PushDeltaRequest, RevokeAllSessionsRequest, RevokeSessionRequest,
-    SessionGrantFields,
+    GetAccountByKeyCommitmentRequest, GetCanonicalNonceRequest, GetCurrentExecutionRequest,
+    GetDeltaHistoryRequest, GetDeltaProposalExecutionRequest, GetDeltaProposalRequest,
+    GetDeltaProposalsRequest, GetDeltaRequest, GetDeltaSinceRequest, GetStateRequest,
+    PushDeltaRequest, RevokeAllSessionsRequest, RevokeSessionRequest, SessionGrantFields,
 };
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
@@ -464,6 +464,33 @@ async fn test_grpc_every_session_eligible_read_accepts_the_session() {
             .await
             .map(drop),
         "GetDeltaProposal",
+    );
+    refused(
+        service
+            .get_delta_proposal_execution(session_request(
+                GetDeltaProposalExecutionRequest {
+                    account_id: account_id(),
+                    proposal_id: format!("0x{}", "ab".repeat(32)),
+                },
+                &account_id_hex,
+                &key,
+            ))
+            .await
+            .map(drop),
+        "GetDeltaProposalExecution",
+    );
+    refused(
+        service
+            .get_current_execution(session_request(
+                GetCurrentExecutionRequest {
+                    account_id: account_id(),
+                },
+                &account_id_hex,
+                &key,
+            ))
+            .await
+            .map(drop),
+        "GetCurrentExecution",
     );
 }
 
