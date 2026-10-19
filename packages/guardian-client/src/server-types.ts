@@ -1,19 +1,20 @@
-import type { TransactionRequestEnvelope } from './request-envelope.js';
-import type { ServerExecutionCapabilityWire } from './execution.js';
+import type { TransactionRequestEnvelope } from "./request-envelope.js";
+import type { ServerExecutionCapabilityWire } from "./execution.js";
 
 export interface ServerFalconSignature {
-  scheme: 'falcon';
+  scheme: "falcon";
   signature: string;
 }
 
 export interface ServerEcdsaSignature {
-  scheme: 'ecdsa';
+  scheme: "ecdsa";
   signature: string;
   public_key?: string;
-  message_format?: 'eip712';
+  message_format?: "eip712";
 }
 
-export type ServerProposalSignature = ServerFalconSignature | ServerEcdsaSignature;
+export type ServerProposalSignature =
+  ServerFalconSignature | ServerEcdsaSignature;
 
 export interface ServerCosignerSignature {
   signer_id: string;
@@ -22,21 +23,30 @@ export interface ServerCosignerSignature {
 }
 
 export type ServerDeltaStatus =
-  | { status: 'pending'; timestamp: string; proposer_id: string; cosigner_sigs: ServerCosignerSignature[] }
-  | { status: 'candidate'; timestamp: string }
-  | { status: 'canonical'; timestamp: string }
-  | { status: 'retained'; timestamp: string; reason?: 'retry_exhausted' | 'diverged' | 'orphaned' }
-  | { status: 'discarded'; timestamp: string; reason?: string };
+  | {
+      status: "pending";
+      timestamp: string;
+      proposer_id: string;
+      cosigner_sigs: ServerCosignerSignature[];
+    }
+  | { status: "candidate"; timestamp: string }
+  | { status: "canonical"; timestamp: string }
+  | {
+      status: "retained";
+      timestamp: string;
+      reason?: "retry_exhausted" | "diverged" | "orphaned";
+    }
+  | { status: "discarded"; timestamp: string; reason?: string };
 
 export type ServerProposalType =
-  | 'add_signer'
-  | 'remove_signer'
-  | 'change_threshold'
-  | 'update_procedure_threshold'
-  | 'switch_guardian'
-  | 'consume_notes'
-  | 'p2id'
-  | 'custom'
+  | "add_signer"
+  | "remove_signer"
+  | "change_threshold"
+  | "update_procedure_threshold"
+  | "switch_guardian"
+  | "consume_notes"
+  | "p2id"
+  | "custom"
   // The server accepts arbitrary proposal types (issue #266); known literals are
   // kept for autocomplete while `(string & {})` admits any custom label.
   | (string & {});
@@ -79,7 +89,10 @@ export interface ServerDeltaObject {
   delta_payload: {
     tx_summary?: { data: string };
     data?: string;
-    signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
+    signatures?: Array<{
+      signer_id: string;
+      signature: ServerProposalSignature;
+    }>;
     metadata?: ServerProposalMetadata;
     transaction_request?: TransactionRequestEnvelope;
   };
@@ -145,7 +158,10 @@ export interface ServerDeltaProposalRequest {
   nonce: number;
   delta_payload: {
     tx_summary: { data: string };
-    signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
+    signatures: Array<{
+      signer_id: string;
+      signature: ServerProposalSignature;
+    }>;
     metadata?: ServerProposalMetadata;
     transaction_request?: TransactionRequestEnvelope;
   };
@@ -168,7 +184,7 @@ export interface ServerAbandonCandidateRequest {
 export interface ServerAbandonCandidateResponse {
   account_id: string;
   nonce: number;
-  state: 'pending' | 'abandoned' | 'retained';
+  state: "pending" | "abandoned" | "retained";
   abandon_requested_at?: string;
 }
 
@@ -191,6 +207,42 @@ export interface ServerStatusResponse {
   started_at: string;
   uptime_seconds: number;
   execution?: ServerExecutionCapabilityWire;
+  sessions?: {
+    max_ttl_seconds: number;
+  };
+}
+
+export interface ServerCreateSessionRequest {
+  scheme: string;
+  auth_format?: string;
+  public_key?: string;
+  signature: string;
+  grant: {
+    signer_commitment: string;
+    session_public_key: string;
+    origin: string;
+    issued_at: number;
+    expires_at: number;
+    guardian_commitment: string;
+    network: string;
+  };
+}
+
+export interface ServerCreateSessionResponse {
+  signer_commitment: string;
+  expires_at: string;
+}
+
+export interface ServerRevokeSessionResponse {
+  revoked: boolean;
+}
+
+export interface ServerRevokeAllSessionsRequest {
+  signer_commitment: string;
+}
+
+export interface ServerRevokeAllSessionsResponse {
+  revoked: number;
 }
 
 export interface ServerLookupAccount {
@@ -205,27 +257,33 @@ export interface ServerLookupResponse {
 
 export interface ServerHistoryNoteAsset {
   asset_id: string;
-  kind: 'fungible' | 'non_fungible';
+  kind: "fungible" | "non_fungible";
   amount?: string;
 }
 
 export interface ServerHistoryNote {
   note_id: string;
-  tag: 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
-  note_type: 'public' | 'private';
+  tag: "p2id" | "p2ide" | "pswap" | "mint" | "burn" | "custom";
+  note_type: "public" | "private";
   assets: ServerHistoryNoteAsset[];
   sender?: string;
   recipient?: string;
 }
 
 export interface ServerHistoryDecodeWarning {
-  section: 'tx_summary' | 'metadata' | 'input_notes' | 'output_notes' | 'vault' | 'storage';
+  section:
+    | "tx_summary"
+    | "metadata"
+    | "input_notes"
+    | "output_notes"
+    | "vault"
+    | "storage";
   reason: string;
 }
 
 export interface ServerHistoryEntry {
   nonce: number;
-  status: 'canonical';
+  status: "canonical";
   timestamp: string;
   new_commitment: string | null;
   input_notes: ServerHistoryNote[];

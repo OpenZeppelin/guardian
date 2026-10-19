@@ -2,7 +2,7 @@ use crate::builder::state::AppState;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::resolve_account;
+use crate::services::resolve_account_allowing_session;
 
 #[derive(Debug, Clone)]
 pub struct GetDeltaProposalParams {
@@ -26,7 +26,7 @@ pub async fn get_delta_proposal(
         credentials,
     } = params;
 
-    let resolved = resolve_account(state, &account_id, &credentials).await?;
+    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
 
     let proposal = resolved
         .storage

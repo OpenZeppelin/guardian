@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use miden_multisig_client::{
-    ExportedProposal, MultisigClient, MultisigClientBuilder, P2ideHeights, ProposalExecutionMode,
-    SignatureScheme,
+    ExportedProposal, MidenCedar, MultisigClient, MultisigClientBuilder, P2ideHeights,
+    ProposalExecutionMode, SignatureScheme,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -40,9 +40,40 @@ pub struct SessionState {
     signature_scheme: SignatureScheme,
     /// Network the configured Miden endpoint belongs to, used to render account
     /// IDs as bech32m addresses (the format faucets expect).
-    network_id: NetworkId,
+    network: DemoNetwork,
     /// Who proves and submits this session's proposals: the demo itself, or GUARDIAN.
     execution_mode: ProposalExecutionMode,
+}
+
+/// Miden network the demo talks to. Cedar and mainnet share the `mm` address
+/// prefix, so the prefix alone cannot name the Guardian network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemoNetwork {
+    Devnet,
+    Testnet,
+    Cedar,
+    Mainnet,
+}
+
+impl DemoNetwork {
+    pub fn network_id(self) -> NetworkId {
+        match self {
+            DemoNetwork::Devnet => NetworkId::Devnet,
+            DemoNetwork::Testnet => NetworkId::Testnet,
+            DemoNetwork::Cedar => MidenCedar::network_id(),
+            DemoNetwork::Mainnet => NetworkId::Mainnet,
+        }
+    }
+
+    /// The Guardian `/status` environment a server on this network reports.
+    pub fn guardian_environment(self) -> &'static str {
+        match self {
+            DemoNetwork::Devnet => "devnet",
+            DemoNetwork::Testnet => "testnet",
+            DemoNetwork::Cedar => "cedar",
+            DemoNetwork::Mainnet => "mainnet",
+        }
+    }
 }
 
 impl SessionState {
@@ -56,7 +87,7 @@ impl SessionState {
             imported_proposal: None,
             custom_recipes: HashMap::new(),
             signature_scheme: SignatureScheme::Falcon,
-            network_id: NetworkId::Devnet,
+            network: DemoNetwork::Devnet,
             execution_mode: ProposalExecutionMode::SelfExecuted,
         })
     }
@@ -76,11 +107,11 @@ impl SessionState {
         &mut self,
         builder: MultisigClientBuilder,
         signature_scheme: SignatureScheme,
-        network_id: NetworkId,
+        network: DemoNetwork,
         execution_mode: ProposalExecutionMode,
     ) -> Result<(), String> {
         self.signature_scheme = signature_scheme;
-        self.network_id = network_id;
+        self.network = network;
         self.execution_mode = execution_mode;
 
         let builder = builder
@@ -122,6 +153,10 @@ impl SessionState {
         Ok(())
     }
 
+    pub fn has_client(&self) -> bool {
+        self.client.is_some()
+    }
+
     pub fn has_account(&self) -> bool {
         self.client
             .as_ref()
@@ -157,7 +192,11 @@ impl SessionState {
     }
 
     pub fn network_id(&self) -> NetworkId {
-        self.network_id.clone()
+        self.network.network_id()
+    }
+
+    pub fn network(&self) -> DemoNetwork {
+        self.network
     }
 
     /// Sets the imported proposal.

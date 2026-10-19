@@ -33,6 +33,7 @@ once.
 5. Create proposals (transfer, consume notes, switch GUARDIAN) and gather signatures.
 6. Execute once the threshold is satisfied, or export/import proposals for offline signing.
 7. After recovering an account on a fresh device (`r` then a sync/pull), run `n` — "Recover notes" — to restore pending notes via the transport drain, proposal import, and public backfill in one flow.
+8. Run `g` — "Guardian session" — to sign one session grant: syncs and proposal requests are then signed by a session key instead of your signer. The same menu shows, ends, or revokes every session of your signer.
 
 All of these steps are surfaced via the interactive menu—run it in multiple terminals to simulate different cosigners.
 
