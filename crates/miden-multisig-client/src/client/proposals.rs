@@ -516,9 +516,7 @@ impl MultisigClient {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
 
@@ -762,7 +760,9 @@ impl MultisigClient {
         match self.propose_transaction(transaction_type.clone()).await {
             Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
             Err(
-                error @ (MultisigError::GuardianConnection(_) | MultisigError::GuardianServer(_)),
+                error @ (MultisigError::GuardianConnection(_)
+                | MultisigError::GuardianServer(_)
+                | MultisigError::GuardianProposalRefused { .. }),
             ) => {
                 if transaction_type.supports_offline_execution() {
                     let exported = self.create_proposal_offline(transaction_type).await?;

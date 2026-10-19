@@ -55,7 +55,17 @@ pub struct ProposalOptions {
     /// summary binds it, so the executing party can neither shorten nor extend it.
     /// At most [`MAX_APPROVAL_EXPIRATION_DELTA`](crate::MAX_APPROVAL_EXPIRATION_DELTA)
     /// blocks, the furthest a transaction can expire after its reference block.
-    /// `None` means the approval never expires, the upstream default.
+    /// `None` applies the client's default: in
+    /// [`SelfExecuted`](ProposalExecutionMode::SelfExecuted) mode, and for a `SwitchGuardian` in
+    /// either mode, the approval never expires (the upstream default); in
+    /// [`GuardianExecutable`](ProposalExecutionMode::GuardianExecutable) mode it expires
+    /// [`GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA`](crate::GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA)
+    /// blocks after the bound block. A Guardian-executable proposal is also bounded, whatever
+    /// this field says, by its transaction's own expiration window, measured from the block it
+    /// executes against: at most
+    /// [`GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA`](crate::GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA)
+    /// blocks, and less when the transaction applies a shorter one (on devnet the fee faucet's
+    /// transfer policy caps a fee-paying transaction at 20 blocks).
     pub approval_expiration_delta: Option<NonZeroU32>,
 }
 
@@ -372,9 +382,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -478,9 +486,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -594,9 +600,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -696,9 +700,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -827,9 +829,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Clone notes for the runtime TransactionType; metadata keeps its own copy.
         let notes_for_tx_type = metadata.consume_notes_notes.clone();
@@ -929,9 +929,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -1008,9 +1006,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(
             tx_summary,

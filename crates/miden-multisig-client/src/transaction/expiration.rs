@@ -14,7 +14,9 @@ pub const GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA: NonZeroU32 =
 
 /// The transaction expiration a Guardian-executable request scripts, measured from the block
 /// it executes against. It keeps a submitted transaction's outcome observable within Guardian's
-/// resolution horizon.
+/// resolution horizon. It is a ceiling, not the window itself: an expiration can only be
+/// lowered, so anything else in the transaction that applies a shorter one sets the window (on
+/// devnet the fee faucet's transfer policy caps a fee-paying transaction at 20 blocks).
 pub const GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA: NonZeroU16 =
     NonZeroU16::new(256).expect("non-zero");
 

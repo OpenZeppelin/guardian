@@ -174,7 +174,26 @@ describe('GuardianHttpClient', () => {
       expect(status.execution).toEqual({ enabled: false, reason: 'prover_not_configured' });
     });
 
-    it('refuses a status whose execution capability is missing or names an unknown reason', async () => {
+    it('reads a status without an execution capability as not offering execution', async () => {
+      const base = {
+        status: 'ok',
+        version: '0.18.2',
+        git_commit: 'abc123def456',
+        environment: 'devnet',
+        started_at: '2026-06-17T10:00:00Z',
+        uptime_seconds: 3600,
+        sessions: { max_ttl_seconds: 28800 },
+      };
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => base });
+      const status = await client.getStatus();
+      expect(status).not.toHaveProperty('execution');
+      expect(status.sessions).toEqual({ maxTtlSeconds: 28800 });
+
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ ...base, execution: null }) });
+      await expect(client.getStatus()).resolves.not.toHaveProperty('execution');
+    });
+
+    it('refuses a status whose execution capability names an unknown reason', async () => {
       const base = {
         status: 'ok',
         version: '0.1.0',
@@ -183,9 +202,6 @@ describe('GuardianHttpClient', () => {
         started_at: '2026-06-17T10:00:00Z',
         uptime_seconds: 3600,
       };
-      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => base });
-      await expect(client.getStatus()).rejects.toThrow(/no execution capability/);
-
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({ ...base, execution: { enabled: false, reason: 'gone_fishing' } }),
@@ -1984,6 +2000,8 @@ describe('GuardianHttpClient sessions', () => {
       ['getDeltaHistory', () => client.getDeltaHistory(accountId)],
       ['getDeltaProposals', () => client.getDeltaProposals(accountId)],
       ['getDeltaProposal', () => client.getDeltaProposal(accountId, '0x' + 'e'.repeat(64))],
+      ['getDeltaProposalExecution', () => client.getDeltaProposalExecution(accountId, '0xproposal')],
+      ['getCurrentExecution', () => client.getCurrentExecution(accountId)],
       [
         'pushDeltaProposal',
         () =>
@@ -2090,6 +2108,35 @@ describe('GuardianHttpClient sessions', () => {
     expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
     expect(lastHeaders()['x-auth-format']).toBeUndefined();
     expect(session.signRequest).not.toHaveBeenCalled();
+  });
+
+  it('keeps the execution request on the wallet while its status reads use the session', async () => {
+    client.setSession(session);
+    const execution = {
+      account_id: '0xabc',
+      proposal_id: '0xproposal',
+      state: 'pending',
+      newly_accepted: true,
+      proposal_exists: true,
+      ignored_signatures: 0,
+      updated_at: '2026-09-30T12:00:00Z',
+    };
+    mockFetch
+      .mockResolvedValueOnce({ ok: true, json: async () => execution })
+      .mockResolvedValueOnce({ ok: true, json: async () => execution })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ execution }) });
+
+    await client.executeDeltaProposal('0xabc', '0xproposal');
+    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+
+    await client.getDeltaProposalExecution('0xabc', '0xproposal');
+    expect(lastHeaders()['x-auth-format']).toBe('session');
+    await client.getCurrentExecution('0xabc');
+    expect(lastHeaders()['x-auth-format']).toBe('session');
+
+    expect(mockSigner.signRequest).toHaveBeenCalledOnce();
+    expect(session.signRequest).toHaveBeenCalledTimes(2);
   });
 
   it('keeps pushDelta and abandonCandidate on the wallet while a session is set', async () => {

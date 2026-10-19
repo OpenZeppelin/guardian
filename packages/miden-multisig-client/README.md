@@ -644,7 +644,8 @@ error (honouring the server's retry-after hint), throws any other error, and giv
 minutes (`deadlineMs`) with a `GuardianExecutionWaitTimeoutError` whose `lastObserved` is the
 last execution it read. A refusal throws a `GuardianExecutionRefusedError` with `code` (the wire
 string, for example `GUARDIAN_EXECUTION_CONFLICT`), `userMessage`, `retryable`,
-`retryAfterSecs` and `blockingProposalId`. See
+`retryAfterSecs` and `blockingProposalId`. Status reads use the Guardian session when one is
+active. See
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
 Two proposals still execute locally on a `guardian_executable` client, because local execution
