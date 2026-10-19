@@ -209,6 +209,7 @@ impl Faults {
                 lease_expires_at: lease.expires_at,
                 ignored_signatures: 0,
                 now,
+                recoverable_since: now,
             })
             .await
             .unwrap();
@@ -631,6 +632,7 @@ async fn a_restart_faster_than_the_lease_still_reports_the_attempt_abandoned() {
             lease_expires_at: dead.expires_at,
             ignored_signatures: 0,
             now: Utc::now(),
+            recoverable_since: Utc::now(),
         })
         .await
         .unwrap();
