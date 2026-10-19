@@ -40,6 +40,17 @@ qual_generate_env() {
   QUAL_GRPC_PORT_B="${QUAL_GRPC_PORT_B:-$(qual_free_port)}"
   QUAL_HTTP_PORT_C="${QUAL_HTTP_PORT_C:-$(qual_free_port)}"
   QUAL_GRPC_PORT_C="${QUAL_GRPC_PORT_C:-$(qual_free_port)}"
+  QUAL_HTTP_PORT_D="${QUAL_HTTP_PORT_D:-$(qual_free_port)}"
+  QUAL_GRPC_PORT_D="${QUAL_GRPC_PORT_D:-$(qual_free_port)}"
+  # The queue server's depth. The deterministic profile has three chained
+  # fixture deltas, so a depth of two is the deepest it can fill and still
+  # refuse the next one; the live chained scenario pushes three transactions
+  # back to back, which need room for all three.
+  if [[ "${profile}" == "live" ]]; then
+    QUAL_QUEUE_DEPTH="${QUAL_QUEUE_DEPTH:-4}"
+  else
+    QUAL_QUEUE_DEPTH="${QUAL_QUEUE_DEPTH:-2}"
+  fi
   QUAL_POSTGRES_PASSWORD="${QUAL_POSTGRES_PASSWORD:-$(qual_random_suffix)}"
 
   QUAL_ACK_KEYS_DIR="${run_dir}/ack-keys"
@@ -60,6 +71,9 @@ QUAL_HTTP_PORT_B=${QUAL_HTTP_PORT_B}
 QUAL_GRPC_PORT_B=${QUAL_GRPC_PORT_B}
 QUAL_HTTP_PORT_C=${QUAL_HTTP_PORT_C}
 QUAL_GRPC_PORT_C=${QUAL_GRPC_PORT_C}
+QUAL_HTTP_PORT_D=${QUAL_HTTP_PORT_D}
+QUAL_GRPC_PORT_D=${QUAL_GRPC_PORT_D}
+QUAL_QUEUE_DEPTH=${QUAL_QUEUE_DEPTH}
 QUAL_POSTGRES_PASSWORD=${QUAL_POSTGRES_PASSWORD}
 QUAL_RATE_BURST_PER_SEC=${QUAL_RATE_BURST_PER_SEC:-500}
 QUAL_RATE_PER_MIN=${QUAL_RATE_PER_MIN:-20000}
@@ -72,5 +86,6 @@ ENV
   export QUAL_RUN_ID QUAL_PROJECT QUAL_HTTP_PORT QUAL_GRPC_PORT QUAL_POSTGRES_PASSWORD
   export QUAL_HTTP_PORT_B QUAL_GRPC_PORT_B
   export QUAL_HTTP_PORT_C QUAL_GRPC_PORT_C
+  export QUAL_HTTP_PORT_D QUAL_GRPC_PORT_D QUAL_QUEUE_DEPTH
   export QUAL_ACK_KEYS_DIR QUAL_ACK_KEYS_MIGRATION_DIR QUAL_OPERATOR_DIR
 }

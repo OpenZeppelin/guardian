@@ -59,14 +59,16 @@ least-travelled configuration.
 
 | Decision | Production choice |
 |---|---|
-| **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenTestnet`, `MidenDevnet`, or `MidenLocal`. The server refuses to start when it is unset or unrecognized; there is no fallback network. |
-| **Image version** | Pin an explicit release tag, **`v0.18.0` or later**. This guide depends on server features that v0.17.x does not have: `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults. An older server does not fail on the unknown variables: it boots, stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. The tell is the startup banner: the `ack signers` line carries `account_schemes` only on a new enough image, and `smoke.sh` fails at its first step on an old one. Guardian 0.18.x runs on Miden 0.17 and needs a node on 0.17.0, so the release and `GUARDIAN_NETWORK_TYPE` must agree: a network still on Miden 0.16 needs Guardian 0.17.x, which this guide does not cover. Check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.17](../../PRODUCTION.md#upgrading-to-miden-017) if you are moving an existing deployment: the first 0.18.x start irreversibly deletes stored Miden account data. Never run `latest` in production. |
+| **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenLocal`, `MidenDevnet`, `MidenTestnet`, `MidenCedar`, or `MidenMainnet`. The server refuses to start when it is unset or unrecognized; there is no fallback network. `MidenCedar` and `MidenMainnet` need `v0.18.2` or later: an older server does not recognize them and refuses to start. |
+| **Image version** | Pin an explicit release tag, **`v0.18.0` or later**, and prefer the newest 0.18.x patch. This guide depends on server features that v0.17.x does not have: `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults. An older server does not fail on the unknown variables: it boots, stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. The tell is the startup banner: the `ack signers` line carries `account_schemes` only on a new enough image, and `smoke.sh` fails at its first step on an old one. Guardian 0.18.x runs on Miden 0.17 and needs a node on 0.17.0, so the release and `GUARDIAN_NETWORK_TYPE` must agree: a network still on Miden 0.16 needs Guardian 0.17.x, which this guide does not cover. Check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.17](../../PRODUCTION.md#upgrading-to-miden-017) if you are moving an existing deployment: the first 0.18.x start irreversibly deletes stored Miden account data. Moving between 0.18.x patches keeps stored data, but read the release's upgrade notes in `MIDEN_COMPATIBILITY.md` first: 0.18.1 changed proposal metadata so that 0.18.0 SDKs cannot sign or execute new proposals. Never run `latest` in production. |
 | **Server features** | The published `ghcr.io/openzeppelin/guardian` image is built with the `postgres` feature, which is the production storage backend; that is the image every track in this guide runs. |
 | **Storage backend** | Postgres, always. The filesystem backend is dev-only and refused at startup in the prod stage. |
 | **Account signature scheme** | Set `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` on a new deployment, and treat it as required on the AWS tracks (A and C): only ECDSA has a hosted signer (KMS), so an ECDSA-only fleet is the only one whose account-facing ACK key never enters the process. Falcon has no remote signer, so every Falcon account is acked by a key that has to be loaded into memory from Secrets Manager; Falcon is second-class ([`PRODUCTION.md`](../../PRODUCTION.md#account-signature-scheme)). The gate applies to **new** registrations only, so it is safe on a fleet that already has Falcon accounts, and it has no effect on which ACK keys the server needs: the Falcon ACK key is still required today, so bootstrap and protect it exactly as below. Rejected registrations get `signature_scheme_not_allowed`; `GET /dashboard/info` shows `accounts_by_auth_method` if you want to check what exists before tightening. All three templates carry the variable. |
 | **ECDSA ACK signer backend** | AWS KMS where AWS is available (tracks A and C): the private key never enters the process. Track B keeps it in a `0600` file. Whichever you choose, the ACK keys **are Guardian's identity**: changing them later is a `SwitchGuardian` migration for every existing account, not a routine rotation ([`runbooks/secrets.md`](../../runbooks/secrets.md#ack-signing-keys)). |
 | **Alerting** | Decide who is told when an alarm fires before going live. Track A builds the CloudWatch alarms, but they notify nobody until you route them: a managed SNS topic delivered to Slack, your own SNS topics, or both (A2). On tracks B and C alerting is yours to build on the metrics endpoint (B6). |
 | **Release sweep** | On by default on every track. A background task walks unreleased Miden accounts against the chain and releases those whose `SwitchGuardian` never reached this server; it makes up to `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND` (default `5`) account visits per second against your Miden node, each at least one `GetAccount`. Lower the rate if you run your own node with little headroom, or set `GUARDIAN_RELEASE_SWEEP_ENABLED=false` to rely on the push path alone ([`CONFIGURATION.md`](../../CONFIGURATION.md#runtime--server-identity-and-storage)). |
+| **Candidate queue** | Keep the default, one in-flight candidate per account (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT=1`), unless wallets need to push back-to-back transactions before the previous one canonicalizes. Raising it (`2` to `16`; AWS: `TF_VAR_guardian_max_pending_candidates_per_account`) is safe only once every TypeScript client runs `@openzeppelin/miden-multisig-client` 0.18.1 or later: older clients can execute a proposal against a state the server did not pin, leaving GUARDIAN behind the chain for that account. Only the device that pushed the newest candidate benefits; other cosigners are refused until the queue drains ([`CONFIGURATION.md`](../../CONFIGURATION.md#runtime--server-identity-and-storage)). |
+| **Session lifetime** | Miden account sessions are always on and stored in Postgres (`auth_sessions`). `GUARDIAN_SESSION_MAX_TTL_SECONDS` (default `28800`, 8 h) is the longest a session may live; set it lower if your policy wants shorter delegated-signer sessions. It can only shorten, never extend ([`CONFIGURATION.md`](../../CONFIGURATION.md#runtime--sessions)). |
 | **Storage encryption** | Recommended. It is opt-in by key-source presence and must be enabled against an **empty** store; the server refuses to mix plaintext and ciphertext once a marker is written ([`PRODUCTION.md`](../../PRODUCTION.md#storage-encryption)). The same `{active, keys}` key document works from Secrets Manager (tracks A and C) or from a mounted file (track B), with multi-key rotation on both. |
 
 ## Track A: AWS ECS/Fargate (reference deployment)
@@ -237,8 +239,8 @@ between `plan` and `deploy --skip-build`. Reference:
 ./scripts/aws-deploy.sh status          # raw Terraform outputs: alb_url (raw ALB) and, with a domain, the custom hostname
 url=https://guardian.example.com        # your hostname: the certificate is issued for it, not for the ALB name
 curl -sf --max-time 10 "$url/"                                # liveness
-curl -sf --max-time 10 "$url/pubkey" | jq .                   # Falcon commitment
 curl -sf --max-time 10 "$url/pubkey?scheme=ecdsa" | jq .      # ECDSA commitment + pubkey (derived from the KMS key)
+curl -sf --max-time 10 "$url/pubkey?scheme=falcon" | jq .     # Falcon commitment
 grpcurl -import-path crates/server/proto -proto guardian.proto -d '{}' guardian.example.com:443 guardian.Guardian/GetPubkey
 ```
 
@@ -292,6 +294,10 @@ Then, outside the server:
   line) are not routine: they run an irreversible reset of stored Miden data
   and need the server deployed before the SDKs. Follow the matching section of
   [`PRODUCTION.md`](../../PRODUCTION.md#upgrading-to-miden-017).
+- **Patch upgrades** within a protocol line keep stored data, but can still
+  change SDK behavior or require a deploy order. Read the release's entry in
+  [`PRODUCTION.md` → Upgrading within 0.18.x](../../PRODUCTION.md#upgrading-within-018x)
+  before rolling the image.
 - **Secrets**: replacement, rotation, and compromise response per category in
   [`runbooks/secrets.md`](../../runbooks/secrets.md). ACK key replacement is an
   identity change.
@@ -503,8 +509,8 @@ By hand, against your real stack:
 
 ```bash
 set -a; source .env; set +a                                    # for the token below
-curl -sf 127.0.0.1:3000/pubkey | jq .                          # Falcon commitment
 curl -sf "127.0.0.1:3000/pubkey?scheme=ecdsa" | jq .           # ECDSA commitment + pubkey
+curl -sf "127.0.0.1:3000/pubkey?scheme=falcon" | jq .          # Falcon commitment
 docker compose logs server | grep -E 'coordination|ack signers|storage backend|listeners'
 curl -s -o /dev/null -w '%{http_code}\n' 127.0.0.1:9464/metrics                          # 401
 curl -sf -H "Authorization: Bearer $GUARDIAN_METRICS_BEARER_TOKEN" 127.0.0.1:9464/metrics | head

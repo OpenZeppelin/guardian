@@ -31,8 +31,8 @@
  *   },
  * });
  *
- * // Get GUARDIAN pubkey for config
- * const guardianCommitment = await client.guardianClient.getPubkey();
+ * // Get GUARDIAN's ACK commitment for the account's signature scheme
+ * const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
  *
  * // Create multisig account
  * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], guardianCommitment };
@@ -57,6 +57,30 @@ export type { ProverConfig, ProverRetryPolicy } from './prover/config.js';
 export type { RpcConfig, RpcRetryPolicy } from './rpc/config.js';
 export { lookupAuthDigest } from './lookupAuth.js';
 export {
+  SESSION_GRANT_SCOPE,
+  describeSessionGrant,
+  sessionGrantDigest,
+  sessionLogoutDigest,
+  sessionRevokeAllDigest,
+} from './session/grant.js';
+export {
+  GuardianSession,
+  IndexedDbSessionKeyStore,
+  type GuardianSessionOptions,
+  WebCryptoSessionKey,
+  type SessionKeyStore,
+  type StoredSessionKey,
+} from './session/key.js';
+export {
+  GuardianSessionsUnsupportedError,
+  SessionGrantDeclinedError,
+  endGuardianSession,
+  resumeGuardianSession,
+  revokeAllGuardianSessions,
+  startGuardianSession,
+  type StartSessionOptions,
+} from './session/manager.js';
+export {
   Multisig,
   type AccountState,
   type SyncStateResult,
@@ -67,15 +91,10 @@ export {
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
   ChainBehindBoundBlockError,
-  chainAnchorFromBase64,
-  chainAnchorToBase64,
-  chainAnchorBlockNum,
-  executeForSummary,
-  executeForSummaryAt,
   executeForSummaryAtTip,
   summaryApprovalExpirationBlockNum,
+  summaryBoundBlockNum,
   summarySalt,
-  SummaryAnchorMismatchError,
   buildUpdateSignersTransactionRequest,
   buildUpdateProcedureThresholdTransactionRequest,
   buildUpdateGuardianTransactionRequest,
@@ -196,9 +215,11 @@ export {
 
 export {
   type AuthArgErrorCode,
+  BoundBlockMismatchError,
   BoundBlockNotDeclaredError,
   MultisigAuthArgsMissingError,
   ProposalSaltMalformedError,
+  TransactionSummaryLayoutError,
 } from './multisig/authArgErrors.js';
 
 export {

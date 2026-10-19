@@ -139,7 +139,7 @@ pass "server is up"
 http "${BASE}/" >/dev/null || fail "GET / (liveness) did not return 2xx"
 pass "/ answers (liveness)"
 
-falcon="$(http "${BASE}/pubkey")"
+falcon="$(http "${BASE}/pubkey?scheme=falcon")"
 ecdsa="$(http "${BASE}/pubkey?scheme=ecdsa")"
 jq -e '.commitment | startswith("0x")' <<<"$falcon" >/dev/null || fail "Falcon /pubkey has no commitment: $falcon"
 jq -e '.commitment | startswith("0x")' <<<"$ecdsa"  >/dev/null || fail "ECDSA /pubkey has no commitment: $ecdsa"

@@ -107,6 +107,29 @@ impl AckRegistry {
         }
     }
 
+    /// A registry whose Falcon signer holds `falcon_secret` (an ephemeral
+    /// ECDSA signer beside it), for tests that drive pre-generated
+    /// fixture accounts: their guardian key must be this server's, or
+    /// every promotion looks like a switch away from it.
+    #[cfg(all(test, feature = "e2e"))]
+    pub(crate) async fn with_falcon_secret_for_tests(
+        keystore_path: PathBuf,
+        falcon_secret: &miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey,
+    ) -> Result<Self> {
+        let falcon = MidenFalconRpoSigner::new(keystore_path.clone(), Some(falcon_secret))?;
+        let ecdsa = build_ecdsa_signer(
+            keystore_path,
+            EcdsaBackendKind::InMemory,
+            None::<&FileSecretProvider>,
+        )
+        .await?;
+        Ok(Self {
+            falcon,
+            ecdsa,
+            account_schemes: AllowedAccountSchemes::ALL,
+        })
+    }
+
     async fn from_provider<P: AckSecretProvider + ?Sized>(
         keystore_path: PathBuf,
         ecdsa_backend: EcdsaBackendKind,

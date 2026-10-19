@@ -3,6 +3,9 @@ use crate::testing::helpers::{
     create_signed_request_with_auth, create_test_app_state,
     load_fixture_account_grpc as load_fixture_account, load_fixture_delta,
 };
+use guardian_shared::FromJson;
+use miden_protocol::Word;
+use miden_protocol::transaction::TransactionSummary;
 use tonic::Request;
 
 use crate::api::grpc::guardian::guardian_server::Guardian;
@@ -386,4 +389,93 @@ async fn test_grpc_get_pubkey() {
     let response = response.unwrap().into_inner();
     assert!(!response.pubkey.is_empty(), "Should return pubkey");
     assert!(response.pubkey.starts_with("0x"), "Pubkey should be hex");
+}
+
+#[tokio::test]
+async fn test_grpc_sign_delta_proposal_verifies_signature() {
+    let state = create_test_app_state().await;
+    let service = create_grpc_service(state);
+
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
+    let signer = TestSigner::new();
+
+    let configure_req = ConfigureRequest {
+        account_id: account_id_hex.clone(),
+        auth: Some(create_miden_falcon_rpo_auth(vec![
+            signer.commitment_hex.clone(),
+        ])),
+        network_config: Some(create_miden_network_config()),
+        initial_state,
+    };
+    service
+        .configure(create_signed_request_with_auth(
+            configure_req,
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap();
+
+    let delta_1 = load_fixture_delta(1);
+    let summary_commitment = TransactionSummary::from_json(&delta_1["delta_payload"])
+        .unwrap()
+        .to_commitment();
+    let delta_payload = serde_json::json!({
+        "tx_summary": delta_1["delta_payload"],
+        "signatures": [],
+        "metadata": {
+            "proposal_type": "change_threshold",
+            "target_threshold": 1,
+            "signer_commitments": [signer.commitment_hex.clone()]
+        }
+    });
+    let push_proposal_req = PushDeltaProposalRequest {
+        account_id: account_id_hex.clone(),
+        nonce: 1,
+        delta_payload: serde_json::to_string(&delta_payload).unwrap(),
+    };
+    let commitment = service
+        .push_delta_proposal(create_signed_request_with_auth(
+            push_proposal_req,
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .commitment;
+
+    let sign_proposal_req = |signature: String| SignDeltaProposalRequest {
+        account_id: account_id_hex.clone(),
+        commitment: commitment.clone(),
+        signature: Some(ProposalSignature {
+            scheme: "falcon".to_string(),
+            signature,
+            public_key: None,
+            message_format: String::new(),
+        }),
+    };
+
+    // Signed over another message: rejected before anything is stored.
+    let wrong = create_signed_request_with_auth(
+        sign_proposal_req(signer.sign_word(Word::default())),
+        &account_id_hex,
+        &signer,
+    );
+    let status = service
+        .sign_delta_proposal(wrong)
+        .await
+        .expect_err("an approval over another message must be a gRPC error");
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    let details: serde_json::Value =
+        serde_json::from_slice(status.details()).expect("Status.details is JSON");
+    assert_eq!(details["code"], "invalid_proposal_signature");
+
+    let valid = create_signed_request_with_auth(
+        sign_proposal_req(signer.sign_word(summary_commitment)),
+        &account_id_hex,
+        &signer,
+    );
+    let response = service.sign_delta_proposal(valid).await;
+    assert!(response.is_ok(), "{:?}", response.err());
 }

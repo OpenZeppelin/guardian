@@ -372,6 +372,26 @@ plus:
   apply the release's Terraform, which adds the alarm notification, release
   sweep, and account-scheme variables, before rolling the image.
 
+## Upgrading within 0.18.x
+
+Patch releases on the Miden 0.17 line keep stored data, the `auth_tx` procedure
+root, and existing accounts; no reset runs. Each one still has operator-visible
+changes, listed in full in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017):
+
+- **0.18.1** moves to the Miden 0.17 patch pins and replaces the proposal
+  `chain_anchor` with `bound_block_num`. The server needs nothing, but 0.18.0
+  SDKs cannot sign or execute proposals that 0.18.1 SDKs create, so upgrade
+  every party that signs or executes an account's proposals together. It is
+  also the TypeScript SDK floor for raising
+  `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above `1`
+  ([`CONFIGURATION.md`](./CONFIGURATION.md#runtime--server-identity-and-storage)).
+- **0.18.2** adds the `MidenCedar` and `MidenMainnet` network types. Deploy the
+  server before configuring clients for either: older servers reject the labels
+  with `unsupported Miden network_type`. `/pubkey` without `scheme` returns the
+  Falcon key even on an ECDSA-only server, so health checks and integrations
+  that want the ECDSA commitment must pass `?scheme=ecdsa`.
+
 ## Upgrading to Miden 0.16
 
 > **One-time, irreversible: the first 0.16 deploy wipes all pre-0.16 Miden

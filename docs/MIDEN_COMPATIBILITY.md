@@ -20,6 +20,8 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
+| 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
 | 0.17.0 | 0.16 | `=0.16.1` | `=0.16.0` | `0.16.0` (exact) |
 | 0.16.x | 0.15 | `0.15.3` | `0.15.0` | `^0.15.8` |
@@ -27,6 +29,12 @@ elsewhere and link here:
 | 0.14.x | 0.14 | n/a | `0.14.x` | `^0.14.0` |
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
+
+0.18.2 keeps the 0.18.1 pins.
+
+0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
+`miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
+Rust pins are 0.17.1 for the protocol crates and 0.17.3 for the client crates.
 
 0.18.0 builds on the stable Miden 0.17 release. `@miden-sdk/miden-sdk` 0.17.0 embeds
 `miden-client` 0.17.0 and `miden-protocol` / `miden-standards` 0.17.0, so every Rust pin
@@ -116,6 +124,90 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
+**Upgrading from 0.18.1 to 0.18.2: Cedar and mainnet network labels.** The Miden pins,
+the `auth_tx` procedure root, stored data and existing contracts are unchanged, so
+accounts and stores carry over. The release only adds:
+
+- **Two Miden network types.** `GUARDIAN_NETWORK_TYPE` accepts `MidenCedar` and
+  `MidenMainnet`, and the `network_type` field of a Miden `NetworkConfig` (gRPC and
+  HTTP) accepts `cedar` and `mainnet` next to `local`, `devnet` and `testnet`. A
+  server on either reports that label in `/status` and session grants. Cedar
+  addresses use the `mm` prefix. Older servers reject the new labels with
+  `unsupported Miden network_type`, so deploy the server before configuring
+  clients for Cedar or mainnet.
+- **Rust SDK presets.** `MidenCedar::endpoint()` makes `MultisigClientBuilder` wire
+  the Cedar prover and note transport, and `Endpoint::mainnet()` now wires the
+  mainnet prover and note transport. `MidenCedar::network_id()` encodes Cedar
+  addresses; miden-client's own `network_id()` returns the generic `mcst` id for
+  Cedar.
+- **TypeScript.** `@miden-sdk/miden-sdk` 0.17.3 has no Cedar or mainnet preset, so
+  a browser client names the RPC, prover and note transport URLs explicitly (see
+  the `@openzeppelin/miden-multisig-client` README).
+- **`/pubkey` without `scheme` returns the Falcon key**, whichever schemes the
+  server admits. This was already the behavior; it is now documented, and the
+  examples pass the account's scheme.
+
+**Upgrading from 0.18.0 to 0.18.1: Miden 0.17 patch pins.** 0.18.1 moves to
+`miden-protocol` / `miden-standards` 0.17.1, `miden-client` 0.17.3 and
+`@miden-sdk/miden-sdk` 0.17.3. The `auth_tx` procedure root and the stored
+account data are unchanged, so accounts carry over. Upstream changes that reach
+the SDKs:
+
+- **Note transport keeps one cursor per tag** (miden-client 0.17.1). A tag
+  without a cursor, such as a recovered account's, is served from the first
+  retained note, and each fetch reads a bounded number of pages. Upstream does
+  not carry the 0.17.0 global cursor over, so a store upgraded from 0.18.0
+  restarts every tag from the first retained note: its first syncs re-walk
+  transport history it already holds (imports dedupe) before they reach newer
+  notes. The transport drain of the recovery flow keeps fetching until a fetch
+  moves no tag's cursor instead of clearing the covered-tags bookkeeping, so
+  it reaches those notes in one call, and pages fetched before a failed one
+  stay imported. Upstream deprecated the covered-tags setting, the global
+  transport cursor and `NoteTransportError::PaginationDidNotTerminate`.
+- **The relay outbox is gone** (miden-client 0.17.2). Private notes are sent
+  directly; upstream's store migration drops the stale outbox row.
+- **`NodeRpcClient` gained `is_invitation_code_valid`** (miden-client 0.17.3).
+  A custom `NodeRpcClient` implementation must add it.
+- **Browser clients sharing a store name share one IndexedDB connection** while
+  any of them is alive. Release a `MidenClient` with
+  `await client[Symbol.asyncDispose]()` before deleting or reopening its store.
+
+**Upgrading from 0.18.0 to 0.18.1: TypeScript proposals are labelled with the account's next
+nonce.** Apart from the patch pins above, this keeps stored data and server
+contracts, but changes a TypeScript SDK default and two admission rules of a
+server that queues chained candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1, issue #17):
+
+- **`create*Proposal` defaults `nonce` to the store account's nonce plus one**, the
+  nonce the executed transaction will have, as the Rust SDK has since #72. Through
+  0.18.0 the default was `Date.now()`. `options.nonce` still overrides it, and
+  an account nonce at or above `Number.MAX_SAFE_INTEGER` makes the default throw
+  rather than round. The delta and proposal nonce is GUARDIAN's storage key
+  (`UNIQUE(account_id, nonce)`), the order of `/delta/since`, the history and the
+  candidate queue, and the lookup key of `getDelta` and `abandonCandidate`. Rows this
+  SDK wrote before the change keep their timestamp keys, nothing is migrated: on such
+  an account a timestamp sorts after every account nonce, so `/delta/since` (ascending)
+  lists those rows last and the history (newest-first) lists them first, and neither
+  order is chain order across the switch; `/delta/since?nonce=N` from a nonce-keyed
+  cursor returns the timestamp-keyed rows every time.
+- **Mixed-version cosigners.** A cosigner still on 0.18.0 or earlier labels with a
+  timestamp. A server at the default depth accepts that proposal as before; a queueing
+  server refuses it with `409 conflict_pending_delta` while a candidate is queued (next
+  item), and refuses a delta labelled with anything but the nonce it leaves the account
+  at while a candidate is queued, so a timestamp label cannot take the queue's tail. With
+  nothing queued, a timestamp-labelled delta is still accepted, and the queue then holds
+  only that candidate until it promotes, because no real nonce exceeds its label. Upgrade
+  the proposing devices first; signing and executing a proposal another device created is
+  unchanged, and a proposal GUARDIAN already holds under a timestamp key stays executable
+  from the device that holds the state it is pinned to.
+- **A queueing server records a proposal behind a queued candidate only at that
+  candidate's nonce plus one**, and **admits nothing behind a candidate that changes the
+  account's signer set or guardian key** until it promotes, both `409
+  conflict_pending_delta`. At the default depth of one nothing changes: a queued
+  candidate already refuses every submission. The queue helps the device that pushed
+  the newest candidate; `/state` serves the canonical state, so every other cosigner
+  is refused until it drains, and serving the queue tail to cosigners is follow-up
+  work.
+
 A Guardian server or SDK built on one protocol line rejects a node from another.
 Run a node matching the **Miden protocol** column.
 
@@ -177,13 +269,51 @@ Nothing stored under Miden 0.16 survives:
   height, timelock height). The script roots moved with the layouts.
 - **Execution proofs come from VM 0.35** (Plonky3 0.8). A 0.16 proof is rejected.
 
+### Proposals name their bound block (0.18.1)
+
+0.18.1 changes the proposal metadata both SDKs write. It is a
+breaking SDK change and needs no server change.
+
+- **Proposals no longer carry `chain_anchor`.** Proposal creation captured an
+  anchor at the proposer's sync height and refused any request bound to another
+  block, so a dApp request built at block N and proposed after the proposer
+  synced past N always failed with `SummaryAnchorMismatchError` (issue #538).
+  Creation now syncs up to the bound block when it is behind and derives the
+  summary at the tip.
+- **Proposals carry `bound_block_num`**, the block the signed summary binds, as
+  an unsigned `u32` metadata field. Both SDKs read the block from the summary
+  and refuse a proposal whose `bound_block_num` disagrees, whatever its type,
+  before it is signed or executed, so a wrong value can deny a proposal but
+  never get a wrong one accepted.
+- **0.18.0 clients cannot sign or execute new proposals.** They refuse a
+  proposal without a `chain_anchor`. Upgrade every party that signs or executes
+  an account's proposals together.
+- **New clients accept proposals 0.18.0 clients made.** Both SDKs read their
+  block from the signed summary; neither reads the legacy `chain_anchor`.
+- **Servers need no redeploy.** The server stores proposal metadata as sent, so
+  `bound_block_num` passes through like any other client field.
+- **Removed APIs.** TypeScript: `executeForSummary` (use
+  `executeForSummaryAtTip`), `executeForSummaryAt`, `SummaryAnchorMismatchError`,
+  `chainAnchorToBase64`, `chainAnchorFromBase64`, `chainAnchorBlockNum`. Rust: the
+  `chain_anchor` fields of `ProposalMetadataPayload` and `ExportedMetadata`,
+  `ProposalMetadata::chain_anchor_b64` and `ProposalMetadata::chain_anchor()`,
+  `ProposalPayload::with_chain_anchor`, and `MultisigError::SummaryAnchorMismatch`.
+  New: `bound_block_num` / `boundBlockNum` on the metadata types, which
+  `ProposalPayload::new` fills from the summary it is given, and
+  `MultisigError::BoundBlockMismatch`. TypeScript: `summaryBoundBlockNum`,
+  `BoundBlockMismatchError` and `TransactionSummaryLayoutError`, with the
+  `AuthArgErrorCode` values `bound_block_mismatch` and
+  `transaction_summary_layout_unsupported`.
+
 ### Open upstream items
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-05.
+Last checked 2026-10-12.
 
-- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach.
+- **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
+  on 2026-10-12 it answered requests whose accept header named client 0.17.3
+  (and 0.17.0), and refused 0.18.0 and 0.17.0-rc.5.
   The devnet run below was made on the Miden 0.17 release candidates and has not
   been repeated on 0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
@@ -201,7 +331,7 @@ Last checked 2026-10-05.
   reports every account as already allowed. Testnet runs Miden 0.16, so
   on testnet the examples need a local `miden-node` from the pinned line until
   it upgrades.
-- **miden-client fee path.** miden-client (still in 0.17.0) commits the
+- **miden-client fee path.** miden-client (still in 0.17.3) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig
   client's `transaction/auth_args.rs`). When the client builds
@@ -224,8 +354,8 @@ Last checked 2026-10-05.
   and recovery are in
   [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#account-data-wasnt-found-or-incomplete-storage-map-in-a-browser).
   When the web SDK fixes it: remove that guidance (`git grep useWorker`).
-- **Pins.** The workspace pins the stable 0.17.0 protocol and client crates and
-  web SDK 0.17.0 (see the matrix). The protocol pin follows the client and web
+- **Pins.** The workspace pins protocol crates 0.17.1, client crates 0.17.3 and
+  web SDK 0.17.3 (see the matrix). The protocol pin follows the client and web
   SDK releases, not the protocol tags, because both SDKs must embed the same
   kernel.
 

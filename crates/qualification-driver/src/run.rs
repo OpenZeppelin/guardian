@@ -84,6 +84,9 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
             migration_endpoint: std::env::var("QUAL_GUARDIAN_MIGRATION_GRPC")
                 .ok()
                 .filter(|endpoint| !endpoint.trim().is_empty()),
+            queue_endpoint: std::env::var("QUAL_GUARDIAN_QUEUE_GRPC")
+                .ok()
+                .filter(|endpoint| !endpoint.trim().is_empty()),
         }
     }));
 

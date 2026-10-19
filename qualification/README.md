@@ -44,6 +44,10 @@ that ships with the driver is a switch that can be left on.
 | Execution submits nothing | drop the `executeProposal` call in `tests/qualification/actions/live.ts` | `failed` / `product`, naming the unmoved account nonce |
 | Signatures are claimed but never collected | in `collectSignatures`, increment the counter without calling `signProposal` | `failed` / `product`, naming the unmet threshold |
 | Stored data does not survive an upgrade | drop the database between the seed and the swap in `run.sh --upgrade-from` | `failed` / `product`, naming the unreadable account |
+| A proposal that does not extend the queue is admitted | in `crates/server/src/services/push_delta_proposal.rs`, disable the `tail_nonce + 1` refusal | `det-candidate-queue` and `live-candidate-queue-stranded-head-1of1-ecdsa`: `failed` / `product`, naming the accepted proposal and its nonce |
+| A full queue judges a delta's base first | in `push_delta.rs` and `storage::gate_candidate_submission`, let an unknown base past the full-queue check | `det-candidate-queue`: `failed` / `product`, naming `commitment_mismatch` where `conflict_pending_delta` was due |
+| The server does not queue chained candidates | run the queue server at `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT=1` | `live-candidate-queue-chained-1of1-ecdsa`: `failed` / `product`, naming the refused second transfer |
+| The TypeScript SDK executes a proposal pinned to a state its client does not hold | in `packages/miden-multisig-client/src/multisig.ts`, drop the `assertExecutesOnPinnedBase` calls | `live-candidate-queue-stranded-head-1of1-ecdsa` (TypeScript): `failed` / `product`, naming the executed proposal labelled past the head |
 
 ```bash
 cd packages/miden-multisig-client
@@ -57,6 +61,10 @@ QUAL_OUT_DIR=/tmp/nc QUAL_RUN_ID=nc-1 \
 
 Run a control, confirm the named verdict, then revert and confirm the run
 passes again. A control that fails in both directions proves nothing.
+
+The candidate-queue controls were run against a local Miden node, since devnet
+had moved past the pinned client when they were added, with the server built
+from the branch, and each passed again once reverted.
 
 Two of these controls found real defects when they were first run, and both
 fixes carry their reasoning at the code: `account-register` is a no-op on a
