@@ -6429,6 +6429,8 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
+      // The approval the served proposal lacks is relayed before the push.
+      mockFetch.mockResolvedValueOnce(servedProposal());
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
@@ -6549,6 +6551,8 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
+      // The approval the served proposal lacks is relayed first.
+      mockFetch.mockResolvedValueOnce(servedProposal());
       // The push back to the old GUARDIAN fails — must be swallowed.
       mockFetch.mockRejectedValueOnce(new Error('pre-switch GUARDIAN went away'));
       // #417 pre-switch note import: the old-GUARDIAN proposal listing (no
@@ -6611,6 +6615,88 @@ describe('Multisig', () => {
           newGuardianEndpoint: 'http://new-guardian.com',
           description: '',
         },
+      });
+    }
+
+    for (const [label, relayResponse, expectedWarning] of [
+      ['accepted', () => servedProposal(), undefined],
+      // A server without the gate accepts only the caller's own approval; the
+      // push is still made, and that server acknowledges it without the rest.
+      [
+        'refused by a server without the gate',
+        () => guardianRefusal(400, 'invalid_proposal_signature'),
+        'GUARDIAN refused the relayed approval',
+      ],
+      // A failed relay still leaves the push to be tried: the stored proposal
+      // may already carry a threshold.
+      [
+        'failed',
+        () => guardianRefusal(503, 'service_unavailable'),
+        'Relaying collected approvals to the pre-switch GUARDIAN failed',
+      ],
+    ] as const) {
+      it(`relays collected approvals to the pre-switch GUARDIAN before pushing the switch back (${label})`, async () => {
+        const config = {
+          threshold: 1,
+          signerCommitments: ['0x' + 'a'.repeat(64)],
+          guardianCommitment: '0x' + 'c'.repeat(64),
+        };
+        const multisig = createTestMultisig(config);
+        const proposalId = '0x' + 'c'.repeat(64);
+        const newGuardianPubkey = '0x' + '1'.repeat(64);
+        readySwitchProposal(multisig, proposalId, newGuardianPubkey);
+
+        // The pre-switch GUARDIAN serves the proposal without the approval
+        // collected off channel, so it would refuse the push back (issue #524).
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ commitment: newGuardianPubkey }),
+        });
+        mockFetch.mockResolvedValueOnce(relayResponse());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ account_id: multisig.accountId, nonce: 1, ack_scheme: 'falcon' }),
+        });
+        vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+        mockImportNotesFromProposals.mockReset();
+        mockImportNotesFromProposals.mockResolvedValue([]);
+        mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+        mockWebClient.accounts.get.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+        });
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          await expect(multisig.executeProposal(proposalId)).resolves.toBeUndefined();
+          if (expectedWarning) {
+            expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(expectedWarning), expect.anything());
+          } else {
+            expect(warnSpy).not.toHaveBeenCalled();
+          }
+          expect(warnSpy).not.toHaveBeenCalledWith(
+            expect.stringContaining('SwitchGuardian delta push to the pre-switch GUARDIAN failed'),
+            expect.anything(),
+          );
+        } finally {
+          warnSpy.mockRestore();
+        }
+        const calls = mockFetch.mock.calls.map(([url, init]) => ({
+          url: String(url),
+          method: (init as RequestInit | undefined)?.method,
+        }));
+        const relayIndex = calls.findIndex(
+          ({ url, method }) => url.includes('/delta/proposal') && method === 'PUT',
+        );
+        const pushIndex = calls.findIndex(({ url }) => url.endsWith('/delta'));
+        expect(relayIndex).toBeGreaterThanOrEqual(0);
+        expect(pushIndex).toBeGreaterThan(relayIndex);
+        expect(JSON.parse((mockFetch.mock.calls[relayIndex][1] as RequestInit).body as string)).toEqual(
+          expect.objectContaining({ commitment: proposalId }),
+        );
       });
     }
 
@@ -6701,6 +6787,13 @@ describe('Multisig', () => {
       }
       expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
       expect(executionPushes()).toHaveLength(1);
+      // Nothing is stored there to relay approvals to.
+      expect(
+        mockFetch.mock.calls.some(
+          ([url, init]) =>
+            String(url).includes('/delta/proposal') && (init as RequestInit)?.method === 'PUT',
+        ),
+      ).toBe(false);
     });
 
     for (const [status, code] of [
@@ -6870,6 +6963,8 @@ describe('Multisig', () => {
         ok: true,
         json: async () => ({ commitment: newGuardianPubkey }),
       });
+      // The approval the served proposal lacks is relayed before the push.
+      mockFetch.mockResolvedValueOnce(servedProposal());
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({

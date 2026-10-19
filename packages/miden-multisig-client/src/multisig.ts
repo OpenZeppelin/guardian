@@ -2126,7 +2126,7 @@ export class Multisig {
    * @param proposalId - The proposal commitment/ID
    */
   async executeProposal(proposalId: string): Promise<void> {
-    const { metadata, finalRequest, proposal, executedBase } =
+    const { metadata, finalRequest, proposal, executedBase, servedSwitch, approvals } =
       await this.prepareProposalExecution(proposalId);
 
     if (metadata.proposalType === 'switch_guardian') {
@@ -2150,7 +2150,24 @@ export class Multisig {
       // Best-effort: an unreachable old GUARDIAN must not block the switch, so
       // errors are swallowed (mirrors the Rust execute path, which names the
       // state it executed on and sends the summary it holds; GUARDIAN assigns
-      // the status).
+      // the status). The pre-switch GUARDIAN acknowledges the delta only when
+      // its stored proposal carries a threshold of approvals (issue #524), so
+      // approvals collected off channel are relayed to it first. A switch it
+      // never stored (one created offline) cannot be relayed to, so that
+      // GUARDIAN refuses the push and releases the account through its
+      // release sweep instead. A failed relay still leaves the push to be
+      // tried: the stored proposal may already carry a threshold.
+      if (servedSwitch) {
+        try {
+          await this.relayCollectedApprovals(normalizeHexWord(proposal.id), approvals, servedSwitch);
+        } catch (error) {
+          console.warn(
+            'Relaying collected approvals to the pre-switch GUARDIAN failed; pushing the ' +
+              'switch delta with the approvals it already holds',
+            error,
+          );
+        }
+      }
       try {
         await this.guardian.pushDelta({
           accountId: this._accountId,
@@ -2493,7 +2510,11 @@ export class Multisig {
    * the acknowledgement push. The endpoint credits an approval to the
    * cosigner its signature cryptographically verifies for, so any configured
    * signer may relay; an approval GUARDIAN already holds answers
-   * `proposal_already_signed` and is skipped.
+   * `proposal_already_signed` and is skipped. A refusal with
+   * `invalid_proposal_signature` is skipped too: a server without the gate
+   * accepts only the caller's own approval and acknowledges the push without
+   * the rest, and a server with it does not count the refused approval, so
+   * the push itself reports a missing threshold.
    */
   private async relayCollectedApprovals(
     proposalId: string,
@@ -2519,6 +2540,15 @@ export class Multisig {
         if (error instanceof GuardianHttpError && error.code === 'proposal_already_signed') {
           continue;
         }
+        if (error instanceof GuardianHttpError && error.code === 'invalid_proposal_signature') {
+          console.warn(
+            `GUARDIAN refused the relayed approval of ${entry.signerId}; a server without the ` +
+              'multisig push gate accepts only your own approval, otherwise the push reports ' +
+              'a missing threshold',
+            error,
+          );
+          continue;
+        }
         throw error;
       }
     }
@@ -2534,6 +2564,13 @@ export class Multisig {
     proposal: Proposal;
     /** The account state the request was built on: this client's record. */
     executedBase: string;
+    /**
+     * A switch_guardian proposal as the pre-switch GUARDIAN serves it, or
+     * `undefined` for another type or when that GUARDIAN does not serve it.
+     */
+    servedSwitch: DeltaObject | undefined;
+    /** The verified approvals the request carries. */
+    approvals: ProposalSignatureEntry[];
   }> {
     const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
@@ -2709,7 +2746,14 @@ export class Multisig {
       binding,
       adviceMap,
     );
-    return { finalRequest, metadata, proposal, executedBase };
+    return {
+      finalRequest,
+      metadata,
+      proposal,
+      executedBase,
+      servedSwitch: isSwitchGuardian ? delta : undefined,
+      approvals: signaturesForExecution,
+    };
   }
 
   /**

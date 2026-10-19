@@ -263,6 +263,17 @@ from the account's published storage.
 Either way it marks the account `released` and stops accepting mutations
 for it.
 
+The old operator acknowledges that push only when the switch proposal it
+stores carries a threshold of verified approvals, as for any multisig
+delta. The TypeScript SDK relays approvals collected off channel to that
+proposal before the push. A switch the old operator never stored (one
+created offline) has nothing to relay to, so the push is refused, and so
+is the Rust SDK's offline execution path, which does not push at all. Both
+fall to the sweep: a switch whose proposal is pending on the old operator
+is released within one rotation (`GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS`,
+6 h by default), and a private account switched offline stays active there
+until it re-onboards (see the table above).
+
 ## What Guardian is *not*
 
 To avoid confusion when reading the architecture docs:

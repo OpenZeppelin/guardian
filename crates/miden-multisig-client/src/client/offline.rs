@@ -354,7 +354,11 @@ impl MultisigClient {
     /// proposal. The signing endpoint credits each approval to the cosigner
     /// its signature cryptographically verifies for, so any configured
     /// signer may relay them; an approval GUARDIAN already holds answers
-    /// with `proposal_already_signed` and is skipped.
+    /// with `proposal_already_signed` and is skipped. A refusal with
+    /// `invalid_proposal_signature` is skipped too: a server without the
+    /// gate accepts only the caller's own approval and acknowledges the
+    /// push without the rest, and a server with it does not count the
+    /// refused approval, so the push itself reports a missing threshold.
     async fn relay_collected_approvals(
         &mut self,
         proposal_id: &str,
@@ -384,6 +388,17 @@ impl MultisigClient {
                 Ok(_) => {}
                 Err(error)
                     if error.guardian_code().as_deref() == Some("proposal_already_signed") => {}
+                Err(error)
+                    if error.guardian_code().as_deref() == Some("invalid_proposal_signature") =>
+                {
+                    tracing::warn!(
+                        signer = %collected.signer_commitment,
+                        %error,
+                        "GUARDIAN refused a relayed approval; a server without the multisig \
+                         push gate accepts only the caller's own approval, otherwise the push \
+                         reports a missing threshold"
+                    );
+                }
                 Err(error) => {
                     return Err(MultisigError::GuardianServer(format!(
                         "failed to relay a collected approval to GUARDIAN: {error}"
