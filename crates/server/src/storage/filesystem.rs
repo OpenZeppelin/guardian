@@ -29,6 +29,12 @@ pub struct FilesystemService {
     /// concurrent write could put that older state back. Taken inside
     /// `delta_write_lock` where both are held, never the other way round.
     state_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Serializes proposal-file writes so the conditional update
+    /// (`update_delta_proposal_if_status`) reads, compares and writes with
+    /// no other proposal write in between: concurrent signings of one
+    /// proposal would otherwise each rewrite the file from the same read
+    /// and drop each other's approval.
+    proposal_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 /// On-disk form of a state file: the state plus its nonce, which
@@ -63,7 +69,40 @@ impl FilesystemService {
             app_path,
             delta_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             state_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            proposal_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
+    }
+
+    /// Write a proposal file WITHOUT taking `proposal_write_lock`.
+    async fn write_proposal_holding_lock(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+    ) -> Result<(), String> {
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
+        }
+
+        // Write to temp file first
+        let temp_path = path.with_extension("tmp");
+        let json = serde_json::to_string_pretty(&proposal)
+            .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
+
+        fs::write(&temp_path, json)
+            .await
+            .map_err(|e| format!("Failed to write proposal file: {e}"))?;
+
+        // Atomic rename
+        fs::rename(&temp_path, &path)
+            .await
+            .map_err(|e| format!("Failed to finalize proposal file: {e}"))?;
+
+        Ok(())
     }
 
     /// Serialize and write a state file WITHOUT taking `state_write_lock`.
@@ -699,30 +738,8 @@ impl StorageBackend for FilesystemService {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
-        }
-
-        // Write to temp file first
-        let temp_path = path.with_extension("tmp");
-        let json = serde_json::to_string_pretty(&proposal)
-            .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
-
-        fs::write(&temp_path, json)
-            .await
-            .map_err(|e| format!("Failed to write proposal file: {e}"))?;
-
-        // Atomic rename
-        fs::rename(&temp_path, &path)
-            .await
-            .map_err(|e| format!("Failed to finalize proposal file: {e}"))?;
-
-        Ok(())
+        let _guard = self.proposal_write_lock.lock().await;
+        self.write_proposal_holding_lock(commitment, proposal).await
     }
 
     async fn pull_delta_proposal(
@@ -768,11 +785,35 @@ impl StorageBackend for FilesystemService {
         self.submit_delta_proposal(commitment, proposal).await
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let _guard = self.proposal_write_lock.lock().await;
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        let json = match fs::read_to_string(&path).await {
+            Ok(json) => json,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(format!("Failed to read proposal file: {error}")),
+        };
+        let stored: DeltaObject =
+            serde_json::from_str(&json).map_err(|e| format!("Failed to parse proposal: {e}"))?;
+        if &stored.status != expected {
+            return Ok(false);
+        }
+        self.write_proposal_holding_lock(commitment, proposal)
+            .await?;
+        Ok(true)
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
         commitment: &str,
     ) -> Result<(), String> {
+        let _guard = self.proposal_write_lock.lock().await;
         let path = self.get_delta_proposal_path(account_id, commitment)?;
 
         // Check if the file exists
@@ -2729,6 +2770,97 @@ mod tests {
         assert_eq!(pulled_proposal.delta_payload["updated"], true);
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    /// Two signings that read the same row: the first write commits, the
+    /// second is refused instead of replacing it, and commits once rebuilt
+    /// on the current row, so both approvals survive.
+    #[tokio::test]
+    async fn test_update_delta_proposal_if_status_refuses_a_stale_read() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let commitment = "0xabc123";
+        let pending = |signers: &[&str]| DeltaStatus::Pending {
+            timestamp: "2026-10-19T00:00:00Z".to_string(),
+            proposer_id: "0xproposer".to_string(),
+            cosigner_sigs: signers
+                .iter()
+                .map(|signer| crate::delta_object::CosignerSignature {
+                    signature: crate::delta_object::ProposalSignature::Falcon {
+                        signature: format!("0xsig-{signer}"),
+                    },
+                    timestamp: "2026-10-19T00:00:00Z".to_string(),
+                    signer_id: signer.to_string(),
+                })
+                .collect(),
+        };
+        let with_status = |status: DeltaStatus| DeltaObject {
+            status,
+            ..create_test_delta(account_id, 1)
+        };
+        storage
+            .submit_delta_proposal(commitment, &with_status(pending(&["0xc1"])))
+            .await
+            .expect("Submit proposal failed");
+        let read = pending(&["0xc1"]);
+
+        let first = storage
+            .update_delta_proposal_if_status(
+                commitment,
+                &with_status(pending(&["0xc1", "0xc2"])),
+                &read,
+            )
+            .await
+            .expect("first write");
+        let second = storage
+            .update_delta_proposal_if_status(
+                commitment,
+                &with_status(pending(&["0xc1", "0xc4"])),
+                &read,
+            )
+            .await
+            .expect("second write");
+        assert!(first, "the first write from the read commits");
+        assert!(
+            !second,
+            "a write from a stale read must not replace the row"
+        );
+
+        let current = storage
+            .pull_delta_proposal(account_id, commitment)
+            .await
+            .expect("pull")
+            .status;
+        assert_eq!(current, pending(&["0xc1", "0xc2"]));
+        let retried = storage
+            .update_delta_proposal_if_status(
+                commitment,
+                &with_status(pending(&["0xc1", "0xc2", "0xc4"])),
+                &current,
+            )
+            .await
+            .expect("retried write");
+        assert!(retried);
+        assert_eq!(
+            storage
+                .pull_delta_proposal(account_id, commitment)
+                .await
+                .expect("pull")
+                .status,
+            pending(&["0xc1", "0xc2", "0xc4"])
+        );
+
+        let missing = storage
+            .update_delta_proposal_if_status("0xdead", &with_status(pending(&["0xc1"])), &read)
+            .await
+            .expect("missing row");
+        assert!(!missing, "a row that is gone is not recreated");
+
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

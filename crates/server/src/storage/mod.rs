@@ -843,6 +843,19 @@ pub trait StorageBackend: Send + Sync {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String>;
+    /// Replace the proposal only while its stored status still equals
+    /// `expected`, the status the caller read before building `proposal`.
+    /// `Ok(false)` when another write changed it first, or the row is
+    /// gone. Every approval lives in the status (`cosigner_sigs`), so two
+    /// concurrent signings cannot both commit from the same read and drop
+    /// each other's approval. The status is never encrypted at rest, so
+    /// the comparison holds through the encryption decorator.
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String>;
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;

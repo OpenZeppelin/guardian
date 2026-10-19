@@ -313,6 +313,21 @@ impl StorageBackend for EncryptedStorage {
             .await
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        self.inner
+            .update_delta_proposal_if_status(
+                commitment,
+                &self.encrypt_proposal(commitment, proposal)?,
+                expected,
+            )
+            .await
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
