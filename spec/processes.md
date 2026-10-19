@@ -608,7 +608,10 @@ only the client that registers the account at the new GUARDIAN and switches its 
 execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `switch_guardian`, whatever the
 request sets), the transaction creates a private output note and the request did not set
 `allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`), a
-client candidate is pending, or the valid, distinct cosigner signatures fall short of the
+client candidate is pending, a parked delta built on the account's current state could still
+land (a `retained` delta, or a `discarded { client_abandoned }` one within
+`retained_ttl_seconds`; `409 conflict_pending_delta` with `meta.reason` `parked_delta`, until
+reconciliation promotes or drops it), or the valid, distinct cosigner signatures fall short of the
 effective per-procedure threshold (`GUARDIAN_PROPOSAL_NOT_READY`).
 
 Whether a transaction creates a private note is read from the output notes of the
@@ -639,8 +642,11 @@ domain-separated from a signed status read (see [Miden Request Signing](api.md#m
 11. Re-check that the account is still at the proposal's base, active, and guarded by this
     Guardian, and that the proven expiration is within the configured horizon.
 12. **The no-retry boundary.** In one storage write, admit the candidate delta and record the
-    submission evidence (transaction id, expected commitment, expiration block). Nothing after
-    this point is proved or sent again.
+    submission evidence (transaction id, expected commitment, expiration block). The same write
+    refuses while a parked delta on the account's state could still land
+    (`GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE`): executing beside it would race it, and Guardian
+    would lose its record of that delta if it won. Nothing after this point is proved or sent
+    again.
 13. Re-validate the fence; a worker that lost ownership sends nothing.
 14. Send the sealed, proven transaction once.
 
@@ -691,7 +697,9 @@ unplanned stop. After the boundary, reconciliation settles only from the chain:
   settles an execution.
 
 A client `push_delta` is refused with `GUARDIAN_EXECUTION_CONFLICT` while a reservation is
-active, and canonicalization never discards a candidate an execution owns.
+active, and canonicalization never discards a candidate an execution owns. A promotion commits
+the execution only when it brings the account to the execution's expected commitment; any
+other delta promoted at the same nonce leaves the execution to reconciliation.
 
 ### Record retention
 Once a day, starting a few minutes after startup, every replica that runs reconciliation deletes
