@@ -660,6 +660,44 @@ async fn a_switch_guardian_proposal_executes_locally_and_reserves_nothing() {
     );
 }
 
+#[tokio::test]
+async fn a_parked_delta_that_can_still_land_refuses_execution_and_reserves_nothing() {
+    let f = Fixture::new(Script::default()).await;
+    f.state
+        .storage
+        .submit_delta(&crate::delta_object::DeltaObject {
+            account_id: ACCOUNT.to_string(),
+            nonce: 1,
+            prev_commitment: BASE.to_string(),
+            new_commitment: Some("0xclient".to_string()),
+            delta_payload: serde_json::json!({}),
+            ack_sig: "0xack".to_string(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: crate::delta_object::DeltaStatus::retained(
+                chrono::Utc::now().to_rfc3339(),
+                crate::delta_object::RetainReason::RetryExhausted,
+            ),
+            metadata: None,
+        })
+        .await
+        .unwrap();
+    let result = f.request().await;
+    assert!(
+        matches!(result, Err(GuardianError::ConflictParkedDelta)),
+        "{result:?}"
+    );
+    assert_nothing_reserved(&f).await;
+    assert!(
+        f.state
+            .storage
+            .pull_delta_proposal(ACCOUNT, PROPOSAL)
+            .await
+            .is_ok(),
+        "the proposal can be executed once the parked delta settles"
+    );
+}
+
 async fn assert_nothing_reserved(f: &Fixture) {
     assert!(
         f.state

@@ -1669,6 +1669,29 @@ describe('GuardianHttpError', () => {
       expect(e.meta?.reason).toBe('private_note');
     });
 
+    it('surfaces a parked-delta conflict as conflict_pending_delta with meta.reason parked_delta', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'conflict_pending_delta',
+            message: 'An earlier change to this account may still land. Try again once it settles.',
+            meta: { retryable: false, reason: 'parked_delta' },
+          }),
+      });
+
+      const e = (await client
+        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
+        .catch((error) => error)) as GuardianHttpError;
+
+      expect(e.code).toBe('conflict_pending_delta');
+      expect(e.meta?.reason).toBe('parked_delta');
+    });
+
     it('drops a meta.reason outside the known vocabulary', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({

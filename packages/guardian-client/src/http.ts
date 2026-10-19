@@ -101,16 +101,24 @@ export interface GuardianErrorMeta {
    */
   proposalType?: string;
   /**
-   * Why GUARDIAN leaves the proposal to local execution. Present only when
+   * Why GUARDIAN refused the request, for the codes that name one. With
    * `code === 'proposal_executes_locally'`: `switch_guardian` for a guardian switch, and
    * `private_note` for a transaction that creates a private output note while the request did
-   * not set `allowPrivateNote`.
+   * not set `allowPrivateNote`. With `code === 'conflict_pending_delta'` on an execution
+   * request: `parked_delta`, a cosigner's parked delta on the account's state may still land,
+   * so request execution again once it settles.
    */
-  reason?: LocalExecutionReason;
+  reason?: GuardianErrorReason;
 }
 
 /** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
 export type LocalExecutionReason = 'switch_guardian' | 'private_note';
+
+/** Why GUARDIAN refuses to execute while a delta is pending: a parked delta may still land. */
+export type PendingDeltaReason = 'parked_delta';
+
+/** Every `meta.reason` GUARDIAN sends. */
+export type GuardianErrorReason = LocalExecutionReason | PendingDeltaReason;
 
 /** Options of {@link GuardianHttpClient.executeDeltaProposal}. */
 export interface ExecuteDeltaProposalOptions {
@@ -122,10 +130,11 @@ export interface ExecuteDeltaProposalOptions {
   allowPrivateNote?: boolean;
 }
 
-function localExecutionReason(value: unknown): LocalExecutionReason | undefined {
+function guardianErrorReason(value: unknown): GuardianErrorReason | undefined {
   switch (value) {
     case 'switch_guardian':
     case 'private_note':
+    case 'parked_delta':
       return value;
     default:
       return undefined;
@@ -192,7 +201,7 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
     meta.blockingProposalId = rawMeta.blocking_proposal_id;
   }
   if (typeof rawMeta.proposal_type === 'string') meta.proposalType = rawMeta.proposal_type;
-  const reason = localExecutionReason(rawMeta.reason);
+  const reason = guardianErrorReason(rawMeta.reason);
   if (reason !== undefined) meta.reason = reason;
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;

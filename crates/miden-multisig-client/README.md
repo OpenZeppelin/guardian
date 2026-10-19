@@ -375,8 +375,10 @@ is `committed` or `failed`, backing off from 1 s to 10 s, retries reads that fai
 retryable or transport error (honouring the server's retry-after hint), returns any other error,
 and gives up after 15 minutes with `MultisigError::GuardianExecutionWaitTimedOut`, which carries
 the last execution it read. A refusal surfaces as `MultisigError::GuardianExecutionRefused {
-code, message, retryable, retry_after, blocking_proposal_id }`, where `code` is the wire string
-(for example `GUARDIAN_EXECUTION_CONFLICT`).
+code, message, retryable, retry_after, blocking_proposal_id, reason }`, where `code` is the wire
+string (for example `GUARDIAN_EXECUTION_CONFLICT`) and `reason` is the server's `meta.reason`.
+`conflict_pending_delta` with `reason` `parked_delta` means a cosigner's parked delta on the
+account's state may still land; request execution again once it settles.
 
 A Guardian-executable client still executes two proposal types itself, and
 `request_guardian_execution` refuses them before contacting Guardian with

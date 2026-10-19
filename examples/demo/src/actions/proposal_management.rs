@@ -767,9 +767,14 @@ fn describe_execution_error(error: MultisigError) -> String {
             code,
             message,
             retryable,
+            reason,
             ..
         } => {
             let hint = match code.as_str() {
+                "conflict_pending_delta" if reason.as_deref() == Some("parked_delta") => {
+                    " A cosigner's earlier delta was parked and may still land: try again once \
+                     Guardian reconciles it, or execute the proposal from this session."
+                }
                 "GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST" => {
                     " The proposal was created by a client that executes itself: create it again \
                      from a session where GUARDIAN executes proposals."

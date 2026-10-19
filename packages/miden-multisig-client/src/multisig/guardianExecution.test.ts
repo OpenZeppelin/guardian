@@ -139,6 +139,19 @@ describe('GuardianExecutionRefusedError', () => {
     expect(refusal.blockingProposalId).toBeNull();
   });
 
+  it('carries the reason of a parked-delta conflict and keeps it a refusal', async () => {
+    const conflict = guardianError(409, {
+      code: 'conflict_pending_delta',
+      message: 'An earlier change to this account may still land.',
+      meta: { retryable: false, reason: 'parked_delta' },
+    });
+    const error = await refusingWith(Promise.reject(conflict)).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GuardianExecutionRefusedError);
+    const refusal = error as GuardianExecutionRefusedError;
+    expect(refusal.code).toBe('conflict_pending_delta');
+    expect(refusal.reason).toBe('parked_delta');
+  });
+
   it('leaves an error without a Guardian code unchanged', () => {
     const plain = guardianError(502, 'bad gateway');
     expect(GuardianExecutionRefusedError.fromGuardian(plain)).toBe(plain);

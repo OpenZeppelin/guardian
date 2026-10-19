@@ -119,8 +119,10 @@ export function assertGuardianMayExecute(
  * Guardian refused an execution request or an execution read with a stable code, such as
  * `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. Mirrors the Rust SDK's
  * `MultisigError::GuardianExecutionRefused`: `code` is the verbatim wire code, `retryable` the
- * server's classification, `retryAfterSecs` its backoff hint and `blockingProposalId` the
- * proposal whose execution holds the account, on a conflict.
+ * server's classification, `retryAfterSecs` its backoff hint, `blockingProposalId` the
+ * proposal whose execution holds the account, on a conflict, and `reason` the server's
+ * `meta.reason`, such as `parked_delta` on a `conflict_pending_delta` (a parked delta on the
+ * account's state may still land: request execution again once it settles).
  */
 export class GuardianExecutionRefusedError extends Error {
   readonly code: string;
@@ -128,6 +130,7 @@ export class GuardianExecutionRefusedError extends Error {
   readonly retryable: boolean;
   readonly retryAfterSecs: number | null;
   readonly blockingProposalId: string | null;
+  readonly reason: string | null;
 
   constructor(details: {
     code: string;
@@ -135,6 +138,7 @@ export class GuardianExecutionRefusedError extends Error {
     retryable: boolean;
     retryAfterSecs: number | null;
     blockingProposalId: string | null;
+    reason: string | null;
     cause?: unknown;
   }) {
     super(`GUARDIAN refused execution (${details.code}): ${details.message}`, { cause: details.cause });
@@ -144,6 +148,7 @@ export class GuardianExecutionRefusedError extends Error {
     this.retryable = details.retryable;
     this.retryAfterSecs = details.retryAfterSecs;
     this.blockingProposalId = details.blockingProposalId;
+    this.reason = details.reason;
   }
 
   /** The refusal a Guardian error carries, or the error unchanged when it carries no code. */
@@ -157,6 +162,7 @@ export class GuardianExecutionRefusedError extends Error {
       retryable: error.isRetryable(),
       retryAfterSecs: error.retryAfterSecs() ?? null,
       blockingProposalId: error.meta?.blockingProposalId ?? null,
+      reason: error.meta?.reason ?? null,
       cause: error,
     });
   }
@@ -195,7 +201,8 @@ function localExecutionRefusal(error: unknown): LocalExecutionReason | null {
   if (!(error instanceof GuardianHttpError) || error.rawCode !== PROPOSAL_EXECUTES_LOCALLY) {
     return null;
   }
-  return error.meta?.reason ?? null;
+  const reason = error.meta?.reason;
+  return reason === 'switch_guardian' || reason === 'private_note' ? reason : null;
 }
 
 /**

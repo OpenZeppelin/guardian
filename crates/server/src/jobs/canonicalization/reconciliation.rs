@@ -248,17 +248,9 @@ impl DeltasProcessorBase {
         Some(age.num_seconds().max(0) as u64)
     }
 
-    /// The oldest client-abandoned discard timestamp still in scope for
-    /// reconciliation: abandoned rows are kept as history forever, so
-    /// the TTL bounds the scan, not their lifetime.
+    /// See [`crate::storage::abandoned_cutoff`].
     fn abandoned_cutoff(&self, now: DateTime<Utc>) -> DateTime<Utc> {
-        // An unrepresentable TTL (e.g. the test processor's u64::MAX)
-        // means "no cutoff": everything since the epoch is in scope.
-        i64::try_from(self.retained_ttl_seconds)
-            .ok()
-            .and_then(chrono::Duration::try_seconds)
-            .and_then(|ttl| now.checked_sub_signed(ttl))
-            .unwrap_or(DateTime::<Utc>::MIN_UTC)
+        crate::storage::abandoned_cutoff(self.retained_ttl_seconds, now)
     }
 
     /// One reconcile pass: list accounts with recoverable rows, visit at

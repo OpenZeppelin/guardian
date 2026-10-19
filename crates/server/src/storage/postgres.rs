@@ -2003,6 +2003,7 @@ impl StorageBackend for PostgresService {
                         conn,
                         &state.account_id,
                         delta.nonce,
+                        &state.commitment,
                         metadata_updated_at,
                     )
                     .await?;
