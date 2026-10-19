@@ -487,6 +487,29 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+  # The execution TLA+ model (.agents/skills/verify-guardian-execution)
+  # mirrors named Rust functions. A change to one of them without a review
+  # of the model fails here; TLC itself is not run, so this needs no Java.
+  # Runs on every PR because the mirrored functions span storage, jobs,
+  # services, coordination and the network client, and it takes seconds.
+  execution-model-drift:
+    name: Execution model drift
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Check the mirrored Rust against the recorded fingerprints
+        run: .agents/skills/verify-guardian-execution/check.sh --drift-only
+
   build:
     name: Build
     runs-on: ubuntu-latest

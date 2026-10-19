@@ -267,7 +267,7 @@ WPrepare(w) ==
 \* Heartbeat / Heartbeat::advance: renew_execution_reservation_tx under the
 \* worker's fence (a lease renew is a no-op in this abstraction).
 WHeartbeat(w) ==
-    /\ wpc[w] \in {"running", "prepared"}
+    /\ wpc[w] \in {"running", "prepared", "send"}
     /\ \E a \in Active :
         /\ OwnsLive(a, w, wtok[w])
         /\ ~res[a].live

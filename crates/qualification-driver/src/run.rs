@@ -70,6 +70,7 @@ pub async fn execute(manifest_dir: &Path, options: RunOptions) -> anyhow::Result
         Expectation {
             image_revision: options.artifact_set.image_revision.clone(),
         },
+        options.out.join("restart-handoff"),
     )?
     .with_fixtures(fixtures)
     .post_restart(options.post_restart)
