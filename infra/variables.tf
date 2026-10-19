@@ -38,7 +38,7 @@ variable "server_image_uri" {
 }
 
 variable "server_network_type" {
-  description = "Miden network for the GUARDIAN server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
+  description = "Miden network for the GUARDIAN server runtime (MidenLocal, MidenDevnet, MidenTestnet, MidenCedar, or MidenMainnet)"
   type        = string
   default     = "MidenTestnet"
 }

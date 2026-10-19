@@ -42,6 +42,14 @@ VITE_PROVER_MAX_ATTEMPTS=2
 VITE_RPC_MAX_ATTEMPTS=2
 ```
 
+`status()` also reports `walletSignatures` (signatures the wallet signer
+produced, by kind: `request`, `lookup`, `grant`, `revokeAll`, `approval`) and
+`guardianSession` (`{ publicKey, expiresAt }` or `null`). After
+`startGuardianSession`, a sync or proposal listing adds no `request`
+signatures; that is the session working. When the SDK ends a session,
+`events()` records `guardianSessionEnded:<reason>` (`expired`, `revoked`,
+`rejected`, or `logout` for one the harness ended itself).
+
 The page follows the `examples/web` lifecycle:
 - it clears the Miden IndexedDB state and boots once on page load
 - `window.smoke.status()` exposes `bootStatus` and `bootError`
@@ -72,6 +80,9 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `signProposalOffline({ proposalId, json })`
 - `importProposal({ json })`
 - `recoverByKey()`
+- `startGuardianSession({ ttlSeconds? })`: the signer signs one session grant; later reads and proposal requests are signed by a session key
+- `endGuardianSession()`
+- `revokeAllGuardianSessions()`: wallet-signed; ends every session of the signer on the Guardian
 - `recoverNotes({ transportDrain?, proposalImport?, publicBackfill?, fromBlock?, toBlock?, syncAfter? })`
 - `clearLocalState()`
 - `events()`

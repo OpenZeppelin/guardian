@@ -1,5 +1,5 @@
-import { Felt, FeltArray, Rpo256, Word } from '@miden-sdk/miden-sdk';
-import { feltFromU64Reduced } from './utils/felt.js';
+import { FeltArray, Rpo256, Word } from '@miden-sdk/miden-sdk';
+import { domainTagWord, feltFromU64Reduced } from './utils/felt.js';
 
 /**
  * Lookup-bound message format used to sign requests against the Guardian
@@ -13,31 +13,12 @@ const DOMAIN_TAG_BYTES = new TextEncoder().encode('guardian.lookup.v1');
 let cachedDomainTag: Word | null = null;
 
 /**
- * Convert a byte array to a sequence of Goldilocks-field felts using the same
- * 8-byte little-endian chunking convention as
- * `guardian_shared::auth_request_payload::AuthRequestPayload::from_bytes`. The
- * final chunk is zero-padded if `bytes.length` is not a multiple of 8.
- */
-function bytesToFelts(bytes: Uint8Array): Felt[] {
-  const felts: Felt[] = [];
-  for (let offset = 0; offset < bytes.length; offset += 8) {
-    let value = 0n;
-    for (let i = 0; i < 8; i += 1) {
-      const byte = offset + i < bytes.length ? bytes[offset + i] : 0;
-      value |= BigInt(byte) << BigInt(8 * i);
-    }
-    felts.push(feltFromU64Reduced(value));
-  }
-  return felts;
-}
-
-/**
  * The 4-felt RPO domain tag prepended to every lookup digest, computed once
  * from `DOMAIN_TAG_BYTES`. Cached on first call.
  */
 function lookupDomainTag(): Word {
   if (cachedDomainTag === null) {
-    cachedDomainTag = Rpo256.hashElements(new FeltArray(bytesToFelts(DOMAIN_TAG_BYTES)));
+    cachedDomainTag = domainTagWord(DOMAIN_TAG_BYTES);
   }
   return cachedDomainTag;
 }

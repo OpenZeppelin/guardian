@@ -311,7 +311,7 @@ ServerBuilder::new()
 - **PUT** `/delta/proposal` - Add a signature to an existing delta proposal
 - **GET** `/delta/proposal?account_id=<id>` - List pending delta proposals for an account
 - **GET** `/delta/proposal/single?account_id=<id>&commitment=<c>` - Retrieve a pending proposal by commitment
-- **GET** `/pubkey?scheme=<falcon|ecdsa>` - Get the acknowledgement key commitment and optional raw public key
+- **GET** `/pubkey?scheme=<falcon|ecdsa>` - Get the acknowledgement key commitment and optional raw public key (ECDSA only). The scheme defaults to `falcon` when omitted, even when `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` admits only `ecdsa`
 - **GET** `/auth/challenge?commitment=<commitment>` - Issue an operator dashboard login challenge
 - **POST** `/auth/verify` - Verify an operator dashboard signature and set a session cookie
 - **POST** `/auth/logout` - Clear the operator dashboard session cookie and invalidate the server-side session
