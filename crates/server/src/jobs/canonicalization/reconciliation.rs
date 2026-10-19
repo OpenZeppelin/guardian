@@ -422,17 +422,24 @@ impl DeltasProcessorBase {
         // Archived superseded deltas (a resubmission replaced them at
         // their nonce) stay recoverable for the retention TTL, counted from
         // when they were superseded; older ones are pruned here.
-        if let Err(e) = self
+        match self
             .state
             .storage
             .prune_superseded_deltas(account_id, cutoff)
             .await
         {
-            tracing::warn!(
+            Ok(0) => {}
+            Ok(pruned) => tracing::info!(
+                event = "reconcile_superseded_pruned",
+                account_id = %account_id,
+                pruned,
+                "Pruned superseded deltas past the retention TTL"
+            ),
+            Err(e) => tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Failed to prune expired superseded deltas"
-            );
+            ),
         }
         let superseded = self
             .state

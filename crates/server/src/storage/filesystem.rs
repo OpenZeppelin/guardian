@@ -809,15 +809,20 @@ impl StorageBackend for FilesystemService {
             // Per-account tolerance: one unreadable delta file must not
             // silently disable reconciliation (and TTL expiry) for every
             // other account in the store.
-            match self
+            let listed = match self
                 .pull_recoverable_deltas(&account_id, abandoned_since)
                 .await
             {
-                Ok(recoverable) if !recoverable.is_empty() => with_recoverable.push(account_id),
-                Ok(_) if self.superseded_dir(&account_id).is_dir() => {
-                    with_recoverable.push(account_id)
-                }
-                Ok(_) => {}
+                Ok(recoverable) if !recoverable.is_empty() => Ok(true),
+                Ok(_) => self
+                    .read_archived(&account_id)
+                    .await
+                    .map(|archived| !archived.is_empty()),
+                Err(e) => Err(e),
+            };
+            match listed {
+                Ok(true) => with_recoverable.push(account_id),
+                Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(
                         account_id = %account_id,
@@ -1109,6 +1114,7 @@ impl StorageBackend for FilesystemService {
                     event = "reconcile_superseded",
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
+                    archived = policy.archive_superseded,
                     "Recoverable row superseded by a new candidate at its nonce"
                 );
             }

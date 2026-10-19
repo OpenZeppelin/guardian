@@ -1958,9 +1958,11 @@ impl StorageBackend for PostgresService {
                 // The superseded row is the only record of its transaction:
                 // archive it first so the reconcile pass can still promote
                 // it if that transaction lands after all.
-                if policy.archive_superseded {
-                    archive_parked_delta(conn, &delta.account_id, delta.nonce, updated_at).await?;
-                }
+                let archived = if policy.archive_superseded {
+                    archive_parked_delta(conn, &delta.account_id, delta.nonce, updated_at).await?
+                } else {
+                    0
+                };
 
                 // A retained row (issue #345) or client-abandoned
                 // discard (issue #319) at this nonce is a best-effort
@@ -1986,6 +1988,7 @@ impl StorageBackend for PostgresService {
                         event = "reconcile_superseded",
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
+                        archived = archived > 0,
                         "Recoverable row superseded by a new candidate at its nonce"
                     );
                 }

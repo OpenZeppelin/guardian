@@ -36,5 +36,3 @@ CREATE TABLE superseded_deltas (
 
 CREATE INDEX idx_superseded_deltas_account_superseded_at
     ON superseded_deltas (account_id, superseded_at);
-CREATE INDEX idx_superseded_deltas_superseded_at
-    ON superseded_deltas (superseded_at);
