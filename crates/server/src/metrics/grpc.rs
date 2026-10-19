@@ -122,10 +122,11 @@ fn grpc_status_from(headers: &http::HeaderMap) -> Option<i32> {
 }
 
 fn grpc_message_from(headers: &http::HeaderMap) -> Option<String> {
-    headers
-        .get("grpc-message")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
+    headers.get("grpc-message").map(|value| {
+        percent_encoding::percent_decode(value.as_bytes())
+            .decode_utf8_lossy()
+            .into_owned()
+    })
 }
 
 /// Holds the in-flight gauge slot for one request; decrements on drop
@@ -388,6 +389,21 @@ mod tests {
         assert!(
             rendered.contains("guardian_grpc_requests_in_flight 0"),
             "in-flight gauge must return to 0 in:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn grpc_message_is_percent_decoded() {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(
+            "grpc-message",
+            "failed%20to%20decode%20Protobuf%20message:%20invalid%20varint"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            grpc_message_from(&headers).as_deref(),
+            Some("failed to decode Protobuf message: invalid varint")
         );
     }
 

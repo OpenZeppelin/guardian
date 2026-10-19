@@ -777,15 +777,17 @@ the ARNs you pass in `alarm_actions`.
   large enough, through the rate alarms). It overlaps with the rate alarms on
   purpose: on a low-traffic stack a few failures never move a percentage that
   ALB health checks dominate, but every one is an ERROR line.
-- What counts as `ERROR`: the centralized HTTP 5xx / gRPC-internal log line,
-  background-job and canonicalization failures, **and** some client-caused
-  rejections the server logs at `ERROR` before mapping them to 4xx (rejected
-  signatures or unauthorized cosigner keys in `metadata/auth`, invalid
-  credentials in `configure_account`). A persistently misconfigured client
-  retrying every minute therefore trips the alarm at the default threshold;
-  if that is expected on a stack, raise `alarm_log_error_threshold` so a
-  known trickle is tolerated while a burst still pages. Tightening the
-  server's log levels is the longer-term fix.
+- What counts as `ERROR`: the centralized HTTP 5xx / gRPC-internal log line
+  and background-job and canonicalization failures. Client-caused rejections
+  (rejected signatures, unauthorized cosigner keys, malformed account IDs,
+  invalid credentials, previous-commitment mismatches) log at `WARN`. One
+  exception remains: `configure_account` reports a failed credential check
+  against `initial_state` as `network_error` (5xx), so that rejection still
+  emits the centralized `ERROR` line. A misconfigured client retrying
+  `configure_account` every minute therefore trips the alarm at the default
+  threshold; if that is expected on a stack, raise
+  `alarm_log_error_threshold` so a known trickle is tolerated while a burst
+  still pages.
 - `WARN` is dashboard-only (the *Server log lines by level* widget) and its
   filter is created only alongside the dashboard, since nothing else reads
   it. No alarm: the server logs `WARN` for client-caused and self-healing

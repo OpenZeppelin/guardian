@@ -274,7 +274,7 @@ impl MidenNetworkClient {
         let account = Account::from_json(state_json)?;
 
         if &account.id() != account_id {
-            tracing::error!(
+            tracing::warn!(
                 expected = %account_id.to_hex(),
                 actual = %account.id().to_hex(),
                 "Account ID mismatch in state JSON"
@@ -298,7 +298,7 @@ impl NetworkClient for MidenNetworkClient {
         state_json: &serde_json::Value,
     ) -> Result<StateHead, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in get_state_head"
@@ -323,7 +323,7 @@ impl NetworkClient for MidenNetworkClient {
         read_mode: RpcReadMode,
     ) -> Result<StateVerification, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in verify_commitment"
@@ -393,7 +393,7 @@ impl NetworkClient for MidenNetworkClient {
         let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
 
         if current_commitment_hex != prev_commitment {
-            tracing::error!(
+            tracing::warn!(
                 delta_prev_commitment = %prev_commitment,
                 state_commitment = %current_commitment_hex,
                 "Previous commitment mismatch in verify_delta"
@@ -581,7 +581,7 @@ impl NetworkClient for MidenNetworkClient {
 
     fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
         AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in validate_account_id"
@@ -602,7 +602,7 @@ impl NetworkClient for MidenNetworkClient {
 
         let (credential_pubkey_hex, _signature, _timestamp) =
             credential.as_signature().ok_or_else(|| {
-                tracing::error!("Invalid credential type - expected signature");
+                tracing::warn!("Invalid credential type - expected signature");
                 "Invalid credential type".to_string()
             })?;
 
@@ -611,7 +611,7 @@ impl NetworkClient for MidenNetworkClient {
         if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
         } else {
-            tracing::error!(
+            tracing::warn!(
                 commitment = %commitment_hex,
                 "Credential public key commitment not found in account storage"
             );
@@ -659,7 +659,7 @@ impl NetworkClient for MidenNetworkClient {
         read_mode: RpcReadMode,
     ) -> Result<OnChainGuardianBinding, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in fetch_on_chain_guardian_binding"
@@ -711,7 +711,7 @@ impl NetworkClient for MidenNetworkClient {
         read_mode: RpcReadMode,
     ) -> Result<TransactionSearch, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in find_transaction_ending_at"
