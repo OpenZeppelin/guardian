@@ -256,7 +256,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Push a state delta. The request body is the JSON-encoded\n[`DeltaObject`] to commit. A multisig account is accepted only when\na matching proposal meets the cosigner threshold of the procedures\nthe delta invokes.",
+        "summary": "Push a state delta. The request body is the JSON-encoded\n[`DeltaObject`] to commit. A multisig account is accepted only when\na matching proposal carries verified cosigner signatures, at least as\nmany as the lowest threshold the account permits.",
         "operationId": "push_delta",
         "parameters": [
           {

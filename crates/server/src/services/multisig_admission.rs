@@ -1,17 +1,16 @@
 //! Multisig gate for `push_delta`. A candidate is acknowledged only when
-//! the matching proposal carries enough verified cosigner signatures for
-//! the account procedures the pushed transaction invokes.
+//! the matching proposal carries verified cosigner signatures over the
+//! pushed transaction, at least as many as the lowest threshold the
+//! account permits for any transaction. The chain enforces the exact
+//! threshold of the procedures a transaction calls; this floor never asks
+//! for more than the chain will, so the gate never refuses a transaction
+//! the chain would accept.
 
 use std::collections::BTreeSet;
 
-use miden_protocol::Word;
-use miden_protocol::account::{
-    Account, StorageMapKey, StorageMapPatch, StorageSlotContent, StorageSlotName, StorageSlotPatch,
-};
-use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
+use miden_protocol::account::{Account, StorageSlotContent};
+use miden_protocol::transaction::TransactionSummary;
 use miden_standards::account::auth::AuthGuardedMultisig;
-use miden_standards::account::wallets::BasicWallet;
-use miden_standards::note::StandardNote;
 use serde_json::Value;
 
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
@@ -19,189 +18,6 @@ use crate::error::{GuardianError, Result};
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use guardian_shared::FromJson;
-
-/// An account procedure whose invocation sets the required signature
-/// count. Procedures Guardian does not model are held to the account
-/// default, matching the on-chain rule that a called procedure without
-/// an override contributes the default threshold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum InvokedProcedure {
-    UpdateSigners,
-    SetProcedureThreshold,
-    UpdateGuardian,
-    SendAsset,
-    ReceiveAsset,
-    AccountDefault,
-}
-
-impl InvokedProcedure {
-    fn of_proposal_type(proposal_type: Option<&str>) -> Self {
-        match proposal_type {
-            Some("add_signer" | "remove_signer" | "change_threshold") => Self::UpdateSigners,
-            Some("update_procedure_threshold") => Self::SetProcedureThreshold,
-            Some("switch_guardian") => Self::UpdateGuardian,
-            Some("p2id") => Self::SendAsset,
-            Some("consume_notes") => Self::ReceiveAsset,
-            Some(_) | None => Self::AccountDefault,
-        }
-    }
-
-    /// The procedures the summary shows were invoked, mirroring the
-    /// on-chain derivation (`multisig.masm`: every called non-auth
-    /// procedure contributes its threshold, combined by max). Input
-    /// notes imply the wallet's receive procedure. Output notes imply
-    /// its send procedures, except the fee note, which the auth
-    /// procedure itself creates on every transaction. Patches to the
-    /// auth component's configuration slots imply its update
-    /// procedures, and a patch to any other slot is a procedure
-    /// Guardian does not model, held to the account default. The
-    /// executed-transactions slot is bookkeeping the auth procedure
-    /// writes on every transaction and implies nothing. The
-    /// account-creating transaction is deltaed against the empty
-    /// account, so it carries the whole initial storage: a patch that
-    /// writes exactly what the registered initial account (`account`,
-    /// the tail at nonce zero) already holds is initialization and
-    /// implies nothing, while one that differs was written by a
-    /// procedure called in that same transaction (a first-transaction
-    /// signer change) and keeps counting.
-    fn of_summary(summary: &TransactionSummary, account: &Account) -> BTreeSet<Self> {
-        let mut invoked = BTreeSet::new();
-        if summary.input_notes().num_notes() > 0 {
-            invoked.insert(Self::ReceiveAsset);
-        }
-        if summary.output_notes().iter().any(is_non_fee_output_note) {
-            invoked.insert(Self::SendAsset);
-        }
-        let account_is_new = account.is_new();
-        invoked.extend(
-            summary
-                .account_delta()
-                .storage()
-                .slots()
-                .filter(|(slot, patch)| {
-                    !account_is_new || !is_initialization_patch(account, slot, patch)
-                })
-                .filter_map(|(slot, _)| Self::of_patched_slot(slot)),
-        );
-        invoked
-    }
-
-    fn of_patched_slot(slot: &StorageSlotName) -> Option<Self> {
-        if slot == AuthGuardedMultisig::threshold_config_slot()
-            || slot == AuthGuardedMultisig::approver_public_keys_slot()
-            || slot == AuthGuardedMultisig::approver_scheme_ids_slot()
-        {
-            Some(Self::UpdateSigners)
-        } else if slot == AuthGuardedMultisig::procedure_thresholds_slot() {
-            Some(Self::SetProcedureThreshold)
-        } else if slot == AuthGuardedMultisig::guardian_public_key_slot()
-            || slot == AuthGuardedMultisig::guardian_scheme_id_slot()
-        {
-            Some(Self::UpdateGuardian)
-        } else if slot == AuthGuardedMultisig::executed_transactions_slot() {
-            None
-        } else {
-            Some(Self::AccountDefault)
-        }
-    }
-
-    /// The account procedure roots a modeled procedure stands for. A
-    /// standard send calls both wallet send procedures (`create_note`
-    /// and `move_asset_to_note`, see the send-notes transaction
-    /// script), and on chain each called procedure contributes its
-    /// override or the default, combined by max, so an override on one
-    /// of them cannot lower a send below the other's contribution.
-    fn roots(self) -> Vec<Word> {
-        let auth_root = |name: &str| {
-            let code = AuthGuardedMultisig::code();
-            let export = code
-                .exports()
-                .find(|export| export.path.to_string().rsplit("::").next() == Some(name))?;
-            code.get_procedure_root_by_path(&*export.path)
-                .map(Word::from)
-        };
-        match self {
-            Self::UpdateSigners => auth_root("update_signers_and_threshold")
-                .into_iter()
-                .collect(),
-            Self::SetProcedureThreshold => {
-                auth_root("set_procedure_threshold").into_iter().collect()
-            }
-            Self::UpdateGuardian => auth_root("update_guardian_public_key")
-                .into_iter()
-                .collect(),
-            Self::SendAsset => vec![
-                BasicWallet::create_note_root().into(),
-                BasicWallet::move_asset_to_note_root().into(),
-            ],
-            Self::ReceiveAsset => vec![BasicWallet::receive_asset_root().into()],
-            Self::AccountDefault => Vec::new(),
-        }
-    }
-}
-
-/// Whether a creating transaction's storage patch only writes what the
-/// registered initial account already holds. A value or entry this gate
-/// cannot read, or one that differs from the stored initial state, is
-/// treated as a real change, the over-requiring direction; a removal is
-/// never initialization. A created map is the complete post-state of its
-/// slot and omits cleared (empty-valued) keys, so a stored entry the
-/// patch lacks was cleared by a procedure called in that transaction:
-/// the whole stored map must be covered, not only the patched keys.
-fn is_initialization_patch(
-    account: &Account,
-    slot: &StorageSlotName,
-    patch: &StorageSlotPatch,
-) -> bool {
-    let storage = account.storage();
-    match patch {
-        StorageSlotPatch::Value(value_patch) => value_patch
-            .value()
-            .is_some_and(|value| storage.get_item(slot).is_ok_and(|stored| stored == value)),
-        StorageSlotPatch::Map(map_patch) => {
-            let Some(StorageSlotContent::Map(stored)) =
-                storage.get(slot).map(|stored_slot| stored_slot.content())
-            else {
-                return false;
-            };
-            let entries = match map_patch {
-                StorageMapPatch::Create { entries } => {
-                    if stored
-                        .entries()
-                        .any(|(key, value)| entries.as_map().get(key) != Some(value))
-                    {
-                        return false;
-                    }
-                    entries
-                }
-                // An update names only the entries it touches, cleared ones
-                // carried with an empty value, so the stored map needs no
-                // separate coverage check.
-                StorageMapPatch::Update { entries } => entries,
-                StorageMapPatch::Remove => return false,
-            };
-            // An absent stored key reads as the empty word, so an
-            // empty-valued patch entry matches exactly when the initial
-            // account holds nothing there.
-            entries
-                .as_map()
-                .iter()
-                .all(|(key, value)| stored.get(key) == *value)
-        }
-    }
-}
-
-/// The fee note is public, so a partial (private) output note is never
-/// the fee note.
-fn is_non_fee_output_note(note: &RawOutputNote) -> bool {
-    match note {
-        RawOutputNote::Full(note) => !matches!(
-            StandardNote::from_script(note.script()),
-            Some(StandardNote::TX_FEE)
-        ),
-        RawOutputNote::Partial(_) => true,
-    }
-}
 
 /// A parsed multisig account, present only when the tail state carries
 /// the multisig threshold slot. Single-key states do not.
@@ -227,7 +43,7 @@ impl MultisigAccount {
 
     /// Refuse the push unless `proposal` is the pending record for
     /// `pushed_payload` and its verified approver signatures meet the
-    /// threshold of the procedures the pushed transaction invokes.
+    /// account's signature floor.
     pub(crate) fn authorize(
         &self,
         pushed_payload: &Value,
@@ -235,15 +51,14 @@ impl MultisigAccount {
     ) -> Result<()> {
         let pushed =
             TransactionSummary::from_json(pushed_payload).map_err(GuardianError::InvalidDelta)?;
+        let required = self.signature_floor()?;
         let Some(proposal) = proposal else {
-            return self.reject(self.required_threshold(&pushed, None)?, 0);
+            return self.reject(required, 0);
         };
         let summary = proposal_tx_summary(&proposal.delta_payload)?;
         if summary.to_commitment() != pushed.to_commitment() {
-            return self.reject(self.required_threshold(&pushed, None)?, 0);
+            return self.reject(required, 0);
         }
-        let claimed = invoked_procedure(&proposal.delta_payload);
-        let required = self.required_threshold(&pushed, Some(claimed))?;
         let got = verified_approver_count(
             &summary,
             pending_signatures(proposal),
@@ -255,83 +70,50 @@ impl MultisigAccount {
         Ok(())
     }
 
-    /// The signature count the pushed transaction needs: the maximum
-    /// threshold over the procedures its summary shows were invoked and
-    /// the procedure its proposal claims to invoke. A summary that shows
-    /// no invoked procedure is held to the account default first, the
-    /// on-chain fallback for a transaction that calls no non-auth
-    /// procedure, so the claim is never trusted on its own: it can raise
-    /// the requirement but never lower it, neither below what the
-    /// summary shows nor below the default.
-    fn required_threshold(
-        &self,
-        pushed: &TransactionSummary,
-        claimed: Option<InvokedProcedure>,
-    ) -> Result<usize> {
-        let mut invoked = InvokedProcedure::of_summary(pushed, &self.account);
-        if invoked.is_empty() {
-            invoked.insert(InvokedProcedure::AccountDefault);
-        }
-        invoked.extend(claimed);
-        invoked
-            .into_iter()
-            .map(|procedure| self.threshold(procedure))
-            .try_fold(0, |required, threshold| Ok(required.max(threshold?)))
-    }
-
-    fn threshold(&self, procedure: InvokedProcedure) -> Result<usize> {
-        let threshold = effective_threshold(&self.account, procedure).ok_or_else(|| {
-            GuardianError::InvalidDelta("Multisig account is missing its threshold".to_string())
-        })?;
-        if threshold == 0 {
+    /// The fewest signatures the chain accepts for any transaction on this
+    /// account: the default threshold, or a lower per-procedure override.
+    /// On chain (`multisig.masm` `compute_transaction_threshold`) every
+    /// called procedure contributes its override or the default, combined
+    /// by max, so no transaction needs fewer. Which procedures a
+    /// transaction calls is not visible in its summary, so the gate does
+    /// not try to match the exact count: the chain enforces it. An override
+    /// of zero is no override, on chain as here.
+    fn signature_floor(&self) -> Result<usize> {
+        let storage = self.account.storage();
+        let default = storage
+            .get_item(AuthGuardedMultisig::threshold_config_slot())
+            .map_err(|_| {
+                GuardianError::InvalidDelta("Multisig account is missing its threshold".to_string())
+            })?[0]
+            .as_canonical_u64() as usize;
+        let lowest_override = match storage
+            .get(AuthGuardedMultisig::procedure_thresholds_slot())
+            .map(|slot| slot.content())
+        {
+            Some(StorageSlotContent::Map(overrides)) => overrides
+                .entries()
+                .map(|(_, threshold)| threshold[0].as_canonical_u64() as usize)
+                .filter(|threshold| *threshold != 0)
+                .min(),
+            Some(StorageSlotContent::Value(_)) | None => None,
+        };
+        let floor = lowest_override.map_or(default, |lowest| lowest.min(default));
+        if floor == 0 {
             return Err(GuardianError::InvalidDelta(
                 "Multisig account threshold must be at least 1".to_string(),
             ));
         }
-        Ok(threshold)
+        Ok(floor)
     }
 
     fn reject(&self, required: usize, got: usize) -> Result<()> {
         tracing::info!(
             required,
             got,
-            "Multisig delta is not authorized by a threshold of verified cosigner signatures"
+            "Multisig delta is not authorized by enough verified cosigner signatures"
         );
         Err(GuardianError::InsufficientSignatures { required, got })
     }
-}
-
-fn invoked_procedure(payload: &Value) -> InvokedProcedure {
-    InvokedProcedure::of_proposal_type(
-        payload
-            .get("metadata")
-            .and_then(|metadata| metadata.get("proposal_type"))
-            .and_then(|proposal_type| proposal_type.as_str()),
-    )
-}
-
-fn effective_threshold(account: &Account, procedure: InvokedProcedure) -> Option<usize> {
-    let storage = account.storage();
-    let default = storage
-        .get_item(AuthGuardedMultisig::threshold_config_slot())
-        .ok()?[0]
-        .as_canonical_u64() as usize;
-    let per_root = |root: Word| {
-        storage
-            .get_map_item(
-                AuthGuardedMultisig::procedure_thresholds_slot(),
-                StorageMapKey::new(root),
-            )
-            .ok()
-            .map(|word| word[0].as_canonical_u64() as usize)
-            .filter(|threshold| *threshold != 0)
-            .unwrap_or(default)
-    };
-    let roots = procedure.roots();
-    if roots.is_empty() {
-        return Some(default);
-    }
-    Some(roots.into_iter().map(per_root).fold(0, usize::max))
 }
 
 fn pending_signatures(proposal: &DeltaObject) -> &[CosignerSignature] {

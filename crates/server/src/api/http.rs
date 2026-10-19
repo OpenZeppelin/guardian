@@ -197,8 +197,8 @@ pub async fn configure(
 
 /// Push a state delta. The request body is the JSON-encoded
 /// [`DeltaObject`] to commit. A multisig account is accepted only when
-/// a matching proposal meets the cosigner threshold of the procedures
-/// the delta invokes.
+/// a matching proposal carries verified cosigner signatures, at least as
+/// many as the lowest threshold the account permits.
 #[utoipa::path(
     post,
     path = "/delta",

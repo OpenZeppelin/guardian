@@ -1163,7 +1163,6 @@ mod tests {
         approver_commitments: &[String],
         threshold: u32,
         procedure_overrides: &[(miden_protocol::Word, u32)],
-        nonce: u64,
     ) -> serde_json::Value {
         use guardian_shared::ToJson;
         use miden_protocol::account::{
@@ -1209,49 +1208,28 @@ mod tests {
                 StorageMap::with_entries(entries).expect("procedure thresholds"),
             ));
         }
-        let storage = AccountStorage::new(slots).expect("storage");
-        let account = if nonce == 0 {
-            // A configured-but-unregistered account: nonce zero plus the
-            // seed its id derives from, as a real initial state carries.
-            let code = AccountCode::mock();
-            let vault = AssetVault::new(&[]).expect("vault");
-            (0u32..)
-                .find_map(|attempt| {
-                    let seed = miden_protocol::Word::from([attempt, 0, 0, 0]);
-                    let id = AccountId::new(
-                        seed,
-                        AccountIdVersion::Version1,
-                        code.commitment(),
-                        storage.to_commitment(),
-                    )
-                    .ok()?;
-                    Account::new(
-                        id,
-                        vault.clone(),
-                        storage.clone(),
-                        code.clone(),
-                        miden_protocol::Felt::ZERO,
-                        Some(seed),
-                    )
-                    .ok()
-                })
-                .expect("a seed that derives a valid account id")
-        } else {
-            let account_id = AccountId::dummy(
-                [3u8; 15],
-                AccountIdVersion::Version1,
-                AccountType::Private,
-                miden_protocol::account::AssetCallbackFlag::Disabled,
-            );
-            Account::new_existing(
-                account_id,
-                AssetVault::new(&[]).expect("vault"),
-                storage,
-                AccountCode::mock(),
-                miden_protocol::Felt::new_unchecked(nonce),
-            )
-        };
-        account.to_json()
+        let account_id = AccountId::dummy(
+            [3u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            miden_protocol::account::AssetCallbackFlag::Disabled,
+        );
+        Account::new_existing(
+            account_id,
+            AssetVault::new(&[]).expect("vault"),
+            AccountStorage::new(slots).expect("storage"),
+            AccountCode::mock(),
+            miden_protocol::Felt::new_unchecked(1),
+        )
+        .to_json()
+    }
+
+    fn pushed_summary() -> miden_protocol::transaction::TransactionSummary {
+        use guardian_shared::FromJson;
+        miden_protocol::transaction::TransactionSummary::from_json(
+            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
+        )
+        .expect("summary")
     }
 
     fn falcon_approval(
@@ -1312,7 +1290,6 @@ mod tests {
         account_id: &str,
         prev_commitment: &str,
         tx_summary: &serde_json::Value,
-        proposal_type: &str,
         status: crate::delta_object::DeltaStatus,
     ) -> MockStorageBackend {
         storage.with_pull_delta_proposal(Ok(DeltaObject {
@@ -1322,7 +1299,7 @@ mod tests {
             new_commitment: None,
             delta_payload: serde_json::json!({
                 "tx_summary": tx_summary,
-                "metadata": { "proposal_type": proposal_type },
+                "metadata": { "proposal_type": "p2id" },
                 "signatures": [],
             }),
             ack_sig: String::new(),
@@ -1337,30 +1314,6 @@ mod tests {
         approvers: &[String],
         threshold: u32,
         procedure_overrides: &[(miden_protocol::Word, u32)],
-        proposal_type: &str,
-        lookup: ProposalLookup,
-    ) -> (Result<PushDeltaResult>, MockStorageBackend) {
-        let tx_summary =
-            crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b");
-        push_payload_on_multisig(
-            tx_summary,
-            approvers,
-            threshold,
-            procedure_overrides,
-            1,
-            proposal_type,
-            lookup,
-        )
-        .await
-    }
-
-    async fn push_payload_on_multisig(
-        tx_summary: serde_json::Value,
-        approvers: &[String],
-        threshold: u32,
-        procedure_overrides: &[(miden_protocol::Word, u32)],
-        account_nonce: u64,
-        proposal_type: &str,
         lookup: ProposalLookup,
     ) -> (Result<PushDeltaResult>, MockStorageBackend) {
         use crate::delta_object::DeltaStatus;
@@ -1368,12 +1321,13 @@ mod tests {
         use crate::testing::helpers::TestSigner;
 
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let tx_summary = crate::testing::helpers::create_test_delta_payload(&account_id);
         let caller = TestSigner::new();
         let (signature, timestamp) = caller.sign(&account_id);
         let prev_commitment = "0xprev".to_string();
         let storage = MockStorageBackend::new().with_pull_state(Ok(StateObject {
             account_id: account_id.clone(),
-            state_json: multisig_state(approvers, threshold, procedure_overrides, account_nonce),
+            state_json: multisig_state(approvers, threshold, procedure_overrides),
             commitment: prev_commitment.clone(),
             nonce: None,
             created_at: "2026-05-25T08:00:00Z".into(),
@@ -1388,7 +1342,6 @@ mod tests {
                 &account_id,
                 &prev_commitment,
                 &tx_summary,
-                proposal_type,
                 pending_status(&caller.commitment_hex, cosigner_sigs),
             ),
             ProposalLookup::NonPending => stored_proposal(
@@ -1396,7 +1349,6 @@ mod tests {
                 &account_id,
                 &prev_commitment,
                 &tx_summary,
-                proposal_type,
                 DeltaStatus::Candidate {
                     timestamp: "2026-05-25T07:59:00Z".into(),
                     retry_count: 0,
@@ -1413,7 +1365,6 @@ mod tests {
                 &account_id,
                 &prev_commitment,
                 &proposal_summary,
-                proposal_type,
                 pending_status(&caller.commitment_hex, signatures),
             ),
         };
@@ -1479,78 +1430,58 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn multisig_push_without_a_proposal_is_rejected() {
-        let approver = crate::testing::helpers::TestSigner::new();
-        let (result, storage) = push_on_multisig(
-            &[approver.commitment_hex],
-            1,
-            &[],
-            "p2id",
-            ProposalLookup::Missing,
-        )
-        .await;
+    fn assert_refused(
+        result: &Result<PushDeltaResult>,
+        storage: &MockStorageBackend,
+        expected_required: usize,
+        expected_got: usize,
+    ) {
         assert!(
             matches!(
                 result,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 1,
-                    got: 0
-                })
+                Err(GuardianError::InsufficientSignatures { required, got })
+                    if *required == expected_required && *got == expected_got
             ),
             "{result:?}"
         );
-        assert_not_committed(&storage);
+        assert_not_committed(storage);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_without_a_proposal_is_rejected() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let (result, storage) =
+            push_on_multisig(&[approver.commitment_hex], 1, &[], ProposalLookup::Missing).await;
+        assert_refused(&result, &storage, 1, 0);
     }
 
     #[tokio::test]
     async fn multisig_push_below_the_threshold_is_rejected() {
         use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
 
         let first = TestSigner::new();
         let second = TestSigner::new();
-        let summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
-        )
-        .expect("summary");
         let (result, storage) = push_on_multisig(
             &[first.commitment_hex.clone(), second.commitment_hex.clone()],
             2,
             &[],
-            "p2id",
-            ProposalLookup::Signatures(vec![falcon_approval(&first, &summary)]),
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
         )
         .await;
-        assert!(
-            matches!(
-                result,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{result:?}"
-        );
-        assert_not_committed(&storage);
+        assert_refused(&result, &storage, 2, 1);
     }
 
     #[tokio::test]
     async fn multisig_push_at_the_falcon_threshold_is_acknowledged() {
         use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
 
         let first = TestSigner::new();
         let second = TestSigner::new();
-        let summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
-        )
-        .expect("summary");
+        let summary = pushed_summary();
         let (result, storage) = push_on_multisig(
             &[first.commitment_hex.clone(), second.commitment_hex.clone()],
             2,
             &[],
-            "p2id",
             ProposalLookup::Signatures(vec![
                 falcon_approval(&first, &summary),
                 falcon_approval(&second, &summary),
@@ -1563,20 +1494,12 @@ mod tests {
 
     #[tokio::test]
     async fn multisig_push_counts_a_verified_ecdsa_approver() {
-        use crate::testing::helpers::TestEcdsaSigner;
-        use guardian_shared::FromJson;
-
-        let approver = TestEcdsaSigner::new();
-        let summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
-        )
-        .expect("summary");
+        let approver = crate::testing::helpers::TestEcdsaSigner::new();
         let (result, storage) = push_on_multisig(
             std::slice::from_ref(&approver.commitment_hex),
             1,
             &[],
-            "p2id",
-            ProposalLookup::Signatures(vec![ecdsa_approval(&approver, &summary)]),
+            ProposalLookup::Signatures(vec![ecdsa_approval(&approver, &pushed_summary())]),
         )
         .await;
         assert!(result.is_ok(), "{result:?}");
@@ -1586,33 +1509,35 @@ mod tests {
     #[tokio::test]
     async fn multisig_push_does_not_count_a_non_approver() {
         use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
 
         let approver = TestSigner::new();
         let outsider = TestSigner::new();
-        let summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
-        )
-        .expect("summary");
         let (result, storage) = push_on_multisig(
             &[approver.commitment_hex],
             1,
             &[],
-            "p2id",
-            ProposalLookup::Signatures(vec![falcon_approval(&outsider, &summary)]),
+            ProposalLookup::Signatures(vec![falcon_approval(&outsider, &pushed_summary())]),
         )
         .await;
-        assert!(
-            matches!(
-                result,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 1,
-                    got: 0
-                })
-            ),
-            "{result:?}"
-        );
-        assert_not_committed(&storage);
+        assert_refused(&result, &storage, 1, 0);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_counts_each_approver_once() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let summary = pushed_summary();
+        let other = crate::testing::helpers::TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            &[approver.commitment_hex.clone(), other.commitment_hex],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&approver, &summary),
+                falcon_approval(&approver, &summary),
+            ]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
     }
 
     #[tokio::test]
@@ -1622,7 +1547,6 @@ mod tests {
             &[approver.commitment_hex],
             1,
             &[],
-            "p2id",
             ProposalLookup::Error("database unavailable".to_string()),
         )
         .await;
@@ -1633,112 +1557,70 @@ mod tests {
         assert_not_committed(&storage);
     }
 
-    fn update_signers_root() -> miden_protocol::Word {
-        use miden_standards::account::auth::AuthGuardedMultisig;
-        let code = AuthGuardedMultisig::code();
-        let export = code
-            .exports()
-            .find(|export| {
-                export.path.to_string().rsplit("::").next() == Some("update_signers_and_threshold")
-            })
-            .expect("update_signers_and_threshold export");
-        code.get_procedure_root_by_path(&*export.path)
-            .map(miden_protocol::Word::from)
-            .expect("update_signers_and_threshold root")
-    }
-
-    /// A per-procedure override applies when the summary shows that
-    /// procedure was invoked, and only then: the same claim on a summary
-    /// that invokes nothing is held to the account default.
+    /// The chain enforces the threshold of the procedures a transaction
+    /// calls; the gate only asks for the fewest signatures any transaction
+    /// on the account can need, so a lower override sets the floor for
+    /// every push.
     #[tokio::test]
-    async fn multisig_push_uses_the_procedure_threshold_override() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-
-        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let approver = TestSigner::new();
-        let overrides = [(update_signers_root(), 1)];
-
-        let payload = update_signers_shaped_summary(account_id);
-        let summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
-        let (admitted, _) = push_payload_on_multisig(
-            payload,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &overrides,
-            1,
-            "add_signer",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(admitted.is_ok(), "{admitted:?}");
-
-        let empty_summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload(account_id),
-        )
-        .expect("empty summary");
-        let (refused, storage) = push_on_multisig(
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &overrides,
-            "add_signer",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &empty_summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
-    }
-
-    /// A summary that invokes no procedure (a bare nonce bump: no notes,
-    /// no storage changes) is held to the account default on chain, so a
-    /// cheap label cannot lower what Guardian requires for it.
-    #[tokio::test]
-    async fn multisig_push_holds_an_empty_summary_to_the_account_default() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
+    async fn multisig_push_requires_the_lowest_threshold_the_account_permits() {
         use miden_standards::account::wallets::BasicWallet;
 
-        let approver = TestSigner::new();
-        let summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
-        )
-        .expect("summary");
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
         let receive = BasicWallet::receive_asset_root().into();
-        let (refused, storage) = push_on_multisig(
-            std::slice::from_ref(&approver.commitment_hex),
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
             2,
             &[(receive, 1)],
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
         )
         .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    /// An override of zero is no override, on chain as in the gate.
+    #[tokio::test]
+    async fn multisig_push_ignores_a_zero_override() {
+        use miden_standards::account::wallets::BasicWallet;
+
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let receive = BasicWallet::receive_asset_root().into();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            2,
+            &[(receive, 0)],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    /// An override above the default raises what some transactions need
+    /// on chain, never the floor.
+    #[tokio::test]
+    async fn multisig_push_floor_never_exceeds_the_default() {
+        use miden_standards::account::wallets::BasicWallet;
+
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let receive = BasicWallet::receive_asset_root().into();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            1,
+            &[(receive, 2)],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
     }
 
     #[tokio::test]
     async fn multisig_push_rejects_a_proposal_for_a_different_summary() {
         use crate::testing::helpers::TestSigner;
-        use guardian_shared::{FromJson, ToJson};
+        use guardian_shared::ToJson;
         use miden_protocol::account::{
             AccountCodePatch, AccountDelta, AccountId, AccountVaultDelta,
         };
@@ -1770,489 +1652,14 @@ mod tests {
             std::slice::from_ref(&approver.commitment_hex),
             1,
             &[],
-            "p2id",
             ProposalLookup::OtherSummary {
                 tx_summary: other.to_json(),
                 signatures: vec![falcon_approval(&approver, &other)],
             },
         )
         .await;
-        let pushed = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload(account_id),
-        )
-        .expect("pushed summary");
-        assert_ne!(other.to_commitment(), pushed.to_commitment());
-        assert!(
-            matches!(
-                result,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 1,
-                    got: 0
-                })
-            ),
-            "{result:?}"
-        );
-        assert_not_committed(&storage);
-    }
-
-    fn update_signers_shaped_summary(account_id: &str) -> serde_json::Value {
-        use guardian_shared::ToJson;
-        use miden_protocol::account::{
-            AccountCodePatch, AccountDelta, AccountId, AccountStoragePatch, AccountVaultDelta,
-            StorageSlotPatch, StorageValuePatch,
-        };
-        use miden_protocol::transaction::{
-            InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
-        };
-        use miden_protocol::{Felt, Word, ZERO};
-        use miden_standards::account::auth::AuthGuardedMultisig;
-
-        let storage_patch = AccountStoragePatch::from_entries([(
-            AuthGuardedMultisig::threshold_config_slot().clone(),
-            StorageSlotPatch::Value(StorageValuePatch::Update {
-                value: Word::from([2u32, 2, 0, 0]),
-            }),
-        )])
-        .expect("storage patch");
-        let delta = AccountDelta::new(
-            AccountId::from_hex(account_id).expect("account id"),
-            storage_patch,
-            AccountVaultDelta::default(),
-            AccountCodePatch::default(),
-            Felt::new_unchecked(1),
-        )
-        .expect("delta");
-        TransactionSummary::new(
-            delta,
-            InputNotes::new(Vec::new()).unwrap(),
-            RawOutputNotes::new(Vec::new()).unwrap(),
-            miden_protocol::block::BlockNumber::from(0),
-            Word::from([ZERO; 4]),
-            0,
-            TransactionSummaryUserParams::new([ZERO; 6]),
-        )
-        .to_json()
-    }
-
-    fn send_shaped_summary(account_id: &str) -> serde_json::Value {
-        use guardian_shared::ToJson;
-        use miden_protocol::account::{
-            AccountCodePatch, AccountDelta, AccountId, AccountStoragePatch, AccountVaultDelta,
-        };
-        use miden_protocol::note::Note;
-        use miden_protocol::transaction::{
-            InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
-            TransactionSummaryUserParams,
-        };
-        use miden_protocol::{Felt, Word, ZERO};
-
-        let delta = AccountDelta::new(
-            AccountId::from_hex(account_id).expect("account id"),
-            AccountStoragePatch::default(),
-            AccountVaultDelta::default(),
-            AccountCodePatch::default(),
-            Felt::new_unchecked(1),
-        )
-        .expect("delta");
-        TransactionSummary::new(
-            delta,
-            InputNotes::new(Vec::new()).unwrap(),
-            RawOutputNotes::new(vec![RawOutputNote::Full(Note::mock_noop(Word::from([
-                9u32, 0, 0, 0,
-            ])))])
-            .unwrap(),
-            miden_protocol::block::BlockNumber::from(0),
-            Word::from([ZERO; 4]),
-            0,
-            TransactionSummaryUserParams::new([ZERO; 6]),
-        )
-        .to_json()
-    }
-
-    /// The shape of an account-creating transaction that consumes a note:
-    /// the delta carries the written configuration (the auth component's
-    /// threshold slot with `threshold_config`, the approver map when
-    /// `approver` is given, and the procedure-thresholds map when
-    /// `procedure_overrides` is given, each map as a created slot's
-    /// complete post-state). With the initial account's own values that is
-    /// pure initialization; with different or missing values it is a
-    /// configuration change made in the creating transaction itself.
-    fn creating_receive_summary(
-        account_id: &str,
-        threshold_config: miden_protocol::Word,
-        approver: Option<miden_protocol::Word>,
-        procedure_overrides: Option<&[(miden_protocol::Word, u32)]>,
-    ) -> serde_json::Value {
-        use guardian_shared::ToJson;
-        use miden_protocol::account::{
-            AccountCodePatch, AccountDelta, AccountId, AccountStoragePatch, AccountVaultDelta,
-            StorageMapKey, StorageSlotPatch, StorageValuePatch,
-        };
-        use miden_protocol::note::Note;
-        use miden_protocol::transaction::{
-            InputNote, InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
-        };
-        use miden_protocol::{Felt, Word, ZERO};
-        use miden_standards::account::auth::AuthGuardedMultisig;
-
-        let mut entries = vec![(
-            AuthGuardedMultisig::threshold_config_slot().clone(),
-            StorageSlotPatch::Value(StorageValuePatch::Update {
-                value: threshold_config,
-            }),
-        )];
-        if let Some(approver) = approver {
-            use miden_protocol::account::{StorageMapPatch, StorageMapPatchEntries};
-            entries.push((
-                AuthGuardedMultisig::approver_public_keys_slot().clone(),
-                StorageSlotPatch::Map(StorageMapPatch::Create {
-                    entries: StorageMapPatchEntries::from_raw(
-                        [(StorageMapKey::new(Word::from([0u32, 0, 0, 0])), approver)]
-                            .into_iter()
-                            .collect(),
-                    ),
-                }),
-            ));
-        }
-        if let Some(overrides) = procedure_overrides {
-            use miden_protocol::account::{StorageMapPatch, StorageMapPatchEntries};
-            entries.push((
-                AuthGuardedMultisig::procedure_thresholds_slot().clone(),
-                StorageSlotPatch::Map(StorageMapPatch::Create {
-                    entries: StorageMapPatchEntries::from_raw(
-                        overrides
-                            .iter()
-                            .map(|(root, threshold)| {
-                                (StorageMapKey::new(*root), Word::from([*threshold, 0, 0, 0]))
-                            })
-                            .collect(),
-                    ),
-                }),
-            ));
-        }
-        let storage_patch = AccountStoragePatch::from_entries(entries).expect("storage patch");
-        let delta = AccountDelta::new(
-            AccountId::from_hex(account_id).expect("account id"),
-            storage_patch,
-            AccountVaultDelta::default(),
-            AccountCodePatch::default(),
-            Felt::new_unchecked(1),
-        )
-        .expect("delta");
-        TransactionSummary::new(
-            delta,
-            InputNotes::new(vec![InputNote::unauthenticated(Note::mock_noop(
-                Word::from([8u32, 0, 0, 0]),
-            ))])
-            .unwrap(),
-            RawOutputNotes::new(Vec::new()).unwrap(),
-            miden_protocol::block::BlockNumber::from(0),
-            Word::from([ZERO; 4]),
-            0,
-            TransactionSummaryUserParams::new([ZERO; 6]),
-        )
-        .to_json()
-    }
-
-    /// A standard send calls both wallet send procedures, and on chain
-    /// each contributes its override or the default, combined by max. An
-    /// override on `move_asset_to_note` alone therefore cannot lower a
-    /// send below the default (`create_note` still contributes it), and
-    /// the gate must not admit below what the chain will demand.
-    #[tokio::test]
-    async fn multisig_push_holds_a_send_to_both_send_procedures() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-        use miden_standards::account::wallets::BasicWallet;
-
-        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let approver = TestSigner::new();
-        let payload = send_shaped_summary(account_id);
-        let summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
-        let send: miden_protocol::Word = BasicWallet::move_asset_to_note_root().into();
-        let create: miden_protocol::Word = BasicWallet::create_note_root().into();
-
-        let (refused, storage) = push_payload_on_multisig(
-            payload.clone(),
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(send, 1)],
-            1,
-            "p2id",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
-
-        let (admitted, _) = push_payload_on_multisig(
-            payload,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(send, 1), (create, 1)],
-            1,
-            "p2id",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(admitted.is_ok(), "{admitted:?}");
-    }
-
-    /// The account-creating transaction writes the whole initial storage
-    /// into its delta without calling any update procedure, so those slot
-    /// patches imply nothing: a first receive is held to the receive
-    /// threshold, not to the update-signers one. The same summary on a
-    /// registered account keeps counting its slot patches.
-    #[tokio::test]
-    async fn multisig_push_ignores_initial_storage_on_the_creating_transaction() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-        use miden_standards::account::wallets::BasicWallet;
-
-        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let approver = TestSigner::new();
-        // The written configuration is exactly what the initial account
-        // holds (threshold 2, one approver at index 0): pure initialization.
-        let payload = creating_receive_summary(
-            account_id,
-            miden_protocol::Word::from([2u32, 1, 0, 0]),
-            Some(word_from_hex(&approver.commitment_hex)),
-            None,
-        );
-        let summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
-        let receive: miden_protocol::Word = BasicWallet::receive_asset_root().into();
-
-        let (admitted, _) = push_payload_on_multisig(
-            payload.clone(),
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(receive, 1)],
-            0,
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(admitted.is_ok(), "{admitted:?}");
-
-        // Without the override the same creating push needs the default,
-        // which proves the gate judged it rather than skipping it.
-        let (refused, storage) = push_payload_on_multisig(
-            payload.clone(),
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[],
-            0,
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
-
-        // On a registered account the config-slot patch is a real signer
-        // change and keeps requiring the update-signers threshold.
-        let (refused, storage) = push_payload_on_multisig(
-            payload,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(receive, 1)],
-            1,
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
-    }
-
-    /// A creating transaction can both consume a note and change the
-    /// signer configuration, and on chain the update procedure still
-    /// counts. A config patch that differs from the registered initial
-    /// account is such a change, so a receive override and a cheap label
-    /// cannot admit it below the update-signers threshold.
-    #[tokio::test]
-    async fn multisig_push_counts_a_configuration_change_in_the_creating_transaction() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-        use miden_standards::account::wallets::BasicWallet;
-
-        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let approver = TestSigner::new();
-        // The initial account holds threshold config [2, 1]; this creating
-        // transaction writes [2, 2]: a signer-set change made in the same
-        // transaction that consumes the note.
-        let payload = creating_receive_summary(
-            account_id,
-            miden_protocol::Word::from([2u32, 2, 0, 0]),
-            None,
-            None,
-        );
-        let summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
-        let receive: miden_protocol::Word = BasicWallet::receive_asset_root().into();
-
-        let (refused, storage) = push_payload_on_multisig(
-            payload,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(receive, 1)],
-            0,
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
-    }
-
-    /// A created map is the complete post-state of its slot and omits
-    /// cleared keys, so clearing a procedure override in the creating
-    /// transaction leaves no entry to compare: the override's absence
-    /// from the patch is the change. The same map written in full is
-    /// initialization and stays admitted at the receive override.
-    #[tokio::test]
-    async fn multisig_push_counts_a_cleared_override_in_the_creating_transaction() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-        use miden_standards::account::wallets::BasicWallet;
-
-        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let approver = TestSigner::new();
-        let receive: miden_protocol::Word = BasicWallet::receive_asset_root().into();
-        let send: miden_protocol::Word = BasicWallet::move_asset_to_note_root().into();
-        let overrides = [(receive, 1), (send, 1)];
-
-        // The created procedure-thresholds map carries both stored
-        // overrides: pure initialization, admitted at the receive override.
-        let full = creating_receive_summary(
-            account_id,
-            miden_protocol::Word::from([2u32, 1, 0, 0]),
-            None,
-            Some(&overrides),
-        );
-        let full_summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&full).expect("summary");
-        let (admitted, _) = push_payload_on_multisig(
-            full,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &overrides,
-            0,
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &full_summary)]),
-        )
-        .await;
-        assert!(admitted.is_ok(), "{admitted:?}");
-
-        // The same creating receive whose created map omits the send
-        // override cleared it, which is a set_procedure_threshold call
-        // held to the account default.
-        let cleared = creating_receive_summary(
-            account_id,
-            miden_protocol::Word::from([2u32, 1, 0, 0]),
-            None,
-            Some(&[(receive, 1)]),
-        );
-        let cleared_summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&cleared).expect("summary");
-        let (refused, storage) = push_payload_on_multisig(
-            cleared,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &overrides,
-            0,
-            "consume_notes",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &cleared_summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                refused,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{refused:?}"
-        );
-        assert_not_committed(&storage);
-    }
-
-    /// A proposal's claimed type cannot buy a lower threshold than the
-    /// procedures its summary shows were invoked: a signer-set change
-    /// labelled `p2id` is held to the update-signers threshold, not the
-    /// send override.
-    #[tokio::test]
-    async fn multisig_push_ignores_a_cheaper_mislabelled_proposal_type() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-        use miden_standards::account::wallets::BasicWallet;
-
-        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let approver = TestSigner::new();
-        let payload = update_signers_shaped_summary(account_id);
-        let summary =
-            miden_protocol::transaction::TransactionSummary::from_json(&payload).expect("summary");
-        let send = BasicWallet::move_asset_to_note_root().into();
-        let (result, storage) = push_payload_on_multisig(
-            payload,
-            std::slice::from_ref(&approver.commitment_hex),
-            2,
-            &[(send, 1)],
-            1,
-            "p2id",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
-        )
-        .await;
-        assert!(
-            matches!(
-                result,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 2,
-                    got: 1
-                })
-            ),
-            "{result:?}"
-        );
-        assert_not_committed(&storage);
+        assert_ne!(other.to_commitment(), pushed_summary().to_commitment());
+        assert_refused(&result, &storage, 1, 0);
     }
 
     #[tokio::test]
@@ -2262,39 +1669,20 @@ mod tests {
             std::slice::from_ref(&approver.commitment_hex),
             1,
             &[],
-            "p2id",
             ProposalLookup::NonPending,
         )
         .await;
-        assert!(
-            matches!(
-                result,
-                Err(GuardianError::InsufficientSignatures {
-                    required: 1,
-                    got: 0
-                })
-            ),
-            "{result:?}"
-        );
-        assert_not_committed(&storage);
+        assert_refused(&result, &storage, 1, 0);
     }
 
     #[tokio::test]
     async fn multisig_push_rejects_a_zero_threshold() {
-        use crate::testing::helpers::TestSigner;
-        use guardian_shared::FromJson;
-
-        let approver = TestSigner::new();
-        let summary = miden_protocol::transaction::TransactionSummary::from_json(
-            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
-        )
-        .expect("summary");
+        let approver = crate::testing::helpers::TestSigner::new();
         let (result, storage) = push_on_multisig(
             std::slice::from_ref(&approver.commitment_hex),
             0,
             &[],
-            "p2id",
-            ProposalLookup::Signatures(vec![falcon_approval(&approver, &summary)]),
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &pushed_summary())]),
         )
         .await;
         assert!(
