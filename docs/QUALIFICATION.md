@@ -395,8 +395,11 @@ prints, and the next live run consumes them.
 
 Before that projection, `run.sh` consumes any notes waiting for the treasury,
 so a top-up needs no command of its own. A failed consume is a warning rather
-than a refusal: the notes stay waiting for the next run, and the projection
-still decides whether this one can go ahead.
+than a refusal: batches that already went through stay in the vault, only the
+unconsumed notes stay waiting for the next run, and the projection uses the
+resulting vault balance to decide whether this one can go ahead. A note the
+treasury cannot consume yet, such as a timelocked P2IDE, is skipped rather than
+batched, so it cannot block the notes behind it.
 
 `run.sh` runs this projection before a live run starts and refuses the run when
 the treasury cannot cover it, so a shortfall costs nothing rather than being

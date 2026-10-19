@@ -460,16 +460,26 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
                 treasury.secret_key(),
             )
             .await?;
-            let consumed =
+            let bootstrap =
                 guardian_qualification_driver::funding::bootstrap::consume_pending_notes(
                     &mut client,
                     treasury.id(),
                 )
                 .await?;
-            if consumed == 0 {
+            if bootstrap.consumed == 0 && bootstrap.deferred == 0 {
                 println!("no notes were waiting for {}", treasury.address());
             } else {
-                println!("consumed {consumed} note(s) for {}", treasury.address());
+                println!(
+                    "consumed {} note(s) for {}",
+                    bootstrap.consumed,
+                    treasury.address()
+                );
+            }
+            if bootstrap.deferred > 0 {
+                println!(
+                    "deferred {} note(s) the treasury cannot consume yet",
+                    bootstrap.deferred
+                );
             }
             Ok(std::process::ExitCode::SUCCESS)
         }
