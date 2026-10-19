@@ -153,6 +153,15 @@ impl Default for CanonicalizationConfig {
 }
 
 impl CanonicalizationConfig {
+    /// The oldest client-abandoned discard the reconcile pass still recovers at `now`; see
+    /// [`crate::storage::abandoned_cutoff`].
+    pub fn abandoned_cutoff(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> chrono::DateTime<chrono::Utc> {
+        crate::storage::abandoned_cutoff(self.retained_ttl_seconds, now)
+    }
+
     /// Create a new canonicalization config with custom settings
     pub fn new(check_interval_seconds: u64, max_retries: u32) -> Self {
         Self {

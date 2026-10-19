@@ -91,6 +91,20 @@ pub(crate) fn is_recoverable(status: &DeltaStatus, abandoned_since: DateTime<Utc
             .unwrap_or(false)
 }
 
+/// The oldest client-abandoned discard timestamp still in scope for
+/// reconciliation under a retention TTL of `retained_ttl_seconds`:
+/// abandoned rows are kept as history forever, so the TTL bounds the
+/// scan, not their lifetime. An unrepresentable TTL (e.g. the test
+/// processor's u64::MAX) means "no cutoff": everything since the epoch
+/// is in scope.
+pub(crate) fn abandoned_cutoff(retained_ttl_seconds: u64, now: DateTime<Utc>) -> DateTime<Utc> {
+    i64::try_from(retained_ttl_seconds)
+        .ok()
+        .and_then(chrono::Duration::try_seconds)
+        .and_then(|ttl| now.checked_sub_signed(ttl))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
+
 /// Cursor parameters for the per-account delta history read. Sort key
 /// is `nonce DESC` against the `(account_id, nonce)` UNIQUE constraint,
 /// so cursor stability is fully guaranteed under both concurrent
