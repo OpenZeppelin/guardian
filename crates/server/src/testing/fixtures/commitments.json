@@ -3,5 +3,8 @@
   "commitment_after_delta_1": "0x21a1244961269a92fb7c572cbcc7173483b0cb53e57a17a91689c9b4f2bf1d6d",
   "commitment_after_delta_2": "0x87df293abb7c200bb900cda73e569036977a8aa1f7621d2e1753e8e5593f7dc9",
   "commitment_after_delta_3": "0x9eaa2da16c1ef3c03b41b3c63ea91915c746d0fdd8c33cf1a8a7295cc264c063",
+  "commitment_after_queue_1": "0xbec5436ebb9d518c9028c8f619f4680491c902f46bbccc978eeaa9bcf846d0b4",
+  "commitment_after_queue_2": "0x74127272b64836a4234e2769ae377068dc0cc0f98de475d2e192939674a0144e",
+  "commitment_after_queue_3": "0x8c8960ae1b65054a8833cb465cb19927bb7f85bcdbeab848efa364f3cb62c87c",
   "initial_commitment": "0xe59a154070000e56eeec0024e682d59b91cd27259bdf1d3ec6ddb367c5467f5e"
 }

@@ -210,6 +210,12 @@ resource "aws_ecs_task_definition" "server" {
               value = local.metrics_path
             }
           ] : [],
+          var.guardian_max_pending_candidates_per_account != null ? [
+            {
+              name  = "GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT"
+              value = tostring(var.guardian_max_pending_candidates_per_account)
+            }
+          ] : [],
           var.guardian_release_sweep_rotation_seconds != null ? [
             {
               name  = "GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS"

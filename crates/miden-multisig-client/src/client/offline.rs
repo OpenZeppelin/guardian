@@ -82,16 +82,19 @@ impl MultisigClient {
             std::iter::empty(),
         )?;
 
-        let (tx_summary, chain_anchor) =
-            crate::transaction::execute_for_summary(&mut self.miden_client, account_id, tx_request)
-                .await?;
+        let tx_summary = crate::transaction::execute_for_summary_at_tip(
+            &mut self.miden_client,
+            account_id,
+            tx_request,
+        )
+        .await?;
 
         let metadata = ExportedMetadata {
             proposal_type: "switch_guardian".to_string(),
             salt_hex: Some(crate::transaction::word_to_hex(&salt)),
             new_guardian_pubkey_hex: Some(crate::transaction::word_to_hex(&new_commitment)),
             new_guardian_endpoint: Some(new_endpoint),
-            chain_anchor: Some(crate::transaction::chain_anchor_to_base64(&chain_anchor)),
+            bound_block_num: Some(tx_summary.block_number().as_u32()),
             ..Default::default()
         };
 

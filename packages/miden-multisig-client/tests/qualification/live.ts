@@ -15,6 +15,8 @@ export interface LiveConfig {
   readonly midenRpcEndpoint: string;
   /** A second GUARDIAN deployment, required only by the migration scenario. */
   readonly migrationEndpoint?: string;
+  /** A GUARDIAN that queues chained candidates, for the candidate-queue scenarios. */
+  readonly queueEndpoint?: string;
 }
 
 /**
@@ -85,6 +87,12 @@ export async function guardianCommitment(cosigner: Cosigner, scheme: Scheme): Pr
 /** The account a live scenario is working on, shared by its actions. */
 export interface LiveSession {
   readonly cosigners: Cosigner[];
+  /**
+   * The GUARDIAN this account is registered with: the main one, or the queue
+   * server for the candidate-queue scenarios. A signer added later has to talk
+   * to the same one.
+   */
+  readonly guardianEndpoint: string;
   readonly threshold: number;
   multisig?: Multisig;
   accountId?: string;

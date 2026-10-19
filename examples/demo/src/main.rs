@@ -5,22 +5,22 @@ mod state;
 
 use miden_client::rpc::Endpoint;
 use miden_multisig_client::{
-    MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy, SignatureScheme,
+    MidenCedar, MultisigClient, ProverConfig, ProverRetryPolicy, RpcConfig, RpcRetryPolicy,
+    SignatureScheme,
 };
-use miden_protocol::address::NetworkId;
 use rustyline::DefaultEditor;
 
 use actions::{
-    action_create_account, action_delta_history, action_list_notes, action_proposal_management,
-    action_recover_by_key, action_recover_notes, action_show_account, action_show_status,
-    action_sync_account, action_verify_state_commitment,
+    action_create_account, action_delta_history, action_guardian_session, action_list_notes,
+    action_proposal_management, action_recover_by_key, action_recover_notes, action_show_account,
+    action_show_status, action_sync_account, action_verify_state_commitment,
 };
 use display::{
     print_banner, print_error, print_full_hex, print_section, print_success, print_waiting,
     shorten_hex_32,
 };
 use menu::{handle_invalid_choice, parse_menu_choice, prompt_input, MenuAction};
-use state::SessionState;
+use state::{DemoNetwork, SessionState};
 
 async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     print_banner();
@@ -32,18 +32,20 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
     println!("    [1] Local (http://localhost:57291)");
     println!("    [2] Devnet (https://rpc.devnet.miden.io)");
     println!("    [3] Testnet (https://rpc.testnet.miden.io)");
-    println!("    [4] Custom URL");
+    println!("    [4] Cedar (https://rpc.cedar.miden.io)");
+    println!("    [5] Mainnet (https://rpc.mainnet.miden.io)");
+    println!("    [6] Custom URL");
     println!();
 
     let network_choice = prompt_input(editor, "Network [1]: ")?;
     let local = || Endpoint::new("http".to_string(), "localhost".to_string(), Some(57291));
     // The network id renders account ids as bech32m addresses and checks pasted
     // ones; a local node is treated as devnet, and a custom endpoint says which.
-    let (miden_endpoint, network_id) = match network_choice.trim() {
-        "" | "1" => (local(), NetworkId::Devnet),
+    let (miden_endpoint, network) = match network_choice.trim() {
+        "" | "1" => (local(), DemoNetwork::Devnet),
         "2" => (
             Endpoint::new("https".to_string(), "rpc.devnet.miden.io".to_string(), None),
-            NetworkId::Devnet,
+            DemoNetwork::Devnet,
         ),
         "3" => (
             Endpoint::new(
@@ -51,28 +53,39 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
                 "rpc.testnet.miden.io".to_string(),
                 None,
             ),
-            NetworkId::Testnet,
+            DemoNetwork::Testnet,
         ),
-        "4" => {
+        "4" => (MidenCedar::endpoint(), DemoNetwork::Cedar),
+        "5" => (
+            Endpoint::new(
+                "https".to_string(),
+                "rpc.mainnet.miden.io".to_string(),
+                None,
+            ),
+            DemoNetwork::Mainnet,
+        ),
+        "6" => {
             let custom_url = prompt_input(editor, "Enter Miden Node URL: ")?;
             let endpoint = parse_miden_endpoint(&custom_url)?;
             let network = prompt_input(
                 editor,
-                "Network of this endpoint ([1] devnet, [2] testnet) [1]: ",
+                "Network of this endpoint ([1] devnet, [2] testnet, [3] cedar, [4] mainnet) [1]: ",
             )?;
-            let network_id = match network.trim() {
-                "" | "1" => NetworkId::Devnet,
-                "2" => NetworkId::Testnet,
+            let network = match network.trim() {
+                "" | "1" => DemoNetwork::Devnet,
+                "2" => DemoNetwork::Testnet,
+                "3" => DemoNetwork::Cedar,
+                "4" => DemoNetwork::Mainnet,
                 _ => {
                     println!("  Invalid choice, using devnet");
-                    NetworkId::Devnet
+                    DemoNetwork::Devnet
                 }
             };
-            (endpoint, network_id)
+            (endpoint, network)
         }
         _ => {
             println!("  Invalid choice, using local");
-            (local(), NetworkId::Devnet)
+            (local(), DemoNetwork::Devnet)
         }
     };
 
@@ -164,7 +177,7 @@ async fn startup(editor: &mut DefaultEditor) -> Result<SessionState, String> {
 
     let mut state = SessionState::new()?;
     state
-        .initialize_client(builder, signature_scheme, network_id)
+        .initialize_client(builder, signature_scheme, network)
         .await?;
 
     let commitment_hex = state.user_commitment_hex()?;
@@ -218,6 +231,7 @@ async fn handle_action(
         MenuAction::ListNotes => action_list_notes(state).await,
         MenuAction::DeltaHistory => action_delta_history(state, editor).await,
         MenuAction::ProposalManagement => action_proposal_management(state, editor).await,
+        MenuAction::GuardianSession => action_guardian_session(state, editor).await,
         MenuAction::RecoverByKey => action_recover_by_key(state).await,
         MenuAction::RecoverNotes => action_recover_notes(state).await,
         MenuAction::ShowAccount => action_show_account(state).await,

@@ -44,14 +44,16 @@ mod tests {
 
     use super::decode_proposal_metadata;
 
-    /// Keeps `chain_anchor` out of delta metadata and dashboard listings.
+    /// Keeps the block-binding fields out of delta metadata and dashboard
+    /// listings.
     #[test]
-    fn decode_proposal_metadata_drops_the_chain_anchor() {
+    fn decode_proposal_metadata_drops_the_block_binding_fields() {
         let payload = json!({
             "tx_summary": { "data": "AAAA" },
             "metadata": {
                 "proposal_type": "consume_notes",
                 "note_ids": ["0xabc"],
+                "bound_block_num": 42,
                 "chain_anchor": "bW9jay1jaGFpbi1hbmNob3I=",
             }
         });
@@ -60,6 +62,7 @@ mod tests {
         assert_eq!(metadata.proposal_type, "consume_notes");
 
         let lifted = serde_json::to_value(&metadata).expect("metadata serializes");
+        assert!(lifted.get("bound_block_num").is_none());
         assert!(lifted.get("chain_anchor").is_none());
     }
 }

@@ -102,8 +102,7 @@ pub async fn synced_fee_faucet_id(client: &MidenSdkClient) -> Result<AccountId> 
 }
 
 /// Auth args for a request a proposer builds now, bound to `client`'s sync
-/// height: the anchor captured right after names that block, and
-/// `execute_for_summary` refuses the pair otherwise.
+/// height, which the proposal's summary then binds.
 pub async fn proposer_auth_args(
     client: &MidenSdkClient,
     salt: Word,

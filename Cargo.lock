@@ -1168,9 +1168,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-rs"
-version = "1.17.3"
+version = "1.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "00bdb5da18dac48ca2cc7cd4a98e533e8635a58e2361d13a1a4ee3888e0d72f1"
+checksum = "b281d307588d634de920874890732659e2e7672f72b5e10e81badc1a8a83621e"
 dependencies = [
  "aws-lc-sys",
  "zeroize",
@@ -1178,9 +1178,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.43.0"
+version = "0.45.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "43103168cc76fe62678a375e722fc9cb3a0146159ac5828bc4f0dfd755c2224c"
+checksum = "9bff6c3b54fad79a2e60b8102caf565819711497c1f5f092f49508e2f5c31b27"
 dependencies = [
  "cc",
  "cmake",
@@ -3434,7 +3434,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-client"
-version = "0.18.0-rc.3"
+version = "0.18.2"
 dependencies = [
  "chrono",
  "guardian-shared",
@@ -3541,7 +3541,7 @@ dependencies = [
 
 [[package]]
 name = "guardian-server"
-version = "0.18.0-rc.3"
+version = "0.18.2"
 dependencies = [
  "aes-gcm",
  "alloy",
@@ -3582,7 +3582,7 @@ dependencies = [
  "rand 0.10.2",
  "rand_chacha 0.10.0",
  "rcgen",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "rustls-pemfile",
  "secrecy",
  "serde",
@@ -3631,13 +3631,15 @@ dependencies = [
 
 [[package]]
 name = "guardian-shared"
-version = "0.18.0-rc.3"
+version = "0.18.2"
 dependencies = [
  "async-trait",
  "base64",
+ "chrono",
  "hex",
  "miden-protocol",
  "miden-standards",
+ "p256",
  "prost",
  "rand 0.10.2",
  "rstest",
@@ -3963,7 +3965,7 @@ dependencies = [
  "http 1.4.2",
  "hyper 1.11.0",
  "hyper-util",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
@@ -4396,7 +4398,7 @@ dependencies = [
  "cpubits",
  "ecdsa 0.17.0",
  "elliptic-curve 0.14.1",
- "primeorder",
+ "primeorder 0.14.0",
  "sha2 0.11.0",
  "wnaf",
 ]
@@ -4763,9 +4765,9 @@ dependencies = [
 
 [[package]]
 name = "miden-agglayer"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cb620dcba6371a17c32a1bc89c1fec1f00a6a48b247cbbc8fae36f66313b31c"
+checksum = "6e8678c1ebbf8e896a8213fc290e4793885e114601312145a5cbf288a5955828"
 dependencies = [
  "alloy-sol-types",
  "fs-err",
@@ -4856,9 +4858,9 @@ dependencies = [
 
 [[package]]
 name = "miden-block-prover"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24c281048b4dab61aea30f2197539056da2d7918dd003f3904281460dc975114"
+checksum = "4f61369d5318cb845ee03a907257434fa270d13300ea6757183758b389318c81"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -4868,9 +4870,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client"
-version = "0.17.0-rc.5"
+version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5d4f4eb0b90aa9805d8b0f0e38b123c4b05707ea9fc88f996ea7a800de11393"
+checksum = "35579ec11e02e43ffcb5e3a8248edf5eca9bb583565d5ac82c0d4fc1a5769854"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4892,6 +4894,7 @@ dependencies = [
  "prost",
  "prost-types",
  "rand 0.10.2",
+ "rand_chacha 0.10.0",
  "serde",
  "serde_json",
  "tempfile",
@@ -4907,10 +4910,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "miden-client-sqlite-store"
-version = "0.17.0-rc.5"
+name = "miden-client-proto"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d6b47da9a7479a1124c154d982b42482e2090aacb9c8edae5c52995d7154ddb"
+checksum = "f87b6c9908e43268cdd004c27776f1b21f41737611764db8ff406c56e069c2cc"
+dependencies = [
+ "miden-client",
+ "miden-objects",
+ "miden-protocol",
+ "prost",
+ "prost-build",
+ "protox",
+ "thiserror 2.0.19",
+]
+
+[[package]]
+name = "miden-client-sqlite-store"
+version = "0.17.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ed14aea81ded38beb8f8759df00caef5721bcc3419d58469e10991f48e48371"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4918,11 +4936,8 @@ dependencies = [
  "deadpool",
  "deadpool-sync",
  "miden-client",
- "miden-objects",
+ "miden-client-proto",
  "miden-protocol",
- "prost",
- "prost-build",
- "protox",
  "rusqlite",
  "rusqlite_migration",
  "thiserror 2.0.19",
@@ -4932,7 +4947,7 @@ dependencies = [
 
 [[package]]
 name = "miden-confidential-contracts"
-version = "0.18.0-rc.3"
+version = "0.18.2"
 dependencies = [
  "anyhow",
  "assert_matches",
@@ -5220,7 +5235,7 @@ dependencies = [
 
 [[package]]
 name = "miden-multisig-client"
-version = "0.18.0-rc.3"
+version = "0.18.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5249,9 +5264,9 @@ dependencies = [
 
 [[package]]
 name = "miden-node-proto-build"
-version = "0.17.0-rc.4"
+version = "0.17.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "624b78d416a8c9a4769a2354d48e6cd44c6cae2c5fce12518fcfb7439e7c2b66"
+checksum = "c9c8e64c1dae7548d86aa455e96544265bc522e70c4f09b2193c406e4226e2d3"
 dependencies = [
  "build-rs",
  "codegen",
@@ -5264,9 +5279,9 @@ dependencies = [
 
 [[package]]
 name = "miden-objects"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08681051b8b99dc1bc1bcfd858b3ec4711977c1b77a2a9ce3abbb8e3e760882e"
+checksum = "4367246c604af0a36e2d55637ee262d09a3ec2a3845616e5539182a618b507fa"
 dependencies = [
  "miden-protobuf",
  "miden-protocol",
@@ -5400,9 +5415,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protobuf"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cd12d8c9ab2aef91ecb3a22b3095ed910ede5a45d61576255a4f730cd62e01a"
+checksum = "a0985b31fe13de01430c23690f3367ce5f3702a726e6a70622abfefecafdda24"
 dependencies = [
  "miden-protobuf-derive",
  "proc-macro-crate",
@@ -5413,9 +5428,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protobuf-derive"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09808d0fd16160275d7648efda3c05402c8ea142869b9ebd36d93539ddbfb8a4"
+checksum = "68484c6f59a68657e515133b9e74276e26340d955bf718222705b15dd4d4a4cd"
 dependencies = [
  "heck",
  "proc-macro-crate",
@@ -5426,9 +5441,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protocol"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "525a43808effad4b97de2db6d11efc1898a5762a0181a2a21baa4e7c02370c0f"
+checksum = "9880b79313d737d8ea71290651f196eaadaaadd30e8282886a0f6ffc89901ba6"
 dependencies = [
  "bech32",
  "fs-err",
@@ -5458,9 +5473,9 @@ dependencies = [
 
 [[package]]
 name = "miden-protocol-build-utils"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "107bd48942e06ea09591101ae6f0dbeb7f568f41841712177c6d46c00c6b18b5"
+checksum = "e2844b72f6dcbe4788a07ec81ababb4e52a903fd0bcec981db63bf2d17ba9782"
 dependencies = [
  "fs-err",
  "miden-assembly",
@@ -5501,7 +5516,7 @@ dependencies = [
 
 [[package]]
 name = "miden-rpc-client"
-version = "0.18.0-rc.3"
+version = "0.18.2"
 dependencies = [
  "async-trait",
  "guardian-shared",
@@ -5530,9 +5545,9 @@ dependencies = [
 
 [[package]]
 name = "miden-standards"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5aed63e23f66c9d8b0566fb2184d7406b70a76ed12290dc9602257a0f4a17bbd"
+checksum = "d16c6d60f72228e503173fbc36c794a7ddc8ff8bee923f03f695274e7e2a3e2d"
 dependencies = [
  "bon",
  "miden-assembly",
@@ -5569,9 +5584,9 @@ dependencies = [
 
 [[package]]
 name = "miden-testing"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd1edefcecc7b1e3ea4060907d3076233e82bc97ee93f8df51039acae9a1143a"
+checksum = "60a04d19a08d03e32537c1dc63ece12c96344fe08a445fb51584ca36e38b75ef"
 dependencies = [
  "anyhow",
  "itertools 0.15.0",
@@ -5590,9 +5605,9 @@ dependencies = [
 
 [[package]]
 name = "miden-tx"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b145fea6d29393409415f35d180160eadfa383a12662f46032d3f23d6d7f230b"
+checksum = "cc57d91b71116b0dbb585fe48c2af04b854d397be903e3e70ed70e30840cb482"
 dependencies = [
  "bon",
  "miden-agglayer",
@@ -5605,9 +5620,9 @@ dependencies = [
 
 [[package]]
 name = "miden-tx-batch"
-version = "0.17.0-rc.9"
+version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7cba49856a5e0a346c0f8b9496c965e6e6362f1e96f66060c5f588ca69795b4f"
+checksum = "e298ad1e9f3bb9dd2b0cc926ff09912bb9a9b2e1936b9b5d0086e400c015dc4f"
 dependencies = [
  "miden-processor",
  "miden-protocol",
@@ -6018,6 +6033,18 @@ name = "owo-colors"
 version = "4.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d211803b9b6b570f68772237e415a029d5a50c65d382910b879fb19d3271f94d"
+
+[[package]]
+name = "p256"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
+dependencies = [
+ "ecdsa 0.16.9",
+ "elliptic-curve 0.13.8",
+ "primeorder 0.13.6",
+ "sha2 0.10.9",
+]
 
 [[package]]
 name = "p3-air"
@@ -6556,6 +6583,15 @@ dependencies = [
 
 [[package]]
 name = "primeorder"
+version = "0.13.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "353e1ca18966c16d9deb1c69278edbc5f194139612772bd9537af60ac231e1e6"
+dependencies = [
+ "elliptic-curve 0.13.8",
+]
+
+[[package]]
+name = "primeorder"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c9f42978c78a00e3d68f69fc03e57a234debae69da4020a4fb588fcdcd07b06"
@@ -6854,7 +6890,7 @@ dependencies = [
  "quinn-proto",
  "quinn-udp",
  "rustc-hash",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "socket2 0.6.5",
  "thiserror 2.0.19",
  "tokio",
@@ -6876,7 +6912,7 @@ dependencies = [
  "rand_pcg",
  "ring",
  "rustc-hash",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "rustls-pki-types",
  "slab",
  "thiserror 2.0.19",
@@ -7204,7 +7240,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -7242,7 +7278,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "quinn",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde",
@@ -7472,16 +7508,16 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.42"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
- "rustls-webpki 0.103.13",
+ "rustls-webpki 0.103.15",
  "subtle",
  "zeroize",
 ]
@@ -7528,10 +7564,10 @@ dependencies = [
  "jni",
  "log",
  "once_cell",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "rustls-native-certs",
  "rustls-platform-verifier-android",
- "rustls-webpki 0.103.13",
+ "rustls-webpki 0.103.15",
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
@@ -7556,9 +7592,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "aws-lc-rs",
  "ring",
@@ -8572,7 +8608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04fb792ccd6bbcd4bba408eb8a292f70fc4a3589e5d793626f45190e6454b6ab"
 dependencies = [
  "ring",
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "tokio",
  "tokio-postgres",
  "tokio-rustls 0.26.4",
@@ -8595,7 +8631,7 @@ version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61"
 dependencies = [
- "rustls 0.23.42",
+ "rustls 0.23.45",
  "tokio",
 ]
 

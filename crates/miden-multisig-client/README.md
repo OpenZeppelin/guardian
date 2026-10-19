@@ -90,6 +90,39 @@ error, not a silent fall-through to the full fetch, so the GUARDIAN server must
 serve `GetCanonicalNonce` (issue #191) before this SDK version is rolled out
 against it.
 
+### Signing Guardian requests with a session
+
+The key manager signs every Guardian request unless a session is active.
+`start_session` has it sign one session grant instead; a delegated P-256 key
+then signs the state and delta reads and the proposal list, get, create and
+sign requests of every later operation:
+
+```rust
+use std::time::Duration;
+use miden_multisig_client::StartSessionOptions;
+
+let info = client
+    .start_session(StartSessionOptions {
+        network: "devnet".to_string(), // the Guardian's /status environment: local, devnet, testnet, cedar or mainnet
+        ttl: Duration::from_secs(3600), // more than 5 minutes, at most the Guardian's maximum
+    })
+    .await?;
+
+client.sync().await?; // the GUARDIAN step is signed by the session key
+
+client.end_session().await?; // log this session out
+client.revoke_all_sessions().await?; // every session of this key, signed by the key manager
+```
+
+Account registration, delta pushes, candidate abandons, account lookup and
+transaction approvals keep using the key manager. A session Guardian ends or
+no longer accepts is dropped by the operation that learns of it, after which
+`session()` returns `None` and the key manager signs again. Starting a session
+logs out the one it replaces, and `set_guardian_endpoint` drops the session.
+`revoke_all_sessions` ends the sessions already registered; a grant signed but
+not yet registered can still be registered for about 10 minutes, so run it
+again 10 minutes later when a key may be compromised.
+
 ## Configuration
 
 Beyond the endpoints and the account directory, the builder carries three
@@ -137,8 +170,8 @@ re-sends undelivered notes on later syncs).
 ### Note transport endpoint (`note_transport_endpoint`)
 
 Private notes are relayed through a note transport service that is separate
-from the node RPC. The testnet and devnet presets derive the transport
-endpoint automatically; a custom node endpoint has no derivable transport
+from the node RPC. The devnet, testnet, Cedar (`MidenCedar::endpoint()`) and
+mainnet presets derive the transport endpoint automatically; a custom node endpoint has no derivable transport
 service, so private-note relay stays disabled until this is set explicitly.
 
 ```rust
@@ -155,8 +188,8 @@ let mut client = MultisigClient::builder()
 ### Remote prover (`prover_config`)
 
 `ProverConfig` overrides the remote prover endpoint and the proof retry
-policy. Without it, the devnet and testnet presets use their public provers
-and every other endpoint proves locally. A custom URL must be absolute
+policy. Without it, the devnet, testnet, Cedar and mainnet presets use their public
+provers and every other endpoint proves locally. A custom URL must be absolute
 HTTP(S) and never falls back to a default endpoint. Remote proving gets two
 total attempts by default and local proving is never retried; retries apply
 only to transient proof failures, so transaction execution, submission, local
@@ -284,14 +317,17 @@ any later tip. An execution runs at the Miden client's sync height, so
 offline paths sync the client first. Foreign accounts, the fee faucet among
 them, load at the tip, so a proposal stays verifiable however long it waits
 for signatures, even after the node has pruned the bound block's account
-state (devnet keeps about 50 blocks). The proposal's `chain_anchor` still
-names the bound block, and 0.18.0-rc.1 clients still re-execute at it.
+state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`; this SDK and the TypeScript one read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees.
 
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
 prover timeout, crash), the approved candidate keeps the account locked on
-GUARDIAN. Record an abandon intent and poll for the resolution:
+GUARDIAN: proposals and deltas answer `conflict_pending_delta` while the
+account's candidate queue (one candidate by default) is full, when they
+build on the state that candidate already claimed, or when their nonce does
+not extend the queue (a proposal's must be the newest queued candidate's plus
+one), and any candidate queued behind it can never land. Record an abandon intent and poll for the resolution:
 
 ```rust
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};
@@ -393,10 +429,9 @@ use miden_protocol::note::NoteType;
 // Producer: build a transaction and propose it under a custom label. The account's
 // auth procedure reads three words out of the request's auth argument since Miden
 // 0.17 (bound block and approval expiration, salt, fee conversion info); the client
-// builds them, bound to its sync height, and the builder attaches them. Sync first:
-// `propose_custom_transaction` anchors the proposal at that same height and does
-// not sync again, because a sync between build and propose would move the anchor
-// past the block the request binds.
+// builds them, bound to its sync height, and the builder attaches them.
+// `propose_custom_transaction` derives the summary at the chain tip, syncing up to
+// the bound block first if the client is behind it.
 client.sync().await?;
 let salt = generate_salt();
 let auth_args = client.multisig_auth_args(salt, None, None).await?;
@@ -410,12 +445,12 @@ let mut request = build_p2id_transaction_request(
     std::iter::empty(),
 )?;
 let proposal = client.propose_custom_transaction(&request.to_bytes(), "b2agg").await?;
-let bound_block_num = proposal.metadata.chain_anchor()?.block_num();
+let bound_block_num = proposal.tx_summary.block_number();
 
 // Cosigners review and sign through the usual list/sign flow.
 
 // Producer (once threshold is met): rebuild the request from the recipe, bound to
-// the proposal's anchor block, bind-check it, fetch the validated advice, inject
+// the block the proposal binds, bind-check it, fetch the validated advice, inject
 // it, and submit. `prepare_custom_execution` verifies the request against the
 // signed commitment *before* the GUARDIAN ack, re-executing at the chain tip;
 // `submit_transaction` executes at the tip too. Both work because the request
@@ -431,8 +466,8 @@ request.advice_map_mut().extend(advice);
 client.submit_transaction(&proposal.id, request).await?;
 ```
 
-The integration keeps its own recipe (build inputs + salt + the proposal's anchor
-block) so it can reproduce the exact transaction at execute time — the SDK does
+The integration keeps its own recipe (build inputs + salt + the proposal's bound
+block) so it can reproduce the exact transaction at execute time - the SDK does
 not store the serialized request. The binding check guarantees the rebuilt
 transaction matches the commitment the cosigners signed.
 
@@ -525,10 +560,11 @@ local store) becomes a `RecoveryStepProblem` entry instead of aborting the
 flow, and `retryable: true` means rerunning the flow — which is idempotent —
 can plausibly recover more. In brief:
 
-- **Transport drain** — rescans the full private-note transport backlog for
-  every tracked tag, regardless of the stored cursor (and without ever
-  regressing it). Bounded by the transport service's retention: a
-  best-effort rescan, **not** a backup.
+- **Transport drain** — fetches the private-note transport backlog for
+  every tracked tag until a fetch moves no tag's cursor. A recovered account's
+  tag has no transport cursor yet, so its whole retained backlog is fetched.
+  Bounded by the transport service's retention: a best-effort rescan,
+  **not** a backup.
 - **Proposal import** — rebuilds importable notes from the bytes v2
   consume-notes proposals embed (validated against the proposals' declared
   note ids) plus node-fetched inclusion proofs, so it works for private
@@ -595,7 +631,7 @@ is the `consume_notes_metadata_version` field on the wire.
   the local store as committed (with one sync if the store is behind the
   note's block). Verification therefore reads and writes the local store
   and contacts the node. Proposal creation does the same before the
-  summary and its chain anchor are captured, and refuses a note that is
+  summary is derived, and refuses a note that is
   not yet committed on chain.
 
 Proposal creation always emits v2 starting with this release; the

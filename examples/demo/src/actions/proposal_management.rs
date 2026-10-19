@@ -1081,11 +1081,7 @@ async fn action_create_custom_proposal(
         .await
         .map_err(|e| format!("propose_custom_transaction failed: {}", e))?;
     let proposal_id = proposal.id.clone();
-    let bound_block_num = proposal
-        .metadata
-        .chain_anchor()
-        .map_err(|e| format!("proposal carries no usable chain anchor: {}", e))?
-        .block_num();
+    let bound_block_num = proposal.tx_summary.block_number();
 
     // The integration owns its recipe (build inputs + salt + bound block), not the
     // serialized transaction; [8] rebuilds the request deterministically from these.

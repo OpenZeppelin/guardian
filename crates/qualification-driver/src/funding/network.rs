@@ -7,7 +7,6 @@ use miden_client::keystore::FilesystemKeyStore;
 use miden_client::rpc::Endpoint;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::account::{Account, AccountId};
-use miden_protocol::crypto::rand::RandomCoin;
 
 use crate::manifest::NetworkName;
 
@@ -36,9 +35,6 @@ pub async fn connect(
         .await
         .map_err(|error| anyhow!("cannot open the local store: {error}"))?;
 
-    let seed: [u32; 4] = rand::random();
-    let rng = Box::new(RandomCoin::new(seed.into()));
-
     let builder = match network {
         NetworkName::Devnet => ClientBuilder::<FilesystemKeyStore>::for_devnet(),
         NetworkName::Testnet => ClientBuilder::<FilesystemKeyStore>::for_testnet(),
@@ -46,7 +42,6 @@ pub async fn connect(
 
     builder
         .store(Arc::new(store))
-        .rng(rng)
         .filesystem_keystore(
             data_dir
                 .join("keys")

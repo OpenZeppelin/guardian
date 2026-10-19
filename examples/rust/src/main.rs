@@ -7,10 +7,12 @@ use std::sync::Arc;
 use clap::{Parser, ValueEnum};
 use miden_client::account::Account;
 use miden_client::builder::ClientBuilder;
-use miden_client::crypto::RandomCoin;
 use miden_client::keystore::FilesystemKeyStore;
+use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::rpc::Endpoint;
-use miden_client::{Client, ClientError, Deserializable, Felt, Serializable, Word};
+use miden_client::{
+    Client, ClientError, Deserializable, Felt, RemoteTransactionProver, Serializable, Word,
+};
 use miden_client_sqlite_store::SqliteStore;
 
 use miden_protocol::account::auth::Signature as AccountSignature;
@@ -26,11 +28,33 @@ use guardian_shared::ToJson;
 
 use tempfile::TempDir;
 
+const CEDAR_RPC_HOST: &str = "rpc.cedar.miden.io";
+const CEDAR_PROVER_ENDPOINT: &str = "https://tx-prover.cedar.miden.io";
+const CEDAR_NOTE_TRANSPORT_ENDPOINT: &str = "https://transport.cedar.miden.io";
+
+fn cedar_endpoint() -> Endpoint {
+    Endpoint::new("https".to_string(), CEDAR_RPC_HOST.to_string(), None)
+}
+
+/// miden-client presets devnet, testnet and mainnet; Cedar has no upstream
+/// preset, so its prover and note transport are wired here.
 fn configured_client_builder(endpoint: &Endpoint) -> ClientBuilder<FilesystemKeyStore> {
     if endpoint == &Endpoint::devnet() {
         ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
         ClientBuilder::<FilesystemKeyStore>::for_testnet()
+    } else if endpoint == &cedar_endpoint() {
+        ClientBuilder::<FilesystemKeyStore>::new()
+            .grpc_client(endpoint, Some(10_000))
+            .prover(Arc::new(RemoteTransactionProver::new(
+                CEDAR_PROVER_ENDPOINT.to_string(),
+            )))
+            .note_transport(Arc::new(GrpcNoteTransportClient::new(
+                CEDAR_NOTE_TRANSPORT_ENDPOINT.to_string(),
+                10_000,
+            )))
+    } else if endpoint == &Endpoint::mainnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_mainnet()
     } else if endpoint == &Endpoint::localhost() {
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
@@ -43,6 +67,8 @@ enum Network {
     Local,
     Devnet,
     Testnet,
+    Cedar,
+    Mainnet,
 }
 
 #[derive(Parser, Debug)]
@@ -73,11 +99,8 @@ async fn create_miden_client(
         .map_err(|err| format!("Failed to open SQLite store: {err}"))?;
     let store = Arc::new(store);
 
-    let rng = Box::new(RandomCoin::new(Word::default()));
-
     configured_client_builder(endpoint)
         .store(store)
-        .rng(rng)
         .tx_discard_delta(Some(20))
         .max_block_number_delta(256)
         .build()
@@ -133,6 +156,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "rpc.testnet.miden.io".to_string(),
                 None,
             )
+        }
+        Network::Cedar => {
+            println!("Step 1: Connect to GUARDIAN and Miden node (cedar)...");
+            cedar_endpoint()
+        }
+        Network::Mainnet => {
+            println!("Step 1: Connect to GUARDIAN and Miden node (mainnet)...");
+            Endpoint::mainnet()
         }
     };
 

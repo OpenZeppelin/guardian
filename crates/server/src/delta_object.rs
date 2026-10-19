@@ -37,6 +37,14 @@ pub enum RetainReason {
     /// The on-chain commitment was observed at neither the candidate's
     /// base nor its expected commitment on enough consecutive ticks.
     Diverged,
+    /// The candidate's predecessor in the account's candidate queue
+    /// (issue #17) was parked, discarded, or abandoned, so the base this
+    /// candidate builds on is one the stored state can never reach on
+    /// its own. No chain observation was needed: the break is a fact of
+    /// the queue. Retained rather than deleted so a spurious verdict on
+    /// the predecessor can still heal through reconciliation, which
+    /// walks recoverable rows as a chain.
+    Orphaned,
 }
 
 /// Delta status state machine

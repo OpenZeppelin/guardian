@@ -5,23 +5,26 @@ use std::sync::Arc;
 
 use miden_client::builder::ClientBuilder;
 use miden_client::grpc_support::{
-    DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, TESTNET_PROVER_ENDPOINT,
+    DEFAULT_GRPC_TIMEOUT_MS, DEVNET_PROVER_ENDPOINT, MAINNET_PROVER_ENDPOINT,
+    TESTNET_PROVER_ENDPOINT,
 };
 use miden_client::keystore::FilesystemKeyStore;
 use miden_client::note_transport::grpc::GrpcNoteTransportClient;
 use miden_client::note_transport::{
-    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
+    NOTE_TRANSPORT_DEVNET_ENDPOINT, NOTE_TRANSPORT_MAINNET_ENDPOINT,
+    NOTE_TRANSPORT_TESTNET_ENDPOINT, NoteTransportClient,
 };
 use miden_client::rpc::{Endpoint, GrpcClient, NodeRpcClient};
+use miden_client::store::Store;
 use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
-use miden_protocol::crypto::rand::RandomCoin;
 
 use crate::MidenSdkClient;
 use crate::client::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager};
+use crate::networks::MidenCedar;
 use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
 use crate::rpc::{
     RetryingNodeRpcClient, RpcConfig, RpcSelection, configured_note_transport_client,
@@ -56,19 +59,30 @@ pub(crate) fn configured_node_rpc_client(
     }
 }
 
+fn has_upstream_preset(endpoint: &Endpoint) -> bool {
+    endpoint == &Endpoint::devnet()
+        || endpoint == &Endpoint::testnet()
+        || endpoint == &Endpoint::mainnet()
+}
+
 fn preset_note_transport_endpoint(endpoint: &Endpoint) -> Option<&'static str> {
-    if endpoint == &Endpoint::testnet() {
-        Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
-    } else if endpoint == &Endpoint::devnet() {
+    if endpoint == &Endpoint::devnet() {
         Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+    } else if endpoint == &Endpoint::testnet() {
+        Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
+    } else if MidenCedar::matches(endpoint) {
+        Some(MidenCedar::NOTE_TRANSPORT_ENDPOINT)
+    } else if endpoint == &Endpoint::mainnet() {
+        Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
     } else {
         None
     }
 }
 
-/// An explicit endpoint always wires the transport; the preset endpoint is
-/// wired only when the RPC config is customized, so a passthrough build
-/// keeps the upstream miden-client transport defaults.
+/// An explicit endpoint always wires the transport. A preset miden-client
+/// already covers is wired only when the RPC config is customized, so a
+/// passthrough build keeps the upstream transport defaults; an SDK-only
+/// preset such as Cedar has no upstream default and is always wired.
 fn resolved_note_transport_endpoint(
     endpoint: &Endpoint,
     note_transport_endpoint: Option<&str>,
@@ -78,8 +92,8 @@ fn resolved_note_transport_endpoint(
         return Some(url.to_string());
     }
     match selection {
-        RpcSelection::Passthrough => None,
-        RpcSelection::Configured { .. } => {
+        RpcSelection::Passthrough if has_upstream_preset(endpoint) => None,
+        RpcSelection::Passthrough | RpcSelection::Configured { .. } => {
             preset_note_transport_endpoint(endpoint).map(str::to_string)
         }
     }
@@ -95,6 +109,8 @@ fn configured_client_builder(
         ClientBuilder::<FilesystemKeyStore>::for_devnet()
     } else if endpoint == &Endpoint::testnet() {
         ClientBuilder::<FilesystemKeyStore>::for_testnet()
+    } else if endpoint == &Endpoint::mainnet() {
+        ClientBuilder::<FilesystemKeyStore>::for_mainnet()
     } else if endpoint == &Endpoint::localhost() {
         ClientBuilder::<FilesystemKeyStore>::for_localhost()
     } else {
@@ -122,6 +138,10 @@ fn configured_client_builder(
         Some(DEVNET_PROVER_ENDPOINT)
     } else if endpoint == &Endpoint::testnet() {
         Some(TESTNET_PROVER_ENDPOINT)
+    } else if MidenCedar::matches(endpoint) {
+        Some(MidenCedar::PROVER_ENDPOINT)
+    } else if endpoint == &Endpoint::mainnet() {
+        Some(MAINNET_PROVER_ENDPOINT)
     } else {
         None
     };
@@ -199,7 +219,7 @@ impl MultisigClientBuilder {
     /// Sets the note transport service endpoint used for private note relay.
     ///
     /// Overrides the default derived from the Miden endpoint (the public
-    /// transport services for the testnet and devnet presets). A custom
+    /// transport services for the devnet, testnet, Cedar and mainnet presets). A custom
     /// Miden node endpoint has no derivable transport service, so this is
     /// the only way to enable note transport there.
     pub fn note_transport_endpoint(mut self, endpoint: impl Into<String>) -> Self {
@@ -297,7 +317,7 @@ impl MultisigClientBuilder {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;
 
-        let miden_client = create_miden_client(
+        let (miden_client, miden_store) = create_miden_client(
             &account_dir,
             &miden_endpoint,
             note_transport_endpoint.as_deref(),
@@ -308,6 +328,7 @@ impl MultisigClientBuilder {
 
         Ok(MultisigClient::new(
             miden_client,
+            miden_store,
             key_manager,
             guardian_endpoint,
             account_dir,
@@ -319,7 +340,8 @@ impl MultisigClientBuilder {
     }
 }
 
-/// Creates a miden-client instance with SQLite storage.
+/// Creates a miden-client instance with SQLite storage, returned with the
+/// store it was built on.
 ///
 /// Each call creates a fresh database with a unique filename to ensure
 /// no accumulated state from previous sessions.
@@ -329,7 +351,7 @@ pub(crate) async fn create_miden_client(
     note_transport_endpoint: Option<&str>,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
-) -> Result<MidenSdkClient> {
+) -> Result<(MidenSdkClient, Arc<dyn Store>)> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -342,19 +364,19 @@ pub(crate) async fn create_miden_client(
     let store = SqliteStore::new(store_path)
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to open SQLite store: {}", e)))?;
-    let store = Arc::new(store);
+    let store: Arc<dyn Store> = Arc::new(store);
 
-    let rng_seed: [u32; 4] = rand::random();
-    let rng = Box::new(RandomCoin::new(rng_seed.into()));
-
-    configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
-        .store(store)
-        .rng(rng)
-        .tx_discard_delta(Some(20))
-        .max_block_number_delta(256)
-        .build()
-        .await
-        .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))
+    let client =
+        configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
+            .store(store.clone())
+            .tx_discard_delta(Some(20))
+            .max_block_number_delta(256)
+            .build()
+            .await
+            .map_err(|e| {
+                MultisigError::MidenClient(format!("failed to create miden client: {}", e))
+            })?;
+    Ok((client, store))
 }
 
 #[cfg(test)]
@@ -377,12 +399,20 @@ mod tests {
     #[test]
     fn note_transport_endpoints_exist_only_for_public_presets() {
         assert_eq!(
+            preset_note_transport_endpoint(&Endpoint::devnet()),
+            Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+        );
+        assert_eq!(
             preset_note_transport_endpoint(&Endpoint::testnet()),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT)
         );
         assert_eq!(
-            preset_note_transport_endpoint(&Endpoint::devnet()),
-            Some(NOTE_TRANSPORT_DEVNET_ENDPOINT)
+            preset_note_transport_endpoint(&MidenCedar::endpoint()),
+            Some(MidenCedar::NOTE_TRANSPORT_ENDPOINT)
+        );
+        assert_eq!(
+            preset_note_transport_endpoint(&Endpoint::mainnet()),
+            Some(NOTE_TRANSPORT_MAINNET_ENDPOINT)
         );
         assert_eq!(preset_note_transport_endpoint(&Endpoint::localhost()), None);
         assert_eq!(preset_note_transport_endpoint(&custom_endpoint()), None);
@@ -431,6 +461,20 @@ mod tests {
             resolved_note_transport_endpoint(&Endpoint::testnet(), None, &selection(&timeout_only)),
             Some(NOTE_TRANSPORT_TESTNET_ENDPOINT.to_string())
         );
+    }
+
+    #[test]
+    fn cedar_note_transport_wires_even_for_passthrough_rpc_config() {
+        for rpc_config in [RpcConfig::new(), single_attempt_config()] {
+            assert_eq!(
+                resolved_note_transport_endpoint(
+                    &MidenCedar::endpoint(),
+                    None,
+                    &selection(&rpc_config)
+                ),
+                Some(MidenCedar::NOTE_TRANSPORT_ENDPOINT.to_string())
+            );
+        }
     }
 
     #[test]

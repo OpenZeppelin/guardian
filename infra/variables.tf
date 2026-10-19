@@ -38,7 +38,7 @@ variable "server_image_uri" {
 }
 
 variable "server_network_type" {
-  description = "Miden network for the GUARDIAN server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
+  description = "Miden network for the GUARDIAN server runtime (MidenLocal, MidenDevnet, MidenTestnet, MidenCedar, or MidenMainnet)"
   type        = string
   default     = "MidenTestnet"
 }
@@ -536,6 +536,27 @@ variable "guardian_canonicalization_fast_promotion_enabled" {
   description = "Whether ECS enables the recent-candidate fast promotion pass"
   type        = bool
   default     = true
+}
+
+variable "guardian_max_pending_candidates_per_account" {
+  description = <<-EOT
+    Optional override for GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT, how many
+    chained candidate deltas one account may hold in flight (issue #17). Unset
+    keeps the server default, 1: one in-flight candidate per account, so a
+    client waits for each transaction to canonicalize before pushing the next.
+    2 to 16 opts in to queueing, which lets a wallet submit back-to-back
+    transactions without that wait.
+  EOT
+  type        = number
+  default     = null
+  validation {
+    condition = var.guardian_max_pending_candidates_per_account == null ? true : (
+      var.guardian_max_pending_candidates_per_account >= 1 &&
+      var.guardian_max_pending_candidates_per_account <= 16 &&
+      floor(var.guardian_max_pending_candidates_per_account) == var.guardian_max_pending_candidates_per_account
+    )
+    error_message = "guardian_max_pending_candidates_per_account must be an integer between 1 and 16 when provided."
+  }
 }
 
 variable "guardian_release_sweep_enabled" {

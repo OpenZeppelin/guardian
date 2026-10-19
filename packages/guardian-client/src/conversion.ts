@@ -3,6 +3,8 @@ import type {
   CosignerSignature,
   ConfigureRequest,
   ConfigureResponse,
+  CreateSessionRequest,
+  CreateSessionResponse,
   DeltaObject,
   DeltaProposalRequest,
   DeltaStatus,
@@ -21,6 +23,8 @@ import type {
   ServerCosignerSignature,
   ServerConfigureRequest,
   ServerConfigureResponse,
+  ServerCreateSessionRequest,
+  ServerCreateSessionResponse,
   ServerDeltaObject,
   ServerDeltaProposalRequest,
   ServerDeltaStatus,
@@ -119,6 +123,7 @@ export function fromServerProposalMetadata(server: ServerProposalMetadata): Prop
     amount: server.amount,
     noteType: server.note_type,
     chainAnchor: server.chain_anchor,
+    boundBlockNum: server.bound_block_num,
     reclaimHeight: server.reclaim_height,
     timelockHeight: server.timelock_height,
   };
@@ -246,6 +251,7 @@ export function toServerProposalMetadata(meta: ProposalMetadata): ServerProposal
     amount: meta.amount,
     note_type: meta.noteType,
     chain_anchor: meta.chainAnchor,
+    bound_block_num: meta.boundBlockNum,
     reclaim_height: meta.reclaimHeight,
     timelock_height: meta.timelockHeight,
   };
@@ -257,6 +263,30 @@ export function toServerConfigureRequest(req: ConfigureRequest): ServerConfigure
     auth: req.auth,
     initial_state: { data: req.initialState.data, account_id: req.initialState.accountId },
   };
+}
+
+export function toServerCreateSessionRequest(req: CreateSessionRequest): ServerCreateSessionRequest {
+  return {
+    scheme: req.scheme,
+    ...(req.authFormat ? { auth_format: req.authFormat } : {}),
+    ...(req.publicKey ? { public_key: req.publicKey } : {}),
+    signature: req.signature,
+    grant: {
+      signer_commitment: req.grant.signerCommitment,
+      session_public_key: req.grant.sessionPublicKey,
+      origin: req.grant.origin,
+      issued_at: req.grant.issuedAt,
+      expires_at: req.grant.expiresAt,
+      guardian_commitment: req.grant.guardianCommitment,
+      network: req.grant.network,
+    },
+  };
+}
+
+export function fromServerCreateSessionResponse(
+  server: ServerCreateSessionResponse
+): CreateSessionResponse {
+  return { signerCommitment: server.signer_commitment, expiresAt: server.expires_at };
 }
 
 export function toServerDeltaProposalRequest(req: DeltaProposalRequest): ServerDeltaProposalRequest {
