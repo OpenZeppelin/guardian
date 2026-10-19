@@ -11,6 +11,7 @@ const EXPECTED = {
   updateSigners: '0xef1d061e74fa7da827343f1f387f45e93286de76c97495ea59a643d22291be9c',
   updateProcedureThreshold: '0x754d45172e729f2da08f1690152115b7f8eb3272441cb1a77c1614afeed4c5db',
   updateGuardian: '0xf8c248ad4859a455a1ba0ad26501821fe1555e719972e0ad7eb487c983319d09',
+  updateGuardianEcdsa: '0xa4038d96fb21e00ec8eb374e290857f33f151909bfaaa9f0c76f2c57125829fb',
 };
 
 test('Guardian-executable auth arguments and scripts match the Rust SDK', async ({ page }) => {
