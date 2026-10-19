@@ -43,15 +43,42 @@ if [[ "${1:-}" == "--accept-drift" ]]; then
   exit 0
 fi
 
+sha256_of() {
+  if command -v sha256sum >/dev/null; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    echo "Neither sha256sum nor shasum is installed" >&2
+    exit 2
+  fi
+}
+
+# Download to a temporary file and move it into the cache only once its
+# checksum matches, so an interrupted or corrupted download never leaves a
+# file at the cached path.
 if [[ ! -f "$TLA_JAR" ]]; then
+  command -v curl >/dev/null || { echo "curl is not installed"; exit 2; }
   mkdir -p "$(dirname "$TLA_JAR")"
   echo "Downloading tla2tools $TLA_VERSION to $TLA_JAR"
-  curl -fsSL -o "$TLA_JAR" \
-    "https://github.com/tlaplus/tlaplus/releases/download/v$TLA_VERSION/tla2tools.jar"
+  partial="$TLA_JAR.partial.$$"
+  if ! curl -fsSL -o "$partial" \
+      "https://github.com/tlaplus/tlaplus/releases/download/v$TLA_VERSION/tla2tools.jar"; then
+    rm -f "$partial"
+    echo "tla2tools download failed"
+    exit 2
+  fi
+  downloaded_sha="$(sha256_of "$partial")"
+  if [[ "$downloaded_sha" != "$TLA_SHA256" ]]; then
+    rm -f "$partial"
+    echo "tla2tools checksum mismatch: $downloaded_sha (expected $TLA_SHA256)"
+    exit 2
+  fi
+  mv "$partial" "$TLA_JAR"
 fi
-actual_sha="$(shasum -a 256 "$TLA_JAR" | cut -d' ' -f1)"
+actual_sha="$(sha256_of "$TLA_JAR")"
 if [[ "$actual_sha" != "$TLA_SHA256" ]]; then
-  echo "tla2tools checksum mismatch: $actual_sha (expected $TLA_SHA256)"
+  echo "tla2tools checksum mismatch: $actual_sha (expected $TLA_SHA256); delete $TLA_JAR and rerun"
   exit 2
 fi
 

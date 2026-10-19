@@ -65,7 +65,7 @@ From the repo root:
 ```
 
 A FAIL verdict names the property TLC reports violated
-(`FAIL:QueuedAccountIsListed`; any temporal property is `FAIL:temporal`),
+(`FAIL:ExecutesOnPinnedBase`; any temporal property is `FAIL:temporal`),
 and an expected failure in `expected.txt` must name it too, so a
 different violation in a cell that is expected to fail still shows as a
 `DIFF`. `--cell` exits 0 on PASS, 1 on FAIL and 2 on ERROR.
@@ -74,8 +74,7 @@ different violation in a cell that is expected to fail still shows as a
 TLC's worker threads (default: all cores).
 
 It needs `java` and `python3`. The first run downloads `tla2tools.jar`
-1.7.4 to `~/.cache/guardian-tla/` and checks its SHA-256. TLC uses 4
-workers (`TLC_WORKERS` overrides).
+1.7.4 to `~/.cache/guardian-tla/` and checks its SHA-256.
 
 Each cell prints `ok` or `DIFF` against `expected.txt`. Exit code 0
 means every cell matched and nothing drifted. 1 means a cell changed

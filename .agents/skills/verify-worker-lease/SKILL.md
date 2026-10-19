@@ -46,7 +46,7 @@ From the repo root:
 ```
 
 A FAIL verdict names the property TLC reports violated
-(`FAIL:QueuedAccountIsListed`; any temporal property is `FAIL:temporal`),
+(`FAIL:WritesInTokenOrder`; any temporal property is `FAIL:temporal`),
 and an expected failure in `expected.txt` must name it too, so a
 different violation in a cell that is expected to fail still shows as a
 `DIFF`. `--cell` exits 0 on PASS, 1 on FAIL and 2 on ERROR.
