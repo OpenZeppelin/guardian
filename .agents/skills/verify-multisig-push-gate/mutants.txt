@@ -1,0 +1,12 @@
+# Broken variants of the models: each must turn its cell's verdict into the
+# one given here, or a passing property is one that cannot fail.
+# <id> <module> <cell> <property> <verdict> :: <perl substitutions on the model> :: <code change it stands for>
+M1 PushGateThreshold threshold-standard NeverOverAsks FAIL:NeverOverAsks :: s/^GateRequired == .*$/GateRequired == dflt/ :: signature_floor(): ignore per-procedure overrides
+M2 PushGateThreshold threshold-standard NeverOverAsks FAIL:NeverOverAsks :: s/^GateRequired == .*$/GateRequired == IF SetOverrides = {} THEN dflt ELSE Min(SetOverrides)/ :: signature_floor(): an override replaces the default instead of lowering it
+M3 PushGateThreshold threshold-standard DefaultWithoutLowOverride FAIL:DefaultWithoutLowOverride :: s/^SetOverrides == .*$/SetOverrides == {ov[r] : r \\in DOMAIN ov}/ :: signature_floor(): drop the filter that treats an override of 0 as none
+M4 PushGateThreshold threshold-standard NeverOverAsks FAIL:NeverOverAsks :: s/^GateRequired == .*$/GateRequired == Max({dflt} \\cup SetOverrides)/ :: signature_floor(): take the highest threshold instead of the lowest
+M5 ApprovalRelay relay-old-new-offchannel-unsigned ReadyExecutionAcked FAIL:ReadyExecutionAcked :: s/^RelayContinues\(r\) == .*$/RelayContinues(r) == r \\in {"ok", "already_signed"}/ :: relay aborts on invalid_proposal_signature (the skip this branch adds)
+M6 ApprovalRelay relay-new-new-offchannel ReadyExecutionAcked FAIL:ReadyExecutionAcked :: s/toRelay = IF ClientRelays THEN Collected \\ StoredAtStart ELSE \{\}/toRelay = {}/ :: the SDK pushes without relaying off-channel approvals
+M7 ApprovalRelay relay-new-new-offchannel AckedApprovalKept FAIL:AckedApprovalKept :: s/stored' = relaySnap \\cup \{relaying\}/stored' = {relaying}/ :: sign_delta_proposal writes only the new approval
+M8 ApprovalRelay relay-new-new-offchannel-late ReadyExecutionAcked FAIL:ReadyExecutionAcked :: s/^Commits\(snap\) == .*$/Commits(snap) == TRUE/ :: sign_delta_proposal writes with update_delta_proposal instead of the conditional write (F4)
+M9 ApprovalRelay relay-new-new-offchannel-late AckedApprovalKept FAIL:AckedApprovalKept :: s/^Commits\(snap\) == .*$/Commits(snap) == TRUE/ :: sign_delta_proposal writes with update_delta_proposal instead of the conditional write (F4)
