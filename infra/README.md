@@ -316,6 +316,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `alarm_slack_channel_id` | `""` | Slack channel ID (`C...`) receiving this stack's alarm notifications; requires `alarm_notifications_enabled` |
 | `alarm_error_rate_threshold_percent` | `5` | HTTP 5xx / gRPC error-rate alarm threshold |
 | `alarm_latency_threshold_seconds` | `1` | Average HTTP latency alarm threshold |
+| `alarm_p99_latency_threshold_seconds` | `2` | ALB p99 target response time alarm threshold |
 | `alarm_cpu_threshold_percent` | `85` | ECS CPU saturation alarm threshold |
 | `alarm_memory_threshold_percent` | `90` | ECS memory saturation alarm threshold |
 | `alarm_execution_failures_threshold` | `1` | Operator-side execution failures (`PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`) per 5-minute period tolerated before the execution-failures alarm fires |
