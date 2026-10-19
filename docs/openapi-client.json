@@ -2100,6 +2100,20 @@
             ],
             "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
           },
+          "proposal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The proposal type Guardian leaves to local execution. Present only for\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the request was refused, for the codes that name one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`) and, on a\nGuardian execution request, `conflict_pending_delta` (`parked_delta`: a parked delta on\nthe account's state may still land)."
+          },
           "released_at": {
             "type": [
               "string",

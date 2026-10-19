@@ -57,6 +57,16 @@ pub struct ApiErrorMeta {
     /// `GUARDIAN_EXECUTION_CONFLICT`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocking_proposal_id: Option<String>,
+    /// The proposal type Guardian leaves to local execution. Present only for
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proposal_type: Option<String>,
+    /// Why the request was refused, for the codes that name one:
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`) and, on a
+    /// Guardian execution request, `conflict_pending_delta` (`parked_delta`: a parked delta on
+    /// the account's state may still land).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// Wire shape of a Guardian error response body: `{ code, message, meta }`

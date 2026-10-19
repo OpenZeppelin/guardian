@@ -1,24 +1,21 @@
-import type { TransactionRequestEnvelope } from "./request-envelope.js";
+import type { TransactionRequestEnvelope } from './request-envelope.js';
 
-import type { RequestAuthPayload } from "./auth-request.js";
-import type { ServerExecutionCapability } from "./execution.js";
+import type { RequestAuthPayload } from './auth-request.js';
+import type { ServerExecutionCapability } from './execution.js';
 
 export interface Signer {
   readonly commitment: string;
   readonly publicKey: string;
   readonly scheme: SignatureScheme;
   /** Selects EIP-712 request authentication; absent keeps the raw signature path. */
-  readonly requestAuthFormat?: "eip712";
+  readonly requestAuthFormat?: 'eip712';
   /** Tags an ECDSA proposal approval as an EIP-712 transaction-summary signature. */
-  readonly proposalMessageFormat?: "eip712";
-  signAccountIdWithTimestamp(
-    accountId: string,
-    timestamp: number,
-  ): Promise<string> | string;
+  readonly proposalMessageFormat?: 'eip712';
+  signAccountIdWithTimestamp(accountId: string, timestamp: number): Promise<string> | string;
   signRequest?(
     accountId: string,
     timestamp: number,
-    requestPayload: RequestAuthPayload,
+    requestPayload: RequestAuthPayload
   ): Promise<string> | string;
   signCommitment(commitmentHex: string): Promise<string> | string;
 
@@ -35,7 +32,7 @@ export interface Signer {
    */
   signLookupMessage?(
     keyCommitmentHex: string,
-    timestampMs: number,
+    timestampMs: number
   ): Promise<string> | string;
 
   /**
@@ -53,7 +50,7 @@ export interface Signer {
    */
   signSessionRevokeAll?(
     signerCommitment: string,
-    timestampMs: number,
+    timestampMs: number
   ): Promise<string> | string;
 }
 
@@ -94,7 +91,7 @@ export interface SessionGrantFields {
  * - `rejected`: Guardian no longer accepts it (`authentication_failed`, e.g.
  *   after a restart forgot it or the Guardian key was rotated).
  */
-export type SessionEndReason = "logout" | "expired" | "revoked" | "rejected";
+export type SessionEndReason = 'logout' | 'expired' | 'revoked' | 'rejected';
 
 /**
  * Signs session-eligible requests on behalf of a wallet after a session grant
@@ -113,7 +110,7 @@ export interface SessionRequestSigner {
   signRequest(
     accountId: string,
     timestamp: number,
-    requestPayload: RequestAuthPayload,
+    requestPayload: RequestAuthPayload
   ): Promise<string> | string;
   /** Sign the account-less `SessionLogoutMessage` for `POST /session/logout`. */
   signLogout(timestampMs: number): Promise<string> | string;
@@ -124,7 +121,7 @@ export interface SessionRequestSigner {
 export interface CreateSessionRequest {
   scheme: SignatureScheme;
   /** `eip712` for EIP-712 wallet signatures; omitted for raw signatures. */
-  authFormat?: "eip712";
+  authFormat?: 'eip712';
   /** Wallet public key; required for ECDSA. */
   publicKey?: string;
   signature: string;
@@ -144,20 +141,20 @@ export interface SessionsStatus {
 }
 
 export interface FalconSignature {
-  scheme: "falcon";
+  scheme: 'falcon';
   signature: string;
 }
 
 export interface EcdsaSignature {
-  scheme: "ecdsa";
+  scheme: 'ecdsa';
   signature: string;
   publicKey?: string;
-  messageFormat?: "eip712";
+  messageFormat?: 'eip712';
 }
 
 export type ProposalSignature = FalconSignature | EcdsaSignature;
 
-export type SignatureScheme = "falcon" | "ecdsa";
+export type SignatureScheme = 'falcon' | 'ecdsa';
 
 export type AuthConfig =
   | {
@@ -178,14 +175,9 @@ export interface CosignerSignature {
 }
 
 export type DeltaStatus =
-  | {
-      status: "pending";
-      timestamp: string;
-      proposerId: string;
-      cosignerSigs: CosignerSignature[];
-    }
-  | { status: "candidate"; timestamp: string }
-  | { status: "canonical"; timestamp: string }
+  | { status: 'pending'; timestamp: string; proposerId: string; cosignerSigs: CosignerSignature[] }
+  | { status: 'candidate'; timestamp: string }
+  | { status: 'canonical'; timestamp: string }
   /** Candidate the Guardian gave up verifying (retry exhaustion, a
    * confirmed-diverged observation, or an orphaned position in the
    * account's candidate queue after its predecessor was parked) but
@@ -193,21 +185,21 @@ export type DeltaStatus =
    * `canonical` if the chain ever shows it landed, dropped after a
    * server-side TTL otherwise. */
   | {
-      status: "retained";
+      status: 'retained';
       timestamp: string;
-      reason?: "retry_exhausted" | "diverged" | "orphaned";
+      reason?: 'retry_exhausted' | 'diverged' | 'orphaned';
     }
-  | { status: "discarded"; timestamp: string; reason?: string };
+  | { status: 'discarded'; timestamp: string; reason?: string };
 
 export type ProposalType =
-  | "add_signer"
-  | "remove_signer"
-  | "change_threshold"
-  | "update_procedure_threshold"
-  | "switch_guardian"
-  | "consume_notes"
-  | "p2id"
-  | "custom"
+  | 'add_signer'
+  | 'remove_signer'
+  | 'change_threshold'
+  | 'update_procedure_threshold'
+  | 'switch_guardian'
+  | 'consume_notes'
+  | 'p2id'
+  | 'custom'
   // Arbitrary server-defined proposal labels (issue #266); known literals are
   // kept for autocomplete while `(string & {})` admits any custom label.
   | (string & {});
@@ -367,7 +359,7 @@ export interface AbandonCandidateResponse {
    * the on-chain outcome is still uncertain: background reconciliation
    * may promote the delta until its retention TTL expires.
    */
-  state: "pending" | "abandoned" | "retained";
+  state: 'pending' | 'abandoned' | 'retained';
   /**
    * RFC 3339 UTC timestamp of the recorded abandon request. Retries
    * return the original timestamp; absent once resolved.
@@ -381,8 +373,7 @@ export interface AbandonCandidateResponse {
  * outcome is still uncertain — "unlocked but unresolved", never to be
  * read as "the transaction did not land".
  */
-export type AbandonStatus =
-  "waiting" | "landed" | "abandoned" | "retained" | "unexpected";
+export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected';
 
 export interface PushDeltaResponse {
   accountId: string;
@@ -408,26 +399,25 @@ export interface LookupResponse {
 }
 
 /** Note classification decoded from the on-chain note script. */
-export type HistoryNoteTag =
-  "p2id" | "p2ide" | "pswap" | "mint" | "burn" | "custom";
+export type HistoryNoteTag = 'p2id' | 'p2ide' | 'pswap' | 'mint' | 'burn' | 'custom';
 
 /** On-chain note visibility from the note metadata. */
-export type HistoryNoteVisibility = "public" | "private";
+export type HistoryNoteVisibility = 'public' | 'private';
 
 /** Which section of the persisted payload failed to decode. */
 export type HistoryDecodeSection =
-  | "tx_summary"
-  | "metadata"
-  | "input_notes"
-  | "output_notes"
-  | "vault"
-  | "storage";
+  | 'tx_summary'
+  | 'metadata'
+  | 'input_notes'
+  | 'output_notes'
+  | 'vault'
+  | 'storage';
 
 /**
  * Delta lifecycle status of a history entry. Only `canonical` is
  * emitted today; the set widens if the feed gains a status filter.
  */
-export type HistoryEntryStatus = "canonical";
+export type HistoryEntryStatus = 'canonical';
 
 /**
  * One decoded asset inside a history note. `amount` is a base-10
@@ -435,7 +425,7 @@ export type HistoryEntryStatus = "canonical";
  */
 export interface HistoryNoteAsset {
   assetId: string;
-  kind: "fungible" | "non_fungible";
+  kind: 'fungible' | 'non_fungible';
   amount?: string;
 }
 

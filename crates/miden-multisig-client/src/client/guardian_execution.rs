@@ -46,6 +46,11 @@ fn refusal(error: ClientError) -> MultisigError {
                     .and_then(|id| id.as_str())
                     .map(str::to_string)
             }),
+            reason: error.guardian_meta().and_then(|meta| {
+                meta.get("reason")
+                    .and_then(|reason| reason.as_str())
+                    .map(str::to_string)
+            }),
             code,
         },
         None => MultisigError::from(error),
@@ -392,6 +397,20 @@ mod tests {
         assert!(retryable);
         assert_eq!(retry_after, Some(Duration::from_secs(3)));
         assert_eq!(blocking_proposal_id, None);
+    }
+
+    #[test]
+    fn a_parked_delta_refusal_carries_its_reason() {
+        let error = refused(serde_json::json!({
+            "code": "conflict_pending_delta",
+            "message": "An earlier change to this account may still land.",
+            "meta": { "retryable": false, "reason": "parked_delta" }
+        }));
+        let MultisigError::GuardianExecutionRefused { code, reason, .. } = error else {
+            panic!("expected a refusal, got {error:?}");
+        };
+        assert_eq!(code, "conflict_pending_delta");
+        assert_eq!(reason.as_deref(), Some("parked_delta"));
     }
 
     #[test]

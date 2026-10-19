@@ -289,7 +289,8 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
   it (`None` for a self-executed proposal) or start from `ProposalPayload::new` and
   `with_transaction_request`.
 - `MultisigError` has two new variants, `GuardianExecutionRefused { code, message, retryable,
-  retry_after, blocking_proposal_id }` and `GuardianExecutionWaitTimedOut { proposal_id,
+  retry_after, blocking_proposal_id, reason }` (`reason` is the server's `meta.reason`, for
+  example `parked_delta`) and `GuardianExecutionWaitTimedOut { proposal_id,
   deadline, last_observed }` (from `wait_for_guardian_execution`), so an exhaustive `match` on
   the error needs an arm for each.
 - `guardian_client::GuardianClient::execute_delta_proposal` takes a third argument,
@@ -313,7 +314,10 @@ Source-level changes in the TypeScript packages:
   `{ allowPrivateNote?: boolean }`, and always sends and signs `allow_private_note` in the body.
   A direct HTTP caller must sign the body with that field present (`false` when it does not opt
   in); `GuardianErrorMeta.reason` (`switch_guardian` or `private_note`) says why a
-  `proposal_executes_locally` refusal left the proposal to local execution.
+  `proposal_executes_locally` refusal left the proposal to local execution. Its type is
+  `GuardianErrorReason`, which also includes `parked_delta`: the reason on a
+  `conflict_pending_delta` refusing an execution while a parked delta may still land. Code that
+  assigns `meta.reason` to a `LocalExecutionReason` must narrow it first.
 - `StatusResponse.execution` is a new required field (`{ enabled: true }` or
   `{ enabled: false, reason }`), so code that builds a `StatusResponse` (a mock, for example)
   must set it.
@@ -322,7 +326,7 @@ Source-level changes in the TypeScript packages:
   Guardian would execute. Use a typed `create*Proposal` method or `createCustomProposal` there.
 - The multisig execution methods (`requestGuardianExecution`, `executionStatus`,
   `currentExecution`) throw `GuardianExecutionRefusedError`, whose `code` is the wire code (for
-  example `GUARDIAN_EXECUTION_CONFLICT`), instead of the base client's `GuardianHttpError`, which
+  example `GUARDIAN_EXECUTION_CONFLICT`) and `reason` the server's `meta.reason`, instead of the base client's `GuardianHttpError`, which
   stays available as `cause`. `waitForGuardianExecution` throws
   `GuardianExecutionWaitTimeoutError` when its deadline passes.
 
