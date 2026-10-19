@@ -33,14 +33,17 @@ sequenceDiagram
   S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
-  alt existing account
-    S->>M: update last_auth_timestamp (verified signer, CAS)
+  alt no metadata for account_id
+    S->>M: create(account_id, auth, network_config, timestamps)\n(insert only if absent)
+    alt claim lost to a concurrent first configuration
+      S->>M: get(account_id)\n(judged as a reconfiguration from here)
+    end
   end
+  Note over S,M: the claim guarantees the metadata row that replay state references by FK
+  S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
   S->>ST: submit_state(state_json, commitment, nonce)
-  S->>M: set(account_id, auth, network_config, timestamps)
-  alt first-time account
-    Note over S,M: metadata must exist first because replay state references it by FK
-    S->>M: seed last_auth_timestamp (verified signer, CAS)
+  alt account already had metadata
+    S->>M: set(account_id, auth, network_config, timestamps)
   end
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```

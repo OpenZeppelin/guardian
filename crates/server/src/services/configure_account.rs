@@ -970,6 +970,129 @@ mod tests {
         assert!(observed_metadata.get_set_calls().is_empty());
     }
 
+    fn claimed_metadata(account_id: &str, commitment: &str) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment.to_string()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".into(),
+            updated_at: "2024-01-01T00:00:00Z".into(),
+            has_pending_candidate: true,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        }
+    }
+
+    /// The retry that finishes an unfinished first configuration is the
+    /// account's creation, so it is counted as one.
+    #[tokio::test]
+    async fn retry_of_an_unfinished_first_configuration_counts_as_a_creation() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
+        let state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3))),
+            MockStorageBackend::new()
+                .with_pull_state(Err("Failed to pull state: Record not found".to_string())),
+            MockMetadataStore::new().with_get(Ok(Some(claimed_metadata(account_id, &commitment)))),
+        )
+        .await;
+        let initial_state =
+            serde_json::from_str(include_str!("../testing/fixtures/account.json")).unwrap();
+        let params = ConfigureAccountParams {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential: Credentials::signature(pubkey, signature, timestamp),
+        };
+
+        let recorder = crate::metrics::recorder::build_recorder();
+        let handle = recorder.handle();
+        let result = {
+            let _guard = metrics::set_default_local_recorder(&recorder);
+            configure_account(&state, params).await
+        };
+
+        assert!(
+            result.is_ok(),
+            "the retry must finish the account: {result:?}"
+        );
+        let rendered = handle.render();
+        assert!(
+            rendered.contains(&format!(
+                "{}{{kind=\"miden\"}} 1",
+                crate::metrics::names::ACCOUNTS_CREATED_TOTAL
+            )),
+            "the finishing retry must count one creation:\n{rendered}"
+        );
+    }
+
+    /// A first configuration that loses the claim to a different signer
+    /// passes its own replay check and goes ahead as a reconfiguration of
+    /// the account it lost to: it writes metadata over the winner's row,
+    /// keeping the winner's creation time and in-flight candidate, rather
+    /// than treating the account as new.
+    #[tokio::test]
+    async fn losing_first_configuration_from_another_signer_reconfigures_the_winners_account() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
+        let winner = AccountMetadata {
+            created_at: "2023-06-01T00:00:00Z".into(),
+            ..claimed_metadata(account_id, &commitment)
+        };
+        // Reads pop LIFO: the first read sees no account, the re-read after
+        // the lost claim sees the winner's.
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(winner)))
+            .with_get(Ok(None))
+            .with_create(Ok(false))
+            .with_update_timestamp_cas(Ok(true));
+        let observed_metadata = metadata.clone();
+        let storage = MockStorageBackend::new();
+        let observed_storage = storage.clone();
+        let state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3))),
+            storage,
+            metadata,
+        )
+        .await;
+        let initial_state =
+            serde_json::from_str(include_str!("../testing/fixtures/account.json")).unwrap();
+        let params = ConfigureAccountParams {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential: Credentials::signature(pubkey, signature, timestamp),
+        };
+
+        let result = configure_account(&state, params).await;
+        assert!(result.is_ok(), "{result:?}");
+
+        let stored = observed_storage.get_submit_state_calls();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].created_at, "2023-06-01T00:00:00Z");
+        let set = observed_metadata.get_set_calls();
+        assert_eq!(set.len(), 1, "the loser reconfigures the winner's row");
+        assert_eq!(set[0].created_at, "2023-06-01T00:00:00Z");
+        assert!(set[0].has_pending_candidate);
+    }
+
     /// Regression: reconfiguring a paused account must NOT clear
     /// `paused_at` / `paused_reason`. Pause state can only be
     /// transitioned by `set_pause`/`clear_pause` (FR-019).
