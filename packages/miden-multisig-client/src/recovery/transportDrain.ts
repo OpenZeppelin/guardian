@@ -1,10 +1,13 @@
 /**
  * Recovery primitives for restoring note state after device loss.
  *
- * After recovery on a fresh device the local store has no note-transport
- * cursor — and in a shared dirty store another account's sync may have
- * advanced the cursor past notes belonging to the newly recovered account.
- * The primitives here rescan sources that normal forward sync would skip.
+ * After recovery on a fresh device, or after adding a recovered account to a
+ * shared store, the account's note tag has no note-transport cursor yet.
+ * Since miden-client 0.17.1 the transport keeps one cursor per tag and scans
+ * a tag without one from the first retained note, but each sync fetches a
+ * bounded number of pages. The drain here keeps fetching until a fetch moves
+ * no tag's cursor, so a recovery flow does not have to wait for later
+ * background syncs.
  */
 
 import type { MidenClient } from '@miden-sdk/miden-sdk';
@@ -13,8 +16,9 @@ import { isTransientRpcError } from '../rpc/errors.js';
 
 /**
  * Outcome class of a private-note transport backlog drain:
- * - `completed` — the full transport backlog was scanned; every note the
- *   transport still holds for the tracked tags is now in the local store.
+ * - `completed` — the transport backlog was fetched until a fetch moved no
+ *   tag's cursor; every note the transport still holds for the tracked tags
+ *   is now in the local store.
  * - `unavailable` — the transport could not be consulted at all: it is
  *   disabled for the injected `MidenClient` (no `noteTransportUrl`
  *   configured) or unreachable before anything was imported (`imported` is
@@ -38,13 +42,13 @@ export interface TransportRecoveryReport {
   status: TransportRecoveryStatus;
   /**
    * Number of note records newly imported into the local store by this
-   * drain. Can be non-zero even on `failed`: batches imported before the
+   * drain. Can be non-zero even on `failed`: pages fetched before the
    * failure stay imported.
    */
   imported: number;
   /**
    * Whether rerunning the drain can plausibly succeed (transient
-   * connectivity failures, the upstream pagination convergence guard).
+   * connectivity failures, a backlog longer than one drain's fetch budget).
    * Always `false` on `completed`.
    */
   retryable: boolean;
@@ -86,19 +90,61 @@ export const NODE_RPC_FRAGMENT = 'grpc request failed';
  */
 export const NODE_CONNECT_FRAGMENT = 'failed to connect to the Miden node';
 /**
- * The covered-tags bookkeeping key, mirror of miden-client's
- * `NOTE_TRANSPORT_COVERED_TAGS_KEY` (the JS surface does not re-export it).
- * Exported for the drift-guard test, which pins it against the shipped WASM
- * binary so a silent upstream rename cannot degrade the drain to a no-op.
+ * Mirror of the Rust SDK's `MAX_DRAIN_PASSES`: upper bound on transport
+ * fetches one drain runs. Each fetch reads up to 32 pages per request group
+ * of up to 128 tags; a backlog whose cursors still move after this many
+ * fetches is reported as a retryable failure, and the stored per-tag cursors
+ * let the next drain or sync continue from there.
  */
-export const NOTE_TRANSPORT_COVERED_TAGS_KEY = 'note_transport_covered_tags';
+const MAX_DRAIN_PASSES = 64;
 
 /**
- * Mirror of miden-client's `Client::MAX_BACKFILL_TAGS_PER_SYNC`: upstream
- * backfills at most this many uncovered tags per transport sync, deferring
- * the remainder to the next sync.
+ * miden-client's `NOTE_TRANSPORT_CURSORS_KEY`, a setting in its client-owned
+ * scope (`SettingScope::Client` = 0), which the SDK's `settings` API does not
+ * reach. Exported for the drift-guard test, which pins the key and the
+ * store layout below against the shipped SDK.
  */
-const MAX_BACKFILL_TAGS_PER_SYNC = 64;
+export const NOTE_TRANSPORT_CURSORS_KEY = 'note_transport_cursors';
+const CLIENT_SETTING_SCOPE = 0;
+/** The SDK's IndexedDB table for settings, keyed by `[scope, key]`. */
+const SETTINGS_TABLE = 'settings';
+
+/**
+ * The stored per-tag note-transport cursors, as the raw bytes miden-client
+ * keeps, read from the client's IndexedDB store. Compared, never decoded: a
+ * fetch that leaves them unchanged found every tracked tag's history
+ * exhausted. Throws when the store cannot be read, which is a local-store
+ * failure the caller must see.
+ */
+export async function readTransportCursors(midenClient: MidenClient): Promise<Uint8Array | null> {
+  const name = await midenClient.storeIdentifier();
+  const db: IDBDatabase = await new Promise((resolve, reject) => {
+    const request = indexedDB.open(name);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    if (!db.objectStoreNames.contains(SETTINGS_TABLE)) {
+      throw new Error(`storage error: the store ${name} has no ${SETTINGS_TABLE} table`);
+    }
+    const row: { value?: Uint8Array } | undefined = await new Promise((resolve, reject) => {
+      const request = db
+        .transaction(SETTINGS_TABLE, 'readonly')
+        .objectStore(SETTINGS_TABLE)
+        .get([CLIENT_SETTING_SCOPE, NOTE_TRANSPORT_CURSORS_KEY]);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    return row?.value ?? null;
+  } finally {
+    db.close();
+  }
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  if (a === null || b === null) return a === b;
+  return a.length === b.length && a.every((byte, index) => byte === b[index]);
+}
 
 /**
  * Mirror of the Rust SDK's `CONNECT_PERMANENT_SIGNALS`: connection-failure
@@ -164,10 +210,8 @@ function classifyDrainFailure(err: unknown): DrainFailure {
   if (lower.includes(TRANSPORT_DISABLED_FRAGMENT)) {
     return { status: 'unavailable', retryable: false, reason, scanned: false };
   }
-  // The upstream convergence guard tripped (the server cursor kept advancing
-  // for 1000 iterations without an empty batch) — a server-side bug, not an
-  // honest backlog. Retryable in the sense that a rerun is safe (imports are
-  // idempotent) and succeeds once the server recovers.
+  // The upstream convergence guard of miden-client before 0.17.1, which no
+  // longer raises it. A rerun is safe (imports are idempotent).
   if (lower.includes(PAGINATION_GUARD_FRAGMENT)) {
     return { status: 'failed', retryable: true, reason, scanned: true };
   }
@@ -202,47 +246,21 @@ function classifyDrainFailure(err: unknown): DrainFailure {
 }
 
 /**
- * Restores the covered-tags value after a failed drain: returning it to its
- * pre-drain state keeps a client that synced fine before the attempt
- * syncing fine after it. Unlike the Rust twin — which merges the snapshot
- * with whatever the interrupted backfill re-covered — this restores the
- * snapshot verbatim (the WASM surface exposes the set only as an opaque
- * value); at worst the next successful drain re-covers tags the failed
- * attempt already handled, which is idempotent. A failed restoring write
- * throws: the store is left with its bookkeeping cleared and subsequent
- * normal syncs may re-drain (and re-fail on) old history — a local-store
- * environment failure the caller must not fold into a transport report.
- */
-async function restoreCoveredTags(
-  midenClient: MidenClient,
-  snapshot: unknown,
-  drainReason: string,
-): Promise<void> {
-  if (snapshot === null || snapshot === undefined) return;
-  try {
-    await midenClient.settings.set(NOTE_TRANSPORT_COVERED_TAGS_KEY, snapshot);
-  } catch (restoreError) {
-    throw new Error(
-      `the transport drain failed (${drainReason}) and restoring the covered-tags bookkeeping also failed (${errorMessage(restoreError)}); subsequent syncs may re-drain old transport history`,
-    );
-  }
-}
-
-/**
- * Rescans the full private-note transport backlog for every tracked note tag
- * and imports what it finds, regardless of the stored transport
- * cursor. Counterpart of `MultisigClient::drain_private_note_backlog`
- * in the Rust SDK; the WASM boundary exposes only error message text, so
- * failure classification here is message-based, keyed on the upstream
- * Display prefixes pinned by the drift-guard test.
+ * Fetches the private-note transport backlog for every tracked note tag and
+ * imports what it finds. Counterpart of
+ * `MultisigClient::drain_private_note_backlog` in the Rust SDK; the WASM
+ * boundary exposes only error message text, so failure classification here
+ * is message-based, keyed on the upstream Display prefixes pinned by the
+ * drift-guard test.
  *
  * Use after account recovery, passing the **same** `MidenClient` instance
- * that was injected into `MultisigClient`: a fresh store has no transport
- * cursor, and in a shared store another account's sync may have advanced the
- * cursor past this account's notes. The drain is idempotent, tag-scoped (the
- * recovered account must already be in the store so its note tag is tracked
- * — `MultisigClient.load` does this), and never regresses an
- * already-advanced cursor.
+ * that was injected into `MultisigClient`. The recovered account must already
+ * be in the store so its note tag is tracked (`MultisigClient.load` does
+ * this). Its tag has no transport cursor yet, so the transport serves it from
+ * the first retained note. The drain runs transport fetches until one moves
+ * no tag's cursor, which only an exhausted backlog leaves unchanged: a fetch
+ * whose pages were all duplicates or screened out still advances it. The
+ * drain is idempotent: imports dedupe, and per-tag cursors only move forward.
  *
  * Transport recovery is bounded by the transport service's retention:
  * senders may bypass the transport entirely and relayed blobs are pruned
@@ -250,81 +268,57 @@ async function restoreCoveredTags(
  * backup. Transport-disabled and transport-unreachable outcomes are reported
  * in the {@link TransportRecoveryReport} rather than thrown; this function
  * only throws when the local store itself fails.
- *
- * The rescan runs as many transport syncs as the upstream per-sync tag
- * backfill cap requires to cover every tracked tag, and a failed drain
- * restores the pre-drain covered-tags bookkeeping so normal sync keeps
- * working exactly as it did before the attempt.
  */
 export async function drainPrivateNoteBacklog(
   midenClient: MidenClient,
 ): Promise<TransportRecoveryReport> {
-  const before = (await midenClient.notes.list()).length;
+  const noteCount = async (): Promise<number> => (await midenClient.notes.list()).length;
+  const before = await noteCount();
   // Records are never removed by a drain, so the length delta is the count
   // of newly imported records. Caveat: it is a store delta — notes imported
   // by concurrent activity on the same store (a background sync, another
   // tab) during the drain are attributed to it.
-  const importedSince = async (): Promise<number> =>
-    Math.max((await midenClient.notes.list()).length - before, 0);
+  const importedSince = async (): Promise<number> => Math.max((await noteCount()) - before, 0);
 
-  // Snapshot the covered-tags value before clearing it: the clear is
-  // durable, and upstream re-marks a tag covered only after its backfill
-  // succeeds — so without a restore, a drain that fails on a tag with a
-  // permanently bad relay blob would leave every tag uncovered and make
-  // every subsequent normal sync re-attempt (and fail) the same backfill.
-  // Store errors here propagate like the count above.
-  const coveredSnapshot = await midenClient.settings.get(NOTE_TRANSPORT_COVERED_TAGS_KEY);
-  let cleared = false;
-
-  try {
-    // The incremental fetch doubles as the transport probe: miden-sdk 0.16's
-    // syncNoteTransport silently no-ops when the transport is disabled, but
-    // this drain must report `unavailable`, and fetchPrivate still throws
-    // the upstream disabled error.
-    await midenClient.notes.fetchPrivate();
-    // miden-sdk 0.16 replaced the explicit full drain with covered-tag
-    // bookkeeping inside syncNoteTransport: every tag not yet marked covered
-    // is drained from the start with a local cursor (the global cursor is
-    // never regressed), then the steady-state fetch runs. Clearing the
-    // covered-tags marker first forces that full per-tag re-drain — exactly
-    // the recovery semantic this primitive promises. Imports dedupe, so
-    // re-draining already-seen history is harmless.
-    await midenClient.settings.remove(NOTE_TRANSPORT_COVERED_TAGS_KEY);
-    cleared = true;
-    // Upstream backfills at most `MAX_BACKFILL_TAGS_PER_SYNC` uncovered tags
-    // per sync, so run enough passes to cover every tracked tag before
-    // reporting the backlog fully scanned.
-    const tagCount = (await midenClient.tags.list()).length;
-    const passes = Math.max(1, Math.ceil(tagCount / MAX_BACKFILL_TAGS_PER_SYNC));
-    for (let pass = 0; pass < passes; pass += 1) {
-      await midenClient.syncNoteTransport();
+  let last = await readTransportCursors(midenClient);
+  for (let pass = 0; pass < MAX_DRAIN_PASSES; pass += 1) {
+    try {
+      // fetchPrivate throws the upstream disabled error when no transport is
+      // configured, where syncNoteTransport silently no-ops; this drain must
+      // report `unavailable`. A failed fetch still imports the pages fetched
+      // before it.
+      await midenClient.notes.fetchPrivate();
+    } catch (err) {
+      // A broken local store is an environment failure, not a transport
+      // outcome: the whole recovery flow needs to know, so it propagates
+      // (matching the Rust `StoreError` branch) instead of being folded into
+      // the report.
+      if (isLocalStoreError(err)) {
+        throw err;
+      }
+      const { status, retryable, reason, scanned } = classifyDrainFailure(err);
+      // A disabled transport throws before fetching anything, so skip the
+      // re-count entirely.
+      const imported = scanned ? await importedSince() : 0;
+      if (status === 'unavailable' && imported > 0) {
+        // `unavailable` promises "nothing was imported"; pages imported before
+        // the failure make it an interrupted drain, so report it as a failure,
+        // keeping the classified retryability, like the Rust twin.
+        return { status: 'failed', imported, retryable, reason };
+      }
+      return { status, imported, retryable, reason };
     }
-  } catch (err) {
-    // A broken local store is an environment failure, not a transport
-    // outcome: the whole recovery flow needs to know, so it propagates
-    // (matching the Rust `StoreError` branch) instead of being folded into
-    // the report.
-    if (isLocalStoreError(err)) {
-      throw err;
+    const cursors = await readTransportCursors(midenClient);
+    if (sameBytes(cursors, last)) {
+      return { status: 'completed', imported: await importedSince(), retryable: false };
     }
-    const { status, retryable, reason, scanned } = classifyDrainFailure(err);
-    if (cleared) {
-      await restoreCoveredTags(midenClient, coveredSnapshot, reason);
-    }
-    // Count even when the drain failed: each fetched batch is imported as it
-    // arrives, so notes recovered before the failure stay in the store. A
-    // disabled transport throws before fetching anything, so skip the
-    // re-count entirely.
-    const imported = scanned ? await importedSince() : 0;
-    if (status === 'unavailable' && imported > 0) {
-      // `unavailable` promises "nothing was imported"; a connection lost
-      // mid-drain after partial progress is an interrupted drain, so report
-      // it as a failure — keeping the classified retryability, like the
-      // Rust twin.
-      return { status: 'failed', imported, retryable, reason };
-    }
-    return { status, imported, retryable, reason };
+    last = cursors;
   }
 
-  return { status: 'completed', imported: await importedSince(), retryable: false };
+  return {
+    status: 'failed',
+    imported: await importedSince(),
+    retryable: true,
+    reason: `the transport backlog was not exhausted after ${MAX_DRAIN_PASSES} fetches; rerun the drain to continue from the stored cursors`,
+  };
 }

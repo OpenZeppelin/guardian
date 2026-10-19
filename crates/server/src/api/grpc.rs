@@ -447,6 +447,83 @@ impl Guardian for GuardianService {
                 .collect(),
         }))
     }
+
+    /// Register a wallet-authorized session key. Mirror of HTTP
+    /// `POST /session`.
+    async fn create_session(
+        &self,
+        request: Request<CreateSessionRequest>,
+    ) -> Result<Response<CreateSessionResponse>, Status> {
+        let req = request.into_inner();
+        let grant = req
+            .grant
+            .ok_or_else(|| Status::invalid_argument("Missing session grant"))?;
+        let scheme = SignatureScheme::from(&req.scheme).map_err(Status::invalid_argument)?;
+        let auth_format =
+            crate::metadata::auth::RequestAuthFormat::parse(req.auth_format.as_deref())
+                .map_err(Status::invalid_argument)?;
+        let result = services::create_session(
+            &self.app_state,
+            services::CreateSessionParams {
+                scheme,
+                auth_format,
+                public_key: req.public_key,
+                signature: req.signature,
+                signer_commitment: grant.signer_commitment,
+                session_public_key: grant.session_public_key,
+                origin: grant.origin,
+                issued_at: grant.issued_at,
+                expires_at: grant.expires_at,
+                guardian_commitment: grant.guardian_commitment,
+                network: grant.network,
+            },
+        )
+        .await
+        .map_err(Status::from)?;
+        Ok(Response::new(CreateSessionResponse {
+            signer_commitment: result.signer_commitment,
+            expires_at: result.expires_at.to_rfc3339(),
+        }))
+    }
+
+    /// Revoke the session whose key signs this call. Mirror of HTTP
+    /// `POST /session/logout`.
+    async fn revoke_session(
+        &self,
+        request: Request<RevokeSessionRequest>,
+    ) -> Result<Response<RevokeSessionResponse>, Status> {
+        let credentials = request.metadata().extract_credentials()?;
+        let result = services::revoke_session(
+            &self.app_state,
+            services::RevokeSessionParams { credentials },
+        )
+        .await
+        .map_err(Status::from)?;
+        Ok(Response::new(RevokeSessionResponse {
+            revoked: result.revoked,
+        }))
+    }
+
+    /// Revoke every session of the wallet key signing this call. Mirror of
+    /// HTTP `POST /session/revoke-all`.
+    async fn revoke_all_sessions(
+        &self,
+        request: Request<RevokeAllSessionsRequest>,
+    ) -> Result<Response<RevokeAllSessionsResponse>, Status> {
+        let credentials = request.metadata().extract_credentials()?;
+        let result = services::revoke_all_sessions(
+            &self.app_state,
+            services::RevokeAllSessionsParams {
+                signer_commitment: request.into_inner().signer_commitment,
+                credentials,
+            },
+        )
+        .await
+        .map_err(Status::from)?;
+        Ok(Response::new(RevokeAllSessionsResponse {
+            revoked: result.revoked,
+        }))
+    }
 }
 
 fn authenticated_request<T: Message>(request: &Request<T>) -> Result<Credentials, Status> {

@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn parses_bech32_and_reports_its_network() {
         let account_id = AccountId::from_hex(ACCOUNT_HEX).unwrap();
-        for network in [NetworkId::Devnet, NetworkId::Testnet] {
+        for network in [NetworkId::Devnet, NetworkId::Testnet, NetworkId::Mainnet] {
             let address = account_id.to_bech32(network.clone());
             assert_eq!(parse_account_id(&address).unwrap(), account_id);
             assert_eq!(
