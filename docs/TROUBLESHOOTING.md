@@ -395,7 +395,11 @@ its predecessor if the chain turns out to have landed.
 Recovery for the client: check the delta's status first — if it flipped
 to `canonical`, the transaction landed and there is nothing to redo.
 Otherwise `GET /delta/since` → replay canonical chain → rebuild the
-transaction → resubmit (this supersedes the retained row).
+transaction → resubmit. The resubmission supersedes the retained row,
+which moves to the `superseded_deltas` archive: if the original
+transaction lands after all, the reconcile pass still promotes it from
+there (within the retention TTL), and the resubmission's candidate is
+parked as diverged.
 
 An error log `Failed to replay the candidate queue onto the canonical
 state` (or `Candidate queue replay does not reproduce the stored tail

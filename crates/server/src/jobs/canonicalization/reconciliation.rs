@@ -85,49 +85,73 @@ pub(super) fn reconcile_due(age_seconds: u64, interval_seconds: u64) -> bool {
     age_seconds % backoff < interval_seconds.max(1)
 }
 
+/// A row the reconcile pass may promote: a retained or client-abandoned
+/// `deltas` row, or an archived superseded delta, with the promotion kind
+/// that targets it and its age.
+#[derive(Debug, Clone)]
+struct Recoverable {
+    age_seconds: u64,
+    delta: DeltaObject,
+    source: crate::storage::PromotableKind,
+}
+
 /// Walk the recoverable rows by their stored commitments from the stored
 /// base to the observed on-chain commitment (issue #17). At each hop the
-/// row whose `prev_commitment` is the running commitment and whose hint
-/// is `on_chain` wins; otherwise the lowest-nonce chaining row is taken.
-/// Returns the rows on the path, base-first, or an empty path when the
-/// hints do not link the base to the chain head. Bounded by the number
-/// of rows, so a malformed cycle can never spin.
+/// rows whose `prev_commitment` is the running commitment are tried, the one
+/// whose hint is `on_chain` first, then by nonce; a hop that leads nowhere
+/// is backed out and the next one tried. Backing out matters once archived
+/// superseded deltas take part: an archived row and the row that replaced it
+/// share a nonce and a base, and only the one that landed reaches the chain.
+/// Returns the rows on the path, base-first, or an empty path when the hints
+/// do not link the base to the chain head. No two rows on a path share a
+/// nonce, and the walk is bounded by the number of rows.
 fn select_recoverable_path(
     stored_commitment: &str,
     on_chain: &str,
-    live: &[(u64, DeltaObject)],
-) -> Vec<DeltaObject> {
-    let mut path: Vec<DeltaObject> = Vec::new();
-    let mut running = stored_commitment.to_string();
-    for _ in 0..live.len() {
-        let mut chaining = live
-            .iter()
-            .map(|(_, delta)| delta)
-            .filter(|delta| {
+    live: &[Recoverable],
+) -> Vec<Recoverable> {
+    fn walk(running: &str, on_chain: &str, live: &[Recoverable], path: &mut Vec<usize>) -> bool {
+        if path.len() >= live.len() {
+            return false;
+        }
+        let mut chaining: Vec<usize> = (0..live.len())
+            .filter(|&index| {
+                let delta = &live[index].delta;
                 delta.prev_commitment == running
                     && delta.new_commitment.is_some()
-                    && !path.iter().any(|taken| taken.nonce == delta.nonce)
+                    && !path
+                        .iter()
+                        .any(|&taken| live[taken].delta.nonce == delta.nonce)
             })
-            .collect::<Vec<_>>();
-        chaining.sort_by_key(|delta| delta.nonce);
-        let Some(next) = chaining
-            .iter()
-            .find(|delta| delta.new_commitment.as_deref() == Some(on_chain))
-            .or_else(|| chaining.first())
-        else {
-            return Vec::new();
-        };
-        let next = (*next).clone();
-        running = next
-            .new_commitment
-            .clone()
-            .expect("filtered to rows with a stored hint");
-        path.push(next);
-        if running == on_chain {
-            return path;
+            .collect();
+        chaining.sort_by_key(|&index| {
+            let delta = &live[index].delta;
+            (
+                delta.new_commitment.as_deref() != Some(on_chain),
+                delta.nonce,
+            )
+        });
+        for index in chaining {
+            path.push(index);
+            let next = live[index]
+                .delta
+                .new_commitment
+                .as_deref()
+                .expect("filtered to rows with a stored hint");
+            if next == on_chain || walk(next, on_chain, live, path) {
+                return true;
+            }
+            path.pop();
         }
+        false
     }
-    Vec::new()
+
+    let mut path = Vec::new();
+    if walk(stored_commitment, on_chain, live, &mut path) {
+        path.into_iter().map(|index| live[index].clone()).collect()
+    } else {
+        Vec::new()
+    }
 }
 
 impl DeltasProcessorBase {
@@ -142,12 +166,13 @@ impl DeltasProcessorBase {
         &self,
         current_state: StateObject,
         on_chain: &str,
-        path: Vec<DeltaObject>,
+        path: Vec<Recoverable>,
     ) -> Result<()> {
         let account_id = current_state.account_id.clone();
-        let mut reconstructed: Vec<(DeltaObject, AppliedState)> = Vec::with_capacity(path.len());
+        let mut reconstructed: Vec<(Recoverable, AppliedState)> = Vec::with_capacity(path.len());
         let mut base_json = current_state.state_json;
-        for delta in path {
+        for row in path {
+            let delta = &row.delta;
             let applied = {
                 let client = self.state.network_client.clone();
                 let prev_state_json = base_json.clone();
@@ -188,7 +213,7 @@ impl DeltasProcessorBase {
                 return Ok(());
             }
             base_json = applied.state_json.clone();
-            reconstructed.push((delta, applied));
+            reconstructed.push((row, applied));
         }
         let Some((_, final_state)) = reconstructed.last() else {
             return Ok(());
@@ -216,17 +241,19 @@ impl DeltasProcessorBase {
             "Recoverable chain now verifies against the on-chain commitment; \
              promoting the recovered path in order"
         );
-        for (delta, applied) in reconstructed {
+        for (row, applied) in reconstructed {
             tracing::info!(
                 event = "reconcile_promoted",
                 account_id = %account_id,
-                nonce = delta.nonce,
-                retention_reason = decode_recoverable_reason(&delta.status),
+                nonce = row.delta.nonce,
+                retention_reason = decode_recoverable_reason(&row.delta.status),
+                superseded = row.source == crate::storage::PromotableKind::Superseded,
                 "Promoting recoverable chain hop"
             );
             self.canonicalize_verified_delta(
-                delta,
+                row.delta,
                 applied,
+                row.source,
                 crate::metrics::labels::CandidateOutcome::Reconciled,
             )
             .await?;
@@ -391,7 +418,31 @@ impl DeltasProcessorBase {
             .map_err(|e| {
                 GuardianError::StorageError(format!("Failed to pull recoverable deltas: {e}"))
             })?;
-        if recoverable.is_empty() {
+
+        // Archived superseded deltas (a resubmission replaced them at
+        // their nonce) stay recoverable for the retention TTL, counted from
+        // when they were superseded; older ones are pruned here.
+        if let Err(e) = self
+            .state
+            .storage
+            .prune_superseded_deltas(account_id, cutoff)
+            .await
+        {
+            tracing::warn!(
+                account_id = %account_id,
+                error = %e,
+                "Failed to prune expired superseded deltas"
+            );
+        }
+        let superseded = self
+            .state
+            .storage
+            .pull_superseded_deltas(account_id, cutoff)
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to pull superseded deltas: {e}"))
+            })?;
+        if recoverable.is_empty() && superseded.is_empty() {
             return Ok(());
         }
 
@@ -402,7 +453,7 @@ impl DeltasProcessorBase {
         // normally never reach here (the read is cutoff-filtered); if
         // one does, it is skipped, not deleted — abandoned discards are
         // preserved history (issue #319).
-        let mut live: Vec<(u64, DeltaObject)> = Vec::new();
+        let mut live: Vec<Recoverable> = Vec::new();
         let mut first_error: Option<GuardianError> = None;
         for delta in recoverable {
             let age = self.recoverable_age_seconds(&delta, now);
@@ -444,9 +495,26 @@ impl DeltasProcessorBase {
                 }
                 continue;
             }
-            live.push((age.unwrap_or(0), delta));
+            live.push(Recoverable {
+                age_seconds: age.unwrap_or(0),
+                source: crate::storage::PromotableKind::of(&delta.status),
+                delta,
+            });
         }
-        let Some(min_age) = live.iter().map(|(age, _)| *age).min() else {
+        // An archived row's age counts from its supersede, not from when it
+        // was parked: a long-parked row that was just superseded gets the
+        // warm-period probe cadence a fresh recoverable row gets.
+        for archived in superseded {
+            live.push(Recoverable {
+                age_seconds: now
+                    .signed_duration_since(archived.superseded_at)
+                    .num_seconds()
+                    .max(0) as u64,
+                source: crate::storage::PromotableKind::Superseded,
+                delta: archived.delta,
+            });
+        }
+        let Some(min_age) = live.iter().map(|row| row.age_seconds).min() else {
             return first_error.map_or(Ok(()), Err);
         };
 
@@ -461,9 +529,9 @@ impl DeltasProcessorBase {
         // deletes the matching proposal after its committed status flip,
         // and a failed delete there would otherwise strand the proposal
         // as `pending` forever once a resubmission supersedes the row.
-        for (_, delta) in &live {
-            if delta.status.is_retained() {
-                let _ = self.delete_matching_proposal(delta).await;
+        for row in &live {
+            if row.source == crate::storage::PromotableKind::Retained {
+                let _ = self.delete_matching_proposal(&row.delta).await;
             }
         }
 
@@ -548,7 +616,7 @@ impl DeltasProcessorBase {
         account_id: &str,
         current_state: StateObject,
         on_chain: &str,
-        live: Vec<(u64, DeltaObject)>,
+        live: Vec<Recoverable>,
     ) -> Result<()> {
         let path = select_recoverable_path(&current_state.commitment, on_chain, &live);
         if path.len() > 1 {
@@ -557,7 +625,12 @@ impl DeltasProcessorBase {
                 .await;
         }
 
-        for (age_seconds, delta) in live {
+        for row in live {
+            let Recoverable {
+                age_seconds,
+                delta,
+                source,
+            } = row;
             // A row that no longer chains from the stored base is
             // structurally obsolete (e.g. the base moved out-of-band via
             // configure): it can never promote and ages out through the
@@ -653,6 +726,7 @@ impl DeltasProcessorBase {
                 .canonicalize_verified_delta(
                     delta,
                     applied,
+                    source,
                     crate::metrics::labels::CandidateOutcome::Reconciled,
                 )
                 .await;
@@ -701,10 +775,11 @@ mod tests {
         assert_eq!(reconcile_backoff_seconds(u64::MAX), 600);
     }
 
-    fn recoverable(nonce: u64, prev: &str, new: Option<&str>) -> (u64, DeltaObject) {
-        (
-            0,
-            DeltaObject {
+    fn recoverable(nonce: u64, prev: &str, new: Option<&str>) -> Recoverable {
+        Recoverable {
+            age_seconds: 0,
+            source: crate::storage::PromotableKind::Retained,
+            delta: DeltaObject {
                 account_id: "0xacc".to_string(),
                 nonce,
                 prev_commitment: prev.to_string(),
@@ -719,11 +794,30 @@ mod tests {
                 ),
                 metadata: None,
             },
-        )
+        }
     }
 
-    fn nonces(path: &[DeltaObject]) -> Vec<u64> {
-        path.iter().map(|delta| delta.nonce).collect()
+    fn nonces(path: &[Recoverable]) -> Vec<u64> {
+        path.iter().map(|row| row.delta.nonce).collect()
+    }
+
+    #[test]
+    fn recoverable_path_backs_out_of_a_superseded_branch() {
+        // An archived superseded delta and the row that replaced it share
+        // nonce 1 and the base. Only the archived one leads to the chain
+        // head (through nonce 2), so the walk must back out of the
+        // replacement's dead end instead of giving up.
+        let mut archived = recoverable(1, "0xbase", Some("0xa1"));
+        archived.source = crate::storage::PromotableKind::Superseded;
+        let live = vec![
+            recoverable(1, "0xbase", Some("0xb1")),
+            archived,
+            recoverable(2, "0xa1", Some("0xa2")),
+        ];
+        let path = select_recoverable_path("0xbase", "0xa2", &live);
+        assert_eq!(nonces(&path), vec![1, 2]);
+        assert_eq!(path[0].source, crate::storage::PromotableKind::Superseded);
+        assert_eq!(path[0].delta.new_commitment.as_deref(), Some("0xa1"));
     }
 
     #[test]
