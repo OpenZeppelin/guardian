@@ -1088,6 +1088,7 @@ impl StorageBackend for FilesystemService {
             .commit_promoted_execution(
                 &promotion.state.account_id,
                 promotion.delta.nonce,
+                &promotion.state.commitment,
                 promoted_at,
             )
             .await?;
@@ -1211,6 +1212,17 @@ impl StorageBackend for FilesystemService {
         }
         if self.has_pending_candidate(&reservation.account_id).await? {
             return Ok(ReservationWrite::CandidateExists);
+        }
+        let current_state = self.pull_state(&reservation.account_id).await?;
+        if self
+            .recoverable_delta_on(
+                &reservation.account_id,
+                &current_state.commitment,
+                reservation.recoverable_since,
+            )
+            .await?
+        {
+            return Ok(ReservationWrite::RecoverableDeltaPending);
         }
         match self
             .pull_delta_proposal(&reservation.account_id, &reservation.proposal_id)
@@ -1374,6 +1386,16 @@ impl StorageBackend for FilesystemService {
         }
         if self.has_pending_candidate(&account_id).await? {
             return Ok(AdmissionWrite::CandidateExists);
+        }
+        if self
+            .recoverable_delta_on(
+                &account_id,
+                &admission.delta.prev_commitment,
+                admission.recoverable_since,
+            )
+            .await?
+        {
+            return Ok(AdmissionWrite::RecoverableDeltaPending);
         }
         match self.pull_delta(&account_id, admission.delta.nonce).await {
             Ok(existing)
@@ -2086,20 +2108,44 @@ impl FilesystemService {
             .any(|record| record.owns_candidate(nonce)))
     }
 
+    /// Whether a retained delta, or a client-abandoned discard recorded at
+    /// or after `abandoned_since`, was built on `base_commitment`: its
+    /// transaction spends the same state an execution would and can still
+    /// land. Callers must hold `delta_write_lock`.
+    async fn recoverable_delta_on(
+        &self,
+        account_id: &str,
+        base_commitment: &str,
+        abandoned_since: DateTime<Utc>,
+    ) -> Result<bool, String> {
+        Ok(self
+            .pull_recoverable_deltas(account_id, abandoned_since)
+            .await?
+            .iter()
+            .any(|delta| delta.prev_commitment == base_commitment))
+    }
+
     /// Persist `committed` and release the reservation whose candidate was
-    /// just promoted, reporting whether one did. Callers must hold
-    /// `delta_write_lock`.
+    /// just promoted to `promoted_commitment`, reporting whether one did.
+    /// Another delta promoted at the same nonce, such as a recovered client
+    /// delta, is not the execution's transaction and settles nothing.
+    /// Callers must hold `delta_write_lock`.
     async fn commit_promoted_execution(
         &self,
         account_id: &str,
         nonce: u64,
+        promoted_commitment: &str,
         now: DateTime<Utc>,
     ) -> Result<bool, String> {
         let mut records = self.read_executions(account_id).await?;
-        let Some(record) = records
-            .iter_mut()
-            .find(|record| record.owns_candidate(nonce))
-        else {
+        let Some(record) = records.iter_mut().find(|record| {
+            record.owns_candidate(nonce)
+                && record.evidence.as_ref().is_some_and(|evidence| {
+                    evidence
+                        .expected_commitment
+                        .eq_ignore_ascii_case(promoted_commitment)
+                })
+        }) else {
             return Ok(false);
         };
         record.outcome = Some(crate::storage::ExecutionOutcome {
