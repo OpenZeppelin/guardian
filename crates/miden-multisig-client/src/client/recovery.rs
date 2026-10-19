@@ -1,27 +1,33 @@
 //! Recovery primitives for restoring note state after device loss.
 //!
-//! After recovery on a fresh device the local store has no note-transport
-//! cursor — and in a shared dirty store another account's sync may have
-//! advanced the cursor past notes belonging to the newly recovered account.
-//! The primitives here rescan sources that normal forward sync would skip.
-
-use std::collections::BTreeSet;
+//! After recovery on a fresh device, or after adding a recovered account to a
+//! shared store, the account's note tag has no note-transport cursor yet.
+//! Since miden-client 0.17.1 the transport keeps one cursor per tag and scans
+//! a tag without one from the first retained note, but each sync fetches a
+//! bounded number of pages. The drain here keeps fetching until a fetch moves
+//! no tag's cursor, so a recovery flow does not have to wait for later
+//! background syncs.
 
 use miden_client::ClientError;
-use miden_client::note_transport::{NOTE_TRANSPORT_COVERED_TAGS_KEY, NoteTransportError};
-use miden_client::sync::NoteTagSource;
-use miden_protocol::note::NoteTag;
+use miden_client::note_transport::{NOTE_TRANSPORT_CURSORS_KEY, NoteTransportError};
+use miden_client::store::SettingScope;
 
 use super::MultisigClient;
-use crate::MidenSdkClient;
 use crate::error::{Result, error_chain};
 use crate::rpc::{is_transient_note_transport_error, is_transient_rpc_error};
+
+/// Upper bound on transport fetches one drain runs. Each fetch reads up to 32
+/// pages per request group of up to 128 tags; a backlog whose cursors still
+/// move after this many fetches is reported as a retryable failure, and the
+/// stored per-tag cursors let the next drain or sync continue from there.
+const MAX_DRAIN_PASSES: usize = 64;
 
 /// Outcome class of a private-note transport backlog drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportRecoveryStatus {
-    /// The full transport backlog was scanned; every note the transport still
-    /// holds for the tracked tags is now in the local store.
+    /// The transport backlog was fetched until a fetch moved no tag's cursor;
+    /// every note the transport still holds for the tracked tags is now in
+    /// the local store.
     Completed,
     /// The transport could not be consulted at all: it is disabled for this
     /// client (no endpoint configured) or unreachable before anything was
@@ -44,28 +50,29 @@ pub struct TransportRecoveryReport {
     /// Outcome class of the drain.
     pub status: TransportRecoveryStatus,
     /// Number of note records newly imported into the local store by this
-    /// drain. Can be non-zero even on `Failed`: batches imported before the
+    /// drain. Can be non-zero even on `Failed`: pages fetched before the
     /// failure stay imported.
     pub imported: usize,
     /// Whether rerunning the drain can plausibly succeed (transient
-    /// connectivity failures, the upstream pagination convergence guard).
-    /// Always `false` on `Completed`.
+    /// connectivity failures, a backlog longer than one drain's fetch
+    /// budget). Always `false` on `Completed`.
     pub retryable: bool,
     /// Human-readable cause when the drain did not complete.
     pub reason: Option<String>,
 }
 
 impl MultisigClient {
-    /// Rescans the full private-note transport backlog for every tracked note
-    /// tag and imports what it finds, regardless of the stored transport
-    /// cursor.
+    /// Fetches the private-note transport backlog for every tracked note tag
+    /// and imports what it finds.
     ///
-    /// Use after account recovery: a fresh store has no transport cursor, and
-    /// in a shared store another account's sync may have advanced the cursor
-    /// past this account's notes. The drain is idempotent, tag-scoped (the
-    /// recovered account must already be in the store so its note tag is
-    /// tracked — [`MultisigClient::pull_account`] does this), and never
-    /// regresses an already-advanced cursor.
+    /// Use after account recovery: the recovered account must already be in
+    /// the store so its note tag is tracked ([`MultisigClient::pull_account`]
+    /// does this). Its tag has no transport cursor yet, so the transport
+    /// serves it from the first retained note. The drain runs transport
+    /// fetches until one moves no tag's cursor, which only an exhausted
+    /// backlog leaves unchanged: a fetch whose pages were all duplicates or
+    /// screened out still advances it. The drain is idempotent: imports
+    /// dedupe, and per-tag cursors only move forward.
     ///
     /// Transport recovery is bounded by the transport service's retention:
     /// senders may bypass the transport entirely and relayed blobs are pruned
@@ -73,11 +80,6 @@ impl MultisigClient {
     /// backup. Transport-disabled and transport-unreachable outcomes are
     /// reported in the [`TransportRecoveryReport`] rather than returned as
     /// errors; an `Err` from this method means the local store itself failed.
-    ///
-    /// The rescan runs as many transport syncs as the upstream per-sync tag
-    /// backfill cap requires to cover every tracked candidate tag, and a
-    /// failed drain restores the pre-drain covered-tags bookkeeping so
-    /// normal sync keeps working exactly as it did before the attempt.
     pub(crate) async fn drain_private_note_backlog(&mut self) -> Result<TransportRecoveryReport> {
         if !self.miden_client.is_note_transport_enabled() {
             return Ok(TransportRecoveryReport {
@@ -93,72 +95,26 @@ impl MultisigClient {
         }
 
         let before = self.input_note_count().await?;
-        // Snapshot the covered-tags set before clearing it: the clear is
-        // durable, and upstream re-marks a tag covered only after its
-        // backfill succeeds — so without a restore, a drain that fails on a
-        // tag with a permanently bad relay blob would leave every tag
-        // uncovered and make every subsequent normal sync re-attempt (and
-        // fail) the same backfill. Restoring on failure returns the client
-        // to its working pre-drain state.
-        let covered_snapshot = self.covered_tags_snapshot().await?;
-        // miden-client 0.16 replaced the explicit full drain with covered-tag
-        // bookkeeping inside `sync_note_transport`: each tag not yet marked
-        // covered is drained from the start with a local cursor (the global
-        // cursor is never regressed), then the steady-state fetch runs.
-        // Clearing the covered-tags marker first forces that full per-tag
-        // re-drain for every tracked tag, which is exactly the recovery
-        // semantic this primitive promises. Imports dedupe, so re-draining
-        // already-seen history is harmless. Upstream backfills at most
-        // `MAX_BACKFILL_TAGS_PER_SYNC` uncovered tags per call, so run
-        // enough passes to cover every candidate tag before reporting the
-        // backlog fully scanned.
-        let passes = self
-            .backfill_candidate_count()
-            .await?
-            .div_ceil(MidenSdkClient::MAX_BACKFILL_TAGS_PER_SYNC)
-            .max(1);
-        let drain_result = match self
-            .miden_client
-            .remove_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
-            .await
-        {
-            Ok(_) => {
-                let mut result = Ok(());
-                for _ in 0..passes {
-                    if let Err(err) = self.miden_client.sync_note_transport().await {
-                        result = Err(err);
-                        break;
-                    }
-                }
-                result
+        let mut drain_result = Err(DrainStop::BudgetExhausted);
+        let mut last = self.transport_cursors().await?;
+        for _ in 0..MAX_DRAIN_PASSES {
+            // A failed fetch still imports the pages fetched before it, so
+            // the count below includes them.
+            if let Err(err) = self.miden_client.fetch_private_notes().await {
+                drain_result = Err(DrainStop::Client(err));
+                break;
             }
-            Err(err) => Err(err),
-        };
-        if let Err(drain_err) = &drain_result
-            && let Err(restore_err) = self.restore_covered_tags(&covered_snapshot).await
-        {
-            // The drain failed AND the store write restoring the
-            // covered-tags bookkeeping failed: the store is left altered and
-            // subsequent normal syncs may re-drain (and re-fail on) old
-            // transport history. That is a local-store environment failure
-            // the whole recovery flow must see, not a transport outcome.
-            return Err(crate::error::MultisigError::miden_client_with_context(
-                format!(
-                    "the transport drain failed ({}) and restoring the covered-tags \
-                     bookkeeping also failed; subsequent syncs may re-drain old transport \
-                     history",
-                    error_chain(drain_err)
-                ),
-                restore_err,
-            ));
+            let cursors = self.transport_cursors().await?;
+            if cursors == last {
+                drain_result = Ok(());
+                break;
+            }
+            last = cursors;
         }
-        // Count even when the drain failed: each fetched batch is imported as
-        // it arrives, so notes recovered before the failure stay in the store.
         // A drain never removes records (and `&mut self` excludes concurrent
         // client operations), so the length delta is the count of newly
         // imported records.
-        let after = self.input_note_count().await?;
-        let imported = after.saturating_sub(before);
+        let imported = self.input_note_count().await?.saturating_sub(before);
 
         match drain_result {
             Ok(()) => Ok(TransportRecoveryReport {
@@ -167,22 +123,29 @@ impl MultisigClient {
                 retryable: false,
                 reason: None,
             }),
+            Err(DrainStop::BudgetExhausted) => Ok(TransportRecoveryReport {
+                status: TransportRecoveryStatus::Failed,
+                imported,
+                retryable: true,
+                reason: Some(format!(
+                    "the transport backlog was not exhausted after {MAX_DRAIN_PASSES} fetches; \
+                     rerun the drain to continue from the stored cursors"
+                )),
+            }),
             // A broken local store is an environment failure, not a transport
             // outcome: the whole recovery flow needs to know, so it
             // propagates instead of being folded into the report.
-            Err(err @ ClientError::StoreError(_)) => {
+            Err(DrainStop::Client(err @ ClientError::StoreError(_))) => {
                 Err(crate::error::MultisigError::miden_client_with_context(
                     "local store failed during the transport drain",
                     err,
                 ))
             }
-            Err(err) => {
+            Err(DrainStop::Client(err)) => {
                 let (status, retryable) = classify_drain_failure(&err);
-                // `Unavailable` promises "nothing was imported". Each transport
-                // sync imports atomically once its fetch succeeded, so partial
-                // progress only arises across the passes above: a pass that
-                // imported followed by one that failed is an interrupted drain,
-                // reported as a retryable failure instead.
+                // `Unavailable` promises "nothing was imported"; pages
+                // imported before the failure make it an interrupted drain,
+                // reported as a failure with the classified retryability.
                 let status = if imported > 0 && status == TransportRecoveryStatus::Unavailable {
                     TransportRecoveryStatus::Failed
                 } else {
@@ -198,72 +161,20 @@ impl MultisigClient {
         }
     }
 
-    /// The covered-tags set as stored, for restore-on-failure. Unreadable
-    /// bytes decode to an empty set — upstream resets the entry to empty on
-    /// load, so that is the state the drain actually starts from.
-    async fn covered_tags_snapshot(&mut self) -> Result<BTreeSet<NoteTag>> {
-        match self
-            .miden_client
-            .get_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
+    /// The stored per-tag note-transport cursors, as the raw bytes upstream
+    /// keeps in its client-owned settings. Compared, never decoded: a fetch
+    /// that leaves them unchanged found every tracked tag's history
+    /// exhausted.
+    async fn transport_cursors(&self) -> Result<Option<Vec<u8>>> {
+        self.miden_store
+            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.to_string())
             .await
-        {
-            Ok(Some(tags)) => Ok(tags),
-            Ok(None) => Ok(BTreeSet::new()),
-            Err(err @ ClientError::StoreError(_)) => {
-                Err(crate::error::MultisigError::miden_client_with_context(
-                    "failed to read the covered-tags setting before the transport drain",
-                    err,
-                ))
-            }
-            Err(_) => Ok(BTreeSet::new()),
-        }
-    }
-
-    /// Restores the covered-tags set after a failed drain: the pre-drain
-    /// covered set united with whatever the interrupted backfill already
-    /// re-covered. A tag restored here was covered before the drain, so
-    /// restoring it only returns the client to its working pre-drain state;
-    /// a later successful drain re-covers everything from scratch anyway.
-    /// The read of the partial progress is best-effort, but a failed
-    /// restoring write is returned — the caller must not swallow a store
-    /// left with its bookkeeping cleared.
-    // See `existing_records_by_commitment`: the Err variant is upstream's `ClientError`.
-    #[allow(clippy::result_large_err)]
-    async fn restore_covered_tags(
-        &mut self,
-        snapshot: &BTreeSet<NoteTag>,
-    ) -> std::result::Result<(), ClientError> {
-        if snapshot.is_empty() {
-            return Ok(());
-        }
-        let current: BTreeSet<NoteTag> = self
-            .miden_client
-            .get_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
-            .await
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let merged: BTreeSet<NoteTag> = snapshot.union(&current).copied().collect();
-        self.miden_client
-            .set_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string(), merged)
-            .await
-    }
-
-    /// Number of tags the transport backfill considers candidates (`User`-
-    /// and `Account`-source, matching upstream `backfill_candidate_tags`).
-    async fn backfill_candidate_count(&mut self) -> Result<usize> {
-        let tags = self.miden_client.get_note_tags().await.map_err(|e| {
-            crate::error::MultisigError::miden_client_with_context("failed to list note tags", e)
-        })?;
-        Ok(tags
-            .iter()
-            .filter(|record| {
-                matches!(
-                    record.source,
-                    NoteTagSource::User | NoteTagSource::Account(_)
+            .map_err(|e| {
+                crate::error::MultisigError::miden_client_with_context(
+                    "failed to read the note transport cursors",
+                    ClientError::StoreError(e),
                 )
             })
-            .count())
     }
 
     /// Number of input note records currently in the local store.
@@ -282,7 +193,15 @@ impl MultisigClient {
     }
 }
 
-/// Maps a transport-drain (`sync_note_transport`) failure onto a report
+/// Why a drain stopped before a fetch came back empty.
+enum DrainStop {
+    /// Every fetch in the budget still moved a cursor.
+    BudgetExhausted,
+    /// A transport fetch failed.
+    Client(ClientError),
+}
+
+/// Maps a transport-drain (`fetch_private_notes`) failure onto a report
 /// class: `(status, retryable)`.
 fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) {
     match err {
@@ -303,12 +222,9 @@ fn classify_drain_failure(err: &ClientError) -> (TransportRecoveryStatus, bool) 
             // The transport answered with an error — worth retrying once the
             // service recovers.
             NoteTransportError::Network(_) => (TransportRecoveryStatus::Unavailable, true),
-            // The upstream convergence guard tripped (the server cursor kept
-            // advancing for 1000 iterations without an empty batch) — a
-            // server-side bug, not an honest backlog. Retryable in the sense
-            // that a rerun is safe (imports are idempotent) and succeeds once
-            // the server recovers; while the server misbehaves, each rerun
-            // repeats the same full scan and trips the same guard.
+            // Deprecated since miden-client 0.17.1, which no longer raises
+            // it: a bounded fetch continues on the next call instead.
+            #[allow(deprecated)]
             NoteTransportError::PaginationDidNotTerminate(_) => {
                 (TransportRecoveryStatus::Failed, true)
             }
@@ -388,15 +304,6 @@ mod tests {
         let (status, retryable) = classify_drain_failure(&transport_error(connection));
         assert_eq!(status, TransportRecoveryStatus::Unavailable);
         assert!(!retryable);
-    }
-
-    #[test]
-    fn pagination_convergence_guard_is_a_retryable_failure() {
-        let (status, retryable) = classify_drain_failure(&transport_error(
-            NoteTransportError::PaginationDidNotTerminate(1_000),
-        ));
-        assert_eq!(status, TransportRecoveryStatus::Failed);
-        assert!(retryable);
     }
 
     #[test]
@@ -502,119 +409,104 @@ mod tests {
         assert_eq!(report.imported, 0);
     }
 
-    /// Clearing the covered set makes every tracked tag a backfill candidate
-    /// at once, and upstream backfills at most
-    /// `MAX_BACKFILL_TAGS_PER_SYNC` tags per transport sync — the drain must
-    /// keep syncing until every tag's backlog is recovered instead of
-    /// reporting `Completed` after the first 64.
+    /// One transport fetch reads at most 32 pages per request group, so a
+    /// backlog served one note per page needs several fetches. The drain
+    /// must keep fetching until the backlog stops yielding notes instead of
+    /// reporting `Completed` after the first fetch.
     #[tokio::test]
-    async fn drain_covers_more_tags_than_the_per_sync_backfill_cap() {
+    async fn drain_covers_a_backlog_longer_than_one_fetch() {
         let dir = tempfile::tempdir().unwrap();
-        let (node, api) = mock_transport();
+        let node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+        let api: Arc<dyn NoteTransportClient> = Arc::new(MockNoteTransportApi::new(node.clone()));
         let mut client = offline_client(dir.path(), Some(api)).await;
 
-        let count = MidenSdkClient::MAX_BACKFILL_TAGS_PER_SYNC + 1;
+        let account = test_wallet(4);
+        client.add_or_update_account(&account, false).await.unwrap();
+        let count = 40;
         for seed in 0..count {
-            let account = test_wallet(seed as u8);
-            client.add_or_update_account(&account, false).await.unwrap();
-            add_to_transport(
-                &node,
-                p2id_note_for(&account, seed as u32 + 1, NoteType::Private),
-            );
+            add_to_transport(&node, private_note_for(&account, seed + 1));
+            // Distinct cursor values require distinct insertion timestamps.
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
 
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.status, TransportRecoveryStatus::Completed);
         assert_eq!(
-            report.imported, count,
-            "every tag's backlog must be recovered, not just the first backfill batch"
+            report.imported, count as usize,
+            "the whole backlog must be recovered, not just the first fetch's pages"
         );
     }
 
-    /// A failed drain must restore the pre-drain covered-tags set: leaving
-    /// it cleared would make every subsequent normal sync re-attempt (and
-    /// fail) the same per-tag backfill, breaking a client that synced fine
-    /// before the drain.
+    /// A store upgraded from miden-client 0.17.0 has no per-tag cursors, so
+    /// every tag restarts from the first retained note while the store
+    /// already holds that history. The first fetch then walks a full page
+    /// budget of duplicates and imports nothing; the drain must keep going
+    /// on the moved cursors to reach the note that arrived after them.
     #[tokio::test]
-    async fn failed_drain_restores_the_covered_tags_snapshot() {
+    async fn drain_reaches_new_notes_behind_a_backlog_the_store_already_holds() {
         let dir = tempfile::tempdir().unwrap();
-        let node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
-        let api: Arc<dyn NoteTransportClient> = Arc::new(InterruptibleTransport {
-            inner: MockNoteTransportApi::new(node.clone()),
-            fetches_before_failure: std::sync::atomic::AtomicUsize::new(0),
-        });
+        let node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
+        let api: Arc<dyn NoteTransportClient> = Arc::new(MockNoteTransportApi::new(node.clone()));
         let mut client = offline_client(dir.path(), Some(api)).await;
 
-        let account = test_wallet(7);
+        let account = test_wallet(8);
         client.add_or_update_account(&account, false).await.unwrap();
-        add_to_transport(&node, private_note_for(&account, 1));
+        let held = 40;
+        for seed in 0..held {
+            add_to_transport(&node, private_note_for(&account, seed + 1));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let report = client.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.imported, held as usize);
 
-        // Pre-drain state: the account's tag is covered, so normal sync
-        // skips its backfill and never touches the failing transport.
-        let covered: BTreeSet<NoteTag> =
-            std::iter::once(NoteTag::with_account_target(account.id())).collect();
         client
-            .miden_client
-            .set_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string(), covered.clone())
+            .miden_store
+            .remove_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.to_string())
             .await
             .unwrap();
+        add_to_transport(&node, private_note_for(&account, held + 1));
 
         let report = client.drain_private_note_backlog().await.unwrap();
-        assert_ne!(report.status, TransportRecoveryStatus::Completed);
-        assert_eq!(report.imported, 0);
-
-        let restored: BTreeSet<NoteTag> = client
-            .miden_client
-            .get_setting(NOTE_TRANSPORT_COVERED_TAGS_KEY.to_string())
-            .await
-            .unwrap()
-            .expect("covered set must be restored after a failed drain");
-        assert!(
-            restored.is_superset(&covered),
-            "pre-drain covered tags must survive a failed drain: {restored:?}"
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(
+            report.imported, 1,
+            "the note behind the already-held backlog must be recovered"
         );
     }
 
+    /// In a shared store another account's sync has already moved the
+    /// transport forward. A recovered account added afterwards has no cursor
+    /// for its tag, so the drain still recovers its older notes.
     #[tokio::test]
-    async fn drain_never_regresses_an_advanced_transport_cursor() {
-        use miden_client::note_transport::NOTE_TRANSPORT_CURSOR_STORE_SETTING;
-
+    async fn drain_recovers_a_new_account_after_another_account_synced() {
         let dir = tempfile::tempdir().unwrap();
         let (node, api) = mock_transport();
         let mut client = offline_client(dir.path(), Some(api)).await;
 
-        let account = test_wallet(3);
-        client.add_or_update_account(&account, false).await.unwrap();
-        add_to_transport(&node, private_note_for(&account, 1));
+        let recovered = test_wallet(3);
+        add_to_transport(&node, private_note_for(&recovered, 1));
+        std::thread::sleep(std::time::Duration::from_millis(2));
 
-        // Simulate a store whose cursor another account's sync has already
-        // advanced far past this backlog. The store encodes the cursor as raw
-        // big-endian u64 bytes.
-        let advanced: u64 = u64::MAX;
+        let existing = test_wallet(5);
         client
-            .miden_client
-            .set_setting(
-                NOTE_TRANSPORT_CURSOR_STORE_SETTING.to_string(),
-                advanced.to_be_bytes(),
-            )
+            .add_or_update_account(&existing, false)
             .await
             .unwrap();
-
-        // The drain ignores the stored cursor for scanning (the backlogged
-        // note is still recovered)...
+        add_to_transport(&node, private_note_for(&existing, 2));
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.status, TransportRecoveryStatus::Completed);
         assert_eq!(report.imported, 1);
 
-        // ...but persists max(drain_cursor, stored_cursor): the advanced
-        // cursor survives.
-        let stored: [u8; 8] = client
-            .miden_client
-            .get_setting(NOTE_TRANSPORT_CURSOR_STORE_SETTING.to_string())
+        client
+            .add_or_update_account(&recovered, false)
             .await
-            .unwrap()
-            .expect("cursor setting exists");
-        assert_eq!(u64::from_be_bytes(stored), advanced);
+            .unwrap();
+        let report = client.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(
+            report.imported, 1,
+            "the recovered account's note predates the other account's sync"
+        );
     }
 
     /// Transport that serves a limited number of successful fetches, then
@@ -663,13 +555,13 @@ mod tests {
         }
     }
 
-    /// A connection lost mid-drain imports nothing: since miden-client 0.17 a
-    /// transport sync fetches every page first and imports only once the whole
-    /// fetch succeeded, so the first page is not kept when the second fails.
-    /// The drain is reported `Unavailable` and retryable; the transport cursor
-    /// is left where it was, so the retry requests the same pages again.
+    /// A connection lost mid-drain keeps what was fetched: since
+    /// miden-client 0.17.1 the pages fetched before a failed page are
+    /// imported and their cursors saved. The drain is reported `Failed`
+    /// (partial progress rules out `Unavailable`) and retryable; a rerun
+    /// continues from the saved cursors.
     #[tokio::test]
-    async fn interrupted_drain_imports_nothing_and_is_retryable() {
+    async fn interrupted_drain_keeps_fetched_pages_and_is_retryable() {
         let dir = tempfile::tempdir().unwrap();
         // Cap each response at one note so the two-note backlog needs two
         // fetches; the transport dies after the first.
@@ -689,9 +581,9 @@ mod tests {
 
         let report = client.drain_private_note_backlog().await.unwrap();
 
-        assert_eq!(report.status, TransportRecoveryStatus::Unavailable);
+        assert_eq!(report.status, TransportRecoveryStatus::Failed);
         assert!(report.retryable);
-        assert_eq!(report.imported, 0);
+        assert_eq!(report.imported, 1);
         assert!(report.reason.unwrap().contains("connection dropped"));
     }
 

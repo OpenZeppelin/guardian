@@ -69,6 +69,8 @@ pub struct CoordinationHandles {
     pub execution_leases: Arc<dyn ExecutionLeases>,
     /// Shared publication store for the `/dashboard/stats` aggregate.
     pub stats_store: Arc<dyn StatsStore>,
+    /// Miden account sessions.
+    pub miden_sessions: Arc<dyn SessionStore>,
     #[cfg(feature = "evm")]
     pub evm_sessions: Arc<dyn SessionStore>,
     #[cfg(feature = "evm")]
@@ -89,6 +91,7 @@ impl CoordinationHandles {
             )),
             execution_leases: Arc::new(InMemoryExecutionLeases::new()),
             stats_store: Arc::new(InMemoryStatsStore::new()),
+            miden_sessions: Arc::new(InMemorySessionStore::new()),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(InMemorySessionStore::new()),
             #[cfg(feature = "evm")]
@@ -128,6 +131,7 @@ impl CoordinationHandles {
             )),
             execution_leases: Arc::new(PgExecutionLeases::new(pool.clone())),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),
+            miden_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Miden)),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),
             #[cfg(feature = "evm")]
@@ -140,6 +144,7 @@ impl CoordinationHandles {
 pub enum Realm {
     Operator,
     Evm,
+    Miden,
 }
 
 impl Realm {
@@ -147,6 +152,7 @@ impl Realm {
         match self {
             Realm::Operator => "operator",
             Realm::Evm => "evm",
+            Realm::Miden => "miden",
         }
     }
 }
