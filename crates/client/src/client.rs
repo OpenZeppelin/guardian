@@ -983,7 +983,7 @@ impl GuardianClient {
             proposal_id: proposal_id.to_string(),
         };
         let response = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_delta_proposal_execution(request).await
             })
             .await?;
@@ -999,7 +999,7 @@ impl GuardianClient {
             account_id: account_id.to_string(),
         };
         let response = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.get_current_execution(request).await
             })
             .await?;
