@@ -9,7 +9,8 @@
 # below becomes one CloudWatch custom metric. Dimension sets are chosen
 # from Guardian's closed label sets (statuses, outcomes, small enums) to
 # keep the count bounded; high-cardinality labels (route, method,
-# operation) are deliberately rolled up, and zero-dimension rollups are
+# operation outside failed storage operations) are deliberately rolled
+# up, and zero-dimension rollups are
 # declared only where a widget or alarm actually consumes them.
 
 locals {
@@ -173,6 +174,17 @@ locals {
             dimensions = [["outcome"]]
           },
           {
+            # Per-operation breakdown for failed storage operations only:
+            # the label matcher keeps the ok series rolled up, so the
+            # metric count grows with the set of operations that actually
+            # fail rather than with every storage method.
+            metric_name_selectors = ["^guardian_storage_operations_total$"]
+            label_matchers = [
+              { label_names = ["outcome"], regex = "^error$" }
+            ]
+            dimensions = [["operation", "outcome"]]
+          },
+          {
             metric_name_selectors = [
               "^guardian_miden_rpc_duration_seconds$",
               "^guardian_miden_rpc_retries_total$",
@@ -313,11 +325,12 @@ resource "aws_cloudwatch_dashboard" "server" {
       {
         type = "metric", x = 16, y = 0, width = 8, height = 6
         properties = {
-          title  = "Request latency (avg seconds)"
+          title  = "Request latency (seconds)"
           region = var.aws_region, view = "timeSeries", period = 300
           metrics = [
             ["${local.metrics_namespace}", "guardian_http_request_duration_seconds", { stat = "Average", label = "HTTP avg" }],
             ["${local.metrics_namespace}", "guardian_grpc_request_duration_seconds", { stat = "Average", label = "gRPC avg" }],
+            ["AWS/ApplicationELB", "TargetResponseTime", "LoadBalancer", aws_lb.main.arn_suffix, { stat = "p99", label = "ALB p99" }],
           ]
         }
       },
@@ -665,6 +678,28 @@ resource "aws_cloudwatch_metric_alarm" "http_latency" {
   period              = 300
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.alarm_latency_threshold_seconds
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+}
+
+# Tail latency from the ALB, which excludes health-check probes and
+# reports percentiles; the app histograms reach CloudWatch as sum/count
+# only, so they cannot back a percentile alarm.
+resource "aws_cloudwatch_metric_alarm" "alb_p99_latency" {
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-alb-p99-latency"
+  alarm_description   = "Guardian p99 target response time at the ALB exceeds ${var.alarm_p99_latency_threshold_seconds}s (HTTP and gRPC, health checks excluded)${local.alarm_description_links}"
+  namespace           = "AWS/ApplicationELB"
+  metric_name         = "TargetResponseTime"
+  dimensions          = { LoadBalancer = aws_lb.main.arn_suffix }
+  extended_statistic  = "p99"
+  period              = 300
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.alarm_p99_latency_threshold_seconds
   evaluation_periods  = 3
   datapoints_to_alarm = 3
   treat_missing_data  = "notBreaching"
