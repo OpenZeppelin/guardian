@@ -144,6 +144,8 @@ impl Faults {
                 state_json: serde_json::json!({ "switched": true }),
                 commitment: commitment.to_string(),
                 nonce: None,
+                cosigner_commitments: Vec::new(),
+                guardian_commitment: Some(guardian.to_string()),
             }));
         let mut keys = self
             .chain

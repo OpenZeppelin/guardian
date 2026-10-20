@@ -806,6 +806,8 @@ mod tests {
             state_json,
             commitment: commitment.to_string(),
             nonce: Some(nonce),
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }
     }
 
