@@ -330,7 +330,7 @@ Full configuration and a dev walkthrough are in
 > be migrated. For what changed on the Miden side and why none of it survives, see
 > [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
 > Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
-> Miden 0.16. Upgrade only once the network you serve runs node 0.17.0: which
+> Miden 0.16. Upgrade only once the network you serve runs a stable Miden 0.17 node (0.17.0 or later): which
 > public networks do, and the upstream items still open, are tracked in
 > [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#open-upstream-items).
 
@@ -376,14 +376,26 @@ plus:
 
 Patch releases on the Miden 0.17 line keep stored data, the `auth_tx` procedure
 root, and existing accounts; no reset runs. Each one still has operator-visible
-changes, listed in full in
-[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017):
+changes. The SDK and Miden-side ones are in
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017),
+and each release's notes on GitHub carry the full list, including server
+behavior:
 
-- **0.18.1** moves to the Miden 0.17 patch pins and replaces the proposal
-  `chain_anchor` with `bound_block_num`. The server needs nothing, but 0.18.0
-  SDKs cannot sign or execute proposals that 0.18.1 SDKs create, so upgrade
-  every party that signs or executes an account's proposals together. It is
-  also the TypeScript SDK floor for raising
+- **0.18.1** requires the new image: deploy the server first, then the SDKs
+  ([release notes](https://github.com/OpenZeppelin/guardian/releases/tag/v0.18.1)).
+  It adds Miden account sessions (#537), which only work against a 0.18.1
+  server and bring the optional `GUARDIAN_SESSION_MAX_TTL_SECONDS` and the
+  error codes `401 session_expired`, `401 session_revoked` and
+  `403 wallet_signature_required`. It verifies proposal approvals against the
+  transaction summary (#526): a client that posts another cosigner's approval
+  at proposal creation, or an approval that does not verify, gets
+  `400 invalid_proposal_signature`. The repository's SDKs comply; watch for
+  that code from custom or third-party clients after the rollout. It also adds
+  the opt-in candidate queue (#486), moves to the Miden 0.17 patch pins and
+  replaces the proposal `chain_anchor` with `bound_block_num`. 0.18.0 SDKs
+  cannot sign or execute proposals that 0.18.1 SDKs create, so upgrade every
+  party that signs or executes an account's proposals together. It is also the
+  TypeScript SDK floor for raising
   `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above `1`
   ([`CONFIGURATION.md`](./CONFIGURATION.md#runtime--server-identity-and-storage)).
 - **0.18.2** adds the `MidenCedar` and `MidenMainnet` network types. Deploy the
