@@ -99,6 +99,7 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # alarm_slack_channel_id = "C0123456789" # e.g. #guardian-alerts-devnet
 # alarm_error_rate_threshold_percent = 5
 # alarm_latency_threshold_seconds = 1
+# alarm_p99_latency_threshold_seconds = 2
 # alarm_cpu_threshold_percent = 85
 # alarm_memory_threshold_percent = 90
 # cloudwatch_log_alarms_enabled = true # ERROR log metric filter + log-errors alarm, WARN filter with the dashboard (needs guardian_log_format = "json")
