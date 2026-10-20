@@ -2,7 +2,7 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. EVM accounts are not configured through this service.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). When the tail account is a multisig, the acknowledgement is refused with `insufficient_signatures` unless a matching pending proposal (the same transaction summary commitment) carries verified cosigner signatures from the account's approvers, counted once per key, at least as many as the lowest threshold the account permits for any transaction: the default threshold, or a lower per-procedure override. This floor is a denial-of-service guard, not the authorization rule. The chain requires the threshold of the procedures the transaction calls, which the summary does not show, so the gate never asks for more than the chain will and never refuses a transaction the chain would accept. A push that meets the floor but not the chain's requirement is acknowledged, refused on chain, and holds a candidate slot until canonicalization drops it; on an account with no per-procedure override below the default, that takes the default threshold of cosigners. The `proposal_type` label plays no part. A storage fault while loading that proposal refuses the push. The gate runs before the delta is verified or applied. Single-key accounts are unchanged. EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
@@ -33,14 +33,17 @@ sequenceDiagram
   S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
-  alt existing account
-    S->>M: update last_auth_timestamp (verified signer, CAS)
+  alt no metadata for account_id
+    S->>M: create(account_id, auth, network_config, timestamps)\n(insert only if absent)
+    alt claim lost to a concurrent first configuration
+      S->>M: get(account_id)\n(judged as a reconfiguration from here)
+    end
   end
+  Note over S,M: the claim guarantees the metadata row that replay state references by FK
+  S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
   S->>ST: submit_state(state_json, commitment, nonce)
-  S->>M: set(account_id, auth, network_config, timestamps)
-  alt first-time account
-    Note over S,M: metadata must exist first because replay state references it by FK
-    S->>M: seed last_auth_timestamp (verified signer, CAS)
+  alt account already had metadata
+    S->>M: set(account_id, auth, network_config, timestamps)
   end
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
