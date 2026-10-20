@@ -1918,10 +1918,18 @@ impl DeltasProcessorBase {
             nonce = delta.nonce,
             "Stored state is already this candidate's verified target; finishing an interrupted promotion"
         );
+        let binding = self
+            .state
+            .network_client
+            .account_auth_binding(&current_state.state_json)
+            .map_err(GuardianError::InvalidDelta)?
+            .unwrap_or_default();
         let applied = AppliedState {
             state_json: current_state.state_json.clone(),
             commitment: current_state.commitment.clone(),
             nonce: current_state.nonce,
+            cosigner_commitments: binding.signers,
+            guardian_commitment: binding.guardian,
         };
         self.canonicalize_verified_delta(
             delta.clone(),
