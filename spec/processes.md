@@ -2,13 +2,13 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order, and each cosigner's declared scheme must match the scheme the state stores for it — the stored auth is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. The state's GUARDIAN slot must hold this server's ACK commitment for the auth's GUARDIAN scheme and its GUARDIAN scheme slot must store that scheme (`AuthorizationFailed` otherwise); for a new account every scheme the auth uses must be allowed by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
 - **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
-- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set or guardian key. The metadata is stored as sent apart from normalizing `proposal_type`, `description`, `amount` and `required_signatures`; client fields such as `bound_block_num` pass through unread.
+- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set, a signer's scheme, or the guardian key or its scheme. The metadata is stored as sent apart from normalizing `proposal_type`, `description`, `amount` and `required_signatures`; client fields such as `bound_block_num` pass through unread.
 - **sign_delta_proposal**: appends one signer signature to a pending Miden proposal.
 - **evm_session**: issues an EIP-712 wallet challenge, recovers the EOA with `ecrecover`, consumes the nonce once, and creates a cookie-backed session.
 - **evm_accounts**: registers EVM smart accounts under `/evm/accounts` by validating the cookie session signer, server-owned chain config, ERC-7579 validator installation, and signer snapshot before storing account metadata without state or acknowledgement data.
@@ -30,7 +30,7 @@ sequenceDiagram
   S->>S: validate network_config for account_id
   S->>N: validate_credential(initial_state, credential)
   S->>N: should_update_auth(initial_state)\n(extract signer map)
-  S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
+  S->>S: reject unless auth cosigners == extracted signer map\n(exact set, order and schemes)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
   alt no metadata for account_id
@@ -77,7 +77,7 @@ sequenceDiagram
     else prev_commitment is the queue tail
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
       S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
-      alt the tail binds another signer set or guardian key
+      alt the tail binds another signer set, guardian key or scheme
         S-->>C: 409 ConflictPendingDelta
       end
       S->>N: verify_and_apply_delta(tail_commitment, tail_state, payload)\n(one decode: new_state_json, new_commitment, new_nonce)
@@ -199,7 +199,7 @@ sequenceDiagram
     else
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
       S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
-      alt the tail binds another signer set or guardian key
+      alt the tail binds another signer set, guardian key or scheme
         S-->>C: 409 ConflictPendingDelta
       end
       S->>N: verify_delta(tail_commitment, tail_state, tx_summary)
@@ -343,8 +343,8 @@ sequenceDiagram
   has not swept the orphans yet) refuses everything; a delta competing for
   a base another queued candidate already claimed, or whose nonce does not
   exceed the tail's, is refused; so is anything behind a tail that changes
-  who may act on the account (the signer set or guardian key its state
-  binds differs from the canonical state's; both bindings are read in one
+  who may act on the account (the signer set, the signers' schemes, or the
+  guardian key or its scheme its state binds differ from the canonical state's; both bindings are read in one
   task on the reconstruction pool and compared on the replayed tail rather
   than on a proposal label, since a direct push changes signers without
   one): requests stay authorized against the canonical signer set until

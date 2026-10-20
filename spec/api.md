@@ -6,6 +6,8 @@
 - Miden credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` and the same keys in gRPC metadata.
 - Miden `x-pubkey` is interpreted by the account auth policy:
   - Miden Falcon/ECDSA accounts use the serialized public key or its commitment.
+  - Per-signer-scheme (`Miden`) accounts use either scheme's serialized public key or its commitment.
+- On a per-signer-scheme (`Miden`) account each request is verified under the scheme its signer is registered with, against only the cosigners registered under that scheme: a raw signature of exactly 1524 bytes is Falcon and one of exactly 65 bytes (`r || s || v`) is ECDSA, any other length is rejected, and `x-auth-format: eip712` is ECDSA.
 - EVM HTTP requests under `/evm/*` use a `guardian_evm_session` cookie. The session EOA is recovered from a wallet signature and is checked against the configured account signer set or proposal signer snapshot.
 - Miden per-account requests MAY instead be signed by a delegated signer registered through `POST /session` (`x-auth-format: session`, see [Session Authentication](#session-authentication)).
 - Replay protection applies to every Miden signed request. EVM challenge nonces are single-use and time-limited, and EVM sessions expire.
@@ -243,12 +245,28 @@ HTTP JSON uses externally tagged variants:
 ```
 
 ```json
+{
+  "Miden": {
+    "cosigners": [
+      { "commitment": "0x...", "scheme": "ecdsa" },
+      { "commitment": "0x...", "scheme": "falcon" }
+    ],
+    "guardian_scheme": "ecdsa"
+  }
+}
+```
+
+```json
 { "EvmEcdsa": { "signers": ["0x..."] } }
 ```
 
+`MidenFalconRpo` and `MidenEcdsa` bind every cosigner and the GUARDIAN to one scheme. `Miden` declares each cosigner's scheme (`"falcon"` or `"ecdsa"`) and the GUARDIAN's scheme separately, for an account whose approvers mix Falcon and ECDSA keys (issue #563). Clients send `Miden` only when the cosigners and the GUARDIAN do not all share one scheme; servers before #563 reject it, and the single-scheme variants keep their wire shape. The server accepts `Miden` for a uniform set too and stores the declared variant as is.
+
+For every variant `/configure` checks the declaration against `initial_state`: the cosigner commitments must equal the approver map in index order, each cosigner's scheme must equal the approver scheme map, the GUARDIAN slot must hold this server's ACK commitment for the GUARDIAN scheme, and the GUARDIAN scheme slot must store that scheme. The GUARDIAN scheme selects the ACK key the account's deltas are acknowledged with. When canonicalization syncs the cosigners from a new canonical state it keeps the GUARDIAN scheme and the schemes the state stores: a single-scheme auth whose cosigners all keep its scheme stays single-scheme, and one that gains a cosigner of another scheme becomes `Miden`.
+
 The contract may expose EVM-shaped auth metadata, but `/configure` and the Miden delta routes only accept Miden auth variants. EVM account registration derives signer metadata from the validator module through `/evm/accounts`.
 
-gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa}` for schema compatibility, while EVM behavior remains HTTP-only under `/evm/*`.
+gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa, miden}` for schema compatibility (`MidenAuth { repeated MidenCosigner cosigners; string guardian_scheme }`, `MidenCosigner { string commitment; string scheme }`; scheme names are case-insensitive), while EVM behavior remains HTTP-only under `/evm/*`.
 
 ### NetworkConfig
 
@@ -288,7 +306,7 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 }
 ```
 
-`auth_scheme` may be `"falcon"` or `"ecdsa"` when present.
+`auth_scheme` may be `"falcon"` or `"ecdsa"` when the account's cosigners and GUARDIAN share that scheme, and `"mixed"` when they do not.
 
 ### DeltaObject
 
