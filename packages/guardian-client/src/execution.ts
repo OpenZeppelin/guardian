@@ -146,10 +146,13 @@ function member<T extends string>(values: readonly T[], value: unknown, what: st
   throw new Error(`Guardian returned an unknown ${what}: ${JSON.stringify(value)}`);
 }
 
-/** Decodes the `GET /status` capability, refusing a missing flag or an unknown reason. */
-export function fromServerExecutionCapability(server: ServerExecutionCapabilityWire | undefined): ServerExecutionCapability {
+/**
+ * Decodes a `GET /status` capability the server sent, refusing a missing flag or an unknown
+ * reason. A status without one does not offer Guardian execution.
+ */
+export function fromServerExecutionCapability(server: ServerExecutionCapabilityWire): ServerExecutionCapability {
   if (typeof server !== 'object' || server === null) {
-    throw new Error(`Guardian returned no execution capability: ${JSON.stringify(server)}`);
+    throw new Error(`Guardian returned a malformed execution capability: ${JSON.stringify(server)}`);
   }
   if (server.enabled === true) {
     if (server.reason !== undefined) {

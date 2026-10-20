@@ -139,7 +139,7 @@ describe('fromServerExecutionCapability', () => {
     );
     expect(() => fromServerExecutionCapability({ enabled: false })).toThrow(/unknown execution unavailable reason/);
     expect(() => fromServerExecutionCapability({ enabled: 'yes' })).toThrow(/boolean enabled/);
-    expect(() => fromServerExecutionCapability(undefined)).toThrow(/no execution capability/);
+    expect(() => fromServerExecutionCapability('yes' as never)).toThrow(/malformed execution capability/);
     expect(() => fromServerExecutionCapability({ enabled: true, reason: 'disabled' })).toThrow(/with a reason/);
   });
 });
