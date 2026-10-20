@@ -77,9 +77,8 @@ every helper they call that decides an outcome the model represents
 `ProtectedByExecution` arms, the chain reads), plus the filesystem
 backend's copies of the E1 fix, which the model does not cover but which
 must stay in parity with Postgres. A new helper on a modeled path that
-decides a refusal, a verdict or a write belongs there too. The `Execution
-model drift` job in `.github/workflows/ci.yml` runs the drift check on
-every pull request and fails on drift. Things the
+decides a refusal, a verdict or a write belongs there too. No CI job runs
+the drift check, so run it yourself on any change to the paths above. Things the
 model treats as one step, which must stay one step in the code:
 
 - `create_execution_reservation_tx`, `admit_execution_candidate_tx`,
@@ -103,8 +102,7 @@ From the repo root:
 ```
 
 `check.sh --drift-only` compares the mirrored Rust against
-`fingerprints.txt` without running TLC (exit 0 no drift, 3 drift); CI runs
-it.
+`fingerprints.txt` without running TLC (exit 0 no drift, 3 drift).
 
 Each cell prints `ok` or `DIFF` against `expected.txt`. A FAIL verdict
 names the violated property (`FAIL:LandedNeverFailed`; a liveness failure
