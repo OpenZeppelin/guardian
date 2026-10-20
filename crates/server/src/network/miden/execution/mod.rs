@@ -36,6 +36,13 @@ pub fn executor_for(
         .map_err(|e| format!("invalid Miden node endpoint for execution: {e}"))?;
     let timeout_ms = u64::try_from(node_timeout.as_millis()).unwrap_or(u64::MAX);
     let rpc = VerifyingRpcClient::new(GrpcClient::new(&endpoint, timeout_ms));
+    let send_timeout_ms = u64::try_from(
+        crate::services::execute_proposal::SendWindow::MAX_SEND
+            .max(node_timeout)
+            .as_millis(),
+    )
+    .unwrap_or(u64::MAX);
+    let submission_rpc = VerifyingRpcClient::new(GrpcClient::new(&endpoint, send_timeout_ms));
     let remote = RemoteTransactionProver::new(prover.url.expose_secret().to_string())
         .with_timeout(prover.timeout);
     let prover: std::sync::Arc<dyn miden_client::transaction::TransactionProver + Send + Sync> =
@@ -46,10 +53,10 @@ pub fn executor_for(
             }),
             None => std::sync::Arc::new(remote),
         };
-    Ok(std::sync::Arc::new(MidenExecutor::new(
-        std::sync::Arc::new(rpc),
-        prover,
-    )))
+    Ok(std::sync::Arc::new(
+        MidenExecutor::new(std::sync::Arc::new(rpc), prover)
+            .with_submission_rpc(std::sync::Arc::new(submission_rpc)),
+    ))
 }
 
 /// Bounds the proofs this process has at the prover at once. The permit covers the prover call

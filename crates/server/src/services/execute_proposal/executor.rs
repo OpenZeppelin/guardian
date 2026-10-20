@@ -58,6 +58,44 @@ pub struct ProvenTransactionInfo {
     pub expiration_block: u32,
 }
 
+/// Where the chain stands against a proven transaction's expiration, read just before the
+/// boundary, and how fast it moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendWindow {
+    pub tip: u32,
+    pub expiration_block: u32,
+    /// The chain's recent time per block, measured from its own block timestamps.
+    pub block_interval: std::time::Duration,
+}
+
+impl SendWindow {
+    /// Blocks kept in reserve below the expiration, for the node's own acceptance check and for
+    /// blocks produced faster than the measured interval.
+    pub const RESERVED_BLOCKS: u32 = 2;
+
+    /// The longest a send waits for the node's answer. A node that is cut off mid-request drops
+    /// the transaction, so this is well above the slowest accepted send seen on devnet (9.3 s).
+    pub const MAX_SEND: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// The least time a send must have left for the attempt to cross the boundary.
+    pub const MIN_SEND: std::time::Duration = std::time::Duration::from_secs(15);
+
+    /// The time left to send before the transaction can no longer be accepted.
+    pub fn remaining(&self) -> std::time::Duration {
+        let blocks = self
+            .expiration_block
+            .saturating_sub(self.tip)
+            .saturating_sub(Self::RESERVED_BLOCKS);
+        self.block_interval * blocks
+    }
+
+    /// How long a send may wait for the node with `left` of the window to go, or `None` when too
+    /// little is left for a send to land.
+    pub fn deadline_within(left: std::time::Duration) -> Option<std::time::Duration> {
+        (left >= Self::MIN_SEND).then(|| left.min(Self::MAX_SEND))
+    }
+}
+
 /// What the node said about a submission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubmissionOutcome {
@@ -116,6 +154,9 @@ pub trait ExecutionAttempt: Send + Sync {
     /// Seals the transaction inputs for submission.
     async fn seal(&mut self) -> Result<(), ExecutionFailure>;
 
-    /// Sends the proven transaction once.
-    async fn submit(&mut self) -> SubmissionOutcome;
+    /// Reads the tip and the chain's pace against the proven transaction's expiration.
+    async fn send_window(&self) -> Result<SendWindow, ExecutionFailure>;
+
+    /// Sends the proven transaction once, waiting at most `deadline` for the node's answer.
+    async fn submit(&mut self, deadline: std::time::Duration) -> SubmissionOutcome;
 }
