@@ -5,6 +5,8 @@
 #   check.sh --deep          adds two reconcilers with two proposals, and liveness (about 10 min)
 #   check.sh --cell <reconcilers> <proposals> <parked> <group>
 #                            run one cell, print TLC's full output and trace
+#   check.sh --drift-only    only compare the mirrored Rust against
+#                            fingerprints.txt (python3 only, no Java or TLC)
 #   check.sh --accept-drift  re-record fingerprints.txt once the model has
 #                            been reviewed against the changed Rust
 #
@@ -26,12 +28,34 @@ TLA_SHA256="936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
 TLA_JAR="${TLA2TOOLS_JAR:-$HOME/.cache/guardian-tla/tla2tools-$TLA_VERSION.jar}"
 SAFETY_INVARIANTS="LandedNeverFailed CommittedMeansLanded SentAfterBoundary OneLandableExecution ExecutionExcludesClientCandidate StoredOnChain LandedStepRecorded"
 
-command -v java >/dev/null || { echo "java not found (brew install openjdk)"; exit 2; }
 command -v python3 >/dev/null || { echo "python3 not found"; exit 2; }
 
 fingerprints() {
   python3 -I "$SKILL_DIR/fingerprint.py" "$REPO_ROOT" "$SKILL_DIR/mirrored.txt"
 }
+
+# Prints the drift report and returns 3 when the mirrored Rust no longer
+# matches fingerprints.txt.
+report_drift() {
+  local current drift
+  current="$(fingerprints)"
+  if drift="$(diff -u "$SKILL_DIR/fingerprints.txt" - <<< "$current")"; then
+    return 0
+  fi
+  echo
+  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
+  { grep -E '^[-+][^-+]' <<< "$drift" || true; } | sed 's/^/  /'
+  echo "Review the matching actions in model/GuardianExecution.tla, then run check.sh --accept-drift."
+  return 3
+}
+
+if [[ "${1:-}" == "--drift-only" ]]; then
+  if report_drift; then
+    echo "No drift: $(wc -l < "$SKILL_DIR/fingerprints.txt" | tr -d ' ') mirrored functions match fingerprints.txt."
+    exit 0
+  fi
+  exit 3
+fi
 
 if [[ "${1:-}" == "--accept-drift" ]]; then
   recorded="$(fingerprints)"
@@ -45,6 +69,8 @@ if [[ "${1:-}" == "--accept-drift" ]]; then
   echo "Recorded $(wc -l < "$SKILL_DIR/fingerprints.txt" | tr -d ' ') fingerprints."
   exit 0
 fi
+
+command -v java >/dev/null || { echo "java not found (brew install openjdk)"; exit 2; }
 
 if [[ ! -f "$TLA_JAR" ]]; then
   mkdir -p "$(dirname "$TLA_JAR")"
@@ -161,11 +187,7 @@ while read -r tier reconcilers proposals parked group expected note; do
   fi
 done < "$SKILL_DIR/expected.txt"
 
-if ! diff -u "$SKILL_DIR/fingerprints.txt" <(fingerprints) > "$WORK/drift.diff"; then
-  echo
-  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
-  { grep -E '^[-+][^-+]' "$WORK/drift.diff" || true; } | sed 's/^/  /'
-  echo "Review the matching actions in model/GuardianExecution.tla, then run check.sh --accept-drift."
+if ! report_drift; then
   [[ $status -eq 0 ]] && status=3
 fi
 exit $status

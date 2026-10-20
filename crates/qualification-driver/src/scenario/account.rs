@@ -3,6 +3,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use std::sync::Arc;
 
+use super::restart_handoff::ExecutionSnapshot;
 use super::{ActionOutcome, Runner, StackServer};
 use crate::fixtures::Fixtures;
 
@@ -706,12 +707,12 @@ pub async fn assert_execution_unavailable(runner: &Runner) -> ActionOutcome {
 /// reached. Its chain RPC is the stack's stub, so an accepted execution fails at its first chain
 /// read: deterministically, before the no-retry boundary, with the proposal untouched.
 ///
-/// On an upgrade target the first pass runs even under `--post-restart`: the seed phase talks
-/// to an older release that cannot create an execution, so there is nothing to read back yet.
-/// The restart pass that follows the upgrade then reads what this pass left.
+/// The last attempt's record is left in the run's handoff directory for the pass after the
+/// restart. On an upgrade target the first pass runs even under `--post-restart`: the seed phase
+/// talks to an older release that cannot create an execution, so there is nothing to read back
+/// yet. The restart pass that follows the upgrade then reads what this pass left.
 pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
-    use guardian_client::execution::ExecutionFailureCode;
-    use guardian_client::{ExecutionState, Signer};
+    use guardian_client::Signer;
 
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
@@ -725,7 +726,7 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
         Err(outcome) => return outcome,
     };
     if runner.post_restart && !runner.upgrade_target {
-        return assert_execution_outcome_survived(fixtures, &id, &endpoint).await;
+        return assert_execution_outcome_survived(runner, fixtures, &id, &endpoint).await;
     }
     let cosigners = || {
         fixtures
@@ -745,24 +746,11 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
             return ActionOutcome::failed_setup(format!("building the fixture proposals: {error}"));
         }
     };
-    let connect_as = |signer: guardian_client::FalconKeyStore| {
-        let endpoint = endpoint.clone();
-        async move {
-            GuardianClient::connect(endpoint.clone())
-                .await
-                .map(|client| client.with_signer(Arc::new(signer)))
-                .map_err(|error| {
-                    ActionOutcome::failed_setup(format!(
-                        "cannot reach the executing GUARDIAN at {endpoint}: {error}"
-                    ))
-                })
-        }
-    };
     let proposer = match cosigners() {
         Ok(mut all) => all.remove(0),
         Err(outcome) => return outcome,
     };
-    let mut client = match connect_as(proposer).await {
+    let mut client = match connect_executing(&endpoint, proposer).await {
         Ok(client) => client,
         Err(outcome) => return outcome,
     };
@@ -827,7 +815,7 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
         let signature = guardian_shared::ProposalSignature::Falcon {
             signature: signer.sign_word_hex(message),
         };
-        let mut cosigner = match connect_as(signer).await {
+        let mut cosigner = match connect_executing(&endpoint, signer).await {
             Ok(cosigner) => cosigner,
             Err(outcome) => return outcome,
         };
@@ -841,113 +829,168 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
         }
     }
 
+    let mut last = None;
     for attempt in 1..=2 {
-        match client
-            .execute_delta_proposal(&id, &proposal_id, false)
-            .await
+        match execute_until_pre_boundary_failure(
+            &mut client,
+            &id,
+            &proposal_id,
+            &format!("attempt {attempt}"),
+        )
+        .await
         {
-            Ok(execution) if execution.newly_accepted => {}
-            Ok(execution) => {
-                return ActionOutcome::failed_product(format!(
-                    "attempt {attempt}: a threshold-met proposal was not newly accepted: {execution:?}"
-                ));
-            }
-            Err(error) => {
-                return ActionOutcome::failed_product(format!(
-                    "attempt {attempt}: a threshold-met proposal was refused: {error}"
-                ));
-            }
-        }
-        let started = std::time::Instant::now();
-        let settled = loop {
-            match client.get_delta_proposal_execution(&id, &proposal_id).await {
-                Ok(execution) if execution.state == ExecutionState::Failed => break execution,
-                Ok(execution)
-                    if execution.state == ExecutionState::Pending
-                        || execution.state == ExecutionState::Proving => {}
-                Ok(execution) => {
-                    return ActionOutcome::failed_product(format!(
-                        "attempt {attempt}: an execution that cannot read the chain reached \
-                         `{}`: {execution:?}",
-                        execution.state.as_str()
-                    ));
-                }
-                Err(error) => {
-                    return ActionOutcome::failed_product(format!(
-                        "attempt {attempt}: reading the execution failed: {error}"
-                    ));
-                }
-            }
-            if started.elapsed() > std::time::Duration::from_secs(60) {
-                return ActionOutcome::failed_product(format!(
-                    "attempt {attempt}: the execution did not settle within 60 s"
-                ));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        };
-        if settled.error.as_ref().map(|error| error.code)
-            != Some(ExecutionFailureCode::NodeUnavailable)
-        {
-            return ActionOutcome::failed_product(format!(
-                "attempt {attempt}: expected `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`: {settled:?}"
-            ));
-        }
-        if !settled.proposal_exists {
-            return ActionOutcome::failed_product(format!(
-                "attempt {attempt}: a pre-boundary failure deleted the proposal: {settled:?}"
-            ));
-        }
-        match client.get_current_execution(&id).await {
-            Ok(None) => {}
-            Ok(Some(active)) => {
-                return ActionOutcome::failed_product(format!(
-                    "attempt {attempt}: a failed execution still holds the account: {active:?}"
-                ));
-            }
-            Err(error) => {
-                return ActionOutcome::failed_product(format!(
-                    "attempt {attempt}: reading the in-flight execution failed: {error}"
-                ));
-            }
+            Ok(settled) => last = Some(settled),
+            Err(outcome) => return outcome,
         }
     }
-    ActionOutcome::Passed
+    let Some(last) = last else {
+        return ActionOutcome::failed_setup("no execution attempt ran");
+    };
+    leave_for_restart(runner, &last)
 }
 
-/// The second pass of the refusals scenario, after GUARDIAN restarted on the same database:
-/// running it again would only recreate its own state, so it reads what the first pass left.
-/// The failed attempt is still reported with its cause, the proposal still exists, and nothing
-/// holds the account.
+const EXECUTION_HANDOFF: &str = "guardian-execution-refusals";
+
+async fn connect_executing(
+    endpoint: &str,
+    signer: guardian_client::FalconKeyStore,
+) -> Result<GuardianClient, ActionOutcome> {
+    GuardianClient::connect(endpoint.to_string())
+        .await
+        .map(|client| client.with_signer(Arc::new(signer)))
+        .map_err(|error| {
+            ActionOutcome::failed_setup(format!(
+                "cannot reach the executing GUARDIAN at {endpoint}: {error}"
+            ))
+        })
+}
+
+/// Requests a new execution of a threshold-met proposal and waits for it to fail before the
+/// no-retry boundary, as it must against the stack's stub chain RPC: newly accepted rather than
+/// refused or answered with an older attempt, failed with `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`,
+/// the proposal kept, and the account released.
+async fn execute_until_pre_boundary_failure(
+    client: &mut GuardianClient,
+    id: &AccountId,
+    proposal_id: &str,
+    label: &str,
+) -> Result<guardian_client::ProposalExecution, ActionOutcome> {
+    use guardian_client::ExecutionState;
+    use guardian_client::execution::ExecutionFailureCode;
+
+    match client.execute_delta_proposal(id, proposal_id, false).await {
+        Ok(execution) if execution.newly_accepted => {}
+        Ok(execution) => {
+            return Err(ActionOutcome::failed_product(format!(
+                "{label}: a threshold-met proposal was not newly accepted: {execution:?}"
+            )));
+        }
+        Err(error) => {
+            return Err(ActionOutcome::failed_product(format!(
+                "{label}: a threshold-met proposal was refused: {error}"
+            )));
+        }
+    }
+    let started = std::time::Instant::now();
+    let settled = loop {
+        match client.get_delta_proposal_execution(id, proposal_id).await {
+            Ok(execution) if execution.state == ExecutionState::Failed => break execution,
+            Ok(execution)
+                if execution.state == ExecutionState::Pending
+                    || execution.state == ExecutionState::Proving => {}
+            Ok(execution) => {
+                return Err(ActionOutcome::failed_product(format!(
+                    "{label}: an execution that cannot read the chain reached `{}`: {execution:?}",
+                    execution.state.as_str()
+                )));
+            }
+            Err(error) => {
+                return Err(ActionOutcome::failed_product(format!(
+                    "{label}: reading the execution failed: {error}"
+                )));
+            }
+        }
+        if started.elapsed() > std::time::Duration::from_secs(60) {
+            return Err(ActionOutcome::failed_product(format!(
+                "{label}: the execution did not settle within 60 s"
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    };
+    if settled.error.as_ref().map(|error| error.code) != Some(ExecutionFailureCode::NodeUnavailable)
+    {
+        return Err(ActionOutcome::failed_product(format!(
+            "{label}: expected `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`: {settled:?}"
+        )));
+    }
+    if !settled.proposal_exists {
+        return Err(ActionOutcome::failed_product(format!(
+            "{label}: a pre-boundary failure deleted the proposal: {settled:?}"
+        )));
+    }
+    match client.get_current_execution(id).await {
+        Ok(None) => Ok(settled),
+        Ok(Some(active)) => Err(ActionOutcome::failed_product(format!(
+            "{label}: a failed execution still holds the account: {active:?}"
+        ))),
+        Err(error) => Err(ActionOutcome::failed_product(format!(
+            "{label}: reading the in-flight execution failed: {error}"
+        ))),
+    }
+}
+
+fn leave_for_restart(
+    runner: &Runner,
+    settled: &guardian_client::ProposalExecution,
+) -> ActionOutcome {
+    match ExecutionSnapshot::of(settled).save(&runner.handoff_dir, EXECUTION_HANDOFF) {
+        Ok(()) => ActionOutcome::Passed,
+        Err(error) => ActionOutcome::failed_setup(format!(
+            "could not leave the execution record for the restart pass: {error:#}"
+        )),
+    }
+}
+
+/// The second pass of the refusals scenario, after GUARDIAN restarted on the same database.
+///
+/// The deterministic stack cannot carry an execution across the no-retry boundary (its chain
+/// RPC is a stub, so every attempt fails at its first chain read) or hold one in flight across
+/// a restart without racing it, so the record that survives is a failed, pre-boundary one.
+/// What a restart could still break is checked against it: the record reads back field for
+/// field as the first pass left it, `updated_at` included, so nothing at startup rewrote it;
+/// nothing holds the account; and a new request is accepted as a new attempt rather than
+/// refused as busy by a reservation or lease the previous process left behind, then fails
+/// the same way with the proposal kept. That attempt is left for any later restart pass.
 async fn assert_execution_outcome_survived(
+    runner: &Runner,
     fixtures: &Fixtures,
     id: &AccountId,
     endpoint: &str,
 ) -> ActionOutcome {
-    use guardian_client::ExecutionState;
-    use guardian_client::execution::ExecutionFailureCode;
-
+    let before = match ExecutionSnapshot::load(&runner.handoff_dir, EXECUTION_HANDOFF) {
+        Ok(before) => before,
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "the pass before the restart left no execution record to compare ({error:#}); \
+                 run the scenario before restarting GUARDIAN"
+            ));
+        }
+    };
     let (Ok(summary), Ok(mut signers)) = (fixtures.executable_summary(), fixtures.cosigners())
     else {
         return ActionOutcome::failed_setup("cannot read the fixture proposal or cosigners");
     };
     let proposal_id = summary.to_commitment().to_hex();
-    let mut client = match GuardianClient::connect(endpoint.to_string()).await {
-        Ok(client) => client.with_signer(Arc::new(signers.remove(0))),
-        Err(error) => {
-            return ActionOutcome::failed_setup(format!(
-                "cannot reach the executing GUARDIAN at {endpoint}: {error}"
-            ));
-        }
+    let mut client = match connect_executing(endpoint, signers.remove(0)).await {
+        Ok(client) => client,
+        Err(outcome) => return outcome,
     };
     match client.get_delta_proposal_execution(id, &proposal_id).await {
-        Ok(execution)
-            if execution.state == ExecutionState::Failed
-                && execution.error.as_ref().map(|error| error.code)
-                    == Some(ExecutionFailureCode::NodeUnavailable)
-                && execution.proposal_exists => {}
+        Ok(execution) if ExecutionSnapshot::of(&execution) == before => {}
         Ok(execution) => {
             return ActionOutcome::failed_product(format!(
-                "after a restart the failed execution reads differently: {execution:?}"
+                "after a restart the execution record changed: before {before:?}, after {:?}",
+                ExecutionSnapshot::of(&execution)
             ));
         }
         Err(error) => {
@@ -957,13 +1000,28 @@ async fn assert_execution_outcome_survived(
         }
     }
     match client.get_current_execution(id).await {
-        Ok(None) => ActionOutcome::Passed,
-        Ok(Some(active)) => ActionOutcome::failed_product(format!(
-            "after a restart a failed execution holds the account: {active:?}"
-        )),
-        Err(error) => ActionOutcome::failed_product(format!(
-            "after a restart the in-flight execution cannot be read: {error}"
-        )),
+        Ok(None) => {}
+        Ok(Some(active)) => {
+            return ActionOutcome::failed_product(format!(
+                "after a restart a failed execution holds the account: {active:?}"
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "after a restart the in-flight execution cannot be read: {error}"
+            ));
+        }
+    }
+    match execute_until_pre_boundary_failure(
+        &mut client,
+        id,
+        &proposal_id,
+        "the first request after a restart",
+    )
+    .await
+    {
+        Ok(settled) => leave_for_restart(runner, &settled),
+        Err(outcome) => outcome,
     }
 }
 

@@ -202,8 +202,8 @@ upgrade check that cannot tell a migrated database from a fresh one proves
 nothing. It also passes `--upgrade-target`, because the older release cannot
 write everything a second pass reads back: it has no Guardian execution, so
 `det-guardian-execution-refusals` runs its own first pass here, and the restart
-pass that follows (which restarts `server` and `server-executing`) reads what
-that pass left.
+pass that follows (which restarts `server` and `server-executing`) checks what
+that pass left and then requests a new execution.
 
 Needs no treasury, so it belongs to the deterministic profile, and is refused
 on the live profile, where it would fund every scenario twice. The
@@ -225,14 +225,17 @@ Eight scenarios cover Guardian executing a proposal instead of a cosigner:
   gate. A proposal without a stored request is refused with
   `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, one with no cosigner signatures with
   `GUARDIAN_PROPOSAL_NOT_READY`. That proposal carries the fixture's effects re-signed as a
-  Guardian-executable client signs them (the 256-block transaction delta and an approval
-  expiration), because the committed fixture comes from a self-executed client and is refused
+  Guardian-executable client signs them (the 256-block transaction expiration ceiling and an
+  approval expiration), because the committed fixture comes from a self-executed client and is refused
   with `approval_expiration_missing`. Once the fixture cosigners sign it, the request is accepted and
   fails before the no-retry boundary with `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, because the
   stack's chain RPC is a stub. The proposal survives, nothing stays in flight, and a second
   request is accepted and fails the same way. Nothing is ever proved, so the prover URL only
-  has to parse. On the pass after the stack restarts Guardian, it reads instead of writing:
-  the failed attempt is still reported with its cause, and nothing holds the account.
+  has to parse. The first pass saves the last attempt's record next to the run's results. On
+  the pass after the stack restarts Guardian, that record must read back unchanged, field for
+  field, nothing may be in flight, and a new execution request must be accepted (not refused
+  as busy by a reservation or lease the stopped process left) and fail the same way with the
+  proposal intact. The new attempt is saved for any later restart pass.
 - `live-guardian-execute-2of3-falcon` and `live-guardian-execute-2of3-ecdsa` (live, both
   SDKs, required on testnet): the cosigners create the proposal in the Guardian-executable mode and sign it to
   threshold, then Guardian proves, submits and commits it. The pass is judged the same way a
@@ -817,8 +820,10 @@ execution is evidenced by devnet runs read scenario by scenario, never by a
 `full` claim.
 
 **Neither expiration bound is crossed.** A Guardian-executable proposal carries an
-approval expiration of 28,800 blocks (about a day) and a transaction expiration of
-256 blocks. No profile waits past either: the late scenarios advance the chain 60
+approval expiration of 28,800 blocks (about a day) and a transaction expiration of at
+most 256 blocks, which a fee faucet with a transfer policy lowers to 20 (devnet's does, so
+on devnet the window is 20 blocks, and a slow Falcon proof can use most of it). No profile
+waits past either on purpose: the late scenarios advance the chain 60
 blocks past the bound block, and the deterministic stack never reaches the chain.
 `GUARDIAN_EXECUTION_EXPIRATION_REACHED` (either `bound`, including the in-kernel
 approval-expired abort) is therefore covered only by the server's unit and

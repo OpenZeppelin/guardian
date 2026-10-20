@@ -3,7 +3,8 @@
 # leaving the database and its volumes untouched. Restarting the whole stack
 # would prove nothing: the data has to outlive the process that wrote it, not be
 # rewritten by a fresh one. The executing server is included because the
-# refusals scenario asserts that its failed execution survives a restart.
+# refusals scenario asserts that its failed execution reads back unchanged after
+# a restart and that the restarted server accepts a new attempt.
 
 qual_restart_server() {
   local project="$1" compose_file="$2" env_file="$3"

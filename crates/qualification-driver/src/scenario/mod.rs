@@ -3,6 +3,7 @@ pub mod error_envelope;
 pub mod identity;
 pub mod live;
 pub mod queue;
+pub mod restart_handoff;
 pub mod signers;
 
 use std::time::Instant;
@@ -152,6 +153,9 @@ pub struct Runner {
     pub http: reqwest::Client,
     pub fixtures: Option<Fixtures>,
     pub post_restart: bool,
+    /// Where a scenario's pass before the restart leaves what its pass after the restart
+    /// compares against. Both passes write the same results directory.
+    pub handoff_dir: std::path::PathBuf,
     /// This pass runs on a database an older release seeded and the image under test then
     /// migrated. A scenario whose second pass reads back what only its own first pass wrote
     /// runs that first pass here instead, because the older release could not have written it.
@@ -163,7 +167,11 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn new(endpoints: Endpoints, expectation: Expectation) -> anyhow::Result<Self> {
+    pub fn new(
+        endpoints: Endpoints,
+        expectation: Expectation,
+        handoff_dir: std::path::PathBuf,
+    ) -> anyhow::Result<Self> {
         let http = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             // The operator dashboard authenticates with a session cookie, so a
@@ -177,6 +185,7 @@ impl Runner {
             http,
             fixtures: None,
             post_restart: false,
+            handoff_dir,
             upgrade_target: false,
             live: None,
             session: tokio::sync::Mutex::new(None),
@@ -446,6 +455,7 @@ mod tests {
             Expectation {
                 image_revision: String::new(),
             },
+            std::env::temp_dir(),
         )
         .expect("runner builds");
 
@@ -486,6 +496,7 @@ mod tests {
             Expectation {
                 image_revision: String::new(),
             },
+            std::env::temp_dir(),
         )
         .expect("runner builds");
 
@@ -511,6 +522,7 @@ mod tests {
             Expectation {
                 image_revision: String::new(),
             },
+            std::env::temp_dir(),
         )
         .expect("runner builds");
 

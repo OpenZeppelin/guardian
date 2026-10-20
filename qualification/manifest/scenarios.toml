@@ -107,7 +107,10 @@ core = false
 # Past the capability gate, on a GUARDIAN that offers execution: a proposal with no stored request
 # and one below threshold are refused synchronously, and a threshold-met one is accepted and
 # fails before the no-retry boundary because the stack's chain RPC is a stub. The proposal
-# survives, nothing stays in flight, and a second request is accepted again.
+# survives, nothing stays in flight, and a second request is accepted again. After the restart
+# the last attempt's record reads back identical to what the first pass saw, `updated_at`
+# included, nothing holds the account, and a new request is accepted as a new attempt rather
+# than refused by a reservation or lease the previous process left behind.
 [[scenario]]
 id = "det-guardian-execution-refusals"
 title = "A GUARDIAN that offers execution refuses what it must and fails cleanly before the boundary"

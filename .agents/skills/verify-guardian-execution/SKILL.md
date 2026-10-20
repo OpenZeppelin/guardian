@@ -69,7 +69,17 @@ it merges, and this model leans on what they prove:
 ## Does my change touch this?
 
 Yes if the diff changes any function in `mirrored.txt`; the drift check
-lists the ones that changed, so when unsure, run `check.sh`. Things the
+lists the ones that changed, so when unsure, run `check.sh --drift-only`
+(seconds, python3 only). `mirrored.txt` lists the modeled functions and
+every helper they call that decides an outcome the model represents
+(`recoverable_delta_on`, `attempt_evidence`, `owns_candidate`,
+`storage::abandoned_cutoff`, `gate_candidate_submission`, the processor's
+`ProtectedByExecution` arms, the chain reads), plus the filesystem
+backend's copies of the E1 fix, which the model does not cover but which
+must stay in parity with Postgres. A new helper on a modeled path that
+decides a refusal, a verdict or a write belongs there too. The `Execution
+model drift` job in `.github/workflows/ci.yml` runs the drift check on
+every pull request and fails on drift. Things the
 model treats as one step, which must stay one step in the code:
 
 - `create_execution_reservation_tx`, `admit_execution_candidate_tx`,
@@ -91,6 +101,10 @@ From the repo root:
 .agents/skills/verify-guardian-execution/check.sh          # quick tier, under 1 min
 .agents/skills/verify-guardian-execution/check.sh --deep   # adds 2 reconcilers, 2 proposals, liveness; 15 to 20 min
 ```
+
+`check.sh --drift-only` compares the mirrored Rust against
+`fingerprints.txt` without running TLC (exit 0 no drift, 3 drift); CI runs
+it.
 
 Each cell prints `ok` or `DIFF` against `expected.txt`. A FAIL verdict
 names the violated property (`FAIL:LandedNeverFailed`; a liveness failure
@@ -158,10 +172,10 @@ Paths are relative to `crates/server/src/`.
 | `ReqAcquire` | `services/execute_proposal/service.rs` `request_execution`: `elector.try_acquire` under a fresh `new_holder_id` (the unlocked pre-checks only refuse early and are not modeled) |
 | `ReqCreate` | `storage/postgres_execution.rs` `create_execution_reservation_tx` (StaleLease, AlreadyReserved, CandidateExists, RecoverableDeltaPending via `recoverable_delta_on`, ProposalGone, Created) |
 | `WPrepare` | `services/execute_proposal/worker.rs` `approach_boundary`: execute and prove fix the reference block and the expiration |
-| `WHeartbeat` | `worker.rs` `Heartbeat` / `Heartbeat::advance` → `coordination/execution_leases.rs` `Renewal::attempt` → `renew_execution_reservation_tx` |
-| `WFail` | any failure before the boundary (`approach_boundary`, `ensure_admissible`, `ensure_unexpired`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
+| `WHeartbeat` | `worker.rs` `Heartbeat` / `Heartbeat::advance` → `coordination/execution_leases.rs` `Renewal::attempt` → `renew_execution_reservation_tx`; before the boundary, and again (recording `Sent`) while `submit` waits for the node |
+| `WFail` | any failure before the boundary (`approach_boundary`, `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
 | `WAdmit`, `RecoverableOnStored` | `cross_boundary` → `admit_execution_candidate_tx` (refuses with RecoverableDeltaPending while `recoverable_delta_on` the base; otherwise deletes rows at the nonce that cannot land, inserts the candidate and the evidence) |
-| `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`) |
+| `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`). A storage error is retried, fenced, while the lease and send window last; a retry is the same claim taken later, which the model already allows since workers get no fairness |
 | `WSubmit`, `WResolveRejected` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution` |
 | `WRelease` | `run_execution`'s `release_quietly` |
 | `RcList` | `jobs/execution_reconcile/mod.rs` `Reconciler::pass` (`list_active_executions`) and the Owned check at the top of `reconcile` |
@@ -198,8 +212,10 @@ Paths are relative to `crates/server/src/`.
 - The executed transaction's result is the proposal's target whatever
   the chain did; a proposal executed on a base the chain already left can
   never land.
-- `ensure_admissible`, `ensure_unexpired` and the other unlocked checks
-  only add early failures, which `WFail` covers at any point.
+- `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`
+  and the other unlocked checks only add early failures, which `WFail`
+  covers at any point. The send's deadline is not modeled: a send is one
+  step, and a transaction lands only by its expiration either way.
 - Client candidates follow the outcome `verify-candidate-queue` proves;
   pushes, parking and abandonment races between clients are not
   re-checked here. Proposal creation, signing, the SDKs, pause, release,
