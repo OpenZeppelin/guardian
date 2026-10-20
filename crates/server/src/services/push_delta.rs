@@ -140,8 +140,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         let delta_payload = Arc::new(params.delta.delta_payload.clone());
         crate::network::reconstructor()
             .run(move || {
-                client.verify_delta(&prev_commitment, &prev_state_json, &delta_payload)?;
-                client.apply_delta(&prev_state_json, &delta_payload)
+                client.verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
             })
             .await?
     };
@@ -879,6 +878,8 @@ mod tests {
             state_json,
             commitment: commitment.to_string(),
             nonce: Some(nonce),
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }
     }
 

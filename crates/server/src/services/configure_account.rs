@@ -82,7 +82,7 @@ pub async fn configure_account(
         client
             .validate_credential(&params.initial_state, &params.credential, &params.auth)
             .map_err(|e| {
-                tracing::error!(
+                tracing::warn!(
                     account_id = %params.account_id,
                     error = %e,
                     "Failed to validate credential"
@@ -93,7 +93,7 @@ pub async fn configure_account(
         client
             .validate_guardian_commitment(&params.initial_state, &expected_guardian_commitment)
             .map_err(|e| {
-                tracing::error!(
+                tracing::warn!(
                     account_id = %params.account_id,
                     expected_guardian_commitment = %expected_guardian_commitment,
                     error = %e,
@@ -127,7 +127,7 @@ pub async fn configure_account(
         if let Some(expected_auth) = extracted_auth
             && expected_auth != params.auth
         {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %params.account_id,
                 expected = ?expected_auth,
                 provided = ?params.auth,
@@ -145,7 +145,7 @@ pub async fn configure_account(
             .auth
             .verify(&params.account_id, &params.credential)
             .map_err(|e| {
-                tracing::error!(
+                tracing::warn!(
                     account_id = %params.account_id,
                     error = %e,
                     "Signature verification failed in configure_account"
