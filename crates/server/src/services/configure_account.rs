@@ -76,13 +76,6 @@ pub async fn configure_account(
         reject_disallowed_scheme(state, scheme)?;
     }
 
-    // The stored state this re-onboarding replaces, read before any check
-    // so the write below refuses to overwrite a state promoted meanwhile.
-    let stored_base = match &existing {
-        Some(_) => stored_head(state, &params.account_id).await?,
-        None => None,
-    };
-
     let (head, signer_commitment) = {
         let client = &state.network_client;
         let expected_guardian_commitment = state.ack.commitment(&scheme);
@@ -170,8 +163,9 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
-    // The replay floor before any chain read below: a replayed stale request
-    // is refused here instead of driving a transaction-history search.
+    // The replay floor before any storage or chain read below: a replayed
+    // request is refused here instead of reading the stored state or
+    // driving a transaction-history search.
     if existing.is_some() {
         consume_auth_timestamp(
             state,
@@ -181,6 +175,14 @@ pub async fn configure_account(
         )
         .await?;
     }
+
+    // The stored state this re-onboarding replaces, read only once the
+    // request is authenticated and fresh. The write below refuses to
+    // overwrite a state promoted after this read.
+    let stored_base = match &existing {
+        Some(_) => stored_head(state, &params.account_id).await?,
+        None => None,
+    };
 
     // A state older than the stored one may replace it only while the stored
     // state never landed (an optimistic-mode state ahead of the chain): once
@@ -1210,7 +1212,7 @@ mod tests {
 
     /// Re-onboard an existing, released account with a state at nonce 1
     /// (`0x0101`); `fresh` is whether the replay floor accepts the request.
-    /// `stored_decodes` answer the stored-state decodes, which run before
+    /// `stored_decodes` answer the stored-state decodes, which run after
     /// the submitted state's.
     async fn reonboard_with(
         network_client: MockNetworkClient,
@@ -1228,12 +1230,14 @@ mod tests {
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
 
-        let network_client = stored_decodes.into_iter().rev().fold(
-            network_client
-                .with_validate_credential(Ok(()))
-                .with_get_state_head(Ok(head("0x0101", 1))),
-            |client, decoded| client.with_get_state_head(decoded),
-        );
+        let network_client = stored_decodes
+            .into_iter()
+            .rev()
+            .fold(network_client, |client, decoded| {
+                client.with_get_state_head(decoded)
+            })
+            .with_validate_credential(Ok(()))
+            .with_get_state_head(Ok(head("0x0101", 1)));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(released_account(account_id_hex, &commitment_hex))))
             .with_set(Ok(()))
@@ -1295,6 +1299,49 @@ mod tests {
         .await;
         assert_refused_as_stale(result, &storage);
         assert_eq!(network.get_state_head_calls().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unauthenticated_request_never_reads_the_stored_state() {
+        // A nonce-less stored row needs a full read and a decode; a request
+        // whose credential does not validate must not reach either.
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let mut legacy = stored_state(account_id_hex, "0x1234");
+        legacy.nonce = None;
+        let storage_backend = MockStorageBackend::new().with_pull_state(Ok(legacy));
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Err("credential does not validate".to_string()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(released_account(account_id_hex, &commitment_hex))));
+        let state = create_test_app_state(
+            network_client.clone(),
+            storage_backend.clone(),
+            metadata_store,
+        )
+        .await;
+
+        let account_json = include_str!("../testing/fixtures/account.json");
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![commitment_hex],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::from_str(account_json).unwrap(),
+            credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+        };
+
+        assert!(configure_account(&state, params).await.is_err());
+        assert_eq!(
+            storage_backend.pending_pull_state_responses(),
+            1,
+            "the stored state is never read"
+        );
+        assert!(network_client.get_state_head_calls().is_empty());
     }
 
     #[tokio::test]

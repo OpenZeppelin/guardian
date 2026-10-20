@@ -72,9 +72,11 @@ switch again. Two checks close it:
   can still be replaced by the older chain state. A stored row without a
   nonce (written before the server stored nonces) has it decoded from the
   stored state (`stored_head`), with the commitment from the same read;
-  only a stored state that does not decode skips the check. The replay
-  floor (`consume_auth_timestamp`) runs first, so a replayed stale
-  request is refused before any chain read.
+  only a stored state that does not decode skips the check. The stored
+  state is read only after the request is authenticated and the replay
+  floor (`consume_auth_timestamp`) accepted it, so neither an
+  unauthenticated nor a replayed request reaches a storage read, a
+  decode or a chain read.
 - Race (mutation `m6` drops both): the write goes through
   `StorageBackend::replace_state`, only while the stored commitment read
   at the start is unchanged (Postgres: one conditional UPDATE; filesystem:

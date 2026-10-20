@@ -38,8 +38,12 @@ def main():
     with open(listing) as handle:
         entries = [line.split() for line in handle if line.strip() and not line.startswith("#")]
     for path, name in entries:
-        with open(f"{root}/{path}") as handle:
-            source = handle.read()
+        try:
+            with open(f"{root}/{path}") as handle:
+                source = handle.read()
+        except FileNotFoundError:
+            print(f"{path} {name} MISSING")
+            continue
         found = list(bodies(source, name))
         digest = hashlib.sha256("\n".join(found).encode()).hexdigest()[:16] if found else "MISSING"
         print(f"{path} {name} {digest}")
