@@ -754,6 +754,89 @@ describe('Multisig', () => {
     });
   });
 
+  describe('getEffectiveThreshold', () => {
+    const baseConfig = {
+      threshold: 2,
+      signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64), '0x' + 'd'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it('does not lower a P2ID transfer below the create_note threshold', () => {
+      const multisig = createTestMultisig({
+        ...baseConfig,
+        procedureThresholds: [{ procedure: 'send_asset', threshold: 1 }],
+      });
+      expect(multisig.getEffectiveThreshold('p2id')).toBe(2);
+    });
+
+    it('takes the higher of the send_asset and create_note thresholds for a P2ID transfer', () => {
+      const lowered = createTestMultisig({
+        ...baseConfig,
+        procedureThresholds: [
+          { procedure: 'send_asset', threshold: 1 },
+          { procedure: 'create_note', threshold: 1 },
+        ],
+      });
+      expect(lowered.getEffectiveThreshold('p2id')).toBe(1);
+
+      const raised = createTestMultisig({
+        ...baseConfig,
+        procedureThresholds: [
+          { procedure: 'send_asset', threshold: 1 },
+          { procedure: 'create_note', threshold: 3 },
+        ],
+      });
+      expect(raised.getEffectiveThreshold('p2id')).toBe(3);
+    });
+  });
+
+  describe('relayCollectedApprovals', () => {
+    const caller = '0x' + '1'.repeat(64);
+    const other = '0x' + 'a'.repeat(64);
+    const approval = (signerId: string, fill: string) => ({
+      signerId,
+      signature: { scheme: 'falcon' as const, signature: '0x' + fill.repeat(128) },
+      timestamp: '2024-01-01T00:00:00Z',
+    });
+    const pending = (cosignerSigs: ReturnType<typeof approval>[]): any => ({
+      status: { status: 'pending', timestamp: '2024-01-01T00:00:00Z', proposerId: caller, cosignerSigs },
+    });
+    const config = {
+      threshold: 2,
+      signerCommitments: [caller, other],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+
+    it("relays the caller's own approval first", async () => {
+      const multisig = createTestMultisig(config);
+      const theirs = approval(other, 'e');
+      const mine = approval(caller, 'f');
+      const sign = vi
+        .spyOn(guardian, 'signDeltaProposal')
+        .mockResolvedValueOnce(pending([mine]))
+        .mockResolvedValueOnce(pending([mine, theirs]));
+
+      await (multisig as any).relayCollectedApprovals('0x' + 'c'.repeat(64), [theirs, mine], pending([]));
+
+      expect(sign.mock.calls.map(([request]) => request.signature)).toEqual([
+        mine.signature,
+        theirs.signature,
+      ]);
+    });
+
+    it('stops when GUARDIAN stores a relayed approval under another signer', async () => {
+      const multisig = createTestMultisig(config);
+      const theirs = approval(other, 'e');
+      vi.spyOn(guardian, 'signDeltaProposal').mockResolvedValueOnce(
+        pending([{ ...theirs, signerId: caller }]),
+      );
+
+      await expect(
+        (multisig as any).relayCollectedApprovals('0x' + 'c'.repeat(64), [theirs], pending([])),
+      ).rejects.toThrow(/stored the relayed approval/);
+    });
+  });
+
   describe('getSignerPublicKeyCommitments (issue #306)', () => {
     const config = {
       threshold: 1,

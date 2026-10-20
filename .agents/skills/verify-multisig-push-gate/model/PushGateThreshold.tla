@@ -6,8 +6,8 @@
 (*                                                                        *)
 (* Gate: crates/server/src/services/multisig_admission.rs                 *)
 (*   MultisigAccount::signature_floor: the default threshold, or the     *)
-(*   lowest non-zero per-procedure override if it is lower. The gate      *)
-(*   reads nothing of the transaction to set the count.                   *)
+(*   lowest non-zero override on a non-auth account procedure if it is    *)
+(*   lower. The gate reads nothing of the transaction to set the count.   *)
 (* Chain: miden-standards (pinned in Cargo.lock)                          *)
 (*   asm/standards/auth/multisig.masm compute_transaction_threshold,     *)
 (*   called from auth_tx with get_initial_threshold_and_num_approvers.    *)
@@ -43,6 +43,14 @@ Procs == {"receive_asset", "create_note", "move_asset_to_note",
 \* suffices because only their minimum matters to the floor.
 Other == "other_procedure"
 
+\* Override keys the chain never reads: the auth procedure (index 0, which
+\* compute_transaction_threshold skips) and a root the account code does not
+\* export. Both SDKs expose auth_tx as an override name and
+\* set_procedure_threshold accepts any root, so an account can hold these.
+\* signature_floor only reads overrides of account.code().procedures()
+\* from index 1, so it ignores them too.
+NonCallable == {"auth_tx", "unexported_root"}
+
 Max(S) == CHOOSE m \in S : \A x \in S : x <= m
 Min(S) == CHOOSE m \in S : \A x \in S : m <= x
 
@@ -51,7 +59,7 @@ vars == <<calls, dflt, ov>>
 
 \* An override of 0 is "no override" on both sides (signature_floor's
 \* filter, the MASM `dup eq.0`).
-SetOverrides == {ov[r] : r \in {r2 \in DOMAIN ov : ov[r2] # 0}}
+SetOverrides == {ov[r] : r \in {r2 \in DOMAIN ov : ov[r2] # 0 /\ r2 \notin NonCallable}}
 
 \* MultisigAccount::signature_floor
 GateRequired == Min({dflt} \cup SetOverrides)
@@ -65,7 +73,7 @@ ChainRequired == IF calls = {} THEN dflt ELSE Max({PerProc(p) : p \in calls})
 Init ==
     /\ calls \in {c \in SUBSET Procs : Cardinality(c) <= MaxCalls}
     /\ dflt \in 1..NumApprovers
-    /\ ov \in [calls \cup {Other} -> 0..NumApprovers]
+    /\ ov \in [calls \cup {Other} \cup NonCallable -> 0..NumApprovers]
 
 Next == UNCHANGED vars
 
@@ -79,10 +87,11 @@ Spec == Init /\ [][Next]_vars
 \* a transaction the chain would accept cannot be executed through Guardian.
 NeverOverAsks == GateRequired <= ChainRequired
 
-\* On an account with no override below the default, Guardian asks for the
-\* default threshold. If not, fewer cosigners than the default can hold the
-\* candidate slot with a delta the chain will refuse (issue #524).
+\* On an account with no override below the default on a procedure a
+\* transaction can call, Guardian asks for the default threshold. If not,
+\* fewer cosigners than the default can hold the candidate slot with a delta
+\* the chain will refuse (issue #524).
 DefaultWithoutLowOverride ==
-    (\A r \in DOMAIN ov : ov[r] = 0 \/ ov[r] >= dflt) => GateRequired = dflt
+    (\A r \in DOMAIN ov \ NonCallable : ov[r] = 0 \/ ov[r] >= dflt) => GateRequired = dflt
 
 ====

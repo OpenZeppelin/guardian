@@ -1,14 +1,14 @@
 //! Multisig gate for `push_delta`. A candidate is acknowledged only when
 //! the matching proposal carries verified cosigner signatures over the
 //! pushed transaction, at least as many as the lowest threshold the
-//! account permits for any transaction. The chain enforces the exact
+//! account permits for any transaction it can execute. The chain enforces the exact
 //! threshold of the procedures a transaction calls; this floor never asks
 //! for more than the chain will, so the gate never refuses a transaction
 //! the chain would accept.
 
 use std::collections::BTreeSet;
 
-use miden_protocol::account::{Account, StorageSlotContent};
+use miden_protocol::account::{Account, StorageMapKey, StorageSlotContent};
 use miden_protocol::transaction::TransactionSummary;
 use miden_standards::account::auth::AuthGuardedMultisig;
 use serde_json::Value;
@@ -71,13 +71,17 @@ impl MultisigAccount {
     }
 
     /// The fewest signatures the chain accepts for any transaction on this
-    /// account: the default threshold, or a lower per-procedure override.
-    /// On chain (`multisig.masm` `compute_transaction_threshold`) every
-    /// called procedure contributes its override or the default, combined
-    /// by max, so no transaction needs fewer. Which procedures a
-    /// transaction calls is not visible in its summary, so the gate does
-    /// not try to match the exact count: the chain enforces it. An override
-    /// of zero is no override, on chain as here.
+    /// account: the default threshold, or a lower override on one of the
+    /// account's non-auth procedures. On chain (`multisig.masm`
+    /// `compute_transaction_threshold`) every called non-auth procedure
+    /// contributes its override or the default, combined by max, so no
+    /// transaction needs fewer. The auth procedure at index 0 is skipped
+    /// there, and a root the account code does not export is never called,
+    /// so overrides on either never lower what a transaction needs and are
+    /// ignored here. Which procedures a transaction calls is not visible in
+    /// its summary, so the gate does not try to match the exact count: the
+    /// chain enforces it. An override of zero is no override, on chain as
+    /// here.
     fn signature_floor(&self) -> Result<usize> {
         let storage = self.account.storage();
         let default = storage
@@ -90,9 +94,16 @@ impl MultisigAccount {
             .get(AuthGuardedMultisig::procedure_thresholds_slot())
             .map(|slot| slot.content())
         {
-            Some(StorageSlotContent::Map(overrides)) => overrides
-                .entries()
-                .map(|(_, threshold)| threshold[0].as_canonical_u64() as usize)
+            Some(StorageSlotContent::Map(overrides)) => self
+                .account
+                .code()
+                .procedures()
+                .iter()
+                .skip(1)
+                .map(|procedure| {
+                    overrides.get(&StorageMapKey::new(*procedure.mast_root()))[0].as_canonical_u64()
+                        as usize
+                })
                 .filter(|threshold| *threshold != 0)
                 .min(),
             Some(StorageSlotContent::Value(_)) | None => None,

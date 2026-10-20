@@ -1167,8 +1167,8 @@ mod tests {
     ) -> serde_json::Value {
         use guardian_shared::ToJson;
         use miden_protocol::account::{
-            Account, AccountCode, AccountId, AccountIdVersion, AccountStorage, AccountType,
-            StorageMap, StorageMapKey, StorageSlot, StorageSlotName,
+            Account, AccountId, AccountIdVersion, AccountStorage, AccountType, StorageMap,
+            StorageMapKey, StorageSlot, StorageSlotName,
         };
         use miden_protocol::asset::AssetVault;
         use miden_standards::account::auth::AuthGuardedMultisig;
@@ -1219,10 +1219,21 @@ mod tests {
             account_id,
             AssetVault::new(&[]).expect("vault"),
             AccountStorage::new(slots).expect("storage"),
-            AccountCode::mock(),
+            wallet_code(),
             miden_protocol::Felt::new_unchecked(1),
         )
         .to_json()
+    }
+
+    fn wallet_code() -> miden_protocol::account::AccountCode {
+        use miden_protocol::testing::noop_auth_component::NoopAuthComponent;
+        use miden_standards::account::wallets::BasicWallet;
+
+        miden_protocol::account::AccountCode::from_components(&[
+            NoopAuthComponent.into(),
+            BasicWallet.into(),
+        ])
+        .expect("wallet code")
     }
 
     fn pushed_summary() -> miden_protocol::transaction::TransactionSummary {
@@ -1592,6 +1603,25 @@ mod tests {
             &[first.commitment_hex.clone(), second.commitment_hex],
             2,
             &[(receive, 0)],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    /// The chain skips the auth procedure and never calls a root the
+    /// account code does not export, so overrides on either never lower
+    /// the floor.
+    #[tokio::test]
+    async fn multisig_push_ignores_overrides_outside_the_callable_procedures() {
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let auth = (*wallet_code().procedures()[0].mast_root(), 1);
+        let unknown = (miden_protocol::Word::from([7u32, 7, 7, 7]), 1);
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            2,
+            &[auth, unknown],
             ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
         )
         .await;

@@ -289,6 +289,31 @@ function approvalExpirationDeltaOf(
   return delta;
 }
 
+/**
+ * Refuses a relay whose response stores the relayed approval under another
+ * signer. A server before 0.18.1 credits every approval to the request
+ * signer, and other devices that load such an entry would execute with it.
+ */
+function assertApprovalCreditedToItsSigner(stored: DeltaObject, relayed: ProposalSignatureEntry): void {
+  if (stored.status.status !== 'pending') {
+    return;
+  }
+  const bare = (hex: string) => hex.replace(/^0x/i, '').toLowerCase();
+  const signature = bare(relayed.signature.signature);
+  const misattributed = stored.status.cosignerSigs.find(
+    (sig) =>
+      bare(sig.signature.signature) === signature &&
+      normalizeHexWord(sig.signerId) !== normalizeHexWord(relayed.signerId),
+  );
+  if (misattributed) {
+    throw new Error(
+      `GUARDIAN stored the relayed approval of ${relayed.signerId} as ${misattributed.signerId}; ` +
+        'it does not verify relayed approvals (a server before 0.18.1). Upgrade the server ' +
+        'before executing this proposal',
+    );
+  }
+}
+
 function summarySaltHex(summary: TransactionSummary): string {
   const salt = summarySalt(summary);
   try {
@@ -561,13 +586,18 @@ export class Multisig {
   /**
    * Get the effective threshold for a given proposal type.
    * Returns the procedure-specific threshold if configured, otherwise the default threshold.
+   * A P2ID transfer calls both `send_asset` and `create_note`, and the chain requires the
+   * higher of their thresholds.
    *
    * @param proposalType - The type of proposal
    * @returns The threshold that applies to this proposal type
    */
   getEffectiveThreshold(proposalType: ProposalType): number {
-    if (this.procedureThresholds.size === 0) {
-      return this.threshold;
+    if (proposalType === 'p2id') {
+      return Math.max(
+        this.getProcedureThreshold('send_asset'),
+        this.getProcedureThreshold('create_note'),
+      );
     }
 
     const procedure = this.getProposalProcedure(proposalType);
@@ -575,6 +605,10 @@ export class Multisig {
       return this.threshold;
     }
 
+    return this.getProcedureThreshold(procedure);
+  }
+
+  private getProcedureThreshold(procedure: ProcedureName): number {
     return this.procedureThresholds.get(procedure) ?? this.threshold;
   }
 
@@ -2526,16 +2560,25 @@ export class Multisig {
         ? delta.status.cosignerSigs.map((sig) => normalizeHexWord(sig.signerId))
         : [],
     );
-    for (const entry of signatures) {
+    // The caller's own approval goes first: a server that credits every
+    // approval to the request signer (before 0.18.1) then refuses the rest
+    // as already signed instead of storing them under the caller.
+    const caller = normalizeHexWord(this.signer.commitment);
+    const ordered = [
+      ...signatures.filter((entry) => normalizeHexWord(entry.signerId) === caller),
+      ...signatures.filter((entry) => normalizeHexWord(entry.signerId) !== caller),
+    ];
+    for (const entry of ordered) {
       if (alreadyHeld.has(normalizeHexWord(entry.signerId))) {
         continue;
       }
       try {
-        await this.guardian.signDeltaProposal({
+        const stored = await this.guardian.signDeltaProposal({
           accountId: this._accountId,
           commitment: proposalId,
           signature: entry.signature,
         });
+        assertApprovalCreditedToItsSigner(stored, entry);
       } catch (error) {
         if (error instanceof GuardianHttpError && error.code === 'proposal_already_signed') {
           continue;

@@ -8,8 +8,8 @@ description: Model-check Guardian's multisig push gate (issue #524) with TLA+/TL
 Since issue #524, Guardian acknowledges a multisig delta only when the
 matching pending proposal carries verified cosigner approvals over the
 pushed transaction, at least as many as the lowest threshold the account
-permits: its default threshold, or a lower per-procedure override
-(`multisig_admission.rs` `MultisigAccount::authorize` and
+permits: its default threshold, or a lower override on one of its non-auth
+procedures (`multisig_admission.rs` `MultisigAccount::authorize` and
 `signature_floor`, called from `push_delta` before `verify_delta`).
 
 The floor is a denial-of-service guard, not the authorization rule. The
@@ -147,7 +147,8 @@ PushGateThreshold:
 | Definition | Code |
 |---|---|
 | `Procs` | miden-standards `asm/components/auth/guarded_multisig/guarded_multisig.masm` and `asm/components/wallets/basic_wallet/basic_wallet.masm` exports, plus `custom` for an extra component |
-| `SetOverrides`, `GateRequired` | `MultisigAccount::signature_floor` (procedure-thresholds map entries, zero filtered, min with the threshold-config default) |
+| `SetOverrides`, `GateRequired` | `MultisigAccount::signature_floor` (procedure-thresholds map read at `account.code().procedures()` from index 1, zero filtered, min with the threshold-config default) |
+| `NonCallable` | override keys the chain never reads: the auth procedure (index 0) and a root the account code does not export |
 | `PerProc`, `ChainRequired` | `multisig.masm` `compute_transaction_threshold` (override via `get_initial_map_item`, 0 means default, max, default when nothing was called), called by `auth_tx` with `get_initial_threshold_and_num_approvers` |
 
 ApprovalRelay:
@@ -189,6 +190,17 @@ ApprovalRelay:
   `verify-candidate-queue` where those exist on your branch).
 - Neither model checks the Rust SDK's online `execute_proposal`. It
   executes from Guardian-served signatures, which are already stored.
+  `execute_proposal` and `execute_imported_proposal` recompute the
+  threshold the chain requires (`MultisigAccount::ensure_threshold_met`)
+  before asking for the ACK, as TS `prepareProposalExecution` does; that is
+  covered by unit tests, not the models. `prepare_custom_execution` still
+  relies on the recorded readiness: the procedures a custom transaction
+  calls are not knowable from its type.
+- Servers before 0.18.1 (which credit every approval to the request
+  signer) are not modelled. The SDK relays send the caller's own approval
+  first and stop when a response stores a relayed approval under another
+  signer; `RelayRead`'s free choice of approval already includes that
+  order.
 
 ## Findings in the baseline
 
@@ -207,6 +219,15 @@ and M9 restore the plain write and fail them. Tests:
 `update_delta_proposal_if_status_admits_one_write_per_read` (Postgres,
 `./scripts/test-postgres.sh`).
 
+**F5 (fixed on this branch, Oct 20 review).** `signature_floor` took the
+minimum over every procedure-thresholds entry, including an override on
+the auth procedure or on a root the account does not export. The chain
+reads neither, so with a default of 2 and `auth_tx` at 1 a single
+cosigner met the floor for any transaction. The model could not express
+it until `NonCallable` was added; mutant M10 restores the old floor and
+fails `DefaultWithoutLowOverride`. Test:
+`multisig_push_ignores_overrides_outside_the_callable_procedures`.
+
 **Documented, not bugs.** `relay-new-old-offchannel`: 0.18.2 SDKs do not
 relay, so a new server refuses their off-channel executions unless the
 stored approvals alone reach the floor (`docs/MIDEN_COMPATIBILITY.md`).
@@ -217,7 +238,7 @@ be relayed to and is refused, and the release sweep releases the account
 Guards the model shows are load-bearing (`--mutants`): honouring lower
 overrides (M1), keeping the default in the minimum (M2), treating an
 override of 0 as none (M3), taking the minimum rather than the maximum
-(M4), the relay's `invalid_proposal_signature` skip against a 0.18.2
+(M4), ignoring overrides the chain never reads (M10), the relay's `invalid_proposal_signature` skip against a 0.18.2
 server when the executor's own approval is not stored (M5), relaying at
 all (M6), appending rather than replacing in `sign_delta_proposal` (M7),
 and the conditional write (M8, M9).

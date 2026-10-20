@@ -99,6 +99,12 @@ RelayContinues(r) == r \in {"ok", "already_signed", "invalid"}
 \* stored answers proposal_not_found: the TS switch path warns and pushes
 \* anyway; that is the only executor that reaches here without a stored
 \* proposal.
+\* The relayed approval is chosen freely, so every order is explored. Both
+\* SDK relays now send the caller's own approval first (for servers before
+\* 0.18.1, which credit any approval to the request signer and are not
+\* modelled); that order is one of these. The SDK check that a 200 response
+\* stores the approval under its own signer never fires against the
+\* modelled servers.
 RelayRead ==
     /\ pc = "relay" /\ relaying = "none" /\ toRelay # {}
     /\ \E a \in toRelay :

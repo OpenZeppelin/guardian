@@ -1,9 +1,9 @@
 crates/server/src/services/multisig_admission.rs authorize 8b5d4cf218928e5a
-crates/server/src/services/multisig_admission.rs signature_floor 452aa12c5b9625a3
+crates/server/src/services/multisig_admission.rs signature_floor 777dd416800744e1
 crates/server/src/services/multisig_admission.rs pending_signatures aaf000190ef8e292
 crates/server/src/services/multisig_admission.rs verified_approver_count 0757a4c09e93bb8a
 Cargo.lock @pin miden-standards 0.17.1
-crates/server/src/services/push_delta.rs push_delta 5dc3d5fc2116e728
+crates/server/src/services/push_delta.rs push_delta bd9b63c04071daf5
 crates/server/src/services/push_delta.rs lookup_matching_proposal 92186e88a19982e2
 crates/server/src/services/candidate_chain.rs ensure_tail_keeps_auth 3aa5afb2c6e5f77d
 crates/server/src/services/sign_delta_proposal.rs sign_delta_proposal 0c178e902ff1e7ea
@@ -15,10 +15,10 @@ crates/server/src/storage/encryption/decorator.rs update_delta_proposal_if_statu
 crates/server/src/storage/postgres.rs update_delta_proposal de621c9ddaf3f34c
 crates/server/src/storage/filesystem.rs update_delta_proposal a9e2f6dff2c1c790
 crates/server/src/storage/filesystem.rs submit_delta_proposal 75fa735e3e524970
-crates/miden-multisig-client/src/client/offline.rs relay_collected_approvals 9dd3b5e13eb83fca
-crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 0dfd582e2f7e30ea
-crates/miden-multisig-client/src/client/proposals.rs execute_proposal 7b62dc43297c28dd
-packages/miden-multisig-client/src/multisig.ts relayCollectedApprovals 17700b8111d752b7
+crates/miden-multisig-client/src/client/offline.rs relay_collected_approvals 1d005033639f3296
+crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal facd52a87c1dcfa1
+crates/miden-multisig-client/src/client/proposals.rs execute_proposal 66bac5a8a2359d8c
+packages/miden-multisig-client/src/multisig.ts relayCollectedApprovals a04503eb321ced3c
 packages/miden-multisig-client/src/multisig.ts prepareProposalExecution aa19ead7f431220e
 packages/miden-multisig-client/src/multisig.ts executeProposal 895eebc853f39c06
 packages/miden-multisig-client/src/multisig.ts assembleCustomAdvice 856dc08cfb05b1a8
