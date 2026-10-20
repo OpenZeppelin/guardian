@@ -60,6 +60,14 @@ impl SignatureScheme {
         self.auth_scheme() as u64
     }
 
+    /// The scheme a guarded-multisig storage scheme id names (the inverse of
+    /// [`Self::auth_scheme_id`]), or `None` for an id no supported scheme uses.
+    pub fn from_auth_scheme_id(id: u64) -> Option<Self> {
+        [Self::Falcon, Self::Ecdsa]
+            .into_iter()
+            .find(|scheme| scheme.auth_scheme_id() == id)
+    }
+
     pub fn parse_signature_hex(self, signature_hex: &str) -> Result<AccountSignature, String> {
         match self {
             Self::Falcon => {
@@ -319,6 +327,26 @@ mod tests {
         auth::{Approver, AuthSingleSig},
         wallets::BasicWallet,
     };
+
+    #[test]
+    fn auth_scheme_id_round_trips_and_rejects_unknown_ids() {
+        for scheme in [SignatureScheme::Falcon, SignatureScheme::Ecdsa] {
+            assert_eq!(
+                SignatureScheme::from_auth_scheme_id(scheme.auth_scheme_id()),
+                Some(scheme)
+            );
+        }
+        assert_eq!(
+            SignatureScheme::from_auth_scheme_id(AuthScheme::EcdsaK256Keccak as u64),
+            Some(SignatureScheme::Ecdsa)
+        );
+        assert_eq!(
+            SignatureScheme::from_auth_scheme_id(AuthScheme::Falcon512Poseidon2 as u64),
+            Some(SignatureScheme::Falcon)
+        );
+        assert_eq!(SignatureScheme::from_auth_scheme_id(0), None);
+        assert_eq!(SignatureScheme::from_auth_scheme_id(99), None);
+    }
 
     #[test]
     fn test_account_json_round_trip() {

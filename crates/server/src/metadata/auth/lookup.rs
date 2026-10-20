@@ -16,8 +16,7 @@ use miden_protocol::crypto::dsa::falcon512_poseidon2::{
 };
 use miden_protocol::utils::serde::Deserializable;
 
-/// Serialized ECDSA secp256k1 signature length: `r (32) || s (32) || v (1)`.
-const ECDSA_SIGNATURE_LEN: usize = 65;
+use super::ECDSA_SIGNATURE_LEN;
 
 /// A public key derived from a lookup signature.
 #[derive(Debug)]

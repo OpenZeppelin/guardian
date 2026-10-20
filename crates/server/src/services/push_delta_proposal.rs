@@ -1918,8 +1918,15 @@ mod tests {
     async fn test_push_delta_proposal_refused_behind_a_signer_changing_candidate() {
         let account_id = &fixture_account_id();
         let binding = |signers: &[&str]| crate::network::AuthBinding {
-            signers: signers.iter().map(|s| s.to_string()).collect(),
+            signers: signers
+                .iter()
+                .map(|s| crate::metadata::auth::ChainCosigner {
+                    commitment: s.to_string(),
+                    scheme: None,
+                })
+                .collect(),
             guardian: Some("0xguardian".to_string()),
+            ..Default::default()
         };
         let setup = queued_proposal_setup_with(
             4,

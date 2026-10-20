@@ -1,6 +1,6 @@
 use crate::metadata::{
-    AccountListCursor, AccountMetadata, Auth, ClearTransition, LEGACY_ACCOUNT_AUTH_FLOOR,
-    MetadataStore, ReleaseTransition,
+    AccountListCursor, AccountMetadata, ClearTransition, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
+    ReleaseTransition,
 };
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use async_trait::async_trait;
@@ -653,18 +653,10 @@ impl MetadataStore for FilesystemMetadataStore {
         let cache = self.cache.read().await;
         let mut matches = Vec::new();
         for (account_id, metadata) in cache.iter() {
-            let commitments = match &metadata.auth {
-                Auth::MidenFalconRpo {
-                    cosigner_commitments,
-                }
-                | Auth::MidenEcdsa {
-                    cosigner_commitments,
-                } => cosigner_commitments.as_slice(),
-                // EVM accounts use a different authorization model and must
-                // never appear in lookup results.
-                Auth::EvmEcdsa { .. } => continue,
-            };
-            if commitments.iter().any(|c| c == commitment) {
+            // EVM accounts use a different authorization model and must
+            // never appear in lookup results: they have no Miden cosigners,
+            // so `signer_scheme` is `None` for them.
+            if metadata.auth.signer_scheme(commitment).is_some() {
                 matches.push(account_id.clone());
             }
         }

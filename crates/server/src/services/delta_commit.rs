@@ -245,7 +245,7 @@ mod tests {
             state_json: serde_json::json!({"new": "state"}),
             commitment: "new_commitment".to_string(),
             nonce: Some(2),
-            cosigner_commitments: Vec::new(),
+            cosigners: Vec::new(),
             guardian_commitment: None,
         }
     }

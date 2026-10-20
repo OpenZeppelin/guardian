@@ -676,7 +676,7 @@ impl ReleaseSweeper {
         };
         let nonce = delta.nonce;
         let ack = self.state.ack.clone();
-        let scheme = metadata.auth.scheme();
+        let scheme = metadata.auth.guardian_scheme();
         let acked = crate::network::reconstructor()
             .run_background(move || Ok::<_, String>(ack.acked_with_current_key(&delta, &scheme)))
             .await

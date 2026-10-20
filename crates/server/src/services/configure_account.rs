@@ -94,14 +94,19 @@ pub async fn configure_account(
         },
         None => false,
     };
-    let scheme = params.auth.scheme();
+    // The GUARDIAN's scheme selects this server's ACK identity for the
+    // account; every scheme the account uses, its cosigners' included, is
+    // held to the policy for new accounts.
+    let guardian_scheme = params.auth.guardian_scheme();
     if existing.is_none() || unfinished_claim {
-        reject_disallowed_scheme(state, scheme)?;
+        for scheme in params.auth.schemes_in_use() {
+            reject_disallowed_scheme(state, scheme)?;
+        }
     }
 
     let (head, signer_commitment) = {
         let client = &state.network_client;
-        let expected_guardian_commitment = state.ack.commitment(&scheme);
+        let expected_guardian_commitment = state.ack.commitment(&guardian_scheme);
 
         // Validates that the credential is valid for the account state.
         client
@@ -116,7 +121,11 @@ pub async fn configure_account(
             })?;
 
         client
-            .validate_guardian_commitment(&params.initial_state, &expected_guardian_commitment)
+            .validate_guardian_commitment(
+                &params.initial_state,
+                &expected_guardian_commitment,
+                guardian_scheme,
+            )
             .map_err(|e| {
                 tracing::warn!(
                     account_id = %params.account_id,
@@ -158,6 +167,16 @@ pub async fn configure_account(
                 provided = ?params.auth,
                 "Cosigner commitments do not match account state in configure_account"
             );
+            // Commitments that match with an auth that still differs differ
+            // in schemes: the declared variant or a cosigner's scheme is not
+            // the one the state stores.
+            if expected_auth.cosigner_commitments() == params.auth.cosigner_commitments() {
+                return Err(GuardianError::InvalidInput(format!(
+                    "cosigner schemes do not match the signer set in initial_state: expected {}, provided {}",
+                    describe_cosigners(&expected_auth),
+                    describe_cosigners(&params.auth)
+                )));
+            }
             return Err(GuardianError::InvalidInput(format!(
                 "cosigner_commitments do not match the signer set in initial_state: expected {:?}, provided {:?}",
                 expected_auth.cosigner_commitments(),
@@ -253,7 +272,7 @@ pub async fn configure_account(
         nonce: head.nonce,
         created_at: created_at.clone(),
         updated_at: now.clone(),
-        auth_scheme: scheme.to_string(),
+        auth_scheme: params.auth.auth_scheme_label().to_string(),
     };
 
     state
@@ -364,9 +383,19 @@ pub async fn configure_account(
 
     Ok(ConfigureAccountResult {
         account_id: params.account_id,
-        ack_pubkey: state.ack.pubkey(&scheme),
-        ack_commitment: state.ack.commitment(&scheme),
+        ack_pubkey: state.ack.pubkey(&guardian_scheme),
+        ack_commitment: state.ack.commitment(&guardian_scheme),
     })
+}
+
+/// `commitment:scheme` for each cosigner, for the scheme-mismatch error.
+fn describe_cosigners(auth: &Auth) -> String {
+    let cosigners: Vec<String> = auth
+        .cosigners()
+        .into_iter()
+        .map(|cosigner| format!("{}:{}", cosigner.commitment, cosigner.scheme))
+        .collect();
+    format!("[{}]", cosigners.join(", "))
 }
 
 fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result<()> {
@@ -739,6 +768,217 @@ mod tests {
         assert!(ack_commitment.starts_with("0x"));
         assert_eq!(ack_commitment.len(), 66);
         assert!(ack_pubkey.len() > 66);
+    }
+
+    fn mixed_auth(falcon: &str, ecdsa: &str, guardian_scheme: SignatureScheme) -> Auth {
+        Auth::Miden {
+            cosigners: vec![
+                crate::metadata::auth::MidenCosigner {
+                    commitment: falcon.to_string(),
+                    scheme: SignatureScheme::Falcon,
+                },
+                crate::metadata::auth::MidenCosigner {
+                    commitment: ecdsa.to_string(),
+                    scheme: SignatureScheme::Ecdsa,
+                },
+            ],
+            guardian_scheme,
+        }
+    }
+
+    /// A mixed account registers with its per-signer auth, the ECDSA
+    /// cosigner signing, and is acknowledged with the GUARDIAN's scheme.
+    #[tokio::test]
+    async fn configure_registers_a_mixed_scheme_account() {
+        use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let auth = mixed_auth(
+            &falcon.commitment_hex,
+            &ecdsa.commitment_hex,
+            SignatureScheme::Ecdsa,
+        );
+
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_should_update_auth(Ok(Some(auth.clone())))
+            .with_get_state_head(Ok(head("0x1234", 3)));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let observed_storage = storage_backend.clone();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(()));
+        let observed_metadata = metadata_store.clone();
+        let state = create_test_app_state(network_client, storage_backend, metadata_store).await;
+
+        let (signature_hex, timestamp) =
+            ecdsa.sign_with_timestamp(account_id_hex, chrono::Utc::now().timestamp_millis());
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: auth.clone(),
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({}),
+            credential: Credentials::signature(ecdsa.pubkey_hex.clone(), signature_hex, timestamp),
+        };
+
+        let result = configure_account(&state, params)
+            .await
+            .expect("mixed account registers");
+        assert_eq!(
+            result.ack_commitment,
+            state.ack.commitment(&SignatureScheme::Ecdsa)
+        );
+        assert_eq!(result.ack_pubkey, state.ack.pubkey(&SignatureScheme::Ecdsa));
+        assert_eq!(observed_metadata.get_create_calls()[0].auth, auth);
+        assert_eq!(
+            observed_storage.get_submit_state_calls()[0].auth_scheme,
+            "mixed"
+        );
+    }
+
+    #[tokio::test]
+    async fn configure_rejects_a_mixed_account_using_a_disallowed_scheme() {
+        use crate::config::account_schemes::AllowedAccountSchemes;
+        use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        // Every cosigner ECDSA but the GUARDIAN Falcon counts too.
+        let ecdsa_cosigners_falcon_guardian = Auth::Miden {
+            cosigners: vec![crate::metadata::auth::MidenCosigner {
+                commitment: ecdsa.commitment_hex.clone(),
+                scheme: SignatureScheme::Ecdsa,
+            }],
+            guardian_scheme: SignatureScheme::Falcon,
+        };
+        for auth in [
+            mixed_auth(
+                &falcon.commitment_hex,
+                &ecdsa.commitment_hex,
+                SignatureScheme::Ecdsa,
+            ),
+            ecdsa_cosigners_falcon_guardian,
+        ] {
+            let mut state = create_test_app_state(
+                MockNetworkClient::new(),
+                MockStorageBackend::new(),
+                MockMetadataStore::new().with_get(Ok(None)),
+            )
+            .await;
+            state.ack = state
+                .ack
+                .clone()
+                .with_account_schemes(AllowedAccountSchemes::parse("ecdsa").unwrap());
+            let (signature_hex, timestamp) =
+                ecdsa.sign_with_timestamp(account_id_hex, chrono::Utc::now().timestamp_millis());
+            let params = ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth,
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::json!({}),
+                credential: Credentials::signature(
+                    ecdsa.pubkey_hex.clone(),
+                    signature_hex,
+                    timestamp,
+                ),
+            };
+            match configure_account(&state, params).await {
+                Err(GuardianError::SignatureSchemeNotAllowed {
+                    scheme,
+                    allowed_schemes,
+                }) => {
+                    assert_eq!(scheme, "falcon");
+                    assert_eq!(allowed_schemes, vec!["ecdsa".to_string()]);
+                }
+                other => panic!("expected SignatureSchemeNotAllowed, got {other:?}"),
+            }
+        }
+
+        // An all-ECDSA per-signer account passes the same policy.
+        let mut state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3))),
+            MockStorageBackend::new().with_submit_state(Ok(())),
+            MockMetadataStore::new().with_get(Ok(None)).with_set(Ok(())),
+        )
+        .await;
+        state.ack = state
+            .ack
+            .clone()
+            .with_account_schemes(AllowedAccountSchemes::parse("ecdsa").unwrap());
+        let (signature_hex, timestamp) =
+            ecdsa.sign_with_timestamp(account_id_hex, chrono::Utc::now().timestamp_millis());
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::Miden {
+                cosigners: vec![crate::metadata::auth::MidenCosigner {
+                    commitment: ecdsa.commitment_hex.clone(),
+                    scheme: SignatureScheme::Ecdsa,
+                }],
+                guardian_scheme: SignatureScheme::Ecdsa,
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({}),
+            credential: Credentials::signature(ecdsa.pubkey_hex.clone(), signature_hex, timestamp),
+        };
+        configure_account(&state, params)
+            .await
+            .expect("an all-ECDSA account is allowed");
+    }
+
+    /// A single-scheme declaration of a state that mixes schemes is refused
+    /// with the schemes named, and nothing is written.
+    #[tokio::test]
+    async fn configure_rejects_a_single_scheme_declaration_of_a_mixed_state() {
+        use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let stored = mixed_auth(
+            &falcon.commitment_hex,
+            &ecdsa.commitment_hex,
+            SignatureScheme::Falcon,
+        );
+        let storage_backend = MockStorageBackend::new();
+        let observed_storage = storage_backend.clone();
+        let state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_should_update_auth(Ok(Some(stored))),
+            storage_backend,
+            MockMetadataStore::new().with_get(Ok(None)),
+        )
+        .await;
+        let (signature_hex, timestamp) = falcon.sign(account_id_hex);
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![
+                    falcon.commitment_hex.clone(),
+                    ecdsa.commitment_hex.clone(),
+                ],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state: serde_json::json!({}),
+            credential: Credentials::signature(falcon.pubkey_hex.clone(), signature_hex, timestamp),
+        };
+        match configure_account(&state, params).await {
+            Err(GuardianError::InvalidInput(message)) => {
+                assert!(
+                    message.contains("cosigner schemes do not match"),
+                    "{message}"
+                );
+                assert!(
+                    message.contains(&format!("{}:ecdsa", ecdsa.commitment_hex)),
+                    "{message}"
+                );
+            }
+            other => panic!("expected InvalidInput, got {other:?}"),
+        }
+        assert!(observed_storage.get_submit_state_calls().is_empty());
     }
 
     #[tokio::test]

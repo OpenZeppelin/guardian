@@ -2493,6 +2493,7 @@ mod tests {
             &self,
             _state_json: &serde_json::Value,
             _expected_guardian_commitment: &str,
+            _expected_guardian_scheme: guardian_shared::SignatureScheme,
         ) -> std::result::Result<(), String> {
             unreachable!()
         }
@@ -5639,7 +5640,10 @@ mod tests {
                 state_json: serde_json::json!({"new": "state"}),
                 commitment: "new_commitment".to_string(),
                 nonce: None,
-                cosigner_commitments: vec!["0xnew_commitment".to_string()],
+                cosigners: vec![crate::metadata::auth::ChainCosigner {
+                    commitment: "0xnew_commitment".to_string(),
+                    scheme: None,
+                }],
                 guardian_commitment: None,
             }))
             .with_verify_commitment(Ok(StateVerification::Match));

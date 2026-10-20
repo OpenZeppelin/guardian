@@ -2,7 +2,7 @@ pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
-    MidenAccountInspector, guardian_public_key_slot_name,
+    MidenAccountInspector, guardian_public_key_slot_name, guardian_scheme_slot_name,
 };
 use crate::network::{
     AppliedState, MidenRpcSettings, NetworkClient, NetworkType, OnChainGuardianBinding,
@@ -10,7 +10,7 @@ use crate::network::{
 };
 use crate::state_object::StateHead;
 use async_trait::async_trait;
-use guardian_shared::{FromJson, ToJson};
+use guardian_shared::{FromJson, SignatureScheme, ToJson};
 use std::collections::BTreeMap;
 
 use miden_protocol::Word;
@@ -384,7 +384,7 @@ impl MidenNetworkClient {
         Ok(AppliedState {
             commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
             nonce: Some(account.nonce().as_canonical_u64()),
-            cosigner_commitments: inspector.extract_slot_1_pubkeys(),
+            cosigners: inspector.extract_chain_cosigners(),
             guardian_commitment: inspector.extract_guardian_public_key(),
             state_json: account.to_json(),
         })
@@ -650,6 +650,7 @@ impl NetworkClient for MidenNetworkClient {
         &self,
         state_json: &serde_json::Value,
         expected_guardian_commitment: &str,
+        expected_guardian_scheme: SignatureScheme,
     ) -> Result<(), String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
@@ -659,11 +660,24 @@ impl NetworkClient for MidenNetworkClient {
             .extract_guardian_public_key()
             .ok_or_else(|| format!("Missing required slot '{guardian_slot}'"))?;
 
-        if actual_guardian_commitment == expected_guardian_commitment {
+        if actual_guardian_commitment != expected_guardian_commitment {
+            return Err(format!(
+                "Slot '{guardian_slot}' mismatch: expected {expected_guardian_commitment}, got {actual_guardian_commitment}"
+            ));
+        }
+
+        // The account verifies this server's acknowledgements under the
+        // scheme it stores for the GUARDIAN, so a key bound under another
+        // scheme would fail every transaction on chain.
+        let scheme_slot = guardian_scheme_slot_name();
+        let actual_guardian_scheme = inspector
+            .extract_guardian_scheme()
+            .ok_or_else(|| format!("Missing or unsupported entry in slot '{scheme_slot}'"))?;
+        if actual_guardian_scheme == expected_guardian_scheme {
             Ok(())
         } else {
             Err(format!(
-                "Slot '{guardian_slot}' mismatch: expected {expected_guardian_commitment}, got {actual_guardian_commitment}"
+                "Slot '{scheme_slot}' mismatch: expected {expected_guardian_scheme}, got {actual_guardian_scheme}"
             ))
         }
     }
@@ -823,11 +837,12 @@ impl NetworkClient for MidenNetworkClient {
         let inspector = MidenAccountInspector::new(&account);
         // Sorted, so that two bindings compare as sets: a membership change
         // re-packs the signer map's indices, and only who may sign matters.
-        let mut signers = inspector.extract_slot_1_pubkeys();
-        signers.sort_unstable();
+        let mut signers = inspector.extract_chain_cosigners();
+        signers.sort_unstable_by(|a, b| a.commitment.cmp(&b.commitment));
         Ok(Some(crate::network::AuthBinding {
             signers,
             guardian: inspector.extract_guardian_public_key(),
+            guardian_scheme: inspector.extract_guardian_scheme(),
         }))
     }
 
@@ -839,12 +854,12 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
 
-        let commitments = inspector.extract_slot_1_pubkeys();
+        let cosigners = inspector.extract_chain_cosigners();
 
-        if commitments.is_empty() {
+        if cosigners.is_empty() {
             Ok(None)
         } else {
-            Ok(Some(current_auth.with_updated_commitments(commitments)))
+            Ok(Some(current_auth.with_chain_cosigners(cosigners)))
         }
     }
 }
@@ -1774,12 +1789,138 @@ mod tests {
             .extract_guardian_public_key()
             .expect("Fixture must contain OpenZeppelin GUARDIAN public key slot");
 
-        let result =
-            client.validate_guardian_commitment(&account_json, &expected_guardian_commitment);
+        assert_eq!(
+            inspector.extract_guardian_scheme(),
+            Some(SignatureScheme::Falcon),
+            "the fixture account's GUARDIAN is Falcon"
+        );
+        let result = client.validate_guardian_commitment(
+            &account_json,
+            &expected_guardian_commitment,
+            SignatureScheme::Falcon,
+        );
         assert!(
             result.is_ok(),
             "Expected matching GUARDIAN commitment to pass"
         );
+    }
+
+    /// A mixed account: Falcon signer, ECDSA signer, ECDSA GUARDIAN.
+    fn mixed_account_json() -> (serde_json::Value, String, String, String) {
+        use crate::testing::helpers::build_guarded_multisig_account;
+        let commitment = |value: u32| Word::from([value, 1, 2, 3]);
+        let hex = |value: u32| format!("0x{}", hex::encode(commitment(value).to_bytes()));
+        let account = build_guarded_multisig_account(
+            [6u8; 32],
+            2,
+            &[
+                (commitment(21), SignatureScheme::Falcon),
+                (commitment(22), SignatureScheme::Ecdsa),
+            ],
+            (commitment(29), SignatureScheme::Ecdsa),
+        );
+        (account.to_json(), hex(21), hex(22), hex(29))
+    }
+
+    #[tokio::test]
+    async fn should_update_auth_promotes_a_single_scheme_auth_of_a_mixed_state() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let (state_json, falcon, ecdsa, _) = mixed_account_json();
+        let current = Auth::MidenEcdsa {
+            cosigner_commitments: vec![falcon.clone(), ecdsa.clone()],
+        };
+        let expected = Auth::Miden {
+            cosigners: vec![
+                crate::metadata::auth::MidenCosigner {
+                    commitment: falcon,
+                    scheme: SignatureScheme::Falcon,
+                },
+                crate::metadata::auth::MidenCosigner {
+                    commitment: ecdsa,
+                    scheme: SignatureScheme::Ecdsa,
+                },
+            ],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+        assert_eq!(
+            client
+                .should_update_auth(&state_json, &current)
+                .await
+                .unwrap(),
+            Some(expected.clone())
+        );
+        // A matching per-signer declaration is reproduced exactly.
+        assert_eq!(
+            client
+                .should_update_auth(&state_json, &expected)
+                .await
+                .unwrap(),
+            Some(expected)
+        );
+    }
+
+    #[tokio::test]
+    async fn auth_binding_carries_signer_and_guardian_schemes() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let (state_json, falcon, ecdsa, guardian) = mixed_account_json();
+        let binding = client
+            .account_auth_binding(&state_json)
+            .unwrap()
+            .expect("Miden states have a binding");
+        let mut expected = vec![
+            crate::metadata::auth::ChainCosigner {
+                commitment: falcon,
+                scheme: Some(SignatureScheme::Falcon),
+            },
+            crate::metadata::auth::ChainCosigner {
+                commitment: ecdsa,
+                scheme: Some(SignatureScheme::Ecdsa),
+            },
+        ];
+        expected.sort_by(|a, b| a.commitment.cmp(&b.commitment));
+        assert_eq!(binding.signers, expected);
+        assert_eq!(binding.guardian, Some(guardian));
+        assert_eq!(binding.guardian_scheme, Some(SignatureScheme::Ecdsa));
+    }
+
+    #[tokio::test]
+    async fn validate_guardian_commitment_checks_a_mixed_accounts_guardian_scheme() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let (state_json, _, _, guardian) = mixed_account_json();
+        assert!(
+            client
+                .validate_guardian_commitment(&state_json, &guardian, SignatureScheme::Ecdsa)
+                .is_ok()
+        );
+        let error = client
+            .validate_guardian_commitment(&state_json, &guardian, SignatureScheme::Falcon)
+            .unwrap_err();
+        assert!(error.contains("expected falcon, got ecdsa"), "{error}");
+    }
+
+    /// The right key stored under the wrong scheme is refused: the account
+    /// would verify this server's acknowledgements under the other scheme.
+    #[tokio::test]
+    async fn test_validate_guardian_commitment_rejects_scheme_mismatch() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+        let account =
+            Account::from_json(&account_json).expect("Failed to deserialize fixture account");
+        let expected_guardian_commitment = MidenAccountInspector::new(&account)
+            .extract_guardian_public_key()
+            .expect("fixture guardian key");
+
+        let error = client
+            .validate_guardian_commitment(
+                &account_json,
+                &expected_guardian_commitment,
+                SignatureScheme::Ecdsa,
+            )
+            .expect_err("a Falcon GUARDIAN slot must not validate as ECDSA");
+        assert!(error.contains(guardian_scheme_slot_name()), "{error}");
+        assert!(error.contains("expected ecdsa, got falcon"), "{error}");
     }
 
     #[tokio::test]
@@ -1794,6 +1935,7 @@ mod tests {
         let result = client.validate_guardian_commitment(
             &account_json,
             "0xdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+            SignatureScheme::Falcon,
         );
         assert!(
             result.is_err(),
@@ -1982,7 +2124,7 @@ mod tests {
         let current_auth = Auth::MidenFalconRpo {
             cosigner_commitments: Vec::new(),
         };
-        assert!(!applied.cosigner_commitments.is_empty());
+        assert!(!applied.cosigners.is_empty());
         assert_eq!(
             applied.updated_auth(&current_auth),
             client

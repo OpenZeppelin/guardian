@@ -162,7 +162,7 @@ impl MockNetworkClient {
             state_json,
             commitment,
             nonce: None,
-            cosigner_commitments: Vec::new(),
+            cosigners: Vec::new(),
             guardian_commitment: None,
         }))
     }
@@ -273,7 +273,7 @@ impl NetworkClient for MockNetworkClient {
                     state_json: serde_json::json!({}),
                     commitment: "mock_new_commitment".to_string(),
                     nonce: None,
-                    cosigner_commitments: Vec::new(),
+                    cosigners: Vec::new(),
                     guardian_commitment: None,
                 })
             })
@@ -317,6 +317,7 @@ impl NetworkClient for MockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _expected_guardian_commitment: &str,
+        _expected_guardian_scheme: guardian_shared::SignatureScheme,
     ) -> StdResult<(), String> {
         self.validate_guardian_commitment_responses
             .lock()
