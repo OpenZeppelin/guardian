@@ -70,7 +70,7 @@ crates/server/src/jobs/canonicalization/processor.rs finalize_abandoned_candidat
 crates/server/src/jobs/canonicalization/processor.rs reset_divergence_streak df78c5c7a495703b
 crates/server/src/jobs/canonicalization/processor.rs handle_diverged_candidate 999b92210bb640b0
 crates/server/src/jobs/canonicalization/processor.rs handle_unverified_candidate ff448e1294bc8fed
-crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 521fdf7aa8b2cd74
+crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 6235a1975d55b66a
 crates/server/src/jobs/canonicalization/reconciliation.rs abandoned_cutoff 70d1a8d70619e321
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path 7a132b53248e9701
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance 29b83278a35d3d6f
