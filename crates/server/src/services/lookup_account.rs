@@ -19,6 +19,7 @@ use crate::metadata::auth::lookup::{
 use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat};
 use crate::state::AppState;
 use guardian_shared::hex::FromHex;
+use guardian_shared::lookup_auth_message::LookupAuthMessage;
 use miden_protocol::Word;
 
 /// Length of a Miden public-key commitment in hex characters (32 bytes ×
@@ -95,6 +96,12 @@ pub async fn lookup_account(
             request_timestamp,
             key_commitment_word,
         ),
+        RequestAuthFormat::Session => {
+            let message = LookupAuthMessage::new(request_timestamp, key_commitment_word).to_word();
+            return Err(
+                super::reject_session_credentials(state, &params.credentials, message).await,
+            );
+        }
     }
     .map_err(GuardianError::AuthenticationFailed)?;
 
@@ -121,10 +128,37 @@ pub async fn lookup_account(
                 "Failed to look up accounts by cosigner commitment: {e}"
             ))
         })?;
+    let accounts = configured_accounts(state, accounts).await?;
     tracing::Span::current().record("match_count", accounts.len());
     tracing::debug!("Lookup completed");
 
     Ok(LookupAccountResult { accounts })
+}
+
+/// Drops accounts whose metadata exists without a stored state: a first
+/// configuration that claimed the account and failed before writing its
+/// state. Listing one would hand the caller an account whose state reads
+/// 404, which fails recovery of every account behind the key.
+async fn configured_accounts(state: &AppState, accounts: Vec<String>) -> Result<Vec<String>> {
+    let mut configured = Vec::with_capacity(accounts.len());
+    for account_id in accounts {
+        match state.storage.pull_state_commitment(&account_id).await {
+            Ok(_) => configured.push(account_id),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {
+                tracing::debug!(
+                    account_id = %account_id,
+                    "Lookup skipped an account whose first configuration has not finished"
+                );
+            }
+            Err(e) => {
+                tracing::error!(account_id = %account_id, error = %e, "Failed to read the stored state during lookup");
+                return Err(GuardianError::StorageError(format!(
+                    "Failed to read the stored state of {account_id}: {e}"
+                )));
+            }
+        }
+    }
+    Ok(configured)
 }
 
 /// Normalize a `0x`-prefixed (or unprefixed) hex commitment to the canonical

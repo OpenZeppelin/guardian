@@ -18,6 +18,8 @@ pub mod felt;
 pub mod hex;
 pub mod lookup_auth_message;
 pub mod retry;
+pub mod session_grant;
+pub mod session_key;
 
 use crate::hex::FromHex;
 

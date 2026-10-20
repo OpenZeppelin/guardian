@@ -1,0 +1,16 @@
+# Rust functions modeled in model/AuthReplay.tla: "<path> <fn name>".
+crates/server/src/metadata/postgres.rs update_last_auth_timestamp_cas
+crates/server/src/metadata/postgres.rs purge_session_floors
+crates/server/src/metadata/filesystem.rs update_last_auth_timestamp_cas
+crates/server/src/metadata/filesystem.rs purge_session_floors
+crates/server/src/services/mod.rs resolve_account_with
+crates/server/src/services/mod.rs verify_session_request
+crates/server/src/services/mod.rs validate_request_timestamp
+crates/server/src/services/mod.rs consume_auth_timestamp
+crates/server/src/services/configure_account.rs configure_account
+crates/server/src/session.rs stale_floor_cutoff_ms
+crates/server/src/session.rs replay_floor_key
+crates/server/src/session.rs find
+crates/server/src/builder/handle.rs start_session_sweep_worker
+crates/server/src/metadata/postgres.rs create
+crates/server/src/metadata/filesystem.rs create

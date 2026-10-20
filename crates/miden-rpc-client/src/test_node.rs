@@ -169,6 +169,14 @@ impl rpc::node_service_server::NodeService for ScriptedNode {
         Err(tonic::Status::unimplemented("scripted node"))
     }
 
+    async fn is_invitation_code_valid(
+        &self,
+        _: tonic::Request<rpc::IsInvitationCodeValidRequest>,
+    ) -> std::result::Result<tonic::Response<rpc::IsInvitationCodeValidResponse>, tonic::Status>
+    {
+        Err(tonic::Status::unimplemented("scripted node"))
+    }
+
     async fn get_block_by_number(
         &self,
         _: tonic::Request<rpc::GetBlockByNumberRequest>,

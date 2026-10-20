@@ -16,6 +16,7 @@ import {
   type RecoveredAccount,
   type RecoverNotesOptions,
   type SignatureScheme,
+  type Signer,
 } from '@openzeppelin/miden-multisig-client';
 import {
   classifyWalletError,
@@ -42,6 +43,7 @@ import {
   loadMultisigAccount,
   normalizeCommitment,
   normalizeError,
+  resolveMidenRpcUrl,
   registerOnGuardian as registerOnlineAccount,
   registerOnGuardianWithState,
   resolveLocalSigner,
@@ -56,6 +58,7 @@ import {
   syncAll,
   useMidenWallet,
   verifyStateCommitment,
+  emptyWalletSignatureCounts,
   type BrowserSessionSnapshot,
   type CustomProposalRecipe,
   type ExternalWalletState,
@@ -63,6 +66,7 @@ import {
   type SignerInfo,
   type SmokeBootStatus,
   type SmokeEventEntry,
+  type WalletSignatureCounts,
   type WalletSource,
 } from '@multisig-browser/index';
 import {
@@ -174,6 +178,13 @@ export interface SmokeApi {
     proposals: Array<ReturnType<typeof serializeProposal>>;
   }>;
   recoverByKey(): Promise<RecoveredAccount[]>;
+  startGuardianSession(input?: { ttlSeconds?: number }): Promise<{
+    publicKey: string;
+    expiresAt: number;
+  }>;
+  endGuardianSession(): Promise<{ revoked: boolean }>;
+  /** Wallet-signed: ends every session of the current signer on the Guardian. */
+  revokeAllGuardianSessions(): Promise<{ revoked: number }>;
   recoverNotes(input?: RecoverNotesOptions): Promise<{
     report: NoteRecoveryReport;
     status: BrowserSessionSnapshot;
@@ -198,6 +209,55 @@ interface SnapshotState {
   consumableNotes: ConsumableNote[];
   lastError: string | null;
   busyAction: string | null;
+  walletSignatures: WalletSignatureCounts;
+  guardianSession: { publicKey: string; expiresAt: number } | null;
+}
+
+const WALLET_SIGNATURE_KINDS: Partial<Record<string, keyof WalletSignatureCounts>> = {
+  signRequest: 'request',
+  signAccountIdWithTimestamp: 'request',
+  signLookupMessage: 'lookup',
+  signSessionGrant: 'grant',
+  signSessionRevokeAll: 'revokeAll',
+  signCommitment: 'approval',
+};
+
+/**
+ * The harness is driven by scripts that requested the session, so it approves
+ * the grant; a real app shows `describeSessionGrant(grant)` to the user.
+ */
+function approveGrantForScript(): boolean {
+  return true;
+}
+
+/** `resolved` with every signature its signer produces counted by kind. */
+function withSignatureCount(
+  resolved: ResolvedSigner,
+  count: (kind: keyof WalletSignatureCounts) => void,
+): ResolvedSigner {
+  return { ...resolved, signerInstance: countingSigner(resolved.signerInstance, count) };
+}
+
+/** `signer` with every signature it produces counted by kind. */
+function countingSigner(
+  signer: Signer,
+  count: (kind: keyof WalletSignatureCounts) => void,
+): Signer {
+  return new Proxy(signer, {
+    get(target, property) {
+      const value: unknown = Reflect.get(target, property, target);
+      if (typeof value !== 'function') {
+        return value;
+      }
+      const kind = typeof property === 'string' ? WALLET_SIGNATURE_KINDS[property] : undefined;
+      return (...args: unknown[]) => {
+        if (kind) {
+          count(kind);
+        }
+        return value.apply(target, args);
+      };
+    },
+  });
 }
 
 const defaultSessionConfig: SessionConfig = {
@@ -351,6 +411,8 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
     proposals: state.proposals.map(serializeProposal),
     consumableNotes: state.consumableNotes.map(serializeConsumableNote),
     lastError: state.lastError,
+    walletSignatures: { ...state.walletSignatures },
+    guardianSession: state.guardianSession,
     busyAction: state.busyAction,
   };
 }
@@ -374,7 +436,7 @@ function requireWalletSource(source: WalletSource | undefined): WalletSource {
 function normalizeSessionInput(input: InitSessionInput): SessionConfig {
   return {
     guardianEndpoint: input.guardianEndpoint?.trim() || DEFAULT_GUARDIAN_ENDPOINT,
-    midenRpcEndpoint: input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL,
+    midenRpcEndpoint: resolveMidenRpcUrl(input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL),
     signerSource: requireWalletSource(input.signerSource),
     signatureScheme: input.signatureScheme ?? 'falcon',
     browserLabel: input.browserLabel?.trim() ?? DEFAULT_BROWSER_LABEL,
@@ -451,6 +513,13 @@ export function useSmokeHarness(): {
     useStateRef<ConsumableNote[]>([]);
   const [busyAction, busyActionRef, setBusyAction] = useStateRef<string | null>(null);
   const [lastError, lastErrorRef, setLastError] = useStateRef<string | null>(null);
+  const [, walletSignaturesRef, setWalletSignatures] = useStateRef<WalletSignatureCounts>(
+    emptyWalletSignatureCounts(),
+  );
+  const [, guardianSessionRef, setGuardianSession] = useStateRef<{
+    publicKey: string;
+    expiresAt: number;
+  } | null>(null);
   const [events, setEvents] = useState<SmokeEventEntry[]>([]);
   const eventIdRef = useRef(0);
   const eventsRef = useRef<SmokeEventEntry[]>([]);
@@ -517,6 +586,8 @@ export function useSmokeHarness(): {
         consumableNotes: consumableNotesRef.current,
         lastError: lastErrorRef.current,
         busyAction: busyActionRef.current,
+        walletSignatures: walletSignaturesRef.current,
+        guardianSession: guardianSessionRef.current,
         ...overrides,
       }),
     [
@@ -525,6 +596,8 @@ export function useSmokeHarness(): {
       bootStatusRef,
       consumableNotesRef,
       detectedConfigRef,
+      guardianSessionRef,
+      walletSignaturesRef,
       guardianPubkeyRef,
       guardianStateRef,
       lastErrorRef,
@@ -552,8 +625,10 @@ export function useSmokeHarness(): {
     setMultisigClient(null);
     setLocalSigners(null);
     setGuardianPubkey(null);
+    setWalletSignatures(emptyWalletSignatureCounts());
+    setGuardianSession(null);
     clearLoadedAccountState();
-  }, [clearLoadedAccountState]);
+  }, [clearLoadedAccountState, setGuardianSession, setWalletSignatures]);
 
   const requireSessionReady = useCallback(() => {
     if (bootStatusRef.current === 'initializing') {
@@ -574,6 +649,13 @@ export function useSmokeHarness(): {
     }
   }, [bootErrorRef, bootStatusRef, guardianPubkeyRef, localSignersRef, multisigClientRef, webClientRef]);
 
+  const countWalletSignature = useCallback(
+    (kind: keyof WalletSignatureCounts) => {
+      setWalletSignatures((counts) => ({ ...counts, [kind]: counts[kind] + 1 }));
+    },
+    [setWalletSignatures],
+  );
+
   const resolveSignerContext = useCallback(
     (
       source: WalletSource = sessionConfigRef.current.signerSource,
@@ -587,25 +669,32 @@ export function useSmokeHarness(): {
             throw new Error('Miden Wallet is not connected');
           }
 
-          return resolveMidenWalletSigner({
-            wallet: { signBytes },
-            commitment: currentMidenWalletSession.commitment,
-            publicKey: currentMidenWalletSession.scheme
-              ? currentMidenWalletSession.publicKey
-              : undefined,
-            scheme: currentMidenWalletSession.scheme ?? signatureScheme,
-          });
+          return withSignatureCount(
+            resolveMidenWalletSigner({
+              wallet: { signBytes },
+              commitment: currentMidenWalletSession.commitment,
+              publicKey: currentMidenWalletSession.scheme
+                ? currentMidenWalletSession.publicKey
+                : undefined,
+              scheme: currentMidenWalletSession.scheme ?? signatureScheme,
+            }),
+            countWalletSignature,
+          );
         }
         case 'local': {
           if (!localSignersRef.current) {
             throw new Error('Local signers are not initialized');
           }
 
-          return resolveLocalSigner(localSignersRef.current, signatureScheme);
+          return withSignatureCount(
+            resolveLocalSigner(localSignersRef.current, signatureScheme),
+            countWalletSignature,
+          );
         }
       }
     },
     [
+      countWalletSignature,
       localSignersRef,
       midenWalletSessionRef,
       sessionConfigRef,
@@ -1485,6 +1574,52 @@ export function useSmokeHarness(): {
     [multisigClientRef, resolveSignerContext, withCommand],
   );
 
+  const startGuardianSession = useCallback(
+    async (input: { ttlSeconds?: number } = {}): Promise<{ publicKey: string; expiresAt: number }> =>
+      withCommand('startGuardianSession', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        const signerContext = resolveSignerContext();
+        const session = await currentMultisigClient.startSession(signerContext.signerInstance, {
+          ...input,
+          confirm: approveGrantForScript,
+          onEnded: (reason, ended) => {
+            appendEvent(`guardianSessionEnded:${reason}`, 'succeeded', null, 0);
+            setGuardianSession((current) =>
+              current?.publicKey === ended.publicKey ? null : current,
+            );
+          },
+        });
+        const started = { publicKey: session.publicKey, expiresAt: session.expiresAt };
+        setGuardianSession(started);
+        return started;
+      }),
+    [appendEvent, multisigClientRef, resolveSignerContext, setGuardianSession, withCommand],
+  );
+
+  const endGuardianSession = useCallback(
+    async (): Promise<{ revoked: boolean }> =>
+      withCommand('endGuardianSession', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        return { revoked: await currentMultisigClient.endSession() };
+      }),
+    [multisigClientRef, withCommand],
+  );
+
+  const revokeAllGuardianSessions = useCallback(
+    async (): Promise<{ revoked: number }> =>
+      withCommand('revokeAllGuardianSessions', async () => {
+        requireSessionReady();
+        const currentMultisigClient = multisigClientRef.current as MultisigClient;
+        const signerContext = resolveSignerContext();
+        return {
+          revoked: await currentMultisigClient.revokeAllSessions(signerContext.signerInstance),
+        };
+      }),
+    [multisigClientRef, resolveSignerContext, withCommand],
+  );
+
   const recoverNotes = useCallback(
     async (
       input: RecoverNotesOptions = {},
@@ -1570,6 +1705,9 @@ export function useSmokeHarness(): {
     signProposalOffline,
     importProposal,
     recoverByKey,
+    startGuardianSession,
+    endGuardianSession,
+    revokeAllGuardianSessions,
     recoverNotes,
     clearLocalState,
     events: listEvents,

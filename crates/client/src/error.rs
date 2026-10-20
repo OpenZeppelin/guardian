@@ -9,6 +9,11 @@ pub type ClientResult<T> = Result<T, ClientError>;
 /// (`authentication_replay`, issue #367): the request was correctly signed
 /// but its timestamp did not win the per-signer monotonicity check.
 pub const AUTHENTICATION_REPLAY_CODE: &str = "authentication_replay";
+/// The delegated signer's session reached its expiry.
+pub const SESSION_EXPIRED_CODE: &str = "session_expired";
+/// The delegated signer's session was ended by logout or revoke-all.
+pub const SESSION_REVOKED_CODE: &str = "session_revoked";
+const AUTHENTICATION_FAILED_CODE: &str = "authentication_failed";
 
 /// Errors that can occur when using the GUARDIAN client.
 #[derive(Debug, Error)]
@@ -102,6 +107,23 @@ impl ClientError {
     /// other authentication failure is terminal and must not be retried.
     pub fn is_replay_rejection(&self) -> bool {
         self.guardian_code().as_deref() == Some(AUTHENTICATION_REPLAY_CODE)
+    }
+
+    /// Whether Guardian reported the delegated signer's session as expired
+    /// ([`SESSION_EXPIRED_CODE`]) or revoked ([`SESSION_REVOKED_CODE`]).
+    pub fn is_ended_session(&self) -> bool {
+        matches!(
+            self.guardian_code().as_deref(),
+            Some(SESSION_EXPIRED_CODE | SESSION_REVOKED_CODE)
+        )
+    }
+
+    /// Whether a session-signed request was refused in a way that leaves the
+    /// session unusable: ended, or no longer recognised (unknown key after a
+    /// restart, rotated Guardian key or network).
+    pub(crate) fn is_rejected_session(&self) -> bool {
+        self.is_ended_session()
+            || self.guardian_code().as_deref() == Some(AUTHENTICATION_FAILED_CODE)
     }
 
     /// Whether the server marked this error safe to retry: `meta.retryable`

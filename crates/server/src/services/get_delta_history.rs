@@ -19,7 +19,7 @@ use crate::delta_summary::{DecodeWarning, DecodedNote, decode_full, decode_trans
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::dashboard_pagination::PagedResult;
-use crate::services::resolve_account;
+use crate::services::resolve_account_allowing_session;
 use crate::state::AppState;
 use crate::storage::AccountDeltaCursor;
 
@@ -113,7 +113,7 @@ impl HistoryEntry {
 ///
 /// Errors:
 ///   - [`GuardianError::AccountNotFound`] / `AuthenticationFailed` /
-///     `UnsupportedForNetwork` from [`resolve_account`].
+///     `UnsupportedForNetwork` from [`resolve_account_allowing_session`].
 ///   - [`GuardianError::InvalidCursor`] when the cursor is not an
 ///     `AccountDeltaHistory` cursor (parse failures surface at the
 ///     transport layer).
@@ -142,7 +142,8 @@ pub async fn get_delta_history(
         ));
     }
 
-    let resolved = resolve_account(state, &params.account_id, &params.credentials).await?;
+    let resolved =
+        resolve_account_allowing_session(state, &params.account_id, &params.credentials).await?;
 
     // Fetch one extra row so `next_cursor` is emitted only when more
     // rows actually exist.
@@ -256,6 +257,7 @@ mod tests {
             .await
             .expect("ack");
         let state = AppState {
+            miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(MockMetadataStore::new()),
             network_client: Arc::new(MockNetworkClient::new()),

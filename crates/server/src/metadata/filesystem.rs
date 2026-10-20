@@ -167,8 +167,9 @@ fn signer_scoped_auth_state_key<'a>(
     });
     (accounts.contains_key(account_id)
         || signer == LEGACY_ACCOUNT_AUTH_FLOOR
-        || canonical_signer_shape)
-        .then_some((account_id, signer))
+        || canonical_signer_shape
+        || crate::session::is_replay_floor_key(signer))
+    .then_some((account_id, signer))
 }
 
 /// Replay state was account-scoped before issue #367. An account-scoped entry
@@ -177,8 +178,11 @@ fn signer_scoped_auth_state_key<'a>(
 /// upgrade instead of re-accepting requests seen just before it), and the
 /// account-scoped entry is dropped. A legacy account-level floor is retained so
 /// a signer absent during migration cannot regain a replay window when added
-/// later. Entries whose accounts are missing abort startup: they indicate an
-/// incomplete restore, and dropping them would silently reset replay state.
+/// later. A delegated signer's floor never seeds that legacy floor: a stolen
+/// session stamping ahead in the skew window would then block every
+/// cosigner's wallet requests after a restart. Entries whose accounts are
+/// missing abort startup: they indicate an incomplete restore, and dropping
+/// them would silently reset replay state.
 fn expand_account_scoped_auth_state(
     accounts: &HashMap<String, AccountMetadata>,
     state: HashMap<String, i64>,
@@ -196,7 +200,7 @@ fn expand_account_scoped_auth_state(
                      accounts.json and auth_state.json from the same backup"
                 ));
             }
-            if signer != LEGACY_ACCOUNT_AUTH_FLOOR {
+            if signer != LEGACY_ACCOUNT_AUTH_FLOOR && !crate::session::is_replay_floor_key(signer) {
                 let floor = signer_floors
                     .entry(account_id.to_string())
                     .or_insert(timestamp);
@@ -340,6 +344,20 @@ impl MetadataStore for FilesystemMetadataStore {
         self.persist(&cache).await
     }
 
+    async fn create(&self, metadata: AccountMetadata) -> Result<bool, String> {
+        let mut cache = self.cache.write().await;
+        if cache.contains_key(&metadata.account_id) {
+            return Ok(false);
+        }
+        let account_id = metadata.account_id.clone();
+        cache.insert(account_id.clone(), metadata);
+        if let Err(persist_error) = self.persist(&cache).await {
+            cache.remove(&account_id);
+            return Err(persist_error);
+        }
+        Ok(true)
+    }
+
     async fn list(&self) -> Result<Vec<String>, String> {
         let cache = self.cache.read().await;
         Ok(cache.keys().cloned().collect())
@@ -477,6 +495,32 @@ impl MetadataStore for FilesystemMetadataStore {
             return Err(persist_error);
         }
         Ok(true)
+    }
+
+    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
+        let mut auth_state = self.auth_state.write().await;
+        let stale: Vec<String> = auth_state
+            .iter()
+            .filter(|(key, timestamp)| {
+                **timestamp < before_ms
+                    && key
+                        .rsplit_once(AUTH_STATE_KEY_SEPARATOR)
+                        .is_some_and(|(_, signer)| crate::session::is_replay_floor_key(signer))
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        if stale.is_empty() {
+            return Ok(0);
+        }
+        let removed: Vec<(String, i64)> = stale
+            .into_iter()
+            .filter_map(|key| auth_state.remove_entry(&key))
+            .collect();
+        if let Err(persist_error) = self.persist_auth_state(&auth_state).await {
+            auth_state.extend(removed);
+            return Err(persist_error);
+        }
+        Ok(removed.len() as u64)
     }
 
     /// First-writer-wins pause: re-pause leaves the original
@@ -1243,6 +1287,95 @@ mod auth_state_tests {
         );
     }
 
+    fn session_floor() -> String {
+        let key = guardian_shared::session_key::SessionKey::from_bytes(&[7; 32]).unwrap();
+        crate::session::replay_floor_key(&key.public_key())
+    }
+
+    #[tokio::test]
+    async fn session_replay_floors_survive_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = store_with_account(&dir).await;
+            assert!(
+                store
+                    .update_last_auth_timestamp_cas("acct", &session_floor(), 100)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .expect("a session floor must not break startup");
+        assert!(
+            !store
+                .update_last_auth_timestamp_cas("acct", &session_floor(), 100)
+                .await
+                .unwrap(),
+            "the session floor is kept across the restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_floors_do_not_seed_the_reserved_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let _store = store_with_account(&dir).await;
+        }
+        std::fs::write(
+            auth_state_path(&dir),
+            serde_json::to_string(&HashMap::from([
+                (auth_state_key("acct", SIGNER_A), 100_i64),
+                (auth_state_key("acct", &session_floor()), 999_999_i64),
+            ]))
+            .unwrap(),
+        )
+        .unwrap();
+        // Rerun the one-time reserved-floor repair on the next start.
+        std::fs::remove_file(auth_floor_migration_path(&dir)).unwrap();
+
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            persisted_auth_state(&dir).get(&auth_state_key("acct", LEGACY_ACCOUNT_AUTH_FLOOR)),
+            Some(&100),
+            "a session stamping ahead must not raise every cosigner's floor"
+        );
+        assert!(
+            store
+                .update_last_auth_timestamp_cas("acct", "0xdddd", 200)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_removes_only_stale_session_floors() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+        for (signer, timestamp) in [(SIGNER_A, 100), (session_floor().as_str(), 100)] {
+            assert!(
+                store
+                    .update_last_auth_timestamp_cas("acct", signer, timestamp)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        assert_eq!(
+            store.purge_session_floors(100).await.unwrap(),
+            0,
+            "not stale yet"
+        );
+        assert_eq!(store.purge_session_floors(101).await.unwrap(), 1);
+        let persisted = persisted_auth_state(&dir);
+        assert!(!persisted.contains_key(&auth_state_key("acct", &session_floor())));
+        assert_eq!(persisted.get(&auth_state_key("acct", SIGNER_A)), Some(&100));
+    }
+
     #[tokio::test]
     async fn evm_account_scoped_auth_state_with_colons_expands_on_startup() {
         let dir = tempfile::tempdir().unwrap();
@@ -1557,6 +1690,54 @@ mod auth_state_tests {
             }
         }
         assert_eq!(accepted, 1, "exactly one concurrent request may win");
+    }
+
+    #[tokio::test]
+    async fn create_inserts_only_when_the_account_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(store.create(sample_metadata("acct")).await.unwrap());
+        let mut later = sample_metadata("acct");
+        later.auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![SIGNER_B.into()],
+        };
+        assert!(
+            !store.create(later).await.unwrap(),
+            "a second create for the same account must not claim it"
+        );
+        assert_eq!(
+            store.get("acct").await.unwrap().unwrap().auth,
+            sample_metadata("acct").auth,
+            "the losing create must leave the first one's row untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_that_fails_to_persist_leaves_no_account_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_file(accounts_path(&dir));
+        std::fs::create_dir(accounts_path(&dir)).unwrap();
+        store
+            .create(sample_metadata("acct"))
+            .await
+            .expect_err("persisting over a directory must fail");
+        assert!(
+            store.get("acct").await.unwrap().is_none(),
+            "a create that was never persisted must not leave the account in memory"
+        );
+
+        std::fs::remove_dir(accounts_path(&dir)).unwrap();
+        assert!(
+            store.create(sample_metadata("acct")).await.unwrap(),
+            "the retry creates the account"
+        );
     }
 
     #[tokio::test]

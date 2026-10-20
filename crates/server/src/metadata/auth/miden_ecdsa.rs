@@ -1,6 +1,7 @@
-use guardian_shared::auth_request_eip712::request_digest;
+use guardian_shared::auth_request_eip712::{request_digest, session_digest};
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::session_grant::SessionGrant;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{PublicKey, Signature};
 use miden_protocol::utils::serde::{Deserializable, Serializable};
@@ -65,6 +66,45 @@ pub fn verify_eip712_request_signature(
     Ok(commitment)
 }
 
+/// Verify a wallet's ECDSA signature over a session grant and return the
+/// signer commitment, using the same key rules as request auth: EIP-712
+/// (`GuardianSession` typed data) always verifies against the supplied public
+/// key; raw (`to_word()`) recovers the key from the signature and falls back
+/// to the supplied key when recovery yields another key.
+pub fn verify_session_grant(
+    grant: &SessionGrant,
+    signature: &str,
+    pubkey_hex: Option<&str>,
+    eip712: bool,
+) -> Result<String, String> {
+    let signature = parse_signature(signature)?;
+    let supplied_key = || {
+        pubkey_hex
+            .ok_or_else(|| "ECDSA session grant requires the wallet public key".to_string())
+            .and_then(parse_public_key)
+    };
+    if eip712 {
+        let public_key = supplied_key()?;
+        if !public_key.verify_prehash(session_digest(grant), &signature) {
+            return Err("Session grant signature verification failed".to_string());
+        }
+        return Ok(commitment_hex(&public_key));
+    }
+
+    let message = grant.to_word();
+    if let Ok(recovered) = PublicKey::recover_from(message, &signature)
+        && recovered.to_commitment() == grant.signer_commitment()
+        && recovered.verify(message, &signature)
+    {
+        return Ok(commitment_hex(&recovered));
+    }
+    let public_key = supplied_key()?;
+    if !public_key.verify(message, &signature) {
+        return Err("Session grant signature verification failed".to_string());
+    }
+    Ok(commitment_hex(&public_key))
+}
+
 /// Convert an account ID and timestamp to a message digest (Word)
 ///
 /// Uses the same digest construction as Falcon to ensure consistency across schemes.
@@ -76,7 +116,7 @@ fn account_id_timestamp_to_digest(
     AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, request_payload.clone())
         .map(|request| request.to_word())
         .map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id_hex,
                 error = %e,
                 "Invalid account ID hex in ECDSA account_id_timestamp_to_digest"
@@ -89,15 +129,14 @@ fn account_id_timestamp_to_digest(
 fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     let hex_str = hex_str.trim_start_matches("0x");
     let bytes = hex::decode(hex_str).map_err(|e| {
-        tracing::error!(
-            signature = %hex_str,
+        tracing::warn!(
             error = %e,
             "Invalid ECDSA signature hex"
         );
         format!("Invalid ECDSA signature hex: {e}")
     })?;
     Signature::read_from_bytes(&bytes).map_err(|e| {
-        tracing::error!(
+        tracing::warn!(
             error = %e,
             "Failed to deserialize ECDSA signature"
         );
@@ -108,7 +147,7 @@ fn parse_signature(hex_str: &str) -> Result<Signature, String> {
 fn parse_public_key(hex_str: &str) -> Result<PublicKey, String> {
     let hex_str = hex_str.trim_start_matches("0x");
     let bytes = hex::decode(hex_str).map_err(|e| {
-        tracing::error!(
+        tracing::warn!(
             public_key = %hex_str,
             error = %e,
             "Invalid ECDSA public key hex"
@@ -116,7 +155,7 @@ fn parse_public_key(hex_str: &str) -> Result<PublicKey, String> {
         format!("Invalid ECDSA public key hex: {e}")
     })?;
     PublicKey::read_from_bytes(&bytes).map_err(|e| {
-        tracing::error!(
+        tracing::warn!(
             error = %e,
             "Failed to deserialize ECDSA public key"
         );
@@ -181,7 +220,7 @@ fn authorized_public_key_from_header(
     let provided_commitment = commitment_hex(&provided_key);
 
     if !authorized_commitments.contains(&provided_commitment) {
-        tracing::error!(
+        tracing::warn!(
             account_id = %account_id,
             provided_commitment = %provided_commitment,
             authorized_count = authorized_commitments.len(),
@@ -211,7 +250,7 @@ fn verify_with_public_key(
     if public_key.verify(*message, signature) {
         Ok(())
     } else {
-        tracing::error!(
+        tracing::warn!(
             account_id = %account_id,
             timestamp = %timestamp,
             sig_commitment = %commitment_hex,

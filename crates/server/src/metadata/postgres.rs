@@ -197,6 +197,47 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(())
     }
 
+    async fn create(&self, metadata: AccountMetadata) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let created_at: chrono::DateTime<chrono::Utc> = metadata
+            .created_at
+            .parse()
+            .map_err(|e| format!("Failed to parse created_at: {e}"))?;
+        let updated_at: chrono::DateTime<chrono::Utc> = metadata
+            .updated_at
+            .parse()
+            .map_err(|e| format!("Failed to parse updated_at: {e}"))?;
+        let auth_json = serde_json::to_value(&metadata.auth)
+            .map_err(|e| format!("Failed to serialize auth: {e}"))?;
+        let network_config_json = serde_json::to_value(&metadata.network_config)
+            .map_err(|e| format!("Failed to serialize network_config: {e}"))?;
+
+        let inserted = diesel::insert_into(account_metadata::table)
+            .values(&NewMetadata {
+                account_id: &metadata.account_id,
+                auth: auth_json,
+                network_config: network_config_json,
+                created_at,
+                updated_at,
+                has_pending_candidate: metadata.has_pending_candidate,
+                paused_at: metadata.paused_at,
+                paused_reason: metadata.paused_reason.clone(),
+                released_at: metadata.released_at,
+            })
+            .on_conflict(account_metadata::account_id)
+            .do_nothing()
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to create metadata: {e}"))?;
+
+        Ok(inserted == 1)
+    }
+
     async fn list(&self) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
@@ -338,6 +379,24 @@ impl MetadataStore for PostgresMetadataStore {
         .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
 
         Ok(rows_updated > 0)
+    }
+
+    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let deleted = diesel::sql_query(
+            "DELETE FROM account_auth_state \
+             WHERE signer_commitment LIKE $1 AND last_auth_timestamp < $2",
+        )
+        .bind::<diesel::sql_types::Text, _>(format!("{}%", crate::session::SESSION_FLOOR_PREFIX))
+        .bind::<diesel::sql_types::BigInt, _>(before_ms)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| format!("Failed to purge session replay floors: {e}"))?;
+        Ok(deleted as u64)
     }
 
     async fn set_has_pending_candidate(
@@ -1380,6 +1439,42 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn purge_removes_only_stale_session_floors() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xpurge{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+        let stale = crate::session::replay_floor_key(&[2; 33]);
+        let live = crate::session::replay_floor_key(&[3; 33]);
+        for (floor, timestamp) in [("0xaa", 100), (stale.as_str(), 100), (live.as_str(), 300)] {
+            assert!(
+                store
+                    .update_last_auth_timestamp_cas(&account_id, floor, timestamp)
+                    .await
+                    .unwrap()
+            );
+        }
+
+        store.purge_session_floors(200).await.unwrap();
+
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id, "0xaa").await,
+            100,
+            "wallet floors are never purged"
+        );
+        assert_eq!(stored_auth_timestamp(&store, &account_id, &live).await, 300);
+        assert!(
+            store
+                .update_last_auth_timestamp_cas(&account_id, &stale, 50)
+                .await
+                .unwrap(),
+            "the stale session floor is gone"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn cas_records_only_strictly_increasing_timestamps() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
@@ -1649,6 +1744,56 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn create_inserts_only_when_the_account_is_absent() {
+        let url = test_database_url().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xcreate{}", Utc::now().timestamp_micros());
+        let now = Utc::now().to_rfc3339();
+        let metadata = |cosigner: &str| AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![cosigner.to_string()],
+            },
+            network_config: NetworkConfig::miden_default(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+        let first = format!("0x{}", "aa".repeat(32));
+        let second = format!("0x{}", "bb".repeat(32));
+
+        assert!(store.create(metadata(&first)).await.expect("first create"));
+        assert!(
+            !store
+                .create(metadata(&second))
+                .await
+                .expect("second create"),
+            "a second create for the same account must not claim it"
+        );
+        assert_eq!(
+            store
+                .get(&account_id)
+                .await
+                .expect("read")
+                .expect("row")
+                .auth,
+            metadata(&first).auth,
+            "the losing create must leave the first one's row untouched"
+        );
+
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]

@@ -177,6 +177,16 @@ impl NetworkClient for IntegrationMockNetworkClient {
             .apply_delta(prev_state_json, delta_payload)
     }
 
+    fn verify_and_apply_delta(
+        &self,
+        prev_proof: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<crate::network::AppliedState, String> {
+        self.miden_client
+            .verify_and_apply_delta(prev_proof, prev_state_json, delta_payload)
+    }
+
     fn merge_deltas(
         &self,
         delta_payloads: Vec<serde_json::Value>,
@@ -332,6 +342,7 @@ pub async fn create_test_app_state() -> AppState {
         .expect("Failed to create signer registry");
 
     AppState {
+        miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
         storage: storage_backend,
         metadata: Arc::new(metadata),
         network_client: Arc::new(mock_client),
@@ -828,6 +839,7 @@ pub fn create_test_app_state_with_mocks(
         .expect("Failed to create signer registry");
 
     AppState {
+        miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
         storage: storage_backend,
         metadata,
         network_client,

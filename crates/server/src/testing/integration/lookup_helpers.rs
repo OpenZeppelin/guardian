@@ -7,6 +7,7 @@
 use crate::metadata::auth::Auth;
 use crate::metadata::{AccountMetadata, NetworkConfig};
 use crate::state::AppState;
+use crate::state_object::StateObject;
 use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
 
 use guardian_shared::hex::FromHex;
@@ -60,7 +61,28 @@ pub fn evm_account(account_id: &str, signers: Vec<String>) -> AccountMetadata {
     }
 }
 
+/// A configured account: its metadata and a stored state.
 pub async fn seed(state: &AppState, metadata: AccountMetadata) {
+    let account_id = metadata.account_id.clone();
+    seed_unfinished(state, metadata).await;
+    state
+        .storage
+        .submit_state(&StateObject {
+            account_id,
+            state_json: serde_json::json!({}),
+            commitment: format!("0x{}", "11".repeat(32)),
+            nonce: None,
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            auth_scheme: String::new(),
+        })
+        .await
+        .expect("seed storage.submit_state succeeds");
+}
+
+/// A first configuration that claimed the account and failed before
+/// writing its state: metadata only.
+pub async fn seed_unfinished(state: &AppState, metadata: AccountMetadata) {
     state
         .metadata
         .set(metadata)
@@ -68,7 +90,7 @@ pub async fn seed(state: &AppState, metadata: AccountMetadata) {
         .expect("seed metadata.set succeeds");
 }
 
-fn lookup_digest(key_commitment_hex: &str, timestamp_ms: i64) -> Word {
+pub fn lookup_digest(key_commitment_hex: &str, timestamp_ms: i64) -> Word {
     let key_commitment_word =
         Word::from_hex(key_commitment_hex).expect("test key_commitment must be valid hex");
     LookupAuthMessage::new(timestamp_ms, key_commitment_word).to_word()

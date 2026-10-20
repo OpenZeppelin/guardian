@@ -1,5 +1,6 @@
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::session_grant::SessionGrant;
 use miden_protocol::Word;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::Signature;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
@@ -34,7 +35,7 @@ pub fn verify_request_signature(
 
     // Check if this commitment is in the authorized list
     if !authorized_commitments.contains(&sig_commitment_hex) {
-        tracing::error!(
+        tracing::warn!(
             account_id = %account_id,
             sig_commitment = %sig_commitment_hex,
             authorized_count = authorized_commitments.len(),
@@ -50,7 +51,7 @@ pub fn verify_request_signature(
     if public_key.verify(message, &sig) {
         Ok(sig_commitment_hex)
     } else {
-        tracing::error!(
+        tracing::warn!(
             account_id = %account_id,
             timestamp = %timestamp,
             sig_commitment = %sig_commitment_hex,
@@ -58,6 +59,20 @@ pub fn verify_request_signature(
         );
         Err("Signature verification failed: invalid signature".to_string())
     }
+}
+
+/// Verify a wallet's Falcon signature over a session grant and return the
+/// signer commitment derived from the public key embedded in the signature.
+pub fn verify_session_grant(grant: &SessionGrant, signature: &str) -> Result<String, String> {
+    let sig = parse_signature(signature)?;
+    let public_key = sig.public_key();
+    if !public_key.verify(grant.to_word(), &sig) {
+        return Err("Session grant signature verification failed".to_string());
+    }
+    Ok(format!(
+        "0x{}",
+        hex::encode(public_key.to_commitment().to_bytes())
+    ))
 }
 
 /// Convert account ID + timestamp + request payload to a message digest (Word)
@@ -77,7 +92,7 @@ pub fn account_id_timestamp_to_digest(
     AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, request_payload.clone())
         .map(|request| request.to_word())
         .map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id_hex,
                 error = %e,
                 "Invalid account ID hex in account_id_timestamp_to_digest"
@@ -90,15 +105,14 @@ pub fn account_id_timestamp_to_digest(
 fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     let hex_str = hex_str.trim_start_matches("0x");
     let bytes = hex::decode(hex_str).map_err(|e| {
-        tracing::error!(
-            signature = %hex_str,
+        tracing::warn!(
             error = %e,
             "Invalid signature hex"
         );
         format!("Invalid signature hex: {e}")
     })?;
     Signature::read_from_bytes(&bytes).map_err(|e| {
-        tracing::error!(
+        tracing::warn!(
             error = %e,
             "Failed to deserialize signature"
         );

@@ -192,7 +192,7 @@ impl DeltaCommitStrategy {
                 crate::services::release_on_switch::release_if_guardian_switched(
                     ctx.state,
                     &ctx.resolved.metadata,
-                    &new_state.state_json,
+                    applied.guardian_commitment.as_deref(),
                     delta.nonce,
                     &new_state.commitment,
                 )
@@ -245,6 +245,8 @@ mod tests {
             state_json: serde_json::json!({"new": "state"}),
             commitment: "new_commitment".to_string(),
             nonce: Some(2),
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }
     }
 
@@ -552,6 +554,61 @@ mod tests {
         assert_eq!(stored[0].commitment, "new_commitment");
         assert_eq!(stored[0].nonce, Some(2));
         assert_eq!(stored[0].state_json, serde_json::json!({"new": "state"}));
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_releases_on_foreign_guardian_binding() {
+        let mock_storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata.clone()),
+        );
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            storage: state.storage.clone(),
+            signer_commitment: String::new(),
+        };
+
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+
+        let applied = AppliedState {
+            guardian_commitment: Some("0xforeign_guardian".to_string()),
+            ..applied_state()
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(ctx, &mut delta, applied)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            mock_metadata.set_released_calls.lock().unwrap().clone(),
+            vec!["0xtest_account_id".to_string()],
+            "a foreign guardian binding on the applied state must release the account"
+        );
+        assert_eq!(
+            mock_metadata
+                .set_released_expected_states
+                .lock()
+                .unwrap()
+                .clone(),
+            vec!["new_commitment".to_string()],
+            "the release is proved against the state the commit just stored"
+        );
     }
 
     #[tokio::test]
