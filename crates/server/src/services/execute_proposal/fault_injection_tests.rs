@@ -54,14 +54,34 @@ impl Faults {
         faults
     }
 
+    /// Waits until the worker sent and exited and its reservation's deadline passed, so the
+    /// next reconciliation finds the attempt abandoned however slowly the worker ran.
     async fn wait_for_submit_then_lease_expiry(&self) {
-        for _ in 0..200 {
-            if self.f.calls.lock().unwrap().submitted > 0 {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let execution = &self.f.state.execution;
+        loop {
+            let sent = self.f.calls.lock().unwrap().submitted > 0;
+            let exited = execution.capacity.available_permits()
+                == execution.config.max_concurrent_executions as usize;
+            let lapsed = self
+                .f
+                .state
+                .storage
+                .load_active_execution(ACCOUNT)
+                .await
+                .unwrap()
+                .is_none_or(|record| record.reservation.lease_expires_at < Utc::now());
+            if sent && exited && lapsed {
                 break;
             }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the worker did not send, exit and let its reservation lapse within 30s \
+                 (sent {sent}, exited {exited}, lapsed {lapsed})"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        tokio::time::sleep(LEASE + Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     fn chain_shows(&self, verification: Result<StateVerification, String>) {
@@ -124,6 +144,8 @@ impl Faults {
                 state_json: serde_json::json!({ "switched": true }),
                 commitment: commitment.to_string(),
                 nonce: None,
+                cosigner_commitments: Vec::new(),
+                guardian_commitment: Some(guardian.to_string()),
             }));
         let mut keys = self
             .chain
@@ -894,6 +916,210 @@ async fn a_worker_whose_reservation_moved_on_writes_and_sends_nothing() {
         record.outcome.is_none(),
         "the stale worker wrote no outcome"
     );
+}
+
+/// Leases whose renewals fail a set number of times once the boundary is crossed, as a database
+/// pool timeout at the send claim would.
+struct FlakyAfterBoundary {
+    leases: crate::coordination::InMemoryExecutionLeases,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct FlakyAfterBoundaryElector {
+    inner: Arc<dyn crate::coordination::LeaderElector>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::coordination::LeaderElector for FlakyAfterBoundaryElector {
+    async fn try_acquire(
+        &self,
+        ttl: Duration,
+    ) -> crate::error::Result<Option<crate::coordination::Lease>> {
+        self.inner.try_acquire(ttl).await
+    }
+    async fn renew(
+        &self,
+        lease: &crate::coordination::Lease,
+        ttl: Duration,
+    ) -> crate::error::Result<bool> {
+        use std::sync::atomic::Ordering;
+        if boundary_crossed(self.storage.as_ref()).await
+            && self
+                .failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+        {
+            return Err(crate::error::GuardianError::StorageError(
+                "pool timed out".to_string(),
+            ));
+        }
+        self.inner.renew(lease, ttl).await
+    }
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        self.inner.verify_held(lease).await
+    }
+    async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {
+        self.inner.release(lease).await
+    }
+    fn supports_fencing(&self) -> bool {
+        self.inner.supports_fencing()
+    }
+}
+
+impl crate::coordination::ExecutionLeases for FlakyAfterBoundary {
+    fn elector(
+        &self,
+        account_id: &str,
+        holder_id: &str,
+    ) -> Arc<dyn crate::coordination::LeaderElector> {
+        Arc::new(FlakyAfterBoundaryElector {
+            inner: self.leases.elector(account_id, holder_id),
+            storage: self.storage.clone(),
+            failures: self.failures.clone(),
+        })
+    }
+
+    fn is_shared(&self) -> bool {
+        self.leases.is_shared()
+    }
+}
+
+#[tokio::test]
+async fn a_transient_failure_at_the_send_claim_is_retried_and_the_transaction_sent() {
+    let mut faults = Faults::new(Script::default()).await;
+    faults.f.state.execution.leases = Arc::new(FlakyAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+    });
+    faults.f.request().await.unwrap();
+    faults.wait_for_submit_then_lease_expiry().await;
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 1);
+}
+
+#[tokio::test]
+async fn a_send_claim_that_keeps_failing_until_the_lease_lapses_never_sends() {
+    let mut faults = Faults::new(Script::default()).await;
+    faults.f.state.execution.leases = Arc::new(FlakyAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX)),
+    });
+    faults.f.request().await.unwrap();
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(reported.state, ExecutionState::Submitted);
+    tokio::time::sleep(LEASE * 3).await;
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+}
+
+/// One second per block and 18 blocks to the expiration: 16 s of window past the 2-block
+/// reserve, one more than a send needs.
+fn barely_sendable() -> Script {
+    Script {
+        tip: Ok(338),
+        expiration_block: 356,
+        block_interval: Duration::from_secs(1),
+        ..Script::default()
+    }
+}
+
+async fn with_send_claim_failures(failures: usize) -> Faults {
+    let mut faults = Faults::new(barely_sendable()).await;
+    faults.f.state.execution.config.lease = Duration::from_secs(30);
+    faults.f.state.execution.leases = Arc::new(FlakyAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(failures)),
+    });
+    faults.f.request().await.unwrap();
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(reported.state, ExecutionState::Submitted);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    faults
+}
+
+#[tokio::test]
+async fn a_send_claim_that_succeeds_after_the_window_ran_short_never_sends() {
+    let faults = with_send_claim_failures(2).await;
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+}
+
+#[tokio::test]
+async fn a_send_claim_that_succeeds_in_time_sends_with_what_is_left_of_the_window() {
+    let faults = with_send_claim_failures(0).await;
+    let calls = faults.f.calls.lock().unwrap();
+    assert_eq!(calls.submitted, 1);
+    assert!(
+        calls.send_deadlines[0] >= super::SendWindow::MIN_SEND
+            && calls.send_deadlines[0] <= Duration::from_secs(16),
+        "{:?}",
+        calls.send_deadlines[0]
+    );
+}
+
+#[tokio::test]
+async fn a_send_longer_than_the_lease_keeps_the_reservation() {
+    let faults = Faults::new(Script {
+        sending_time: LEASE * 4,
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    for _ in 0..200 {
+        if faults.f.calls.lock().unwrap().submitted > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(LEASE * 2).await;
+    assert_eq!(faults.reconcile(PassKind::Steady).await, Reconciled::Owned);
+}
+
+#[tokio::test]
+async fn too_little_of_the_window_left_to_send_is_refused_before_the_boundary() {
+    let faults = Faults::new(Script {
+        tip: Ok(350),
+        expiration_block: 356,
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let (failed, _) = faults
+        .f
+        .settle(|state| state == ExecutionState::Failed)
+        .await;
+    let error = failed.error.expect("the attempt failed");
+    assert_eq!(error.code, "GUARDIAN_EXECUTION_EXPIRATION_REACHED");
+    assert!(failed.proposal_exists, "the proposal can be retried");
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+    assert!(faults.f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+}
+
+#[tokio::test]
+async fn the_send_waits_as_long_as_the_window_allows_up_to_its_cap() {
+    for (tip, longest) in [
+        (340, Duration::from_secs(3 * (356 - 340 - 2))),
+        (100, super::SendWindow::MAX_SEND),
+    ] {
+        let faults = Faults::new(Script {
+            tip: Ok(tip),
+            expiration_block: 356,
+            ..Script::default()
+        })
+        .await;
+        faults.f.request().await.unwrap();
+        faults.wait_for_submit_then_lease_expiry().await;
+        let deadline = faults.f.calls.lock().unwrap().send_deadlines[0];
+        assert!(
+            deadline <= longest && deadline > longest - Duration::from_secs(2),
+            "tip {tip}: {deadline:?}"
+        );
+    }
 }
 
 /// Leases that work until the boundary commit and are gone at the renewal that gates the send:

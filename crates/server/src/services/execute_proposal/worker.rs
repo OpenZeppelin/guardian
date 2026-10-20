@@ -5,12 +5,12 @@
 
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use guardian_shared::SignatureScheme;
 
 use super::executor::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SubmissionOutcome,
+    ProvenTransactionInfo, SendWindow, SubmissionOutcome,
 };
 use crate::coordination::{LeaderElector, Lease, Renewal, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -74,6 +74,7 @@ impl From<ExecutionFailure> for Stop {
 /// can never persist an older phase or deadline after a newer one.
 struct Heartbeat {
     phase: Arc<tokio::sync::Mutex<ExecutionPhase>>,
+    held_until: Arc<std::sync::Mutex<DateTime<Utc>>>,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -81,8 +82,13 @@ struct Heartbeat {
 const HEARTBEAT_RETRY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl Heartbeat {
-    fn start(state: &AppState, job: &ExecutionJob) -> Self {
-        let phase = Arc::new(tokio::sync::Mutex::new(ExecutionPhase::Accepted));
+    fn start(
+        state: &AppState,
+        job: &ExecutionJob,
+        phase: ExecutionPhase,
+        held_until: DateTime<Utc>,
+    ) -> Self {
+        let phase = Arc::new(tokio::sync::Mutex::new(phase));
         let interval = state.execution.config.lease / 3;
         let ttl = state.execution.config.lease;
         let storage = state.storage.clone();
@@ -91,8 +97,10 @@ impl Heartbeat {
         let fence = job.fence.clone();
         let account_id = job.account_id.clone();
         let current = phase.clone();
+        let held = Arc::new(std::sync::Mutex::new(held_until));
+        let renewed = held.clone();
         let task = tokio::spawn(async move {
-            let mut held_until = lease.expires_at;
+            let mut held_until = held_until;
             let mut wait = interval;
             loop {
                 tokio::time::sleep(wait).await;
@@ -110,6 +118,9 @@ impl Heartbeat {
                 {
                     Renewal::Held(renewed_until) => {
                         held_until = renewed_until;
+                        *renewed
+                            .lock()
+                            .expect("the lease deadline lock is never poisoned") = renewed_until;
                         wait = interval;
                     }
                     Renewal::LeaseLost => {
@@ -133,13 +144,27 @@ impl Heartbeat {
                         error,
                     } => {
                         held_until = renewed_until;
+                        *renewed
+                            .lock()
+                            .expect("the lease deadline lock is never poisoned") = renewed_until;
                         tracing::warn!(%account_id, %error, "failed to renew the execution reservation; retrying while the lease is held");
                         wait = HEARTBEAT_RETRY.min(interval);
                     }
                 }
             }
         });
-        Self { phase, task }
+        Self {
+            phase,
+            held_until: held,
+            task,
+        }
+    }
+
+    fn record_held_until(&self, renewed_until: DateTime<Utc>) {
+        *self
+            .held_until
+            .lock()
+            .expect("the lease deadline lock is never poisoned") = renewed_until;
     }
 
     /// Records the phase under a renewed lease.
@@ -152,13 +177,20 @@ impl Heartbeat {
         let mut recorded = self.phase.lock().await;
         *recorded = phase;
         match job.renew(state, phase).await {
-            Renewal::Held(_) => Ok(()),
+            Renewal::Held(renewed_until) => {
+                self.record_held_until(renewed_until);
+                Ok(())
+            }
             Renewal::LeaseLost | Renewal::ReservationLost => Err(Stop::OwnershipLost),
             Renewal::LeaseUnavailable(error) => {
                 tracing::warn!(account_id = %job.account_id, %error, "could not renew the execution lease to record the phase; the heartbeat keeps retrying");
                 Ok(())
             }
-            Renewal::ReservationUnavailable { error, .. } => {
+            Renewal::ReservationUnavailable {
+                renewed_until,
+                error,
+            } => {
+                self.record_held_until(renewed_until);
                 tracing::warn!(account_id = %job.account_id, %error, "failed to record the execution phase");
                 Ok(())
             }
@@ -166,10 +198,14 @@ impl Heartbeat {
     }
 
     /// Stops renewing and waits for an in-flight renewal to finish, so none can land after a
-    /// later write such as the send claim.
-    async fn stop(mut self) {
+    /// later write such as the send claim. Returns how long the lease is known to be held.
+    async fn stop(mut self) -> DateTime<Utc> {
         self.task.abort();
         let _ = (&mut self.task).await;
+        *self
+            .held_until
+            .lock()
+            .expect("the lease deadline lock is never poisoned")
     }
 }
 
@@ -228,13 +264,23 @@ impl std::fmt::Display for PhaseTimings {
 /// execution in flight instead of being turned away as busy.
 pub(super) async fn run_execution(state: &AppState, job: ExecutionJob, input: ExecutionInput) {
     let mut timings = PhaseTimings::start();
-    let heartbeat = Heartbeat::start(state, &job);
+    let heartbeat = Heartbeat::start(state, &job, ExecutionPhase::Accepted, job.lease.expires_at);
     let reached = run_to_boundary(state, &job, input, &heartbeat, &mut timings).await;
-    heartbeat.stop().await;
+    let held_until = heartbeat.stop().await;
     match reached {
-        Ok(mut attempt) => {
-            if claim_send(state, &job).await {
-                submit(state, &job, attempt.as_mut(), &mut timings).await;
+        Ok((mut attempt, window_closes)) => {
+            if let Some((deadline, held_until)) =
+                claim_send(state, &job, held_until, window_closes).await
+            {
+                submit(
+                    state,
+                    &job,
+                    attempt.as_mut(),
+                    deadline,
+                    held_until,
+                    &mut timings,
+                )
+                .await;
             } else {
                 tracing::warn!(
                     account_id = %job.account_id,
@@ -269,8 +315,8 @@ async fn run_to_boundary(
     input: ExecutionInput,
     heartbeat: &Heartbeat,
     timings: &mut PhaseTimings,
-) -> Result<Box<dyn ExecutionAttempt>, Stop> {
-    let (attempt, acknowledged, proven) = tokio::select! {
+) -> Result<(Box<dyn ExecutionAttempt>, tokio::time::Instant), Stop> {
+    let (attempt, acknowledged, proven, window_closes) = tokio::select! {
         biased;
         _ = state.execution.shutdown.cancelled() => {
             return Err(ExecutionFailure::new(
@@ -284,7 +330,7 @@ async fn run_to_boundary(
     };
     cross_boundary(state, job, acknowledged, &proven).await?;
     timings.mark("boundary");
-    Ok(attempt)
+    Ok((attempt, window_closes))
 }
 
 async fn approach_boundary(
@@ -298,6 +344,7 @@ async fn approach_boundary(
         Box<dyn ExecutionAttempt>,
         AcknowledgedDelta,
         ProvenTransactionInfo,
+        tokio::time::Instant,
     ),
     Stop,
 > {
@@ -319,6 +366,7 @@ async fn approach_boundary(
         )
         .into());
     }
+    ensure_guarded_by_this_guardian(state, job, &current_state)?;
 
     let mut attempt = job.executor.prepare(input).await?;
     heartbeat
@@ -363,9 +411,9 @@ async fn approach_boundary(
     attempt.seal().await?;
     timings.mark("seal");
     ensure_admissible(state, job).await?;
-    ensure_unexpired(job, &proven).await?;
+    let window_closes = ensure_sendable(attempt.as_ref()).await?;
     timings.mark("checks");
-    Ok((attempt, acknowledged, proven))
+    Ok((attempt, acknowledged, proven, window_closes))
 }
 
 async fn acknowledge(
@@ -443,17 +491,35 @@ async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), S
         .ok_or_else(|| inadmissible("the account metadata disappeared"))?;
     ensure_account_active_metadata(&metadata)
         .map_err(|e| unreadable("the account was paused or released during the attempt", &e))?;
-    if let Some(guardian) = state
+    ensure_guarded_by_this_guardian(state, job, &current_state)
+}
+
+/// The account's guardian slot must hold the commitment of the key Guardian acknowledges with,
+/// or the transaction cannot authorize however many cosigners signed it.
+fn ensure_guarded_by_this_guardian(
+    state: &AppState,
+    job: &ExecutionJob,
+    current_state: &crate::state_object::StateObject,
+) -> Result<(), Stop> {
+    let guardian = state
         .network_client
         .extract_guardian_commitment(&current_state.state_json)
-        .map_err(|e| unreadable("Guardian could not read the account's guardian", &e))?
-        && !guardian.eq_ignore_ascii_case(&state.ack.commitment(&job.scheme))
-    {
-        return Err(inadmissible(
-            "the account is no longer guarded by this Guardian",
-        ));
+        .map_err(|e| {
+            Stop::Failed(ExecutionFailure::with_logged_cause(
+                ExecutionFailureCode::AccountInadmissible,
+                "Guardian could not read the account's guardian",
+                &e,
+            ))
+        })?;
+    match guardian {
+        Some(guardian) if !guardian.eq_ignore_ascii_case(&state.ack.commitment(&job.scheme)) => {
+            Err(Stop::Failed(ExecutionFailure::new(
+                ExecutionFailureCode::AccountInadmissible,
+                "the account's guardian slot does not hold this Guardian's acknowledgment key",
+            )))
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Checked as soon as execution fixes the expiration, so a transaction this server could not
@@ -476,28 +542,30 @@ fn ensure_within_horizon(state: &AppState, executed: &ExecutedTransactionInfo) -
     Ok(())
 }
 
-/// Proving can take minutes, so the tip is read again just before the boundary: a transaction
-/// that can no longer be included is refused while its proposal can still be retried, rather
-/// than sent and settled as expired with its proposal gone.
-async fn ensure_unexpired(job: &ExecutionJob, proven: &ProvenTransactionInfo) -> Result<(), Stop> {
-    let tip = job.executor.chain_tip().await.map_err(|error| {
-        ExecutionFailure::with_logged_cause(
-            ExecutionFailureCode::NodeUnavailable,
-            "Guardian could not read the chain tip from the node",
-            &error,
-        )
-    })?;
-    if proven.expiration_block <= tip {
+/// Proving can take most of a short expiration window, so the tip is read again just before the
+/// boundary: a transaction left too little time to be sent and accepted is refused while its
+/// proposal can still be retried, rather than sent into the expiration and settled as rejected
+/// or expired with its proposal gone. Returns when the window closes.
+async fn ensure_sendable(attempt: &dyn ExecutionAttempt) -> Result<tokio::time::Instant, Stop> {
+    let window = attempt.send_window().await?;
+    let remaining = window.remaining();
+    if SendWindow::deadline_within(remaining).is_none() {
         return Err(ExecutionFailure::new(
             ExecutionFailureCode::ExpirationReached(ExpirationBound::Transaction),
             format!(
-                "the transaction expires at block {}; the tip is {tip}",
-                proven.expiration_block
+                "the transaction expires at block {}; the tip is {}, which leaves about {}s at \
+                 {}ms per block with {} blocks in reserve, less than the {}s a send needs",
+                window.expiration_block,
+                window.tip,
+                window.remaining().as_secs(),
+                window.block_interval.as_millis(),
+                SendWindow::RESERVED_BLOCKS,
+                SendWindow::MIN_SEND.as_secs()
             ),
         )
         .into());
     }
-    Ok(())
+    Ok(tokio::time::Instant::now() + remaining)
 }
 
 /// The no-retry boundary: the candidate and the evidence commit together, or not at all.
@@ -575,15 +643,53 @@ async fn cross_boundary(
 /// and the send while its lease expires and another owner takes over. The fenced renewal that
 /// records the send is the last write before it, so it is the gate:
 /// only a worker whose fence still matches the persisted reservation sends. A storage error
-/// leaves ownership unknown, and an unsent transaction is safe where a second owner's is not.
-async fn claim_send(state: &AppState, job: &ExecutionJob) -> bool {
-    match job.renew(state, ExecutionPhase::Sent).await {
-        Renewal::Held(_) => true,
-        Renewal::LeaseLost | Renewal::LeaseUnavailable(_) | Renewal::ReservationLost => false,
-        Renewal::ReservationUnavailable { error, .. } => {
-            tracing::warn!(account_id = %job.account_id, %error, "could not record the send; not sending");
-            false
+/// leaves ownership unknown, so the claim is retried, each time fenced, while the lease is still
+/// held and the send window still open; past either an unsent transaction is safe where a second
+/// owner's is not. The window is checked before every claim and after the one that succeeds, so
+/// a send always starts with at least [`SendWindow::MIN_SEND`] left. Returns how long the send
+/// may wait for the node and how long the lease is held.
+async fn claim_send(
+    state: &AppState,
+    job: &ExecutionJob,
+    mut held_until: DateTime<Utc>,
+    window_closes: tokio::time::Instant,
+) -> Option<(std::time::Duration, DateTime<Utc>)> {
+    let deadline = || {
+        SendWindow::deadline_within(
+            window_closes.saturating_duration_since(tokio::time::Instant::now()),
+        )
+    };
+    loop {
+        if deadline().is_none() {
+            tracing::warn!(account_id = %job.account_id, "too little of the send window is left to send; not sending");
+            return None;
         }
+        let error = match job.renew(state, ExecutionPhase::Sent).await {
+            Renewal::Held(renewed_until) => {
+                let Some(deadline) = deadline() else {
+                    tracing::warn!(account_id = %job.account_id, "the send window closed while the send was recorded; not sending");
+                    return None;
+                };
+                return Some((deadline, renewed_until));
+            }
+            Renewal::LeaseLost | Renewal::ReservationLost => return None,
+            Renewal::LeaseUnavailable(error) => error.to_string(),
+            Renewal::ReservationUnavailable {
+                renewed_until,
+                error,
+            } => {
+                held_until = renewed_until;
+                error
+            }
+        };
+        let retry = HEARTBEAT_RETRY.min(state.execution.config.lease / 3);
+        let lease_left = (held_until - Utc::now()).to_std().unwrap_or_default();
+        if lease_left <= retry {
+            tracing::warn!(account_id = %job.account_id, %error, "could not record the send before the lease ran out; not sending");
+            return None;
+        }
+        tracing::warn!(account_id = %job.account_id, %error, "could not record the send; retrying under the held lease");
+        tokio::time::sleep(retry).await;
     }
 }
 
@@ -591,9 +697,13 @@ async fn submit(
     state: &AppState,
     job: &ExecutionJob,
     attempt: &mut dyn ExecutionAttempt,
+    deadline: std::time::Duration,
+    held_until: DateTime<Utc>,
     timings: &mut PhaseTimings,
 ) {
-    let outcome = attempt.submit().await;
+    let heartbeat = Heartbeat::start(state, job, ExecutionPhase::Sent, held_until);
+    let outcome = attempt.submit(deadline).await;
+    heartbeat.stop().await;
     timings.mark("send");
     match outcome {
         SubmissionOutcome::Accepted => {
