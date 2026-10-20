@@ -18,6 +18,7 @@ export type {
   SignatureScheme,
   CosignerSignature,
   AuthConfig,
+  MidenCosignerConfig,
   CanonicalNonce,
   DeltaStatus,
   DeltaObject,

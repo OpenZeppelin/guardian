@@ -173,11 +173,35 @@ let client = GuardianClient::connect("http://localhost:50051")
 
 ### 3. Set Up Account Authorization
 
-```rust
-use guardian_client::auth;
+The `AuthConfig` passed to `configure` lists the account's cosigners. When every
+cosigner and the GUARDIAN use one scheme, use that scheme's variant:
 
-// Add the public key to the account's authorized cosigners
-let auth_config = auth::miden_falcon_rpo_auth(vec![pubkey_hex]);
+```rust
+use guardian_client::{AuthConfig, MidenFalconRpoAuth, auth_config::AuthType};
+
+let auth_config = AuthConfig {
+    auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+        cosigner_commitments: vec![commitment_hex],
+    })),
+};
+```
+
+An account whose cosigners mix Falcon and ECDSA keys declares each cosigner's
+scheme and the GUARDIAN's scheme. Servers before this variant reject it, so keep
+the single-scheme variants for every other account:
+
+```rust
+use guardian_client::{AuthConfig, MidenAuth, MidenCosigner, auth_config::AuthType};
+
+let auth_config = AuthConfig {
+    auth_type: Some(AuthType::Miden(MidenAuth {
+        cosigners: vec![
+            MidenCosigner { commitment: wallet_commitment_hex, scheme: "ecdsa".into() },
+            MidenCosigner { commitment: falcon_commitment_hex, scheme: "falcon".into() },
+        ],
+        guardian_scheme: "ecdsa".into(),
+    })),
+};
 ```
 
 ### 4. Sign Requests With a Session (optional)
