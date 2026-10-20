@@ -541,7 +541,9 @@ signatures. The mode is set once, on the client; no method signature changes, an
 never asks the server whether it offers execution; a server without a prover refuses the
 request with `GUARDIAN_PROVING_UNAVAILABLE`. An application that wants to know beforehand, for
 example to show or hide an "execute through Guardian" action, can read `execution` from the
-server's public `GET /status` (`getStatus()` in the TypeScript base client).
+server's public `GET /status` (`getStatus()` in the TypeScript base client). A Guardian that
+predates Guardian execution sends no `execution`, so `getStatus()` leaves it out: such a server
+does not offer it.
 
 ```rust
 use miden_multisig_client::{
@@ -687,10 +689,14 @@ What the mode changes, identically in both SDKs:
   `approvalExpirationDelta` still applies).
 - **Two signed expiration bounds.** The approval expires `GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA`
   (28,800) blocks after the proposal's bound block unless the caller sets
-  `approval_expiration_delta` / `approvalExpirationDelta`, and the transaction expires
-  `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` (256) blocks after the block it executes against.
-  Both are bound by the summary, so the same effects create a **different** proposal in each
-  mode.
+  `approval_expiration_delta` / `approvalExpirationDelta`. The transaction expires a window
+  after the block it executes against, and that window is set by the transaction: the request
+  scripts `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` as a ceiling, and an expiration can only be
+  lowered, so anything else in the transaction that applies a shorter one wins. On devnet every
+  fee-paying transaction gets 20 blocks, because the fee faucet's transfer policy
+  (`expiration::apply_default`) caps it at the reference block + 20. That window is the real
+  budget for proving plus sending, whoever executes. Both bounds are bound by the summary, so
+  the same effects create a **different** proposal in each mode.
 - **The stored request.** `transaction_request` carries the serialized request in an envelope
   tagged with the protocol line (`0.17`). The server must run the same `miden-client` as the SDK
   that wrote it to decode it. It does not change the proposal id.
@@ -698,10 +704,11 @@ What the mode changes, identically in both SDKs:
   consumes it in the same mode the cosigners signed, whatever its own store holds.
 - **Custom proposals.** `propose_custom_transaction` / `createCustomProposal` store the
   producer's bytes unchanged. For Guardian to execute them, the request needs a non-zero
-  approval expiration in its auth arguments, and its script should apply the 256-block
-  transaction expiration (`push.256 exec.::miden::protocol::tx::update_expiration_block_delta`);
+  approval expiration in its auth arguments, and its script should apply the same transaction
+  expiration ceiling the SDKs script (`push.256 exec.::miden::protocol::tx::update_expiration_block_delta`);
   without it the proven expiration is the approval window and Guardian refuses it as beyond its
-  horizon.
+  horizon. As above, the window the transaction ends up with may be shorter, such as 20 blocks
+  for a fee-paying transaction on devnet.
 - **The low-level `createProposal(nonce, txSummaryBase64, metadata)`** (TypeScript) carries no
   request, so it refuses on a Guardian-executable client.
 - **Thresholds.** Guardian accepts a request once the valid signatures meet the threshold of the
@@ -715,7 +722,10 @@ What the mode changes, identically in both SDKs:
   to the account's auth procedure, so one invalid signature makes it fail.
 
 A proposal created in either mode can still be executed locally with `execute_proposal` /
-`executeProposal`, and listing, signing, exporting and importing work the same. For a thin
+`executeProposal`, and listing, signing, exporting and importing work the same. A listing
+(`get_delta_proposals` / `getDeltaProposals`) never carries the stored `transaction_request`, so
+it stays within the transport's message limit however many requests an account stores; the
+single-proposal read (`get_delta_proposal` / `getDeltaProposal`) returns it. For a thin
 client with no Miden connectivity, use the base clients' `execute_delta_proposal` /
 `executeDeltaProposal`, `get_delta_proposal_execution` / `getDeltaProposalExecution` and
 `get_current_execution` / `getCurrentExecution`. The base clients carry no Miden dependency (a
@@ -768,7 +778,12 @@ with the same fields (`code`, `userMessage`, `retryable`, `retryAfterSecs`, `blo
 `reason`). `code` is the wire string, such as `GUARDIAN_EXECUTION_CONFLICT`, in both.
 `conflict_pending_delta` with `reason` `parked_delta` means a cosigner's parked delta on the
 account's state may still land: request execution again once Guardian reconciles it, or execute
-the proposal locally meanwhile. The base clients
+the proposal locally meanwhile. A refusal to store a new proposal, such as
+`GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` or `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`, surfaces from
+the Rust `propose_*` methods and `propose_custom_transaction` as
+`MultisigError::GuardianProposalRefused { code, message, retryable, retry_after }`, with the same
+meaning for each field; a push failure that carries no Guardian code stays
+`MultisigError::GuardianServer`. In TypeScript it is the base client's `GuardianHttpError`. The base clients
 report a refusal as their usual error: `ClientError` in Rust and a `GuardianHttpError` whose
 `rawCode` is the wire string in TypeScript. See
 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution) for every code.

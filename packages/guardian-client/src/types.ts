@@ -315,7 +315,11 @@ export interface StatusResponse {
   environment: string;
   startedAt: string;
   uptimeSeconds: number;
-  execution: ServerExecutionCapability;
+  /**
+   * Whether the server accepts Guardian execution requests. Absent on a Guardian that predates
+   * Guardian execution: it does not offer it.
+   */
+  execution?: ServerExecutionCapability;
   /** Present on every Guardian that accepts session grants; absent on older servers. */
   sessions?: SessionsStatus;
 }

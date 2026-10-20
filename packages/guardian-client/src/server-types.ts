@@ -190,7 +190,7 @@ export interface ServerStatusResponse {
   environment: string;
   started_at: string;
   uptime_seconds: number;
-  execution?: ServerExecutionCapabilityWire;
+  execution?: ServerExecutionCapabilityWire | null;
   sessions?: {
     max_ttl_seconds: number;
   };

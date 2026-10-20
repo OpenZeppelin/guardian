@@ -347,10 +347,13 @@ resource "aws_ecs_task_definition" "server" {
               valueFrom = local.evm_rpc_urls_secret_arn
             }
           ] : [],
+          # The managed prover URL secret is pinned to its version, so a new URL changes the
+          # task definition and rolls the service; an operator-supplied one is read at
+          # AWSCURRENT and needs a forced deployment after rotation.
           local.tx_prover_url_secret_arn != "" ? [
             {
               name      = "GUARDIAN_TX_PROVER_URL"
-              valueFrom = local.tx_prover_url_secret_arn
+              valueFrom = local.tx_prover_url_secret_value_from
             }
           ] : [],
           local.is_prod ? [

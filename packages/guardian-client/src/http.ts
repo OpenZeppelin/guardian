@@ -495,7 +495,9 @@ export class GuardianHttpClient {
       environment: data.environment,
       startedAt: data.started_at,
       uptimeSeconds: data.uptime_seconds,
-      execution: fromServerExecutionCapability(data.execution),
+      ...(data.execution === undefined || data.execution === null
+        ? {}
+        : { execution: fromServerExecutionCapability(data.execution) }),
       ...(data.sessions
         ? {
             sessions: {
@@ -625,7 +627,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/proposal/execution?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery);
+    }, accountId, requestQuery, 'session');
     return fromServerExecution((await response.json()) as ServerProposalExecution);
   }
 
@@ -635,7 +637,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/execution/current?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery);
+    }, accountId, requestQuery, 'session');
     const server = (await response.json()) as ServerCurrentExecution;
     return server.execution === null ? null : fromServerExecution(server.execution);
   }
