@@ -163,15 +163,15 @@ pub async fn request_execution(
     {
         return answer_active(active, &proposal_id);
     }
-    if proposal.delta_payload.get("transaction_request").is_none() {
-        return Err(GuardianError::ProposalMissingTransactionRequest);
-    }
     let proposal_type = proposal.proposal_type().unwrap_or("custom").to_string();
     if proposal_type == "switch_guardian" {
         return Err(GuardianError::ProposalExecutesLocally {
             proposal_type,
             reason: LocalExecutionReason::SwitchGuardian,
         });
+    }
+    if proposal.delta_payload.get("transaction_request").is_none() {
+        return Err(GuardianError::ProposalMissingTransactionRequest);
     }
     if !allow_private_note && creates_private_note(&proposal.delta_payload)? {
         return Err(GuardianError::ProposalExecutesLocally {

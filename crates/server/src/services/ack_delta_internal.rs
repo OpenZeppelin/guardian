@@ -27,19 +27,37 @@ pub(crate) async fn acknowledge_delta(
     base_state_json: &serde_json::Value,
     delta: &DeltaObject,
 ) -> Result<AcknowledgedDelta> {
-    let applied = {
-        let client = state.network_client.clone();
-        let prev_commitment = base_commitment.to_string();
-        let prev_state_json = base_state_json.clone();
-        let delta_payload = Arc::new(delta.delta_payload.clone());
-        crate::network::reconstructor()
-            .run(move || {
-                client.verify_delta(&prev_commitment, &prev_state_json, &delta_payload)?;
-                client.apply_delta(&prev_state_json, &delta_payload)
-            })
-            .await?
-    };
+    let applied = apply_to_base(state, base_commitment, base_state_json, delta).await?;
+    acknowledge_applied(state, scheme, delta, applied).await
+}
 
+/// Verifies `delta` against the state it builds on and applies it, without signing anything.
+pub(crate) async fn apply_to_base(
+    state: &AppState,
+    base_commitment: &str,
+    base_state_json: &serde_json::Value,
+    delta: &DeltaObject,
+) -> Result<AppliedState> {
+    let client = state.network_client.clone();
+    let prev_commitment = base_commitment.to_string();
+    let prev_state_json = base_state_json.clone();
+    let delta_payload = Arc::new(delta.delta_payload.clone());
+    crate::network::reconstructor()
+        .run(move || {
+            client.verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
+        })
+        .await
+        .map_err(Into::into)
+}
+
+/// Derives the metadata of a delta already applied by [`apply_to_base`] and signs Guardian's
+/// acknowledgment of it.
+pub(crate) async fn acknowledge_applied(
+    state: &AppState,
+    scheme: &SignatureScheme,
+    delta: &DeltaObject,
+    applied: AppliedState,
+) -> Result<AcknowledgedDelta> {
     // Unconditional lookup: for multisig pushes this lifts the matching proposal's metadata
     // so `build_metadata` can preserve operator intent. For single-key pushes the lookup
     // misses and returns `None`; the cost is one extra storage read per push.

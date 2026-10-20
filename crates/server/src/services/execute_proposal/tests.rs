@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use super::executor::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SignatureSelection, SubmissionOutcome,
+    ProvenTransactionInfo, SendWindow, SignatureSelection, SubmissionOutcome,
 };
 use super::{ExecutionState as ExecutionServices, RequestExecutionParams, request_execution};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -106,8 +106,10 @@ pub(crate) struct Script {
     pub(crate) submission: SubmissionOutcome,
     pub(crate) tip: std::result::Result<u32, String>,
     pub(crate) expiration_block: u32,
+    pub(crate) block_interval: Duration,
     pub(crate) proving_time: Duration,
     pub(crate) sealing_time: Duration,
+    pub(crate) sending_time: Duration,
 }
 
 impl Default for Script {
@@ -122,8 +124,10 @@ impl Default for Script {
             submission: SubmissionOutcome::Accepted,
             tip: Ok(100),
             expiration_block: 356,
+            block_interval: Duration::from_secs(3),
             proving_time: Duration::ZERO,
             sealing_time: Duration::ZERO,
+            sending_time: Duration::ZERO,
         }
     }
 }
@@ -135,6 +139,7 @@ pub(crate) struct Calls {
     pub(crate) executed_with_ack: Vec<bool>,
     pub(crate) proved: usize,
     pub(crate) submitted: usize,
+    pub(crate) send_deadlines: Vec<Duration>,
 }
 
 struct FakeExecutor {
@@ -229,8 +234,25 @@ impl ExecutionAttempt for FakeAttempt {
         self.script.seal.clone()
     }
 
-    async fn submit(&mut self) -> SubmissionOutcome {
-        self.calls.lock().unwrap().submitted += 1;
+    async fn send_window(&self) -> std::result::Result<SendWindow, ExecutionFailure> {
+        let tip =
+            self.script.tip.clone().map_err(|error| {
+                ExecutionFailure::new(ExecutionFailureCode::NodeUnavailable, error)
+            })?;
+        Ok(SendWindow {
+            tip,
+            expiration_block: self.script.expiration_block,
+            block_interval: self.script.block_interval,
+        })
+    }
+
+    async fn submit(&mut self, deadline: Duration) -> SubmissionOutcome {
+        {
+            let mut calls = self.calls.lock().unwrap();
+            calls.submitted += 1;
+            calls.send_deadlines.push(deadline);
+        }
+        tokio::time::sleep(self.script.sending_time).await;
         self.script.submission.clone()
     }
 }
@@ -622,7 +644,7 @@ async fn a_proposal_without_a_stored_request_is_not_guardian_executable() {
 #[tokio::test]
 async fn a_switch_guardian_proposal_executes_locally_and_reserves_nothing() {
     let f = Fixture::new(Script::default()).await;
-    f.store_typed_proposal("switch_guardian", true).await;
+    f.store_typed_proposal("switch_guardian", false).await;
     let result = f.request().await;
     assert!(
         matches!(

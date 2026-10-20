@@ -612,3 +612,88 @@ async fn test_sign_delta_proposal_verifies_signature() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+/// Builds a GET request to `uri` signed by `signer` over `query`.
+fn signed_get(
+    uri: String,
+    signer: &TestSigner,
+    account_id_hex: &str,
+    query: &serde_json::Value,
+) -> Request<Body> {
+    let (signature_hex, timestamp) = signer.sign_json_payload(account_id_hex, query);
+    Request::builder()
+        .uri(uri)
+        .method("GET")
+        .header("x-pubkey", &signer.pubkey_hex)
+        .header("x-signature", &signature_hex)
+        .header("x-timestamp", timestamp.to_string())
+        .body(Body::empty())
+        .unwrap()
+}
+
+#[tokio::test]
+async fn test_listing_omits_the_stored_request_the_single_read_keeps() {
+    let state = create_test_app_state().await;
+    let app = create_router(state);
+    let signer = TestSigner::new();
+    let (account_id_hex, _summary_commitment) = configure_fixture_account(&app, &signer).await;
+
+    let envelope = serde_json::to_value(
+        crate::services::execution_codec::TransactionRequestEnvelope::seal(&[7u8; 64]),
+    )
+    .unwrap();
+    let mut body = fixture_proposal_body(&account_id_hex, &signer, json!([]));
+    body["delta_payload"]["transaction_request"] = envelope.clone();
+    let pushed = app
+        .clone()
+        .call(proposal_request("POST", &signer, &account_id_hex, &body))
+        .await
+        .unwrap();
+    assert_eq!(pushed.status(), StatusCode::OK);
+    let commitment = json_body(pushed).await["commitment"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let listing_query = json!({ "account_id": account_id_hex.clone() });
+    let listed = app
+        .clone()
+        .call(signed_get(
+            format!("/delta/proposal?account_id={account_id_hex}"),
+            &signer,
+            &account_id_hex,
+            &listing_query,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed = json_body(listed).await;
+    let proposals = listed["proposals"].as_array().unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert!(proposals[0]["delta_payload"]["tx_summary"].is_object());
+    assert!(
+        proposals[0]["delta_payload"]
+            .get("transaction_request")
+            .is_none(),
+        "a listing omits the stored request: {}",
+        proposals[0]["delta_payload"]
+    );
+
+    let single_query = json!({
+        "account_id": account_id_hex.clone(),
+        "commitment": commitment.clone(),
+    });
+    let single = app
+        .clone()
+        .call(signed_get(
+            format!("/delta/proposal/single?account_id={account_id_hex}&commitment={commitment}"),
+            &signer,
+            &account_id_hex,
+            &single_query,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(single.status(), StatusCode::OK);
+    let single = json_body(single).await;
+    assert_eq!(single["delta_payload"]["transaction_request"], envelope);
+}

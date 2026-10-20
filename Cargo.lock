@@ -3578,6 +3578,7 @@ dependencies = [
  "miden-standards",
  "miden-testing",
  "miden-tx",
+ "percent-encoding",
  "pin-project-lite",
  "prost",
  "rand 0.10.2",
