@@ -96,6 +96,18 @@ impl StorageBackend for InstrumentedStorage {
         timed("pull_state_head", self.inner.pull_state_head(account_id)).await
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        timed(
+            "replace_state",
+            self.inner.replace_state(state, expected_commitment),
+        )
+        .await
+    }
+
     async fn backfill_state_nonce(
         &self,
         account_id: &str,
