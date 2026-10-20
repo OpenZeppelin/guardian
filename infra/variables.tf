@@ -728,6 +728,17 @@ variable "alarm_error_rate_threshold_percent" {
   }
 }
 
+variable "alarm_p99_latency_threshold_seconds" {
+  description = "ALB p99 target response time in seconds above which the p99 latency alarm fires"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.alarm_p99_latency_threshold_seconds > 0
+    error_message = "alarm_p99_latency_threshold_seconds must be positive."
+  }
+}
+
 variable "alarm_latency_threshold_seconds" {
   description = "Average HTTP request latency in seconds above which the latency alarm fires"
   type        = number
@@ -956,7 +967,7 @@ variable "guardian_tx_prover_url" {
 }
 
 variable "guardian_tx_prover_url_secret_arn" {
-  description = "Secrets Manager secret ARN holding the remote transaction prover URL, used instead of guardian_tx_prover_url"
+  description = "Secrets Manager secret ARN holding the remote transaction prover URL, used instead of guardian_tx_prover_url. When the secret is encrypted with a customer-managed KMS key, the task execution role is also granted kms:Decrypt on that key. The task reads the secret's AWSCURRENT version at start, so after rotating it force a new deployment (aws ecs update-service --force-new-deployment)"
   type        = string
   default     = ""
 }

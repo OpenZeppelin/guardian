@@ -580,13 +580,29 @@ once come back synchronously and create nothing.
 - **`GUARDIAN_EXECUTION_PROVING_FAILED`, with a message starting "the prover refused the
   transaction".** The prover answered with a permanent error, such as an invalid argument, and the
   message carries its whole cause chain. Transport failures and transient gRPC codes
-  (unavailable, deadline exceeded, connection errors, i/o timeouts) never produce this code: they
+  (unavailable, deadline exceeded, connection errors, i/o timeouts, and an HTTP/2 GoAway that tonic
+  reports as `Internal` "h2 protocol error") never produce this code: they
   are retried with backoff under the held reservation. A deadline that keeps firing usually means
   `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (default 300) was lowered below a real proof; the client
   library's own 10 s default is far too short, which is why Guardian always sets its own. If the prover stays unreachable until the transaction's expiration, the
   attempt fails with `GUARDIAN_EXECUTION_EXPIRATION_REACHED` (`meta.bound: "transaction"`),
   and the message carries the last prover error's whole cause chain. `guardian_execution_prover_retries_total` counts
   the retries.
+- **`GUARDIAN_EXECUTION_EXPIRATION_REACHED` (`meta.bound: "transaction"`) with a prover that
+  answers, just slowly.** The transaction sets its own expiration window, and that window is the
+  whole budget for proving plus sending. Built-in proposals script 256 blocks, but the expiration
+  can only be lowered, and a fee faucet with a transfer policy lowers it for every transaction
+  that pays a fee: its policy runs `miden::standards::expiration::apply_default`, which caps the
+  expiration at the reference block plus 20 (`DEFAULT_EXPIRATION_BLOCK_DELTA`). Devnet's fee
+  faucet does, so on devnet every fee-paying transaction expires 20 blocks after its reference
+  block, about one minute at three-second blocks. Treat those 20 blocks as the real budget: a
+  slow prover (Falcon proofs take around 47 s) or a few prover retries can exhaust it. Guardian
+  checks the window once more just before the no-retry boundary and refuses the attempt there,
+  with the proposal intact, unless at least 15 s remain for the send, counted at the chain's
+  measured block time with 2 blocks held in reserve; the message gives the tip, the expiration
+  and the time left. The send itself waits for the node for up to 60 s, never past the window.
+  Point `GUARDIAN_TX_PROVER_URL` at a faster or less loaded prover, then request execution again;
+  the new attempt executes at the new tip with a fresh window.
 - **`GUARDIAN_EXECUTION_CHAIN_BEHIND`.** The node's tip is below the block the proposal's summary
   binds. Retrying once the node catches up works; the proposal is untouched.
 - **`GUARDIAN_EXECUTION_NODE_UNAVAILABLE`.** Guardian could not read its configured node (the tip,
@@ -609,9 +625,10 @@ once come back synchronously and create nothing.
   `scripts/devnet-register-account.sh` mints a funding note to the account, which then has to be
   consumed.
 - **`GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` on a custom proposal.** The request scripts no
-  transaction expiration, so it expires at its approval window (28,800 blocks by default), past
-  the server's `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (default 512). The producer must
-  apply `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` (256) in its script with
+  transaction expiration, and nothing else in it lowers one (a fee faucet with a transfer policy
+  would cap it at 20 blocks), so it expires at its approval window (28,800 blocks by default),
+  past the server's `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (default 512). The producer
+  must apply `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` (256) in its script with
   `exec.::miden::protocol::tx::update_expiration_block_delta`; built-in proposals already do.
 - **`GUARDIAN_EXECUTION_BINDING_MISMATCH` right after a fee or protocol change.** The stored
   request no longer reproduces the summary the cosigners signed. When the log line "the
@@ -646,13 +663,15 @@ once come back synchronously and create nothing.
   outcome, the transaction may never have reached the node. Reconciliation only observes the chain
   and never resends, so the account stays reserved: new execution requests get
   `GUARDIAN_EXECUTION_CONFLICT` and client deltas are refused. Once the chain passes the
-  transaction's recorded expiration block with the account unchanged (256 blocks after the
-  reference block for built-in proposals), it settles as `GUARDIAN_EXECUTION_EXPIRED` and the
+  transaction's recorded expiration block with the account unchanged (at most 256 blocks after
+  the reference block for built-in proposals, and 20 for a fee-paying transaction on devnet,
+  whose fee faucet caps it), it settles as `GUARDIAN_EXECUTION_EXPIRED` and the
   proposal is deleted; the cosigners must propose and sign again. This is an accepted risk, not a
   fault to repair by hand. The signal is `guardian_execution_oldest_reservation_age_seconds`
   climbing; it drops back once the execution settles. The AWS reservation-age alarm
-  (`alarm_execution_reservation_age_threshold_seconds`, default 1800 s) sits above the 256-block
-  window, so it fires only when a reservation outlives it, which is worth investigating.
+  (`alarm_execution_reservation_age_threshold_seconds`, default 1800 s) sits above even the
+  256-block window built-in proposals script, so it fires only when a reservation outlives the
+  transaction's expiration, which is worth investigating.
 
 ### Rate limits triggered
 
@@ -783,13 +802,13 @@ Synchronous refusals of `POST /delta/proposal/execution` and the proposal-creati
 
 | Code | HTTP | First check |
 |---|---|---|
-| `GUARDIAN_PROVING_UNAVAILABLE` | 503 (gRPC `Unavailable`) | The server offers no execution; see its startup log. |
+| `GUARDIAN_PROVING_UNAVAILABLE` | 409 (gRPC `FailedPrecondition`) | The server offers no execution; see its startup log. |
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 (gRPC `FailedPrecondition`) | Fewer valid cosigner signatures than the effective threshold. |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 (gRPC `FailedPrecondition`) | The proposal was created by a self-executed client; create it again from a Guardian-executable one. |
 | `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 (gRPC `FailedPrecondition`) | Read `meta.reason`. `switch_guardian`: GUARDIAN never executes a guardian switch, even when the request sets `allow_private_note`, because only the client can finish the handoff (register the account at the new GUARDIAN and switch its endpoint); a GUARDIAN-executed switch would leave the account stuck. `private_note`: the transaction the cosigners signed creates a private output note and the request did not set `allow_private_note`; only the executing party learns a private note's details, so GUARDIAN executes one only on that opt-in, which is part of the signed request. `meta.proposal_type` names the proposal's type either way. Nothing was reserved and the proposal stays pending: execute it locally from the wallet, or, for `private_note`, request execution again with `allow_private_note` set. |
 | `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active. |
 | `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the same account and has not reserved it yet, the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions (default 64), a safety bound on memory, or the process is shutting down (its drain refuses every new execution). Nothing was reserved. Retryable; retry shortly. If `guardian_execution_capacity_refusals_total` keeps rising, give the task more memory before raising the bound. |
-| `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone. |
+| `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone and no execution record is left, which is also how a finished execution reads once `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` deleted its records. |
 | `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 (gRPC `InvalidArgument`) | Stored request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`. |
 | `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED` | 409 (gRPC `FailedPrecondition`) | The account's viable proposals already hold `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`; finish or discard one. |
 

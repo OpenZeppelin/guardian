@@ -10,6 +10,7 @@ use crate::services::{normalize_payload, resolve_account_allowing_session};
 use crate::storage::{ProposalAdmission, ProposalWrite};
 use guardian_shared::DeltaSignature;
 use serde::Deserialize;
+use std::sync::Arc;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
@@ -239,10 +240,15 @@ pub async fn push_delta_proposal(
         .unwrap_or_default();
 
     // Validate delta using network client (check validity but don't apply)
-    state
-        .network_client
-        .verify_delta(&tail.commitment, &tail.state_json, tx_summary)
-        .map_err(GuardianError::InvalidDelta)?;
+    {
+        let client = state.network_client.clone();
+        let prev_commitment = tail.commitment.clone();
+        let prev_state_json = tail.state_json.clone();
+        let tx_summary = Arc::new(tx_summary.clone());
+        crate::network::reconstructor()
+            .run(move || client.verify_delta(&prev_commitment, &prev_state_json, &tx_summary))
+            .await?;
+    }
     let commitment = proposal_id.map_err(GuardianError::InvalidDelta)?;
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 

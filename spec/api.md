@@ -155,6 +155,7 @@ approval prompts: the wallet still signs every transaction summary.
 - **Routes.** Session credentials are accepted only on the session-eligible
   routes: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
   `GET /delta/history`, `GET /delta/proposal`, `GET /delta/proposal/single`,
+  `GET /delta/proposal/execution`, `GET /delta/execution/current`,
   `POST /delta/proposal` and `PUT /delta/proposal` (and their gRPC twins).
   Every other route is wallet-only by default, including routes added later:
   after the delegated signature verifies and the session resolves (an ended
@@ -354,6 +355,13 @@ bytes, and refuses a request that does not decode (`GUARDIAN_EXECUTION_REQUEST_C
 not reproduce the signed summary (`GUARDIAN_EXECUTION_BINDING_MISMATCH`). A self-executed proposal omits the field, so its wire shape is unchanged, and the
 proposal id is the summary commitment either way.
 
+Only the single-proposal reads (`GET /delta/proposal/single`, `GetDeltaProposal`) and the
+create and sign responses return `transaction_request`. Listings (`GET /delta/proposal`,
+`GetDeltaProposals`) omit it on both transports: each request may be as large as
+`GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`, so a listing that carried every stored request could
+outgrow a client's message limit (tonic decodes at most 4 MiB). Nothing a cosigner verifies,
+signs or exports reads the field, and the proposal id never covers it.
+
 Every proposal the multisig SDKs create also carries `bound_block_num`, the `u32` block its transaction summary binds. It is not signed and the server does not read it: the clients read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees, so a wrong value can deny a proposal, never get a wrong one accepted. Proposals created by 0.18.0 clients carry `chain_anchor` (a base64 Miden `ChainAnchor`) instead; current clients take their block from the summary, never read the anchor and never write it.
 
 EVM proposals use EVM-specific request and response shapes under `/evm/proposals`. They do not use `DeltaObject` or the `/delta/proposal` envelope.
@@ -534,12 +542,12 @@ component schemas.
 | client | `GET /status` | public | Server liveness, version, environment, uptime, execution capability, session parameters |
 | client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |
-| client | `GET /delta/proposal` | signed headers | List pending proposals |
+| client | `GET /delta/proposal` | signed headers | List pending proposals (without `transaction_request`; see [Proposal Payloads](#proposal-payloads)) |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
 | client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
 | client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id, allow_private_note}`; `allow_private_note` defaults to `false` and is signed |
-| client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when never executed, or when retention deleted its records: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
+| client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
 | client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
 | client | `POST /session/logout` | session-key-signed headers | Revoke this session |

@@ -288,13 +288,25 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
 - `ProposalPayload` has a new public field, `transaction_request`, so a struct literal must set
   it (`None` for a self-executed proposal) or start from `ProposalPayload::new` and
   `with_transaction_request`.
-- `MultisigError` has two new variants, `GuardianExecutionRefused { code, message, retryable,
-  retry_after, blocking_proposal_id, reason }` (`reason` is the server's `meta.reason`, for
-  example `parked_delta`) and `GuardianExecutionWaitTimedOut { proposal_id,
-  deadline, last_observed }` (from `wait_for_guardian_execution`), so an exhaustive `match` on
-  the error needs an arm for each.
-- `guardian_client::GuardianClient::execute_delta_proposal` takes a third argument,
-  `allow_private_note: bool`. Guardian refuses a transaction that creates a private output note
+- `MultisigError` has new variants, so an exhaustive `match` on the error needs an arm for
+  each:
+  <!-- multisig-error-variants:start -->
+  - `GuardianExecutionRefused { code, message, retryable, retry_after, blocking_proposal_id,
+    reason }`: Guardian refused an execution request with a stable code (`reason` is the
+    server's `meta.reason`, for example `parked_delta`).
+  - `LocalExecutionRequired { proposal_id, reason }`: the proposal must be executed by a
+    client, not by Guardian; `reason` is a `LocalExecutionReason`.
+  - `ProposalNotHeldLocally { proposal_id }`: execution was requested for a proposal this
+    client has not listed, fetched, signed or created, so it cannot check it first.
+  - `GuardianExecutionWaitTimedOut { proposal_id, deadline, last_observed }`: from
+    `wait_for_guardian_execution`, whose deadline passed while the execution kept running.
+  - `GuardianProposalRefused { code, message, retryable, retry_after }`: Guardian refused a
+    proposal push with a stable code, carried as the wire string (for example
+    `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`); a push failure
+    without a Guardian code stays `GuardianServer`.
+  <!-- multisig-error-variants:end -->
+- `guardian_client::GuardianClient::execute_delta_proposal` is new:
+  `execute_delta_proposal(account_id, proposal_id, allow_private_note: bool)`. Guardian refuses a transaction that creates a private output note
   (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`) unless it is `true`. The
   flag is signed, and the gRPC execute payload is tagged `guardian.ExecuteDeltaProposal`, so a
   client that signs the plain request bytes is refused with `authentication_failed`.
@@ -310,17 +322,18 @@ Source-level changes in the TypeScript packages:
   `execution_busy`, `execution_conflict`, `execution_not_found`,
   `proposal_executes_locally`, `proposal_missing_transaction_request`, `proposal_not_ready`,
   `proposal_request_too_large` and `proving_unavailable`.
-- `GuardianHttpClient.executeDeltaProposal` takes an optional third argument,
-  `{ allowPrivateNote?: boolean }`, and always sends and signs `allow_private_note` in the body.
-  A direct HTTP caller must sign the body with that field present (`false` when it does not opt
+- `GuardianHttpClient.executeDeltaProposal` is new:
+  `executeDeltaProposal(accountId, proposalId, options?: { allowPrivateNote?: boolean })`.
+  It always sends and signs `allow_private_note` in the body. A direct HTTP caller must sign the body with that field present (`false` when it does not opt
   in); `GuardianErrorMeta.reason` (`switch_guardian` or `private_note`) says why a
   `proposal_executes_locally` refusal left the proposal to local execution. Its type is
   `GuardianErrorReason`, which also includes `parked_delta`: the reason on a
   `conflict_pending_delta` refusing an execution while a parked delta may still land. Code that
   assigns `meta.reason` to a `LocalExecutionReason` must narrow it first.
-- `StatusResponse.execution` is a new required field (`{ enabled: true }` or
-  `{ enabled: false, reason }`), so code that builds a `StatusResponse` (a mock, for example)
-  must set it.
+- `StatusResponse.execution` is a new optional field (`{ enabled: true }` or
+  `{ enabled: false, reason }`). `getStatus()` leaves it out when the server sends none, as a
+  Guardian that predates Guardian execution does, so a client still starts a session against
+  an older server; absent means the server does not offer Guardian execution.
 - `Multisig.createProposal` (`@openzeppelin/miden-multisig-client`) throws on a client created
   with `executionMode: 'guardian_executable'`, because it takes a summary without the request
   Guardian would execute. Use a typed `create*Proposal` method or `createCustomProposal` there.

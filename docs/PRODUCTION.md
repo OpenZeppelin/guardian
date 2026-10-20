@@ -258,7 +258,8 @@ database's guarantees:
   Reconciliation only observes the chain and never resends, so the account
   stays reserved (new executions get `GUARDIAN_EXECUTION_CONFLICT`, client
   deltas are refused) until the chain passes the transaction's expiration
-  (256 blocks after the reference block for built-in proposals). It then
+  (at most 256 blocks after the reference block for built-in proposals; 20
+  for a fee-paying transaction on devnet, whose fee faucet caps it). It then
   settles as `GUARDIAN_EXECUTION_EXPIRED`, the proposal is deleted, and the
   cosigners must propose and sign again. The signal is
   `guardian_execution_oldest_reservation_age_seconds` climbing; the AWS
@@ -274,7 +275,8 @@ database's guarantees:
   Active attempts and the newest attempt of a proposal that still exists are
   never deleted, so attempt numbering continues and a client waiting on a
   live proposal still reads its outcome; a status read for a proposal whose
-  records were deleted gets `GUARDIAN_EXECUTION_NOT_FOUND`. The sweep is
+  records were deleted gets `proposal_not_found`, because only a deleted
+  proposal loses its last record. The sweep is
   idempotent, so replicas need no coordination; each logs a summary at
   `info` and adds what it deleted to `guardian_execution_records_pruned_total`.
   Sizing: retained rows grow with executions per day times the retention

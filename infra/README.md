@@ -252,7 +252,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_evm_rpc_urls_secret_arn` | `""` | Existing EVM RPC URLs secret ARN; takes precedence over the managed value |
 | `guardian_execution_enabled` | `null` | `true` fails the plan without a prover URL or secret ARN; `false` turns execution off on purpose and refuses a prover; unset infers it from the prover but fails the plan rather than delete the stack's existing managed prover secret. Needs `secretsmanager:ListSecrets` at plan time |
 | `guardian_tx_prover_url` | `""` | Remote transaction prover URL; creates a stack-scoped secret (7-day recovery window) and turns Guardian execution on. An `http(s)` URL with a host and no userinfo, query or fragment, or the server refuses to start: a private prover is restricted at the network level, never by credentials in the URL |
-| `guardian_tx_prover_url_secret_arn` | `""` | Existing prover URL secret ARN; takes precedence over the managed value |
+| `guardian_tx_prover_url_secret_arn` | `""` | Existing prover URL secret ARN; takes precedence over the managed value. A customer-managed KMS key on it is granted to the task execution role (`kms:Decrypt`). Read at `AWSCURRENT` when a task starts, so force a new deployment after rotating it; a changed `guardian_tx_prover_url` instead rolls the tasks by itself, since the task definition pins the managed secret's version |
 | `guardian_proving_enabled` | `null` | Overrides `GUARDIAN_PROVING_ENABLED`; `false` refuses execution requests while executions in flight still settle |
 | `guardian_tx_prover_timeout_secs` | `null` | Overrides `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (server default 300) |
 | `guardian_execution_lease_secs` | `null` | Overrides `GUARDIAN_EXECUTION_LEASE_SECS` (server default 120, at most 3600) |
@@ -316,6 +316,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `alarm_slack_channel_id` | `""` | Slack channel ID (`C...`) receiving this stack's alarm notifications; requires `alarm_notifications_enabled` |
 | `alarm_error_rate_threshold_percent` | `5` | HTTP 5xx / gRPC error-rate alarm threshold |
 | `alarm_latency_threshold_seconds` | `1` | Average HTTP latency alarm threshold |
+| `alarm_p99_latency_threshold_seconds` | `2` | ALB p99 target response time alarm threshold |
 | `alarm_cpu_threshold_percent` | `85` | ECS CPU saturation alarm threshold |
 | `alarm_memory_threshold_percent` | `90` | ECS memory saturation alarm threshold |
 | `alarm_execution_failures_threshold` | `1` | Operator-side execution failures (`PROVING_FAILED`, `NODE_UNAVAILABLE`, `CHAIN_INCONSISTENT`, `SEALING_FAILED`, `ACKNOWLEDGEMENT_FAILED`) per 5-minute period tolerated before the execution-failures alarm fires |

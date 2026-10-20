@@ -44,7 +44,7 @@ use crate::metrics::execution::{record_chain_view, record_prover_retry, record_p
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::execute_proposal::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SignatureSelection, SubmissionOutcome,
+    ProvenTransactionInfo, SendWindow, SignatureSelection, SubmissionOutcome,
 };
 use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
@@ -53,10 +53,14 @@ use crate::storage::{ExecutionFailure, ExecutionFailureCode};
 
 const PROVER_BACKOFF_START: Duration = Duration::from_secs(1);
 const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
+/// Fewer blocks than this between the reference block and the tip measure the chain's pace too
+/// coarsely against one-second timestamps, so the pace is taken over the chain since genesis.
+const MIN_MEASURED_BLOCKS: u32 = 4;
 
 /// Executes Guardian-executable proposals against a Miden node and remote prover.
 pub struct MidenExecutor {
     rpc: Arc<dyn NodeRpcClient>,
+    submission_rpc: Arc<dyn NodeRpcClient>,
     prover: Arc<dyn TransactionProver + Send + Sync>,
     genesis: tokio::sync::OnceCell<BlockHeader>,
 }
@@ -67,10 +71,18 @@ impl MidenExecutor {
         prover: Arc<dyn TransactionProver + Send + Sync>,
     ) -> Self {
         Self {
+            submission_rpc: rpc.clone(),
             rpc,
             prover,
             genesis: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// Sends transactions through `rpc`, a client whose own deadline is long enough for the
+    /// slowest send the expiration window allows; reads keep the node's shorter deadline.
+    pub fn with_submission_rpc(mut self, rpc: Arc<dyn NodeRpcClient>) -> Self {
+        self.submission_rpc = rpc;
+        self
     }
 
     /// The node's genesis header, read once and pinned on the RPC client so later reads are
@@ -79,10 +91,10 @@ impl MidenExecutor {
         self.genesis
             .get_or_try_init(|| async {
                 let genesis = fetch_genesis(self.rpc.as_ref()).await?;
-                if self.rpc.has_genesis_commitment().is_none() {
-                    self.rpc
-                        .set_genesis_commitment(genesis.commitment())
-                        .await?;
+                for rpc in [&self.rpc, &self.submission_rpc] {
+                    if rpc.has_genesis_commitment().is_none() {
+                        rpc.set_genesis_commitment(genesis.commitment()).await?;
+                    }
                 }
                 Ok(genesis)
             })
@@ -258,17 +270,31 @@ fn with_sources(error: &(dyn std::error::Error + 'static)) -> String {
     text
 }
 
+/// Connection-level HTTP/2 failures, such as a GoAway from a prover recycling its connections.
+/// tonic reports them as `Internal`, a code that otherwise means the prover refused the proof.
+const H2_CONNECTION_SIGNALS: [&str; 3] = ["h2 protocol error", "goaway", "go away"];
+
+fn is_connection_reset(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |cause| cause.source()).any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        H2_CONNECTION_SIGNALS
+            .iter()
+            .any(|signal| message.contains(signal))
+    })
+}
+
 fn is_transient(error: &(dyn std::error::Error + 'static)) -> bool {
-    is_transient_error_with(
-        error,
-        |cause| {
-            cause
-                .downcast_ref::<tonic::Status>()
-                .map(|status| grpc_code_evidence(status.code() as i32))
-                .unwrap_or(StructuredEvidence::Indeterminate)
-        },
-        &[RPC_TRANSPORT_SIGNALS.as_slice(), &["timed out"]].concat(),
-    )
+    is_connection_reset(error)
+        || is_transient_error_with(
+            error,
+            |cause| {
+                cause
+                    .downcast_ref::<tonic::Status>()
+                    .map(|status| grpc_code_evidence(status.code() as i32))
+                    .unwrap_or(StructuredEvidence::Indeterminate)
+            },
+            &[RPC_TRANSPORT_SIGNALS.as_slice(), &["timed out"]].concat(),
+        )
 }
 
 #[async_trait]
@@ -428,7 +454,9 @@ impl ProposalExecutor for MidenExecutor {
 
         Ok(Box::new(MidenAttempt {
             rpc: self.rpc.clone(),
+            submission_rpc: self.submission_rpc.clone(),
             prover: self.prover.clone(),
+            genesis: genesis.clone(),
             account,
             request,
             summary_payload: reproduced.to_json(),
@@ -528,7 +556,9 @@ fn log_output_note_difference(signed: &TransactionSummary, reproduced: &Transact
 
 struct MidenAttempt {
     rpc: Arc<dyn NodeRpcClient>,
+    submission_rpc: Arc<dyn NodeRpcClient>,
     prover: Arc<dyn TransactionProver + Send + Sync>,
+    genesis: BlockHeader,
     account: Account,
     request: StoredRequest,
     summary: TransactionSummary,
@@ -568,6 +598,9 @@ impl MidenAttempt {
             || proven.account_id() != executed.account_id()
             || proven.account_update().final_state_commitment()
                 != executed.final_account().to_commitment()
+            || proven.ref_block_num() != executed.block_header().block_num()
+            || proven.ref_block_commitment() != executed.block_header().commitment()
+            || proven.expiration_block_num() != executed.expiration_block_num()
         {
             return Err(refused(format!(
                 "the prover returned transaction {} for executed transaction {}",
@@ -796,7 +829,35 @@ impl ExecutionAttempt for MidenAttempt {
         Ok(())
     }
 
-    async fn submit(&mut self) -> SubmissionOutcome {
+    async fn send_window(&self) -> Result<SendWindow, ExecutionFailure> {
+        let proven = self
+            .proven
+            .as_ref()
+            .expect("the attempt proves before it reads its send window");
+        let tip = self
+            .rpc
+            .get_block_header_by_number(None, false)
+            .await
+            .map(|(header, _)| header)
+            .map_err(|e| {
+                ExecutionFailure::with_logged_cause(
+                    ExecutionFailureCode::NodeUnavailable,
+                    "Guardian could not read the chain tip from the node",
+                    &e,
+                )
+            })?;
+        Ok(SendWindow {
+            tip: tip.block_num().as_u32(),
+            expiration_block: proven.expiration_block_num().as_u32(),
+            block_interval: block_interval(
+                self.store.chain().reference_header(),
+                &self.genesis,
+                &tip,
+            ),
+        })
+    }
+
+    async fn submit(&mut self, deadline: Duration) -> SubmissionOutcome {
         let proven = self
             .proven
             .as_ref()
@@ -805,11 +866,42 @@ impl ExecutionAttempt for MidenAttempt {
             .sealed
             .take()
             .expect("the attempt seals before it submits, and submits once");
-        match self.rpc.submit_proven_transaction(proven, sealed).await {
-            Ok(_) => SubmissionOutcome::Accepted,
-            Err(error) => classify_submission_error(&error),
+        match tokio::time::timeout(
+            deadline,
+            self.submission_rpc
+                .submit_proven_transaction(proven, sealed),
+        )
+        .await
+        {
+            Ok(Ok(_)) => SubmissionOutcome::Accepted,
+            Ok(Err(error)) => classify_submission_error(&error),
+            Err(_) => SubmissionOutcome::Unknown {
+                reason: format!("the node did not answer within {}s", deadline.as_secs()),
+            },
         }
     }
+}
+
+/// The chain's time per block, measured over the blocks since the attempt's reference block, or
+/// over the whole chain when too few have passed to measure against one-second timestamps.
+fn block_interval(reference: &BlockHeader, genesis: &BlockHeader, tip: &BlockHeader) -> Duration {
+    let measured_from = if tip
+        .block_num()
+        .as_u32()
+        .saturating_sub(reference.block_num().as_u32())
+        >= MIN_MEASURED_BLOCKS
+    {
+        reference
+    } else {
+        genesis
+    };
+    let blocks = tip
+        .block_num()
+        .as_u32()
+        .saturating_sub(measured_from.block_num().as_u32())
+        .max(1);
+    let seconds = tip.timestamp().saturating_sub(measured_from.timestamp());
+    Duration::from_secs(u64::from(seconds)) / blocks
 }
 
 /// Past the boundary a rejection deletes the proposal, so only a node that answered and refused
@@ -875,6 +967,16 @@ mod tests {
         assert!(is_transient(&ProveRefused(tonic::Status::unavailable(
             "prover busy"
         ))));
+    }
+
+    #[test]
+    fn an_http2_goaway_from_the_prover_is_retried() {
+        assert!(is_transient(&ProveRefused(tonic::Status::internal(
+            "h2 protocol error: error reading a body from connection"
+        ))));
+        assert!(is_transient(&wrapped(
+            "status: Internal, message: \"h2 protocol error: connection error received: not a result of an error (GoAway)\""
+        )));
     }
 
     #[test]
