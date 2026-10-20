@@ -685,7 +685,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Pending proposals",
+            "description": "Pending proposals, each without its stored `transaction_request` (the single-proposal read returns it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1114,7 +1114,7 @@
             }
           },
           "409": {
-            "description": "Not ready, not Guardian-executable, left to local execution, or the account is busy",
+            "description": "Not ready, not Guardian-executable, left to local execution, the account is busy, or this server does not offer Guardian execution",
             "content": {
               "application/json": {
                 "schema": {
@@ -1135,16 +1135,6 @@
           },
           "429": {
             "description": "Rate limit exceeded",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "This server does not offer Guardian execution",
             "content": {
               "application/json": {
                 "schema": {

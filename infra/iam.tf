@@ -66,6 +66,17 @@ resource "aws_iam_role_policy" "ecs_task_execution_database_secret" {
             data.aws_kms_key.dashboard_cursor[0].arn
           ]
         }
+      ] : [],
+      length(data.aws_kms_key.tx_prover_url) > 0 ? [
+        {
+          Effect = "Allow"
+          Action = [
+            "kms:Decrypt"
+          ]
+          Resource = [
+            data.aws_kms_key.tx_prover_url[0].arn
+          ]
+        }
       ] : []
     )
   })

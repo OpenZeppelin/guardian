@@ -626,7 +626,10 @@ domain-separated from a signed status read (see [Miden Request Signing](api.md#m
    declares the summary's bound block, carries its auth arguments with their preimage, the
    summary binds an approval expiration, and every consumed note is pinned. Stop if the chain
    tip is already at or past the approval expiration.
-3. Take the chain tip as the reference block `R` and build the chain view at `R`, tracking the
+3. Check that the account's guardian slot holds the commitment of the key Guardian acknowledges
+   with (`GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` otherwise: no number of cosigner signatures
+   can authorize the transaction then).
+   Take the chain tip as the reference block `R` and build the chain view at `R`, tracking the
    bound block and every authenticated note's creation block.
 4. Reproduce the transaction unsigned at `R` and confirm it yields the signed summary.
 5. Issue Guardian's acknowledgment through the internal path, which stores no candidate.
@@ -638,15 +641,24 @@ domain-separated from a signed status read (see [Miden Request Signing](api.md#m
 10. Seal the transaction inputs to the validator encryption key after verifying its
     attestations.
 11. Re-check that the account is still at the proposal's base, active, and guarded by this
-    Guardian, and that the proven expiration is within the configured horizon.
+    Guardian, and that the proven expiration is within the configured horizon. Read the tip
+    again and refuse (`GUARDIAN_EXECUTION_EXPIRATION_REACHED`) unless at least 15 s of the
+    transaction's window remain for the send, counted at the chain's block time measured from
+    its own block timestamps, with 2 blocks below the expiration held in reserve.
 12. **The no-retry boundary.** In one storage write, admit the candidate delta and record the
     submission evidence (transaction id, expected commitment, expiration block). The same write
     refuses while a parked delta on the account's state could still land
     (`GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE`): executing beside it would race it, and Guardian
     would lose its record of that delta if it won. Nothing after this point is proved or sent
     again.
-13. Re-validate the fence; a worker that lost ownership sends nothing.
-14. Send the sealed, proven transaction once.
+13. Re-validate the fence; a worker that lost ownership sends nothing. A storage error here
+    leaves ownership unknown, so the fenced claim is retried while the worker's lease is held
+    and the send window is open. The window is checked before every claim and again after the
+    one that succeeds: nothing is sent with less than 15 s of it left.
+14. Send the sealed, proven transaction once, waiting for the node's answer for up to 60 s and
+    never past the window measured at step 11 (a node cut off mid-request drops the
+    transaction). The worker keeps renewing its lease and reservation, recording `Sent`, while
+    it waits, so reconciliation never takes over an attempt whose send is still in flight.
 
 A failure before step 12 records a `failed` outcome with its code and releases the account;
 the proposal stays executable. A definite rejection at step 14 deletes the candidate and the
@@ -676,7 +688,9 @@ sequenceDiagram
 Only promotion writes `committed`. When a worker's lease lapses, the reconciler takes the
 reservation over by compare-and-set on its fence. Before the boundary it fails the attempt
 (`GUARDIAN_EXECUTION_LEASE_EXPIRED`, or `GUARDIAN_EXECUTION_ABANDONED` on the first pass after a
-restart). A process that is asked to stop (SIGTERM or Ctrl-C) refuses new executions as busy,
+restart). A storage outage longer than the lease, such as a database crash the Guardian process
+survives, therefore reads `GUARDIAN_EXECUTION_LEASE_EXPIRED`; the two codes are retried the same
+way. A process that is asked to stop (SIGTERM or Ctrl-C) refuses new executions as busy,
 fails its own attempts short of the boundary with `GUARDIAN_EXECUTION_ABANDONED`, and gives
 attempts past it up to 8 seconds to finish their send before exiting. An attempt still running
 when that grace ends (one past the boundary still sending, or one whose local execution is on the
@@ -706,9 +720,10 @@ the finished attempts (released, with an outcome) resolved more than
 is gone or that a newer attempt of the same proposal supersedes, with their submission evidence
 and outcome, in bounded batches. An active attempt and the newest attempt of a proposal storage
 still holds are never deleted, so the next attempt of a live proposal is still numbered one past
-its newest and the latest execution of a live proposal stays readable. A status read for a
-proposal whose records were deleted returns `GUARDIAN_EXECUTION_NOT_FOUND`, as for one never
-executed. The sweep is idempotent and needs no lease.
+its newest and the latest execution of a live proposal stays readable. Only a deleted proposal
+loses its last attempt, so a status read for a proposal whose records were deleted returns
+`proposal_not_found`, as for any proposal storage no longer holds;
+`GUARDIAN_EXECUTION_NOT_FOUND` is reserved for a proposal that exists and was never executed. The sweep is idempotent and needs no lease.
 
 ## Release sweep
 

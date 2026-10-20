@@ -265,8 +265,8 @@ async fn refusals_carry_the_same_code_and_status_pair_on_both_transports() {
         unavailable.http_execute(PROPOSAL).await,
         unavailable.grpc_execute(PROPOSAL).await,
         "GUARDIAN_PROVING_UNAVAILABLE",
-        StatusCode::SERVICE_UNAVAILABLE,
-        tonic::Code::Unavailable,
+        StatusCode::CONFLICT,
+        tonic::Code::FailedPrecondition,
     );
 
     let not_ready = Fixture::new(Script {

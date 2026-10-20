@@ -298,7 +298,9 @@ build_tf_vars() {
   TF_VARS+=("-var" "guardian_evm_allowed_chain_ids_secret_arn=${GUARDIAN_EVM_ALLOWED_CHAIN_IDS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_evm_rpc_urls_secret_arn=${GUARDIAN_EVM_RPC_URLS_SECRET_ARN}")
   TF_VARS+=("-var" "guardian_operator_public_keys_secret_arn=${GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ARN}")
-  TF_VARS+=("-var" "guardian_tx_prover_url_secret_arn=${GUARDIAN_TX_PROVER_URL_SECRET_ARN}")
+  if [ -n "$GUARDIAN_TX_PROVER_URL_SECRET_ARN" ]; then
+    TF_VARS+=("-var" "guardian_tx_prover_url_secret_arn=${GUARDIAN_TX_PROVER_URL_SECRET_ARN}")
+  fi
   if [ -n "$GUARDIAN_TX_PROVER_URL" ]; then
     TF_VARS+=("-var" "guardian_tx_prover_url=${GUARDIAN_TX_PROVER_URL}")
   fi

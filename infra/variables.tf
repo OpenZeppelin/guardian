@@ -967,7 +967,7 @@ variable "guardian_tx_prover_url" {
 }
 
 variable "guardian_tx_prover_url_secret_arn" {
-  description = "Secrets Manager secret ARN holding the remote transaction prover URL, used instead of guardian_tx_prover_url"
+  description = "Secrets Manager secret ARN holding the remote transaction prover URL, used instead of guardian_tx_prover_url. When the secret is encrypted with a customer-managed KMS key, the task execution role is also granted kms:Decrypt on that key. The task reads the secret's AWSCURRENT version at start, so after rotating it force a new deployment (aws ecs update-service --force-new-deployment)"
   type        = string
   default     = ""
 }
