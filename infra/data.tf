@@ -36,6 +36,18 @@ data "aws_kms_key" "dashboard_cursor" {
   key_id = data.aws_secretsmanager_secret.dashboard_cursor[0].kms_key_id
 }
 
+# An operator-supplied prover URL secret, read so a customer-managed KMS key on it can be
+# granted to the task execution role.
+data "aws_secretsmanager_secret" "tx_prover_url" {
+  count = var.guardian_tx_prover_url_secret_arn != "" ? 1 : 0
+  arn   = var.guardian_tx_prover_url_secret_arn
+}
+
+data "aws_kms_key" "tx_prover_url" {
+  count  = var.guardian_tx_prover_url_secret_arn != "" && try(data.aws_secretsmanager_secret.tx_prover_url[0].kms_key_id, "") != "" ? 1 : 0
+  key_id = data.aws_secretsmanager_secret.tx_prover_url[0].kms_key_id
+}
+
 # Get default VPC if vpc_id is not specified
 data "aws_vpc" "default" {
   count   = var.vpc_id == "" ? 1 : 0
@@ -173,6 +185,7 @@ locals {
   managed_tx_prover_url_secret_exists                         = contains(data.aws_secretsmanager_secrets.managed_tx_prover_url.names, local.tx_prover_url_secret_name)
   managed_tx_prover_url_secret_enabled                        = var.guardian_tx_prover_url_secret_arn == "" && var.guardian_tx_prover_url != ""
   tx_prover_url_secret_arn                                    = var.guardian_tx_prover_url_secret_arn != "" ? var.guardian_tx_prover_url_secret_arn : (local.managed_tx_prover_url_secret_enabled ? aws_secretsmanager_secret.tx_prover_url[0].arn : "")
+  tx_prover_url_secret_value_from                             = local.managed_tx_prover_url_secret_enabled ? "${aws_secretsmanager_secret.tx_prover_url[0].arn}:::${aws_secretsmanager_secret_version.tx_prover_url[0].version_id}" : local.tx_prover_url_secret_arn
   managed_operator_public_keys_secret_enabled                 = var.guardian_operator_public_keys_secret_arn == "" && length(var.guardian_operator_public_keys) > 0
   operator_public_keys_secret_arn                             = var.guardian_operator_public_keys_secret_arn != "" ? var.guardian_operator_public_keys_secret_arn : (local.managed_operator_public_keys_secret_enabled ? aws_secretsmanager_secret.operator_public_keys[0].arn : "")
 

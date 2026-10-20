@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use guardian_client::testing::mocks::{MockGuardianService, start_mock_server};
+use guardian_client::testing::mocks::{MockGuardianHandle, MockGuardianService, start_mock_server};
 use guardian_shared::FromJson;
 use guardian_shared::request_envelope::TransactionRequestEnvelope;
 use miden_client::transaction::TransactionSummary;
@@ -124,17 +124,16 @@ async fn propose_on(
     .await
 }
 
-/// [`propose_on`] with per-proposal `options`.
-async fn propose_on_with(
+/// A client in `mode` holding an account of `shape`, connected to `guardian`, and the account's
+/// signers.
+async fn proposing_client(
     dir: &std::path::Path,
     mode: ProposalExecutionMode,
-    options: ProposalOptions,
     shape: AccountShape,
-    transaction_type: impl FnOnce(Vec<Word>) -> TransactionType,
-) -> Proposed {
+    guardian: MockGuardianService,
+) -> (MultisigClient, MockGuardianHandle, Vec<Word>) {
     let keystore: Arc<dyn KeyManager> = Arc::new(GuardianKeyStore::generate());
     let (account, signers) = shape.build(keystore.commitment());
-    let transaction_type = transaction_type(signers);
     let api = chain_with_notes(vec![]);
     let (mut client, _store) =
         offline_client_parts_with_keystore(dir, api.clone(), None, keystore).await;
@@ -144,7 +143,6 @@ async fn propose_on_with(
     client.miden_client.sync_state().await.unwrap();
     client.execution_mode = mode;
 
-    let guardian = MockGuardianService::default();
     let handle = guardian.handle();
     let endpoint = start_mock_server(guardian).await.unwrap();
     handle.set_persistent_get_state(registered_state(&account));
@@ -152,9 +150,21 @@ async fn propose_on_with(
         .set_guardian_endpoint(&endpoint, false)
         .await
         .unwrap();
+    (client, handle, signers)
+}
 
+/// [`propose_on`] with per-proposal `options`.
+async fn propose_on_with(
+    dir: &std::path::Path,
+    mode: ProposalExecutionMode,
+    options: ProposalOptions,
+    shape: AccountShape,
+    transaction_type: impl FnOnce(Vec<Word>) -> TransactionType,
+) -> Proposed {
+    let (mut client, handle, signers) =
+        proposing_client(dir, mode, shape, MockGuardianService::default()).await;
     let _ = client
-        .propose_transaction_with_options(transaction_type, options)
+        .propose_transaction_with_options(transaction_type(signers), options)
         .await;
     let pushed = handle.pushed_proposals();
     assert_eq!(pushed.len(), 1, "the proposal was pushed once");
@@ -164,6 +174,54 @@ async fn propose_on_with(
         client,
         payload,
         summary,
+    }
+}
+
+/// A proposal GUARDIAN refuses to store surfaces as a typed refusal carrying the server's code
+/// and retry meta, not as an untyped server error.
+#[tokio::test]
+async fn a_refused_push_surfaces_typed_with_the_server_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let refusal = tonic::Status::with_details(
+        tonic::Code::InvalidArgument,
+        "refused",
+        serde_json::json!({
+            "code": "GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE",
+            "message": "This transaction is too large for Guardian to store.",
+            "meta": { "retryable": false }
+        })
+        .to_string()
+        .into_bytes()
+        .into(),
+    );
+    let (mut client, handle, _signers) = proposing_client(
+        dir.path(),
+        ProposalExecutionMode::GuardianExecutable,
+        AccountShape::OneSigner,
+        MockGuardianService::default().with_push_delta_proposal(Err(refusal)),
+    )
+    .await;
+
+    let outcome = client
+        .propose_transaction(TransactionType::UpdateProcedureThreshold {
+            procedure: ProcedureName::ReceiveAsset,
+            new_threshold: 1,
+        })
+        .await;
+
+    assert_eq!(handle.pushed_proposals().len(), 1);
+    match outcome {
+        Err(crate::error::MultisigError::GuardianProposalRefused {
+            code,
+            retryable,
+            retry_after,
+            ..
+        }) => {
+            assert_eq!(code, "GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE");
+            assert!(!retryable);
+            assert_eq!(retry_after, None);
+        }
+        other => panic!("expected GuardianProposalRefused, got {other:?}"),
     }
 }
 
@@ -734,7 +792,6 @@ async fn a_listed_proposal_that_fails_verification_is_not_held() {
 
 mod local_execution {
     use guardian_client::ExecutionEnvelope;
-    use guardian_client::testing::mocks::MockGuardianHandle;
     use miden_protocol::account::AccountId;
     use miden_protocol::note::NoteType;
 
@@ -754,6 +811,14 @@ mod local_execution {
 
     impl Requester {
         async fn start() -> Self {
+            Self::answering(Ok).await
+        }
+
+        /// A requester whose GUARDIAN answers an execution request with what `answer` makes of
+        /// an accepted execution.
+        async fn answering(
+            answer: impl FnOnce(ExecutionEnvelope) -> Result<ExecutionEnvelope, tonic::Status>,
+        ) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let keystore: Arc<dyn KeyManager> = Arc::new(GuardianKeyStore::generate());
             let account = multisig_account(keystore.commitment(), Word::from([9u32, 9, 9, 9]), 71);
@@ -778,7 +843,7 @@ mod local_execution {
                 ignored_signatures: 0,
                 updated_at: "2026-10-07T12:00:00Z".to_string(),
             };
-            let guardian = MockGuardianService::default().with_execution(Ok(accepted));
+            let guardian = MockGuardianService::default().with_execution(answer(accepted));
             let handle = guardian.handle();
             let endpoint = start_mock_server(guardian).await.unwrap();
             client
@@ -921,6 +986,34 @@ mod local_execution {
         );
         assert_local(
             requester.request(opted_in()).await,
+            LocalExecutionReason::SwitchGuardian,
+        );
+        assert!(!requester.guardian_was_asked());
+    }
+
+    /// A switch carries no stored request, so a GUARDIAN reached without the local check answers
+    /// `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`. The SDK never lets that answer through:
+    /// it refuses the switch as a local execution before GUARDIAN is contacted.
+    #[tokio::test]
+    async fn a_switch_is_refused_locally_before_guardian_could_answer_missing_request() {
+        let mut requester = Requester::answering(|_| {
+            Err(tonic::Status::with_details(
+                tonic::Code::FailedPrecondition,
+                "refused",
+                serde_json::json!({
+                    "code": "GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST",
+                    "message": "This transaction wasn't created for Guardian to execute.",
+                    "meta": { "retryable": false }
+                })
+                .to_string()
+                .into_bytes()
+                .into(),
+            ))
+        })
+        .await
+        .holding(switch_guardian());
+        assert_local(
+            requester.request(GuardianExecutionRequest::default()).await,
             LocalExecutionReason::SwitchGuardian,
         );
         assert!(!requester.guardian_was_asked());

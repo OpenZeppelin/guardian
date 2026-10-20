@@ -776,6 +776,14 @@ async fn test_every_session_eligible_read_accepts_the_session() {
             "/delta/proposal/single",
             json!({ "account_id": account_id_hex, "commitment": commitment }),
         ),
+        (
+            "/delta/proposal/execution",
+            json!({ "account_id": account_id_hex, "proposal_id": commitment }),
+        ),
+        (
+            "/delta/execution/current",
+            json!({ "account_id": account_id_hex }),
+        ),
     ];
     let start = now_ms();
     for (offset, (path, query)) in (0..).zip(&reads) {
