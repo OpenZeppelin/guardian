@@ -35,7 +35,7 @@ pub fn verify_request_signature(
 
     // Check if this commitment is in the authorized list
     if !authorized_commitments.contains(&sig_commitment_hex) {
-        tracing::error!(
+        tracing::warn!(
             account_id = %account_id,
             sig_commitment = %sig_commitment_hex,
             authorized_count = authorized_commitments.len(),
@@ -51,7 +51,7 @@ pub fn verify_request_signature(
     if public_key.verify(message, &sig) {
         Ok(sig_commitment_hex)
     } else {
-        tracing::error!(
+        tracing::warn!(
             account_id = %account_id,
             timestamp = %timestamp,
             sig_commitment = %sig_commitment_hex,
@@ -92,7 +92,7 @@ pub fn account_id_timestamp_to_digest(
     AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, request_payload.clone())
         .map(|request| request.to_word())
         .map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id_hex,
                 error = %e,
                 "Invalid account ID hex in account_id_timestamp_to_digest"
@@ -105,14 +105,14 @@ pub fn account_id_timestamp_to_digest(
 fn parse_signature(hex_str: &str) -> Result<Signature, String> {
     let hex_str = hex_str.trim_start_matches("0x");
     let bytes = hex::decode(hex_str).map_err(|e| {
-        tracing::error!(
+        tracing::warn!(
             error = %e,
             "Invalid signature hex"
         );
         format!("Invalid signature hex: {e}")
     })?;
     Signature::read_from_bytes(&bytes).map_err(|e| {
-        tracing::error!(
+        tracing::warn!(
             error = %e,
             "Failed to deserialize signature"
         );

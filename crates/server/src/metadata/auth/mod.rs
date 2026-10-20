@@ -189,7 +189,7 @@ impl Auth {
                 }
                 let (_pubkey, signature, timestamp) =
                     credentials.as_signature().ok_or_else(|| {
-                        tracing::error!(
+                        tracing::warn!(
                             account_id = %account_id,
                             "MidenFalconRpo requires signature credentials but got different type"
                         );
@@ -209,7 +209,7 @@ impl Auth {
             } => {
                 let (pubkey, signature, timestamp) =
                     credentials.as_signature().ok_or_else(|| {
-                        tracing::error!(
+                        tracing::warn!(
                             account_id = %account_id,
                             "MidenEcdsa requires signature credentials but got different type"
                         );
@@ -263,7 +263,7 @@ impl TryFrom<crate::api::grpc::guardian::AuthConfig> for Auth {
                     .collect::<Result<Vec<_>, _>>()?,
             }),
             None => {
-                tracing::error!("Auth type not specified in AuthConfig");
+                tracing::warn!("Auth type not specified in AuthConfig");
                 Err("Auth type not specified".to_string())
             }
         }
