@@ -14,6 +14,8 @@
 //! - `public_note_backfill` - Recovery primitive: historical public-note backfill by tag
 //! - `helpers` - Internal GUARDIAN client helpers
 
+#[cfg(test)]
+mod abandoned_sync_tests;
 mod account;
 #[cfg(test)]
 mod anchor_binding_tests;
@@ -126,6 +128,13 @@ pub struct MultisigClient {
     /// The store `miden_client` was built on, for the client-owned settings
     /// the public settings API does not reach (the note-transport cursors).
     pub(crate) miden_store: Arc<dyn Store>,
+    /// The file `miden_store` lives in. A rollback replaces the store and
+    /// leaves this file in place, so its path is logged.
+    pub(crate) miden_store_path: PathBuf,
+    /// Stores a rollback or reset replaced, newest first. A fresh store cannot
+    /// take over output-note records, so exporting a note this session created
+    /// before the replacement reads it from here.
+    pub(crate) replaced_stores: Vec<Arc<dyn Store>>,
     pub(crate) key_manager: Arc<dyn KeyManager>,
     /// Guardian server endpoint.
     pub(crate) guardian_endpoint: String,
@@ -146,6 +155,36 @@ pub struct MultisigClient {
     pub(crate) rpc_config: RpcConfig,
     /// The Guardian session every per-operation client shares.
     pub(crate) guardian_session: SessionSlot,
+    /// The last transaction this client wrote to the store without a
+    /// miden-client record, kept for the session as the store is.
+    pub(crate) untracked_submission: Option<UntrackedSubmission>,
+}
+
+/// A submitted transaction whose post-state execution wrote to the store
+/// itself (`rebuilds_local_state_from_delta`), so miden-client holds no record
+/// of it and cannot tell when the node drops it. Sync rolls a dropped one back
+/// for membership and threshold changes and for a switch that keeps the
+/// endpoint. A switch to a new endpoint registers the unlanded state on the new
+/// GUARDIAN, whose head then equals local, so it is not rolled back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UntrackedSubmission {
+    pub(crate) commitment: Word,
+    pub(crate) submission_height: BlockNumber,
+    pub(crate) expiration_block_num: BlockNumber,
+}
+
+impl UntrackedSubmission {
+    /// Whether miden-client would have discarded this transaction by
+    /// `sync_height` had it held a record: expired, or still unconfirmed
+    /// [`TX_DISCARD_DELTA`](crate::builder::TX_DISCARD_DELTA) blocks after
+    /// submission (miden-client `apply_sync_height_update`).
+    pub(crate) fn dropped_at(&self, sync_height: BlockNumber) -> bool {
+        self.expiration_block_num <= sync_height
+            || self.submission_height
+                < sync_height
+                    .checked_sub(crate::builder::TX_DISCARD_DELTA)
+                    .unwrap_or_default()
+    }
 }
 
 impl MultisigClient {
@@ -159,6 +198,7 @@ impl MultisigClient {
     pub(crate) fn new(
         miden_client: MidenSdkClient,
         miden_store: Arc<dyn Store>,
+        miden_store_path: PathBuf,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,
@@ -172,6 +212,8 @@ impl MultisigClient {
         Self {
             miden_client,
             miden_store,
+            miden_store_path,
+            replaced_stores: Vec::new(),
             key_manager,
             guardian_endpoint,
             account: None,
@@ -182,6 +224,7 @@ impl MultisigClient {
             prover_config,
             rpc_config,
             guardian_session: SessionSlot::default(),
+            untracked_submission: None,
         }
     }
 

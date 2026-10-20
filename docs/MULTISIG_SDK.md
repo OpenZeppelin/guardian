@@ -1262,8 +1262,8 @@ Authentication).
 | Method | Description |
 |--------|-------------|
 | `accountId` | Get account ID (hex string) |
-| `threshold` | Get current threshold |
-| `signerCommitments` | Get list of signer commitments |
+| `threshold` | Get current threshold, as of the last read of the local store |
+| `signerCommitments` | Get list of signer commitments, as of the last read of the local store. Every proposal creator, signing (online and offline), import, listing (`syncProposals`), registration, `submitTransaction` and execution (built-in and custom) re-read the store before deciding, after their own chain sync when they make one (a chain sync can undo a dropped transaction), and refuse when the store's record cannot be read in full rather than decide on the cache |
 | `fetchState()` | Fetch latest state from GUARDIAN |
 | `syncState()` | Reconcile the local store with GUARDIAN; pre-checks GUARDIAN's canonical nonce (`getCanonicalNonce`) and skips the state fetch when that nonce is below the local nonce, or equal to it at the same commitment. Returns `{ source: 'guardian', state }` or `{ source: 'local', localNonce, guardianNonce }` |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
@@ -1292,7 +1292,7 @@ Authentication).
 | `executeProposal(id)` | Execute ready proposal |
 | `exportProposalToJson(id)` | Export for offline signing |
 | `importProposal(json)` | Import offline proposal |
-| `signProposalOffline(id)` | Sign imported proposal offline |
+| `signProposalOffline(id)` | Sign imported proposal offline. A built-in proposal type syncs the chain first, before the already-signed check, so it needs the node |
 | `getConsumableNotes()` | Get notes that can be consumed |
 | `getSignerPublicKeyCommitments()` | Read the current signer public-key commitments from account storage, ordered by signer index (strict; throws on partial reads) |
 | `getGuardianPublicKeyCommitment()` | Read the current guardian commitment from account storage (strict; throws when the entry is missing — the guarded-multisig always includes a guardian) |
@@ -1408,6 +1408,20 @@ Unlike the TypeScript `load()`, `pull_account` overwrites the local store with
 GUARDIAN's state unconditionally, by design: it is for joining an account or
 discarding a store known to be bad. Use `sync_from_guardian` to refresh an
 account you intend to keep.
+
+`sync` also rolls back a membership, threshold or same-endpoint switch
+transaction this client executed and the node dropped: those are written to the
+local store without a miden-client record, so miden-client cannot undo them.
+The rollback needs miden-client's own discard rule to say the transaction is
+dropped (expired, or still unconfirmed 20 blocks after submission; the second
+is a heuristic, as it is for every recorded transaction), the chain at
+GUARDIAN's state, and GUARDIAN not holding the local state as a candidate or
+retained delta. It replaces the local store with a fresh one holding GUARDIAN's
+state and the unconsumed input notes (notes it created earlier stay exportable,
+read from the replaced store); the replaced store file stays in the
+account directory, and the warning logged names it, in case the transaction
+lands after all. A switch to a new endpoint is not rolled back this way: the
+new GUARDIAN is registered with the switched state.
 
 ### Delta History
 

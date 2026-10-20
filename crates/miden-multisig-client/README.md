@@ -90,6 +90,37 @@ error, not a silent fall-through to the full fetch, so the GUARDIAN server must
 serve `GetCanonicalNonce` (issue #191) before this SDK version is rolled out
 against it.
 
+A local state ahead of GUARDIAN is normally a transaction this client
+executed that GUARDIAN has not canonicalized yet, and it is kept. Membership,
+threshold and switch transactions are written to the local store without a
+miden-client transaction record, so miden-client cannot undo one the node drops
+(expired, or evicted with a dropped dependency). Sync therefore rolls the local
+account back to GUARDIAN's state when that transaction can no longer land. The
+client records each such submission, and judges it dropped by miden-client's own
+discard rule for the transactions it does record: the transaction expired
+(proof), or is still unconfirmed 20 blocks after submission (a heuristic, the
+same one miden-client applies to recorded transactions). On top of that,
+GUARDIAN is not ahead, the chain holds GUARDIAN's state, miden-client has no
+pending transaction for the account, and GUARDIAN does not hold the local state
+as a candidate or retained delta. GUARDIAN's absence of the delta alone proves
+nothing (it can drop a delta whose transaction is still pending), and a failed
+GUARDIAN, chain or store read keeps the local state. A state this client did not
+submit in the current session (the store is per process) is never rolled back
+this way, and neither is a switch to a new endpoint, which registers the
+switched state on the new GUARDIAN.
+
+The rollback starts from a fresh local store, as a restarted client does,
+carrying the unconsumed input notes over; when a note cannot be tracked again
+(its tag is unknown) the local state is kept instead. The fresh store is synced
+to the chain tip, which re-authenticates the carried notes, and replaces the
+current one only once it holds the account and every carried note, so a failed
+rollback keeps the current store for the next sync to retry. A fresh store
+cannot take over output-note records, so the client keeps the replaced store
+for the session and `export_note_to_bytes` reads a note created before the
+rollback from it. The replaced store file is left in the account directory and
+named in the logged warning: should the transaction land after all, it still
+holds the local state.
+
 ### Signing Guardian requests with a session
 
 The key manager signs every Guardian request unless a session is active.

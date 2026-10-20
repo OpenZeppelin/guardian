@@ -14,7 +14,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::utils::serde::Serializable;
 
-use super::MultisigClient;
+use super::{MultisigClient, UntrackedSubmission};
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result, error_chain};
@@ -499,7 +499,9 @@ impl MultisigClient {
                     )
                 })?;
 
-            self.miden_client
+            let expiration_block_num = proven.expiration_block_num();
+            let submission_height = self
+                .miden_client
                 .submit_proven_transaction(proven, &tx_result)
                 .await
                 .map_err(|e| {
@@ -529,6 +531,11 @@ impl MultisigClient {
             };
 
             self.add_or_update_account(&rebuilt, true).await?;
+            self.untracked_submission = Some(UntrackedSubmission {
+                commitment: rebuilt.to_commitment(),
+                submission_height,
+                expiration_block_num,
+            });
 
             let _ = self.miden_client.sync_state().await;
 
@@ -630,19 +637,35 @@ impl MultisigClient {
         Ok(())
     }
 
-    /// Resets the miden-client by creating a new instance with a fresh database.
+    /// Resets the miden-client by creating a new instance with a fresh database,
+    /// on the same node RPC client.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        let (miden_client, miden_store) = create_miden_client(
+        let (miden_client, miden_store, miden_store_path) = self.fresh_miden_client().await?;
+        self.miden_client = miden_client;
+        let replaced = std::mem::replace(&mut self.miden_store, miden_store);
+        self.replaced_stores.insert(0, replaced);
+        self.miden_store_path = miden_store_path;
+        Ok(())
+    }
+
+    /// A new miden-client on a fresh database and the same node RPC client,
+    /// not yet installed, with the database's file.
+    pub(crate) async fn fresh_miden_client(
+        &self,
+    ) -> Result<(
+        crate::MidenSdkClient,
+        std::sync::Arc<dyn miden_client::store::Store>,
+        std::path::PathBuf,
+    )> {
+        create_miden_client(
             &self.account_dir,
             &self.miden_endpoint,
+            self.node_rpc_client(),
             self.note_transport_endpoint.as_deref(),
             &self.prover_config,
             &self.rpc_config,
         )
-        .await?;
-        self.miden_client = miden_client;
-        self.miden_store = miden_store;
-        Ok(())
+        .await
     }
 
     /// Adds an account to miden-client if it doesn't exist, or updates it if it does.
