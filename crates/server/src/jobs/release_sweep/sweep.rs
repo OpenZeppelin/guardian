@@ -498,14 +498,28 @@ impl ReleaseSweeper {
             return Ok(VisitOutcome::Checked);
         }
 
-        let stored_commitment = self
-            .state
-            .storage
-            .pull_state_commitment(account_id)
-            .await
-            .map_err(|e| {
-                GuardianError::StorageError(format!("Failed to get the stored commitment: {e}"))
-            })?;
+        // Metadata without a stored state is a first configuration that
+        // claimed the account and failed before writing its state. There is
+        // no stored base to compare the chain against until its retry
+        // finishes it, so the account is skipped rather than failed.
+        let stored_commitment = match self.state.storage.pull_state_commitment(account_id).await {
+            Ok(commitment) => commitment,
+            Err(e) if crate::storage::is_storage_not_found(&e) => {
+                tracing::debug!(
+                    event = "release_sweep_skipped",
+                    reason = "unfinished_configuration",
+                    account_id = %account_id,
+                    "No stored state; the first configuration has not finished"
+                );
+                self.sweep.forget_account(account_id);
+                return Ok(VisitOutcome::Checked);
+            }
+            Err(e) => {
+                return Err(GuardianError::StorageError(format!(
+                    "Failed to get the stored commitment: {e}"
+                )));
+            }
+        };
 
         let verification = self
             .state
@@ -1874,6 +1888,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_account_without_a_stored_state_is_skipped_not_failed() {
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Err("Failed to pull state: Record not found".to_string())),
+            MockNetworkClient::new(),
+            MockMetadataStore::new(),
+            1,
+        );
+        assert_eq!(h.visit().await, VisitOutcome::Checked);
+        assert!(h.network.get_verify_commitment_calls().is_empty());
+        assert!(released_ids(&h.metadata).is_empty());
+        assert_eq!(h.sweeper.sweep_state().streak(ACCOUNT), None);
+    }
+
+    #[tokio::test]
     async fn opaque_storage_and_missing_binding_never_release() {
         for binding in [OnChainGuardianBinding::Opaque, visible(None, 5, 90)] {
             let h = harness(
@@ -3126,11 +3155,11 @@ mod tests {
                 .with_list_release_sweep_ids(Ok(vec!["0xa".into()])),
             1,
         );
-        // Both accounts lack stored state in the mock: counted as failed
-        // visits, but the walk completes.
+        // Both accounts lack stored state in the mock: skipped as unfinished
+        // first configurations, and the walk completes.
         let summary = run_release_sweep_now(&h.sweeper.state).await.expect("walk");
         assert_eq!(summary.accounts, 2);
-        assert_eq!(summary.failed_accounts, 2);
+        assert_eq!(summary.failed_accounts, 0);
         assert_eq!(
             h.metadata.get_list_release_sweep_ids_calls(),
             vec![

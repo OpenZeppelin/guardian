@@ -309,11 +309,14 @@ breaking SDK change and needs no server change.
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-12.
+Last checked 2026-10-20.
 
 - **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
   on 2026-10-12 it answered requests whose accept header named client 0.17.3
-  (and 0.17.0), and refused 0.18.0 and 0.17.0-rc.5.
+  (and 0.17.0), and refused 0.18.0 and 0.17.0-rc.5. Testnet runs node 0.17.1:
+  on 2026-10-20 it answered requests whose accept header named client 0.17.3
+  (and 0.17.1), and refused 0.16.0. The OZ stacks serve the 0.18.x line on
+  both: `guardian-testnet` reports 0.18.1 and `guardian-devnet` 0.18.2.
   The devnet run below was made on the Miden 0.17 release candidates and has not
   been repeated on 0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
@@ -328,9 +331,7 @@ Last checked 2026-10-12.
   `RegisterAccount` RPC, which pays it a small public P2ID note in the fee asset
   (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`
   does not send the request on devnet, because devnet enforces no allowlist and
-  reports every account as already allowed. Testnet runs Miden 0.16, so
-  on testnet the examples need a local `miden-node` from the pinned line until
-  it upgrades.
+  reports every account as already allowed.
 - **miden-client fee path.** miden-client (still in 0.17.3) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig

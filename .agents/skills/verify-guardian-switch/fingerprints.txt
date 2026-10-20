@@ -3,7 +3,7 @@ crates/server/src/services/release_on_switch.rs release_switched_account 67a0d43
 crates/server/src/services/account_status.rs ensure_account_active_metadata b7303e5276ca4f67
 crates/server/src/services/push_delta.rs push_delta 7d49cdd45f9e7883
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal d0ea6d72a97ea29e
-crates/server/src/services/configure_account.rs configure_account fc32e82d9f440261
+crates/server/src/services/configure_account.rs configure_account 1390c3134c961728
 crates/server/src/services/configure_account.rs stored_state_landed f1082399d583be3f
 crates/server/src/services/configure_account.rs stored_head 641128d1cfa79677
 crates/server/src/services/pause_account.rs pause 7a8b3686c25b35b2
@@ -28,7 +28,7 @@ crates/server/src/jobs/canonicalization/processor.rs landed_through_successor 16
 crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 61d9018a4f981703
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance 29b83278a35d3d6f
 crates/server/src/network/miden/mod.rs verify_delta 0f121467477a893b
-crates/server/src/jobs/release_sweep/sweep.rs visit ba71f0ca4baf8434
+crates/server/src/jobs/release_sweep/sweep.rs visit 2cdaac0a33d018e5
 crates/server/src/jobs/release_sweep/sweep.rs check_stored_state fbeb999917f801a5
 crates/server/src/jobs/release_sweep/sweep.rs promoting_delta_nonce 8b98ab40353da247
 crates/server/src/jobs/release_sweep/sweep.rs visit_diverged 6e1064eedd79244e
