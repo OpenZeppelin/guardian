@@ -38,7 +38,7 @@ VARIABLES
     req,       \* per push_delta request: [pc, s]
     hook,      \* a promoted state whose release hook has not run yet, or 0
     sweep,     \* the release sweep holder: [pc, e] (e: the stored state it proved against)
-    cfg,       \* per /configure: [pc, s, saw]
+    cfg,       \* per /configure: [pc, s, saw, base]
     pauses,    \* operator pauses so far
     badAcks,   \* acks returned while the account was paused or released: [s, why]
     relBase    \* ghost: the stored state a release was proved against, or a re-onboarded one
@@ -67,7 +67,7 @@ Init ==
     /\ req = [q \in Requests |-> [pc |-> "idle", s |-> 0]]
     /\ hook = 0
     /\ sweep = [pc |-> "idle", e |-> 0]
-    /\ cfg = [c \in Configures |-> [pc |-> "idle", s |-> 0, saw |-> FALSE]]
+    /\ cfg = [c \in Configures |-> [pc |-> "idle", s |-> 0, saw |-> FALSE, base |-> 0]]
     /\ pauses = 0
     /\ badAcks = {}
     /\ relBase = 1
@@ -77,10 +77,15 @@ Init ==
 (* on the metadata row, then the states row read, then the write. Shared   *)
 (* by the push-path hook and the sweep through                             *)
 (* services/release_on_switch.rs release_switched_account. m1 drops the    *)
-(* state condition.                                                        *)
+(* state condition. m8 stops releasing once a /configure re-onboarded a    *)
+(* released account (a release that only ever happens once).               *)
 (***************************************************************************)
+ReonboardedAfterRelease == \E c \in Configures : cfg[c].pc = "done" /\ cfg[c].saw
+
 ReleaseIfState(e) ==
-    /\ released' = (released \/ stored = e \/ Mutation = "m1")
+    /\ released' = \/ released
+                    \/ (stored = e /\ ~(Mutation = "m8" /\ ReonboardedAfterRelease))
+                    \/ Mutation = "m1"
     /\ relBase' = IF ~released /\ released' THEN stored ELSE relBase
 
 (***************************************************************************)
@@ -138,17 +143,17 @@ PushRead(q) ==
     /\ UNCHANGED <<relBase, retained, chain, stored, promoted, released, paused, cand, acks, known,
                    hook, sweep, cfg, pauses, badAcks>>
 
-(* Step 2: ack_delta, then storage submit_candidate under                  *)
-(* lock_account_metadata with gate_candidate_submission; the response      *)
-(* carries the ack. The gate checks the queue and the base, not the        *)
-(* account status. "lockcheck" re-reads paused_at / released_at under the  *)
-(* lock (the proposed fix).                                                *)
+(* Step 2: ack_delta, then storage submit_candidate, which reads           *)
+(* paused_at / released_at in the FOR UPDATE that locks the account row    *)
+(* (the row set_pause and set_released_if_state write), then runs          *)
+(* gate_candidate_submission; the response carries the ack. m10 skips the  *)
+(* status read (the pre-fix lock_account_metadata).                        *)
 PushCommit(q) ==
     /\ req[q].pc = "applied"
     /\ LET s == req[q].s
            admitted == /\ cand = 0
                        /\ st[s].p = stored
-                       /\ ~(Mutation = "lockcheck" /\ (paused \/ released))
+                       /\ ~(Mutation # "m10" /\ (paused \/ released))
        IN /\ cand' = IF admitted THEN s ELSE cand
           /\ acks' = IF admitted THEN acks \cup {s} ELSE acks
           /\ badAcks' =
@@ -240,9 +245,18 @@ HookSkip ==
 (***************************************************************************)
 DeltaEvidence(s) == Key(s) = Other /\ promoted
 
+(* switch_candidates / candidate_bases: the stored state and the end state *)
+(* of every retained delta chaining from it, transitively. m7 keeps only   *)
+(* the stored state (the one-hop match this replaced).                     *)
+RECURSIVE Reach(_, _)
+Reach(B, n) ==
+    IF n = 0 THEN B ELSE Reach(B \cup {r \in retained : st[r].p \in B}, n - 1)
+
+Bases(s) == IF Mutation = "m7" THEN {s} ELSE Reach({s}, Cardinality(retained))
+
 MatchEvidence(s) ==
     /\ ChainHead # s
-    /\ \E p \in known \cup retained : Key(p) = Other /\ st[p].p = s /\ InChain(p)
+    /\ \E p \in known \cup retained : Key(p) = Other /\ st[p].p \in Bases(s) /\ InChain(p)
 
 ChainEvidence(s) ==
     /\ Public
@@ -275,24 +289,39 @@ SweepWriteFails ==
 
 (***************************************************************************)
 (* services/configure_account.rs configure_account on an existing account. *)
-(* The wallet re-onboards with the chain's state, which must bind the      *)
-(* account to this server (validate_guardian_commitment). Steps: the       *)
-(* metadata read, submit_state, then clear_released_if_state (same lock    *)
-(* and state condition as the release). metadata.set never touches        *)
-(* lifecycle columns and is not a step. m2 clears only when the first read *)
-(* saw a release; m3 clears unconditionally before submit_state.           *)
+(* The wallet re-onboards with any state the chain has held that binds the *)
+(* account to this server (validate_guardian_commitment): the request      *)
+(* carries the state, and a stale wallet's may be old. Steps: the       *)
+(* metadata and stored commitment reads, replace_state (written only over *)
+(* the stored state the request read, else 400 commitment_mismatch), then *)
+(* clear_released_if_state (same lock and state condition as the release).*)
+(* metadata.set never touches lifecycle columns and is not a step. m2      *)
+(* clears only when the first read saw a release; m3 clears unconditionally*)
+(* before the state write; m6 writes the state unconditionally (the        *)
+(* submit_state upsert this replaced).                                     *)
 (***************************************************************************)
 CfgRead(c) ==
     /\ cfg[c].pc = "idle"
-    /\ Key(ChainHead) = Own
-    /\ cfg' = [cfg EXCEPT ![c] = [pc |-> "read", s |-> ChainHead, saw |-> released]]
+    /\ \E i \in 1..Len(chain) :
+         /\ Key(chain[i]) = Own
+         /\ cfg' = [cfg EXCEPT ![c] = [pc |-> "read", s |-> chain[i], saw |-> released,
+                                        base |-> stored]]
     /\ UNCHANGED <<relBase, retained, st, chain, stored, promoted, released, paused, cand, acks,
                    known, req, hook, sweep, pauses, badAcks>>
+
+(* configure_account's stored_state_landed check: the submitted state is   *)
+(* older than a stored state the chain reached (at the head or in the      *)
+(* transaction history). m9 drops it.                                      *)
+StaleConfigure(c) ==
+    /\ Mutation \notin {"m6", "m9"}
+    /\ Nonce(cfg[c].s) < Nonce(stored)
+    /\ InChain(stored)
 
 CfgSubmit(c) ==
     /\ \/ cfg[c].pc = "read" /\ Mutation # "m3"
        \/ cfg[c].pc = "cleared" /\ Mutation = "m3"
-    /\ ~(Mutation = "cfgnonce" /\ Nonce(cfg[c].s) < Nonce(stored))
+    /\ stored = cfg[c].base \/ Mutation = "m6"
+    /\ ~StaleConfigure(c)
     /\ stored' = cfg[c].s
     /\ relBase' = cfg[c].s
     /\ promoted' = FALSE
@@ -300,12 +329,14 @@ CfgSubmit(c) ==
     /\ UNCHANGED <<retained, st, chain, released, paused, cand, acks, known, req, hook,
                    sweep, pauses, badAcks>>
 
-(* "cfgnonce" (a candidate fix): submit_state refuses a state older than   *)
-(* the stored one, atomically, and the request fails.                      *)
+(* replace_state found the stored state moved since the request read it,  *)
+(* or StaleConfigure: nothing is written and the request fails.            *)
+
 CfgRefused(c) ==
-    /\ Mutation = "cfgnonce"
-    /\ cfg[c].pc = "read"
-    /\ Nonce(cfg[c].s) < Nonce(stored)
+    /\ \/ cfg[c].pc = "read" /\ Mutation # "m3"
+       \/ cfg[c].pc = "cleared" /\ Mutation = "m3"
+    /\ \/ (stored # cfg[c].base /\ Mutation # "m6")
+       \/ StaleConfigure(c)
     /\ cfg' = [cfg EXCEPT ![c].pc = "done"]
     /\ UNCHANGED <<relBase, retained, st, chain, stored, promoted, released, paused, cand,
                    acks, known, req, hook, sweep, pauses, badAcks>>
@@ -401,7 +432,8 @@ OnlyReonboardingReactivates ==
          \E c \in Configures : cfg[c].pc # cfg'[c].pc]_vars
 
 
-(* An account that left this server for good is eventually released, when *)
+(* An account that left this server for good is eventually released for   *)
+(* good, every time it leaves (not just once in a run), when               *)
 (* the server can see the switch: the account publishes its storage, or    *)
 (* every switch transaction is one this server holds (a delta it acked, a *)
 (* switch proposal, a recoverable switch delta). A private account's       *)
@@ -415,6 +447,6 @@ SwitchVisible ==
     \/ Public
     \/ \A j \in SwitchesAway : chain[j] \in known \cup acks
 
-SwitchIsReleased == <>[](SwitchedAway /\ SwitchVisible) => <>released
+SwitchIsReleased == <>[](SwitchedAway /\ SwitchVisible) => <>[]released
 
 =============================================================================

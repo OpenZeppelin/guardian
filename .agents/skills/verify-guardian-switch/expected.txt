@@ -5,25 +5,24 @@
 # include SwitchIsReleased runs FairSpec (the server side keeps working);
 # every other cell runs Spec.
 #
-# pause-race is finding F1 (SKILL.md): an ack returned after a pause
-# executes on chain. lockcheck is the proposed fix and must PASS.
-# liveness-private is findings F2 and F3: a switch the server saw is
-# never released on a private account. cfgnonce fixes F2 only, so its
-# cell still fails on F3.
-quick safety          {c1}    5 3 1 TRUE  none      PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes OnlyReonboardingReactivates
-quick safety-private  {c1}    5 3 1 FALSE none      PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes OnlyReonboardingReactivates
-quick pause-race      {c1}    5 3 1 TRUE  none      FAIL:PausedAckNeverExecutes   PausedAckNeverExecutes -
-quick lockcheck       {c1}    5 3 1 TRUE  lockcheck PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
-quick liveness        {c1}    5 3 1 TRUE  none      PASS                          - SwitchIsReleased
-quick liveness-private {c1}   5 3 1 FALSE none      FAIL:temporal                 - SwitchIsReleased
-quick cfgnonce-private {c1}   5 3 1 FALSE cfgnonce  FAIL:temporal                 - SwitchIsReleased
-deep  safety-7        {c1}    7 4 1 TRUE  none      PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes OnlyReonboardingReactivates
-deep  safety-private-6 {c1}   6 4 1 FALSE none      PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes OnlyReonboardingReactivates
-deep  safety-2cfg     {c1,c2} 6 4 1 TRUE  none      PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes OnlyReonboardingReactivates
-deep  safety-2pause   {c1}    6 4 2 TRUE  none      PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes OnlyReonboardingReactivates
-deep  lockcheck-6     {c1}    6 4 2 TRUE  lockcheck PASS                          ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
-deep  liveness-6      {c1}    6 4 1 TRUE  none      PASS                          - SwitchIsReleased
-mutation m1           {c1}    6 4 1 TRUE  m1        FAIL:ReleasedIsTrue           ReleasedIsTrue -
-mutation m2           {c1}    6 4 1 TRUE  m2        FAIL:ReleasedIsTrue           ReleasedIsTrue -
-mutation m3           {c1}    6 4 1 TRUE  m3        FAIL:ReleasedIsTrue           ReleasedIsTrue -
-mutation m5           {c1}    6 4 1 TRUE  m5        FAIL:OnlyReonboardingReactivates - OnlyReonboardingReactivates
+# Every finding is fixed (SKILL.md, "Findings"); each mutation puts one
+# fault or one guard back and must fail.
+quick safety          {c1}    5 3 1 TRUE  none PASS ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
+quick safety-private  {c1}    5 3 1 FALSE none PASS ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
+quick liveness        {c1}    5 3 1 TRUE  none PASS - SwitchIsReleased
+quick liveness-private {c1}   5 3 1 FALSE none PASS - SwitchIsReleased
+deep  safety-7        {c1}    7 4 1 TRUE  none PASS ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
+deep  safety-private-6 {c1}   6 4 1 FALSE none PASS ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
+deep  safety-2cfg     {c1,c2} 6 4 1 TRUE  none PASS ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
+deep  safety-2pause   {c1}    6 4 2 TRUE  none PASS ReleasedIsTrue,ReleasedAckNeverExecutes,PausedAckNeverExecutes,NoAckWhileInactive OnlyReonboardingReactivates
+deep  liveness-6      {c1}    6 4 1 TRUE  none PASS - SwitchIsReleased
+deep  liveness-private-6 {c1} 6 4 1 FALSE none PASS - SwitchIsReleased
+mutation m1           {c1}    6 4 1 TRUE  m1   FAIL:ReleasedIsTrue ReleasedIsTrue -
+mutation m2           {c1}    6 4 1 TRUE  m2   FAIL:ReleasedIsTrue ReleasedIsTrue -
+mutation m3           {c1}    6 4 1 TRUE  m3   FAIL:ReleasedIsTrue ReleasedIsTrue -
+mutation m5           {c1}    6 4 1 TRUE  m5   FAIL:OnlyReonboardingReactivates - OnlyReonboardingReactivates
+mutation m6           {c1}    5 3 1 FALSE m6   FAIL:temporal - SwitchIsReleased
+mutation m7           {c1}    5 3 1 FALSE m7   FAIL:temporal - SwitchIsReleased
+mutation m8           {c1}    5 4 1 TRUE  m8   FAIL:temporal - SwitchIsReleased
+mutation m9           {c1}    5 3 1 FALSE m9   FAIL:temporal - SwitchIsReleased
+mutation m10          {c1}    5 3 1 TRUE  m10  FAIL:PausedAckNeverExecutes PausedAckNeverExecutes -

@@ -1,6 +1,6 @@
 ---
 name: verify-guardian-switch
-description: Model-check the account status lifecycle around a guardian switch (issues #305, #434) and an operator pause (#181) with TLA+/TLC. It checks that a release is always true of the state the server holds, that only /configure re-onboarding reactivates a released account, that a switch the server can see is eventually released, and whether an ack returned after a pause or release can execute on chain. Use when a diff touches services/release_on_switch.rs, services/account_status.rs, the pause/unpause services, set_released_if_state / clear_released_if_state / set_pause / clear_pause, configure_account's submit_state and release clear, jobs/release_sweep/, the release hook in canonicalization or delta_commit, the status check in push_delta or push_delta_proposal, or when check.sh reports DRIFT.
+description: Model-check the account status lifecycle around a guardian switch (issues #305, #434) and an operator pause (#181) with TLA+/TLC. It checks that a release is always true of the state the server holds, that only /configure re-onboarding reactivates a released account, that a switch the server can see is released for good every time, and that no ack returned after a pause or release executes on chain. Use when a diff touches services/release_on_switch.rs, services/account_status.rs, the pause/unpause services, set_released_if_state / clear_released_if_state / set_pause / clear_pause, configure_account's stored-state checks, replace_state and release clear, the status read in submit_candidate or the optimistic commit, jobs/release_sweep/, the release hook in canonicalization or delta_commit, the status check in push_delta or push_delta_proposal, or when check.sh reports DRIFT.
 ---
 
 # Verify the guardian switch lifecycle
@@ -23,18 +23,18 @@ model step is one storage transaction or one statement.
 | `ReleasedIsTrue` | A released account really left this server at or after the state the release was proved against, and a re-onboarding is never left released by evidence about an older state. | A re-onboarded wallet is refused every mutation (`GUARDIAN_ACCOUNT_RELEASED`) although it is bound to this server. |
 | `OnlyReonboardingReactivates` | Only a `/configure` step clears `released_at`; pause and unpause never do. | An operator unpause makes a switched-away account mutable again. |
 | `ReleasedAckNeverExecutes` | An ack returned after the account was released never executes on chain. | This server co-signs for an account it no longer guards. |
-| `PausedAckNeverExecutes` | An ack returned after the account was paused never executes on chain. | The operator's pause, the safety lever, does not stop the next transaction. **Fails today (F1).** |
-| `NoAckWhileInactive` | No ack is returned at all while paused or released. | Stricter form of the two above; holds only with the F1 fix. |
-| `SwitchIsReleased` | When the account has left for good and the server can see the switch (public storage, or every switch went through a delta or proposal held here), it is eventually released. | Stale reads and dead proposals for a switched account. **Fails for private accounts (F2, F3).** |
+| `PausedAckNeverExecutes` | An ack returned after the account was paused never executes on chain. | The operator's pause, the safety lever, does not stop the next transaction. Held only after the F1 fix. |
+| `NoAckWhileInactive` | No ack is returned at all while paused or released. | Stricter form of the two above. |
+| `SwitchIsReleased` | When the account has left for good and the server can see the switch (public storage, or every switch went through a delta or proposal held here), it is eventually released and stays released. The consequent is `<>[]released`, so one release earlier in the run (before a re-onboarding and a second switch) does not satisfy it. | Stale reads and dead proposals for a switched account. Held for private accounts only after the F2 and F3 fixes. |
 
 ## Findings
 
-**F1 (medium): a pause does not fence a `push_delta` already in flight.**
-`push_delta` checks the status on the metadata loaded at the start of the
-request (`services/push_delta.rs`, `ensure_account_active_metadata`),
-then reconstructs, applies, signs the ack and submits the candidate.
-`submit_candidate` and `gate_candidate_submission` never read
-`paused_at`. Trace (`check.sh --cell pause-race`):
+**F1 (medium, fixed): a pause did not fence a `push_delta` already in
+flight.** `push_delta` checks the status on the metadata loaded at the
+start of the request (`services/push_delta.rs`,
+`ensure_account_active_metadata`), then reconstructs, applies, signs the
+ack and submits the candidate; `submit_candidate` never read
+`paused_at`. Trace (mutation `m10`):
 
 ```
 PushRead    push passes the status check
@@ -43,42 +43,58 @@ PushCommit  candidate admitted, ack returned to the client
 ChainLand   the transaction executes on chain
 ```
 
-The window is the whole reconstruction and apply, seconds under load.
-The fix the `lockcheck` variant models: read `paused_at` and
-`released_at` inside `submit_candidate`'s transaction, after
-`lock_account_metadata` (the row `set_pause` updates), and refuse there.
-With it every property holds, including `NoAckWhileInactive`.
-`push_delta_proposal` and `sign_delta_proposal` have the same
-check-then-act shape, but they store proposals and signatures, not acks,
-so a late write there cannot execute anything on its own. The release
-side of the same race is harmless (`ReleasedAckNeverExecutes` holds): an
-ack after a release is built on a state the chain has already left.
+`storage/postgres.rs` `submit_candidate` now reads `paused_at`,
+`paused_reason` and `released_at` in the `FOR UPDATE` that locks the
+account row, the row `set_pause` and `set_released_if_state` write, and
+refuses with `CandidateSubmission::Paused` / `Released` (mapped to
+`GUARDIAN_ACCOUNT_PAUSED` / `GUARDIAN_ACCOUNT_RELEASED` in
+`services/delta_commit.rs`). The filesystem backend and optimistic mode
+re-read the status right before the write, without a lock shared with
+the pause, so there the window narrows but stays open; the model covers
+Postgres candidate mode only. `push_delta_proposal` and
+`sign_delta_proposal` keep the check-then-act shape: they store
+proposals and signatures, not acks, so a late write there executes
+nothing on its own.
 
-**F2 (low): `/configure` can roll the stored state back, and a private
-account then never releases.** `storage/postgres.rs` `submit_state` is an
-unconditional upsert, with no lock and no nonce check. A `/configure`
-that read the chain before a switch delta promoted writes its older state
-over the promoted one. The hook's release then correctly refuses
-(StateMoved), but nothing will ever prove the switch again: the stored
-state is bound to this server, the switch delta is canonical (so not a
-recoverable row), and its proposal was deleted at promotion. On a public
-account the sweep's storage read still releases it. The `cfgnonce`
-variant (refuse a state whose nonce is below the stored one, atomically)
-removes this trace; whether `/configure` should ever accept an older
-state is a design decision.
+**F2 (low, fixed): `/configure` could roll the stored state back, and a
+private account then never released.** `submit_state` was an
+unconditional upsert, and the request carries the state, so any older
+state still bound to this server could replace a promoted switch; the
+hook's release then refused (StateMoved) and nothing could prove the
+switch again. Two checks close it:
 
-**F3 (low): a late-landing retained delta followed by a switch.** An own
-delta exhausts its retries and is retained, then lands; a cosigner
-creates a switch proposal here, which is recorded against the stored
-state (the queue is empty, and `verify_delta` checks only the tail's
-own commitment, not the base the summary was built on); the switch
-executes. The sweep applies each proposal only to the stored state
-(`precompute_switch`), one hop, so it never reproduces the switch's
-post-state, and reconcile only promotes a recoverable path that ends at
-the chain head, which is now the switch. Same impact class as issue #504.
-Clients that refuse to execute a proposal pinned to a state they do not
-hold (TypeScript 0.18.1 and later, Rust with PR #559) cannot produce this
-trace; older clients can.
+- Stale state (mutation `m9`): when the submitted nonce is below the
+  stored one, `configure_account` asks the chain whether it reached the
+  stored state (`stored_state_landed`: at the head, or a committed
+  transaction ended at it) and refuses with `400 commitment_mismatch` if
+  so; an unreadable chain refuses with `rpc_unavailable` (fail closed). A
+  stored state that never landed (optimistic mode, ahead of the chain)
+  can still be replaced by the older chain state. A stored row without a
+  nonce (written before the server stored nonces) has it decoded from the
+  stored state (`stored_head`), with the commitment from the same read;
+  only a stored state that does not decode skips the check. The replay
+  floor (`consume_auth_timestamp`) runs first, so a replayed stale
+  request is refused before any chain read.
+- Race (mutation `m6` drops both): the write goes through
+  `StorageBackend::replace_state`, only while the stored commitment read
+  at the start is unchanged (Postgres: one conditional UPDATE; filesystem:
+  under `delta_write_lock`).
+
+A stale state at the *same* nonce as a lagging stored state is not
+refused: it can clear a release until the sweep proves the switch again
+(`ReleasedAckNeverExecutes` shows acks meanwhile cannot execute).
+
+**F3 (low, fixed; also issue #504): the sweep matched candidates only
+against the stored state.** An own delta retained after its retries, then
+landing late, followed by a switch proposal built on it (recorded against
+the stored state: a summary does not name its base) or a switch delta
+parked behind it: applied to the stored state neither reproduces the
+switch's post-state, and reconcile promotes only a path ending at the
+chain head. `switch_candidates` now builds every base
+(`candidate_bases`: the stored state plus the replayed end state of each
+retained or abandoned delta chaining from it, each matching the
+commitment it was admitted with), applies proposals to every base and
+deltas to their own. Mutation `m7` restores the one-hop match.
 
 ## Does my change touch this?
 
@@ -98,7 +114,7 @@ From the repo root:
 .agents/skills/verify-guardian-switch/check.sh              # quick tier, about 30 s
 .agents/skills/verify-guardian-switch/check.sh --deep       # larger bounds, a few minutes
 .agents/skills/verify-guardian-switch/check.sh --mutations  # every broken variant must fail
-.agents/skills/verify-guardian-switch/check.sh --cell pause-race
+.agents/skills/verify-guardian-switch/check.sh --cell m10
 ```
 
 A FAIL verdict names the property TLC reports violated
@@ -116,9 +132,9 @@ It needs `java` and `python3`. `tla2tools.jar` 1.7.4 is cached in
 Exit codes are the same as the other verify skills: 0 all match, 1 a
 verdict changed, 2 setup error, 3 mirrored Rust drifted.
 
-When F1, F2 or F3 is fixed, implement the fix, check that the matching
-variant's action matches the code, fold it into the normal action, and
-flip the cell in `expected.txt` to PASS.
+Every finding is fixed and folded into the normal actions; its mutation
+keeps the check failing if the code slides back. A new finding goes in
+the same way: an expected FAIL until the fix lands, then a mutation.
 
 ## Reading a result
 
@@ -140,17 +156,17 @@ Paths are relative to `crates/server/src/`.
 | `ChainSwitch` | the cosigners rotate the guardian key away without pushing the delta here (offline switch), optionally after creating it as a proposal here (`push_delta_proposal`) |
 | `ChainForeign` | a transaction under the other guardian, including a rotation back to this server |
 | `PushRead` | `services/push_delta.rs` `push_delta` up to the ack: `resolve_account`, `ensure_account_active_metadata`, the queue reads, `verify_and_apply_delta` |
-| `PushCommit` | `ack_delta`, then `storage/postgres.rs` `submit_candidate` under `lock_account_metadata` with `storage/mod.rs` `gate_candidate_submission`; the response carries the ack |
+| `PushCommit` | `ack_delta`, then `storage/postgres.rs` `submit_candidate`: the status read under the account row lock (`CandidateSubmission::refused_while_inactive`), then `storage/mod.rs` `gate_candidate_submission`; the response carries the ack |
 | `Promote` | `jobs/canonicalization/processor.rs` promotion through `storage/postgres.rs` `promote_candidate` (CAS on the base commitment) |
 | `Retire` | `handle_diverged_candidate` (Retained), a stale base, or `max_retries` exhausted after the grace period |
 | `ReconcilePromote` | `jobs/canonicalization/reconciliation.rs` `reconcile_chain_advance`: a recoverable path that ends at the chain head |
 | `HookRelease`, `HookSkip` | `services/release_on_switch.rs` `release_if_guardian_switched` from `canonicalize_verified_delta`; the write may fail |
 | `SweepRead` | `jobs/release_sweep/sweep.rs` `visit`: `check_stored_state` / `promoting_delta_nonce` (Delta), `visit_diverged` with `switch_candidates` and `precompute_switch` (ProposalMatch, RecoverableDelta), `fetch_on_chain_guardian_binding` with `classify_key` (ChainSweep) |
 | `SweepWrite`, `SweepWriteFails` | `release_switched_account` through `metadata/postgres.rs` `set_released_if_state` |
-| `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read and the binding validation of a state bound to this server |
-| `CfgSubmit` | `storage/postgres.rs` `submit_state` (the following `metadata.set` never touches lifecycle columns) |
+| `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read, the stored head read (`stored_base`) and the binding validation of the submitted state, any state the chain held that binds the account to this server |
+| `CfgSubmit` | `storage/postgres.rs` `replace_state` over the commitment read (the following `metadata.set` never touches lifecycle columns) |
+| `CfgRefused` | `stored_state_landed` refuses an older state, or `replace_state` returns `StateMoved`: `400 commitment_mismatch`, nothing written |
 | `CfgClear` | `metadata/postgres.rs` `clear_released_if_state` |
-| `CfgRefused` | only in the `cfgnonce` variant: the proposed refusal of an older state |
 | `Pause`, `Unpause` | `services/pause_account.rs` `pause` and `services/unpause_account.rs` `unpause` through `set_pause` / `clear_pause` |
 
 ## Scope and assumptions
@@ -159,7 +175,9 @@ Paths are relative to `crates/server/src/`.
   to two pauses, 5 to 7 states, nonces up to 3 or 4. A push builds either
   a plain delta or a switch delta.
 - Candidate queue depth 1, the default. A switch delta queued behind
-  another candidate (issue #504) needs depth 2 and is not modeled.
+  another candidate (issue #504) needs depth 2 and is not modeled here;
+  `a_switch_delta_parked_behind_a_retained_delta_is_evidence` in
+  `jobs/release_sweep/sweep.rs` covers it.
 - The chain read is exact: the sweep's `confirmations`, the lagging-node
   checks (`chain_behind_stored`) and `divergence_confirmations` guard
   against stale reads, which the model does not produce.
@@ -167,8 +185,9 @@ Paths are relative to `crates/server/src/`.
   reads in the code are separate statements, but the only write is
   conditional on the stored state it read, so splitting them adds
   nothing the write's condition does not already cover.
-- `/configure` re-onboards with the chain head, and only when the head is
-  bound to this server (`validate_guardian_commitment`). Replay floors and
+- `/configure` submits any state the chain has held that binds the
+  account to this server (`validate_guardian_commitment`), the head or a
+  stale one; a state never on chain is not modeled. Replay floors and
   the auth checks are `verify-auth-replay`'s concern.
 - This server's own ack key never changes, so `own_key_mismatch` never
   arises. EVM accounts have no guardian binding and are out of scope.
@@ -191,3 +210,16 @@ Each of these breaks a property (`check.sh --mutations`):
 - `m3` `/configure` clears before `submit_state`: a release landing
   between the two survives (`ReleasedIsTrue`).
 - `m5` unpause also clears `released_at` (`OnlyReonboardingReactivates`).
+- `m6` `/configure` writes its state unconditionally: it can roll the
+  stored state back over a promoted switch, and a private account never
+  releases (`SwitchIsReleased`).
+- `m7` the sweep matches candidates only against the stored state: a
+  switch built past a late-landing retained delta is never released on a
+  private account (`SwitchIsReleased`).
+- `m8` no release once a `/configure` re-onboarded a released account:
+  the second switch away is never released (`SwitchIsReleased`; the
+  earlier `<>released` consequent passed this).
+- `m9` `/configure` accepts an older state over a landed stored state: a
+  stale wallet rolls back a promoted switch (`SwitchIsReleased`).
+- `m10` `submit_candidate` does not read the status under the lock: an
+  ack returned after a pause executes (`PausedAckNeverExecutes`).
