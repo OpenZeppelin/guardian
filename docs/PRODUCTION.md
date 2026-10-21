@@ -404,6 +404,13 @@ behavior:
   with `unsupported Miden network_type`. `/pubkey` without `scheme` returns the
   Falcon key even on an ECDSA-only server, so health checks and integrations
   that want the ECDSA commitment must pass `?scheme=ecdsa`.
+- **0.18.3** rebuilds the server image against Debian `ca-certificates
+  20250419~deb12u2`, which distrusts the compromised
+  [eMudhra intermediates](https://emudhra.we-have-a-problem.com/). The server
+  trusts the system store for Miden RPC and AWS, so redeploy the new image;
+  restarting a container from an older image keeps the old trust store. No
+  data reset, and no SDK upgrade is needed
+  ([release notes](https://github.com/OpenZeppelin/guardian/releases/tag/v0.18.3)).
 
 ## Upgrading to Miden 0.16
 
