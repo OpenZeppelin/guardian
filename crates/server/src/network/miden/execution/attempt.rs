@@ -37,7 +37,6 @@ use super::foreign::ForeignAccountUnavailable;
 use super::request::{StoredRequest, approval_expiration_block};
 use super::sealing::seal_for_submission;
 use super::store::ExecutionDataStore;
-use super::threshold::{InvokedProcedure, effective_threshold};
 use crate::delta_object::CosignerSignature;
 use crate::error::GuardianError;
 use crate::metrics::execution::{record_chain_view, record_prover_retry, record_proving};
@@ -50,6 +49,7 @@ use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use crate::storage::execution::{ExpirationBound, ForeignAccountUnavailableReason};
 use crate::storage::{ExecutionFailure, ExecutionFailureCode};
+use guardian_shared::multisig_threshold::ThresholdedTransaction;
 
 const PROVER_BACKOFF_START: Duration = Duration::from_secs(1);
 const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
@@ -121,8 +121,9 @@ fn select(
         .into_iter()
         .map(|commitment| commitment.to_lowercase())
         .collect();
-    let required = effective_threshold(account, invoked_procedure(&input.proposal_payload))
-        .unwrap_or(usize::MAX);
+    let required = thresholded_transaction(&input.proposal_payload)
+        .threshold(account)
+        .map_or(usize::MAX, |threshold| threshold as usize);
 
     let mut seen = BTreeSet::new();
     let mut advice = Vec::new();
@@ -214,8 +215,8 @@ fn verified_advice(
     }
 }
 
-fn invoked_procedure(payload: &serde_json::Value) -> InvokedProcedure {
-    InvokedProcedure::of_proposal_type(
+fn thresholded_transaction(payload: &serde_json::Value) -> ThresholdedTransaction {
+    ThresholdedTransaction::of_proposal_type(
         payload
             .get("metadata")
             .and_then(|metadata| metadata.get("proposal_type"))
@@ -462,7 +463,7 @@ impl ProposalExecutor for MidenExecutor {
             summary_payload: reproduced.to_json(),
             summary,
             signature_advice: selected.advice,
-            requires_ack: invoked_procedure(&input.proposal_payload).requires_guardian_ack(),
+            requires_ack: thresholded_transaction(&input.proposal_payload).requires_guardian_ack(),
             store,
             executed: None,
             proven: None,

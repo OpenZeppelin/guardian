@@ -18,6 +18,7 @@ pub mod execution;
 pub mod felt;
 pub mod hex;
 pub mod lookup_auth_message;
+pub mod multisig_threshold;
 pub mod request_envelope;
 pub mod retry;
 pub mod session_grant;

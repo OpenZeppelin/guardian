@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isProposalActionable, type Proposal } from './types/proposal.js';
+import { isProposalActionable, type Proposal, type ProposalType } from './types/proposal.js';
+import type { ProcedureName } from './procedures.js';
 import { Multisig } from './multisig.js';
 import {
   GuardianExecutionRefusedError,
@@ -799,6 +803,40 @@ describe('Multisig', () => {
       });
       expect(raised.getEffectiveThreshold('p2id')).toBe(3);
     });
+
+    interface ThresholdVector {
+      name: string;
+      threshold: number;
+      overrides: Record<string, number>;
+      expected: Record<string, number>;
+    }
+
+    const vectors = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL('../../../fixtures/miden-multisig-client/threshold-vectors.json', import.meta.url),
+        ),
+        'utf8',
+      ),
+    ) as ThresholdVector[];
+
+    for (const vector of vectors) {
+      it(`matches the shared Rust threshold vector: ${vector.name}`, () => {
+        const multisig = createTestMultisig({
+          ...baseConfig,
+          threshold: vector.threshold,
+          procedureThresholds: Object.entries(vector.overrides).map(([procedure, threshold]) => ({
+            procedure: procedure as ProcedureName,
+            threshold,
+          })),
+        });
+        for (const [proposalType, expected] of Object.entries(vector.expected)) {
+          expect(multisig.getEffectiveThreshold(proposalType as ProposalType), proposalType).toBe(
+            expected,
+          );
+        }
+      });
+    }
   });
 
   describe('relayCollectedApprovals', () => {

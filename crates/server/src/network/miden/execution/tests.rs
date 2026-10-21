@@ -1588,19 +1588,7 @@ mod threshold {
     use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
     use miden_standards::account::wallets::BasicWallet;
 
-    use crate::network::miden::execution::threshold::{InvokedProcedure, effective_threshold};
-
-    fn auth_root(name: &str) -> Word {
-        use miden_standards::account::auth::AuthGuardedMultisig;
-        let code = AuthGuardedMultisig::code();
-        let export = code
-            .exports()
-            .find(|export| export.path.to_string().rsplit("::").next() == Some(name))
-            .unwrap();
-        code.get_procedure_root_by_path(&*export.path)
-            .unwrap()
-            .into()
-    }
+    use guardian_shared::multisig_threshold::{ThresholdProcedure, ThresholdedTransaction};
 
     fn account(overrides: Vec<(Word, u32)>) -> miden_protocol::account::Account {
         let signers = (0..3)
@@ -1619,10 +1607,10 @@ mod threshold {
         let account = account(vec![
             (BasicWallet::move_asset_to_note_root().into(), 3),
             (BasicWallet::receive_asset_root().into(), 1),
-            (auth_root("set_procedure_threshold"), 3),
+            (ThresholdProcedure::SetProcedureThreshold.root(), 3),
         ]);
         let of = |proposal_type| {
-            effective_threshold(&account, InvokedProcedure::of_proposal_type(proposal_type))
+            ThresholdedTransaction::of_proposal_type(proposal_type).threshold(&account)
         };
         assert_eq!(of(Some("p2id")), Some(3));
         assert_eq!(of(Some("consume_notes")), Some(1));
@@ -1634,11 +1622,30 @@ mod threshold {
     }
 
     #[test]
+    fn a_lower_send_override_does_not_lower_what_a_transfer_needs() {
+        let p2id = |account: &miden_protocol::account::Account| {
+            ThresholdedTransaction::of_proposal_type(Some("p2id")).threshold(account)
+        };
+        let send_lowered = account(vec![(BasicWallet::move_asset_to_note_root().into(), 1)]);
+        assert_eq!(
+            p2id(&send_lowered),
+            Some(2),
+            "create_note keeps the account default"
+        );
+        let create_note_raised = account(vec![
+            (BasicWallet::move_asset_to_note_root().into(), 1),
+            (BasicWallet::create_note_root().into(), 3),
+            (ThresholdProcedure::SetProcedureThreshold.root(), 3),
+        ]);
+        assert_eq!(p2id(&create_note_raised), Some(3));
+    }
+
+    #[test]
     fn an_unmodelled_proposal_type_is_held_to_the_account_default() {
         let account = account(vec![(BasicWallet::receive_asset_root().into(), 1)]);
         for proposal_type in [Some("b2agg"), Some("custom"), None] {
             assert_eq!(
-                effective_threshold(&account, InvokedProcedure::of_proposal_type(proposal_type)),
+                ThresholdedTransaction::of_proposal_type(proposal_type).threshold(&account),
                 Some(2)
             );
         }
@@ -1647,15 +1654,12 @@ mod threshold {
     #[test]
     fn every_modelled_auth_procedure_resolves_to_an_override() {
         let account = account(vec![
-            (auth_root("update_signers_and_threshold"), 3),
-            (auth_root("set_procedure_threshold"), 3),
-            (auth_root("update_guardian_public_key"), 1),
+            (ThresholdProcedure::UpdateSigners.root(), 3),
+            (ThresholdProcedure::SetProcedureThreshold.root(), 3),
+            (ThresholdProcedure::UpdateGuardian.root(), 1),
         ]);
         let of = |proposal_type| {
-            effective_threshold(
-                &account,
-                InvokedProcedure::of_proposal_type(Some(proposal_type)),
-            )
+            ThresholdedTransaction::of_proposal_type(Some(proposal_type)).threshold(&account)
         };
         for proposal_type in [
             "add_signer",

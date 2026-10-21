@@ -8,6 +8,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use guardian_client::DeltaObject;
 use guardian_shared::FromJson;
 use guardian_shared::hex::FromHex;
+use guardian_shared::multisig_threshold::ThresholdedTransaction;
 use guardian_shared::{EcdsaMessageFormat, ProposalSignature, SignatureScheme};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -283,6 +284,20 @@ impl TransactionType {
             Self::UpdateProcedureThreshold { .. } => Some("update_procedure_threshold"),
             Self::UpdateSigners { .. } => None,
             Self::Custom => None,
+        }
+    }
+
+    /// What the transaction is for threshold purposes: which overridable procedures it calls.
+    pub fn thresholded(&self) -> ThresholdedTransaction {
+        match self {
+            Self::P2ID { .. } => ThresholdedTransaction::P2id,
+            Self::ConsumeNotes { .. } => ThresholdedTransaction::ConsumeNotes,
+            Self::AddCosigner { .. } | Self::RemoveCosigner { .. } | Self::UpdateSigners { .. } => {
+                ThresholdedTransaction::UpdateSigners
+            }
+            Self::UpdateProcedureThreshold { .. } => ThresholdedTransaction::SetProcedureThreshold,
+            Self::SwitchGuardian { .. } => ThresholdedTransaction::UpdateGuardian,
+            Self::Custom => ThresholdedTransaction::AccountDefault,
         }
     }
 

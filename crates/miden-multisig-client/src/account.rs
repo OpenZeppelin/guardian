@@ -8,6 +8,8 @@ use miden_protocol::account::{
 
 use miden_standards::account::auth::{ApproverSet, AuthGuardedMultisig};
 
+use guardian_shared::multisig_threshold::ThresholdedTransaction;
+
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
@@ -188,26 +190,19 @@ impl MultisigAccount {
             .unwrap_or(self.threshold()?))
     }
 
-    /// Returns the effective threshold for a transaction type.
+    /// Returns the effective threshold for a transaction type: the rule GUARDIAN's executor
+    /// applies, from `guardian_shared::multisig_threshold`.
     pub fn effective_threshold_for_transaction(&self, tx_type: &TransactionType) -> Result<u32> {
-        match tx_type {
-            TransactionType::P2ID { .. } => self.effective_threshold_for_p2id(),
-            TransactionType::ConsumeNotes { .. } => {
-                self.effective_threshold_for_procedure(ProcedureName::ReceiveAsset)
-            }
-            TransactionType::AddCosigner { .. }
-            | TransactionType::RemoveCosigner { .. }
-            | TransactionType::UpdateSigners { .. } => {
-                self.effective_threshold_for_procedure(ProcedureName::UpdateSigners)
-            }
-            TransactionType::UpdateProcedureThreshold { .. } => {
-                self.effective_threshold_for_procedure(ProcedureName::UpdateProcedureThreshold)
-            }
-            TransactionType::SwitchGuardian { .. } => {
-                self.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)
-            }
-            TransactionType::Custom => self.threshold(),
-        }
+        self.effective_threshold_for(tx_type.thresholded())
+    }
+
+    /// Returns the threshold the chain holds `transaction` to on this account: the highest
+    /// threshold among the procedures it calls, each its override else the default.
+    pub fn effective_threshold_for(&self, transaction: ThresholdedTransaction) -> Result<u32> {
+        self.assert_pinned_contract_version()?;
+        transaction.threshold(&self.account).ok_or_else(|| {
+            MultisigError::AccountStorage("threshold config slot not found".to_string())
+        })
     }
 
     /// Refuses `collected` approvals below what the chain requires for
@@ -228,9 +223,7 @@ impl MultisigAccount {
     /// calls both `move_asset_to_note` (`send_asset`) and `create_note`, and
     /// the chain requires the higher of their thresholds.
     pub fn effective_threshold_for_p2id(&self) -> Result<u32> {
-        Ok(self
-            .effective_threshold_for_procedure(ProcedureName::SendAsset)?
-            .max(self.effective_threshold_for_procedure(ProcedureName::CreateNote)?))
+        self.effective_threshold_for(ThresholdedTransaction::P2id)
     }
 
     /// Extracts cosigner commitments from signer public keys map slot.
