@@ -820,6 +820,7 @@ export default function App() {
   // Disconnect
   const handleDisconnect = () => {
     setMultisig(null);
+    setAccountScheme('ecdsa');
     setGuardianState(null);
     setProposals([]);
     setError(null);
