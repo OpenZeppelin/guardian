@@ -431,6 +431,51 @@ breaking SDK change and needs no server change.
   `AuthArgErrorCode` values `bound_block_mismatch` and
   `transaction_summary_layout_unsupported`.
 
+### Multisig pushes need stored approvals (after 0.18.3)
+
+The release after 0.18.3 makes the server refuse to acknowledge a multisig
+delta unless the proposal it stores for that delta carries verified cosigner
+approvals, at least as many as the lowest threshold the account permits (its
+default threshold, or a lower override on one of its non-auth procedures; an
+override on the auth procedure or on a root the account does not export is
+never used on chain and is ignored; issue #524). The push
+fails with `insufficient_signatures` (400). It is a breaking change for released SDKs, so
+**release the SDKs first, then deploy the servers**.
+
+- **Proposals signed through GUARDIAN keep working on every SDK.** Each
+  cosigner's approval is already on the stored proposal.
+- **0.18.3 and earlier clients cannot execute a proposal whose approvals were
+  collected off channel** (an exported document signed elsewhere and imported),
+  in either SDK, unless the approvals already stored reach that floor. Those
+  approvals exist only in the document, and these clients push without
+  relaying them.
+- **New clients relay off-channel approvals before the push.** The signing
+  endpoint credits an approval to the cosigner its signature verifies for, so
+  any configured signer can relay the whole document. New clients relay the
+  caller's own approval first. A 0.18.1, 0.18.2 or 0.18.3 server refuses each approval
+  that is not the caller's own (with `invalid_proposal_signature`, or
+  `proposal_already_signed` once the caller has signed); new clients skip that
+  refusal and push anyway, and that server acknowledges the push as before, so
+  new clients work against servers from 0.18.1 on, with or without the gate.
+- **0.18.0 servers do not verify relayed approvals** and store each one under
+  the request signer. Relaying the caller's own approval first makes such a
+  server refuse the rest as already signed. If the caller has no approval in
+  the document, the first relayed approval would be stored under the caller,
+  and new clients stop with an error instead of executing. Upgrade the server
+  to 0.18.1 or later before executing off-channel proposals.
+- **Guardian switches pushed back to the old GUARDIAN.** The TypeScript SDK
+  relays off-channel approvals to the old GUARDIAN's stored switch proposal
+  before that best-effort push. A switch the old GUARDIAN never stored (one
+  created offline) is refused there and released by its release sweep, as
+  [`CONCEPTS.md`](./CONCEPTS.md) describes.
+- **Single-key accounts are unchanged.**
+- **P2ID transfers need the higher of the `send_asset` and `create_note`
+  thresholds.** A transfer calls both procedures, and the chain counts each.
+  Both SDKs now know `create_note` as a procedure name and take the higher of
+  the two, so a lower `send_asset` override alone no longer lowers what a
+  P2ID proposal asks for. Earlier SDKs asked for the `send_asset` override
+  alone, and the chain refused such a transfer.
+
 ### Open upstream items
 
 The facts below change independently of this repository. This list is the one

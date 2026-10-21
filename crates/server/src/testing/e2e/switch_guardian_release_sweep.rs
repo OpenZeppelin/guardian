@@ -380,22 +380,30 @@ impl UnannouncedSwitch {
         self.state.canonicalization =
             Some(CanonicalizationConfig::default().with_max_pending_candidates_per_account(4));
         let nonce = self.executed_account.nonce().as_canonical_u64();
+        let delta = DeltaObject {
+            account_id: self.account_id_hex.clone(),
+            nonce,
+            prev_commitment: self.pre_switch_commitment.clone(),
+            delta_payload: nonce_bump_summary(&self.pre_switch_account),
+            ..Default::default()
+        };
+        let authorization = crate::testing::helpers::store_authorizing_proposal(
+            &self.state,
+            &delta,
+            &self.cosigner_keys,
+        )
+        .await;
         let creds = self.credentials();
         let pushed = push_delta(
             &self.state,
             PushDeltaParams {
-                delta: DeltaObject {
-                    account_id: self.account_id_hex.clone(),
-                    nonce,
-                    prev_commitment: self.pre_switch_commitment.clone(),
-                    delta_payload: nonce_bump_summary(&self.pre_switch_account),
-                    ..Default::default()
-                },
+                delta,
                 credentials: creds,
             },
         )
         .await
         .expect("the candidate is admitted on the stored base");
+        authorization.restore(&self.state).await;
         assert!(pushed.delta.status.is_candidate());
         (
             nonce,
@@ -645,7 +653,7 @@ async fn unannounced_switch_for(account_type: AccountType) -> UnannouncedSwitch 
         new_guardian_commitment_hex,
         ack_commitment_hex,
         cosigner_key: cosigner_keys[0].clone(),
-        cosigner_keys: cosigner_keys.clone(),
+        cosigner_keys,
         new_guardian_commitment,
         api_pubkey_hex,
         all_commitments_hex,
@@ -1461,22 +1469,30 @@ async fn test_release_sweep_matches_a_switch_delta_parked_behind_another_candida
     )
     .await;
     let switch_nonce = switch.account.nonce().as_canonical_u64();
+    let delta = DeltaObject {
+        account_id: fixture.account_id_hex.clone(),
+        nonce: switch_nonce,
+        prev_commitment: own_post_state.clone(),
+        delta_payload: switch.summary.clone(),
+        ..Default::default()
+    };
+    let authorization = crate::testing::helpers::store_authorizing_proposal(
+        &fixture.state,
+        &delta,
+        &fixture.cosigner_keys,
+    )
+    .await;
     let creds = fixture.credentials();
     let pushed = push_delta(
         &fixture.state,
         PushDeltaParams {
-            delta: DeltaObject {
-                account_id: fixture.account_id_hex.clone(),
-                nonce: switch_nonce,
-                prev_commitment: own_post_state.clone(),
-                delta_payload: switch.summary.clone(),
-                ..Default::default()
-            },
+            delta,
             credentials: creds,
         },
     )
     .await
     .expect("the switch delta is queued behind the own candidate");
+    authorization.restore(&fixture.state).await;
     assert_eq!(
         pushed.delta.new_commitment.as_deref(),
         Some(switch.final_commitment.as_str()),

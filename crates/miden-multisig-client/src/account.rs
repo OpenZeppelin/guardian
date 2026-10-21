@@ -190,20 +190,47 @@ impl MultisigAccount {
 
     /// Returns the effective threshold for a transaction type.
     pub fn effective_threshold_for_transaction(&self, tx_type: &TransactionType) -> Result<u32> {
-        let procedure = match tx_type {
-            TransactionType::P2ID { .. } => ProcedureName::SendAsset,
-            TransactionType::ConsumeNotes { .. } => ProcedureName::ReceiveAsset,
+        match tx_type {
+            TransactionType::P2ID { .. } => self.effective_threshold_for_p2id(),
+            TransactionType::ConsumeNotes { .. } => {
+                self.effective_threshold_for_procedure(ProcedureName::ReceiveAsset)
+            }
             TransactionType::AddCosigner { .. }
             | TransactionType::RemoveCosigner { .. }
-            | TransactionType::UpdateSigners { .. } => ProcedureName::UpdateSigners,
-            TransactionType::UpdateProcedureThreshold { .. } => {
-                ProcedureName::UpdateProcedureThreshold
+            | TransactionType::UpdateSigners { .. } => {
+                self.effective_threshold_for_procedure(ProcedureName::UpdateSigners)
             }
-            TransactionType::SwitchGuardian { .. } => ProcedureName::UpdateGuardian,
-            TransactionType::Custom => return self.threshold(),
-        };
+            TransactionType::UpdateProcedureThreshold { .. } => {
+                self.effective_threshold_for_procedure(ProcedureName::UpdateProcedureThreshold)
+            }
+            TransactionType::SwitchGuardian { .. } => {
+                self.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)
+            }
+            TransactionType::Custom => self.threshold(),
+        }
+    }
 
-        self.effective_threshold_for_procedure(procedure)
+    /// Refuses `collected` approvals below what the chain requires for
+    /// `tx_type` on this account now. A proposal records its required count
+    /// when it is created, and an older SDK may have recorded too few.
+    pub fn ensure_threshold_met(&self, tx_type: &TransactionType, collected: usize) -> Result<()> {
+        let required = self.effective_threshold_for_transaction(tx_type)? as usize;
+        if collected < required {
+            return Err(MultisigError::ProposalNotReady {
+                required,
+                collected,
+            });
+        }
+        Ok(())
+    }
+
+    /// Returns the effective threshold for a P2ID transfer. The transfer
+    /// calls both `move_asset_to_note` (`send_asset`) and `create_note`, and
+    /// the chain requires the higher of their thresholds.
+    pub fn effective_threshold_for_p2id(&self) -> Result<u32> {
+        Ok(self
+            .effective_threshold_for_procedure(ProcedureName::SendAsset)?
+            .max(self.effective_threshold_for_procedure(ProcedureName::CreateNote)?))
     }
 
     /// Extracts cosigner commitments from signer public keys map slot.
@@ -510,6 +537,71 @@ mod tests {
         assert_eq!(TransactionType::Custom.target_signer_count(3), None);
     }
 
+    /// A P2ID transfer calls `create_note` as well as `send_asset`, so a lower
+    /// `send_asset` override alone does not lower what the chain requires.
+    #[test]
+    fn p2id_threshold_is_the_higher_of_send_asset_and_create_note() {
+        let build = |overrides: Vec<(Word, u32)>| {
+            let config = MultisigGuardianConfig::new(2, vec![word(1), word(2), word(3)], word(99))
+                .with_proc_threshold_overrides(overrides);
+            MultisigAccount::new(
+                MultisigGuardianBuilder::new(config)
+                    .with_seed([7u8; 32])
+                    .build()
+                    .expect("account builds"),
+            )
+        };
+
+        let send_only = build(vec![(ProcedureName::SendAsset.root(), 1)]);
+        assert_eq!(
+            send_only.effective_threshold_for_p2id().expect("threshold"),
+            2
+        );
+
+        let both = build(vec![
+            (ProcedureName::SendAsset.root(), 1),
+            (ProcedureName::CreateNote.root(), 1),
+        ]);
+        assert_eq!(both.effective_threshold_for_p2id().expect("threshold"), 1);
+
+        let create_higher = build(vec![
+            (ProcedureName::SendAsset.root(), 1),
+            (ProcedureName::CreateNote.root(), 3),
+            (ProcedureName::UpdateProcedureThreshold.root(), 3),
+        ]);
+        assert_eq!(
+            create_higher
+                .effective_threshold_for_p2id()
+                .expect("threshold"),
+            3
+        );
+    }
+
+    /// A P2ID proposal recorded by an older SDK as needing only the
+    /// `send_asset` override is refused before execution asks for an ACK.
+    #[test]
+    fn ensure_threshold_met_uses_the_threshold_the_chain_requires_now() {
+        let account = build_test_account();
+        let account_id =
+            AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("account id");
+        let p2id = TransactionType::P2ID {
+            recipient: account_id,
+            faucet_id: account_id,
+            amount: 10,
+            note_type: miden_protocol::note::NoteType::Public,
+            heights: Default::default(),
+        };
+
+        assert!(matches!(
+            account.ensure_threshold_met(&p2id, 1),
+            Err(MultisigError::ProposalNotReady {
+                required: 2,
+                collected: 1
+            })
+        ));
+        assert!(account.ensure_threshold_met(&p2id, 2).is_ok());
+    }
+
     #[test]
     fn effective_threshold_for_transaction_maps_to_expected_procedures() {
         let account = build_test_account();
@@ -526,7 +618,7 @@ mod tests {
                     heights: Default::default(),
                 })
                 .expect("threshold"),
-            1
+            2
         );
         assert_eq!(
             account

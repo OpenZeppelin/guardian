@@ -1646,6 +1646,48 @@ impl StorageBackend for PostgresService {
         Ok(())
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let expected_json = serde_json::to_value(expected)
+            .map_err(|e| format!("Failed to serialize expected status: {e}"))?;
+        let status_json = serde_json::to_value(&proposal.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&proposal.status)?;
+
+        // One statement, so the status comparison and the write are atomic:
+        // a concurrent signing that committed first changed the status and
+        // this update matches no row.
+        let updated = diesel::update(delta_proposals::table)
+            .filter(delta_proposals::account_id.eq(&proposal.account_id))
+            .filter(delta_proposals::commitment.eq(commitment))
+            .filter(delta_proposals::status.eq(&expected_json))
+            .set((
+                delta_proposals::nonce.eq(proposal.nonce as i64),
+                delta_proposals::prev_commitment.eq(&proposal.prev_commitment),
+                delta_proposals::new_commitment.eq(&proposal.new_commitment),
+                delta_proposals::delta_payload.eq(&proposal.delta_payload),
+                delta_proposals::ack_sig.eq(Some(&proposal.ack_sig)),
+                delta_proposals::status.eq(&status_json),
+                delta_proposals::status_kind.eq(status_kind),
+                delta_proposals::status_timestamp.eq(status_timestamp),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to update delta proposal: {e}"))?;
+
+        Ok(updated == 1)
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
@@ -2666,6 +2708,85 @@ impl StorageBackend for PostgresService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending_with(signers: &[&str]) -> DeltaStatus {
+        DeltaStatus::Pending {
+            timestamp: "2026-10-19T00:00:00Z".to_string(),
+            proposer_id: "0xproposer".to_string(),
+            cosigner_sigs: signers
+                .iter()
+                .map(|signer| crate::delta_object::CosignerSignature {
+                    signature: crate::delta_object::ProposalSignature::Falcon {
+                        signature: format!("0xsig-{signer}"),
+                    },
+                    timestamp: "2026-10-19T00:00:00Z".to_string(),
+                    signer_id: signer.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    fn proposal_with(account_id: &str, status: DeltaStatus) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce: 1,
+            prev_commitment: "0xprev".to_string(),
+            new_commitment: None,
+            delta_payload: serde_json::json!({"tx_summary": {}, "signatures": []}),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status,
+            metadata: None,
+        }
+    }
+
+    /// Two signings commit concurrently from the same read: exactly one
+    /// write lands and the other is refused, so neither silently replaces
+    /// the approval the other added.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn update_delta_proposal_if_status_admits_one_write_per_read() {
+        let url = crate::testing::pg::test_database_url().await;
+        let storage = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xcas{}", Utc::now().timestamp_micros());
+        let commitment = "0xcas";
+        storage
+            .submit_delta_proposal(
+                commitment,
+                &proposal_with(&account_id, pending_with(&["0xc1"])),
+            )
+            .await
+            .expect("submit");
+        let read = pending_with(&["0xc1"]);
+
+        let with_c2 = proposal_with(&account_id, pending_with(&["0xc1", "0xc2"]));
+        let with_c4 = proposal_with(&account_id, pending_with(&["0xc1", "0xc4"]));
+        let (c2, c4) = tokio::join!(
+            storage.update_delta_proposal_if_status(commitment, &with_c2, &read),
+            storage.update_delta_proposal_if_status(commitment, &with_c4, &read),
+        );
+        let (c2, c4) = (c2.expect("c2 write"), c4.expect("c4 write"));
+        assert!(
+            c2 ^ c4,
+            "exactly one write from the same read commits: {c2} {c4}"
+        );
+
+        let stored = storage
+            .pull_delta_proposal(&account_id, commitment)
+            .await
+            .expect("pull")
+            .status;
+        let winner = if c2 { &with_c2 } else { &with_c4 };
+        assert_eq!(stored, winner.status);
+        assert!(
+            !storage
+                .update_delta_proposal_if_status(commitment, &with_c2, &read)
+                .await
+                .expect("stale write"),
+            "a write from a stale read is refused"
+        );
+    }
 
     #[test]
     fn postgres_timestamp_precision_truncates_sub_microseconds() {

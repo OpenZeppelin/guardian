@@ -1,4 +1,4 @@
-use crate::delta_object::DeltaObject;
+use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::{AppliedState, NetworkClient, StateVerification};
@@ -487,6 +487,10 @@ pub struct MockStorageBackend {
     pub pull_all_delta_proposals_calls: Arc<StdMutex<Vec<String>>>,
     pub update_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub update_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
+    /// Answers for `update_delta_proposal_if_status`, popped last first;
+    /// `Ok(true)` (the write committed) when empty. A committed write is
+    /// recorded in `update_delta_proposal_calls`.
+    pub update_delta_proposal_if_status_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
@@ -764,6 +768,14 @@ impl MockStorageBackend {
 
     pub fn with_update_delta_proposal(self, response: StdResult<(), String>) -> Self {
         self.update_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_update_delta_proposal_if_status(self, response: StdResult<bool, String>) -> Self {
+        self.update_delta_proposal_if_status_responses
             .lock()
             .unwrap()
             .push(response);
@@ -1340,6 +1352,27 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
+    }
+
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        _expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let response = self
+            .update_delta_proposal_if_status_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true));
+        if matches!(response, Ok(true)) {
+            self.update_delta_proposal_calls
+                .lock()
+                .unwrap()
+                .push((commitment.to_string(), proposal.clone()));
+        }
+        response
     }
 
     async fn delete_delta_proposal(

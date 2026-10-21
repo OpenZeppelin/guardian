@@ -248,22 +248,26 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     .await
     .expect("configure_account succeeds");
 
-    // Push the switch delta exactly as `execute_proposal` does client-side.
+    // Push the switch delta exactly as `execute_proposal` does client-side,
+    // with the threshold-satisfying proposal the push gate requires.
+    let delta = DeltaObject {
+        account_id: account_id_hex.clone(),
+        nonce: executed_nonce,
+        prev_commitment: pre_switch_commitment.clone(),
+        new_commitment: None,
+        delta_payload,
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    let authorization =
+        crate::testing::helpers::store_authorizing_proposal(&state, &delta, &cosigner_keys).await;
     let push_result = push_delta(
         &state,
         PushDeltaParams {
-            delta: DeltaObject {
-                account_id: account_id_hex.clone(),
-                nonce: executed_nonce,
-                prev_commitment: pre_switch_commitment.clone(),
-                new_commitment: None,
-                delta_payload,
-                ack_sig: String::new(),
-                ack_pubkey: String::new(),
-                ack_scheme: String::new(),
-                status: Default::default(),
-                metadata: None,
-            },
+            delta,
             credentials: falcon_credentials(
                 &cosigner_keys[0],
                 &api_pubkey_hex,
@@ -274,6 +278,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     )
     .await
     .expect("push_delta accepts the switch delta");
+    authorization.restore(&state).await;
 
     assert!(
         push_result.delta.status.is_candidate(),

@@ -1,0 +1,21 @@
+# <cell> <module> <CONSTANT=value>...  (values without spaces)
+#
+# PushGateThreshold cells: a standard account (BasicWallet + guarded
+# multisig) and one with an extra component. MaxCalls comes from the tier
+# (quick 3, deep 5).
+threshold-standard   PushGateThreshold NumApprovers=3 CustomComponent=FALSE
+threshold-custom     PushGateThreshold NumApprovers=3 CustomComponent=TRUE
+#
+# ApprovalRelay cells: a 3-of-4 account, c1 executes holding c1, c2, c3.
+# off-channel: Guardian holds only c1 (c2 and c3 signed an exported document).
+# unsigned: Guardian holds nothing, c1 signed the document too (Rust sign_imported_proposal).
+relay-new-new-offchannel      ApprovalRelay ServerGate=TRUE  ClientRelays=TRUE  Stored=TRUE  StoredAtStart={"c1"}           LateSigners={}
+relay-new-new-offchannel-late ApprovalRelay ServerGate=TRUE  ClientRelays=TRUE  Stored=TRUE  StoredAtStart={"c1"}           LateSigners={"c4"}
+relay-new-new-stored-late     ApprovalRelay ServerGate=TRUE  ClientRelays=TRUE  Stored=TRUE  StoredAtStart={"c1","c2","c3"} LateSigners={"c4"}
+relay-old-new-offchannel      ApprovalRelay ServerGate=FALSE ClientRelays=TRUE  Stored=TRUE  StoredAtStart={"c1"}           LateSigners={}
+relay-old-new-offchannel-late ApprovalRelay ServerGate=FALSE ClientRelays=TRUE  Stored=TRUE  StoredAtStart={"c1"}           LateSigners={"c4"}
+relay-old-new-offchannel-unsigned ApprovalRelay ServerGate=FALSE ClientRelays=TRUE  Stored=TRUE  StoredAtStart={}               LateSigners={}
+relay-new-old-offchannel      ApprovalRelay ServerGate=TRUE  ClientRelays=FALSE Stored=TRUE  StoredAtStart={"c1"}           LateSigners={}
+relay-new-old-stored          ApprovalRelay ServerGate=TRUE  ClientRelays=FALSE Stored=TRUE  StoredAtStart={"c1","c2","c3"} LateSigners={}
+relay-new-new-unstored        ApprovalRelay ServerGate=TRUE  ClientRelays=TRUE  Stored=FALSE StoredAtStart={}               LateSigners={}
+relay-old-new-unstored        ApprovalRelay ServerGate=FALSE ClientRelays=TRUE  Stored=FALSE StoredAtStart={}               LateSigners={}

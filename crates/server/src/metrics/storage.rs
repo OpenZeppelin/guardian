@@ -286,6 +286,20 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        timed(
+            "update_delta_proposal_if_status",
+            self.inner
+                .update_delta_proposal_if_status(commitment, proposal, expected),
+        )
+        .await
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,

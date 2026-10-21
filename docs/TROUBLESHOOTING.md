@@ -866,7 +866,7 @@ fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 | `unsupported_for_network` | 400 | Endpoint not available for the account's network. |
 | `unsupported_evm_chain` | 400 | EVM chain ID not in the configured allowlist. |
 | `invalid_evm_proposal` | 400 | EVM proposal payload validation failed. |
-| `insufficient_signatures` | 400 | Threshold not met for a multi-sig execute. |
+| `insufficient_signatures` | 400 | Multisig threshold not met: an EVM execute, or a Miden `push_delta` whose matching proposal lacks verified cosigner signatures for the lowest threshold the account permits (its default threshold, or a lower override on one of its non-auth procedures). |
 
 ### Network and infrastructure
 

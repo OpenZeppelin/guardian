@@ -55,6 +55,7 @@ excluded_scenarios = [
   "live-guardian-execute-base-client-2of3-ecdsa",
   "live-candidate-queue-chained-1of1-ecdsa",
   "live-candidate-queue-stranded-head-1of1-ecdsa",
+  "live-send-override-p2id-2of3-falcon",
 ]
 
 [[pair]]
@@ -89,4 +90,5 @@ excluded_scenarios = [
   "live-guardian-execute-base-client-2of3-ecdsa",
   "live-candidate-queue-chained-1of1-ecdsa",
   "live-candidate-queue-stranded-head-1of1-ecdsa",
+  "live-send-override-p2id-2of3-falcon",
 ]
