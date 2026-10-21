@@ -182,7 +182,10 @@ Paths are relative to `crates/server/src/`.
   `jobs/release_sweep/sweep.rs` covers it.
 - The chain read is exact: the sweep's `confirmations`, the lagging-node
   checks (`chain_behind_stored`) and `divergence_confirmations` guard
-  against stale reads, which the model does not produce.
+  against stale reads, which the model does not produce. `/configure`'s
+  `stored_state_landed` has no such guard: it trusts one chain read, so a
+  node lagging behind the stored state answers "never landed" and lets
+  an older state replace it.
 - A sweep visit's reads are one step and its write a later one. The
   reads in the code are separate statements, but the only write is
   conditional on the stored state it read, so splitting them adds

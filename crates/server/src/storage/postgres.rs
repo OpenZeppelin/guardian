@@ -3977,11 +3977,6 @@ mod tests {
             .await;
     }
 
-    /// Issue #17: the in-transaction admission gate queues chained
-    /// candidates up to the configured depth, in nonce order, refuses a
-    /// submission competing for a claimed base, reports an unknown base
-    /// against the canonical commitment, and serializes two racing
-    /// extensions of the same tail so exactly one commits.
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn submit_candidate_refuses_a_paused_or_released_account_under_the_account_lock() {
@@ -4095,6 +4090,11 @@ mod tests {
         );
     }
 
+    /// Issue #17: the in-transaction admission gate queues chained
+    /// candidates up to the configured depth, in nonce order, refuses a
+    /// submission competing for a claimed base, reports an unknown base
+    /// against the canonical commitment, and serializes two racing
+    /// extensions of the same tail so exactly one commits.
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn submit_candidate_queues_chained_candidates_under_the_account_lock() {
