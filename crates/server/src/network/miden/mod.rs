@@ -274,7 +274,7 @@ impl MidenNetworkClient {
         let account = Account::from_json(state_json)?;
 
         if &account.id() != account_id {
-            tracing::error!(
+            tracing::warn!(
                 expected = %account_id.to_hex(),
                 actual = %account.id().to_hex(),
                 "Account ID mismatch in state JSON"
@@ -288,115 +288,16 @@ impl MidenNetworkClient {
 
         Ok(account)
     }
-}
 
-#[async_trait]
-impl NetworkClient for MidenNetworkClient {
-    fn get_state_head(
-        &self,
-        account_id: &str,
-        state_json: &serde_json::Value,
-    ) -> Result<StateHead, String> {
-        let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
-                account_id = %account_id,
-                error = %e,
-                "Invalid Miden account ID format in get_state_head"
-            );
-            format!("Invalid Miden account ID format: {e}")
-        })?;
-
-        let account = Self::construct_account_from_json(&account_id, state_json)?;
-        let local_commitment = account.to_commitment();
-        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
-
-        Ok(StateHead {
-            commitment: local_commitment_hex,
-            nonce: Some(account.nonce().as_canonical_u64()),
-        })
-    }
-
-    async fn verify_commitment(
-        &self,
-        account_id: &str,
-        expected_commitment: &str,
-        read_mode: RpcReadMode,
-    ) -> Result<StateVerification, String> {
-        let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
-                account_id = %account_id,
-                error = %e,
-                "Invalid Miden account ID format in verify_commitment"
-            );
-            format!("Invalid Miden account ID format: {e}")
-        })?;
-
-        // Outbound chain-node RPC — the upstream dependency this
-        // server's availability hangs on, so it gets its own metric
-        // (`operation` is the static RPC method name, a closed set).
-        let rpc_started = std::time::Instant::now();
-        let rpc_result = self
-            .client
-            .get_account_commitment(&account_id, read_mode)
-            .await;
-        metrics::counter!(
-            crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
-            crate::metrics::names::LABEL_OPERATION => "get_account_commitment",
-            crate::metrics::names::LABEL_OUTCOME =>
-                crate::metrics::labels::Outcome::from_ok(rpc_result.is_ok()).as_str()
-        )
-        .increment(1);
-        metrics::histogram!(
-            crate::metrics::names::MIDEN_RPC_DURATION_SECONDS,
-            crate::metrics::names::LABEL_OPERATION => "get_account_commitment"
-        )
-        .record(rpc_started.elapsed().as_secs_f64());
-
-        let on_chain_commitment = rpc_result.map_err(|e| {
-            tracing::error!(
-                account_id = %account_id.to_hex(),
-                error = %e,
-                "Failed to fetch account commitment from Miden network"
-            );
-            format!("Failed to verify account '{account_id}' on Miden network: {e}")
-        })?;
-
-        if Self::is_empty_word_digest(&on_chain_commitment) {
-            return Ok(StateVerification::Absent);
-        }
-
-        if expected_commitment != on_chain_commitment {
-            tracing::debug!(
-                account_id = %account_id.to_hex(),
-                expected = %expected_commitment,
-                on_chain = %on_chain_commitment,
-                "Commitment mismatch during state verification"
-            );
-            return Ok(StateVerification::Mismatch {
-                on_chain: on_chain_commitment,
-            });
-        }
-
-        Ok(StateVerification::Match)
-    }
-
-    fn verify_delta(
-        &self,
-        prev_commitment: &str,
-        prev_state_json: &serde_json::Value,
-        delta_payload: &serde_json::Value,
-    ) -> Result<(), String> {
-        TransactionSummary::from_json(delta_payload)?;
-        let account = Account::from_json(prev_state_json)?;
-
+    fn ensure_prev_commitment(account: &Account, prev_commitment: &str) -> Result<(), String> {
         let current_commitment = account.to_commitment();
         let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
 
         if current_commitment_hex != prev_commitment {
-            tracing::error!(
+            tracing::warn!(
                 delta_prev_commitment = %prev_commitment,
                 state_commitment = %current_commitment_hex,
-                "Previous commitment mismatch in verify_delta"
+                "Delta base commitment does not match the stored state"
             );
             return Err(format!(
                 "Previous commitment mismatch: delta specifies {prev_commitment}, but current state has {current_commitment_hex}"
@@ -406,15 +307,12 @@ impl NetworkClient for MidenNetworkClient {
         Ok(())
     }
 
-    fn apply_delta(
-        &self,
-        prev_state_json: &serde_json::Value,
-        delta_payload: &serde_json::Value,
+    fn apply_summary(
+        prev_account: Result<Account, String>,
+        tx_summary: &TransactionSummary,
     ) -> Result<AppliedState, String> {
-        let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account_delta = tx_summary.account_delta();
 
-        let prev_account = Account::from_json(prev_state_json);
         let is_full_state =
             !account_delta.code().is_empty() && prev_account.as_ref().map_or(true, Account::is_new);
         let base_account = if is_full_state {
@@ -482,11 +380,137 @@ impl NetworkClient for MidenNetworkClient {
             account
         };
 
+        let inspector = MidenAccountInspector::new(&account);
         Ok(AppliedState {
             commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
             nonce: Some(account.nonce().as_canonical_u64()),
+            cosigner_commitments: inspector.extract_slot_1_pubkeys(),
+            guardian_commitment: inspector.extract_guardian_public_key(),
             state_json: account.to_json(),
         })
+    }
+}
+
+#[async_trait]
+impl NetworkClient for MidenNetworkClient {
+    fn get_state_head(
+        &self,
+        account_id: &str,
+        state_json: &serde_json::Value,
+    ) -> Result<StateHead, String> {
+        let account_id = AccountId::from_hex(account_id).map_err(|e| {
+            tracing::warn!(
+                account_id = %account_id,
+                error = %e,
+                "Invalid Miden account ID format in get_state_head"
+            );
+            format!("Invalid Miden account ID format: {e}")
+        })?;
+
+        let account = Self::construct_account_from_json(&account_id, state_json)?;
+        let local_commitment = account.to_commitment();
+        let local_commitment_hex = format!("0x{}", hex::encode(local_commitment.as_bytes()));
+
+        Ok(StateHead {
+            commitment: local_commitment_hex,
+            nonce: Some(account.nonce().as_canonical_u64()),
+        })
+    }
+
+    async fn verify_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<StateVerification, String> {
+        let account_id = AccountId::from_hex(account_id).map_err(|e| {
+            tracing::warn!(
+                account_id = %account_id,
+                error = %e,
+                "Invalid Miden account ID format in verify_commitment"
+            );
+            format!("Invalid Miden account ID format: {e}")
+        })?;
+
+        // Outbound chain-node RPC — the upstream dependency this
+        // server's availability hangs on, so it gets its own metric
+        // (`operation` is the static RPC method name, a closed set).
+        let rpc_started = std::time::Instant::now();
+        let rpc_result = self
+            .client
+            .get_account_commitment(&account_id, read_mode)
+            .await;
+        metrics::counter!(
+            crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
+            crate::metrics::names::LABEL_OPERATION => "get_account_commitment",
+            crate::metrics::names::LABEL_OUTCOME =>
+                crate::metrics::labels::Outcome::from_ok(rpc_result.is_ok()).as_str()
+        )
+        .increment(1);
+        metrics::histogram!(
+            crate::metrics::names::MIDEN_RPC_DURATION_SECONDS,
+            crate::metrics::names::LABEL_OPERATION => "get_account_commitment"
+        )
+        .record(rpc_started.elapsed().as_secs_f64());
+
+        let on_chain_commitment = rpc_result.map_err(|e| {
+            tracing::error!(
+                account_id = %account_id.to_hex(),
+                error = %e,
+                "Failed to fetch account commitment from Miden network"
+            );
+            format!("Failed to verify account '{account_id}' on Miden network: {e}")
+        })?;
+
+        if Self::is_empty_word_digest(&on_chain_commitment) {
+            return Ok(StateVerification::Absent);
+        }
+
+        if expected_commitment != on_chain_commitment {
+            tracing::debug!(
+                account_id = %account_id.to_hex(),
+                expected = %expected_commitment,
+                on_chain = %on_chain_commitment,
+                "Commitment mismatch during state verification"
+            );
+            return Ok(StateVerification::Mismatch {
+                on_chain: on_chain_commitment,
+            });
+        }
+
+        Ok(StateVerification::Match)
+    }
+
+    fn verify_delta(
+        &self,
+        prev_commitment: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(), String> {
+        TransactionSummary::from_json(delta_payload)?;
+        let account = Account::from_json(prev_state_json)?;
+        Self::ensure_prev_commitment(&account, prev_commitment)
+    }
+
+    fn apply_delta(
+        &self,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String> {
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
+        Self::apply_summary(Account::from_json(prev_state_json), &tx_summary)
+    }
+
+    fn verify_and_apply_delta(
+        &self,
+        prev_commitment: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String> {
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
+        let account = Account::from_json(prev_state_json)?;
+        Self::ensure_prev_commitment(&account, prev_commitment)?;
+        Self::apply_summary(Ok(account), &tx_summary)
     }
 
     fn merge_deltas(
@@ -581,7 +605,7 @@ impl NetworkClient for MidenNetworkClient {
 
     fn validate_account_id(&self, account_id: &str) -> Result<(), String> {
         AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in validate_account_id"
@@ -602,7 +626,7 @@ impl NetworkClient for MidenNetworkClient {
 
         let (credential_pubkey_hex, _signature, _timestamp) =
             credential.as_signature().ok_or_else(|| {
-                tracing::error!("Invalid credential type - expected signature");
+                tracing::warn!("Invalid credential type - expected signature");
                 "Invalid credential type".to_string()
             })?;
 
@@ -611,7 +635,7 @@ impl NetworkClient for MidenNetworkClient {
         if inspector.pubkey_exists(&commitment_hex) {
             Ok(())
         } else {
-            tracing::error!(
+            tracing::warn!(
                 commitment = %commitment_hex,
                 "Credential public key commitment not found in account storage"
             );
@@ -659,7 +683,7 @@ impl NetworkClient for MidenNetworkClient {
         read_mode: RpcReadMode,
     ) -> Result<OnChainGuardianBinding, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in fetch_on_chain_guardian_binding"
@@ -711,7 +735,7 @@ impl NetworkClient for MidenNetworkClient {
         read_mode: RpcReadMode,
     ) -> Result<TransactionSearch, String> {
         let account_id = AccountId::from_hex(account_id).map_err(|e| {
-            tracing::error!(
+            tracing::warn!(
                 account_id = %account_id,
                 error = %e,
                 "Invalid Miden account ID format in find_transaction_ending_at"
@@ -1909,6 +1933,69 @@ mod tests {
         assert!(
             applied.nonce > configured.nonce,
             "the applied state is past the configured one"
+        );
+    }
+
+    /// The push path and promotion read the post-delta auth bindings off
+    /// `AppliedState` instead of decoding the stored blob again (issue
+    /// #328), so they must equal what a fresh decode of that blob reads.
+    #[tokio::test]
+    async fn verify_and_apply_delta_matches_separate_passes() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON)
+                .expect("Failed to parse account fixture");
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON)
+                .expect("Failed to parse delta fixture");
+        let delta_payload = delta_fixture
+            .get("delta_payload")
+            .expect("delta_payload field missing");
+        let prev_commitment = format!(
+            "0x{}",
+            hex::encode(
+                Account::from_json(&account_json)
+                    .expect("fixture account")
+                    .to_commitment()
+                    .as_bytes()
+            )
+        );
+
+        let applied = client
+            .verify_and_apply_delta(&prev_commitment, &account_json, delta_payload)
+            .expect("verify_and_apply_delta should succeed");
+        assert_eq!(
+            applied,
+            client
+                .apply_delta(&account_json, delta_payload)
+                .expect("apply_delta should succeed"),
+            "the single-decode path must produce the state the separate passes produce"
+        );
+
+        assert!(
+            client
+                .verify_and_apply_delta("0xnot_the_base", &account_json, delta_payload)
+                .expect_err("a wrong base commitment must be rejected")
+                .contains("Previous commitment mismatch"),
+        );
+
+        let current_auth = Auth::MidenFalconRpo {
+            cosigner_commitments: Vec::new(),
+        };
+        assert!(!applied.cosigner_commitments.is_empty());
+        assert_eq!(
+            applied.updated_auth(&current_auth),
+            client
+                .should_update_auth(&applied.state_json, &current_auth)
+                .await
+                .expect("should_update_auth should succeed"),
+        );
+        assert!(applied.guardian_commitment.is_some());
+        assert_eq!(
+            applied.guardian_commitment,
+            client
+                .extract_guardian_commitment(&applied.state_json)
+                .expect("extract_guardian_commitment should succeed"),
         );
     }
 

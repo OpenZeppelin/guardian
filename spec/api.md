@@ -17,17 +17,23 @@
 - The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
 - All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
 - `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
-- `POST /configure` enforces the same timestamp skew and replay CAS. A first-time
-  configuration seeds the verified signer's floor once the account metadata row
-  exists; reconfiguration consumes the timestamp before changing stored state.
-  The first-time seed is deliberately post-write because replay state has a
-  foreign key to account metadata. A crash in that narrow interval can leave the
-  new account without a floor, allowing any captured, still-fresh request signed
-  by that signer to initialize the floor and execute. Replaying the configure
-  itself only idempotently re-submits the same state, but the bounded first-write
-  window applies to other signed routes too. Concurrent first configurations are
-  not serialized across different signers; callers must not use `/configure` as
-  a general concurrent state-update mechanism.
+- `POST /configure` enforces the same timestamp skew and replay CAS, and every
+  configuration consumes its timestamp before it writes any state. A first-time
+  configuration first claims the account: it creates the metadata row only if
+  none exists, atomically, and only the request that created it proceeds as a
+  first configuration. Replay state has a foreign key to account metadata, so the
+  claim is what lets the timestamp be consumed before the state write. A request
+  that loses the claim (a concurrent duplicate or a replay of the signed request)
+  re-reads the account and is judged as a reconfiguration, so a replay from the
+  same signer is refused with `authentication_replay` before it writes anything.
+  A configuration from a different signer that loses the claim passes its own
+  replay check and reconfigures the account it lost to; callers must not use
+  `/configure` as a general concurrent state-update mechanism.
+- A first configuration that fails after its claim (a storage error before the
+  state write) leaves metadata with no stored state. Such an account is not
+  listed by `GET /state/lookup` and is skipped by the release sweep. A retry of
+  the same account id finishes it: the retry is held to the new-account scheme
+  policy and counted as the account's creation.
 - Migrated stores retain the former account-scoped value as a lower bound for
   signers first seen later, preventing a removed signer from regaining a replay
   window when it is authorized again.
@@ -79,8 +85,8 @@ approval prompts: the wallet still signs every transaction summary.
   - `origin`: the website that asked for the grant, e.g. `https://app.example`, at most 256 bytes; empty for clients outside a browser. The page writes it, so it is unverified; wallets display it, and Guardian does not check it against requests;
   - `issued_at` and `expires_at` (Unix seconds), plus `expires`, the canonical readable form of `expires_at` (`YYYY-MM-DD HH:MM:SS UTC`);
   - the scope, a fixed text every v1 grant states: *Every account this signer cosigns on this Guardian, now or later, until this grant expires*;
-  - `guardian_commitment`: this Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey`);
-  - `network`: the status `environment`, exactly `local`, `devnet` or `testnet` (not a bech32 HRP: local and devnet share `mdev`).
+  - `guardian_commitment`: this Guardian's ACK key commitment for the wallet's scheme (`GET /pubkey?scheme=<scheme>`);
+  - `network`: the status `environment`, exactly `local`, `devnet`, `testnet`, `cedar` or `mainnet`. It is not a bech32 HRP and cannot be derived from one: local and devnet share `mdev`, and Cedar and mainnet share `mm`, so a wallet must display this field rather than infer the network from an address.
 
   `expires` and the scope are derived by Guardian, never sent: a wallet that
   displayed anything else signed a different digest and is rejected.
@@ -472,7 +478,7 @@ component schemas.
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/nonce` | signed headers | Nonce and commitment of the latest canonical state (sync pre-check) |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
-| client | `GET /pubkey` | public | ACK public key / commitment |
+| client | `GET /pubkey` | public | ACK public key / commitment for `?scheme=falcon\|ecdsa` (default `falcon`) |
 | client | `GET /status` | public | Server liveness, version, environment, uptime |
 | client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |

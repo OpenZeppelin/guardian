@@ -31,8 +31,8 @@
  *   },
  * });
  *
- * // Get GUARDIAN pubkey for config
- * const guardianCommitment = await client.guardianClient.getPubkey();
+ * // Get GUARDIAN's ACK commitment for the account's signature scheme
+ * const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
  *
  * // Create multisig account
  * const config = { threshold: 2, signerCommitments: [signer.commitment, ...], guardianCommitment };

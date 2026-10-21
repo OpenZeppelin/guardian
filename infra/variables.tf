@@ -38,7 +38,7 @@ variable "server_image_uri" {
 }
 
 variable "server_network_type" {
-  description = "Miden network for the GUARDIAN server runtime (MidenTestnet, MidenDevnet, or MidenLocal)"
+  description = "Miden network for the GUARDIAN server runtime (MidenLocal, MidenDevnet, MidenTestnet, MidenCedar, or MidenMainnet)"
   type        = string
   default     = "MidenTestnet"
 }
@@ -725,6 +725,17 @@ variable "alarm_error_rate_threshold_percent" {
   validation {
     condition     = var.alarm_error_rate_threshold_percent > 0 && var.alarm_error_rate_threshold_percent <= 100
     error_message = "alarm_error_rate_threshold_percent must be in (0, 100]."
+  }
+}
+
+variable "alarm_p99_latency_threshold_seconds" {
+  description = "ALB p99 target response time in seconds above which the p99 latency alarm fires"
+  type        = number
+  default     = 2
+
+  validation {
+    condition     = var.alarm_p99_latency_threshold_seconds > 0
+    error_message = "alarm_p99_latency_threshold_seconds must be positive."
   }
 }
 

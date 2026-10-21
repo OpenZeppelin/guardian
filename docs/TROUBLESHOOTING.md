@@ -133,8 +133,9 @@ Most startup failures are environment misconfiguration. Check in order:
    `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
    (or `contains non-Unicode data` / `has unrecognized value "..."` for
    malformed values and typos like `tesnet`). There is no fallback network.
-   Replace the variable with `MidenLocal`, `MidenTestnet`, or
-   `MidenDevnet` (short forms `local`/`testnet`/`devnet` work,
+   Replace the variable with `MidenLocal`, `MidenDevnet`, `MidenTestnet`,
+   `MidenCedar`, or `MidenMainnet` (short forms
+   `local`/`devnet`/`testnet`/`cedar`/`mainnet` work,
    case-insensitive).
 2. **Miden node unreachable or Miden RPC settings invalid.** The initial
    node connection retries transient failures for ≈35 seconds (5 attempts
@@ -662,7 +663,7 @@ come from
 | `wallet_signature_required` | 403 | A wallet-only route (delta push, candidate abandon, configure, lookup, revoke-all) was called with session (delegated-signer) credentials. Sign it with the wallet. |
 | `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
 | `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
-| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already in this Guardian's metadata are never rejected this way; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
+| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already configured on this Guardian are never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
 ### Resource lookup

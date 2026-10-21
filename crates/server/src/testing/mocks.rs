@@ -162,6 +162,8 @@ impl MockNetworkClient {
             state_json,
             commitment,
             nonce: None,
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }))
     }
 
@@ -271,8 +273,20 @@ impl NetworkClient for MockNetworkClient {
                     state_json: serde_json::json!({}),
                     commitment: "mock_new_commitment".to_string(),
                     nonce: None,
+                    cosigner_commitments: Vec::new(),
+                    guardian_commitment: None,
                 })
             })
+    }
+
+    fn verify_and_apply_delta(
+        &self,
+        prev_proof: &str,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> StdResult<AppliedState, String> {
+        self.verify_delta(prev_proof, prev_state_json, delta_payload)?;
+        self.apply_delta(prev_state_json, delta_payload)
     }
 
     fn merge_deltas(
@@ -1313,6 +1327,8 @@ pub struct MockMetadataStore {
         Arc<StdMutex<std::collections::HashMap<String, crate::metadata::AccountMetadata>>>,
     pub set_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
+    pub create_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
+    pub create_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
     pub list_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub list_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
@@ -1360,6 +1376,11 @@ impl MockMetadataStore {
             .lock()
             .unwrap()
             .insert(metadata.account_id.clone(), metadata);
+        self
+    }
+
+    pub fn with_create(self, response: StdResult<bool, String>) -> Self {
+        self.create_responses.lock().unwrap().push(response);
         self
     }
 
@@ -1471,6 +1492,10 @@ impl MockMetadataStore {
         self.get_calls.lock().unwrap().clone()
     }
 
+    pub fn get_create_calls(&self) -> Vec<crate::metadata::AccountMetadata> {
+        self.create_calls.lock().unwrap().clone()
+    }
+
     pub fn get_set_calls(&self) -> Vec<crate::metadata::AccountMetadata> {
         self.set_calls.lock().unwrap().clone()
     }
@@ -1508,6 +1533,15 @@ impl MetadataStore for MockMetadataStore {
         self.set_calls.lock().unwrap().push(metadata);
         // Always allow set operations by default
         self.set_responses.lock().unwrap().pop().unwrap_or(Ok(()))
+    }
+
+    async fn create(&self, metadata: crate::metadata::AccountMetadata) -> StdResult<bool, String> {
+        self.create_calls.lock().unwrap().push(metadata);
+        self.create_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true))
     }
 
     async fn list(&self) -> StdResult<Vec<String>, String> {

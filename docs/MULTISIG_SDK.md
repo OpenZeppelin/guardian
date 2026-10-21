@@ -27,13 +27,13 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.1 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.18.2 @miden-sdk/miden-sdk@0.17.3
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "=0.18.1"
+miden-multisig-client = "=0.18.2"
 miden-client = "=0.17.3"
 ```
 
@@ -58,8 +58,8 @@ const client = new MultisigClient(midenClient, {
 // Both endpoints are required; construction throws when either is omitted.
 // midenRpcEndpoint must point at the same network as the injected MidenClient.
 
-// 2. Get GUARDIAN server public key
-const guardianCommitment = await client.guardianClient.getPubkey();
+// 2. Get GUARDIAN's ACK commitment for the account's signature scheme
+const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
 
 // 3. Create 1-of-3 multisig account
 const config = {
@@ -233,10 +233,13 @@ The Guardian server exposes the same policy for its own node reads via
 ### Note transport endpoint
 
 Private notes are relayed through a note transport service that is separate
-from the node RPC. On the testnet and devnet presets both SDKs derive the
-transport endpoint automatically; a custom node endpoint has no derivable
-transport service, so it must be set explicitly — otherwise private-note
-relay is disabled.
+from the node RPC. On the devnet and testnet presets both SDKs derive the
+transport endpoint automatically, and the Rust SDK also derives it for Cedar
+(`MidenCedar::endpoint()`) and mainnet (`Endpoint::mainnet()`). The web SDK
+has no Cedar or mainnet preset or shorthand yet, so a browser client on either
+network passes its transport URL explicitly. A custom node endpoint has
+no derivable transport service, so it must be set explicitly; otherwise
+private-note relay is disabled.
 
 In Rust the endpoint lives on the builder, next to the node endpoint:
 
@@ -611,11 +614,67 @@ the upstream status in
 [MIDEN_COMPATIBILITY.md](./MIDEN_COMPATIBILITY.md#open-upstream-items). Node.js
 clients have no worker and are unaffected.
 
+#### Cedar
+
+`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+so a Cedar client names its endpoints explicitly:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.cedar.miden.io',
+  proverUrl: 'https://tx-prover.cedar.miden.io',
+  noteTransportUrl: 'https://transport.cedar.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.cedar.miden.io',
+});
+```
+
+Cedar addresses use the `mm` prefix, today the same as mainnet's. In Rust,
+`MidenCedar::endpoint()` selects the Cedar prover and note transport automatically. miden-client does
+not know Cedar, so its `Client::network_id()` returns the generic custom id
+`mcst` for a Cedar endpoint; encode Cedar addresses with
+`MidenCedar::network_id()` (`mm`) instead.
+
+#### Mainnet
+
+`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
+so a mainnet client names its endpoints the same way:
+
+```typescript
+const midenClient = await MidenClient.create({
+  rpcUrl: 'https://rpc.mainnet.miden.io',
+  proverUrl: 'https://tx-prover.mainnet.miden.io',
+  noteTransportUrl: 'https://transport.mainnet.miden.io',
+  autoSync: true,
+  useWorker: false,
+});
+
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint: 'https://your-guardian-host',
+  midenRpcEndpoint: 'https://rpc.mainnet.miden.io',
+  prover: {
+    retry: { maxAttempts: 4 },
+  },
+});
+```
+
+`createTestnet` and `createDevnet` set exactly these three endpoints plus
+`autoSync`, so the explicit Cedar and mainnet forms are equivalent. Without
+`noteTransportUrl`, private notes cannot be relayed between cosigners. Leave
+`prover.url` unset so the SDK keeps the Cedar or mainnet prover injected into
+the `MidenClient`; a `url` there overrides it.
+
 ### Creating Accounts
 
 ```typescript
-// Get GUARDIAN server's public key commitment
-const guardianCommitment = await client.guardianClient.getPubkey();
+// Get GUARDIAN's ACK commitment for the account's signature scheme
+const { commitment: guardianCommitment } = await client.guardianClient.getPubkey(signer.scheme);
 
 // Define multisig configuration
 const config: MultisigConfig = {
@@ -638,6 +697,13 @@ console.log('Account ID:', multisig.accountId);
 console.log('Threshold:', multisig.threshold);
 console.log('Signers:', multisig.signerCommitments);
 ```
+
+`getPubkey` returns `{ commitment, pubkey }` for one signature scheme and
+defaults to Falcon when no scheme is passed, including on a Guardian that only
+admits ECDSA accounts (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`): both ACK keys
+stay loaded for existing accounts. Always pass the scheme of the account you
+are creating, usually `signer.scheme`. A Falcon commitment in an ECDSA account
+is refused at registration with an authorization error, not a scheme mismatch.
 
 ### Loading Existing Accounts
 
