@@ -448,6 +448,23 @@ impl StorageBackend for FilesystemService {
         self.write_state_holding_lock(state).await
     }
 
+    // Holds `delta_write_lock`, which `promote_candidate` holds across its
+    // base check and state write, then the state lock, in that order.
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        let _delta_guard = self.delta_write_lock.lock().await;
+        let _state_guard = self.state_write_lock.lock().await;
+        let current = self.pull_state(&state.account_id).await?.commitment;
+        if current != expected_commitment {
+            return Ok(crate::storage::StateReplace::StateMoved { current });
+        }
+        self.write_state_holding_lock(state).await?;
+        Ok(crate::storage::StateReplace::Replaced)
+    }
+
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
         let _guard = self.delta_write_lock.lock().await;
         self.write_delta_holding_lock(delta).await
@@ -887,6 +904,20 @@ impl StorageBackend for FilesystemService {
         max_pending_candidates: usize,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         let _guard = self.delta_write_lock.lock().await;
+
+        // The status re-read right before the write. The metadata store has
+        // its own lock, so a pause landing between this read and the write
+        // is not fenced; the Postgres twin reads under the lock the pause
+        // takes.
+        if let Some(account) = metadata.get(&delta.account_id).await?
+            && let Some(refused) = crate::storage::CandidateSubmission::refused_while_inactive(
+                account.released_at,
+                account.paused_at,
+                account.paused_reason,
+            )
+        {
+            return Ok(refused);
+        }
 
         // Race-proof twin of the service-layer admission gate, mirroring
         // the Postgres transaction: two submissions that both passed the
@@ -1826,6 +1857,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_submit_candidate_rereads_the_account_status() {
+        use crate::metadata::MetadataStore;
+
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7d7d7d7a7d7d7d017d7d7d7d7d7d7d";
+        seed_account(&storage, &metadata_store, account_id).await;
+        let now = "2024-11-14T12:10:00Z";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate(now.to_string());
+        delta.prev_commitment = "0x123".to_string();
+        delta.new_commitment = Some("0xc1".to_string());
+
+        metadata_store
+            .set_pause(account_id, chrono::Utc::now(), "compliance")
+            .await
+            .expect("pause");
+        match storage
+            .submit_candidate(&metadata_store, &delta, now, 1)
+            .await
+            .expect("resolves")
+        {
+            crate::storage::CandidateSubmission::Paused { paused_reason, .. } => {
+                assert_eq!(paused_reason.as_deref(), Some("compliance"))
+            }
+            other => panic!("expected Paused, got {other:?}"),
+        }
+        assert!(
+            storage
+                .pull_candidate_deltas(account_id)
+                .await
+                .expect("candidates")
+                .is_empty()
+        );
+
+        metadata_store
+            .clear_pause(account_id)
+            .await
+            .expect("unpause");
+        assert_eq!(
+            storage
+                .submit_candidate(&metadata_store, &delta, now, 1)
+                .await
+                .expect("resolves"),
+            crate::storage::CandidateSubmission::Submitted
+        );
+
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
     async fn test_submit_candidate_queues_chained_candidates_up_to_depth() {
         // Issue #17: candidates queue as a chain. Under the lock the
         // gate admits a delta that builds on the newest queued
@@ -2346,6 +2434,57 @@ mod tests {
         // ...but not in the object's own serialization, the `GET /state` body.
         let body = serde_json::to_value(&state).expect("serializes");
         assert!(body.get("nonce").is_none(), "got {body}");
+
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn replace_state_writes_only_over_the_expected_commitment() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7c7c7c7a7c7c7c017c7c7c7c7c7c7c";
+        let state = |commitment: &str, nonce| StateObject {
+            account_id: account_id.to_string(),
+            state_json: serde_json::json!({ "test": commitment }),
+            commitment: commitment.to_string(),
+            nonce: Some(nonce),
+            created_at: "2024-11-14T12:00:00Z".to_string(),
+            updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: "falcon".to_string(),
+        };
+        storage
+            .submit_state(&state("0xpromoted", 2))
+            .await
+            .expect("submit");
+
+        assert_eq!(
+            storage
+                .replace_state(&state("0xolder", 1), "0xstale")
+                .await
+                .unwrap(),
+            crate::storage::StateReplace::StateMoved {
+                current: "0xpromoted".to_string()
+            }
+        );
+        assert_eq!(
+            storage.pull_state(account_id).await.unwrap().commitment,
+            "0xpromoted",
+            "a refused replace writes nothing"
+        );
+
+        assert_eq!(
+            storage
+                .replace_state(&state("0xolder", 1), "0xpromoted")
+                .await
+                .unwrap(),
+            crate::storage::StateReplace::Replaced
+        );
+        assert_eq!(
+            storage.pull_state(account_id).await.unwrap().commitment,
+            "0xolder"
+        );
 
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }

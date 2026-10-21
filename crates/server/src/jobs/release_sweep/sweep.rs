@@ -47,7 +47,8 @@ pub enum VisitOutcome {
 }
 
 /// A candidate post-state's origin: a pending proposal, or an unpromoted
-/// delta chaining from the stored base.
+/// delta chaining from the stored base, directly or through other
+/// unpromoted deltas.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SwitchSource {
     /// `storage_id` as the storage backend keys it (the filesystem
@@ -71,7 +72,18 @@ impl SwitchSource {
     }
 }
 
-/// A candidate's post-state, computed once from the stored base.
+/// A state candidates are applied to: the stored state, or the end state
+/// of unpromoted deltas chaining from it. A delta retained after its
+/// retries ran out can still land late, and a switch built on it, or a
+/// switch delta parked behind it, then starts from its end state rather
+/// than from the stored one.
+#[derive(Debug, Clone)]
+struct CandidateBase {
+    commitment: String,
+    state_json: serde_json::Value,
+}
+
+/// A candidate's post-state, computed once per base.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SwitchPostState {
     Ready {
@@ -87,8 +99,8 @@ enum SwitchPostState {
 /// Everything the sweep knows about one candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SwitchEvidence {
-    /// The stored base the post-state was computed from; an entry for
-    /// another base is stale.
+    /// The base the post-state was computed from; an entry for another
+    /// base is stale.
     base_commitment: String,
     post_state: SwitchPostState,
     /// First block not yet searched for a transaction ending at the
@@ -135,6 +147,11 @@ pub struct SweepState {
     /// attributable to a switch), so a healthy account's state is parsed
     /// once per stored state.
     checked_stored: Mutex<HashMap<String, u64>>,
+}
+
+/// Evidence cache key: one candidate applied to one base.
+fn candidate_key(source: &SwitchSource, base: &CandidateBase) -> String {
+    format!("{}@{}", source.key(), base.commitment)
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -469,9 +486,8 @@ impl ReleaseSweeper {
         }
         // A candidate in flight belongs to the push path: it either
         // canonicalizes (and the hook releases on a switch) or resolves
-        // to a state this sweep sees on a later visit (except a switch
-        // delta parked behind another candidate, issue #504). No
-        // observation is recorded either way.
+        // to a state this sweep sees on a later visit. No observation is
+        // recorded either way.
         if metadata.has_pending_candidate {
             tracing::debug!(
                 event = "release_sweep_skipped",
@@ -974,24 +990,24 @@ impl ReleaseSweeper {
         Ok(VisitOutcome::Checked)
     }
 
-    /// Candidates to apply to the stored base: every pending proposal
-    /// and every unpromoted delta canonicalization retained or the client
-    /// abandoned (their proposal is gone, but their payload is not) that
-    /// chains from the stored base. A proposal counts whatever its label
-    /// (the post-state's guardian key decides, not the client-written
-    /// type) and whatever base it was recorded against: the candidate
-    /// queue records a proposal against its tail (issue #17). One built
-    /// on the stored state behind a queued candidate is refused when its
-    /// nonce does not extend the queue, but a summary does not name its
-    /// base, so one labelled past the tail is recorded against it all the
-    /// same. Either its summary applied to the stored state reproduces a
-    /// state the chain reached, or it proves nothing. A switch delta
-    /// queued behind another candidate is not matched yet (issue #504).
+    /// Candidates, each with the base to apply it to: every pending
+    /// proposal and every unpromoted delta canonicalization retained or
+    /// the client abandoned (their proposal is gone, but their payload is
+    /// not) that chains from the stored base, directly or through other
+    /// such deltas (issue #504). A proposal counts whatever its label (the
+    /// post-state's guardian key decides, not the client-written type)
+    /// and whatever base it was recorded against: the candidate queue
+    /// records a proposal against its tail (issue #17), and with an empty
+    /// queue against the stored state even when it was built on a state a
+    /// retained delta reached by landing late. A summary does not name its
+    /// base, so a proposal is applied to every base; a delta only to the
+    /// one it was admitted on. Either a post-state is a state the chain
+    /// reached, or it proves nothing.
     async fn switch_candidates(
         &self,
         account_id: &str,
         stored: &StateObject,
-    ) -> Result<Vec<(SwitchSource, serde_json::Value)>> {
+    ) -> Result<Vec<(SwitchSource, serde_json::Value, CandidateBase)>> {
         let proposals = self
             .state
             .storage
@@ -1008,19 +1024,30 @@ impl ReleaseSweeper {
             .map_err(|e| {
                 GuardianError::StorageError(format!("Failed to pull recoverable deltas: {e}"))
             })?;
+        let chained = deltas
+            .iter()
+            .any(|delta| delta.prev_commitment != stored.commitment);
+        let bases = if proposals.is_empty() && !chained {
+            vec![CandidateBase {
+                commitment: stored.commitment.clone(),
+                state_json: stored.state_json.clone(),
+            }]
+        } else {
+            self.candidate_bases(account_id, stored, &deltas).await
+        };
 
         let mut candidates = Vec::new();
         for record in proposals {
             let Some(tx_summary) = record.proposal.delta_payload.get("tx_summary").cloned() else {
                 continue;
             };
-            candidates.push((
-                SwitchSource::Proposal {
-                    proposal_id: canonical_proposal_id(&record.commitment),
-                    storage_id: record.commitment,
-                },
-                tx_summary,
-            ));
+            let source = SwitchSource::Proposal {
+                proposal_id: canonical_proposal_id(&record.commitment),
+                storage_id: record.commitment,
+            };
+            for base in &bases {
+                candidates.push((source.clone(), tx_summary.clone(), base.clone()));
+            }
         }
         for DeltaObject {
             nonce,
@@ -1029,11 +1056,75 @@ impl ReleaseSweeper {
             ..
         } in deltas
         {
-            if prev_commitment == stored.commitment {
-                candidates.push((SwitchSource::Delta { nonce }, delta_payload));
+            if let Some(base) = bases.iter().find(|base| base.commitment == prev_commitment) {
+                candidates.push((SwitchSource::Delta { nonce }, delta_payload, base.clone()));
             }
         }
         Ok(candidates)
+    }
+
+    /// The stored state, then the end state of every unpromoted delta that
+    /// chains from a base already found, each reproducing the commitment
+    /// the delta was admitted with. Every delta is applied at most once,
+    /// so the walk ends. Only needed when something can start past the
+    /// stored state: a pending proposal, or a delta queued behind another.
+    async fn candidate_bases(
+        &self,
+        account_id: &str,
+        stored: &StateObject,
+        deltas: &[DeltaObject],
+    ) -> Vec<CandidateBase> {
+        let mut bases = vec![CandidateBase {
+            commitment: stored.commitment.clone(),
+            state_json: stored.state_json.clone(),
+        }];
+        let mut unapplied: Vec<&DeltaObject> = deltas.iter().collect();
+        while let Some(position) = unapplied.iter().position(|delta| {
+            bases
+                .iter()
+                .any(|base| base.commitment == delta.prev_commitment)
+        }) {
+            let delta = unapplied.swap_remove(position);
+            let Some(base) = bases
+                .iter()
+                .find(|base| base.commitment == delta.prev_commitment)
+            else {
+                continue;
+            };
+            let client = self.state.network_client.clone();
+            let prev_state_json = base.state_json.clone();
+            let delta_payload = delta.delta_payload.clone();
+            let applied = crate::network::reconstructor()
+                .run_background(move || client.apply_delta(&prev_state_json, &delta_payload))
+                .await;
+            match applied {
+                Ok(applied)
+                    if delta
+                        .new_commitment
+                        .as_deref()
+                        .is_none_or(|hint| hint == applied.commitment)
+                        && bases
+                            .iter()
+                            .all(|base| base.commitment != applied.commitment) =>
+                {
+                    bases.push(CandidateBase {
+                        commitment: applied.commitment,
+                        state_json: applied.state_json,
+                    });
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::info!(
+                        account_id = %account_id,
+                        nonce = delta.nonce,
+                        error = %GuardianError::from(e),
+                        "Unpromoted delta does not apply to its base; it cannot extend the \
+                         bases candidates are applied to"
+                    );
+                }
+            }
+        }
+        bases
     }
 
     /// Client-abandoned deltas stay in scope for the canonicalization
@@ -1069,22 +1160,25 @@ impl ReleaseSweeper {
         base: &mut BaseGuardian,
     ) -> Result<SwitchSearch> {
         let candidates = self.switch_candidates(account_id, stored).await?;
-        let current: HashSet<String> = candidates.iter().map(|(source, _)| source.key()).collect();
+        let current: HashSet<String> = candidates
+            .iter()
+            .map(|(source, _, base)| candidate_key(source, base))
+            .collect();
         self.sweep.retain_switches(account_id, &current);
 
         let mut ready = Vec::new();
-        for (source, tx_summary) in candidates {
-            let key = source.key();
+        for (source, tx_summary, base) in candidates {
+            let key = candidate_key(&source, &base);
             let evidence = match self
                 .sweep
-                .switch_evidence(account_id, &key, &stored.commitment)
+                .switch_evidence(account_id, &key, &base.commitment)
             {
                 Some(evidence) => evidence,
                 None => {
                     let evidence = SwitchEvidence {
-                        base_commitment: stored.commitment.clone(),
+                        base_commitment: base.commitment.clone(),
                         post_state: self
-                            .precompute_switch(account_id, &key, tx_summary, stored)
+                            .precompute_switch(account_id, &key, tx_summary, &base)
                             .await,
                         resume_from_block: 0,
                     };
@@ -1183,10 +1277,10 @@ impl ReleaseSweeper {
         account_id: &str,
         key: &str,
         tx_summary: serde_json::Value,
-        stored: &StateObject,
+        base: &CandidateBase,
     ) -> SwitchPostState {
         let client = self.state.network_client.clone();
-        let prev_state_json = stored.state_json.clone();
+        let prev_state_json = base.state_json.clone();
         let applied = crate::network::reconstructor()
             .run_background(move || {
                 let post = client.apply_delta(&prev_state_json, &tx_summary)?;
@@ -1204,8 +1298,8 @@ impl ReleaseSweeper {
                     account_id = %account_id,
                     candidate = %key,
                     error = %GuardianError::from(e),
-                    "Candidate does not apply to the stored base; it cannot serve as \
-                     release evidence"
+                    "Candidate does not apply to its base; it cannot serve as release \
+                     evidence"
                 );
                 SwitchPostState::Unusable
             }
@@ -1439,6 +1533,7 @@ mod tests {
     /// key has since changed.
     const PREVIOUS_OWN: &str = "0xprevious_own_guardian";
     const PROPOSAL_ID: &str = "0xswitch_proposal";
+    const LANDED_SECOND: &str = "0xsecond_end_state";
 
     fn miden_meta(account_id: &str) -> AccountMetadata {
         AccountMetadata {
@@ -2299,6 +2394,201 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_switch_proposal_built_past_a_late_landing_retained_delta_is_evidence() {
+        // An own delta ran out of retries and was retained, then landed;
+        // the stored state stayed at its base. A switch proposal built on
+        // the landed state was recorded against the stored one, and the
+        // chain now sits at its post-state. Applied to the stored state the
+        // summary proves nothing; applied past the retained delta it is the
+        // chain head.
+        const LANDED: &str = "0xlanded_commitment";
+        let landed = DeltaObject {
+            new_commitment: Some(LANDED.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_all_delta_proposals(Ok(vec![switch_proposal(ACCOUNT, STORED)]))
+                .with_pull_recoverable_deltas(Ok(vec![landed])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({}), LANDED.into())))
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Err("summary does not apply".into()))
+                .with_apply_delta(Ok((serde_json::json!({"landed": true}), LANDED.into())))
+                .with_extract_guardian_commitment(Ok(None))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        let events = h.auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["detected_by"], "proposal_match");
+        assert_eq!(events[0].payload["proposal_id"], PROPOSAL_ID);
+        assert_eq!(events[0].payload["stored_commitment"], STORED);
+        assert_eq!(events[0].payload["switch_commitment"], ON_CHAIN);
+        assert_eq!(
+            h.storage.get_delete_delta_proposal_calls(),
+            vec![(ACCOUNT.to_string(), PROPOSAL_ID.to_string())]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_switch_delta_parked_behind_a_retained_delta_is_evidence() {
+        // Issue #504: the switch delta was queued behind another candidate
+        // and both were retained. It does not chain from the stored base,
+        // but it does from its predecessor's end state.
+        const LANDED: &str = "0xlanded_commitment";
+        let predecessor = DeltaObject {
+            new_commitment: Some(LANDED.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let switch = DeltaObject {
+            new_commitment: Some(ON_CHAIN.to_string()),
+            ..retained_delta(ACCOUNT, 4, LANDED)
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_recoverable_deltas(Ok(vec![predecessor, switch])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({}), LANDED.into())))
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({"landed": true}), LANDED.into())))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into())))
+                .with_extract_guardian_commitment(Ok(None)),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        let events = h.auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["detected_by"], "recoverable_delta");
+        assert_eq!(events[0].payload["delta_nonce"], 4);
+        assert_eq!(events[0].payload["stored_commitment"], STORED);
+        assert_eq!(events[0].payload["switch_commitment"], ON_CHAIN);
+    }
+
+    #[tokio::test]
+    async fn a_replay_that_misses_its_admitted_commitment_is_not_a_base() {
+        // The retained delta's replay does not reproduce the commitment it
+        // was admitted with, so its end state is no base: the proposal is
+        // applied to the stored state only, and nothing is released.
+        const HINT: &str = "0xadmitted_commitment";
+        let mismatching = DeltaObject {
+            new_commitment: Some(HINT.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_all_delta_proposals(Ok(vec![switch_proposal(ACCOUNT, STORED)]))
+                .with_pull_recoverable_deltas(Ok(vec![mismatching])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({}), ON_CHAIN.into())))
+                .with_apply_delta(Err("summary does not apply".into()))
+                .with_apply_delta(Ok((serde_json::json!({}), "0xreplayed".into())))
+                .with_fetch_on_chain_guardian_binding(Ok(OnChainGuardianBinding::Opaque)),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert!(released_ids(&h.metadata).is_empty());
+        assert_eq!(
+            h.network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "derivation, the proposal on the stored state and the delta itself: three replays"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_switch_delta_whose_predecessor_is_gone_is_never_applied() {
+        // The predecessor row aged out: nothing links the switch delta to
+        // the stored base, so it is never applied and proves nothing.
+        let orphan = DeltaObject {
+            new_commitment: Some(ON_CHAIN.to_string()),
+            ..retained_delta(ACCOUNT, 4, "0xmissing_predecessor")
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_recoverable_deltas(Ok(vec![orphan])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({}), ON_CHAIN.into())))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into())))
+                .with_fetch_on_chain_guardian_binding(Ok(OnChainGuardianBinding::Opaque)),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert!(released_ids(&h.metadata).is_empty());
+        assert_eq!(
+            h.network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "the orphan is never replayed"
+        );
+        assert!(h.auditor.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_longer_chain_listed_out_of_order_is_walked_in_order() {
+        // Three retained rows, listed out of nonce order: the walk follows
+        // the commitments, not the listing, and the switch at the end of
+        // the chain is the evidence.
+        const FIRST: &str = "0xfirst_end_state";
+        let first = DeltaObject {
+            new_commitment: Some(FIRST.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let second = DeltaObject {
+            new_commitment: Some(LANDED_SECOND.to_string()),
+            ..retained_delta(ACCOUNT, 4, FIRST)
+        };
+        let switch = DeltaObject {
+            new_commitment: Some(ON_CHAIN.to_string()),
+            ..retained_delta(ACCOUNT, 5, LANDED_SECOND)
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_recoverable_deltas(Ok(vec![switch, first, second])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({}), LANDED_SECOND.into())))
+                .with_apply_delta(Ok((serde_json::json!({}), FIRST.into())))
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({}), LANDED_SECOND.into())))
+                .with_apply_delta(Ok((serde_json::json!({}), FIRST.into())))
+                .with_extract_guardian_commitment(Ok(None))
+                .with_extract_guardian_commitment(Ok(None))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        let events = h.auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["detected_by"], "recoverable_delta");
+        assert_eq!(events[0].payload["delta_nonce"], 5);
+    }
+
+    #[tokio::test]
     async fn history_searches_resume_where_the_last_one_stopped() {
         // Visit 1 searches blocks 0..=100 without a hit; visit 2 searches
         // from 101 and finds the switch. The post-state is computed once.
@@ -2865,11 +3155,11 @@ mod tests {
                 .with_list_release_sweep_ids(Ok(vec!["0xa".into()])),
             1,
         );
-        // Both accounts lack stored state in the mock: counted as failed
-        // visits, but the walk completes.
+        // Both accounts lack stored state in the mock: skipped as unfinished
+        // first configurations, and the walk completes.
         let summary = run_release_sweep_now(&h.sweeper.state).await.expect("walk");
         assert_eq!(summary.accounts, 2);
-        assert_eq!(summary.failed_accounts, 2);
+        assert_eq!(summary.failed_accounts, 0);
         assert_eq!(
             h.metadata.get_list_release_sweep_ids_calls(),
             vec![

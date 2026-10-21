@@ -481,8 +481,7 @@ Operator checks:
   pending proposal or unpromoted delta on this server reached the chain
   (neither at the head nor in the account's transaction history), and
   the guardian key cannot be read from chain. If that account is known to have switched
-  guardians (an offline switch with no proposal here, or a switch delta
-  that was queued behind another candidate, issue #504), it will not
+  guardians (an offline switch with no proposal here), it will not
   release by itself. `own_key_mismatch` (warn) means the account is
   bound to a guardian key this server does not hold and nothing on chain
   moved it there: this server's ack key changed since the account was
@@ -535,6 +534,26 @@ GET /delta/since?account_id=...&nonce=<last-known-nonce>
 
 Replay the returned canonical deltas locally, then resubmit your new
 delta. This is the same pattern as a Git fast-forward.
+
+### `commitment_mismatch` on `ConfigureAccount`
+
+Re-onboarding an existing account never puts an older state over a newer
+one. Two cases refuse it, and in both nothing is written and the release,
+if any, stands:
+
+- The submitted state's nonce is below the stored state's, and the chain
+  already reached the stored state (it is the chain head, or a committed
+  transaction ended at it): the wallet's state is stale. A stored state
+  that never landed (optimistic mode, ahead of the chain) can still be
+  replaced by the older chain state.
+- The stored state changed while the request ran: a delta was promoted in
+  between, for example a `switch_guardian` delta landing while the wallet
+  re-onboards.
+
+`expected` is the commitment now stored: re-read the account's state
+(from chain or `GET /state`) and retry with it. When the submitted state
+is older and the chain cannot be read to decide, the request fails with
+`rpc_unavailable` (retryable) rather than risk the overwrite.
 
 ### Stale state served by Guardian
 
@@ -696,7 +715,7 @@ come from
 | `invalid_account_id` | 400 | Malformed account ID. |
 | `invalid_delta` | 400 | Delta payload failed schema or commitment validation. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
-| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. |
+| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
 | `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload. |
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |
