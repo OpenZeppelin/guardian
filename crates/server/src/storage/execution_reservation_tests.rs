@@ -1829,6 +1829,9 @@ mod filesystem {
             }
             self.0.set(metadata).await
         }
+        async fn create(&self, metadata: crate::metadata::AccountMetadata) -> Result<bool, String> {
+            self.0.create(metadata).await
+        }
         async fn list(&self) -> Result<Vec<String>, String> {
             self.0.list().await
         }

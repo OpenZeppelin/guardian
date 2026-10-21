@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
@@ -30,7 +31,7 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.2 keeps the 0.18.1 pins.
+0.18.2 and 0.18.3 keep the 0.18.1 pins.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
@@ -123,6 +124,29 @@ be reproduced: `TransactionRequest` serialization changed and the auth arg commi
 Execute or cancel every pending proposal on the rc version, have GUARDIAN drop any that
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
+
+**Upgrading from 0.18.2 to 0.18.3: patched CA trust store.** The Miden pins, the
+`auth_tx` procedure root, stored data, existing contracts and the wire contract are
+unchanged, so accounts and stores carry over and 0.18.2 SDKs keep working against a
+0.18.3 server. The release is mainly a server image:
+
+- **CA trust store.** The image requires Debian `ca-certificates 20250419~deb12u2`,
+  which distrusts the compromised
+  [eMudhra intermediates](https://emudhra.we-have-a-problem.com/). Earlier images
+  ship `20250419~deb12u1`. The server trusts the system store for Miden RPC and
+  AWS, so redeploy the 0.18.3 image; restarting a container from an older image
+  keeps the old trust store. The workspace lockfile also moves to
+  `rustls-webpki` 0.103.16 and `webpki-roots` / `webpki-root-certs` 1.0.10.
+  Applications using the Rust SDKs keep their own lockfile; run
+  `cargo update -p rustls-webpki` there to pick up 0.103.16.
+- **First configuration claims the account** before consuming its replay
+  timestamp (#558), so two concurrent first `/configure` requests for one account
+  can no longer both write state; the loser is judged as a reconfiguration.
+- **Fewer account decodes** on `push_delta` and canonicalization promotion (#523),
+  and `push_delta_proposal` verification now shares the reconstruction gate with
+  pushes.
+- **Logging.** Client-caused auth and configure rejections log at WARN instead of
+  ERROR, and gRPC server-fault statuses produced by tonic are logged (#522).
 
 **Upgrading from 0.18.1 to 0.18.2: Cedar and mainnet network labels.** The Miden pins,
 the `auth_tx` procedure root, stored data and existing contracts are unchanged, so
@@ -411,15 +435,18 @@ breaking SDK change and needs no server change.
 
 The facts below change independently of this repository. This list is the one
 place that tracks them; other documents point here rather than restating them.
-Last checked 2026-10-12.
+Last checked 2026-10-20.
 
 - **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
   live qualification, including the `live-guardian-execute-*` scenarios, passed
   there on both SDKs on 2026-10-06, and on 2026-10-12 it answered requests whose
   accept header named client 0.17.3 (and 0.17.0), and refused 0.18.0 and
-  0.17.0-rc.5. The manual devnet run described next is a separate, earlier run
-  on the Miden 0.17 release candidates and has not been repeated on 0.17.0.
-  There, this build's protocol
+  0.17.0-rc.5. Testnet runs node 0.17.1: on 2026-10-20 it answered requests
+  whose accept header named client 0.17.3 (and 0.17.1), and refused 0.16.0. The
+  OZ stacks serve the 0.18.x line on both: `guardian-testnet` reports 0.18.1 and
+  `guardian-devnet` 0.18.2. The manual devnet run described next is a separate,
+  earlier run on the Miden 0.17 release candidates and has not been repeated on
+  0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
   block headers, so the transaction kernels matched. A guarded 2-of-2 multisig
   ran two proposals there end to end, a first consume-notes
@@ -432,9 +459,7 @@ Last checked 2026-10-12.
   `RegisterAccount` RPC, which pays it a small public P2ID note in the fee asset
   (`scripts/devnet-register-account.sh`). `miden-client`'s `register_account`
   does not send the request on devnet, because devnet enforces no allowlist and
-  reports every account as already allowed. Testnet runs Miden 0.16, so
-  on testnet the examples need a local `miden-node` from the pinned line until
-  it upgrades.
+  reports every account as already allowed.
 - **miden-client fee path.** miden-client (still in 0.17.3) commits the
   two-word 0.16 auth arg when a request declares `fee_conversion_salt`, so both
   SDKs set the three-word auth arg themselves (rationale in the multisig

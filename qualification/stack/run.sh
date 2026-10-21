@@ -409,6 +409,16 @@ print(sum(1 for s in scenarios if s['profile'] == 'live'))
   fi
   QUAL_TREASURY_REQUIRED="${QUAL_TREASURY_REQUIRED:-$(( LEGS * 400000 ))}"
 
+  # A top-up is a note sent to the treasury, and a note is not a balance until
+  # it is consumed. Consuming here means topping up is only ever a faucet
+  # request. A failure is a warning, not a stop: the prover is the flakiest part
+  # of a live network, and the check below still refuses a run the vault cannot
+  # cover.
+  echo "==> consuming notes waiting for the treasury"
+  if ! "${DRIVER[@]}" treasury-bootstrap --network "${NETWORK}"; then
+    echo "warning: consuming the treasury's waiting notes failed; checking the vault as it is" >&2
+  fi
+
   echo "==> checking the treasury covers ${LEGS} scenario leg(s)"
   set +e
   "${DRIVER[@]}" treasury-check \

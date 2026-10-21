@@ -473,7 +473,16 @@ faucet.
 
 `treasury-check` reports the starting balance, what a run is expected to cost,
 and how many further runs the remainder supports. Top up when that projection
-gets short.
+gets short: request funds from the faucet to the address `treasury-address`
+prints, and the next live run consumes them.
+
+Before that projection, `run.sh` consumes any notes waiting for the treasury,
+so a top-up needs no command of its own. A failed consume is a warning rather
+than a refusal: batches that already went through stay in the vault, only the
+unconsumed notes stay waiting for the next run, and the projection uses the
+resulting vault balance to decide whether this one can go ahead. A note the
+treasury cannot consume yet, such as a timelocked P2IDE, is skipped rather than
+batched, so it cannot block the notes behind it.
 
 `run.sh` runs this projection before a live run starts and refuses the run when
 the treasury cannot cover it, so a shortfall costs nothing rather than being
@@ -498,7 +507,7 @@ names the remediation rather than failing partway through a scenario.
 | `treasury-new --network <n>` | Create a key, print the address to fund, emit the secret on stdout |
 | `treasury-address --network <n>` | Print the configured treasury's address, for topping up |
 | `treasury-status --network <n>` | What the chain shows: deployment, vault, waiting notes, transactions |
-| `treasury-bootstrap --network <n>` | Consume waiting notes, which deploys the account and funds its vault |
+| `treasury-bootstrap --network <n>` | Consume waiting notes, ten per transaction, which deploys the account and funds its vault; `run.sh` runs it before every live run |
 | `treasury-check --network <n>` | Preflight: lock, fee model, usability, depletion projection |
 | `fund --network <n> --recipient <id> --amount <n>` | Fund one account; both drivers call this |
 | `treasury-sweep --network <n>` | Move funds out of a superseded private treasury |

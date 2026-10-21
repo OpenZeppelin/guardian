@@ -450,6 +450,12 @@ pub struct MockStorageBackend {
     pub pool_status: Option<crate::storage::PoolStatus>,
     pub submit_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_state_calls: Arc<StdMutex<Vec<StateObject>>>,
+    pub replace_state_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::StateReplace, String>>>>,
+    pub replace_state_calls: Arc<StdMutex<Vec<(StateObject, String)>>>,
+    /// Served by `pull_state_head` instead of the peeked stored state: a
+    /// head read that sees an older state than the full read after it.
+    pub pull_state_head_override: Arc<StdMutex<Option<crate::state_object::StateHead>>>,
     pub submit_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_calls: Arc<StdMutex<Vec<DeltaObject>>>,
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
@@ -577,7 +583,7 @@ impl MockStorageBackend {
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or_else(|| "No state found".to_string()),
+                .ok_or_else(|| "State not found".to_string()),
         }
     }
 
@@ -593,6 +599,19 @@ impl MockStorageBackend {
 
     pub fn with_submit_state(self, response: StdResult<(), String>) -> Self {
         self.submit_state_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_pull_state_head(self, head: crate::state_object::StateHead) -> Self {
+        *self.pull_state_head_override.lock().unwrap() = Some(head);
+        self
+    }
+
+    pub fn with_replace_state(
+        self,
+        response: StdResult<crate::storage::StateReplace, String>,
+    ) -> Self {
+        self.replace_state_responses.lock().unwrap().push(response);
         self
     }
 
@@ -681,6 +700,10 @@ impl MockStorageBackend {
 
     pub fn get_submit_state_calls(&self) -> Vec<StateObject> {
         self.submit_state_calls.lock().unwrap().clone()
+    }
+
+    pub fn get_replace_state_calls(&self) -> Vec<(StateObject, String)> {
+        self.replace_state_calls.lock().unwrap().clone()
     }
 
     /// Queue one `backfill_state_nonce` answer (LIFO). The default with an
@@ -1057,6 +1080,21 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or(Ok(()))
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> StdResult<crate::storage::StateReplace, String> {
+        self.replace_state_calls
+            .lock()
+            .unwrap()
+            .push((state.clone(), expected_commitment.to_string()));
+        if let Some(response) = self.replace_state_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::replace_state_sequential(self, state, expected_commitment).await
+    }
+
     async fn submit_delta(&self, delta: &DeltaObject) -> StdResult<(), String> {
         self.submit_delta_calls.lock().unwrap().push(delta.clone());
         self.submit_delta_responses
@@ -1091,6 +1129,9 @@ impl StorageBackend for MockStorageBackend {
         &self,
         _account_id: &str,
     ) -> StdResult<crate::state_object::StateHead, String> {
+        if let Some(head) = self.pull_state_head_override.lock().unwrap().clone() {
+            return Ok(head);
+        }
         self.peek_stored_state()
             .map(|state| crate::state_object::StateHead {
                 commitment: state.commitment,
@@ -1670,6 +1711,8 @@ pub struct MockMetadataStore {
         Arc<StdMutex<std::collections::HashMap<String, crate::metadata::AccountMetadata>>>,
     pub set_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub set_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
+    pub create_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
+    pub create_calls: Arc<StdMutex<Vec<crate::metadata::AccountMetadata>>>,
     pub list_responses: Arc<StdMutex<Vec<ListResult>>>,
     pub list_paged_responses:
         Arc<StdMutex<Vec<StdResult<Vec<crate::metadata::AccountMetadata>, String>>>>,
@@ -1717,6 +1760,11 @@ impl MockMetadataStore {
             .lock()
             .unwrap()
             .insert(metadata.account_id.clone(), metadata);
+        self
+    }
+
+    pub fn with_create(self, response: StdResult<bool, String>) -> Self {
+        self.create_responses.lock().unwrap().push(response);
         self
     }
 
@@ -1828,6 +1876,10 @@ impl MockMetadataStore {
         self.get_calls.lock().unwrap().clone()
     }
 
+    pub fn get_create_calls(&self) -> Vec<crate::metadata::AccountMetadata> {
+        self.create_calls.lock().unwrap().clone()
+    }
+
     pub fn get_set_calls(&self) -> Vec<crate::metadata::AccountMetadata> {
         self.set_calls.lock().unwrap().clone()
     }
@@ -1865,6 +1917,15 @@ impl MetadataStore for MockMetadataStore {
         self.set_calls.lock().unwrap().push(metadata);
         // Always allow set operations by default
         self.set_responses.lock().unwrap().pop().unwrap_or(Ok(()))
+    }
+
+    async fn create(&self, metadata: crate::metadata::AccountMetadata) -> StdResult<bool, String> {
+        self.create_calls.lock().unwrap().push(metadata);
+        self.create_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true))
     }
 
     async fn list(&self) -> StdResult<Vec<String>, String> {
