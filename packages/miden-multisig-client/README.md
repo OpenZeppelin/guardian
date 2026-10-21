@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.2 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.18.3 @miden-sdk/miden-sdk@0.17.3
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
