@@ -206,6 +206,24 @@
 
 - [X] T082 `TransactionProjection`, `AccountStateProjection` (`oneof network`, Miden only) and `RawTransaction` (named `encoding`) replace the Miden-only fields in `TransactionSubject`, `PendingTransaction`, `CommitEvent` and `RegistrationSubject`, with new field numbers and the old ones reserved; `TxProjection` and `AccountProjection` renamed `MidenTransaction` and `MidenAccountState`; SDK accessors (`subject.miden()`), `basic-policy`, `note-policy`, tests and the guide updated
 - [ ] T083 `ModuleInfo.networks` and the Guardian's check that a mandatory instance can judge the account's network, when a second network gets a variant
+
+## Phase 18: Review of revision 23 (RFC revision 24)
+
+Not started. The prototype branch must first merge `main` (#523, #552, #558). T084 to T088, T093 and T095 are the version 1 freeze criteria (RFC 0002 section 7).
+
+- [ ] T084 Regenerate `crates/guardian-module-sdk/proto/guardian_module_v1.proto` from the RFC (renumbered version 1) and update every constructor and test that sets field values
+- [ ] T085 Registration after #558 in `crates/server/src/services/configure_account.rs`: hook before `metadata.create` and `consume_auth_timestamp`; `default` copies written with the claim; unfinished claim runs `all` plus the stored assignment with no `before`; a lost claim re-runs the pipeline before consuming anything; service tests for all three (FR-009)
+- [ ] T086 `network_id` from the account's `network_config` in `HookRequest`, `CommitEvent` and `Gap`; conformance case that a module reads it (FR-039)
+- [ ] T087 `AccountView.code_commitment` and `procedure_roots`; `procedure_thresholds` filtered to effective overrides (non-zero, on an exported procedure, not the auth procedure); fixture tests with an inert override (FR-039)
+- [ ] T088 `MidenTransaction.reference_block`, optional `expiration_block` (absent when `expiration_delta` is 0) and `new_code_commitment` from the delta's code patch (FR-039)
+- [ ] T089 Account views from the single decode in `verify_and_apply_delta` (view fields on `AppliedState`); proposal creation moves to `verify_and_apply_delta` when a module will be called
+- [ ] T090 Dry-run `complete = false` when an approval-only instance applies; `params_drift` against `seeded_params`; `GUARDIAN_MODULE_PARAMS_MAX_BYTES`; paginated params history
+- [ ] T091 `basic-policy` fixed `client_message` per reason code; a missing projection is a module error, not a `projection_missing` deny; `request_id` in the denial log line
+- [ ] T093 `basic-policy` `allowed_code_commitments` with `code_check` (`code_not_allowed`); `HookRequest.submitter_session` from the resolved credential; `proposer_session` stored with the proposal, returned by the `ProposalContext` lookup and sent in `TransactionSubject`, `pending` and `CommitEvent` (FR-039)
+- [ ] T094 Filesystem registration: copy `default` instances before the claim, replacing a copy an earlier unclaimed attempt left; an unfinished claim with no assignment history repeats the copy (FR-009)
+- [ ] T095 Dry-run check runs `before_transaction_approved`-only instances after the creation instances, with `HookRequest.dry_run`; `complete` derived from the catalog, not the account (FR-058)
+- [ ] T096 [M2b] Reassigning a subscribed instance to an account it was unassigned from puts the pair in `resync_required`; extend the counting model to cover unassignment (FR-064)
+- [ ] T092 [M2b] `notify` capability: offered only when the notifier runs; a module requiring it is refused unless its entry lists `after_transaction_committed`; `StatefulModule` declares it (FR-066)
 ---
 
 ## Dependencies & Execution Order

@@ -9,6 +9,8 @@
 | `GUARDIAN_MODULES_CONFIG` | unset | M2a | Path to the catalog TOML; unset disables the feature |
 | `GUARDIAN_MODULES_STATE` | `<GUARDIAN_METADATA_PATH>/modules` | M2a | Filesystem backend only: directory of the module state file; Postgres keeps module state in its tables |
 | `GUARDIAN_MODULE_TIMEOUT_MAX_MS` | `1000` | M2a | Upper bound for any instance `timeout_ms` |
+| `GUARDIAN_MODULE_PARAMS_MAX_BYTES` | `65536` | M2a | Largest params value (JCS-encoded) accepted at startup or through the operator API |
+| `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` | `30` | M2a | Dry-run checks per minute per account and signer (RFC 0002 section 2.7) |
 | `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` | `1000` | M2a | Total module time per hook invocation |
 | `GUARDIAN_MODULE_REQUEST_MAX_BYTES` | `2097152` | M2a | Encoded request size cap |
 | `GUARDIAN_MODULE_BREAKER_FAILURES` | `5` | M2a | Consecutive failures that open the circuit |
@@ -77,7 +79,9 @@ The prototype (#554) reads secrets from files instead of the secrets backend: `a
 | `asset_allowlist` | list of faucet ids | Deny an unlisted faucet among assets sent in payment notes or received in input notes; the fee note (`tx_fee`) is not checked |
 | `signer_allowlist` / `signer_denylist` | list of signer commitments | Check signers per `signer_check`; at most one of the two |
 | `signer_check` | `added` (default) or `all` | `added`: signers in `after` not in `before`; `all`: every signer in `after` |
+| `allowed_code_commitments` | list of code commitments | Code allowlist, checked per `code_check` |
+| `code_check` | `changed` (default) or `all` | `changed`: `after.code_commitment` at registration and `new_code_commitment` when a transaction replaces code; `all`: `after.code_commitment` at every gate hook |
 
 `params` in the file seed the global params once (section "Layered parameters" of RFC 0002 section 2.2); afterwards they are changed through the operator API, and a changed file value is reported as drift. Per-account settings never live in this file.
 
-Unknown params fail `validate_params`. Hooks supported: `before_transaction_approved`, `before_proposal_created`, `before_account_registered`; transaction-only params are ignored at registration.
+Unknown params fail `validate_params`. Hooks supported: `before_transaction_approved`, `before_proposal_created`, `before_account_registered`; transaction-only params are ignored at registration. A transaction request without a Miden projection is a module error (`on_error` applies), not a deny.

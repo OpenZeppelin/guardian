@@ -53,7 +53,7 @@ The harness speaks plain text, so the catalog entry uses the loopback scheme and
 id = "caps-remote"
 kind = "grpc"
 endpoint = "grpc+insecure://127.0.0.1:7443"
-auth = { token_file = "caps.token" }
+auth = { token_file = "caps.token" }   # prototype stand-in; M2a uses token_secret (RFC 0002 section 2.2)
 ```
 
 Point this second instance of kind `grpc` at it with `on_error = "deny"`, repeat step 2, then stop the module: pushes return `GUARDIAN_MODULE_UNAVAILABLE`; after five failures they return without waiting for the timeout; `guardian_module_up` drops to 0. Switch to `on_error = "allow"`: pushes proceed and `guardian_module_fail_open_total` increases. (US4, US6)

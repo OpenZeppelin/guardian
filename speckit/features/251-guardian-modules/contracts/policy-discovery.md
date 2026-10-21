@@ -16,18 +16,18 @@ PolicyEntry {
   module_id: string,
   hooks: string[],
   description: string,          // disclosure = summary or params
-  params?: object,              // disclosure = params: the global params for scope = all, the account's own params for an assigned instance
+  params?: object,              // disclosure = params: the global params for scope = all, the account's own params for a default or assigned instance
   account_layer?: object        // disclosure = params, scope = all: this account's layer, when set
 }
 PoliciesView  { account_id: string, policies: PolicyEntry[] }   // evaluation order; instances with disclosure = none are absent
 
 CheckDeltaProposal request: the proposal creation body (`DeltaProposalRequest`)
-CheckResult   { allowed: true, complete: bool }   // complete = false when an instance with dry_run = false was skipped; never names it
+CheckResult   { allowed: true, complete: bool }   // complete = false whenever the catalog declares an enabled gate instance with dry_run = false, whether or not it applies to the account; never names it
 ```
 
 ## Rules
 
-- The check runs creation's own checks (authentication, queue admission, the pending-proposal limit, delta verification) and the `before_proposal_created` instances, with the evaluation time as `accounting_time`; it stores nothing, takes no proposal slot and records no decision. The rate limit is admitted before the state is rebuilt.
+- The check runs creation's own checks (authentication, queue admission, the pending-proposal limit, delta verification), then the `before_proposal_created` instances, then the instances subscribed only to `before_transaction_approved`, each with its own hook, `dry_run = true` and the evaluation time as `accounting_time`; it stores nothing, takes no proposal slot and records no decision. The rate limit is admitted before the state is rebuilt.
 - gRPC carries `params` and `account_layer` as JSON strings; HTTP as JSON objects.
 - Rate limit per account and signer: `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` (default 30); excess returns the existing `rate_limit_exceeded`.
 - Every check is logged with the account and signer.

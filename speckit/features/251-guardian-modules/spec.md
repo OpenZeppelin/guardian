@@ -3,7 +3,7 @@
 **Feature Branch**: `251-guardian-modules`
 **Created**: 2026-10-13
 **Status**: Draft
-**Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), revision 19. The RFC holds the wire protocol, configuration format and code citations; this spec states what the feature must achieve and how that is verified. Where the two differ, the RFC is corrected first and this spec follows.
+**Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; the RFC is now at revision 24. The RFC holds the wire protocol, configuration format and code citations; this spec states what the feature must achieve and how that is verified. Where the two differ, the RFC is corrected first and this spec follows.
 **Input**: Issue #251 ("Modularization: middleware architecture and pluggable modules"), first consumer #182 (policy evaluation), later consumer #252 (x402 facilitator).
 **Planning note**: `plan.md` records the pre-prototype plan and its prototype findings; the gates (account view extraction effort, projection reuse, added latency, module author ergonomics, placement relative to PR #510) and their results are in `research.md`. `tasks.md` holds the P0 prototype tasks and the follow-on phases generated since. The quickstart walk-through and an end-to-end run against a local node remain open.
 
@@ -121,7 +121,7 @@ Most accounts share defaults, but some need different limits, and some need opti
 **Acceptance Scenarios**:
 
 1. **Given** a module declared as "default", **When** a new account registers, **Then** the module is copied into its assignment with the default parameters, and existing accounts are unaffected.
-2. **Given** a mandatory and a default module that both evaluate registration, **When** a new account registers before it has any assignment, **Then** both are evaluated with their configuration parameters, and a denial by either leaves no records.
+2. **Given** a mandatory and a default module that both evaluate registration, **When** a new account registers before it has any assignment, **Then** both are evaluated with their current global parameters, and a denial by either leaves no records.
 3. **Given** an account, **When** an operator assigns an optional module with parameters and a reason, **Then** the module applies to that account only, and the change is audited with the operator identity and reason.
 4. **Given** a mandatory module, **When** an operator tries to remove it from an account, **Then** the request is refused.
 5. **Given** an instance not marked as operator-disableable, **When** an operator tries to disable it, **Then** the request is refused; enabling a declared instance is always allowed.
@@ -132,7 +132,7 @@ Most accounts share defaults, but some need different limits, and some need opti
 10. **Given** an account that re-registers, **When** registration succeeds, **Then** its stored assignment is preserved and never reset to catalog defaults by a cosigner.
 11. **Given** a mandatory blocklist of A and B, **When** an operator adds C globally, **Then** every account is checked against A, B and C, on every replica, without a deploy.
 12. **Given** the same blocklist, **When** an operator adds D for one account only, **Then** that account is checked against A, B, C and D, and every other account only against A, B and C.
-13. **Given** a mandatory cap of 10,000 and an account layer of 50,000 for one account, **When** that account sends 20,000, **Then** it is refused by the global layer: an account layer cannot loosen a mandatory rule. **When** the account needs a higher limit, **Then** the rule belongs in an optional (default) module whose parameters the account can replace.
+13. **Given** a mandatory cap of 10,000 and an account layer of 50,000 for one account, **When** that account sends 20,000, **Then** it is refused by the global layer: an account layer cannot loosen a mandatory rule. **When** the account needs a higher limit, **Then** the rule belongs in a `default` module whose parameters the account can replace.
 14. **Given** a denial, **When** the client and the operator inspect it, **Then** it names the instance, the reason code and whether the global or the account layer denied.
 15. **Given** any parameter change, **When** an operator reads the history, **Then** it shows the previous and new parameters, the operator, the reason and the time, and each signed transaction records the parameter version it was checked against.
 16. **Given** an operator holding only the per-account policy permission, **When** it tries to change global parameters, **Then** the request is refused.
@@ -222,11 +222,12 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-006** [M2a]: An account with an empty module set MUST skip the pipeline entirely; a Guardian with no modules configured MUST behave as before this feature.
 - **FR-007** [M2a]: At transaction approval and proposal creation, the existing pause and release checks MUST run before any module is called, so a paused or released account is refused without any module seeing its transaction. Registration MUST NOT gain a pause or release check: reconfiguring a paused account and re-onboarding a released one stay allowed as today, registration modules run for them, a successful reconfiguration preserves the pause state, and reactivation of a released account happens only if every module allows.
 - **FR-008** [M2a]: Modules MUST be evaluated in a defined order: mandatory modules in configuration order, then the account's assigned modules in their stored order.
+- **FR-009** [M2a]: The registration gate MUST run before the account is claimed, before the request's replay timestamp is consumed and before anything is stored. A first configuration (no account, or a claim whose state was never stored) MUST be evaluated without a prior state; `default` instances MUST be copied into the assignment together with the claim; a request that loses a concurrent claim MUST be evaluated again against the winning account's assignment before it consumes anything.
 
 ### Configuration and scopes
 
 - **FR-010** [M2a]: Module instances MUST be declared only in server configuration loaded at startup; an operator session MUST NOT be able to add an instance or change its kind, endpoint, authentication, hooks, timeout or failure mode.
-- **FR-011** [M2a]: Each instance MUST have a scope: mandatory for every account, default (copied into new accounts and removable per account), or assigned (only where an operator assigns it).
+- **FR-011** [M2a]: Each instance MUST have a scope: `all` (called *mandatory* in this spec: every account), `default` (copied into new accounts and removable per account) or `assigned` (only where an operator assigns it). `default` and `assigned` instances are called *optional*.
 - **FR-012** [M2a]: Default modules MUST NOT be applied retroactively to existing accounts, and later changes to default parameters MUST NOT change parameters already copied into accounts.
 - **FR-013** [M2a]: Instances MUST be registered only in configuration, which also seeds each instance's global parameters the first time it is seen; afterwards global parameters MUST be managed only through the operator interface, and a configuration change to them MUST be reported as drift, not applied. Each request MUST carry only the parameters of the layer being evaluated, never another account's.
 - **FR-014** [M2a]: At startup the Guardian MUST verify that each instance supports its configured hooks, speaks a supported protocol version, and accepts its parameters. In production mode a failure of an enabled instance MUST stop startup; a disabled instance that fails is logged and stays disabled, so an unavailable module can be staged without blocking a deploy, and enabling it MUST run the same checks first and refuse on failure.
@@ -242,12 +243,12 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-021** [M2a]: An account's layer on a mandatory module MUST be evaluated as a second pass after the global parameters, and the transaction MUST pass only if both allow, so a layer can only add restrictions. The operator interface MUST refuse removing a mandatory module from an account, parameters containing secret references, changes to parameters the configuration holds with secret references, and assignments or layers whose combined timeouts exceed the evaluation budget.
 - **FR-022** [M2a]: Parameters MUST be validated by the module when they are written, each layer on its own.
 - **FR-023** [M2a]: Operators MUST be able to enable any declared instance, under the general policy permission only, and disable only instances the configuration marks as disableable, under either the general policy permission or a dedicated narrow disable permission that grants nothing else; a disabled instance MUST keep receiving commit notifications.
+- **FR-024** [M2a]: Operators MUST be able to list all instances with their runtime state, including differences between configuration and runtime switches and the circuit state.
+- **FR-025** [M2a]: Re-registration of an existing account MUST preserve its stored assignment.
 - **FR-026** [M2a]: Every parameter write MUST append to a history (previous and new parameters, operator, reason, time); the parameter store MUST carry a version that increases with every write, and every signed transaction MUST record it next to the configuration fingerprint.
 - **FR-027** [M2a]: Changing global parameters MUST require a separate permission from per-account policy changes.
 - **FR-028** [M2a]: Each evaluation MUST use global parameters, enabled flags and the account's parameters from a single parameter version: a request MUST NOT combine values from configurations that were never committed together, even while operators write concurrently.
 - **FR-029** [M2a]: A write derived from an earlier read (a module migrating stored parameters at startup or before enabling) MUST apply only if the stored value is still the one read, so it never overwrites a newer operator write.
-- **FR-024** [M2a]: Operators MUST be able to list all instances with their runtime state, including differences between configuration and runtime switches and the circuit state.
-- **FR-025** [M2a]: Re-registration of an existing account MUST preserve its stored assignment.
 
 ### What modules receive
 
@@ -260,6 +261,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-036** [M2a]: Proposer-supplied proposal metadata MUST be passed only as explicitly untrusted data, and no typed copy of proposer-asserted values (amounts, recipients, signers) may be provided.
 - **FR-037** [M2a]: Each request MUST identify the instance being called, so one remote service can back several instances with separate state and credentials.
 - **FR-038** [M2a]: Each request MUST be bounded in size; an oversized request counts as a module failure without the call being made.
+- **FR-039** [M2a]: Requests MUST name the account's network within its family (for example mainnet or testnet), the account views MUST carry the account's code commitment and exported procedure roots and only the procedure threshold overrides its code can apply, and transaction projections MUST carry the reference block, the expiration block only when one is set, and a new code commitment when the transaction replaces the account's code. Requests MUST say whether the submitter acted through a delegated session key, and transaction requests, pending entries and notifications MUST say whether the proposal was created through one, stored with the proposal. The reference policy MUST be able to restrict accounts to listed code commitments, at registration and on code replacement.
 
 ### Decisions and errors
 
@@ -278,7 +280,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-055** [M2a]: Each instance MUST declare what an account's cosigners may learn about it (nothing, a description, or the description and its effective params), defaulting to nothing; disclosing anything MUST require an operator-written description.
 - **FR-056** [M2a]: An instance MUST be able to deny generically: the client learns that a policy refused and nothing about which module, layer or reason, while the operator's log keeps the full decision.
 - **FR-057** [M2a]: A module MAY return a message for the requester; the Guardian MUST forward it only for instances that deny with full reasons, as plain text of at most 256 characters.
-- **FR-058** [M2a]: The account's cosigners MUST be able to list the policies that apply to the account, filtered by disclosure, and to check a proposal without storing it or taking a slot; the check MUST be rate limited per account and signer, logged, skip instances that opt out (reported as an incomplete check without naming them), and be advisory only.
+- **FR-058** [M2a]: The account's cosigners MUST be able to list the policies that apply to the account, filtered by disclosure, and to check a proposal without storing it or taking a slot; the check MUST run the instances of both transaction gate points, mark its requests as checks, be rate limited per account and signer, logged, skip instances that opt out (reported as an incomplete check whenever the configuration has such an instance, so the answer reveals nothing about one account), and be advisory only.
 
 ### Stateful limits
 
@@ -287,8 +289,9 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-061** [M2b]: Every evaluation for a subscribed module MUST include the transactions signed for the account that the module has not yet acknowledged, each with its accounting time, account nonce, submitter and proposer, so limits count every signed transaction exactly once in candidate mode.
 - **FR-062** [M2b]: Time windows MUST use one accounting clock, the time the Guardian signed the transaction, fixed before evaluation and repeated unchanged in notifications.
 - **FR-063** [M2b]: Notifications MUST carry the account nonce so modules can discard duplicates and late deliveries; delivery after leadership changes MUST be fenced.
-- **FR-064** [M2b]: Undelivered notifications MUST be retained for a configurable period; when history is dropped the affected module enters resync-required for that account. While it is set, the module is not called for that account and its failure mode applies: fail-closed instances refuse, fail-open instances let the transaction proceed with the skip logged and counted. An operator resyncs with a reason, audited; the module is told which account lost history, and the refusal lasts until the module has acknowledged that notice, so no evaluation and no later notification reaches the module before it.
+- **FR-064** [M2b]: Undelivered notifications MUST be retained for a configurable period; when history is dropped the affected module enters resync-required for that account. While it is set, the module is not called for that account and its failure mode applies: fail-closed instances refuse, fail-open instances let the transaction proceed with the skip logged and counted. An operator resyncs with a reason, audited; the module is told which account lost history, and the refusal lasts until the module has acknowledged that notice, so no evaluation and no later notification reaches the module before it. Assigning a module again to an account it was removed from MUST put that account in resync-required for the module, since the events in between were not delivered.
 - **FR-065** [M2b]: A module MAY declare a maximum notification lag; beyond it, and beyond a backlog cap, its failure mode applies.
+- **FR-066** [M2b]: A module that relies on notifications MUST be able to require them at startup, and MUST then be refused unless the Guardian delivers notifications and the instance subscribes to commit notifications.
 
 ### Proposal filtering
 
@@ -297,7 +300,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 
 ### Extensibility
 
-- **FR-080** [M2a]: First-party in-process modules MUST be included in the official image and usable by configuration alone, including the reference policy: recipient allowlist and denylist (with an option to refuse notes whose recipient cannot be determined), asset allowlist, a per-transaction amount cap per asset over the total amount sent in the transaction (not offset by amounts received, fee excluded), and signer allowlist and denylist with a choice between checking added signers and all signers.
+- **FR-080** [M2a]: First-party in-process modules MUST be included in the official image and usable by configuration alone, including the reference policy: recipient allowlist and denylist (with an option to refuse notes whose recipient cannot be determined), asset allowlist, a per-transaction amount cap per asset over the total amount sent in the transaction (not offset by amounts received, fee excluded), signer allowlist or denylist with a choice between checking added signers and all signers, and an account code allowlist with a choice between checking changed code and the current code.
 - **FR-081** [M2a]: A published module SDK MUST provide the module interface, protocol types, a serving harness for remote modules, and a conformance suite that runs the same cases against in-process and remote modules.
 - **FR-082** [M2c]: Operators MUST be able to register their own module kinds in a custom build from a published template that pins the release's dependency lock; the registration interface is versioned public API.
 - **FR-083** [M2a]: Module kinds MUST NOT be loadable at runtime.
@@ -348,7 +351,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 
 - The official server runs in candidate mode; stateful limits are exact only there, and the optimistic mode's limitation is documented rather than solved.
 - Stateful machinery (notifications, in-flight accounting, resync) requires the Postgres backend; the filesystem backend is for development and runs gate hooks only.
-- Guardian execution (RFC 0001, PR #510) lands before or with M2a; until it does, the execution-path requirements apply when it merges.
+- M2a starts after Guardian execution (RFC 0001, PR #510) merges, so the approval hook is placed once in the shared acknowledgement function (RFC 0002 section 7).
 - The Miden protocol line is 0.17; projections and account views are re-derived on protocol upgrades by the Guardian, not by modules.
 - Proposer metadata follows the multisig SDKs' schema and may change between SDK releases.
 - No operator dashboard page is built; the operator interface and its client library are in scope.

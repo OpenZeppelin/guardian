@@ -12,14 +12,14 @@
 | `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | M2a | `ParamsBody` | 200 `ModuleInstanceView` |
 | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | M2a | `ParamsBody` | 200 `AccountModulesView` |
 | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | M2a | `ReasonBody` | 200 `AccountModulesView` |
-| `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | M2a | none | 200 `ParamsHistory` |
+| `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | M2a | `?before=<version>&limit=<n>`, newest first | 200 `ParamsHistory` |
 | `POST /dashboard/modules/{module_id}/enable` | `policies:write` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
 | `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
 | `POST /dashboard/modules/{module_id}/resync` | `policies:write` | M2b | `ResyncBody` | 200 `ResyncResult` |
 
 Enable and disable are idempotent: enabling an enabled instance or disabling a disabled one returns 200 with the unchanged view and writes an audit record.
 
-`resync` belongs to the stateful slice (RFC 0002 sections 3.3 and 3.4), not to configuration: when undelivered commit events for a module are dropped (retention) or the catalog removes an instance with pending events, the affected account and module pairs move to `resync_required`. The operator calls `resync`, accepting the gap: delivery moves past the dropped events and the Guardian calls the module's `NotifyGap`, which lets the module reset or rebuild its own state (for example from chain history). The pairs stay refused until the module acknowledges `NotifyGap`; then evaluation and notification resume (RFC 0002 section 3.3). It never reads the catalog file, which is only loaded at startup.
+`resync` belongs to the stateful slice (RFC 0002 sections 3.3 and 3.4), not to configuration: when undelivered commit events for a module are dropped (retention) or the catalog removes an instance with pending events, or an instance is assigned again to an account it was unassigned from, the affected account and module pairs move to `resync_required`. The operator calls `resync`, accepting the gap: delivery moves past the dropped events and the Guardian calls the module's `NotifyGap`, which lets the module reset or rebuild its own state (from its own or a vendor's records; protocol version 1 has no history API). The pairs stay refused until the module acknowledges `NotifyGap`; then evaluation and notification resume (RFC 0002 section 3.3). It never reads the catalog file, which is only loaded at startup.
 
 ## Schemas
 
@@ -40,7 +40,7 @@ ModuleInstanceView {
   enabled_drift: bool,          // catalog_enabled != enabled
   operator_can_disable: bool,
   params: object,               // current global params; secret references unresolved
-  params_drift: bool,           // catalog params differ from the stored global params
+  params_drift: bool,           // catalog file params differ from seeded_params (the raw catalog value at seeding); operator writes and module migrations do not count
   file_managed_params: bool,    // params hold secret references, so only the file changes them
   build?: string,               // "name version" from describe at startup; absent if the checks failed
   disclosure: "none" | "summary" | "params",

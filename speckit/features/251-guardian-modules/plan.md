@@ -1,7 +1,7 @@
 # Implementation Plan: Guardian Modules, a Hook Pipeline for Pluggable Policy
 
 **Branch**: `251-guardian-modules` (spec and plan on `251-guardian-modules-rfc`, PR #544) | **Date**: 2026-10-13 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `speckit/features/251-guardian-modules/spec.md`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md) revision 19
+**Input**: Feature specification from `speckit/features/251-guardian-modules/spec.md`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; the RFC is now at revision 24
 **Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. Still open: the end-to-end walk-through and latency A/B against a local Miden node. M2a `tasks.md` follows.
 
 ## Summary

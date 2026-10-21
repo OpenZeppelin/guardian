@@ -1,6 +1,6 @@
 # Research: Guardian Modules
 
-**Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19, findings applied through revision 22
+**Feature**: [spec.md](./spec.md) | **Plan**: [plan.md](./plan.md) | **Design source**: [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19, findings applied through revision 24
 
 This research was written before the prototype on `251-modules-prototype` and now records what it found. Decisions the RFC settled through nineteen revisions are recorded as decisions. Questions only running code could answer were recorded as gates, each stating what the prototype had to show, the default assumed until then, and what changes if the default fails; their results are in the findings sections below. `tasks.md` holds the P0 prototype tasks and the follow-on phases. Still open: the quickstart walk-through and an end-to-end run against a local node.
 
@@ -179,7 +179,7 @@ At concurrency 8 (3 rounds x 1,600 pushes) the server is saturated at about 89 p
 - **SC-006** (at most 10 ms added at p99 for one in-process module) was borderline before the fixes (p99 +11 ms on the long runs) and holds after them (+1 to +4 ms, within noise). The remote module costs no more than in-process at p50 over loopback.
 - The cost is the request, not the module (an in-process evaluation is 0.2 µs). A release-build profile of the builders: `account_view` 1.3 ms per call, almost all of it decoding the account; the projection 2.4 µs. Each request built two views and repeated a proposal storage read.
 - Fixed (2026-10-16): account views are cached per replica by the state commitment the Guardian computed (stored tail, applied state, registration head; never a client value), bounded at 4,096 entries. A chained push reuses the previous push's `after` view, and a proposal's approval push reuses both views built at its creation. `push_delta` reads the matching proposal once for metadata and modules; a storage failure still reaches modules as a failure, not as "no proposer".
-- Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes, which needs a `NetworkClient` change; re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after.
+- Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes. Since #523 (`8c1e5d6f`) the push path calls `verify_and_apply_delta`, which decodes the base account once and applies the summary to it, so both views can be read from that decode by adding view fields to `AppliedState`; proposal creation still calls `verify_delta` alone and moves to `verify_and_apply_delta` when a module will be called (RFC revision 24, section 3.2). Re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after.
 
 ### In-process custom kinds (2026-10-16)
 
@@ -215,6 +215,15 @@ At concurrency 8 (3 rounds x 1,600 pushes) the server is saturated at about 89 p
 
 All applied in RFC 0002 revision 20 (2026-10-15). After the fleet review the prototype differs from it on two points: request assembly runs on the request task (item 8), and the TLS client certificate and key are file paths (`tls.client_cert_file`, `tls.client_key_file`) like `auth.token_file`, not secret references, because the prototype has no secrets backend.
 
+1. `AccountView.auth_scheme` source (or per-signer schemes).
+2. Single-key accounts and account views.
+3. `raw_tx_summary` encoding.
+4. TLS fields for remote kinds.
+5. `notify` default no-op; SDK helper list; `serve` token argument.
+6. Registration hook runs before the replay timestamp is consumed.
+7. `OutputNote.tx_fee`, and the fee rule stated in terms of it.
+8. Request assembly runs inside the bounded reconstruction task. The prototype decodes the account views and projection inline on the request task: an error already becomes a module failure under `on_error`, but a slow or heavy decode is not bounded the way `apply_delta` is (`network::reconstructor()`). M2a moves the view and projection building into the same CPU-bounded task, and the RFC states that request assembly shares the reconstruction bound (section 4.3).
+
 ### Fleet review (2026-10-15)
 
 Four reviewers over the uncommitted prototype. Fixed (tasks T051 to T060):
@@ -233,12 +242,39 @@ Added after the review (T061, T062): a signed delta records `catalog_hash`, `par
 
 Deferred to M2a, as scoped by `tasks.md`: the evaluation budget and request size cap (an `all` instance with an account layer runs twice, each with a full timeout), typed module errors in the TypeScript SDKs and the operator client, the `default` scope and the registration subject's `initial_state`.
 
+### Review of revision 23 (2026-10-21)
 
-1. `AccountView.auth_scheme` source (or per-signer schemes).
-2. Single-key accounts and account views.
-3. `raw_tx_summary` encoding.
-4. TLS fields for remote kinds.
-5. `notify` default no-op; SDK helper list; `serve` token argument.
-6. Registration hook runs before the replay timestamp is consumed.
-7. `OutputNote.tx_fee`, and the fee rule stated in terms of it.
-8. Request assembly runs inside the bounded reconstruction task. The prototype decodes the account views and projection inline on the request task: an error already becomes a module failure under `on_error`, but a slow or heavy decode is not bounded the way `apply_delta` is (`network::reconstructor()`). M2a moves the view and projection building into the same CPU-bounded task, and the RFC states that request assembly shares the reconstruction bound (section 4.3).
+Two external reviews of PR #544, checked against `main` at `ca503704` (merged into the RFC branch). Applied in RFC revision 24; the prototype (`251-modules-prototype`, PR #554) has not caught up yet.
+
+- **Registration after #558.** `main` now claims the account (metadata row) before consuming the replay timestamp and before storing the initial state, and treats a claim without stored state as a first configuration (`unfinished_claim`). The RFC defined a new account as `existing.is_none()`. Revision 24 runs the hook before the claim, writes `default` copies with the claim, runs `all` plus the stored assignment for an unfinished claim with `before` absent, and re-runs the pipeline for a request that lost the claim before it consumes anything.
+- **Network identity.** #552 serves several Miden networks per Guardian, and bech32 prefixes overlap (Cedar shares mainnet's, local shares devnet's). `network_id` is added to `HookRequest`, `CommitEvent` and `Gap`.
+- **Account code.** The Guardian checks storage slots but never the account code, and applies code patches in deltas. `AccountView` gains `code_commitment` and `procedure_roots`, `MidenTransaction` gains `new_code_commitment`, and `procedure_thresholds` is limited to overrides the code can apply (on chain an override on the auth procedure or on a procedure the code lacks changes nothing, and the transaction is governed by the initial state's overrides).
+- **Expiration.** `expiration_block` equalled the reference block when no expiration was set. `reference_block` is added and `expiration_block` is optional.
+- **Proto numbering.** Renumbered for version 1 without draft `reserved` entries; the prototype's proto and generated code need regenerating.
+- **Stateful modules without `pending`.** A `notify` capability with a startup check: a module requiring it starts only on a Guardian that offers it and only when its catalog entry lists `after_transaction_committed`.
+- **Smaller.** `request_id` defined; dry-run `complete = false` when an approval-only instance applies; `params_drift` compares the file with `seeded_params`; params size cap (`GUARDIAN_MODULE_PARAMS_MAX_BYTES`); paginated params history; `basic-policy` reason codes and fixed client messages; session-authenticated proposals resolve `submitter` to the granting cosigner; M2a starts after PR #510 merges.
+- **Rejected.** "The RFC and the proto contract each claim to be the source of truth": the RFC sentence meant one schema for both transports, now worded so. "Open questions: None contradicts Open for comment": the RFC README requires no deadline; a "Review sought" header row says what the review is for. "No dashboard or CLI is unacknowledged": the RFC already said so.
+
+### Re-review of revision 24 (2026-10-21)
+
+Both reviewers accepted the design. Applied, still as revision 24:
+
+- **Invariant 6 had no shipped defence.** `basic-policy` gains `allowed_code_commitments` (`code_not_allowed`), checked at registration and on any code replacement.
+- **Freeze criteria.** Version 1 freezes only once the prototype implements the surface added in revision 24 with tests (T084 to T088, T093).
+- **Delegated sessions.** `HookRequest.submitter_session` marks requests authenticated by a delegated session key; at the ack, `proposer` carries no such flag, so a rule on delegated proposals decides at `before_proposal_created`.
+- **Filesystem registration.** The claim and the module state are separate files there, so `default` copies are written first, only for an account without an assignment, and an unfinished claim with no assignment history repeats the copy (T094).
+- **Smaller.** `default` copies store the params the evaluation used; `projection_missing` is now a module error under `on_error`, not a deny; transaction rules pass at registration; `params_drift` means "the file changed since seeding"; signer allowlist and denylist are mutually exclusive, as the catalog contract already said; citations re-pinned to `ca503704` and Miden 0.17.1 (the cited 0.17.0 files are byte-identical in 0.17.1).
+- **Writing.** Contents list, a policy summary JSON example, a sequence diagram for notify and resync, and a shorter revision row.
+- **Not taken.** One reviewer quoted RFC text that does not exist (`stored_state_commitment`, `new_account_owner`, `signer_check = "any"`); the underlying points were checked against the actual text and applied where they held.
+
+### Third review round (2026-10-21)
+
+Two more reviews; one cited lines from before revision 24 (`checkProposal`, the `drift` example, "catalog params" in the hook table), all already fixed. Applied, still as revision 24:
+
+- **Delegation was visible only at creation.** `submitter_session` is always false at the ack, where rules must be enforced. `proposer_session` is now stored with the proposal, returned with the proposer by the `ProposalContext` lookup, and sent in `TransactionSubject`, `pending` and `CommitEvent`.
+- **The dry run skipped the hook that matters.** It now also runs instances subscribed only to `before_transaction_approved`, marked with `HookRequest.dry_run`, and `complete` is derived from the catalog, so it no longer reveals that one account carries a hidden instance.
+- **Code allowlist grandfathering.** `code_check = "changed"` (default) keeps code an account already runs, documented as `signer_check = "added"` is; `code_check = "all"` checks the current code at every gate hook.
+- **Reassignment of a stateful module** after removal from an account enters `resync_required`, matching catalog removal and return. The counting model does not cover assignment changes (its SKILL.md says so); T096 extends it.
+- **Filesystem registration.** The copy from the request that claims the account wins; a copy left by an unclaimed attempt is replaced, or left unused.
+- **Smaller.** Resync goes through the Guardian API in the sequence diagram; the [RAN] model is linked at commit `79eb6e68`; `GET /dashboard/modules` example carries `file_managed_params` and `build`; spec FR-024 and FR-025 back in order; acceptance scenario 2 of story 2 says "current global parameters".
+- **Open, not changed here.** PR #510 also adds `docs/rfcs/README.md` with different content, so whichever of #510 and #544 merges second resolves an add/add conflict. The RFC 0001 links point at branch `254-execution-impl` and need repointing to `main` when #510 merges.

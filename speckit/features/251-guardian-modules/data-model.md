@@ -61,7 +61,7 @@ Transitions of `enabled`: `enabled -> disabled` only if the catalog entry has `o
 | `params` | JSON object, validated on its own; never `$secret` |
 | `updated_at`, `updated_by` | Last write |
 
-Assignments are created for `default` instances in the same write that creates a new account, preserved on re-onboarding, and replaced only through `PUT /dashboard/accounts/{id}/modules`; layers through `PUT`/`DELETE /dashboard/accounts/{id}/modules/{module_id}/params`. A row naming an instance no longer in the catalog is orphaned: kept, skipped, reported.
+Assignments are created for `default` instances in the same transaction as the claim that creates a new account (RFC 0002 section 2.3, "Registration"), preserved on re-onboarding, and replaced only through `PUT /dashboard/accounts/{id}/modules`; layers through `PUT`/`DELETE /dashboard/accounts/{id}/modules/{module_id}/params`. A row naming an instance no longer in the catalog is orphaned: kept, skipped, reported.
 
 #### `module_params_history`
 
