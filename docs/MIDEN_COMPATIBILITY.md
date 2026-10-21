@@ -137,10 +137,8 @@ unchanged, so accounts and stores carry over and 0.18.2 SDKs keep working agains
   AWS, so redeploy the 0.18.3 image; restarting a container from an older image
   keeps the old trust store. The workspace lockfile also moves to
   `rustls-webpki` 0.103.16 and `webpki-roots` / `webpki-root-certs` 1.0.10.
-  Applications using the Rust SDKs resolve their own lockfile and update it with
-  `cargo update -p rustls-webpki`. Add `-p webpki-roots` or `-p webpki-root-certs`
-  only if the lockfile has them: Cargo rejects the whole command when a `-p`
-  names a package absent from the lockfile, and the SDKs alone do not pull either.
+  Applications using the Rust SDKs keep their own lockfile; run
+  `cargo update -p rustls-webpki` there to pick up 0.103.16.
 - **First configuration claims the account** before consuming its replay
   timestamp (#558), so two concurrent first `/configure` requests for one account
   can no longer both write state; the loser is judged as a reconfiguration.
