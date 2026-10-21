@@ -6,7 +6,7 @@ ARG MIN_CA_CERTIFICATES_VERSION=20250419~deb12u2
 # Build stage
 # For reproducible builds across machines, specify --platform:
 #   docker build --platform linux/amd64 ...
-FROM rust:1.98.1-bookworm as base-builder
+FROM rust:1.99.0-bookworm as base-builder
 ARG MIN_CA_CERTIFICATES_VERSION
 
 # Install protobuf compiler (pinned to upstream 3.21.12; the Debian
