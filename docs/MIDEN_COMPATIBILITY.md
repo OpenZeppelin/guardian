@@ -329,9 +329,9 @@ breaking SDK change and needs no server change.
   `AuthArgErrorCode` values `bound_block_mismatch` and
   `transaction_summary_layout_unsupported`.
 
-### Multisig pushes need stored approvals (after 0.18.2)
+### Multisig pushes need stored approvals (after 0.18.3)
 
-The release after 0.18.2 makes the server refuse to acknowledge a multisig
+The release after 0.18.3 makes the server refuse to acknowledge a multisig
 delta unless the proposal it stores for that delta carries verified cosigner
 approvals, at least as many as the lowest threshold the account permits (its
 default threshold, or a lower override on one of its non-auth procedures; an
@@ -342,7 +342,7 @@ fails with `insufficient_signatures` (400). It is a breaking change for released
 
 - **Proposals signed through GUARDIAN keep working on every SDK.** Each
   cosigner's approval is already on the stored proposal.
-- **0.18.2 and earlier clients cannot execute a proposal whose approvals were
+- **0.18.3 and earlier clients cannot execute a proposal whose approvals were
   collected off channel** (an exported document signed elsewhere and imported),
   in either SDK, unless the approvals already stored reach that floor. Those
   approvals exist only in the document, and these clients push without
@@ -350,7 +350,7 @@ fails with `insufficient_signatures` (400). It is a breaking change for released
 - **New clients relay off-channel approvals before the push.** The signing
   endpoint credits an approval to the cosigner its signature verifies for, so
   any configured signer can relay the whole document. New clients relay the
-  caller's own approval first. A 0.18.1 or 0.18.2 server refuses each approval
+  caller's own approval first. A 0.18.1, 0.18.2 or 0.18.3 server refuses each approval
   that is not the caller's own (with `invalid_proposal_signature`, or
   `proposal_already_signed` once the caller has signed); new clients skip that
   refusal and push anyway, and that server acknowledges the push as before, so
