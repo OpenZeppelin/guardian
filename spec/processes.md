@@ -41,9 +41,17 @@ sequenceDiagram
   end
   Note over S,M: the claim guarantees the metadata row that replay state references by FK
   S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
-  S->>ST: submit_state(state_json, commitment, nonce)
-  alt account already had metadata
+  Note over S,M: before any stored-state or chain read below, so a replayed request never drives the history search
+  alt existing account, submitted nonce below the stored one (decoded from the stored state when its row has none)
+    S->>N: verify_commitment / find_transaction_ending_at(stored commitment)
+    Note over S,N: the chain reached the stored state: 400 commitment_mismatch (a stale state); the chain cannot be read: rpc_unavailable (fail closed)
+  end
+  alt existing account
+    S->>ST: replace_state(state_json, commitment, nonce)\nonly while the stored commitment is the one read after the replay floor
+    Note over S,ST: a state promoted meanwhile is never overwritten: 400 commitment_mismatch (expected = the stored commitment)
     S->>M: set(account_id, auth, network_config, timestamps)
+  else first-time account
+    S->>ST: submit_state(state_json, commitment, nonce)
   end
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
@@ -661,22 +669,25 @@ so the sweep is deliberately slow and rate-bounded.
      released: when the chain holds the stored state the account is
      reported as `own_key_mismatch`; when it moved on, the detectors
      below decide.
-  3. **Chain moved past the stored base: candidate match.** Every
-     pending proposal and every recoverable delta (`retained`, or
-     `discarded { client_abandoned }` within `retained_ttl_seconds`)
-     that chains from the stored base is applied to the stored state
-     (the same `apply_delta` canonicalization uses; computed once per
-     candidate and base, failures included). A proposal counts whatever
-     its label (the post-state's guardian key decides, not the
-     client-written type) and whatever base it was recorded against: the
-     candidate queue records a proposal against its tail. One built on
-     the stored state behind a queued candidate is refused unless its
-     nonce is the tail's plus one, but a summary does not name its base,
-     so one labelled exactly so is recorded against the tail all the
-     same.
-     A switch delta queued behind another candidate and parked with
-     it does not chain from the stored base and is not matched yet
-     (issue #504). The
+  3. **Chain moved past the stored base: candidate match.** The
+     candidates are every pending proposal and every recoverable delta
+     (`retained`, or `discarded { client_abandoned }` within
+     `retained_ttl_seconds`) that chains from the stored base, directly
+     or through other recoverable deltas. Their bases are the stored
+     state and the end state of every recoverable delta chaining from
+     it, each replayed with the same `apply_delta` canonicalization uses
+     and required to reproduce the commitment the delta was admitted
+     with: a switch delta parked behind another candidate (issue #504)
+     starts from its predecessor's end state, and a proposal built on a
+     state a retained delta reached by landing late starts from that
+     delta's. A recoverable delta is applied to the base it was admitted
+     on; a summary does not name its base, so a proposal is applied to
+     every base (post-states computed once per candidate and base,
+     failures included). A proposal counts whatever its label (the
+     post-state's guardian key decides, not the client-written type) and
+     whatever base it was recorded against: the candidate queue records
+     a proposal against its tail, and with an empty queue against the
+     stored state. The
      resulting commitment is looked for on chain: first at the head
      (free: the probe already read it), then — for post-states that move
      the guardian key away — in the account's transaction history

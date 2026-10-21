@@ -96,6 +96,18 @@ impl StorageBackend for InstrumentedStorage {
         timed("pull_state_head", self.inner.pull_state_head(account_id)).await
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        timed(
+            "replace_state",
+            self.inner.replace_state(state, expected_commitment),
+        )
+        .await
+    }
+
     async fn backfill_state_nonce(
         &self,
         account_id: &str,
@@ -533,6 +545,43 @@ mod tests {
             rendered.contains("outcome=\"error\"} 1"),
             "missing error outcome in:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn replace_state_forwards_the_compare_and_swap() {
+        let inner = Arc::new(MockStorageBackend::new().with_replace_state(Ok(
+            crate::storage::StateReplace::StateMoved {
+                current: "0xpromoted".to_string(),
+            },
+        )));
+        let state = StateObject {
+            account_id: "acct".to_string(),
+            state_json: serde_json::json!({}),
+            commitment: "0xsubmitted".to_string(),
+            nonce: Some(1),
+            created_at: String::new(),
+            updated_at: String::new(),
+            auth_scheme: String::new(),
+        };
+        let recorder = build_recorder();
+        let handle = recorder.handle();
+        let outcome = metrics::with_local_recorder(&recorder, || {
+            let storage = InstrumentedStorage::new(inner.clone());
+            block_on(async move { storage.replace_state(&state, "0xread").await })
+        });
+        assert_eq!(
+            outcome,
+            Ok(crate::storage::StateReplace::StateMoved {
+                current: "0xpromoted".to_string()
+            })
+        );
+        let calls = inner.get_replace_state_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "0xread");
+        assert!(inner.get_submit_state_calls().is_empty());
+        assert!(handle.render().contains(
+            "guardian_storage_operations_total{operation=\"replace_state\",outcome=\"ok\"} 1"
+        ));
     }
 
     #[test]

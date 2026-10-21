@@ -8,7 +8,7 @@ use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
     GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite, ProposalRecord,
-    StorageType,
+    StateReplace, StorageType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Timelike, Utc};
@@ -996,6 +996,50 @@ impl StorageBackend for PostgresService {
         Ok(())
     }
 
+    // One conditional UPDATE: under READ COMMITTED it waits behind a
+    // concurrent writer of the row and re-evaluates the commitment filter
+    // on the committed row, like `promote_candidate`'s base gate.
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<StateReplace, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let updated_at: chrono::DateTime<chrono::Utc> = state
+            .updated_at
+            .parse()
+            .map_err(|e| format!("Failed to parse updated_at: {e}"))?;
+
+        let replaced = diesel::update(states::table)
+            .filter(states::account_id.eq(&state.account_id))
+            .filter(states::commitment.eq(expected_commitment))
+            .set((
+                states::state_json.eq(&state.state_json),
+                states::commitment.eq(&state.commitment),
+                states::nonce.eq(nonce_column(state.nonce)),
+                states::updated_at.eq(updated_at),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to replace state: {e}"))?;
+        if replaced > 0 {
+            return Ok(StateReplace::Replaced);
+        }
+
+        let current = states::table
+            .filter(states::account_id.eq(&state.account_id))
+            .select(states::commitment)
+            .first::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull state commitment: {e}"))?;
+        Ok(StateReplace::StateMoved { current })
+    }
+
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
         let mut conn = self
             .pool
@@ -1713,7 +1757,27 @@ impl StorageBackend for PostgresService {
 
         conn.transaction::<CandidateSubmission, diesel::result::Error, _>(|conn| {
             async move {
-                lock_account_metadata(conn, &delta.account_id).await?;
+                // The account lock, reading the lifecycle columns it guards:
+                // set_pause and set_released_if_state write this row, so a
+                // pause or release either commits before this read (and
+                // refuses the submission) or waits for it to commit.
+                let (paused_at, paused_reason, released_at) = account_metadata::table
+                    .filter(account_metadata::account_id.eq(&delta.account_id))
+                    .select((
+                        account_metadata::paused_at,
+                        account_metadata::paused_reason,
+                        account_metadata::released_at,
+                    ))
+                    .for_update()
+                    .first::<(Option<DateTime<Utc>>, Option<String>, Option<DateTime<Utc>>)>(conn)
+                    .await?;
+                if let Some(refused) = CandidateSubmission::refused_while_inactive(
+                    released_at,
+                    paused_at,
+                    paused_reason,
+                ) {
+                    return Ok(refused);
+                }
 
                 let current_commitment = states::table
                     .filter(states::account_id.eq(&delta.account_id))
@@ -3166,6 +3230,42 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn replace_state_writes_only_over_the_expected_commitment() {
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xreplace{}", chrono::Utc::now().timestamp_micros());
+
+        let mut state = create_test_state(&account_id);
+        state.nonce = Some(2);
+        service.submit_state(&state).await.expect("submit");
+
+        let mut older = state.clone();
+        older.commitment = "0xolder".to_string();
+        older.nonce = Some(1);
+        assert_eq!(
+            service.replace_state(&older, "0xstale").await.unwrap(),
+            StateReplace::StateMoved {
+                current: "0x789".to_string()
+            }
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0x789", Some(2)),
+            "a refused replace writes nothing"
+        );
+
+        assert_eq!(
+            service.replace_state(&older, "0x789").await.unwrap(),
+            StateReplace::Replaced
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0xolder", Some(1))
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn state_nonce_is_stored_and_backfilled_only_at_its_own_commitment() {
         let url = crate::testing::pg::test_database_url().await;
         let service = PostgresService::new(&url, 4).await.expect("storage");
@@ -3996,6 +4096,119 @@ mod tests {
             .bind::<Text, _>(&lease_name)
             .execute(&mut conn)
             .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn submit_candidate_refuses_a_paused_or_released_account_under_the_account_lock() {
+        use diesel::sql_types::Text;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = std::sync::Arc::new(PostgresService::new(&url, 4).await.expect("storage"));
+        let metadata_store = std::sync::Arc::new(
+            crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+                .await
+                .expect("metadata store"),
+        );
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xpaused{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+
+        let initial_state = create_test_state(&account_id);
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+        let mut delta = create_test_delta(&account_id, 1);
+        delta.status = DeltaStatus::candidate(now.clone());
+        delta.prev_commitment = initial_state.commitment.clone();
+        delta.new_commitment = Some("0xc1".to_string());
+
+        // A pause whose transaction holds the row while the submission
+        // starts: the submission waits on the account lock and then sees
+        // the committed pause.
+        diesel::sql_query("BEGIN")
+            .execute(&mut conn)
+            .await
+            .expect("begin");
+        diesel::sql_query(
+            "UPDATE account_metadata SET paused_at = now(), paused_reason = 'compliance' \
+             WHERE account_id = $1",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("pause");
+        let submission = {
+            let service = service.clone();
+            let metadata_store = metadata_store.clone();
+            let delta = delta.clone();
+            let now = now.clone();
+            tokio::spawn(async move {
+                service
+                    .submit_candidate(metadata_store.as_ref(), &delta, &now, 1)
+                    .await
+                    .expect("submission resolves")
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !submission.is_finished(),
+            "the submission waits for the pause's row lock"
+        );
+        diesel::sql_query("COMMIT")
+            .execute(&mut conn)
+            .await
+            .expect("commit");
+        match submission.await.expect("join") {
+            CandidateSubmission::Paused { paused_reason, .. } => {
+                assert_eq!(paused_reason.as_deref(), Some("compliance"))
+            }
+            other => panic!("expected Paused, got {other:?}"),
+        }
+
+        diesel::sql_query("UPDATE account_metadata SET released_at = now() WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("release");
+        assert!(
+            matches!(
+                service
+                    .submit_candidate(metadata_store.as_ref(), &delta, &now, 1)
+                    .await
+                    .expect("submission resolves"),
+                CandidateSubmission::Released { .. }
+            ),
+            "released wins over paused"
+        );
+
+        diesel::sql_query(
+            "UPDATE account_metadata SET paused_at = NULL, paused_reason = NULL, \
+             released_at = NULL WHERE account_id = $1",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("reactivate");
+        assert_eq!(
+            service
+                .submit_candidate(metadata_store.as_ref(), &delta, &now, 1)
+                .await
+                .expect("submission resolves"),
+            CandidateSubmission::Submitted
+        );
     }
 
     /// Issue #17: the in-transaction admission gate queues chained

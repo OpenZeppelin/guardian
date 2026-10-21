@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.18.2"
+    "version": "0.18.3"
   },
   "paths": {
     "/": {
@@ -333,6 +333,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Re-onboarding with a state older than the stored one, and the chain could not be read to check whether the stored state landed (`rpc_unavailable`)",
             "content": {
               "application/json": {
                 "schema": {
