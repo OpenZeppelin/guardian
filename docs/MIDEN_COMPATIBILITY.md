@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
@@ -30,7 +31,7 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.2 keeps the 0.18.1 pins.
+0.18.2 and 0.18.3 keep the 0.18.1 pins.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
@@ -124,7 +125,7 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
-**Moving past 0.18.2: accounts that mix Falcon and ECDSA cosigners (issue #563).**
+**Moving past 0.18.3: accounts that mix Falcon and ECDSA cosigners (issue #563).**
 GUARDIAN can now register and operate a guarded multisig whose approvers use
 different schemes, for example an ECDSA wallet or hardware signer next to a
 locally held Falcon key. Existing stored data needs no migration, and
@@ -134,7 +135,7 @@ single-scheme accounts keep their wire and storage shape.
   [{ commitment, scheme }], guardian_scheme }` next to `MidenFalconRpo` and
   `MidenEcdsa`. Each request is verified under its signer's registered scheme,
   deltas are acknowledged with the GUARDIAN scheme's ACK key, and `auth_scheme`
-  reads `mixed` for such an account. Servers up to 0.18.2 reject the variant, so
+  reads `mixed` for such an account. Servers up to 0.18.3 reject the variant, so
   upgrade the server before clients register mixed accounts; clients keep sending
   the single-scheme variants for every other account.
 - **`/configure` also checks the GUARDIAN scheme slot**, for every variant: the
@@ -146,7 +147,7 @@ single-scheme accounts keep their wire and storage shape.
 - **Postgres** gains the index `idx_account_metadata_miden_cosigners` (embedded
   migration `2026-10-20-000001_miden_auth_cosigner_index`) so `GET /state/lookup`
   and session grants find the cosigners of such accounts.
-- **No rollback once a mixed account is stored.** Servers up to 0.18.2 cannot
+- **No rollback once a mixed account is stored.** Servers up to 0.18.3 cannot
   read a stored `Miden` auth, whether `/configure` wrote it or canonicalization
   promoted an account to it: a filesystem metadata store then fails to load as a
   whole, and on Postgres every request for that account fails. During a rolling
@@ -155,6 +156,29 @@ single-scheme accounts keep their wire and storage shape.
 - **SDKs.** The base clients can send the variant. The Rust multisig SDK (#549) and
   the TypeScript multisig SDK (after #540) still build and register single-scheme
   accounts until they adopt it.
+
+**Upgrading from 0.18.2 to 0.18.3: patched CA trust store.** The Miden pins, the
+`auth_tx` procedure root, stored data, existing contracts and the wire contract are
+unchanged, so accounts and stores carry over and 0.18.2 SDKs keep working against a
+0.18.3 server. The release is mainly a server image:
+
+- **CA trust store.** The image requires Debian `ca-certificates 20250419~deb12u2`,
+  which distrusts the compromised
+  [eMudhra intermediates](https://emudhra.we-have-a-problem.com/). Earlier images
+  ship `20250419~deb12u1`. The server trusts the system store for Miden RPC and
+  AWS, so redeploy the 0.18.3 image; restarting a container from an older image
+  keeps the old trust store. The workspace lockfile also moves to
+  `rustls-webpki` 0.103.16 and `webpki-roots` / `webpki-root-certs` 1.0.10.
+  Applications using the Rust SDKs keep their own lockfile; run
+  `cargo update -p rustls-webpki` there to pick up 0.103.16.
+- **First configuration claims the account** before consuming its replay
+  timestamp (#558), so two concurrent first `/configure` requests for one account
+  can no longer both write state; the loser is judged as a reconfiguration.
+- **Fewer account decodes** on `push_delta` and canonicalization promotion (#523),
+  and `push_delta_proposal` verification now shares the reconstruction gate with
+  pushes.
+- **Logging.** Client-caused auth and configure rejections log at WARN instead of
+  ERROR, and gRPC server-fault statuses produced by tonic are logged (#522).
 
 **Upgrading from 0.18.1 to 0.18.2: Cedar and mainnet network labels.** The Miden pins,
 the `auth_tx` procedure root, stored data and existing contracts are unchanged, so
