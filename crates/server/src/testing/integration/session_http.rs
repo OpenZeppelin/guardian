@@ -600,6 +600,14 @@ async fn test_wallet_only_routes_reject_the_session() {
     let posts = [
         ("/delta", load_fixture_delta(1)),
         (
+            "/delta/proposal/execution",
+            json!({
+                "account_id": account_id_hex,
+                "proposal_id": format!("0x{}", "e".repeat(64)),
+                "allow_private_note": false
+            }),
+        ),
+        (
             "/delta/candidate/abandon",
             json!({ "account_id": account_id_hex, "nonce": 1 }),
         ),

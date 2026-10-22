@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.18.2"
+    "version": "0.18.3"
   },
   "paths": {
     "/": {
@@ -333,6 +333,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Re-onboarding with a state older than the stored one, and the chain could not be read to check whether the stored state landed (`rpc_unavailable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1780,7 +1790,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Push a signed state delta for a single-key account. The request\nbody is the JSON-encoded [`DeltaObject`] to commit.",
+        "summary": "Push a state delta. The request body is the JSON-encoded\n[`DeltaObject`] to commit. A multisig account is accepted only when\na matching proposal carries verified cosigner signatures, at least as\nmany as the lowest threshold the account permits.",
         "operationId": "push_delta",
         "parameters": [
           {
@@ -1818,7 +1828,7 @@
             }
           },
           "400": {
-            "description": "Invalid delta payload",
+            "description": "Invalid delta payload, or a multisig push below the cosigner threshold",
             "content": {
               "application/json": {
                 "schema": {
@@ -2261,7 +2271,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Add a cosigner signature to an existing multisig proposal. When the\nsignature threshold is reached the proposal is promoted to a delta.",
+        "summary": "Add a cosigner signature to an existing multisig proposal. The approval\nis credited to the cosigner its signature cryptographically verifies\nfor, so an authenticated signer may also relay an approval another\ncosigner produced off channel. When the signature threshold is reached\nthe proposal is promoted to a delta.",
         "operationId": "sign_delta_proposal",
         "parameters": [
           {
@@ -6682,7 +6692,8 @@
         "description": "The body of an execution request. Every field is part of the signed payload, so the\npayload never equals a signed read of the same proposal.",
         "required": [
           "account_id",
-          "proposal_id"
+          "proposal_id",
+          "allow_private_note"
         ],
         "properties": {
           "account_id": {
@@ -6690,7 +6701,7 @@
           },
           "allow_private_note": {
             "type": "boolean",
-            "description": "Let Guardian execute a transaction that creates a private output note. Without it the\nrequest is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`\n`private_note`). Signed as `false` when omitted."
+            "description": "Let Guardian execute a transaction that creates a private output note. Without it the\nrequest is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`\n`private_note`). Required, and signed as sent: a body that omits it is refused before\nits signature is checked, rather than failing a signature over a field it never carried."
           },
           "proposal_id": {
             "type": "string"

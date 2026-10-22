@@ -158,11 +158,28 @@ impl QueueSetup {
         }
     }
 
+    /// The queue fixtures raise the threshold as they apply, so the
+    /// authorizing proposal carries all three fixture approvals. It is
+    /// stored only for the duration of the push: these tests assert
+    /// over the proposal store, and rows this harness plants would
+    /// change what those assertions see.
     async fn push(&mut self, delta: DeltaObject) -> Result<DeltaObject, GuardianError> {
+        let authorization = crate::testing::helpers::store_authorizing_proposal(
+            &self.state,
+            &delta,
+            &[
+                crate::testing::helpers::fixture_secret_key_n(1),
+                crate::testing::helpers::fixture_secret_key_n(2),
+                crate::testing::helpers::fixture_secret_key_n(3),
+            ],
+        )
+        .await;
         let credentials = self.credentials();
-        push_delta(&self.state, PushDeltaParams { delta, credentials })
+        let result = push_delta(&self.state, PushDeltaParams { delta, credentials })
             .await
-            .map(|result| result.delta)
+            .map(|result| result.delta);
+        authorization.restore(&self.state).await;
+        result
     }
 
     async fn deltas(&self) -> Vec<DeltaObject> {

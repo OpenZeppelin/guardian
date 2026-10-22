@@ -27,13 +27,13 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.2 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.18.3 @miden-sdk/miden-sdk@0.17.3
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "=0.18.2"
+miden-multisig-client = "=0.18.3"
 miden-client = "=0.17.3"
 ```
 
@@ -611,12 +611,14 @@ methods and `importProposal` in TypeScript; `list_proposals`, `sign_proposal`, t
 methods and `import_proposal` / `import_proposal_from_string` in Rust). A proposal the client does not hold fails closed without
 a request: the client never asks Guardian what a proposal is to decide whether Guardian may run
 it. Only a proposal that passed verification is held: one a listing reports as `Failed` fails
-closed until a later listing verifies it.
+closed until a later listing verifies it. A TypeScript proposal still `unchecked` (imported, or
+parsed without a check) is verified once before the request, and fails closed if that fails.
 
 Guardian applies the same rule on its side. The opt-in travels with the request
 (`allow_private_note` on the wire), and Guardian refuses a switch always, and a private-note
 P2ID without the opt-in, with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`
-`switch_guardian` or `private_note`). Both SDKs surface that refusal as the same
+`switch_guardian` or `private_note`). Guardian reads both from the signed summary, not the
+label: a proposal whose transaction changes the guardian key is a switch whatever it is called. Both SDKs surface that refusal as the same
 `LocalExecutionRequired` error as the local check.
 
 | Outcome | Rust | TypeScript |
@@ -1470,8 +1472,9 @@ per request on a hardware wallet. When the Guardian advertises `sessions` on
 `GET /status`, the wallet can sign one session grant; a non-extractable
 WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing
 and proposal create/sign until the session ends. Transaction approvals,
-account registration, delta pushes, candidate abandons and account lookup
-still use the wallet.
+account registration, delta pushes, candidate abandons, account lookup and
+Guardian execution requests (`requestGuardianExecution`) still use the wallet;
+execution status reads may use the session.
 
 ```typescript
 import { IndexedDbSessionKeyStore, describeSessionGrant } from '@openzeppelin/miden-multisig-client';

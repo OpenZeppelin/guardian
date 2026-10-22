@@ -9,7 +9,6 @@ mod foreign;
 mod request;
 mod sealing;
 mod store;
-mod threshold;
 
 pub use attempt::MidenExecutor;
 pub use chain::{ChainViewError, build_chain_view};

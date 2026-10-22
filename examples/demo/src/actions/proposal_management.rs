@@ -636,6 +636,9 @@ fn failed_execution_advice(code: ExecutionFailureCode) -> &'static str {
         ExecutionFailureCode::RequestInvalid(_) => {
             "GUARDIAN cannot execute this request: execute it from this client instead."
         }
+        ExecutionFailureCode::SubmissionNotProcessed => {
+            "The node refused the transaction without processing it: execute the proposal again."
+        }
         ExecutionFailureCode::SubmissionRejected
         | ExecutionFailureCode::CandidateDiscarded
         | ExecutionFailureCode::Expired => {
