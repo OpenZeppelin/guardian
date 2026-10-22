@@ -258,9 +258,12 @@ flowchart LR
 ```
 
 State is kept **locally** per stack+stage at
-`infra/terraform.<stack>.<stage>.tfstate`. There is no remote backend
-configured; the deploy script is the source of truth for which state file is
-in use.
+`infra/terraform.<stack>.<stage>.tfstate` by default. The tracked module
+declares no backend; operators who want shared state add an untracked
+`infra/*_override.tf` with a backend block and set `TF_WORKSPACE`, and the
+deploy script then defers state resolution to Terraform (see
+[`docs/SERVER_AWS_DEPLOY.md`](../SERVER_AWS_DEPLOY.md#remote-state-backend)).
+Either way the deploy script is the source of truth for which state is in use.
 
 ## Observability surface
 
@@ -291,9 +294,11 @@ Tracing exporters remain an open gap.
 
 ## Things that are deliberately not here
 
-- **No remote Terraform backend.** State files are local; the deploy script
-  treats them as authoritative. Switch to S3+DynamoDB before multiple
-  operators apply concurrently.
+- **No remote Terraform backend in the tracked module.** State is local by
+  default. Remote, locked state is an operator-supplied `infra/*_override.tf`
+  plus `TF_WORKSPACE` (see [Deploy lifecycle](#deploy-lifecycle) above); nothing
+  in the repo provisions the bucket, and multiple operators applying
+  concurrently need that override in place.
 - **No WAF, no Shield Advanced.** The ALB is reachable from
   `alb_ingress_cidrs`, default `0.0.0.0/0`.
 - **No RDS read replica, no automated DR drill.** Backups are
