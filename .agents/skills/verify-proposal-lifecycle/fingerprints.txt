@@ -27,8 +27,8 @@ packages/miden-multisig-client/src/multisig.ts prepareProposalExecution aa19ead7
 packages/miden-multisig-client/src/multisig.ts executeProposal 895eebc853f39c06
 packages/miden-multisig-client/src/multisig.ts servedSwitchProposal 1d20c761856c0524
 packages/miden-multisig-client/src/multisig.ts syncState 252041231e9081ca
-crates/miden-multisig-client/src/client/proposals.rs get_pinned_proposal f7694f27a928a0cb
-crates/miden-multisig-client/src/client/proposals.rs ensure_executes_on_pinned_base 086a902bb42443db
+crates/miden-multisig-client/src/client/proposals.rs get_pinned_proposal b9320f430b90684d
+crates/miden-multisig-client/src/client/proposals.rs ensure_executes_on_pinned_base dee891217ed11db3
 crates/miden-multisig-client/src/client/proposals.rs prepare_custom_execution 30494be1178b4fe2
 crates/server/src/storage/postgres.rs archive_parked_delta 553623ce59dbe6b8
 crates/server/src/storage/postgres.rs restore_superseded 5ae2a5e38baf32e6
@@ -36,4 +36,4 @@ crates/server/src/storage/postgres.rs pull_superseded_deltas b050cc3f5fe9d3b8
 crates/server/src/storage/postgres.rs prune_superseded_deltas 916aaf402a3bdee5
 crates/server/src/storage/filesystem.rs restore_superseded_holding_lock 5d925a2212a25cb9
 crates/server/src/storage/filesystem.rs archive_delta_holding_lock 590f7a4e60b5c52c
-crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_path 59ef581751c8d7ff
+crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_path 7282f9f4c7281a23

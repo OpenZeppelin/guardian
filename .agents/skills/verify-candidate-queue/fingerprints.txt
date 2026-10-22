@@ -37,7 +37,7 @@ crates/server/src/jobs/canonicalization/processor.rs handle_unverified_candidate
 crates/server/src/jobs/canonicalization/processor.rs release_account_if_queue_empty 256efa198ba760e2
 crates/server/src/jobs/canonicalization/processor.rs retain_candidate 813bb75dd428ee39
 crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta e92c4b8bd4b2a199
-crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_path 59ef581751c8d7ff
+crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_path 7282f9f4c7281a23
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path 29ec5c6d03466450
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_account 2e54d1dc7ad453cc
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance a9652aaef66374ce
