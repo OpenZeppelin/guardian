@@ -196,6 +196,14 @@ Paths are relative to `crates/server/src/`.
   the auth checks are `verify-auth-replay`'s concern.
 - This server's own ack key never changes, so `own_key_mismatch` never
   arises. EVM accounts have no guardian binding and are out of scope.
+- Guardian execution is not modeled. Its admission refuses a paused or
+  released account under the same account lock (`admit_execution_candidate_tx`),
+  a reservation adds refusals to candidate submission (`ExecutionReserved`)
+  and settles on promotion without touching account state, and a candidate
+  an unresolved execution owns cannot be retired (`ProtectedByExecution`),
+  which postpones `Retire` until the execution resolves. `SwitchIsReleased`
+  therefore assumes executions resolve; `verify-guardian-execution` checks
+  that bound.
 - The worker lease, the candidate queue's own invariants and the proposal
   lifecycle belong to `verify-worker-lease`, `verify-candidate-queue` and
   `verify-proposal-lifecycle`; promotion here is a single step.
