@@ -234,8 +234,9 @@ gRPC read; never by the execution `POST`:
 | `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but has never been executed |
 
 **Asynchronous failure causes**, surfaced in `error.code` with `state: "failed"`, listed roughly in
-FR-045 step order. `SUBMISSION_REJECTED`, `CANDIDATE_DISCARDED` and `EXPIRED` are post-boundary;
-every other code is pre-boundary, so its proposal still exists and FR-042 permits a retry
+FR-045 step order. `SUBMISSION_REJECTED`, `SUBMISSION_NOT_PROCESSED`, `CANDIDATE_DISCARDED` and
+`EXPIRED` are post-boundary; all but `SUBMISSION_NOT_PROCESSED` delete the proposal. Every other
+code is pre-boundary, so its proposal still exists and FR-042 permits a retry
 (which only helps where the cause is transient, such as `CHAIN_BEHIND` or `PROVING_FAILED`).
 
 | Code | Cause |
@@ -258,6 +259,7 @@ every other code is pre-boundary, so its proposal still exists and FR-042 permit
 | `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` | The proven transaction's `expiration_block_num − R` exceeds `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS`, `R` being the attempt's reference block; refused **before** the boundary, with no waiting (FR-046). A long approval without a transaction delta can reach this until the chain is within the horizon of the approval expiration |
 | `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | The pre-submission re-check found the account moved, paused, released, or no longer guarded by this Guardian (FR-048) |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED` | Node definitively rejected the proven transaction |
+| `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED` | Node refused the send before processing it (rate limit, authentication, permission, unimplemented call); the candidate is dropped and the proposal kept |
 | `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` | Submitted, but the candidate reached `discarded`, or the account was observed superseded (FR-040) |
 | `GUARDIAN_EXECUTION_EXPIRED` | Submitted, but the chain passed the recorded expiration block with the account still at base: the transaction can never land (FR-040) |
 | `GUARDIAN_EXECUTION_LEASE_EXPIRED` | Lease expired without renewal **before the no-retry boundary** (FR-028). After the boundary, expiry transfers ownership to reconciliation instead of failing, even if the network send never began |

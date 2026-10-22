@@ -27,14 +27,17 @@
 //!    against a stuck candidate's post-state — never on an opaque read. A
 //!    switch built on the stored state while a stuck candidate holds its
 //!    nonce is refused up front instead, and releases once the stuck
-//!    candidate is parked and the proposal is made again.
+//!    candidate is parked and the proposal is made again. A switch built
+//!    on a retained delta's end state (a proposal past a late landing, or
+//!    a switch delta parked behind it, issue #504) is executed for real
+//!    from that state and proved through the replayed chain of rows.
 
 use std::sync::Arc;
 
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
-use guardian_shared::{SignatureScheme, ToJson};
+use guardian_shared::{FromJson, SignatureScheme, ToJson};
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
@@ -123,6 +126,119 @@ fn nonce_bump_summary(account: &Account) -> serde_json::Value {
     .to_json()
 }
 
+/// A guardian switch executed on a mock chain from one account state.
+struct ExecutedSwitch {
+    /// The abort `TransactionSummary` the wallet pushes as the switch
+    /// proposal / delta payload.
+    summary: serde_json::Value,
+    account: Account,
+    /// The transaction header's commitments, as the node records them for
+    /// `SyncTransactions`.
+    initial: String,
+    final_commitment: String,
+}
+
+/// Execute the signed `update_guardian_public_key` transaction from
+/// `account` on a mock chain that holds it: the 2-of-2 cosigners sign the
+/// abort summary, and the switch runs with the multisig threshold alone.
+async fn execute_switch(
+    account: &Account,
+    cosigner_keys: &[SecretKey],
+    new_guardian_commitment: Word,
+) -> ExecutedSwitch {
+    let cosigner_pubkeys: Vec<_> = cosigner_keys.iter().map(|k| k.public_key()).collect();
+    let mock_chain = MockChainBuilder::with_accounts([account.clone()])
+        .expect("mock chain accepts account")
+        .build()
+        .expect("mock chain builds");
+
+    let new_guardian_scheme_id = SignatureScheme::Falcon.auth_scheme_id();
+    let tx_script_code = format!(
+        "@transaction_script\npub proc main\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+    );
+    let tx_script = CodeBuilder::new()
+        .with_dynamically_linked_package(AuthGuardedMultisig::code())
+        .expect("library links")
+        .compile_tx_script(&tx_script_code)
+        .expect("tx script compiles");
+    // `MockChain` charges no fee and the guarded component pays none on
+    // this protocol line, so the auth args commit no conversion info
+    // (see switch_guardian_canonicalization.rs).
+    let auth_args = MultisigAuthArgs::new(
+        mock_chain.latest_block_header().block_num(),
+        Word::from([Felt::new_unchecked(7); 4]),
+    );
+
+    // The mock chain holds no state for private accounts, so the
+    // transaction is built from the account itself for both visibilities.
+    let abort_summary = match mock_chain
+        .build_transaction(account.clone())
+        .authenticator(None)
+        .tx_script(tx_script.clone())
+        .multisig_auth_args(&auth_args)
+        .build()
+        .expect("tx builds")
+        .execute()
+        .await
+        .unwrap_err()
+    {
+        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+    let msg = abort_summary.as_ref().to_commitment();
+    let summary = abort_summary.as_ref().to_json();
+    let signing = SigningInputs::TransactionSummary(abort_summary);
+    let authenticator_1 =
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[0].clone())]);
+    let authenticator_2 =
+        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[1].clone())]);
+    let sig_1 = authenticator_1
+        .get_signature(cosigner_pubkeys[0].to_commitment().into(), &signing)
+        .await
+        .expect("cosigner 1 signs");
+    let sig_2 = authenticator_2
+        .get_signature(cosigner_pubkeys[1].to_commitment().into(), &signing)
+        .await
+        .expect("cosigner 2 signs");
+
+    let executed_tx = mock_chain
+        .build_transaction(account.clone())
+        .authenticator(None)
+        .tx_script(tx_script)
+        .add_signature(cosigner_pubkeys[0].clone().into(), msg, sig_1)
+        .add_signature(cosigner_pubkeys[1].clone().into(), msg, sig_2)
+        .multisig_auth_args(&auth_args)
+        .build()
+        .expect("tx builds")
+        .execute()
+        .await
+        .expect("signed switch executes");
+    let mut executed_account = account.clone();
+    executed_account
+        .apply_patch(executed_tx.account_patch())
+        .expect("executed patch applies");
+    let header = TransactionHeader::from(&executed_tx);
+    let initial = format!(
+        "0x{}",
+        hex::encode(header.initial_state_commitment().as_bytes())
+    );
+    let final_commitment = format!(
+        "0x{}",
+        hex::encode(header.final_state_commitment().as_bytes())
+    );
+    assert_eq!(
+        final_commitment,
+        commitment_hex(&executed_account),
+        "the header's final commitment is the executed state"
+    );
+    ExecutedSwitch {
+        summary,
+        account: executed_account,
+        initial,
+        final_commitment,
+    }
+}
+
 /// A guardian-bound account onboarded on this server with its pre-switch
 /// state, plus the authoritative post-switch state the chain holds after
 /// a switch this server never heard about.
@@ -144,6 +260,8 @@ struct UnannouncedSwitch {
     new_guardian_commitment_hex: String,
     ack_commitment_hex: String,
     cosigner_key: SecretKey,
+    cosigner_keys: Vec<SecretKey>,
+    new_guardian_commitment: Word,
     api_pubkey_hex: String,
     all_commitments_hex: Vec<String>,
     next_timestamp: i64,
@@ -220,6 +338,16 @@ impl UnannouncedSwitch {
         &mut self,
         nonce: u64,
     ) -> Result<String, crate::error::GuardianError> {
+        let summary = self.switch_summary.clone();
+        self.try_push_switch_proposal_with(summary, nonce).await
+    }
+
+    /// A switch proposal carrying `tx_summary`, labelled with `nonce`.
+    async fn try_push_switch_proposal_with(
+        &mut self,
+        tx_summary: serde_json::Value,
+        nonce: u64,
+    ) -> Result<String, crate::error::GuardianError> {
         let creds = self.credentials();
         let proposal = push_delta_proposal(
             &self.state,
@@ -227,7 +355,7 @@ impl UnannouncedSwitch {
                 account_id: self.account_id_hex.clone(),
                 nonce,
                 delta_payload: serde_json::json!({
-                    "tx_summary": self.switch_summary.clone(),
+                    "tx_summary": tx_summary,
                     "signatures": [],
                     "metadata": {
                         "proposal_type": "switch_guardian",
@@ -252,22 +380,30 @@ impl UnannouncedSwitch {
         self.state.canonicalization =
             Some(CanonicalizationConfig::default().with_max_pending_candidates_per_account(4));
         let nonce = self.executed_account.nonce().as_canonical_u64();
+        let delta = DeltaObject {
+            account_id: self.account_id_hex.clone(),
+            nonce,
+            prev_commitment: self.pre_switch_commitment.clone(),
+            delta_payload: nonce_bump_summary(&self.pre_switch_account),
+            ..Default::default()
+        };
+        let authorization = crate::testing::helpers::store_authorizing_proposal(
+            &self.state,
+            &delta,
+            &self.cosigner_keys,
+        )
+        .await;
         let creds = self.credentials();
         let pushed = push_delta(
             &self.state,
             PushDeltaParams {
-                delta: DeltaObject {
-                    account_id: self.account_id_hex.clone(),
-                    nonce,
-                    prev_commitment: self.pre_switch_commitment.clone(),
-                    delta_payload: nonce_bump_summary(&self.pre_switch_account),
-                    ..Default::default()
-                },
+                delta,
                 credentials: creds,
             },
         )
         .await
         .expect("the candidate is admitted on the stored base");
+        authorization.restore(&self.state).await;
         assert!(pushed.delta.status.is_candidate());
         (
             nonce,
@@ -283,17 +419,24 @@ impl UnannouncedSwitch {
     /// release). The process-now test processor never parks on
     /// divergence, so the writes are made directly.
     async fn park_diverged_candidate(&self, nonce: u64) {
+        self.park_diverged_candidates(&[nonce]).await;
+    }
+
+    /// [`Self::park_diverged_candidate`] for every queued candidate.
+    async fn park_diverged_candidates(&self, nonces: &[u64]) {
         let now = chrono::Utc::now().to_rfc3339();
-        self.state
-            .storage
-            .update_candidate_status(
-                &self.account_id_hex,
-                nonce,
-                DeltaStatus::retained(now.clone(), RetainReason::Diverged),
-                None,
-            )
-            .await
-            .expect("the candidate is parked");
+        for &nonce in nonces {
+            self.state
+                .storage
+                .update_candidate_status(
+                    &self.account_id_hex,
+                    nonce,
+                    DeltaStatus::retained(now.clone(), RetainReason::Diverged),
+                    None,
+                )
+                .await
+                .expect("the candidate is parked");
+        }
         assert!(
             !self
                 .state
@@ -316,6 +459,21 @@ impl UnannouncedSwitch {
             .into_iter()
             .filter(|e| e.action_kind == crate::audit::kinds::ACCOUNTS_RELEASE)
             .collect()
+    }
+
+    /// The state the own delta [`Self::push_stuck_candidate`] pushes leaves
+    /// the account at, replayed the way canonicalization and the sweep
+    /// replay it. A later transaction is built from this state.
+    fn own_delta_post_state(&self) -> Account {
+        let applied = self
+            .state
+            .network_client
+            .apply_delta(
+                &self.pre_switch_account.to_json(),
+                &nonce_bump_summary(&self.pre_switch_account),
+            )
+            .expect("the own delta applies to the stored state");
+        Account::from_json(&applied.state_json).expect("the replayed state decodes")
     }
 
     /// The pre-switch account advanced by one transaction that kept this
@@ -447,100 +605,23 @@ async fn unannounced_switch_for(account_type: AccountType) -> UnannouncedSwitch 
     let account_id_hex = multisig_account.id().to_hex();
     let pre_switch_commitment = commitment_hex(&multisig_account);
 
-    let mock_chain = MockChainBuilder::with_accounts([multisig_account.clone()])
-        .expect("mock chain accepts account")
-        .build()
-        .expect("mock chain builds");
-
     // The switch target: a fresh guardian key unrelated to this server.
     let new_guardian_key = SecretKey::new();
     let new_guardian_commitment = new_guardian_key.public_key().to_commitment();
     let new_guardian_commitment_hex =
         format!("0x{}", hex::encode(new_guardian_commitment.to_bytes()));
 
-    let new_guardian_scheme_id = SignatureScheme::Falcon.auth_scheme_id();
-    let tx_script_code = format!(
-        "@transaction_script\npub proc main\n    push.{new_guardian_commitment}\n    push.{new_guardian_scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
-    );
-    let tx_script = CodeBuilder::new()
-        .with_dynamically_linked_package(AuthGuardedMultisig::code())
-        .expect("library links")
-        .compile_tx_script(&tx_script_code)
-        .expect("tx script compiles");
-    // `MockChain` charges no fee and the guarded component pays none on
-    // this protocol line, so the auth args commit no conversion info
-    // (see switch_guardian_canonicalization.rs).
-    let auth_args = MultisigAuthArgs::new(
-        mock_chain.latest_block_header().block_num(),
-        Word::from([Felt::new_unchecked(7); 4]),
-    );
-
-    // The mock chain holds no state for private accounts, so the
-    // transaction is built from the account itself for both visibilities.
-    let abort_summary = match mock_chain
-        .build_transaction(multisig_account.clone())
-        .authenticator(None)
-        .tx_script(tx_script.clone())
-        .multisig_auth_args(&auth_args)
-        .build()
-        .expect("tx builds")
-        .execute()
-        .await
-        .unwrap_err()
-    {
-        TransactionExecutorError::Unauthorized(tx_effects) => tx_effects,
-        error => panic!("expected abort with tx effects: {error:?}"),
-    };
-    let msg = abort_summary.as_ref().to_commitment();
-    let switch_summary = abort_summary.as_ref().to_json();
-    let signing = SigningInputs::TransactionSummary(abort_summary);
-    let authenticator_1 =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[0].clone())]);
-    let authenticator_2 =
-        BasicAuthenticator::new(&[AuthSecretKey::Falcon512Poseidon2(cosigner_keys[1].clone())]);
-    let sig_1 = authenticator_1
-        .get_signature(cosigner_pubkeys[0].to_commitment().into(), &signing)
-        .await
-        .expect("cosigner 1 signs");
-    let sig_2 = authenticator_2
-        .get_signature(cosigner_pubkeys[1].to_commitment().into(), &signing)
-        .await
-        .expect("cosigner 2 signs");
-
     // The authoritative on-chain result: the switch executed with the
     // multisig threshold alone — the one transaction that needs no
     // guardian signature, which is exactly why this server never saw it.
-    let executed_tx = mock_chain
-        .build_transaction(multisig_account.clone())
-        .authenticator(None)
-        .tx_script(tx_script)
-        .add_signature(cosigner_pubkeys[0].clone().into(), msg, sig_1)
-        .add_signature(cosigner_pubkeys[1].clone().into(), msg, sig_2)
-        .multisig_auth_args(&auth_args)
-        .build()
-        .expect("tx builds")
-        .execute()
-        .await
-        .expect("signed switch executes");
-    let mut executed_account = multisig_account.clone();
-    executed_account
-        .apply_patch(executed_tx.account_patch())
-        .expect("executed patch applies");
+    let ExecutedSwitch {
+        summary: switch_summary,
+        account: executed_account,
+        initial: switch_tx_initial,
+        final_commitment: switch_tx_final,
+    } = execute_switch(&multisig_account, &cosigner_keys, new_guardian_commitment).await;
     let executed_commitment = commitment_hex(&executed_account);
     assert_ne!(executed_commitment, pre_switch_commitment);
-    let switch_header = TransactionHeader::from(&executed_tx);
-    let switch_tx_initial = format!(
-        "0x{}",
-        hex::encode(switch_header.initial_state_commitment().as_bytes())
-    );
-    let switch_tx_final = format!(
-        "0x{}",
-        hex::encode(switch_header.final_state_commitment().as_bytes())
-    );
-    assert_eq!(
-        switch_tx_final, executed_commitment,
-        "the header's final commitment is the executed state"
-    );
     assert_eq!(
         MidenAccountInspector::new(&executed_account)
             .extract_guardian_public_key()
@@ -572,6 +653,8 @@ async fn unannounced_switch_for(account_type: AccountType) -> UnannouncedSwitch 
         new_guardian_commitment_hex,
         ack_commitment_hex,
         cosigner_key: cosigner_keys[0].clone(),
+        cosigner_keys,
+        new_guardian_commitment,
         api_pubkey_hex,
         all_commitments_hex,
         next_timestamp: chrono::Utc::now().timestamp_millis(),
@@ -1294,4 +1377,161 @@ async fn test_release_sweep_still_releases_a_real_switch_after_this_servers_ack_
         release_events[0].payload["new_guardian_commitment"],
         fixture.new_guardian_commitment_hex
     );
+}
+
+#[tokio::test]
+async fn test_release_sweep_matches_a_switch_built_past_a_late_landing_retained_delta() {
+    // An own delta was admitted, ran out of retries and was retained, then
+    // landed; the stored state stayed at its base. The cosigners built the
+    // switch on the landed state and proposed it here; with the queue empty
+    // it is recorded against the stored state, so its summary applied there
+    // proves nothing. Applied past the retained delta, the real summary
+    // reproduces the switch the chain executed.
+    let mut fixture = unannounced_switch_for(AccountType::Private).await;
+    let (own_nonce, own_post_state) = fixture.push_stuck_candidate().await;
+    let landed = fixture.own_delta_post_state();
+    assert_eq!(own_post_state, commitment_hex(&landed));
+    fixture.park_diverged_candidate(own_nonce).await;
+
+    let switch = execute_switch(
+        &landed,
+        &fixture.cosigner_keys,
+        fixture.new_guardian_commitment,
+    )
+    .await;
+    let switch_commitment = commitment_hex(&switch.account);
+    let proposal_id = fixture
+        .try_push_switch_proposal_with(
+            switch.summary.clone(),
+            switch.account.nonce().as_canonical_u64(),
+        )
+        .await
+        .expect("the switch proposal is accepted on the old guardian");
+    let recorded = fixture
+        .state
+        .storage
+        .pull_pending_proposals(&fixture.account_id_hex)
+        .await
+        .expect("proposals readable");
+    assert_eq!(
+        recorded[0].proposal.prev_commitment, fixture.pre_switch_commitment,
+        "with the queue empty the proposal is recorded against the stored state"
+    );
+
+    let history = vec![
+        (
+            40,
+            fixture.pre_switch_commitment.clone(),
+            own_post_state.clone(),
+        ),
+        (41, switch.initial.clone(), switch.final_commitment.clone()),
+    ];
+    fixture.install_chain_with_history(&switch.account, false, &history);
+
+    let pass = run_release_sweep_now(&fixture.state)
+        .await
+        .expect("sweep succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert!(
+        fixture.released_at().await.is_some(),
+        "the switch past the late-landing delta releases the private account"
+    );
+    let release_events = fixture.release_events();
+    assert_eq!(release_events.len(), 1);
+    let event = &release_events[0];
+    assert_eq!(event.payload["detected_by"], "proposal_match");
+    assert_eq!(event.payload["proposal_id"], proposal_id);
+    assert_eq!(
+        event.payload["stored_commitment"],
+        fixture.pre_switch_commitment
+    );
+    assert_eq!(event.payload["switch_commitment"], switch_commitment);
+    assert_eq!(
+        event.payload["new_guardian_commitment"],
+        fixture.new_guardian_commitment_hex
+    );
+}
+
+#[tokio::test]
+async fn test_release_sweep_matches_a_switch_delta_parked_behind_another_candidate() {
+    // Issue #504: the switch delta was queued behind an own candidate, and
+    // both were parked once the chain moved on under the new guardian. The
+    // switch does not chain from the stored base, only from the retained
+    // predecessor's end state; the history holds the switch transaction.
+    let mut fixture = unannounced_switch_for(AccountType::Private).await;
+    let (own_nonce, own_post_state) = fixture.push_stuck_candidate().await;
+    let landed = fixture.own_delta_post_state();
+    assert_eq!(own_post_state, commitment_hex(&landed));
+    let switch = execute_switch(
+        &landed,
+        &fixture.cosigner_keys,
+        fixture.new_guardian_commitment,
+    )
+    .await;
+    let switch_nonce = switch.account.nonce().as_canonical_u64();
+    let delta = DeltaObject {
+        account_id: fixture.account_id_hex.clone(),
+        nonce: switch_nonce,
+        prev_commitment: own_post_state.clone(),
+        delta_payload: switch.summary.clone(),
+        ..Default::default()
+    };
+    let authorization = crate::testing::helpers::store_authorizing_proposal(
+        &fixture.state,
+        &delta,
+        &fixture.cosigner_keys,
+    )
+    .await;
+    let creds = fixture.credentials();
+    let pushed = push_delta(
+        &fixture.state,
+        PushDeltaParams {
+            delta,
+            credentials: creds,
+        },
+    )
+    .await
+    .expect("the switch delta is queued behind the own candidate");
+    authorization.restore(&fixture.state).await;
+    assert_eq!(
+        pushed.delta.new_commitment.as_deref(),
+        Some(switch.final_commitment.as_str()),
+        "the server's replay of the queued switch is the executed state"
+    );
+    fixture
+        .park_diverged_candidates(&[own_nonce, switch_nonce])
+        .await;
+
+    let mut moved = switch.account.clone();
+    moved.increment_nonce(Felt::ONE).expect("nonce increments");
+    let history = vec![
+        (
+            40,
+            fixture.pre_switch_commitment.clone(),
+            own_post_state.clone(),
+        ),
+        (41, switch.initial.clone(), switch.final_commitment.clone()),
+        (42, switch.final_commitment.clone(), commitment_hex(&moved)),
+    ];
+    fixture.install_chain_with_history(&moved, false, &history);
+
+    let pass = run_release_sweep_now(&fixture.state)
+        .await
+        .expect("sweep succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert!(
+        fixture.released_at().await.is_some(),
+        "the parked switch delta releases the private account"
+    );
+    let release_events = fixture.release_events();
+    assert_eq!(release_events.len(), 1);
+    let event = &release_events[0];
+    assert_eq!(event.payload["detected_by"], "recoverable_delta");
+    assert_eq!(event.payload["delta_nonce"], switch_nonce);
+    assert_eq!(
+        event.payload["stored_commitment"],
+        fixture.pre_switch_commitment
+    );
+    assert_eq!(event.payload["switch_commitment"], switch.final_commitment);
+    assert_eq!(event.payload["switch_block_num"], 41);
 }

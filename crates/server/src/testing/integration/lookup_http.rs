@@ -11,8 +11,8 @@
 use crate::api::http::LookupResponse;
 use crate::testing::helpers::{TestEcdsaSigner, TestSigner, create_router, create_test_app_state};
 use crate::testing::integration::lookup_helpers::{
-    ecdsa_account, evm_account, falcon_account, fresh_account_id_hex, now_ms, seed, sign_lookup,
-    sign_lookup_ecdsa, sign_lookup_eip712,
+    ecdsa_account, evm_account, falcon_account, fresh_account_id_hex, now_ms, seed,
+    seed_unfinished, sign_lookup, sign_lookup_ecdsa, sign_lookup_eip712,
 };
 
 use axum::{
@@ -237,6 +237,51 @@ async fn lookup_returns_all_matches_for_shared_commitment() {
     let mut expected = [account_a.as_str(), account_b.as_str()];
     expected.sort();
     assert_eq!(ids, expected.to_vec());
+}
+
+#[tokio::test]
+async fn lookup_excludes_an_account_whose_first_configuration_did_not_finish() {
+    // A first configuration that claimed the account and failed before
+    // writing its state leaves metadata with no state. Listing it would make
+    // the caller's state read 404 and fail recovery of every account behind
+    // the key, so only the configured account is returned.
+    let state = create_test_app_state().await;
+    let signer = TestSigner::new();
+    let configured = fresh_account_id_hex(30);
+    seed(
+        &state,
+        falcon_account(&configured, vec![signer.commitment_hex.clone()]),
+    )
+    .await;
+    seed_unfinished(
+        &state,
+        falcon_account(
+            &fresh_account_id_hex(31),
+            vec![signer.commitment_hex.clone()],
+        ),
+    )
+    .await;
+    let app = create_router(state);
+
+    let timestamp = now_ms();
+    let signature = sign_lookup(&signer, &signer.commitment_hex, timestamp);
+    let request = build_lookup_request(
+        &signer.commitment_hex,
+        &signer.pubkey_hex,
+        &signature,
+        timestamp,
+    );
+
+    let (status, body) = send(&app, request).await;
+    assert_eq!(status, StatusCode::OK, "body: {body}");
+
+    let parsed = parse_lookup_response(&body);
+    assert_eq!(
+        parsed.accounts.len(),
+        1,
+        "only the configured account: {body}"
+    );
+    assert_eq!(parsed.accounts[0].account_id, configured);
 }
 
 #[tokio::test]

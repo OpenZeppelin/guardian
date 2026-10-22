@@ -548,6 +548,59 @@ async fn a_pre_boundary_failure_releases_with_its_outcome(h: &Harness) {
     );
 }
 
+async fn a_send_the_node_never_processed_discards_the_candidate_and_keeps_the_proposal(
+    h: &Harness,
+) {
+    let proposal = proposal_commitment(1);
+    h.store_proposal(&proposal, 1).await;
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let attempt = h.reserve(&proposal, &owner).await;
+    assert_eq!(
+        h.storage
+            .admit_execution_candidate(
+                h.metadata.as_ref(),
+                h.admission(&proposal, attempt, &owner, 1)
+            )
+            .await
+            .unwrap(),
+        AdmissionWrite::Admitted
+    );
+    assert_eq!(
+        h.storage
+            .resolve_execution(
+                h.metadata.as_ref(),
+                h.resolution(
+                    &proposal,
+                    attempt,
+                    &owner,
+                    ExecutionFailureCode::SubmissionNotProcessed
+                )
+            )
+            .await
+            .unwrap(),
+        ResolveWrite::Resolved
+    );
+    assert!(h.delta_at(1).await.is_none(), "candidate discarded");
+    assert!(
+        h.storage
+            .pull_delta_proposal(&h.account_id, &proposal)
+            .await
+            .unwrap()
+            .status
+            .is_pending(),
+        "the proposal stays executable"
+    );
+    assert!(!h.pending_flag().await);
+    assert!(
+        h.storage
+            .load_active_execution(&h.account_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the account is free for the next attempt"
+    );
+}
+
 async fn a_post_boundary_failure_discards_the_candidate_and_the_proposal(h: &Harness) {
     let proposal = proposal_commitment(1);
     h.store_proposal(&proposal, 1).await;
@@ -1643,6 +1696,7 @@ mod filesystem {
         a_client_candidate_is_refused_while_reserved,
         a_client_candidate_is_refused_while_guardian_holds_its_own,
         a_pre_boundary_failure_releases_with_its_outcome,
+        a_send_the_node_never_processed_discards_the_candidate_and_keeps_the_proposal,
         a_post_boundary_failure_discards_the_candidate_and_the_proposal,
         canonicalization_cannot_discard_an_executing_candidate,
         a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner,
@@ -1828,6 +1882,9 @@ mod filesystem {
                 return Err("injected: the flag write crashed".to_string());
             }
             self.0.set(metadata).await
+        }
+        async fn create(&self, metadata: crate::metadata::AccountMetadata) -> Result<bool, String> {
+            self.0.create(metadata).await
         }
         async fn list(&self) -> Result<Vec<String>, String> {
             self.0.list().await
@@ -2099,6 +2156,7 @@ mod postgres {
         a_client_candidate_is_refused_while_reserved,
         a_client_candidate_is_refused_while_guardian_holds_its_own,
         a_pre_boundary_failure_releases_with_its_outcome,
+        a_send_the_node_never_processed_discards_the_candidate_and_keeps_the_proposal,
         a_post_boundary_failure_discards_the_candidate_and_the_proposal,
         canonicalization_cannot_discard_an_executing_candidate,
         a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner,

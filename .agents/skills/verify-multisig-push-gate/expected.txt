@@ -1,0 +1,25 @@
+# <cell> <property> <expected> [note]   (cells: cells.txt)
+threshold-standard NeverOverAsks PASS
+threshold-standard DefaultWithoutLowOverride PASS
+threshold-custom NeverOverAsks PASS
+threshold-custom DefaultWithoutLowOverride PASS
+relay-new-new-offchannel ReadyExecutionAcked PASS
+relay-new-new-offchannel AckedApprovalKept PASS
+relay-new-new-offchannel-late ReadyExecutionAcked PASS
+relay-new-new-offchannel-late AckedApprovalKept PASS
+relay-new-new-stored-late ReadyExecutionAcked PASS
+relay-new-new-stored-late AckedApprovalKept PASS
+relay-old-new-offchannel ReadyExecutionAcked PASS
+relay-old-new-offchannel AckedApprovalKept PASS
+relay-old-new-offchannel-late ReadyExecutionAcked PASS
+relay-old-new-offchannel-late AckedApprovalKept PASS
+relay-old-new-offchannel-unsigned ReadyExecutionAcked PASS
+relay-old-new-offchannel-unsigned AckedApprovalKept PASS
+relay-new-old-offchannel ReadyExecutionAcked FAIL:ReadyExecutionAcked (documented: 0.18.2 SDKs cannot execute off-channel approvals)
+relay-new-old-offchannel AckedApprovalKept PASS
+relay-new-old-stored ReadyExecutionAcked PASS
+relay-new-old-stored AckedApprovalKept PASS
+relay-new-new-unstored ReadyExecutionAcked FAIL:ReadyExecutionAcked (documented: offline-created switch falls to the release sweep)
+relay-new-new-unstored AckedApprovalKept PASS
+relay-old-new-unstored ReadyExecutionAcked PASS
+relay-old-new-unstored AckedApprovalKept PASS

@@ -970,11 +970,13 @@ impl PostgresService {
                         .filter(deltas::status_kind.eq("candidate"))
                         .execute(conn)
                         .await?;
-                    diesel::delete(delta_proposals::table)
-                        .filter(delta_proposals::account_id.eq(account_id))
-                        .filter(delta_proposals::commitment.eq(proposal_id))
-                        .execute(conn)
-                        .await?;
+                    if failure.code.ends_proposal() {
+                        diesel::delete(delta_proposals::table)
+                            .filter(delta_proposals::account_id.eq(account_id))
+                            .filter(delta_proposals::commitment.eq(proposal_id))
+                            .execute(conn)
+                            .await?;
+                    }
                     clear_pending_flag_if_none(conn, account_id, *now).await?;
                 }
                 insert_outcome(
