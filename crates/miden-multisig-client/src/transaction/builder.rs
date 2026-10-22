@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
+use guardian_shared::multisig_threshold::ThresholdedTransaction;
 use miden_client::rpc::NodeRpcClient;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -311,7 +312,7 @@ impl ProposalBuilder {
         let current_threshold = account.threshold()?;
         let mut current_signers = account.cosigner_commitments();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         // Add the new signer
         current_signers.push(new_commitment);
@@ -417,7 +418,7 @@ impl ProposalBuilder {
         let current_threshold = account.threshold()?;
         let current_signers = account.cosigner_commitments();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         validate_threshold_change(
             current_threshold,
@@ -514,7 +515,7 @@ impl ProposalBuilder {
         let current_threshold = account.threshold()?;
         let current_signers = account.cosigner_commitments();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         // Remove the signer
         let new_signers: Vec<Word> = current_signers
@@ -630,7 +631,8 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
-        let required_signatures = account.effective_threshold_for_p2id()? as usize;
+        let required_signatures =
+            account.effective_threshold_for(ThresholdedTransaction::P2id)? as usize;
 
         let asset = build_transfer_asset(faucet_id, amount)?;
 
@@ -730,7 +732,7 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::ReceiveAsset)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::ConsumeNotes)? as usize;
 
         let auth_args = self.fresh_auth_args(miden_client).await?;
         let salt = auth_args.salt();
@@ -859,7 +861,7 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateGuardian)? as usize;
         ensure_admissible_signer_set(&account.cosigner_commitments(), new_guardian_pubkey)?;
 
         verify_endpoint_commitment(
@@ -956,7 +958,7 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures = account
-            .effective_threshold_for_procedure(ProcedureName::UpdateProcedureThreshold)?
+            .effective_threshold_for(ThresholdedTransaction::SetProcedureThreshold)?
             as usize;
 
         let auth_args = self.fresh_auth_args(miden_client).await?;
