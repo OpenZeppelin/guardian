@@ -46,8 +46,10 @@ TypeScript). The `check.sh` drift check hashes each one. In particular:
   `prepareProposalExecution` pushes the served `prevCommitment` after
   `assertExecutesOnPinnedBase`.
 - Which proposals an SDK will execute: Rust refuses
-  `proposal.nonce <= account.nonce()`; TS refuses any proposal whose
-  pinned base is not its local commitment.
+  `proposal.nonce <= account.nonce()` and, through
+  `ensure_executes_on_pinned_base`, any proposal whose pinned base is not
+  its local commitment; TS refuses any proposal whose pinned base is not
+  its local commitment.
 - How Guardian pins and labels: `push_delta_proposal` pins to the queue
   tail and checks the label only when a queue exists. `push_delta`
   checks label = applied nonce only behind a queued candidate.
@@ -123,7 +125,7 @@ TLC could not run the model; its first error lines are printed.
 |---|---|
 | `Sync` | Rust `client/account.rs` `sync`; TS `multisig.ts` `syncState` (adopt the chain state or Guardian's canonical state) |
 | `Propose` | Rust `client/proposals.rs` `propose_transaction_with_options` (label `account.nonce() + 1`); TS `resolveProposalNonce` (store nonce + 1, `Date.now()` through 0.18.0); server `services/push_delta_proposal.rs` `push_delta_proposal` (pin to tail; refuse a full queue or a label other than tail + 1 when a queue exists) |
-| `ExecuteRust` | Rust `execute_proposal` (sync, refuse `proposal.nonce <= account.nonce()`), `helpers.rs` `get_guardian_ack_signature` (push with the local commitment), `finalize_transaction` (execute on the local account) |
+| `ExecuteRust` | Rust `execute_proposal` (sync, refuse `proposal.nonce <= account.nonce()`, refuse a pinned base other than the local commitment via `ensure_executes_on_pinned_base`), `helpers.rs` `get_guardian_ack_signature` (push with the local commitment), `finalize_transaction` (execute on the local account) |
 | `ExecuteTs` | TS `prepareProposalExecution` → `assertExecutesOnPinnedBase`, `pushDelta` with the served `prevCommitment`; `executeProposal` → `submitAtTip` on the store account |
 | `Admits`, `Admit` | server `services/push_delta.rs` `push_delta` and `storage::gate_candidate_submission` / `submit_candidate` (tail position, full queue, label rule behind a queue, supersede of a parked row at the nonce) |
 | `Land`, `Expire` | the chain: lands from the state it was built on; the multisig replay map refuses a summary that already executed; a transaction may expire |
@@ -144,8 +146,9 @@ TLC could not run the model; its first error lines are printed.
 - Retention is on and nothing expires through the TTL. A transaction
   either lands or expires before `retained_ttl_seconds`.
 - Out of scope: switch_guardian (TS `servedSwitchProposal` deliberately
-  skips the pin check when the old Guardian does not serve it; Rust never
-  checks a switch's pinned base), offline import/export, custom
+  skips the pin check when the old Guardian does not serve it; Rust checks
+  a switch's pinned base against the pre-switch Guardian that serves it,
+  like any other proposal), offline import/export, custom
   proposals, EVM proposals, the pending-proposal limit, and every queue
   race covered by `verify-candidate-queue`.
 - Guardian cannot know which state a proposer built a summary on: it pins

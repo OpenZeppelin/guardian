@@ -162,7 +162,7 @@ while read -r tier max_time max_writes expected note; do
       echo "  counterexample (full trace: check.sh --cell $max_time $max_writes):"
       trace_steps "$out"
     else
-      grep -E -A8 "^Error" "$out" | head -24 | sed 's/^/  /'
+      { grep -E -A8 "^Error" "$out" || tail -n 24 "$out"; } | head -24 | sed 's/^/  /' || true
     fi
   fi
 done < "$SKILL_DIR/expected.txt"

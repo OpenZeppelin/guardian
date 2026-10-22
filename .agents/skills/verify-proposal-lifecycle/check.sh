@@ -174,7 +174,7 @@ for tier in $tiers; do
         echo "  counterexample (full trace: check.sh --cell $sdk1 $sdk2 $depth $property $proposals):"
         trace_steps "$out"
       else
-        grep -E -A8 "^Error" "$out" | head -24 | sed 's/^/  /'
+        { grep -E -A8 "^Error" "$out" || tail -n 24 "$out"; } | head -24 | sed 's/^/  /' || true
       fi
     fi
   done < "$SKILL_DIR/expected.txt"

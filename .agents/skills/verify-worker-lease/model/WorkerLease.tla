@@ -160,10 +160,10 @@ SingleBelievedHolder ==
         (r1 # r2 /\ rpc[r1] # "idle" /\ rpc[r2] # "idle")
             => ~(believed[r1] > now /\ believed[r2] > now)
 
-(* Fenced writes commit in fence-token order: once a newer holder has      *)
-(* committed a write, no write from a superseded holder commits after it.  *)
-(* This is what lets every fenced write assume it is not racing an older   *)
-(* leader's decision.                                                      *)
+(* Fenced writes under one lock commit in fence-token order: once a newer *)
+(* holder has committed a write under that lock, no write from a          *)
+(* superseded holder commits after it under the same lock. The model has   *)
+(* one account lock; writes under independent locks are not ordered.      *)
 WritesInTokenOrder ==
     \A i, j \in DOMAIN log : i < j => log[i].token <= log[j].token
 

@@ -275,11 +275,6 @@ impl FilesystemService {
         if let Some(existing) = &current {
             self.archive_delta_holding_lock(existing, now).await?;
         }
-        for path in restored {
-            fs::remove_file(&path)
-                .await
-                .map_err(|e| format!("Failed to remove superseded delta: {e}"))?;
-        }
         self.submit_state(&promotion.state).await?;
         if let Some(new_auth) = promotion.new_auth {
             metadata
@@ -287,6 +282,11 @@ impl FilesystemService {
                 .await?;
         }
         self.write_delta_holding_lock(&promotion.delta).await?;
+        for path in restored {
+            fs::remove_file(&path)
+                .await
+                .map_err(|e| format!("Failed to remove superseded delta: {e}"))?;
+        }
         self.release_pending_flag_if_queue_empty(metadata, &account_id, &promotion.now)
             .await?;
         Ok(crate::storage::PromoteWrite::Applied)

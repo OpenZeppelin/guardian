@@ -18,7 +18,7 @@ or one transaction step.
 | Property | In plain words | Harm if broken |
 |---|---|---|
 | `SingleBelievedHolder` | At most one replica runs a pass on a lease it believes is unexpired. | Two replicas canonicalize concurrently, each sure it is the only one. |
-| `WritesInTokenOrder` | Fenced writes commit in fence-token order: once a newer holder has committed a write, no write from a superseded holder commits after it. | A stale leader overwrites decisions the new leader already made (lost updates; the corrupted-canonical-row trace in `verify-candidate-queue`). |
+| `WritesInTokenOrder` | Fenced writes under one lock commit in fence-token order: once a newer holder has committed a write under that lock, no write from a superseded holder commits after it under the same lock. The model has one account lock; writes under independent locks (other accounts, the stats row) are not ordered against each other. | A stale leader overwrites decisions the new leader already made (lost updates; the corrupted-canonical-row trace in `verify-candidate-queue`). |
 | `OneHolderPerToken` | All writes under one fence token come from one replica. | The token stops identifying a leader. |
 | `TokenAdvancesOnSteal` | The token never goes back, and every change of holder advances it. | A superseded holder's token becomes valid again. |
 
