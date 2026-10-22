@@ -371,14 +371,14 @@ Steps:
    const status = await window.smoke.status();
    ```
 3. Verify `status.signerSource === 'miden-wallet'` and `status.midenWallet.connected === true`.
-4. If the trigger was `ECDSA external signer resolution changed`, also verify `status.midenWallet.scheme === 'ecdsa'`; a Falcon-only wallet run does not exercise external ECDSA resolution and does not satisfy that trigger.
+4. If the trigger was `ECDSA external signer resolution changed`, also verify `status.signatureScheme === 'ecdsa'` and that a wallet-signed register on Guardian succeeds. The wallet exposes only a key commitment, so `status.midenWallet.scheme` is `null` and the signer uses the configured scheme; a wrong choice fails in the browser with `select <scheme>`. A Falcon-only wallet run does not exercise external ECDSA resolution and does not satisfy that trigger.
 5. If the changed code path affects signing, create or load a small multisig and run at least one sign operation through the wallet.
 
 Expect:
 
 - wallet connection succeeds
-- commitment, public key, and scheme are visible in `status().midenWallet`
-- for an ECDSA resolution trigger, `status.midenWallet.scheme` is `ecdsa`
+- commitment and public key are visible in `status().midenWallet`; `scheme` is `null` for a commitment-only wallet
+- for an ECDSA resolution trigger, `status.signatureScheme` is `ecdsa` and the wallet-signed register succeeds
 - any requested signing path succeeds with the wallet as the active signer source
 
 ## `state-verification`
