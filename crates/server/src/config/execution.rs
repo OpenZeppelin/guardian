@@ -55,9 +55,10 @@ pub struct ProverConfig {
 }
 
 /// The public Miden transaction provers, by the network each one is run for.
-const PUBLIC_PROVERS: [(&str, NetworkType); 2] = [
+const PUBLIC_PROVERS: [(&str, NetworkType); 3] = [
     ("tx-prover.testnet.miden.io", NetworkType::MidenTestnet),
     ("tx-prover.devnet.miden.io", NetworkType::MidenDevnet),
+    ("tx-prover.cedar.miden.io", NetworkType::MidenCedar),
 ];
 
 impl ProverConfig {
@@ -359,6 +360,10 @@ mod tests {
         assert_eq!(
             prover_at("https://TX-PROVER.devnet.miden.io/").public_network(),
             Some(NetworkType::MidenDevnet)
+        );
+        assert_eq!(
+            prover_at("https://tx-prover.cedar.miden.io").public_network(),
+            Some(NetworkType::MidenCedar)
         );
         assert_eq!(prover_at("https://prover.example").public_network(), None);
         assert_eq!(
