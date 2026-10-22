@@ -220,10 +220,6 @@ impl ProposalExecutor for FakeExecutor {
             payload: fixture_summary(),
         }))
     }
-
-    async fn chain_tip(&self) -> std::result::Result<u32, String> {
-        self.script.lock().unwrap().tip.clone()
-    }
 }
 
 struct FakeAttempt {

@@ -124,10 +124,6 @@ pub trait ProposalExecutor: Send + Sync {
         &self,
         input: ExecutionInput,
     ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure>;
-
-    /// The chain's committed tip, which reconciliation compares with a submission's recorded
-    /// expiration.
-    async fn chain_tip(&self) -> Result<u32, String>;
 }
 
 #[async_trait]

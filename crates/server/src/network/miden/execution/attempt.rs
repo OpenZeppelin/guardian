@@ -470,13 +470,6 @@ impl ProposalExecutor for MidenExecutor {
             sealed: None,
         }))
     }
-
-    async fn chain_tip(&self) -> Result<u32, String> {
-        chain_tip(self.rpc.as_ref())
-            .await
-            .map(|tip| tip.as_u32())
-            .map_err(|failure| failure.message)
-    }
 }
 
 /// Maps an execution error onto a stable cause. The foreign-account cause is read from the data
