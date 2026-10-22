@@ -1654,6 +1654,42 @@ export async function assertAssetSent(_context: ActionContext, scenarioId: strin
 }
 
 /**
+ * Proposes lowering the send override to one signature while the account
+ * threshold stays above it. A P2ID transfer also calls `create_note`, which
+ * keeps the account threshold, so the chain still needs that many signatures
+ * for a transfer: an SDK that asks for the send override alone gets an
+ * acknowledgement for a transfer the chain refuses (issue #524).
+ */
+export async function lowerProcedureThreshold(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (session.threshold < 2) {
+    return { kind: 'skipped', reason: 'a 1-of-n account has no override below its threshold' };
+  }
+
+  try {
+    const proposal = await proposeWhenSettled(() =>
+      session.multisig!.createUpdateProcedureThresholdProposal(OVERRIDE_PROCEDURE, 1),
+    );
+    session.proposalId = proposal.id;
+    session.expectedProcedure = OVERRIDE_PROCEDURE;
+    session.expectedProcedureThreshold = 1;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing the lower procedure threshold override failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
  * Proposes requiring every signer for one procedure, leaving the account's own
  * threshold alone. The override is what makes per-procedure policy testable:
  * the account stays 2-of-3 while that one procedure needs 3.

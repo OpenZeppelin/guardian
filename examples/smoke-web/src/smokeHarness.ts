@@ -665,11 +665,7 @@ export function useSmokeHarness(): {
 
       switch (requireWalletSource(source)) {
         case 'miden-wallet': {
-          if (
-            !currentMidenWalletSession.commitment ||
-            !currentMidenWalletSession.publicKey ||
-            !currentMidenWalletSession.scheme
-          ) {
+          if (!currentMidenWalletSession.commitment || !currentMidenWalletSession.publicKey) {
             throw new Error('Miden Wallet is not connected');
           }
 
@@ -677,8 +673,10 @@ export function useSmokeHarness(): {
             resolveMidenWalletSigner({
               wallet: { signBytes },
               commitment: currentMidenWalletSession.commitment,
-              publicKey: currentMidenWalletSession.publicKey,
-              scheme: currentMidenWalletSession.scheme,
+              publicKey: currentMidenWalletSession.scheme
+                ? currentMidenWalletSession.publicKey
+                : undefined,
+              scheme: currentMidenWalletSession.scheme ?? signatureScheme,
             }),
             countWalletSignature,
           );
