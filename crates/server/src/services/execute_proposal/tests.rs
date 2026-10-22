@@ -98,6 +98,16 @@ pub(crate) fn summary_with_output_note(
 /// A signed summary whose transaction rotates the account's guardian key, as
 /// `update_guardian_public_key` does, and changes nothing else.
 pub(crate) fn summary_changing_guardian() -> serde_json::Value {
+    summary_patching_guardian(false)
+}
+
+/// A new account's first transaction: its delta creates every slot, the guardian slot with the
+/// key the account was registered under.
+pub(crate) fn summary_creating_the_account() -> serde_json::Value {
+    summary_patching_guardian(true)
+}
+
+fn summary_patching_guardian(create: bool) -> serde_json::Value {
     use guardian_shared::ToJson;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
     use miden_protocol::account::{
@@ -117,7 +127,11 @@ pub(crate) fn summary_changing_guardian() -> serde_json::Value {
     );
     let storage = AccountStoragePatch::from_entries([(
         AuthGuardedMultisig::guardian_public_key_slot().clone(),
-        StorageSlotPatch::Map(StorageMapPatch::Update { entries }),
+        StorageSlotPatch::Map(if create {
+            StorageMapPatch::Create { entries }
+        } else {
+            StorageMapPatch::Update { entries }
+        }),
     )])
     .unwrap();
     let delta = AccountDelta::new(
@@ -928,6 +942,14 @@ async fn a_public_note_needs_no_opt_in() {
         summary_with_output_note(miden_protocol::note::NoteType::Public),
     )
     .await;
+    assert!(f.request().await.unwrap().newly_accepted);
+}
+
+#[tokio::test]
+async fn a_new_accounts_first_transaction_is_no_guardian_switch() {
+    let f = Fixture::new(Script::default()).await;
+    f.store_proposal_with_summary("consume_notes", true, summary_creating_the_account())
+        .await;
     assert!(f.request().await.unwrap().newly_accepted);
 }
 

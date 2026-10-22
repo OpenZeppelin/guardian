@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use miden_protocol::account::{StorageMapPatch, StorageSlotPatch};
 use miden_protocol::transaction::TransactionSummary;
 use miden_standards::account::auth::AuthGuardedMultisig;
 
@@ -353,12 +354,20 @@ pub async fn request_execution(
 /// Whether the transaction the cosigners signed changes the account's guardian key, read from
 /// the signed summary rather than the proposal's metadata label: a guardian switch executes
 /// locally whatever the proposal calls itself, since the client finishes it at the new guardian.
+/// A new account's first transaction carries every slot as created, the guardian slot with the
+/// key it was registered under, and that is no switch.
 fn changes_guardian(summary: &TransactionSummary) -> bool {
-    summary
+    match summary
         .account_delta()
         .storage()
         .get(AuthGuardedMultisig::guardian_public_key_slot())
-        .is_some()
+    {
+        None | Some(StorageSlotPatch::Map(StorageMapPatch::Create { .. })) => false,
+        Some(
+            StorageSlotPatch::Map(StorageMapPatch::Update { .. } | StorageMapPatch::Remove)
+            | StorageSlotPatch::Value(_),
+        ) => true,
+    }
 }
 
 /// Whether the transaction the cosigners signed creates a private output note, read from the
