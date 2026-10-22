@@ -79,7 +79,8 @@ impl SendWindow {
     /// the transaction, so this is well above the slowest accepted send seen on devnet (9.3 s).
     pub const MAX_SEND: std::time::Duration = std::time::Duration::from_secs(60);
 
-    /// The least time a send must have left for the attempt to cross the boundary.
+    /// The least time a send must have left for the attempt to cross the boundary. After the
+    /// boundary the claim sends with whatever is left (see [`Self::deadline_after_boundary`]).
     pub const MIN_SEND: std::time::Duration = std::time::Duration::from_secs(15);
 
     /// The time left to send before the transaction can no longer be accepted.
@@ -91,10 +92,17 @@ impl SendWindow {
         self.block_interval * blocks
     }
 
-    /// How long a send may wait for the node with `left` of the window to go, or `None` when too
-    /// little is left for a send to land.
+    /// Before the boundary: how long a send may wait for the node with `left` of the window to
+    /// go, or `None` when too little is left to start an attempt that cannot be retried.
     pub fn deadline_within(left: std::time::Duration) -> Option<std::time::Duration> {
         (left >= Self::MIN_SEND).then(|| left.min(Self::MAX_SEND))
+    }
+
+    /// After the boundary: how long the send may wait, or `None` once the window has closed.
+    /// Not sending then guarantees the proposal is lost, while a late send can only land, be
+    /// rejected or leave an outcome the chain settles, so any time left is used.
+    pub fn deadline_after_boundary(left: std::time::Duration) -> Option<std::time::Duration> {
+        (!left.is_zero()).then(|| left.min(Self::MAX_SEND))
     }
 }
 
