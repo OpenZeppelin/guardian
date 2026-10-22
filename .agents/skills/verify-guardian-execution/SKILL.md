@@ -77,8 +77,12 @@ every helper they call that decides an outcome the model represents
 `ProtectedByExecution` arms, the chain reads), plus the filesystem
 backend's copies of the E1 fix, which the model does not cover but which
 must stay in parity with Postgres. A new helper on a modeled path that
-decides a refusal, a verdict or a write belongs there too. No CI job runs
-the drift check, so run it yourself on any change to the paths above. Things the
+decides a refusal, a verdict or a write belongs there too. The advisory
+`Execution model drift` workflow (`.github/workflows/execution-model-drift.yml`)
+runs the drift check on pull requests that touch these files and posts a
+warning naming the drifted functions; it never fails the pull request, so
+the review is still yours. Its path list mirrors the files in
+`mirrored.txt`: add a new file to both. Things the
 model treats as one step, which must stay one step in the code:
 
 - `create_execution_reservation_tx`, `admit_execution_candidate_tx`,
