@@ -1,4 +1,4 @@
-crates/server/src/services/execute_proposal/service.rs request_execution c1169f6b42602c7e
+crates/server/src/services/execute_proposal/service.rs request_execution 47ea9c6fd53010f9
 crates/server/src/services/execute_proposal/worker.rs run_execution 17870f61880af494
 crates/server/src/services/execute_proposal/worker.rs run_to_boundary cd12d1d77b1ae6e2
 crates/server/src/services/execute_proposal/worker.rs approach_boundary 9abf7ddaed2d102c
@@ -49,7 +49,7 @@ crates/server/src/storage/postgres.rs lease_fence_is_current 951aa94931bd4c54
 crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
 crates/server/src/storage/postgres.rs clear_pending_flag_if_none ab1f451ea9f18cad
 crates/server/src/storage/postgres.rs pull_recoverable_deltas 3a397123c23e5839
-crates/server/src/storage/postgres.rs submit_candidate 35eb4b2afbcea9bf
+crates/server/src/storage/postgres.rs submit_candidate c75fa2e59d2a903a
 crates/server/src/storage/postgres.rs promote_candidate c5e6b3870b224a88
 crates/server/src/storage/postgres.rs discard_candidate 96eb99645d435499
 crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7

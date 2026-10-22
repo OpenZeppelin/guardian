@@ -2881,7 +2881,8 @@
         "description": "The body of an execution request. Every field is part of the signed payload, so the\npayload never equals a signed read of the same proposal.",
         "required": [
           "account_id",
-          "proposal_id"
+          "proposal_id",
+          "allow_private_note"
         ],
         "properties": {
           "account_id": {
@@ -2889,7 +2890,7 @@
           },
           "allow_private_note": {
             "type": "boolean",
-            "description": "Let Guardian execute a transaction that creates a private output note. Without it the\nrequest is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`\n`private_note`). Signed as `false` when omitted."
+            "description": "Let Guardian execute a transaction that creates a private output note. Without it the\nrequest is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`\n`private_note`). Required, and signed as sent: a body that omits it is refused before\nits signature is checked, rather than failing a signature over a field it never carried."
           },
           "proposal_id": {
             "type": "string"

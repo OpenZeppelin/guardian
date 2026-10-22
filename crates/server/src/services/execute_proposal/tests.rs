@@ -95,6 +95,51 @@ pub(crate) fn summary_with_output_note(
     .to_json()
 }
 
+/// A signed summary whose transaction rotates the account's guardian key, as
+/// `update_guardian_public_key` does, and changes nothing else.
+pub(crate) fn summary_changing_guardian() -> serde_json::Value {
+    use guardian_shared::ToJson;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::account::{
+        AccountCodePatch, AccountId, AccountStoragePatch, StorageMapKey, StorageMapPatch,
+        StorageMapPatchEntries, StorageSlotPatch,
+    };
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
+    use miden_protocol::{Felt, Word, ZERO};
+    use miden_standards::account::auth::AuthGuardedMultisig;
+
+    let mut entries = StorageMapPatchEntries::new();
+    entries.insert(
+        StorageMapKey::new(Word::from([ZERO; 4])),
+        Word::from([5u32, 6, 7, 8]),
+    );
+    let storage = AccountStoragePatch::from_entries([(
+        AuthGuardedMultisig::guardian_public_key_slot().clone(),
+        StorageSlotPatch::Map(StorageMapPatch::Update { entries }),
+    )])
+    .unwrap();
+    let delta = AccountDelta::new(
+        AccountId::from_hex(ACCOUNT).unwrap(),
+        storage,
+        AccountVaultDelta::default(),
+        AccountCodePatch::default(),
+        Felt::ONE,
+    )
+    .unwrap();
+    TransactionSummary::new(
+        delta,
+        InputNotes::new(Vec::new()).unwrap(),
+        RawOutputNotes::new(Vec::new()).unwrap(),
+        miden_protocol::block::BlockNumber::from(0),
+        Word::from([ZERO; 4]),
+        0,
+        TransactionSummaryUserParams::new([ZERO; 6]),
+    )
+    .to_json()
+}
+
 #[derive(Clone)]
 pub(crate) struct Script {
     pub(crate) required: usize,
@@ -259,6 +304,8 @@ impl ExecutionAttempt for FakeAttempt {
 
 pub(crate) struct Fixture {
     pub(crate) state: AppState,
+    /// The chain the state reads, which reports this Guardian as the account's guardian.
+    pub(crate) chain: crate::testing::mocks::MockNetworkClient,
     pub(crate) calls: Arc<Mutex<Calls>>,
     pub(crate) script: Arc<Mutex<Script>>,
     signer: Mutex<TestSigner>,
@@ -268,6 +315,13 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn new(script: Script) -> Self {
         let mut state = create_test_app_state().await;
+        let chain = crate::testing::mocks::MockNetworkClient::new();
+        *chain.guardian_commitment.lock().unwrap() = Some(
+            state
+                .ack
+                .commitment(&guardian_shared::SignatureScheme::Falcon),
+        );
+        state.network_client = Arc::new(chain.clone());
         let calls = Arc::new(Mutex::new(Calls::default()));
         let script = Arc::new(Mutex::new(script));
         state.execution = ExecutionServices {
@@ -280,6 +334,7 @@ impl Fixture {
         let signer = TestSigner::new();
         let fixture = Self {
             state,
+            chain,
             calls,
             script,
             signer_commitment: signer.commitment_hex.clone(),
@@ -342,6 +397,17 @@ impl Fixture {
         guardian_executable: bool,
         tx_summary: serde_json::Value,
     ) {
+        self.store_proposal_as(PROPOSAL, proposal_type, guardian_executable, tx_summary)
+            .await;
+    }
+
+    pub(crate) async fn store_proposal_as(
+        &self,
+        proposal_id: &str,
+        proposal_type: &str,
+        guardian_executable: bool,
+        tx_summary: serde_json::Value,
+    ) {
         let mut payload = serde_json::json!({
             "tx_summary": tx_summary,
             "signatures": [],
@@ -358,7 +424,7 @@ impl Fixture {
         self.state
             .storage
             .submit_delta_proposal(
-                PROPOSAL,
+                proposal_id,
                 &DeltaObject {
                     account_id: ACCOUNT.to_string(),
                     nonce: 1,
@@ -794,6 +860,27 @@ async fn a_public_note_needs_no_opt_in() {
     )
     .await;
     assert!(f.request().await.unwrap().newly_accepted);
+}
+
+#[tokio::test]
+async fn a_guardian_change_executes_locally_whatever_the_label_says() {
+    for label in ["custom", "p2id"] {
+        let f = Fixture::new(Script::default()).await;
+        f.store_proposal_with_summary(label, true, summary_changing_guardian())
+            .await;
+        let result = f.request_allowing_private_note(true).await;
+        assert!(
+            matches!(
+                &result,
+                Err(GuardianError::ProposalExecutesLocally {
+                    reason: LocalExecutionReason::SwitchGuardian,
+                    ..
+                })
+            ),
+            "{label}: {result:?}"
+        );
+        assert_nothing_reserved(&f).await;
+    }
 }
 
 #[tokio::test]

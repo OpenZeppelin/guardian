@@ -31,8 +31,7 @@ struct Faults {
 impl Faults {
     async fn new(script: Script) -> Self {
         let mut f = Fixture::new(script).await;
-        let chain = MockNetworkClient::new();
-        f.state.network_client = Arc::new(chain.clone());
+        let chain = f.chain.clone();
         f.state.execution.config.lease = LEASE;
         Self { f, chain }
     }
@@ -850,6 +849,22 @@ async fn a_guardian_switch_during_proving_fails_the_admissibility_recheck() {
         Some("GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE".to_string())
     );
     assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+}
+
+#[tokio::test]
+async fn an_account_without_a_guardian_slot_is_inadmissible_before_any_chain_work() {
+    let faults = Faults::new(Script::default()).await;
+    *faults.chain.guardian_commitment.lock().unwrap() = None;
+    faults.f.request().await.unwrap();
+    let (failed, _) = faults
+        .f
+        .settle(|state| state == ExecutionState::Failed)
+        .await;
+    assert_eq!(
+        failed.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE".to_string())
+    );
+    assert_eq!(faults.f.calls.lock().unwrap().prepared, 0);
 }
 
 #[tokio::test]

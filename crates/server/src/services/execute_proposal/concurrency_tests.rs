@@ -137,6 +137,45 @@ async fn a_client_push_is_refused_while_an_execution_holds_the_account() {
 }
 
 #[tokio::test]
+async fn a_switch_during_another_execution_is_told_to_execute_locally() {
+    let f = Fixture::new(Script {
+        proving_time: std::time::Duration::from_millis(500),
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let switch_id = format!("0x{}", "5".repeat(64));
+    f.store_proposal_as(
+        &switch_id,
+        "switch_guardian",
+        true,
+        super::tests::summary_changing_guardian(),
+    )
+    .await;
+    let result = request_execution(
+        &f.state,
+        RequestExecutionParams {
+            account_id: ACCOUNT.to_string(),
+            proposal_id: switch_id,
+            credentials: f.credentials(),
+            allow_private_note: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            &result,
+            Err(GuardianError::ProposalExecutesLocally {
+                reason: crate::error::LocalExecutionReason::SwitchGuardian,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    f.settle(is_submitted_or_terminal).await;
+}
+
+#[tokio::test]
 async fn a_shutdown_fails_an_attempt_short_of_the_boundary_and_releases_its_account() {
     let f = Fixture::new(Script {
         proving_time: std::time::Duration::from_secs(30),

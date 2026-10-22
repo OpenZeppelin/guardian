@@ -512,13 +512,17 @@ fn ensure_guarded_by_this_guardian(
             ))
         })?;
     match guardian {
-        Some(guardian) if !guardian.eq_ignore_ascii_case(&state.ack.commitment(&job.scheme)) => {
-            Err(Stop::Failed(ExecutionFailure::new(
-                ExecutionFailureCode::AccountInadmissible,
-                "the account's guardian slot does not hold this Guardian's acknowledgment key",
-            )))
+        Some(guardian) if guardian.eq_ignore_ascii_case(&state.ack.commitment(&job.scheme)) => {
+            Ok(())
         }
-        _ => Ok(()),
+        Some(_) => Err(Stop::Failed(ExecutionFailure::new(
+            ExecutionFailureCode::AccountInadmissible,
+            "the account's guardian slot does not hold this Guardian's acknowledgment key",
+        ))),
+        None => Err(Stop::Failed(ExecutionFailure::new(
+            ExecutionFailureCode::AccountInadmissible,
+            "the account has no guardian slot, so it is not a guarded multisig Guardian can execute for",
+        ))),
     }
 }
 

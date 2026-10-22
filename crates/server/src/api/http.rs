@@ -830,8 +830,8 @@ pub struct ExecuteProposalRequest {
     pub proposal_id: String,
     /// Let Guardian execute a transaction that creates a private output note. Without it the
     /// request is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`
-    /// `private_note`). Signed as `false` when omitted.
-    #[serde(default)]
+    /// `private_note`). Required, and signed as sent: a body that omits it is refused before
+    /// its signature is checked, rather than failing a signature over a field it never carried.
     pub allow_private_note: bool,
 }
 
