@@ -172,6 +172,7 @@ pub struct ConfigureResponse {
         (status = 400, description = "Invalid request", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "New account uses a signature scheme excluded by GUARDIAN_ALLOWED_ACCOUNT_SCHEMES (`signature_scheme_not_allowed`; meta.scheme and meta.allowed_schemes)", body = crate::openapi::ApiErrorResponse),
+        (status = 502, description = "Re-onboarding with a state older than the stored one, and the chain could not be read to check whether the stored state landed (`rpc_unavailable`)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn configure(
@@ -195,8 +196,10 @@ pub async fn configure(
     }))
 }
 
-/// Push a signed state delta for a single-key account. The request
-/// body is the JSON-encoded [`DeltaObject`] to commit.
+/// Push a state delta. The request body is the JSON-encoded
+/// [`DeltaObject`] to commit. A multisig account is accepted only when
+/// a matching proposal carries verified cosigner signatures, at least as
+/// many as the lowest threshold the account permits.
 #[utoipa::path(
     post,
     path = "/delta",
@@ -206,7 +209,7 @@ pub async fn configure(
     request_body = DeltaObject,
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
-        (status = 400, description = "Invalid delta payload", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid delta payload, or a multisig push below the cosigner threshold", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Conflicting pending delta/proposal, or a Guardian execution holds the account (GUARDIAN_EXECUTION_CONFLICT)", body = crate::openapi::ApiErrorResponse),
     )
@@ -1013,8 +1016,11 @@ pub async fn get_delta_proposal(
     Ok(Json(response.proposal))
 }
 
-/// Add a cosigner signature to an existing multisig proposal. When the
-/// signature threshold is reached the proposal is promoted to a delta.
+/// Add a cosigner signature to an existing multisig proposal. The approval
+/// is credited to the cosigner its signature cryptographically verifies
+/// for, so an authenticated signer may also relay an approval another
+/// cosigner produced off channel. When the signature threshold is reached
+/// the proposal is promoted to a delta.
 #[utoipa::path(
     put,
     path = "/delta/proposal",
@@ -1727,11 +1733,51 @@ mod tests {
 
         let test_delta = create_test_delta(&account_id, 1);
 
+        // The fixture account is a 2-of-3 multisig, so the push is
+        // acknowledged only with a matching proposal carrying two
+        // verified approver signatures over the pushed summary.
+        let summary = {
+            use guardian_shared::FromJson;
+            miden_protocol::transaction::TransactionSummary::from_json(&test_delta.delta_payload)
+                .expect("fixture delta summary")
+        };
+        let approval = |n: usize| {
+            let signer = crate::testing::helpers::fixture_signer_n(n);
+            crate::delta_object::CosignerSignature {
+                signature: ProposalSignature::Falcon {
+                    signature: signer.sign_word(summary.to_commitment()),
+                },
+                timestamp: "2024-11-14T12:00:00Z".into(),
+                signer_id: signer.commitment_hex,
+            }
+        };
+        let matching_proposal = DeltaObject {
+            account_id: account_id.clone(),
+            nonce: 1,
+            prev_commitment: test_delta.prev_commitment.clone(),
+            new_commitment: None,
+            delta_payload: serde_json::json!({
+                "tx_summary": test_delta.delta_payload,
+                "metadata": { "proposal_type": "add_signer" },
+                "signatures": [],
+            }),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status: DeltaStatus::Pending {
+                timestamp: "2024-11-14T12:00:00Z".into(),
+                proposer_id: crate::testing::helpers::fixture_signer_n(1).commitment_hex,
+                cosigner_sigs: vec![approval(1), approval(2)],
+            },
+            metadata: None,
+        };
+
         let storage = storage.with_pull_state(Ok(create_state_object(
             account_id.clone(),
             test_delta.prev_commitment.clone(),
             account_json,
         )));
+        let storage = storage.with_pull_delta_proposal(Ok(matching_proposal));
         let _storage = storage.with_pull_deltas_after(Ok(vec![]));
 
         let test_delta_value = serde_json::to_value(&test_delta).unwrap();

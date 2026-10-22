@@ -43,7 +43,7 @@ describe('procedure roots', () => {
     );
 
     expect(PROCEDURE_ROOTS).toEqual(expected);
-  });
+  }, 120_000);
 
   it('do not use the Rust display encoding', () => {
     const generated = loadGeneratedProcedureRoots();

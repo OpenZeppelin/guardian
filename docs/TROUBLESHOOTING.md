@@ -481,8 +481,7 @@ Operator checks:
   pending proposal or unpromoted delta on this server reached the chain
   (neither at the head nor in the account's transaction history), and
   the guardian key cannot be read from chain. If that account is known to have switched
-  guardians (an offline switch with no proposal here, or a switch delta
-  that was queued behind another candidate, issue #504), it will not
+  guardians (an offline switch with no proposal here), it will not
   release by itself. `own_key_mismatch` (warn) means the account is
   bound to a guardian key this server does not hold and nothing on chain
   moved it there: this server's ack key changed since the account was
@@ -535,6 +534,26 @@ GET /delta/since?account_id=...&nonce=<last-known-nonce>
 
 Replay the returned canonical deltas locally, then resubmit your new
 delta. This is the same pattern as a Git fast-forward.
+
+### `commitment_mismatch` on `ConfigureAccount`
+
+Re-onboarding an existing account never puts an older state over a newer
+one. Two cases refuse it, and in both nothing is written and the release,
+if any, stands:
+
+- The submitted state's nonce is below the stored state's, and the chain
+  already reached the stored state (it is the chain head, or a committed
+  transaction ended at it): the wallet's state is stale. A stored state
+  that never landed (optimistic mode, ahead of the chain) can still be
+  replaced by the older chain state.
+- The stored state changed while the request ran: a delta was promoted in
+  between, for example a `switch_guardian` delta landing while the wallet
+  re-onboards.
+
+`expected` is the commitment now stored: re-read the account's state
+(from chain or `GET /state`) and retry with it. When the submitted state
+is older and the chain cannot be read to decide, the request fails with
+`rpc_unavailable` (retryable) rather than risk the overwrite.
 
 ### Stale state served by Guardian
 
@@ -771,7 +790,7 @@ come from
 | `wallet_signature_required` | 403 | A wallet-only route (delta push, candidate abandon, configure, lookup, revoke-all) was called with session (delegated-signer) credentials. Sign it with the wallet. |
 | `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
 | `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
-| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already in this Guardian's metadata are never rejected this way; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
+| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already configured on this Guardian are never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
 ### Resource lookup
@@ -838,7 +857,7 @@ fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 | `invalid_account_id` | 400 | Malformed account ID. |
 | `invalid_delta` | 400 | Delta payload failed schema or commitment validation. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
-| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. |
+| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
 | `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload. |
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |
@@ -847,7 +866,7 @@ fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 | `unsupported_for_network` | 400 | Endpoint not available for the account's network. |
 | `unsupported_evm_chain` | 400 | EVM chain ID not in the configured allowlist. |
 | `invalid_evm_proposal` | 400 | EVM proposal payload validation failed. |
-| `insufficient_signatures` | 400 | Threshold not met for a multi-sig execute. |
+| `insufficient_signatures` | 400 | Multisig threshold not met: an EVM execute, or a Miden `push_delta` whose matching proposal lacks verified cosigner signatures for the lowest threshold the account permits (its default threshold, or a lower override on one of its non-auth procedures). |
 
 ### Network and infrastructure
 

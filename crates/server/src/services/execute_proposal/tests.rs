@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use super::executor::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SendWindow, SignatureSelection, SubmissionOutcome,
+    ProvenTransactionInfo, SelectedProposal, SendWindow, SignatureSelection, SubmissionOutcome,
 };
 use super::{ExecutionState as ExecutionServices, RequestExecutionParams, request_execution};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -95,6 +95,65 @@ pub(crate) fn summary_with_output_note(
     .to_json()
 }
 
+/// A signed summary whose transaction rotates the account's guardian key, as
+/// `update_guardian_public_key` does, and changes nothing else.
+pub(crate) fn summary_changing_guardian() -> serde_json::Value {
+    summary_patching_guardian(false)
+}
+
+/// A new account's first transaction: its delta creates every slot, the guardian slot with the
+/// key the account was registered under.
+pub(crate) fn summary_creating_the_account() -> serde_json::Value {
+    summary_patching_guardian(true)
+}
+
+fn summary_patching_guardian(create: bool) -> serde_json::Value {
+    use guardian_shared::ToJson;
+    use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+    use miden_protocol::account::{
+        AccountCodePatch, AccountId, AccountStoragePatch, StorageMapKey, StorageMapPatch,
+        StorageMapPatchEntries, StorageSlotPatch,
+    };
+    use miden_protocol::transaction::{
+        InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+    };
+    use miden_protocol::{Felt, Word, ZERO};
+    use miden_standards::account::auth::AuthGuardedMultisig;
+
+    let mut entries = StorageMapPatchEntries::new();
+    entries.insert(
+        StorageMapKey::new(Word::from([ZERO; 4])),
+        Word::from([5u32, 6, 7, 8]),
+    );
+    let storage = AccountStoragePatch::from_entries([(
+        AuthGuardedMultisig::guardian_public_key_slot().clone(),
+        StorageSlotPatch::Map(if create {
+            StorageMapPatch::Create { entries }
+        } else {
+            StorageMapPatch::Update { entries }
+        }),
+    )])
+    .unwrap();
+    let delta = AccountDelta::new(
+        AccountId::from_hex(ACCOUNT).unwrap(),
+        storage,
+        AccountVaultDelta::default(),
+        AccountCodePatch::default(),
+        Felt::ONE,
+    )
+    .unwrap();
+    TransactionSummary::new(
+        delta,
+        InputNotes::new(Vec::new()).unwrap(),
+        RawOutputNotes::new(Vec::new()).unwrap(),
+        miden_protocol::block::BlockNumber::from(0),
+        Word::from([ZERO; 4]),
+        0,
+        TransactionSummaryUserParams::new([ZERO; 6]),
+    )
+    .to_json()
+}
+
 #[derive(Clone)]
 pub(crate) struct Script {
     pub(crate) required: usize,
@@ -145,39 +204,65 @@ pub(crate) struct Calls {
 struct FakeExecutor {
     script: Arc<Mutex<Script>>,
     calls: Arc<Mutex<Calls>>,
+    /// The guardian slot every selection reads, this Guardian's key unless a test changes it.
+    guardian: Arc<Mutex<Option<String>>>,
+}
+
+impl ProposalExecutor for FakeExecutor {
+    fn select_signatures(
+        self: Arc<Self>,
+        input: ExecutionInput,
+    ) -> Result<Box<dyn SelectedProposal>> {
+        let selection = {
+            let script = self.script.lock().unwrap();
+            SignatureSelection {
+                required: script.required,
+                valid: script.valid,
+                ignored: 1,
+            }
+        };
+        let guardian = self.guardian.lock().unwrap().clone();
+        Ok(Box::new(FakeSelected {
+            executor: self,
+            input,
+            selection,
+            guardian,
+        }))
+    }
+}
+
+struct FakeSelected {
+    executor: Arc<FakeExecutor>,
+    input: ExecutionInput,
+    selection: SignatureSelection,
+    guardian: Option<String>,
 }
 
 #[async_trait]
-impl ProposalExecutor for FakeExecutor {
-    fn select_signatures(&self, _input: &ExecutionInput) -> Result<SignatureSelection> {
-        let script = self.script.lock().unwrap();
-        Ok(SignatureSelection {
-            required: script.required,
-            valid: script.valid,
-            ignored: 1,
-        })
+impl SelectedProposal for FakeSelected {
+    fn selection(&self) -> &SignatureSelection {
+        &self.selection
+    }
+
+    fn guardian_commitment(&self) -> Option<&str> {
+        self.guardian.as_deref()
     }
 
     async fn prepare(
-        &self,
-        input: ExecutionInput,
+        self: Box<Self>,
     ) -> std::result::Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
         {
-            let mut calls = self.calls.lock().unwrap();
+            let mut calls = self.executor.calls.lock().unwrap();
             calls.prepared += 1;
-            calls.prepared_inputs.push(input);
+            calls.prepared_inputs.push(self.input);
         }
-        let script = self.script.lock().unwrap().clone();
+        let script = self.executor.script.lock().unwrap().clone();
         script.prepare.clone()?;
         Ok(Box::new(FakeAttempt {
             script,
-            calls: self.calls.clone(),
+            calls: self.executor.calls.clone(),
             payload: fixture_summary(),
         }))
-    }
-
-    async fn chain_tip(&self) -> std::result::Result<u32, String> {
-        self.script.lock().unwrap().tip.clone()
     }
 }
 
@@ -259,6 +344,10 @@ impl ExecutionAttempt for FakeAttempt {
 
 pub(crate) struct Fixture {
     pub(crate) state: AppState,
+    /// The chain the state reads.
+    pub(crate) chain: crate::testing::mocks::MockNetworkClient,
+    /// The guardian slot the executor's selections read.
+    pub(crate) guardian: Arc<Mutex<Option<String>>>,
     pub(crate) calls: Arc<Mutex<Calls>>,
     pub(crate) script: Arc<Mutex<Script>>,
     signer: Mutex<TestSigner>,
@@ -268,18 +357,28 @@ pub(crate) struct Fixture {
 impl Fixture {
     pub(crate) async fn new(script: Script) -> Self {
         let mut state = create_test_app_state().await;
+        let chain = crate::testing::mocks::MockNetworkClient::new();
+        state.network_client = Arc::new(chain.clone());
         let calls = Arc::new(Mutex::new(Calls::default()));
         let script = Arc::new(Mutex::new(script));
+        let guardian = Arc::new(Mutex::new(Some(
+            state
+                .ack
+                .commitment(&guardian_shared::SignatureScheme::Falcon),
+        )));
         state.execution = ExecutionServices {
             executor: Some(Arc::new(FakeExecutor {
                 script: script.clone(),
                 calls: calls.clone(),
+                guardian: guardian.clone(),
             })),
             ..ExecutionServices::default()
         };
         let signer = TestSigner::new();
         let fixture = Self {
             state,
+            chain,
+            guardian,
             calls,
             script,
             signer_commitment: signer.commitment_hex.clone(),
@@ -342,6 +441,17 @@ impl Fixture {
         guardian_executable: bool,
         tx_summary: serde_json::Value,
     ) {
+        self.store_proposal_as(PROPOSAL, proposal_type, guardian_executable, tx_summary)
+            .await;
+    }
+
+    pub(crate) async fn store_proposal_as(
+        &self,
+        proposal_id: &str,
+        proposal_type: &str,
+        guardian_executable: bool,
+        tx_summary: serde_json::Value,
+    ) {
         let mut payload = serde_json::json!({
             "tx_summary": tx_summary,
             "signatures": [],
@@ -358,7 +468,7 @@ impl Fixture {
         self.state
             .storage
             .submit_delta_proposal(
-                PROPOSAL,
+                proposal_id,
                 &DeltaObject {
                     account_id: ACCOUNT.to_string(),
                     nonce: 1,
@@ -424,8 +534,11 @@ impl Fixture {
         &self,
         until: impl Fn(ExecutionState) -> bool,
     ) -> (ExecutionEnvelope, Vec<ExecutionState>) {
+        // A deadline rather than a poll count: a loaded CI runner can take seconds to reach a
+        // state, and a settled execution still returns at its first poll.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut observed = Vec::new();
-        for _ in 0..200 {
+        while tokio::time::Instant::now() < deadline {
             let envelope = self.read().await.unwrap();
             if observed.last() != Some(&envelope.state) {
                 observed.push(envelope.state);
@@ -435,7 +548,7 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("the execution did not settle: {observed:?}");
+        panic!("the execution did not settle within 30s: {observed:?}");
     }
 
     pub(crate) async fn promote(&self) -> PromoteWrite {
@@ -497,7 +610,8 @@ async fn a_threshold_met_proposal_is_executed_submitted_and_committed_by_promoti
         submitted.error
     );
     assert_eq!(submitted.delta_nonce, Some(1));
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -629,6 +743,41 @@ async fn a_non_cosigner_is_refused_on_authentication() {
             .unwrap()
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn a_non_cosigner_cannot_read_an_execution_or_what_holds_the_account() {
+    let f = Fixture::new(Script {
+        proving_time: Duration::from_millis(300),
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let outsider = || {
+        let (pubkey, _, signature, timestamp) = generate_falcon_signature_with_timestamp(
+            ACCOUNT,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        Credentials::signature(pubkey, signature, timestamp)
+    };
+    let read = get_execution(&f.state, ACCOUNT, PROPOSAL, &outsider()).await;
+    assert!(
+        matches!(read, Err(GuardianError::AuthenticationFailed(_))),
+        "{read:?}"
+    );
+    let current = current_execution(&f.state, ACCOUNT, &outsider()).await;
+    assert!(
+        matches!(current, Err(GuardianError::AuthenticationFailed(_))),
+        "{current:?}"
+    );
+    assert!(
+        current_execution(&f.state, ACCOUNT, &f.credentials())
+            .await
+            .unwrap()
+            .is_some(),
+        "the cosigner still reads the execution the outsider could not"
+    );
+    f.settle(is_submitted_or_terminal).await;
 }
 
 #[tokio::test]
@@ -797,6 +946,35 @@ async fn a_public_note_needs_no_opt_in() {
 }
 
 #[tokio::test]
+async fn a_new_accounts_first_transaction_is_no_guardian_switch() {
+    let f = Fixture::new(Script::default()).await;
+    f.store_proposal_with_summary("consume_notes", true, summary_creating_the_account())
+        .await;
+    assert!(f.request().await.unwrap().newly_accepted);
+}
+
+#[tokio::test]
+async fn a_guardian_change_executes_locally_whatever_the_label_says() {
+    for label in ["custom", "p2id"] {
+        let f = Fixture::new(Script::default()).await;
+        f.store_proposal_with_summary(label, true, summary_changing_guardian())
+            .await;
+        let result = f.request_allowing_private_note(true).await;
+        assert!(
+            matches!(
+                &result,
+                Err(GuardianError::ProposalExecutesLocally {
+                    reason: LocalExecutionReason::SwitchGuardian,
+                    ..
+                })
+            ),
+            "{label}: {result:?}"
+        );
+        assert_nothing_reserved(&f).await;
+    }
+}
+
+#[tokio::test]
 async fn a_switch_guardian_proposal_is_refused_even_when_private_notes_are_allowed() {
     let f = Fixture::new(Script::default()).await;
     f.store_typed_proposal("switch_guardian", true).await;
@@ -925,6 +1103,42 @@ async fn a_definitely_rejected_submission_discards_the_candidate_and_the_proposa
     );
     assert!(!failed.proposal_exists);
     assert!(f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+}
+
+#[tokio::test]
+async fn a_send_the_node_never_processed_discards_the_candidate_and_keeps_the_proposal() {
+    let f = Fixture::new(Script {
+        submission: SubmissionOutcome::NotProcessed {
+            reason: "rate limited".to_string(),
+        },
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
+    assert_eq!(
+        failed.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED".to_string())
+    );
+    assert!(failed.proposal_exists);
+    assert!(f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+    assert!(
+        f.state
+            .storage
+            .pull_delta_proposal(ACCOUNT, PROPOSAL)
+            .await
+            .unwrap()
+            .status
+            .is_pending()
+    );
+
+    f.script.lock().unwrap().submission = SubmissionOutcome::Accepted;
+    assert!(
+        f.request().await.unwrap().newly_accepted,
+        "the kept proposal can be executed again"
+    );
+    let (retried, _) = f.settle(is_submitted_or_terminal).await;
+    assert_eq!(retried.state, ExecutionState::Submitted);
 }
 
 async fn account_lease_is_free(f: &Fixture) -> bool {

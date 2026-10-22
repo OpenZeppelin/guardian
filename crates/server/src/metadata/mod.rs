@@ -87,6 +87,16 @@ pub trait MetadataStore: Send + Sync {
     /// insert, where no concurrent owner can exist yet.
     async fn set(&self, metadata: AccountMetadata) -> Result<(), String>;
 
+    /// Insert metadata for an account only if none exists yet, atomically,
+    /// and report whether this call created it. First-time configuration
+    /// claims the account with this before consuming the request's replay
+    /// timestamp (whose row references the metadata row) and before writing
+    /// any state, so of two concurrent first configurations exactly one
+    /// creates the account and the other is judged as a reconfiguration,
+    /// replay check first. A plain `set` cannot serve here: both callers
+    /// would see themselves as the creator.
+    async fn create(&self, metadata: AccountMetadata) -> Result<bool, String>;
+
     /// List all account IDs
     async fn list(&self) -> Result<Vec<String>, String>;
 

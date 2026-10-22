@@ -535,6 +535,10 @@ mod tests {
             submit_calls[0].0,
             "0xabababababababababababababababababababababababababababababababab"
         );
+        assert!(
+            storage.reserved_nothing(),
+            "creating a ready proposal never reserves the account for execution"
+        );
     }
 
     #[tokio::test]
@@ -1000,6 +1004,10 @@ mod tests {
         assert_eq!(
             submit_calls[0].0,
             "0xabababababababababababababababababababababababababababababababab"
+        );
+        assert!(
+            storage.reserved_nothing(),
+            "creating a ready proposal never reserves the account for execution"
         );
     }
 

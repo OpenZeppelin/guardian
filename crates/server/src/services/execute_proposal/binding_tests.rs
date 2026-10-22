@@ -70,7 +70,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn an_account_advanced_past_the_base_is_a_state_mismatch_before_any_chain_work() {
+async fn an_account_advanced_past_the_base_is_refused_before_anything_is_reserved() {
     let f = Fixture::new(Script::default()).await;
     f.state
         .storage
@@ -86,18 +86,30 @@ async fn an_account_advanced_past_the_base_is_a_state_mismatch_before_any_chain_
         })
         .await
         .unwrap();
-    f.request().await.unwrap();
-    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
-    assert_eq!(
-        failed.error.map(|error| error.code),
-        Some("GUARDIAN_EXECUTION_STATE_MISMATCH".to_string())
+    let result = f.request().await;
+    assert!(
+        matches!(
+            &result,
+            Err(GuardianError::CommitmentMismatch { expected, actual })
+                if expected == "0x4444444444444444444444444444444444444444444444444444444444444444"
+                    && actual == super::tests::BASE
+        ),
+        "{result:?}"
+    );
+    assert!(
+        f.state
+            .storage
+            .load_latest_execution(ACCOUNT, PROPOSAL)
+            .await
+            .unwrap()
+            .is_none(),
+        "nothing was reserved"
     );
     assert_eq!(
         f.calls.lock().unwrap().prepared,
         0,
         "nothing was reproduced"
     );
-    assert_eq!(f.calls.lock().unwrap().proved, 0);
 }
 
 #[tokio::test]

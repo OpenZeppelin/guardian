@@ -167,6 +167,16 @@ impl StorageBackend for EncryptedStorage {
         self.inner.pull_state_commitment(account_id).await
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        self.inner
+            .replace_state(&self.encrypt_state(state)?, expected_commitment)
+            .await
+    }
+
     // The nonce is stored in the clear next to the commitment, so the
     // head read and the backfill both pass through without decrypting.
     async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
@@ -323,6 +333,21 @@ impl StorageBackend for EncryptedStorage {
     ) -> Result<(), String> {
         self.inner
             .update_delta_proposal(commitment, &self.encrypt_proposal(commitment, proposal)?)
+            .await
+    }
+
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        self.inner
+            .update_delta_proposal_if_status(
+                commitment,
+                &self.encrypt_proposal(commitment, proposal)?,
+                expected,
+            )
             .await
     }
 
@@ -679,6 +704,42 @@ mod tests {
         assert_eq!(
             enc.pull_delta("acct1", 1).await.unwrap().delta_payload,
             json!({ "move": 7 })
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_state_seals_the_payload_and_compares_the_plain_commitment() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        let mut stored = state("acct1", "first-secret");
+        stored.commitment = "0xstored".to_string();
+        enc.submit_state(&stored).await.unwrap();
+
+        let mut next = state("acct1", "second-secret");
+        next.commitment = "0xnext".to_string();
+        assert_eq!(
+            enc.replace_state(&next, "0xother").await.unwrap(),
+            crate::storage::StateReplace::StateMoved {
+                current: "0xstored".to_string()
+            }
+        );
+        assert_eq!(
+            enc.replace_state(&next, "0xstored").await.unwrap(),
+            crate::storage::StateReplace::Replaced
+        );
+
+        let raw = inner.pull_state("acct1").await.unwrap();
+        assert_eq!(raw.commitment, "0xnext");
+        assert!(
+            raw.state_json.get("ct").is_some(),
+            "payload must be an envelope"
+        );
+        assert!(!raw.state_json.to_string().contains("second-secret"));
+        assert_eq!(
+            enc.pull_state("acct1").await.unwrap().state_json,
+            json!({ "secret": "second-secret" })
         );
     }
 
