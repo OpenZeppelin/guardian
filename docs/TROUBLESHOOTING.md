@@ -619,7 +619,8 @@ once come back synchronously and create nothing.
   checks the window once more just before the no-retry boundary and refuses the attempt there,
   with the proposal intact, unless at least 15 s remain for the send, counted at the chain's
   measured block time with 2 blocks held in reserve; the message gives the tip, the expiration
-  and the time left. The send itself waits for the node for up to 60 s, never past the window.
+  and the time left. Once past that check the transaction is sent with whatever window is left,
+  even below 15 s, and the send waits for the node for up to 60 s, never past the window.
   Point `GUARDIAN_TX_PROVER_URL` at a faster or less loaded prover, then request execution again;
   the new attempt executes at the new tip with a fresh window.
 - **`GUARDIAN_EXECUTION_CHAIN_BEHIND`.** The node's tip is below the block the proposal's summary
