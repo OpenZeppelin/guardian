@@ -52,7 +52,8 @@ async fn two_replicas_sharing_storage_prove_and_submit_once() {
     );
     joined_one_execution([first, second]);
     f.settle(is_submitted_or_terminal).await;
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -69,7 +70,8 @@ async fn guardian_admits_its_own_candidate_under_its_own_reservation() {
     f.request().await.unwrap();
     let (settled, observed) = f.settle(is_submitted_or_terminal).await;
     assert_eq!(settled.state, ExecutionState::Submitted, "{observed:?}");
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -122,7 +124,8 @@ async fn a_client_push_is_refused_while_an_execution_holds_the_account() {
         other => panic!("before the boundary: expected an execution conflict, got {other:?}"),
     }
     f.settle(is_submitted_or_terminal).await;
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -134,6 +137,45 @@ async fn a_client_push_is_refused_while_an_execution_holds_the_account() {
         }) => assert_eq!(blocking_proposal_id, PROPOSAL),
         other => panic!("after the boundary: expected an execution conflict, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn a_switch_during_another_execution_is_told_to_execute_locally() {
+    let f = Fixture::new(Script {
+        proving_time: std::time::Duration::from_millis(500),
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let switch_id = format!("0x{}", "5".repeat(64));
+    f.store_proposal_as(
+        &switch_id,
+        "switch_guardian",
+        true,
+        super::tests::summary_changing_guardian(),
+    )
+    .await;
+    let result = request_execution(
+        &f.state,
+        RequestExecutionParams {
+            account_id: ACCOUNT.to_string(),
+            proposal_id: switch_id,
+            credentials: f.credentials(),
+            allow_private_note: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            &result,
+            Err(GuardianError::ProposalExecutesLocally {
+                reason: crate::error::LocalExecutionReason::SwitchGuardian,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    f.settle(is_submitted_or_terminal).await;
 }
 
 #[tokio::test]

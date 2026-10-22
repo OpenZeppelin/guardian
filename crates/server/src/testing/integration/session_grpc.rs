@@ -174,6 +174,25 @@ async fn assert_wallet_only_rpcs(
         .expect_err("push_delta is wallet-only");
     assert_error(&status, code, guardian_code, "PushDelta");
 
+    let execute = crate::api::grpc::guardian::ExecuteDeltaProposalRequest {
+        account_id: account_id_hex.to_string(),
+        proposal_id: format!("0x{}", "e".repeat(64)),
+        allow_private_note: false,
+    };
+    let timestamp = now_ms();
+    let payload = AuthRequestPayload::for_operation(
+        guardian_shared::auth_request_payload::SignedOperation::ExecuteDeltaProposal,
+        &prost::Message::encode_to_vec(&execute),
+    );
+    let word = AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, payload)
+        .unwrap()
+        .to_word();
+    let status = service
+        .execute_delta_proposal(signed_by_session(execute, key, word, timestamp))
+        .await
+        .expect_err("execute_delta_proposal is wallet-only");
+    assert_error(&status, code, guardian_code, "ExecuteDeltaProposal");
+
     // AbandonDeltaCandidate reports errors in its response body.
     let response = service
         .abandon_delta_candidate(session_request(

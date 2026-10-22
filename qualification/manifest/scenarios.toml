@@ -697,6 +697,27 @@ step_budget = "480s"
 required = true
 core = false
 
+# A send override below the account threshold must not lower what a P2ID
+# transfer needs: the transfer also calls `create_note`, which keeps the
+# account threshold. SDKs that read the send override alone executed with one
+# approval, GUARDIAN acknowledged it, and the kernel refused it, holding the
+# candidate slot until retries ran out (issue #524). The below-threshold step
+# proves the SDK refuses before asking for an acknowledgement; the second
+# execution proves the account threshold is what the chain requires.
+[[scenario]]
+id = "live-send-override-p2id-2of3-falcon"
+title = "A lower send override does not lower what a transfer needs"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "procedure-threshold-lower", "proposal-sign", "proposal-execute", "procedure-threshold-assert", "asset-send", "proposal-reject-below-threshold", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "720s"
+required = true
+core = false
+
 # The candidate queue (issue #17). All three run on the stack's queue server,
 # which switches queueing on (GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT, two
 # in this profile and four in the live one) while the main server keeps the

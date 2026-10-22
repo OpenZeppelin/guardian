@@ -111,6 +111,10 @@ pub enum ExecutionFailureCode {
     ExpirationBeyondHorizon,
     AccountInadmissible,
     SubmissionRejected,
+    /// The node refused the send without processing it (a rate limit that outlasted the
+    /// client's retries, an authentication or permission refusal, an unimplemented call): the
+    /// transaction cannot land, so the candidate is dropped and the proposal stays executable.
+    SubmissionNotProcessed,
     CandidateDiscarded,
     Expired,
     LeaseExpired,
@@ -156,10 +160,44 @@ impl ExecutionFailureCode {
             }
             ExecutionFailureCode::AccountInadmissible => "GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE",
             ExecutionFailureCode::SubmissionRejected => "GUARDIAN_EXECUTION_SUBMISSION_REJECTED",
+            ExecutionFailureCode::SubmissionNotProcessed => {
+                "GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED"
+            }
             ExecutionFailureCode::CandidateDiscarded => "GUARDIAN_EXECUTION_CANDIDATE_DISCARDED",
             ExecutionFailureCode::Expired => "GUARDIAN_EXECUTION_EXPIRED",
             ExecutionFailureCode::LeaseExpired => "GUARDIAN_EXECUTION_LEASE_EXPIRED",
             ExecutionFailureCode::Abandoned => "GUARDIAN_EXECUTION_ABANDONED",
+        }
+    }
+
+    /// Whether resolving a boundary-crossed attempt with this cause deletes its proposal: a
+    /// transaction the node rejected or the chain shows never landed ends the proposal, while
+    /// one the node never processed leaves it executable.
+    pub fn ends_proposal(&self) -> bool {
+        match self {
+            ExecutionFailureCode::SubmissionRejected
+            | ExecutionFailureCode::CandidateDiscarded
+            | ExecutionFailureCode::Expired => true,
+            ExecutionFailureCode::BindingMismatch
+            | ExecutionFailureCode::StateMismatch
+            | ExecutionFailureCode::RequestCodec
+            | ExecutionFailureCode::ProtocolMismatch
+            | ExecutionFailureCode::RequestInvalid(_)
+            | ExecutionFailureCode::ExpirationReached(_)
+            | ExecutionFailureCode::ChainBehind
+            | ExecutionFailureCode::ChainInconsistent
+            | ExecutionFailureCode::NodeUnavailable
+            | ExecutionFailureCode::ForeignAccountUnavailable(_)
+            | ExecutionFailureCode::InsufficientFee
+            | ExecutionFailureCode::InsufficientSignatures
+            | ExecutionFailureCode::ProvingFailed
+            | ExecutionFailureCode::SealingFailed
+            | ExecutionFailureCode::AcknowledgementFailed
+            | ExecutionFailureCode::ExpirationBeyondHorizon
+            | ExecutionFailureCode::AccountInadmissible
+            | ExecutionFailureCode::SubmissionNotProcessed
+            | ExecutionFailureCode::LeaseExpired
+            | ExecutionFailureCode::Abandoned => false,
         }
     }
 
@@ -190,6 +228,7 @@ impl ExecutionFailureCode {
             | ExecutionFailureCode::ExpirationBeyondHorizon
             | ExecutionFailureCode::AccountInadmissible
             | ExecutionFailureCode::SubmissionRejected
+            | ExecutionFailureCode::SubmissionNotProcessed
             | ExecutionFailureCode::CandidateDiscarded
             | ExecutionFailureCode::Expired
             | ExecutionFailureCode::LeaseExpired
@@ -241,11 +280,38 @@ impl ExecutionFailureCode {
             }
             "GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE" => ExecutionFailureCode::AccountInadmissible,
             "GUARDIAN_EXECUTION_SUBMISSION_REJECTED" => ExecutionFailureCode::SubmissionRejected,
+            "GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED" => {
+                ExecutionFailureCode::SubmissionNotProcessed
+            }
             "GUARDIAN_EXECUTION_CANDIDATE_DISCARDED" => ExecutionFailureCode::CandidateDiscarded,
             "GUARDIAN_EXECUTION_EXPIRED" => ExecutionFailureCode::Expired,
             "GUARDIAN_EXECUTION_LEASE_EXPIRED" => ExecutionFailureCode::LeaseExpired,
             "GUARDIAN_EXECUTION_ABANDONED" => ExecutionFailureCode::Abandoned,
             other => return Err(format!("unknown execution failure code '{other}'")),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_a_transaction_that_was_refused_or_never_landed_ends_its_proposal() {
+        assert!(ExecutionFailureCode::SubmissionRejected.ends_proposal());
+        assert!(ExecutionFailureCode::CandidateDiscarded.ends_proposal());
+        assert!(ExecutionFailureCode::Expired.ends_proposal());
+        assert!(!ExecutionFailureCode::SubmissionNotProcessed.ends_proposal());
+        assert!(!ExecutionFailureCode::LeaseExpired.ends_proposal());
+    }
+
+    #[test]
+    fn the_not_processed_code_round_trips_without_meta() {
+        let code = ExecutionFailureCode::SubmissionNotProcessed;
+        assert_eq!(code.meta(), None);
+        assert_eq!(
+            ExecutionFailureCode::from_parts(code.as_str(), None).unwrap(),
+            code
+        );
     }
 }

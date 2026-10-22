@@ -29,6 +29,7 @@ pub enum ProcedureName {
     UpdateGuardian,
     SendAsset,
     ReceiveAsset,
+    CreateNote,
 }
 
 impl ProcedureName {
@@ -55,6 +56,9 @@ impl ProcedureName {
             ProcedureName::ReceiveAsset => procedure_root_word(
                 "0xd7416b798a70aabbca510c3cd0f48ba35473b5d76dc302375157c6f563fffc15",
             ),
+            ProcedureName::CreateNote => procedure_root_word(
+                "0x27641b79c8aec7ec29820c907eb5c05134b7d02cf69e7e73a5b7dcd09c803a95",
+            ),
         }
     }
 
@@ -67,6 +71,7 @@ impl ProcedureName {
             ProcedureName::UpdateGuardian,
             ProcedureName::SendAsset,
             ProcedureName::ReceiveAsset,
+            ProcedureName::CreateNote,
         ]
     }
 }
@@ -111,6 +116,7 @@ impl std::fmt::Display for ProcedureName {
             ProcedureName::UpdateGuardian => write!(f, "update_guardian"),
             ProcedureName::SendAsset => write!(f, "send_asset"),
             ProcedureName::ReceiveAsset => write!(f, "receive_asset"),
+            ProcedureName::CreateNote => write!(f, "create_note"),
         }
     }
 }
@@ -126,6 +132,7 @@ impl std::str::FromStr for ProcedureName {
             "update_guardian" => Ok(ProcedureName::UpdateGuardian),
             "send_asset" => Ok(ProcedureName::SendAsset),
             "receive_asset" => Ok(ProcedureName::ReceiveAsset),
+            "create_note" => Ok(ProcedureName::CreateNote),
             _ => Err(format!("unknown procedure name: {}", s)),
         }
     }
@@ -218,6 +225,10 @@ mod tests {
         assert_eq!(
             ProcedureName::ReceiveAsset.root(),
             Word::from(BasicWallet::receive_asset_root())
+        );
+        assert_eq!(
+            ProcedureName::CreateNote.root(),
+            Word::from(BasicWallet::create_note_root())
         );
     }
 

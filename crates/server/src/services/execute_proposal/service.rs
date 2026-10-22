@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use miden_protocol::account::{StorageMapPatch, StorageSlotPatch};
+use miden_protocol::transaction::TransactionSummary;
+use miden_standards::account::auth::AuthGuardedMultisig;
 
 use super::executor::{ExecutionInput, ProposalExecutor};
 use super::worker::{ExecutionJob, run_execution};
@@ -155,16 +158,10 @@ pub async fn request_execution(
         });
     };
 
-    if let Some(active) = state
-        .storage
-        .load_active_execution(&account_id)
-        .await
-        .map_err(GuardianError::StorageError)?
-    {
-        return answer_active(active, &proposal_id);
-    }
     let proposal_type = proposal.proposal_type().unwrap_or("custom").to_string();
-    if proposal_type == "switch_guardian" {
+    let summary =
+        crate::services::proposal_signature::proposal_tx_summary(&proposal.delta_payload)?;
+    if proposal_type == "switch_guardian" || changes_guardian(&summary) {
         return Err(GuardianError::ProposalExecutesLocally {
             proposal_type,
             reason: LocalExecutionReason::SwitchGuardian,
@@ -173,11 +170,19 @@ pub async fn request_execution(
     if proposal.delta_payload.get("transaction_request").is_none() {
         return Err(GuardianError::ProposalMissingTransactionRequest);
     }
-    if !allow_private_note && creates_private_note(&proposal.delta_payload)? {
+    if !allow_private_note && creates_private_note(&summary) {
         return Err(GuardianError::ProposalExecutesLocally {
             proposal_type,
             reason: LocalExecutionReason::PrivateNote,
         });
+    }
+    if let Some(active) = state
+        .storage
+        .load_active_execution(&account_id)
+        .await
+        .map_err(GuardianError::StorageError)?
+    {
+        return answer_active(active, &proposal_id);
     }
     if state
         .storage
@@ -199,13 +204,22 @@ pub async fn request_execution(
                 GuardianError::StorageError(error)
             }
         })?;
+    if current_state.commitment != proposal.prev_commitment {
+        return Err(GuardianError::CommitmentMismatch {
+            expected: current_state.commitment,
+            actual: proposal.prev_commitment,
+        });
+    }
     let input = ExecutionInput {
         account_id: account_id.clone(),
         state_json: current_state.state_json,
         proposal_payload: proposal.delta_payload,
         cosigner_signatures: cosigner_sigs.clone(),
     };
-    let selection = executor.select_signatures(&input)?;
+    let selected = crate::network::reconstructor()
+        .run(move || Ok(executor.select_signatures(input)))
+        .await??;
+    let selection = selected.selection().clone();
     if !selection.is_ready() {
         return Err(GuardianError::ProposalNotReady {
             required: selection.required,
@@ -318,11 +332,10 @@ pub async fn request_execution(
         fence,
         lease,
         elector,
-        executor,
         permit,
     };
     let worker_state = state.clone();
-    tokio::spawn(async move { run_execution(&worker_state, job, input).await });
+    tokio::spawn(async move { run_execution(&worker_state, job, selected).await });
 
     let record = state
         .storage
@@ -338,15 +351,33 @@ pub async fn request_execution(
     Ok(ExecutionEnvelope::from_record(&record, exists, true))
 }
 
+/// Whether the transaction the cosigners signed changes the account's guardian key, read from
+/// the signed summary rather than the proposal's metadata label: a guardian switch executes
+/// locally whatever the proposal calls itself, since the client finishes it at the new guardian.
+/// A new account's first transaction carries every slot as created, the guardian slot with the
+/// key it was registered under, and that is no switch.
+fn changes_guardian(summary: &TransactionSummary) -> bool {
+    match summary
+        .account_delta()
+        .storage()
+        .get(AuthGuardedMultisig::guardian_public_key_slot())
+    {
+        None | Some(StorageSlotPatch::Map(StorageMapPatch::Create { .. })) => false,
+        Some(
+            StorageSlotPatch::Map(StorageMapPatch::Update { .. } | StorageMapPatch::Remove)
+            | StorageSlotPatch::Value(_),
+        ) => true,
+    }
+}
+
 /// Whether the transaction the cosigners signed creates a private output note, read from the
 /// signed summary rather than the proposal's metadata label. Execution reproduces exactly this
 /// summary, so the stored request cannot create a note the summary does not show.
-fn creates_private_note(delta_payload: &serde_json::Value) -> Result<bool> {
-    let summary = crate::services::proposal_signature::proposal_tx_summary(delta_payload)?;
-    Ok(summary
+fn creates_private_note(summary: &TransactionSummary) -> bool {
+    summary
         .output_notes()
         .iter()
-        .any(|note| note.metadata().is_private()))
+        .any(|note| note.metadata().is_private())
 }
 
 /// The answer for a request that lost the race for the account's lease: the winner's execution

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use crate::network::NetworkType;
 use crate::secret::CredentialUrl;
 
 pub const ENV_TX_PROVER_URL: &str = "GUARDIAN_TX_PROVER_URL";
@@ -51,6 +52,28 @@ pub struct ProverConfig {
     /// Proofs this process has at the prover at once; `None` leaves them bounded only by the
     /// executions it holds. Set for a shared or small prover, which times out when overloaded.
     pub max_concurrent: Option<u32>,
+}
+
+/// The public Miden transaction provers, by the network each one is run for.
+const PUBLIC_PROVERS: [(&str, NetworkType); 3] = [
+    ("tx-prover.testnet.miden.io", NetworkType::MidenTestnet),
+    ("tx-prover.devnet.miden.io", NetworkType::MidenDevnet),
+    ("tx-prover.cedar.miden.io", NetworkType::MidenCedar),
+];
+
+impl ProverConfig {
+    /// The network this prover is run for, when it is one of the public Miden provers. A private
+    /// prover names no network, so nothing can be said about it.
+    pub fn public_network(&self) -> Option<NetworkType> {
+        let host = url::Url::parse(self.url.expose_secret().trim())
+            .ok()?
+            .host_str()?
+            .to_ascii_lowercase();
+        PUBLIC_PROVERS
+            .iter()
+            .find(|(public_host, _)| host == *public_host)
+            .map(|(_, network)| *network)
+    }
 }
 
 /// How long finished execution attempts are kept before the retention sweep removes them.
@@ -320,6 +343,34 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+
+    fn prover_at(url: &str) -> ProverConfig {
+        ExecutionConfig::from_lookup(|key| Ok((key == ENV_TX_PROVER_URL).then(|| url.to_string())))
+            .unwrap()
+            .prover
+            .unwrap()
+    }
+
+    #[test]
+    fn a_public_prover_names_its_network_and_a_private_one_names_none() {
+        assert_eq!(
+            prover_at("https://tx-prover.testnet.miden.io").public_network(),
+            Some(NetworkType::MidenTestnet)
+        );
+        assert_eq!(
+            prover_at("https://TX-PROVER.devnet.miden.io/").public_network(),
+            Some(NetworkType::MidenDevnet)
+        );
+        assert_eq!(
+            prover_at("https://tx-prover.cedar.miden.io").public_network(),
+            Some(NetworkType::MidenCedar)
+        );
+        assert_eq!(prover_at("https://prover.example").public_network(), None);
+        assert_eq!(
+            prover_at("http://tx-prover.testnet.miden.io.example:8080").public_network(),
+            None
+        );
+    }
 
     #[test]
     fn a_configured_prover_that_cannot_be_used_is_reported_as_a_warning() {

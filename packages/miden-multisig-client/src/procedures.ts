@@ -17,6 +17,7 @@ export const PROCEDURE_ROOTS = {
   update_guardian: '0x93dedb135fd5bb7112c07aacf4a5680ddc76e45ecf043bfc42ea735b6d971911',
   send_asset: '0xf261e7bdd1faee5db3b0abe4bb67b153fbca6ece3e456b83eff98697f21f6a97',
   receive_asset: '0xd7416b798a70aabbca510c3cd0f48ba35473b5d76dc302375157c6f563fffc15',
+  create_note: '0x27641b79c8aec7ec29820c907eb5c05134b7d02cf69e7e73a5b7dcd09c803a95',
 } as const;
 
 /**

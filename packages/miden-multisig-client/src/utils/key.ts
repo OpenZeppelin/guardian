@@ -9,13 +9,13 @@ import {
 
 export class PublicKeyFormat {
   static parse(publicKey: Uint8Array): {
-    scheme: SignatureScheme;
+    scheme: SignatureScheme | null;
     publicKeyHex: string;
     commitment: string | null;
   } {
     if (publicKey.length === 32) {
       const commitmentHex = PublicKeyFormat.wordBytesToHex(publicKey);
-      return { scheme: 'falcon', publicKeyHex: commitmentHex, commitment: commitmentHex };
+      return { scheme: null, publicKeyHex: commitmentHex, commitment: commitmentHex };
     }
 
     const firstByte = publicKey[0];

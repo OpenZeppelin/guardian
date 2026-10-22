@@ -617,6 +617,20 @@ impl ServerBuilder {
                  request is refused with GUARDIAN_PROVING_UNAVAILABLE"
             ),
         }
+        if let Some(prover_network) = self
+            .execution
+            .prover
+            .as_ref()
+            .and_then(|prover| prover.public_network())
+            && prover_network != network_type
+        {
+            tracing::warn!(
+                prover_network = ?prover_network,
+                network = ?network_type,
+                "GUARDIAN_TX_PROVER_URL is the public prover run for another network; proofs fail \
+                 whenever that network's protocol version differs from this one's"
+            );
+        }
         let execution = crate::services::execute_proposal::ExecutionState {
             executor: rpc_settings.proposal_executor(&self.execution)?,
             leases: coordination
