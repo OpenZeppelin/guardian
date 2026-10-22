@@ -6,6 +6,8 @@
 #   check.sh --deep          adds the threshold cells at up to 5 procedures
 #   check.sh --cell <cell> <property> [max-calls]
 #                            run one cell, print TLC's output and the trace
+#   check.sh --drift-only    only compare the mirrored code with fingerprints.txt,
+#                            without running TLC (exit 0 no drift, 3 drift)
 #   check.sh --accept-drift  re-record fingerprints.txt once the models have
 #                            been reviewed against the changed code
 #
@@ -31,6 +33,17 @@ command -v python3 >/dev/null || { echo "python3 not found"; exit 2; }
 fingerprints() {
   python3 -I "$SKILL_DIR/fingerprint.py" "$REPO_ROOT" "$SKILL_DIR/mirrored.txt"
 }
+
+if [[ "${1:-}" == "--drift-only" ]]; then
+  if drift="$(diff -u "$SKILL_DIR/fingerprints.txt" <(fingerprints))"; then
+    echo "No drift: $(wc -l < "$SKILL_DIR/fingerprints.txt" | tr -d ' ') mirrored functions match fingerprints.txt."
+    exit 0
+  fi
+  echo "DRIFT: code the models mirror changed since fingerprints.txt was recorded:"
+  { grep -E '^[-+][^-+]' <<< "$drift" || true; } | sed 's/^/  /'
+  echo "Review the matching definitions in model/*.tla (SKILL.md, Code map), then run check.sh --accept-drift."
+  exit 3
+fi
 
 if [[ "${1:-}" == "--accept-drift" ]]; then
   recorded="$(fingerprints)"

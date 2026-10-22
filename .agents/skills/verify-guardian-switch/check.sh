@@ -7,6 +7,8 @@
 #   check.sh --mutations     runs every broken variant; each must fail
 #   check.sh --cell <name>   run one cell from expected.txt, print TLC's
 #                            full output and the trace
+#   check.sh --drift-only    only compare the mirrored code with fingerprints.txt,
+#                            without running TLC (exit 0 no drift, 3 drift)
 #   check.sh --accept-drift  re-record fingerprints.txt once the model has
 #                            been reviewed against the changed Rust
 #
@@ -28,6 +30,17 @@ command -v python3 >/dev/null || { echo "python3 not found"; exit 2; }
 fingerprints() {
   python3 -I "$SKILL_DIR/fingerprint.py" "$REPO_ROOT" "$SKILL_DIR/mirrored.txt"
 }
+
+if [[ "${1:-}" == "--drift-only" ]]; then
+  if drift="$(diff -u "$SKILL_DIR/fingerprints.txt" <(fingerprints))"; then
+    echo "No drift: $(wc -l < "$SKILL_DIR/fingerprints.txt" | tr -d ' ') mirrored functions match fingerprints.txt."
+    exit 0
+  fi
+  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
+  { grep -E '^[-+][^-+]' <<< "$drift" || true; } | sed 's/^/  /'
+  echo "Review the matching actions in model/GuardianSwitch.tla (SKILL.md, action map), then run check.sh --accept-drift."
+  exit 3
+fi
 
 if [[ "${1:-}" == "--accept-drift" ]]; then
   recorded="$(fingerprints)"
