@@ -1,7 +1,7 @@
 # Rust and TypeScript functions modeled in model/ProposalLifecycle.tla: "<path> <fn name>".
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal
 crates/server/src/services/push_delta.rs push_delta
-crates/server/src/services/push_delta.rs lookup_matching_proposal_payload
+crates/server/src/services/push_delta.rs lookup_matching_proposal
 crates/server/src/services/candidate_chain.rs load_for_admission
 crates/server/src/services/candidate_chain.rs tail_commitment
 crates/server/src/storage/mod.rs gate_candidate_submission

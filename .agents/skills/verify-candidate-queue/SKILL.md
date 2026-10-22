@@ -163,10 +163,12 @@ Paths are relative to `crates/server/src/`.
   the replaced row. The retention-off delete paths are not modeled.
 - One `delta_write_lock` section is one step, including crash points
   inside it. The filesystem backend is development-only and is not
-  crash-atomic: its restore of an archived delta deletes the archived
-  copy before the state and delta files are rewritten, so a crash or
-  write failure in between can lose that copy. Postgres does the whole
-  restore in one transaction.
+  crash-atomic: its restore of an archived delta rewrites the state and
+  delta files before it deletes the archived copy, so a crash or write
+  failure in between leaves that copy behind rather than losing it (a
+  later restore of it is refused because the row is no longer parked,
+  and the prune drops it at the TTL). Postgres does the whole restore in
+  one transaction.
 - At most one lease holder at a time. A lost lease can leave one
   promotion in flight (Postgres only), and it may still commit, but only
   before the new holder's first step that takes the account lock. That
