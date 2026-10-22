@@ -96,11 +96,11 @@ violated_property() {
   fi
 }
 
-# run_cell <name> <max_states> <max_nonce> <max_drops> <mutation>
+# run_cell <name> <max_states> <max_nonce> <max_drops> <expiring> <mutation>
 #          <invariants> <properties> <out>
 run_cell() {
-  local name="$1" max_states="$2" max_nonce="$3" max_drops="$4" mutation="$5"
-  local invariants="$6" properties="$7" out="$8"
+  local name="$1" max_states="$2" max_nonce="$3" max_drops="$4" expiring="$5" mutation="$6"
+  local invariants="$7" properties="$8" out="$9"
   local dir="$WORK/$name" spec="Spec"
   [[ ",$properties," == *",DeviceConverges,"* ]] && spec="FairSpec"
   mkdir -p "$dir"
@@ -112,6 +112,7 @@ run_cell() {
       "    MaxStates = $max_states" \
       "    MaxNonce = $max_nonce" \
       "    MaxDrops = $max_drops" \
+      "    Expiring = $expiring" \
       "    Mutation = \"$mutation\"" \
       "SPECIFICATION $spec" \
       'CHECK_DEADLOCK FALSE'
@@ -144,9 +145,9 @@ if [[ "${1:-}" == "--cell" ]]; then
   [[ -n "${2:-}" ]] || { echo "usage: check.sh --cell <name>"; exit 2; }
   row="$(cells | awk -v c="$2" '$2 == c' | head -1)"
   [[ -n "$row" ]] || { echo "no cell named $2 in expected.txt"; exit 2; }
-  read -r _tier name max_states max_nonce max_drops mutation _expected invariants properties <<< "$row"
+  read -r _tier name max_states max_nonce max_drops expiring mutation _expected invariants properties <<< "$row"
   out="$WORK/cell.out"
-  verdict="$(run_cell "$name" "$max_states" "$max_nonce" "$max_drops" "$mutation" "$invariants" "$properties" "$out")"
+  verdict="$(run_cell "$name" "$max_states" "$max_nonce" "$max_drops" "$expiring" "$mutation" "$invariants" "$properties" "$out")"
   cat "$out"
   echo
   echo "$name: $verdict"
@@ -166,11 +167,11 @@ case "${1:-}" in
 esac
 
 status=0
-while read -r tier name max_states max_nonce max_drops mutation expected invariants properties; do
+while read -r tier name max_states max_nonce max_drops expiring mutation expected invariants properties; do
   [[ " $tiers " == *" $tier "* ]] || continue
   out="$WORK/$name.out"
   started=$SECONDS
-  verdict="$(run_cell "$name" "$max_states" "$max_nonce" "$max_drops" "$mutation" "$invariants" "$properties" "$out")"
+  verdict="$(run_cell "$name" "$max_states" "$max_nonce" "$max_drops" "$expiring" "$mutation" "$invariants" "$properties" "$out")"
   states="$(grep -Eo '[0-9]+ distinct states found' "$out" | tail -1 || true)"
   line="$name: $verdict (expected $expected; ${states:-no state count}; $((SECONDS - started))s)"
   if [[ "$verdict" == "$expected" ]]; then

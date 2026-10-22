@@ -95,19 +95,32 @@ executed that GUARDIAN has not canonicalized yet, and it is kept. Membership,
 threshold and switch transactions are written to the local store without a
 miden-client transaction record, so miden-client cannot undo one the node drops
 (expired, or evicted with a dropped dependency). Sync therefore rolls the local
-account back to GUARDIAN's state when that transaction can no longer land. The
+account back to GUARDIAN's state once the conditions below hold. The
 client records each such submission, and judges it dropped by miden-client's own
 discard rule for the transactions it does record: the transaction expired
 (proof), or is still unconfirmed 20 blocks after submission (a heuristic, the
 same one miden-client applies to recorded transactions). On top of that,
-GUARDIAN is not ahead, the chain holds GUARDIAN's state, miden-client has no
-pending transaction for the account, and GUARDIAN does not hold the local state
-as a candidate or retained delta. GUARDIAN's absence of the delta alone proves
+GUARDIAN is not ahead, the chain holds GUARDIAN's state, and miden-client has
+no pending transaction for the account. A transaction that did not expire also
+needs GUARDIAN not to hold the local state as a candidate or retained delta,
+since the 20-block rule alone proves nothing; an expired one cannot land, so
+GUARDIAN is not asked. GUARDIAN's absence of the delta alone proves
 nothing (it can drop a delta whose transaction is still pending), and a failed
 GUARDIAN, chain or store read keeps the local state. A state this client did not
 submit in the current session (the store is per process) is never rolled back
 this way, and neither is a switch to a new endpoint, which registers the
 switched state on the new GUARDIAN.
+
+How soon the rollback happens depends on the proposal. A proposal created with
+`ProposalOptions::approval_expiration_delta` gives its transaction that
+expiration, and the first sync after it expires rolls back. A proposal without
+one (the default) relies on the 20-block rule, so GUARDIAN's veto applies and
+it keeps the delta until its canonicalization gives up and the retained delta
+expires (`GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`, 24 hours by
+default); the first sync after that rolls back. To recover at once, restart
+the client, which starts a fresh store (the store is per process), and pull the
+account. `pull_account` on the current store does not: miden-client refuses to
+replace an account with one at a lower nonce.
 
 The rollback starts from a fresh local store, as a restarted client does,
 carrying the unconsumed input notes over; when a note cannot be tracked again

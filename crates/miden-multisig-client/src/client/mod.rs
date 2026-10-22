@@ -179,11 +179,18 @@ impl UntrackedSubmission {
     /// [`TX_DISCARD_DELTA`](crate::builder::TX_DISCARD_DELTA) blocks after
     /// submission (miden-client `apply_sync_height_update`).
     pub(crate) fn dropped_at(&self, sync_height: BlockNumber) -> bool {
-        self.expiration_block_num <= sync_height
+        self.expired_at(sync_height)
             || self.submission_height
                 < sync_height
                     .checked_sub(crate::builder::TX_DISCARD_DELTA)
                     .unwrap_or_default()
+    }
+
+    /// Whether the transaction expired by `sync_height`, which proves no
+    /// later block can include it. Only a proposal created with
+    /// `ProposalOptions::approval_expiration_delta` carries an expiration.
+    pub(crate) fn expired_at(&self, sync_height: BlockNumber) -> bool {
+        self.expiration_block_num <= sync_height
     }
 }
 

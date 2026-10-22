@@ -43,13 +43,19 @@ struct Ahead {
     service: MockGuardianService,
 }
 
+/// The chain height the fixtures prove to: past the stale window, so a
+/// submission at block 0 is dropped by miden-client's stale rule.
+const STALE_CHAIN_HEIGHT: u32 = 30;
+
 async fn client_ahead_of_guardian(dir: &std::path::Path, chain_holds_local: bool) -> Ahead {
-    client_ahead_of_guardian_at(dir, Some(chain_holds_local), 0).await
+    client_ahead_of_guardian_at(dir, Some(chain_holds_local), STALE_CHAIN_HEIGHT).await
 }
 
 /// As [`client_ahead_of_guardian`], on a chain proved up to `chain_height`
 /// that holds local (`Some(true)`), GUARDIAN's state (`Some(false)`) or no
-/// account at all (`None`).
+/// account at all (`None`). The store is synced to that height and the
+/// local state's submission carries no expiration, so a rollback past the
+/// stale window still consults GUARDIAN.
 async fn client_ahead_of_guardian_at(
     dir: &std::path::Path,
     chain_holds: Option<bool>,
@@ -86,10 +92,11 @@ async fn client_ahead_of_guardian_at(
     client.set_node_rpc_client(api);
     client.add_or_update_account(&local, false).await.unwrap();
     client.account = Some(MultisigAccount::new(local.clone()));
+    client.miden_client.sync_state().await.unwrap();
     client.untracked_submission = Some(UntrackedSubmission {
         commitment: local.to_commitment(),
         submission_height: BlockNumber::from(0u32),
-        expiration_block_num: BlockNumber::from(0u32),
+        expiration_block_num: BlockNumber::from(u32::MAX),
     });
 
     let service = MockGuardianService::default();
@@ -164,13 +171,39 @@ struct Synced {
 async fn sync_with_delta(
     delta: impl FnOnce(&Account) -> Result<GetDeltaResponse, Status>,
 ) -> Synced {
+    sync_ahead(Some(false), false, delta).await
+}
+
+/// As [`sync_with_delta`], whose submission expired at the store's sync
+/// height (and was submitted there, inside the stale window), on a chain
+/// holding `chain_holds` as [`client_ahead_of_guardian_at`] takes it.
+async fn sync_expired_with_delta(
+    chain_holds: Option<bool>,
+    delta: impl FnOnce(&Account) -> Result<GetDeltaResponse, Status>,
+) -> Synced {
+    sync_ahead(chain_holds, true, delta).await
+}
+
+async fn sync_ahead(
+    chain_holds: Option<bool>,
+    expired: bool,
+    delta: impl FnOnce(&Account) -> Result<GetDeltaResponse, Status>,
+) -> Synced {
     let dir = tempfile::tempdir().unwrap();
     let Ahead {
         mut client,
         guardian_state,
         local,
         service,
-    } = client_ahead_of_guardian(dir.path(), false).await;
+    } = client_ahead_of_guardian_at(dir.path(), chain_holds, STALE_CHAIN_HEIGHT).await;
+    if expired {
+        let sync_height = client.miden_client.get_sync_height().await.unwrap();
+        client.untracked_submission = Some(UntrackedSubmission {
+            commitment: local.to_commitment(),
+            submission_height: sync_height,
+            expiration_block_num: sync_height,
+        });
+    }
     let service = service.with_get_delta(delta(&local));
     let requests = service.get_delta_requests_handle();
     connect(&mut client, service).await;
@@ -228,17 +261,11 @@ async fn sync_rolls_back_a_stale_transaction() {
     let Ahead {
         mut client,
         guardian_state,
-        local,
+        local: _,
         service,
-    } = client_ahead_of_guardian_at(dir.path(), Some(false), 30).await;
-    client.miden_client.sync_state().await.unwrap();
+    } = client_ahead_of_guardian(dir.path(), false).await;
     let sync_height = client.miden_client.get_sync_height().await.unwrap();
     assert!(sync_height.as_u32() > crate::builder::TX_DISCARD_DELTA);
-    client.untracked_submission = Some(UntrackedSubmission {
-        commitment: local.to_commitment(),
-        submission_height: BlockNumber::from(0u32),
-        expiration_block_num: BlockNumber::from(u32::MAX),
-    });
     connect(
         &mut client,
         service.with_get_delta(Err(Status::not_found("delta not found"))),
@@ -266,8 +293,7 @@ async fn sync_keeps_a_transaction_still_inside_the_stale_window() {
         guardian_state: _,
         local,
         service,
-    } = client_ahead_of_guardian_at(dir.path(), Some(false), 30).await;
-    client.miden_client.sync_state().await.unwrap();
+    } = client_ahead_of_guardian(dir.path(), false).await;
     let sync_height = client.miden_client.get_sync_height().await.unwrap();
     client.untracked_submission = Some(UntrackedSubmission {
         commitment: local.to_commitment(),
@@ -298,7 +324,7 @@ async fn sync_keeps_local_when_the_chain_does_not_show_guardians_state() {
         guardian_state: _,
         local,
         service,
-    } = client_ahead_of_guardian_at(dir.path(), None, 0).await;
+    } = client_ahead_of_guardian_at(dir.path(), None, STALE_CHAIN_HEIGHT).await;
     connect(
         &mut client,
         service.with_get_delta(Err(Status::not_found("delta not found"))),
@@ -531,6 +557,44 @@ async fn sync_keeps_local_when_the_delta_commitment_does_not_parse() {
     );
 }
 
+#[tokio::test]
+async fn sync_rolls_back_an_expired_transaction_guardian_still_holds_as_its_candidate() {
+    // Submitted at the sync height, so inside the stale window: only the
+    // expiration says it is dropped, and that is proof.
+    let synced = sync_expired_with_delta(Some(false), |local| Ok(candidate_for(local))).await;
+    assert_eq!(synced.now, synced.guardian_state.to_commitment());
+    assert_eq!(synced.stored, synced.guardian_state.to_commitment());
+    assert!(
+        synced.asked.is_empty(),
+        "an expired transaction cannot land, so GUARDIAN is not asked: {:?}",
+        synced.asked
+    );
+}
+
+#[tokio::test]
+async fn sync_rolls_back_an_expired_transaction_guardian_retains() {
+    let synced = sync_expired_with_delta(Some(false), |local| {
+        Ok(delta_recording(
+            local,
+            delta_status::Status::RetainedAt(at()),
+        ))
+    })
+    .await;
+    assert_eq!(synced.now, synced.guardian_state.to_commitment());
+    assert_eq!(synced.stored, synced.guardian_state.to_commitment());
+}
+
+#[tokio::test]
+async fn sync_keeps_an_expired_transaction_when_the_chain_does_not_show_guardians_state() {
+    let synced = sync_expired_with_delta(None, |_| Err(Status::not_found("delta not found"))).await;
+    assert_eq!(
+        synced.now,
+        synced.local.to_commitment(),
+        "expiry proves the transaction will not land, not that GUARDIAN's state is the chain's"
+    );
+    assert_eq!(synced.stored, synced.local.to_commitment());
+}
+
 #[test]
 fn a_submission_is_dropped_as_miden_client_discards_its_own() {
     let submission = UntrackedSubmission {
@@ -549,6 +613,11 @@ fn a_submission_is_dropped_as_miden_client_discards_its_own() {
         ..submission
     };
     assert!(!long_lived.dropped_at(BlockNumber::from(120u32)));
+    assert!(
+        long_lived.dropped_at(BlockNumber::from(121u32))
+            && !long_lived.expired_at(BlockNumber::from(121u32)),
+        "the stale window drops it without proving it expired"
+    );
     let expiring = UntrackedSubmission {
         expiration_block_num: BlockNumber::from(110u32),
         ..submission

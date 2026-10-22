@@ -17,12 +17,14 @@ CONSTANTS
     MaxStates,   \* bound on distinct account states built
     MaxNonce,    \* bound on any state's nonce
     MaxDrops,    \* bound on transactions the node drops
+    Expiring,    \* config proposals set an approval expiration (TRUE) or none do
     Mutation     \* "none", or a variant (SKILL.md)
 
 Devices == {"rust", "ts"}
 
 VARIABLES
-    st,        \* every state built: [n |-> nonce, p |-> parent, c |-> signer config, k |-> kind]
+    st,        \* every state built: [n |-> nonce, p |-> parent, c |-> signer config, k |-> kind,
+               \*                      e |-> its transaction carries an expiration]
     chain,     \* states included on chain, oldest first
     mempool,   \* states whose transaction the node accepted but has not included
     drops,     \* transactions dropped so far
@@ -45,7 +47,7 @@ Cfg(s) == st[s].c
 CanGrow(parent) == Len(st) < MaxStates /\ Nonce(parent) < MaxNonce
 
 Init ==
-    /\ st = <<[n |-> 0, p |-> 0, c |-> 0, k |-> "plain"]>>
+    /\ st = <<[n |-> 0, p |-> 0, c |-> 0, k |-> "plain", e |-> FALSE]>>
     /\ chain = <<1>>
     /\ mempool = {}
     /\ drops = 0
@@ -67,11 +69,15 @@ Init ==
 (* not land (local_state_abandoned): the node no longer has it pending     *)
 (* (UntrackedSubmission::dropped_at, miden-client's own discard rule:      *)
 (* expired, or pending for tx_discard_delta blocks), Guardian not ahead,   *)
-(* the chain at Guardian's state, Guardian not holding local as a          *)
-(* candidate or retained delta, and no pending miden-client record (a      *)
-(* recorded transaction is miden-client's to undo). TS never needs it: its *)
-(* transactions are recorded. m1 drops the rollback; m3 takes Guardian's   *)
-(* word alone that local will not land.                                    *)
+(* the chain at Guardian's state, and no pending miden-client record (a    *)
+(* recorded transaction is miden-client's to undo). A transaction without  *)
+(* an expiration is dropped only by the stale window, a heuristic, so it   *)
+(* also needs Guardian not to hold local as a candidate or retained delta  *)
+(* (delta_may_still_land_as); an expired one is proof and skips Guardian.  *)
+(* The model reads the node's mempool, so both drops are exact here; the   *)
+(* split checks that skipping Guardian on expiry keeps the properties.     *)
+(* TS never needs it: its transactions are recorded. m1 drops the          *)
+(* rollback; m3 takes Guardian's word alone that local will not land.      *)
 (***************************************************************************)
 GuardianAdopts(d) ==
     \/ /\ Nonce(stored) > Nonce(local[d])
@@ -81,8 +87,7 @@ GuardianAdopts(d) ==
        /\ Nonce(stored) <= Nonce(local[d])
        /\ stored # local[d]
        /\ ChainHead = stored
-       /\ cand # local[d]
-       /\ local[d] \notin retained
+       /\ ~st[local[d]].e => (cand # local[d] /\ local[d] \notin retained)
        /\ (Mutation # "m3" => local[d] \notin mempool)
        /\ (tracked[d] => InChain(local[d]))
 
@@ -123,7 +128,13 @@ SyncChainUndo(d) ==
 (* Proposal creation: summary built on the device's local state, nonce     *)
 (* label local + 1, recorded by Guardian against its tail (the stored      *)
 (* state at depth 1; refused while a candidate is queued). "config" kind   *)
-(* changes the signer config (add/remove signer, threshold).               *)
+(* changes the signer config (add/remove signer, threshold). A proposal   *)
+(* may set an approval expiration (ProposalOptions::approval_expiration_   *)
+(* delta, TS approvalExpirationDelta), which becomes its transaction's     *)
+(* expiration. Only a config transaction can be rolled back (the Rust SDK *)
+(* records every other one), so only a config proposal carries it, and a  *)
+(* cell sets it for all of them (Expiring) rather than branching per      *)
+(* proposal, which multiplies the state space.                            *)
 (***************************************************************************)
 Propose(d) ==
     /\ cand = 0
@@ -131,7 +142,7 @@ Propose(d) ==
     /\ \E kind \in {"plain", "config"} :
          /\ st' = Append(st, [n |-> Nonce(local[d]) + 1, p |-> local[d],
                               c |-> IF kind = "config" THEN 1 - Cfg(local[d]) ELSE Cfg(local[d]),
-                              k |-> kind])
+                              k |-> kind, e |-> kind = "config" /\ Expiring])
          /\ props' = props \cup {[post |-> Len(st'), base |-> stored]}
     /\ UNCHANGED <<retained, chain, mempool, drops, stored, cand, local, tracked, cfg, staleUse>>
 

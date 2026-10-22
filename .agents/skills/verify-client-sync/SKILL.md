@@ -41,8 +41,9 @@ recorded, discarded transactions), and `sync_from_guardian_internal` kept
 local whenever Guardian was not ahead. Trace (mutation `m1`): a
 signer-config proposal executes on the Rust device, the node drops it,
 Guardian retires the candidate, and the device stays on its local state
-for the rest of the session (the store is per process, so a restart or
-`pull_account` recovered it). The TypeScript SDK applies through
+for the rest of the session (the store is per process, so a restart and
+a pull recovered it; `pull_account` on the same store cannot, since
+miden-client refuses a lower nonce). The TypeScript SDK applies through
 `submission.apply()`, so miden-client undoes it there.
 
 Fix: `finalize_transaction` records the submission it wrote without a
@@ -58,9 +59,12 @@ all of these hold:
   `apply_sync_height_update` judges the transactions it does record);
 - miden-client has no pending record for the account;
 - the chain holds Guardian's state;
-- Guardian does not hold the local state as a delta that may still land
+- unless the transaction expired (`UntrackedSubmission::expired_at`, only
+  for a proposal created with an approval expiration), Guardian does not
+  hold the local state as a delta that may still land
   (`delta_may_still_land_as`: a candidate or retained delta recording the
   local commitment, or one whose commitment does not parse, keeps local).
+  An expired transaction cannot land, so Guardian is not asked.
 
 The node-side condition is what makes the rollback safe. Guardian's
 answer alone is no evidence: it can forget a delta whose transaction is
@@ -72,7 +76,9 @@ answers and rolled back a still-pending transaction (mutation `m3`). The
 stale half of the rule is a heuristic, not proof: it is the one
 miden-client already applies to every recorded transaction, so a Rust
 untracked transaction and a TypeScript or Rust recorded one are judged
-alike. A failed read keeps local.
+alike, and it is why a transaction without an expiration still waits for
+Guardian's veto (in practice until `retained_ttl_seconds`, 24 hours by
+default, runs out). A failed read keeps local.
 
 The rollback builds a fresh miden-client store (both miden-client and the
 store refuse a lower nonce) on the same node RPC client, puts Guardian's
@@ -176,8 +182,8 @@ match, 1 a verdict changed, 2 setup error, 3 mirrored source drifted.
 
 Both findings are fixed and folded into the normal actions; mutations
 `m1` (no Rust rollback), `m2` (TS reads its cached config) and `m3` (roll
-back on Guardian's word alone, without the node-side drop) put each back
-and must fail
+back on Guardian's word alone, without the node-side drop; `m3-expiring`
+runs it with every config proposal expiring) put each back and must fail
 (`check.sh --mutations`). A new finding goes in the
 same way: an expected FAIL until the fix lands, then a mutation.
 
@@ -197,11 +203,11 @@ paths under `packages/miden-multisig-client/src/`.
 
 | Model action | Rust | TypeScript |
 |---|---|---|
-| `SyncGuardian` | `client/account.rs` `sync_from_guardian_internal` with `is_not_ahead_of`, `local_state_abandoned` (`UntrackedSubmission::dropped_at`, `delta_may_still_land_as`), `ensure_safe_to_overwrite_local_state`, then `input_notes_to_carry` and `roll_back_store` on a rollback | `multisig.ts` `syncState` with `guardianIsNotAhead`, `state/adopt.ts` `isSafeToAdoptGuardianState` |
+| `SyncGuardian` | `client/account.rs` `sync_from_guardian_internal` with `is_not_ahead_of`, `local_state_abandoned` (`UntrackedSubmission::dropped_at` / `expired_at`, `delta_may_still_land_as`), `ensure_safe_to_overwrite_local_state`, then `input_notes_to_carry` and `roll_back_store` on a rollback | `multisig.ts` `syncState` with `guardianIsNotAhead`, `state/adopt.ts` `isSafeToAdoptGuardianState` |
 | `RefreshConfig` | (none: the config is read from the account each time) | `multisig.ts` `refreshConfigFromAccount`, from `syncState` / `syncNetworkOnly` |
 | `SyncChainUndo` | miden-client `sync_state` (sqlite store `undo_account_state`) for recorded transactions | the same, through the WASM client |
 | `Propose` | `client/proposals.rs` `propose_transaction_with_options` (label local + 1) | `multisig.ts` `createProposal`, `resolveProposalNonce` |
-| `Execute` | `client/proposals.rs` `execute_proposal`, `client/helpers.rs` `get_guardian_ack_signature`, `finalize_transaction` (untracked for `rebuilds_local_state_from_delta` types, recorded as an `UntrackedSubmission`) | `multisig.ts` `prepareProposalExecution` / `prepareCustomExecution` (store read, `refreshConfigFromAccount`, `assertPinnedBase`), `executeProposal`, `prover/workflow.ts` `submit` |
+| `Execute` | `client/proposals.rs` `execute_proposal`, `client/helpers.rs` `get_guardian_ack_signature`, `finalize_transaction` (untracked for `rebuilds_local_state_from_delta` types, recorded as an `UntrackedSubmission`) | `multisig.ts` `prepareProposalExecution` / `prepareCustomExecution` (store read, `adoptConfigFromAccount`, `assertPinnedBase`), `executeProposal`, `prover/workflow.ts` `submit` |
 | `Land`, `Drop` | the node: include a pending transaction built on the chain head, or drop one | |
 | `Promote`, `Retire` | Guardian's canonicalization: promote the candidate once the chain holds it; retire it as retained (also while its transaction may still be pending, on exhausted retries or a lagging read) | |
 | `ReconcilePromote`, `Expire` | Guardian's reconcile pass: promote a retained delta the chain head shows landed; drop it after `retained_ttl_seconds` once its transaction is gone | |
@@ -233,6 +239,15 @@ paths under `packages/miden-multisig-client/src/`.
   that then lands leaves Guardian behind the chain, a server-side gap no
   client sync can close (with the default 24 hour TTL it needs a
   transaction pending at the node for a day).
+- Each state records whether its proposal set an expiration (`e`), and
+  only states without one take Guardian's veto. A cell sets it for every
+  config proposal (the `expiring` column, constant `Expiring`) instead of
+  branching per proposal, which multiplied the safety cell's state space
+  by more than five. Because the model reads the node's mempool, expiry and
+  the stale window are both exact in it: the `-expiring` cells check that
+  skipping Guardian on expiry keeps the properties, and `m3-expiring` that
+  the expiry path still needs the node-side drop, not that the veto backs
+  the heuristic.
 - "The node no longer has it pending" stands for miden-client's discard
   rule, which the SDKs act on; a transaction that outlives the stale window
   in the mempool and then lands is outside the model, for recorded and

@@ -1415,13 +1415,23 @@ local store without a miden-client record, so miden-client cannot undo them.
 The rollback needs miden-client's own discard rule to say the transaction is
 dropped (expired, or still unconfirmed 20 blocks after submission; the second
 is a heuristic, as it is for every recorded transaction), the chain at
-GUARDIAN's state, and GUARDIAN not holding the local state as a candidate or
-retained delta. It replaces the local store with a fresh one holding GUARDIAN's
+GUARDIAN's state, and, unless the transaction expired, GUARDIAN not holding the
+local state as a candidate or retained delta. It replaces the local store with a fresh one holding GUARDIAN's
 state and the unconsumed input notes (notes it created earlier stay exportable,
 read from the replaced store); the replaced store file stays in the
 account directory, and the warning logged names it, in case the transaction
 lands after all. A switch to a new endpoint is not rolled back this way: the
 new GUARDIAN is registered with the switched state.
+
+An expired transaction cannot land, so its rollback skips the GUARDIAN check
+and follows the first sync after expiry. Only a proposal created with
+`ProposalOptions::approval_expiration_delta` carries an expiration. Without one
+(the default) the rollback waits for GUARDIAN to drop the delta, which it holds
+as a candidate and then as a retained delta until
+`GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS` (24 hours by default) runs out.
+Restarting the client (each process starts a fresh store) and pulling the
+account recovers immediately; `pull_account` on the current store does not,
+since miden-client refuses to replace an account with one at a lower nonce.
 
 ### Delta History
 

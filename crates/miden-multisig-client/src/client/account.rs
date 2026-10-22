@@ -337,14 +337,16 @@ impl MultisigClient {
     /// when the node drops them. The drop is judged as miden-client judges its
     /// own transactions
     /// ([`UntrackedSubmission::dropped_at`](super::UntrackedSubmission::dropped_at)):
-    /// expiry is proof, the stale window a heuristic. GUARDIAN can forget a delta whose transaction is still pending (an
-    /// expired retained row, retention disabled, a best-effort switch push
-    /// that failed), so its absence alone proves nothing. All must hold: this
-    /// client submitted the local state and that transaction is dropped by
-    /// the store's sync height, miden-client has no pending record for the
-    /// account, the chain sits at GUARDIAN's canonical state, and GUARDIAN does
-    /// not hold the local state as a delta that may still land
-    /// (`delta_may_still_land_as`). A failed read keeps local.
+    /// expiry is proof, the stale window a heuristic. GUARDIAN can forget a
+    /// delta whose transaction is still pending (an expired retained row,
+    /// retention disabled, a best-effort switch push that failed), so its
+    /// absence alone proves nothing. All must hold: this client submitted the
+    /// local state and that transaction is dropped by the store's sync
+    /// height, miden-client has no pending record for the account, and the
+    /// chain sits at GUARDIAN's canonical state. A transaction dropped only by
+    /// the stale window also needs GUARDIAN not to hold the local state as a
+    /// delta that may still land (`delta_may_still_land_as`); an expired one
+    /// cannot land, so GUARDIAN is not asked. A failed read keeps local.
     async fn local_state_abandoned(
         &self,
         guardian_client: &mut GuardianClient,
@@ -391,6 +393,9 @@ impl MultisigClient {
         match self.try_get_on_chain_account_commitment(account_id).await {
             Ok(Some(on_chain)) if on_chain == guardian_commitment => {}
             Ok(_) | Err(_) => return Ok(false),
+        }
+        if submission.expired_at(sync_height) {
+            return Ok(true);
         }
 
         match guardian_client.get_delta(&account_id, local_nonce).await {
