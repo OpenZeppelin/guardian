@@ -51,7 +51,7 @@
 
 - HTTP request payload digest: RPO256 over canonical JSON bytes of the request payload (`body` for `POST`/`PUT`, query object for `GET`).
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
-- `ExecuteDeltaProposal` is domain-separated, because its body (`account_id`, `proposal_id`, and `allow_private_note`, which protobuf omits when `false`) can encode to the same bytes as a `GetDeltaProposalExecution` read. Its gRPC payload digest is RPO256 over the ASCII tag `guardian.ExecuteDeltaProposal` and one zero byte, followed by the protobuf-encoded request bytes. No protobuf message begins with that tag. Over HTTP the execute body always carries `allow_private_note` in the signed JSON (signed as `false` when omitted), so it never equals a signed read query. A signed status read therefore never authenticates an execute.
+- `ExecuteDeltaProposal` is domain-separated, because its body (`account_id`, `proposal_id`, and `allow_private_note`, which protobuf omits when `false`) can encode to the same bytes as a `GetDeltaProposalExecution` read. Its gRPC payload digest is RPO256 over the ASCII tag `guardian.ExecuteDeltaProposal` and one zero byte, followed by the protobuf-encoded request bytes. No protobuf message begins with that tag. Over HTTP the execute body must carry `allow_private_note` (a body without it is refused before its signature is checked), so the signed JSON never equals a signed read query. A signed status read therefore never authenticates an execute.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
 - ECDSA accounts may send `x-auth-format: eip712` with the same three required headers. The signature is over `GuardianRequest(bytes32 requestHash)` in the `EIP712Domain` `{ name: "Guardian Request", version: "1" }`; `requestHash` is the 32-byte little-endian encoding of the signed message above. An absent format header keeps the raw signature behavior. Falcon does not accept EIP-712 request auth. The existing timestamp skew and replay checks apply to both formats.
 - The typed request message displays a hash, not the decoded HTTP operation or proposal. The client must show the transaction details separately before prompting a hardware wallet.
@@ -552,7 +552,7 @@ component schemas.
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
 | client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
-| client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id, allow_private_note}`; `allow_private_note` defaults to `false` and is signed |
+| client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id, allow_private_note}`; all three are required and signed, `allow_private_note` as `false` when the caller does not opt in |
 | client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
 | client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
@@ -725,8 +725,9 @@ Stable error codes include:
 - `rpc_validation_failed`
 - Guardian execution: `GUARDIAN_PROVING_UNAVAILABLE`, `GUARDIAN_PROPOSAL_NOT_READY`,
   `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`
-  (`meta.proposal_type` and `meta.reason`: `switch_guardian` for a guardian switch, which only
-  the client that finishes the GUARDIAN handoff executes, even when the request sets
+  (`meta.proposal_type` and `meta.reason`: `switch_guardian` for a guardian switch, labelled
+  `switch_guardian` or with a signed summary that changes the guardian public key slot, which
+  only the client that finishes the GUARDIAN handoff executes, even when the request sets
   `allow_private_note`; `private_note` for a transaction whose signed summary creates a private
   output note while the request did not set `allow_private_note`. Nothing is reserved and the
   proposal stays pending), `GUARDIAN_EXECUTION_CONFLICT`
@@ -736,7 +737,8 @@ Stable error codes include:
   reserved, and a retry reaches another replica or the restarted server),
   `GUARDIAN_EXECUTION_NOT_FOUND`,
   `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`, `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`. An
-  execution request also gets `conflict_pending_delta` while a client candidate is pending, and
+  execution request gets `commitment_mismatch` when the proposal builds on a state other than
+  the account's current one, and `conflict_pending_delta` while a client candidate is pending, and
   the same code with `meta.reason` `parked_delta` while a parked delta (`retained`, or a recent
   client-abandoned discard) built on the account's state could still land; nothing is reserved
   and the request succeeds once reconciliation promotes or drops that delta. Their

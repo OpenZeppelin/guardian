@@ -614,19 +614,25 @@ background under a per-account reservation held by a renewed, fenced lease.
 
 ### Refusals before anything is reserved
 Guardian refuses synchronously, creating nothing, when the server offers no execution
-(`GUARDIAN_PROVING_UNAVAILABLE`), the account is paused or released, another execution holds the
-account (`GUARDIAN_EXECUTION_CONFLICT`), the proposal stores no request
-(`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), the proposal is a `switch_guardian`, which
-only the client that registers the account at the new GUARDIAN and switches its endpoint can
-execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `switch_guardian`, whatever the
-request sets), the transaction creates a private output note and the request did not set
-`allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`), a
-client candidate is pending, a parked delta built on the account's current state could still
-land (a `retained` delta, or a `discarded { client_abandoned }` one within
-`retained_ttl_seconds`; `409 conflict_pending_delta` with `meta.reason` `parked_delta`, until
-reconciliation promotes or drops it), or the valid, distinct cosigner signatures fall short of the
-effective per-procedure threshold (`GUARDIAN_PROPOSAL_NOT_READY`).
+(`GUARDIAN_PROVING_UNAVAILABLE`), the account is paused or released, the proposal is a guardian
+switch, which only the client that registers the account at the new GUARDIAN and switches its
+endpoint can execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `switch_guardian`,
+whatever the request sets), the proposal stores no request
+(`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), the transaction creates a private output note
+and the request did not set `allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`,
+`meta.reason` `private_note`), another execution holds the account
+(`GUARDIAN_EXECUTION_CONFLICT`), a client candidate is pending, a parked delta built on the
+account's current state could still land (a `retained` delta, or a `discarded { client_abandoned }`
+one within `retained_ttl_seconds`; `409 conflict_pending_delta` with `meta.reason`
+`parked_delta`, until reconciliation promotes or drops it), the proposal builds on a state other
+than the account's current one (`commitment_mismatch`; the proposal can never execute),
+or the valid, distinct cosigner signatures fall short of the effective per-procedure threshold
+(`GUARDIAN_PROPOSAL_NOT_READY`). The checks run in that order, so a proposal that must execute
+locally is told so even while another execution holds the account.
 
+A proposal is a guardian switch when it is labelled `switch_guardian` or when the
+`TransactionSummary` the cosigners signed changes the guardian public key slot. The label is not
+signed, so the signed summary decides: a switch labelled anything else is still refused.
 Whether a transaction creates a private note is read from the output notes of the
 `TransactionSummary` the cosigners signed, never from the proposal's metadata label; execution
 reproduces exactly that summary, so the stored request cannot create a note it does not show.
@@ -677,7 +683,11 @@ domain-separated from a signed status read (see [Miden Request Signing](api.md#m
 
 A failure before step 12 records a `failed` outcome with its code and releases the account;
 the proposal stays executable. A definite rejection at step 14 deletes the candidate and the
-proposal; no delta is kept with a `discarded` status. An unknown outcome leaves the execution `submitted`.
+proposal; no delta is kept with a `discarded` status. A refusal the node made before processing
+the send (a rate limit that outlasted the client's retries, authentication, permission, an
+unimplemented call) is `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED`: the transaction cannot land,
+so the candidate is deleted but the proposal is kept and can be executed again. An unknown outcome
+leaves the execution `submitted`.
 
 ```mermaid
 sequenceDiagram

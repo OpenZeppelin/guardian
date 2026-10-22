@@ -569,6 +569,56 @@ async fn an_opted_in_private_note_execution_is_accepted_on_both_transports() {
 }
 
 #[tokio::test]
+async fn an_http_execute_without_allow_private_note_is_refused_before_authentication() {
+    let f = Fixture::new(Script::default()).await;
+    let body = serde_json::json!({ "account_id": ACCOUNT, "proposal_id": PROPOSAL });
+    let signed = AuthRequestPayload::from_json_value(&body).unwrap();
+    let (pubkey, signature, timestamp) = f.sign_request(&signed);
+    let router = build_http_router(
+        f.state.clone(),
+        HttpRouterConfig {
+            cors_layer: None,
+            rate_limit_store: RateLimitStore::new(RateLimitConfig::new(10_000, 10_000)),
+            body_limit_config: Some(BodyLimitConfig {
+                max_bytes: 1024 * 1024,
+            }),
+            metrics_enabled: false,
+        },
+    );
+    let response = router
+        .oneshot(
+            HttpRequest::builder()
+                .method("POST")
+                .uri("/delta/proposal/execution")
+                .header("content-type", "application/json")
+                .header("x-pubkey", pubkey)
+                .header("x-signature", signature)
+                .header("x-timestamp", timestamp.to_string())
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let text = String::from_utf8(
+        axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec(),
+    )
+    .unwrap();
+    assert!(text.contains("allow_private_note"), "{text}");
+    assert!(
+        f.state
+            .storage
+            .load_latest_execution(ACCOUNT, PROPOSAL)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn a_signed_status_read_does_not_authenticate_an_execute() {
     let f = Fixture::new(Script::default()).await;
     let read = GetDeltaProposalExecutionRequest {
@@ -621,7 +671,9 @@ async fn a_signed_status_read_does_not_authenticate_an_execute() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    // The read query lacks `allow_private_note`, so the execute route refuses it before
+    // authentication; either way a signed read never starts an execution.
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     assert!(
         f.state
             .storage

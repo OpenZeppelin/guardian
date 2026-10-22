@@ -262,12 +262,16 @@ database's guarantees:
   `GUARDIAN_EXECUTION_BUSY`, fails its attempts that have not reached the
   boundary commit with `GUARDIAN_EXECUTION_ABANDONED` (retryable, the
   proposal is kept), and waits up to 8 seconds for attempts past it to send,
-  then exits. A deploy or scale-in therefore releases those accounts at once
-  instead of after the 120-second lease. A kill that skips SIGTERM (OOM,
-  `SIGKILL`) still leaves them to the lease and reconciliation, and so does
-  an attempt whose local transaction execution is already running on the
-  CPU when the signal lands: it stops only at its next await, which can
-  come after the grace.
+  then exits. A deploy or scale-in therefore releases most of those accounts
+  at once instead of after the 120-second lease. Three cases still leave an
+  account to the lease and reconciliation: a kill that skips SIGTERM (OOM,
+  `SIGKILL`); an attempt whose local transaction execution is already running
+  on the CPU when the signal lands, which stops only at its next await, after
+  the grace; and a send still waiting on the node when the 8 seconds run out.
+  A send may wait up to 60 seconds (the slowest accepted devnet send took
+  about 9), so a slow node at deploy time leaves its accounts held until
+  reconciliation settles them from the chain. Nothing is sent twice either
+  way.
 - **Guardian execution across a crash (accepted risk).** If the process dies
   after an execution's boundary commit (state `submitted`) and before the
   send has a definite outcome, the transaction may never have been sent.
