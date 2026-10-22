@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use guardian_shared::SignatureScheme;
 
 use super::executor::{
-    ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SendWindow, SubmissionOutcome,
+    ExecutedTransactionInfo, ExecutionAttempt, GuardianAck, ProvenTransactionInfo,
+    SelectedProposal, SendWindow, SubmissionOutcome,
 };
 use crate::coordination::{LeaderElector, Lease, Renewal, release_quietly};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -34,7 +34,6 @@ pub(super) struct ExecutionJob {
     pub fence: LeaseFence,
     pub lease: Lease,
     pub elector: Arc<dyn LeaderElector>,
-    pub executor: Arc<dyn ProposalExecutor>,
     /// Counts this execution towards the server's cap until the worker returns.
     pub permit: tokio::sync::OwnedSemaphorePermit,
 }
@@ -262,10 +261,14 @@ impl std::fmt::Display for PhaseTimings {
 /// The worker gives its lease up on every exit. After the send the reservation stays held under
 /// the worker's fence and reconciliation claims it, so a request arriving meanwhile reads the
 /// execution in flight instead of being turned away as busy.
-pub(super) async fn run_execution(state: &AppState, job: ExecutionJob, input: ExecutionInput) {
+pub(super) async fn run_execution(
+    state: &AppState,
+    job: ExecutionJob,
+    selected: Box<dyn SelectedProposal>,
+) {
     let mut timings = PhaseTimings::start();
     let heartbeat = Heartbeat::start(state, &job, ExecutionPhase::Accepted, job.lease.expires_at);
-    let reached = run_to_boundary(state, &job, input, &heartbeat, &mut timings).await;
+    let reached = run_to_boundary(state, &job, selected, &heartbeat, &mut timings).await;
     let held_until = heartbeat.stop().await;
     match reached {
         Ok((mut attempt, window_closes)) => {
@@ -312,7 +315,7 @@ pub(super) async fn run_execution(state: &AppState, job: ExecutionJob, input: Ex
 async fn run_to_boundary(
     state: &AppState,
     job: &ExecutionJob,
-    input: ExecutionInput,
+    selected: Box<dyn SelectedProposal>,
     heartbeat: &Heartbeat,
     timings: &mut PhaseTimings,
 ) -> Result<(Box<dyn ExecutionAttempt>, tokio::time::Instant), Stop> {
@@ -326,7 +329,7 @@ async fn run_to_boundary(
             )
             .into());
         }
-        reached = approach_boundary(state, job, input, heartbeat, timings) => reached?,
+        reached = approach_boundary(state, job, selected, heartbeat, timings) => reached?,
     };
     cross_boundary(state, job, acknowledged, &proven).await?;
     timings.mark("boundary");
@@ -336,7 +339,7 @@ async fn run_to_boundary(
 async fn approach_boundary(
     state: &AppState,
     job: &ExecutionJob,
-    input: ExecutionInput,
+    selected: Box<dyn SelectedProposal>,
     heartbeat: &Heartbeat,
     timings: &mut PhaseTimings,
 ) -> Result<
@@ -366,9 +369,12 @@ async fn approach_boundary(
         )
         .into());
     }
-    ensure_guarded_by_this_guardian(state, job, &current_state)?;
+    // Selection decoded the account at the base state, which the account is still at, so its
+    // guardian slot is the one this attempt executes against.
+    let guardian = selected.guardian_commitment().map(str::to_string);
+    ensure_guarded_by_this_guardian(state, job, guardian.as_deref())?;
 
-    let mut attempt = job.executor.prepare(input).await?;
+    let mut attempt = selected.prepare().await?;
     heartbeat
         .advance(state, job, ExecutionPhase::Verified)
         .await?;
@@ -410,7 +416,7 @@ async fn approach_boundary(
     timings.mark("prove");
     attempt.seal().await?;
     timings.mark("seal");
-    ensure_admissible(state, job).await?;
+    ensure_admissible(state, job, guardian.as_deref()).await?;
     let window_closes = ensure_sendable(attempt.as_ref()).await?;
     timings.mark("checks");
     Ok((attempt, acknowledged, proven, window_closes))
@@ -461,7 +467,13 @@ async fn acknowledge(
     })
 }
 
-async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), Stop> {
+/// `guardian` is the guardian slot read at selection; an account still at the base state has the
+/// same one, so it is not decoded again.
+async fn ensure_admissible(
+    state: &AppState,
+    job: &ExecutionJob,
+    guardian: Option<&str>,
+) -> Result<(), Stop> {
     let inadmissible = |message: &'static str| {
         Stop::Failed(ExecutionFailure::new(
             ExecutionFailureCode::AccountInadmissible,
@@ -475,12 +487,12 @@ async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), S
             cause,
         ))
     };
-    let current_state = state
+    let current_commitment = state
         .storage
-        .pull_state(&job.account_id)
+        .pull_state_commitment(&job.account_id)
         .await
         .map_err(|e| unreadable("Guardian could not read the account state", &e))?;
-    if current_state.commitment != job.base_commitment {
+    if current_commitment != job.base_commitment {
         return Err(inadmissible("the account moved during the attempt"));
     }
     let metadata = state
@@ -491,7 +503,7 @@ async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), S
         .ok_or_else(|| inadmissible("the account metadata disappeared"))?;
     ensure_account_active_metadata(&metadata)
         .map_err(|e| unreadable("the account was paused or released during the attempt", &e))?;
-    ensure_guarded_by_this_guardian(state, job, &current_state)
+    ensure_guarded_by_this_guardian(state, job, guardian)
 }
 
 /// The account's guardian slot must hold the commitment of the key Guardian acknowledges with,
@@ -499,18 +511,8 @@ async fn ensure_admissible(state: &AppState, job: &ExecutionJob) -> Result<(), S
 fn ensure_guarded_by_this_guardian(
     state: &AppState,
     job: &ExecutionJob,
-    current_state: &crate::state_object::StateObject,
+    guardian: Option<&str>,
 ) -> Result<(), Stop> {
-    let guardian = state
-        .network_client
-        .extract_guardian_commitment(&current_state.state_json)
-        .map_err(|e| {
-            Stop::Failed(ExecutionFailure::with_logged_cause(
-                ExecutionFailureCode::AccountInadmissible,
-                "Guardian could not read the account's guardian",
-                &e,
-            ))
-        })?;
     match guardian {
         Some(guardian) if guardian.eq_ignore_ascii_case(&state.ack.commitment(&job.scheme)) => {
             Ok(())
@@ -738,29 +740,54 @@ async fn submit(
                 total_ms = timings.total_ms(),
                 "the node rejected the submission"
             );
-            let resolution = resolution(
+            resolve_refused_send(
+                state,
                 job,
                 ExecutionFailure::new(
                     ExecutionFailureCode::SubmissionRejected,
                     "the node rejected the transaction",
                 ),
+            )
+            .await;
+        }
+        SubmissionOutcome::NotProcessed { reason } => {
+            tracing::warn!(
+                account_id = %job.account_id,
+                proposal_id = %job.proposal_id,
+                %reason,
+                phases = %timings,
+                total_ms = timings.total_ms(),
+                "the node refused the submission without processing it; the proposal stays executable"
             );
-            match state
-                .storage
-                .resolve_execution(state.metadata.as_ref(), resolution)
-                .await
-            {
-                Ok(ResolveWrite::Resolved) => crate::metrics::execution::record_outcome(Some(
-                    &ExecutionFailureCode::SubmissionRejected,
-                )),
-                Ok(ResolveWrite::AlreadyResolved) => {}
-                Ok(other) => {
-                    tracing::warn!(account_id = %job.account_id, ?other, "could not resolve a rejected submission; reconciliation will")
-                }
-                Err(error) => {
-                    tracing::error!(account_id = %job.account_id, %error, "failed to resolve a rejected submission")
-                }
-            }
+            resolve_refused_send(
+                state,
+                job,
+                ExecutionFailure::new(
+                    ExecutionFailureCode::SubmissionNotProcessed,
+                    "the node refused the transaction without processing it",
+                ),
+            )
+            .await;
+        }
+    }
+}
+
+/// Resolves a send the node refused: its candidate is dropped, and its proposal with it unless
+/// the cause leaves the proposal executable (`ExecutionFailureCode::ends_proposal`).
+async fn resolve_refused_send(state: &AppState, job: &ExecutionJob, failure: ExecutionFailure) {
+    let code = failure.code;
+    match state
+        .storage
+        .resolve_execution(state.metadata.as_ref(), resolution(job, failure))
+        .await
+    {
+        Ok(ResolveWrite::Resolved) => crate::metrics::execution::record_outcome(Some(&code)),
+        Ok(ResolveWrite::AlreadyResolved) => {}
+        Ok(other) => {
+            tracing::warn!(account_id = %job.account_id, ?other, "could not resolve a refused submission; reconciliation will")
+        }
+        Err(error) => {
+            tracing::error!(account_id = %job.account_id, %error, "failed to resolve a refused submission")
         }
     }
 }

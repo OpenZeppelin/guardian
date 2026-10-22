@@ -2,6 +2,8 @@
 //! module stays network-agnostic. The Miden implementation lives in
 //! `network::miden::execution`.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use guardian_shared::SignatureScheme;
 
@@ -104,26 +106,41 @@ pub enum SubmissionOutcome {
     Rejected {
         reason: String,
     },
+    /// A refusal the node made before processing the transaction (rate limit, authentication,
+    /// permission, unimplemented call): it will not land, and nothing about the proposal was
+    /// judged, so the proposal stays executable.
+    NotProcessed {
+        reason: String,
+    },
     /// No definite answer (timeout, dropped connection, unavailable): it may still land.
     Unknown {
         reason: String,
     },
 }
 
-#[async_trait]
 pub trait ProposalExecutor: Send + Sync {
-    /// Selects the proposal's valid cosigner signatures and the threshold they must meet.
+    /// Decodes the account state and the signed summary once and selects the proposal's valid
+    /// cosigner signatures against the threshold they must meet. CPU-bound: callers run it off
+    /// the async threads.
     fn select_signatures(
-        &self,
-        input: &ExecutionInput,
-    ) -> Result<SignatureSelection, GuardianError>;
+        self: Arc<Self>,
+        input: ExecutionInput,
+    ) -> Result<Box<dyn SelectedProposal>, GuardianError>;
+}
+
+/// A proposal whose signatures were selected, holding what selection decoded so the attempt
+/// that executes it decodes and verifies nothing again. Valid while the account stays at the
+/// state it was decoded from, which the worker checks before preparing.
+#[async_trait]
+pub trait SelectedProposal: Send + Sync {
+    fn selection(&self) -> &SignatureSelection;
+
+    /// The commitment in the decoded account's guardian slot, or `None` when it has none.
+    fn guardian_commitment(&self) -> Option<&str>;
 
     /// Decodes and checks the stored request, assembles the chain view at the tip, and
     /// reproduces the transaction, confirming it yields the signed summary.
-    async fn prepare(
-        &self,
-        input: ExecutionInput,
-    ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure>;
+    async fn prepare(self: Box<Self>) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure>;
 }
 
 #[async_trait]

@@ -215,7 +215,10 @@ pub async fn request_execution(
         proposal_payload: proposal.delta_payload,
         cosigner_signatures: cosigner_sigs.clone(),
     };
-    let selection = executor.select_signatures(&input)?;
+    let selected = crate::network::reconstructor()
+        .run(move || Ok(executor.select_signatures(input)))
+        .await??;
+    let selection = selected.selection().clone();
     if !selection.is_ready() {
         return Err(GuardianError::ProposalNotReady {
             required: selection.required,
@@ -328,11 +331,10 @@ pub async fn request_execution(
         fence,
         lease,
         elector,
-        executor,
         permit,
     };
     let worker_state = state.clone();
-    tokio::spawn(async move { run_execution(&worker_state, job, input).await });
+    tokio::spawn(async move { run_execution(&worker_state, job, selected).await });
 
     let record = state
         .storage

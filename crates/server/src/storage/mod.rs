@@ -1143,8 +1143,9 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<AdmissionWrite, String>;
 
     /// Resolve a boundary-crossed attempt as failed: discard its candidate,
-    /// delete its proposal, persist the outcome and release the reservation
-    /// as one commit.
+    /// delete its proposal when the cause ends it
+    /// (`ExecutionFailureCode::ends_proposal`), persist the outcome and release
+    /// the reservation as one commit.
     async fn resolve_execution(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,

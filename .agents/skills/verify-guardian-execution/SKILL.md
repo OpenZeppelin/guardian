@@ -178,7 +178,7 @@ Paths are relative to `crates/server/src/`.
 | `WFail` | any failure before the boundary (`approach_boundary`, `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
 | `WAdmit`, `RecoverableOnStored` | `cross_boundary` → `admit_execution_candidate_tx` (refuses with RecoverableDeltaPending while `recoverable_delta_on` the base; otherwise deletes rows at the nonce that cannot land, inserts the candidate and the evidence) |
 | `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`). A storage error is retried, fenced, while the lease and send window last; a retry is the same claim taken later, which the model already allows since workers get no fairness |
-| `WSubmit`, `WResolveRejected` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution` |
+| `WSubmit`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`) |
 | `WRelease` | `run_execution`'s `release_quietly` |
 | `RcList` | `jobs/execution_reconcile/mod.rs` `Reconciler::pass` (`list_active_executions`) and the Owned check at the top of `reconcile` |
 | `RcAcquire`, `RcClaim` | `take_ownership` (`try_acquire`, then `claim_execution_reservation_tx` unless the fence is already ours) |

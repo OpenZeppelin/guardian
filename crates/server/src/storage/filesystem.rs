@@ -1522,9 +1522,9 @@ impl StorageBackend for FilesystemService {
         record.outcome = Some(failed_outcome(&resolution));
         record.reservation.released_at = Some(resolution.now);
         record.reservation.updated_at = resolution.now;
-        // The candidate and proposal go first: a crash before the outcome is written leaves an
-        // unresolved boundary-crossed attempt for reconciliation, never a released execution
-        // whose proposal still advertises a retry.
+        // The candidate and, when the cause ends it, the proposal go first: a crash before the
+        // outcome is written leaves an unresolved boundary-crossed attempt for reconciliation,
+        // never a released execution whose proposal still advertises a retry.
         if let Ok(candidate) = self
             .pull_delta(&resolution.account_id, evidence.candidate_nonce)
             .await
@@ -1533,8 +1533,10 @@ impl StorageBackend for FilesystemService {
             self.delete_delta(&resolution.account_id, evidence.candidate_nonce)
                 .await?;
         }
-        self.delete_delta_proposal(&resolution.account_id, &resolution.proposal_id)
-            .await?;
+        if resolution.failure.code.ends_proposal() {
+            self.delete_delta_proposal(&resolution.account_id, &resolution.proposal_id)
+                .await?;
+        }
         self.release_pending_flag_if_queue_empty(
             metadata,
             &resolution.account_id,

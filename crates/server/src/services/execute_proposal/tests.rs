@@ -5,7 +5,7 @@ use async_trait::async_trait;
 
 use super::executor::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SendWindow, SignatureSelection, SubmissionOutcome,
+    ProvenTransactionInfo, SelectedProposal, SendWindow, SignatureSelection, SubmissionOutcome,
 };
 use super::{ExecutionState as ExecutionServices, RequestExecutionParams, request_execution};
 use crate::delta_object::{DeltaObject, DeltaStatus};
@@ -190,33 +190,63 @@ pub(crate) struct Calls {
 struct FakeExecutor {
     script: Arc<Mutex<Script>>,
     calls: Arc<Mutex<Calls>>,
+    /// The guardian slot every selection reads, this Guardian's key unless a test changes it.
+    guardian: Arc<Mutex<Option<String>>>,
+}
+
+impl ProposalExecutor for FakeExecutor {
+    fn select_signatures(
+        self: Arc<Self>,
+        input: ExecutionInput,
+    ) -> Result<Box<dyn SelectedProposal>> {
+        let selection = {
+            let script = self.script.lock().unwrap();
+            SignatureSelection {
+                required: script.required,
+                valid: script.valid,
+                ignored: 1,
+            }
+        };
+        let guardian = self.guardian.lock().unwrap().clone();
+        Ok(Box::new(FakeSelected {
+            executor: self,
+            input,
+            selection,
+            guardian,
+        }))
+    }
+}
+
+struct FakeSelected {
+    executor: Arc<FakeExecutor>,
+    input: ExecutionInput,
+    selection: SignatureSelection,
+    guardian: Option<String>,
 }
 
 #[async_trait]
-impl ProposalExecutor for FakeExecutor {
-    fn select_signatures(&self, _input: &ExecutionInput) -> Result<SignatureSelection> {
-        let script = self.script.lock().unwrap();
-        Ok(SignatureSelection {
-            required: script.required,
-            valid: script.valid,
-            ignored: 1,
-        })
+impl SelectedProposal for FakeSelected {
+    fn selection(&self) -> &SignatureSelection {
+        &self.selection
+    }
+
+    fn guardian_commitment(&self) -> Option<&str> {
+        self.guardian.as_deref()
     }
 
     async fn prepare(
-        &self,
-        input: ExecutionInput,
+        self: Box<Self>,
     ) -> std::result::Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
         {
-            let mut calls = self.calls.lock().unwrap();
+            let mut calls = self.executor.calls.lock().unwrap();
             calls.prepared += 1;
-            calls.prepared_inputs.push(input);
+            calls.prepared_inputs.push(self.input);
         }
-        let script = self.script.lock().unwrap().clone();
+        let script = self.executor.script.lock().unwrap().clone();
         script.prepare.clone()?;
         Ok(Box::new(FakeAttempt {
             script,
-            calls: self.calls.clone(),
+            calls: self.executor.calls.clone(),
             payload: fixture_summary(),
         }))
     }
@@ -300,8 +330,10 @@ impl ExecutionAttempt for FakeAttempt {
 
 pub(crate) struct Fixture {
     pub(crate) state: AppState,
-    /// The chain the state reads, which reports this Guardian as the account's guardian.
+    /// The chain the state reads.
     pub(crate) chain: crate::testing::mocks::MockNetworkClient,
+    /// The guardian slot the executor's selections read.
+    pub(crate) guardian: Arc<Mutex<Option<String>>>,
     pub(crate) calls: Arc<Mutex<Calls>>,
     pub(crate) script: Arc<Mutex<Script>>,
     signer: Mutex<TestSigner>,
@@ -312,18 +344,19 @@ impl Fixture {
     pub(crate) async fn new(script: Script) -> Self {
         let mut state = create_test_app_state().await;
         let chain = crate::testing::mocks::MockNetworkClient::new();
-        *chain.guardian_commitment.lock().unwrap() = Some(
-            state
-                .ack
-                .commitment(&guardian_shared::SignatureScheme::Falcon),
-        );
         state.network_client = Arc::new(chain.clone());
         let calls = Arc::new(Mutex::new(Calls::default()));
         let script = Arc::new(Mutex::new(script));
+        let guardian = Arc::new(Mutex::new(Some(
+            state
+                .ack
+                .commitment(&guardian_shared::SignatureScheme::Falcon),
+        )));
         state.execution = ExecutionServices {
             executor: Some(Arc::new(FakeExecutor {
                 script: script.clone(),
                 calls: calls.clone(),
+                guardian: guardian.clone(),
             })),
             ..ExecutionServices::default()
         };
@@ -331,6 +364,7 @@ impl Fixture {
         let fixture = Self {
             state,
             chain,
+            guardian,
             calls,
             script,
             signer_commitment: signer.commitment_hex.clone(),
@@ -698,6 +732,41 @@ async fn a_non_cosigner_is_refused_on_authentication() {
 }
 
 #[tokio::test]
+async fn a_non_cosigner_cannot_read_an_execution_or_what_holds_the_account() {
+    let f = Fixture::new(Script {
+        proving_time: Duration::from_millis(300),
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let outsider = || {
+        let (pubkey, _, signature, timestamp) = generate_falcon_signature_with_timestamp(
+            ACCOUNT,
+            chrono::Utc::now().timestamp_millis(),
+        );
+        Credentials::signature(pubkey, signature, timestamp)
+    };
+    let read = get_execution(&f.state, ACCOUNT, PROPOSAL, &outsider()).await;
+    assert!(
+        matches!(read, Err(GuardianError::AuthenticationFailed(_))),
+        "{read:?}"
+    );
+    let current = current_execution(&f.state, ACCOUNT, &outsider()).await;
+    assert!(
+        matches!(current, Err(GuardianError::AuthenticationFailed(_))),
+        "{current:?}"
+    );
+    assert!(
+        current_execution(&f.state, ACCOUNT, &f.credentials())
+            .await
+            .unwrap()
+            .is_some(),
+        "the cosigner still reads the execution the outsider could not"
+    );
+    f.settle(is_submitted_or_terminal).await;
+}
+
+#[tokio::test]
 async fn a_proposal_without_a_stored_request_is_not_guardian_executable() {
     let f = Fixture::new(Script::default()).await;
     f.store_proposal(false).await;
@@ -1012,6 +1081,42 @@ async fn a_definitely_rejected_submission_discards_the_candidate_and_the_proposa
     );
     assert!(!failed.proposal_exists);
     assert!(f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+}
+
+#[tokio::test]
+async fn a_send_the_node_never_processed_discards_the_candidate_and_keeps_the_proposal() {
+    let f = Fixture::new(Script {
+        submission: SubmissionOutcome::NotProcessed {
+            reason: "rate limited".to_string(),
+        },
+        ..Script::default()
+    })
+    .await;
+    f.request().await.unwrap();
+    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
+    assert_eq!(
+        failed.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED".to_string())
+    );
+    assert!(failed.proposal_exists);
+    assert!(f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+    assert!(
+        f.state
+            .storage
+            .pull_delta_proposal(ACCOUNT, PROPOSAL)
+            .await
+            .unwrap()
+            .status
+            .is_pending()
+    );
+
+    f.script.lock().unwrap().submission = SubmissionOutcome::Accepted;
+    assert!(
+        f.request().await.unwrap().newly_accepted,
+        "the kept proposal can be executed again"
+    );
+    let (retried, _) = f.settle(is_submitted_or_terminal).await;
+    assert_eq!(retried.state, ExecutionState::Submitted);
 }
 
 async fn account_lease_is_free(f: &Fixture) -> bool {

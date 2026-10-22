@@ -693,7 +693,47 @@ mod executor {
     use crate::delta_object::CosignerSignature;
     use crate::network::miden::execution::aborts::{APPROVAL_EXPIRED, Abort, VAULT_SHORTFALL};
     use crate::network::miden::execution::{MidenExecutor, StoredRequest};
-    use crate::services::execute_proposal::{ExecutionInput, ProposalExecutor};
+    use crate::services::execute_proposal::{
+        ExecutionAttempt, ExecutionInput, ProposalExecutor, SignatureSelection,
+    };
+    use crate::storage::ExecutionFailure;
+
+    /// The service selects a proposal once and the worker prepares that selection; these tests
+    /// drive an executor directly, so they do both from one input.
+    #[async_trait::async_trait]
+    trait SelectAndPrepare {
+        fn selection_for(
+            &self,
+            input: &ExecutionInput,
+        ) -> Result<SignatureSelection, crate::error::GuardianError>;
+        async fn prepare(
+            &self,
+            input: ExecutionInput,
+        ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure>;
+    }
+
+    #[async_trait::async_trait]
+    impl SelectAndPrepare for MidenExecutor {
+        fn selection_for(
+            &self,
+            input: &ExecutionInput,
+        ) -> Result<SignatureSelection, crate::error::GuardianError> {
+            Arc::new(self.clone())
+                .select_signatures(input.clone())
+                .map(|selected| selected.selection().clone())
+        }
+
+        async fn prepare(
+            &self,
+            input: ExecutionInput,
+        ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
+            Arc::new(self.clone())
+                .select_signatures(input)
+                .expect("the proposal state and summary decode")
+                .prepare()
+                .await
+        }
+    }
     use crate::services::execution_codec::TransactionRequestEnvelope;
     use crate::storage::ExecutionFailureCode;
     use crate::storage::execution::{ExpirationBound, RequestInvalidReason};
@@ -701,6 +741,8 @@ mod executor {
     struct Proposal {
         account: Account,
         cosigners: Vec<SecretKey>,
+        /// The key whose commitment the account's guardian slot holds.
+        guardian: SecretKey,
         request_bytes: Vec<u8>,
         summary: TransactionSummary,
         rpc: Arc<MockRpcApi>,
@@ -723,13 +765,11 @@ mod executor {
             .iter()
             .map(|key| key.public_key().to_commitment())
             .collect();
-        let config = MultisigGuardianConfig::new(
-            2,
-            commitments,
-            SecretKey::new().public_key().to_commitment(),
-        )
-        .with_account_type(AccountType::Public)
-        .with_signature_scheme(SignatureScheme::Falcon);
+        let guardian = SecretKey::new();
+        let config =
+            MultisigGuardianConfig::new(2, commitments, guardian.public_key().to_commitment())
+                .with_account_type(AccountType::Public)
+                .with_signature_scheme(SignatureScheme::Falcon);
         let account = MultisigGuardianBuilder::new(config)
             .build_existing()
             .unwrap();
@@ -786,6 +826,7 @@ mod executor {
         Proposal {
             account,
             cosigners,
+            guardian,
             request_bytes,
             summary,
             rpc,
@@ -878,21 +919,17 @@ mod executor {
     async fn signature_selection_counts_only_distinct_valid_cosigners() {
         let proposal = proposal(true).await;
         let executor = proposal.executor();
-        let both = executor
-            .select_signatures(&proposal.input(&[0, 1]))
-            .unwrap();
+        let both = executor.selection_for(&proposal.input(&[0, 1])).unwrap();
         assert_eq!((both.required, both.valid, both.ignored), (2, 2, 0));
         assert!(both.is_ready());
 
-        let duplicated = executor
-            .select_signatures(&proposal.input(&[0, 0]))
-            .unwrap();
+        let duplicated = executor.selection_for(&proposal.input(&[0, 0])).unwrap();
         assert_eq!((duplicated.valid, duplicated.ignored), (1, 1));
         assert!(!duplicated.is_ready());
 
         let mut forged = proposal.input(&[0, 1]);
         forged.cosigner_signatures[1].signature = forged.cosigner_signatures[0].signature.clone();
-        let forged = executor.select_signatures(&forged).unwrap();
+        let forged = executor.selection_for(&forged).unwrap();
         assert_eq!(
             (forged.valid, forged.ignored),
             (1, 1),
@@ -902,7 +939,7 @@ mod executor {
         let mut invalid_first = proposal.input(&[0, 0, 1]);
         invalid_first.cosigner_signatures[0].signature =
             invalid_first.cosigner_signatures[2].signature.clone();
-        let invalid_first = executor.select_signatures(&invalid_first).unwrap();
+        let invalid_first = executor.selection_for(&invalid_first).unwrap();
         assert_eq!(
             (invalid_first.valid, invalid_first.ignored),
             (2, 1),
@@ -925,7 +962,7 @@ mod executor {
             },
             timestamp: "2026-09-30T12:00:00Z".to_string(),
         });
-        let with_outsider = executor.select_signatures(&with_outsider).unwrap();
+        let with_outsider = executor.selection_for(&with_outsider).unwrap();
         assert_eq!((with_outsider.valid, with_outsider.ignored), (2, 1));
         assert!(
             with_outsider.is_ready(),
@@ -933,12 +970,44 @@ mod executor {
         );
     }
 
+    /// Guardian's acknowledgment is its own authorization, never a cosigner approval: a signature
+    /// by the guardian key over the summary, offered as one, is ignored like any outsider's.
+    #[tokio::test]
+    async fn the_guardian_key_cannot_stand_in_for_a_missing_cosigner() {
+        let proposal = proposal(true).await;
+        let mut input = proposal.input(&[0]);
+        input.cosigner_signatures.push(CosignerSignature {
+            signer_id: format!(
+                "0x{}",
+                hex::encode(proposal.guardian.public_key().to_commitment().to_bytes())
+            ),
+            signature: ProposalSignature::Falcon {
+                signature: format!(
+                    "0x{}",
+                    hex::encode(
+                        proposal
+                            .guardian
+                            .sign(proposal.summary.to_commitment())
+                            .to_bytes()
+                    )
+                ),
+            },
+            timestamp: "2026-09-30T12:00:00Z".to_string(),
+        });
+        let selection = proposal.executor().selection_for(&input).unwrap();
+        assert_eq!(
+            (selection.required, selection.valid, selection.ignored),
+            (2, 1, 1)
+        );
+        assert!(!selection.is_ready());
+    }
+
     #[tokio::test]
     async fn only_signatures_guardian_holds_count_towards_the_threshold() {
         let proposal = proposal(true).await;
         let held = proposal
             .executor()
-            .select_signatures(&proposal.input(&[0]))
+            .selection_for(&proposal.input(&[0]))
             .unwrap();
         assert_eq!((held.required, held.valid), (2, 1));
         assert!(
@@ -1464,7 +1533,7 @@ mod executor {
         };
         let executor = MidenExecutor::new(rpc, Arc::new(LocalTransactionProver::default()));
 
-        let selection = executor.select_signatures(&input).unwrap();
+        let selection = executor.selection_for(&input).unwrap();
         assert_eq!((selection.valid, selection.ignored), (2, 0));
         assert!(selection.is_ready(), "the EIP-712 signature counts");
         let mut attempt = executor.prepare(input).await.unwrap();
@@ -1494,7 +1563,7 @@ mod executor {
             },
             timestamp: "2026-09-30T12:00:00Z".to_string(),
         });
-        let selection = proposal.executor().select_signatures(&input).unwrap();
+        let selection = proposal.executor().selection_for(&input).unwrap();
         assert_eq!((selection.valid, selection.ignored), (1, 1));
     }
 

@@ -43,8 +43,6 @@ pub struct MockNetworkClient {
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
     pub account_auth_binding_responses: Arc<StdMutex<Vec<AccountAuthBindingResult>>>,
     pub extract_guardian_commitment_responses: Arc<StdMutex<Vec<ExtractGuardianCommitmentResult>>>,
-    /// The guardian key `extract_guardian_commitment` reports once its queue is empty.
-    pub guardian_commitment: Arc<StdMutex<Option<String>>>,
     pub fetch_on_chain_guardian_binding_responses: Arc<StdMutex<Vec<OnChainGuardianBindingResult>>>,
     pub fetch_on_chain_guardian_binding_calls: Arc<StdMutex<Vec<String>>>,
     pub find_transaction_ending_at_responses: Arc<StdMutex<Vec<TransactionSearchResult>>>,
@@ -358,7 +356,7 @@ impl NetworkClient for MockNetworkClient {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Ok(self.guardian_commitment.lock().unwrap().clone()))
+            .unwrap_or(Ok(None))
     }
 
     async fn fetch_on_chain_guardian_binding(
@@ -573,6 +571,19 @@ pub struct MockStorageBackend {
 }
 
 impl MockStorageBackend {
+    /// Whether no execution was reserved or admitted through this backend.
+    pub fn reserved_nothing(&self) -> bool {
+        self.create_execution_reservation_calls
+            .lock()
+            .unwrap()
+            .is_empty()
+            && self
+                .admit_execution_candidate_calls
+                .lock()
+                .unwrap()
+                .is_empty()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }

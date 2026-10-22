@@ -43,7 +43,7 @@ use crate::metrics::execution::{record_chain_view, record_prover_retry, record_p
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::execute_proposal::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SendWindow, SignatureSelection, SubmissionOutcome,
+    ProvenTransactionInfo, SelectedProposal, SendWindow, SignatureSelection, SubmissionOutcome,
 };
 use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
@@ -58,6 +58,7 @@ const PROVER_BACKOFF_CAP: Duration = Duration::from_secs(30);
 const MIN_MEASURED_BLOCKS: u32 = 4;
 
 /// Executes Guardian-executable proposals against a Miden node and remote prover.
+#[derive(Clone)]
 pub struct MidenExecutor {
     rpc: Arc<dyn NodeRpcClient>,
     submission_rpc: Arc<dyn NodeRpcClient>,
@@ -298,21 +299,56 @@ fn is_transient(error: &(dyn std::error::Error + 'static)) -> bool {
         )
 }
 
-#[async_trait]
 impl ProposalExecutor for MidenExecutor {
     fn select_signatures(
-        &self,
-        input: &ExecutionInput,
-    ) -> Result<SignatureSelection, GuardianError> {
+        self: Arc<Self>,
+        input: ExecutionInput,
+    ) -> Result<Box<dyn SelectedProposal>, GuardianError> {
         let account = Account::from_json(&input.state_json).map_err(GuardianError::InvalidDelta)?;
         let summary = proposal_tx_summary(&input.proposal_payload)?;
-        Ok(select(input, &account, &summary).selection)
+        let selected = select(&input, &account, &summary);
+        let guardian = MidenAccountInspector::new(&account).extract_guardian_public_key();
+        Ok(Box::new(MidenSelected {
+            executor: self,
+            input,
+            account,
+            summary,
+            selected,
+            guardian,
+        }))
+    }
+}
+
+/// A proposal selected against the account state it was decoded from: the decoded account,
+/// summary and signature advice are reused by the attempt that executes it.
+struct MidenSelected {
+    executor: Arc<MidenExecutor>,
+    input: ExecutionInput,
+    account: Account,
+    summary: TransactionSummary,
+    selected: SelectedSignatures,
+    guardian: Option<String>,
+}
+
+#[async_trait]
+impl SelectedProposal for MidenSelected {
+    fn selection(&self) -> &SignatureSelection {
+        &self.selected.selection
     }
 
-    async fn prepare(
-        &self,
-        input: ExecutionInput,
-    ) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
+    fn guardian_commitment(&self) -> Option<&str> {
+        self.guardian.as_deref()
+    }
+
+    async fn prepare(self: Box<Self>) -> Result<Box<dyn ExecutionAttempt>, ExecutionFailure> {
+        let MidenSelected {
+            executor: node,
+            input,
+            account,
+            summary,
+            selected,
+            ..
+        } = *self;
         let started = std::time::Instant::now();
         let codec = |message: &'static str, cause: &dyn std::fmt::Display| {
             ExecutionFailure::with_logged_cause(ExecutionFailureCode::RequestCodec, message, cause)
@@ -340,22 +376,17 @@ impl ProposalExecutor for MidenExecutor {
                 &e,
             )
         })?;
-        let summary = proposal_tx_summary(&input.proposal_payload)
-            .map_err(|e| codec("the signed transaction summary does not decode", &e))?;
         request.check_against(&summary).map_err(|reason| {
             ExecutionFailure::new(
                 ExecutionFailureCode::RequestInvalid(reason),
                 format!("stored request is not Guardian-executable: {reason:?}"),
             )
         })?;
-        let account = Account::from_json(&input.state_json)
-            .map_err(|e| codec("the account state does not decode", &e))?;
-        let selected = select(&input, &account, &summary);
         let decoded = started.elapsed();
 
-        let genesis = self.genesis().await?;
+        let genesis = node.genesis().await?;
         let approval_expiration = approval_expiration_block(&summary);
-        let tip = chain_tip(self.rpc.as_ref()).await?;
+        let tip = chain_tip(node.rpc.as_ref()).await?;
         if u64::from(tip.as_u32()) >= approval_expiration {
             return Err(ExecutionFailure::new(
                 ExecutionFailureCode::ExpirationReached(ExpirationBound::Approval),
@@ -394,7 +425,7 @@ impl ProposalExecutor for MidenExecutor {
             tracked.insert(block);
         }
         let assembly = std::time::Instant::now();
-        let view = build_chain_view_from(self.rpc.as_ref(), genesis, &tracked)
+        let view = build_chain_view_from(node.rpc.as_ref(), genesis, &tracked)
             .await
             .map_err(chain_view_failure)?;
         let chain_view = assembly.elapsed();
@@ -404,7 +435,7 @@ impl ProposalExecutor for MidenExecutor {
             .iter()
             .map(|note| note.note().clone())
             .collect();
-        let store = ExecutionDataStore::new(account.clone(), view, self.rpc.clone(), &notes);
+        let store = ExecutionDataStore::new(account.clone(), view, node.rpc.clone(), &notes);
 
         let reference = store.chain().reference_block();
         let executor: TransactionExecutor<'_, '_, _, UnreachableAuth> =
@@ -454,9 +485,9 @@ impl ProposalExecutor for MidenExecutor {
         }
 
         Ok(Box::new(MidenAttempt {
-            rpc: self.rpc.clone(),
-            submission_rpc: self.submission_rpc.clone(),
-            prover: self.prover.clone(),
+            rpc: node.rpc.clone(),
+            submission_rpc: node.submission_rpc.clone(),
+            prover: node.prover.clone(),
             genesis: genesis.clone(),
             account,
             request,
@@ -899,20 +930,32 @@ fn block_interval(reference: &BlockHeader, genesis: &BlockHeader, tip: &BlockHea
 }
 
 /// Past the boundary a rejection deletes the proposal, so only a node that answered and refused
-/// the transaction is a rejection. A response that failed to arrive or to decode may still have
-/// been accepted, and a node reporting the transaction as already known may hold it, so both are
-/// left for the chain to settle.
+/// the transaction itself is a rejection. A refusal issued before the node processed anything (a
+/// rate limit the client's own retries outlasted, authentication, permission, an unimplemented
+/// call) says nothing about the proposal, which stays executable. A response that failed to
+/// arrive or to decode may still have been accepted, and a node reporting the transaction as
+/// already known may hold it, so both are left for the chain to settle.
 fn classify_submission_error(error: &miden_client::rpc::RpcError) -> SubmissionOutcome {
     use miden_client::rpc::{GrpcError, RpcError};
-    let refused = matches!(
-        error,
-        RpcError::RequestError { error_kind, .. } if !matches!(error_kind, GrpcError::AlreadyExists)
-    ) && !error.is_indeterminate_submission();
     let reason = error.to_string();
-    if refused {
-        SubmissionOutcome::Rejected { reason }
-    } else {
-        SubmissionOutcome::Unknown { reason }
+    if error.is_indeterminate_submission() {
+        return SubmissionOutcome::Unknown { reason };
+    }
+    match error {
+        RpcError::RequestError {
+            error_kind:
+                GrpcError::ResourceExhausted
+                | GrpcError::Unauthenticated
+                | GrpcError::PermissionDenied
+                | GrpcError::Unimplemented,
+            ..
+        } => SubmissionOutcome::NotProcessed { reason },
+        RpcError::RequestError {
+            error_kind: GrpcError::AlreadyExists,
+            ..
+        } => SubmissionOutcome::Unknown { reason },
+        RpcError::RequestError { .. } => SubmissionOutcome::Rejected { reason },
+        _ => SubmissionOutcome::Unknown { reason },
     }
 }
 
@@ -1102,5 +1145,39 @@ mod submission_classification_tests {
         assert!(is_unknown(RpcError::ExpectedDataMissing(
             "block".to_string()
         )));
+    }
+
+    #[test]
+    fn a_refusal_before_processing_keeps_the_proposal_rather_than_rejecting_it() {
+        for kind in [
+            GrpcError::ResourceExhausted,
+            GrpcError::Unauthenticated,
+            GrpcError::PermissionDenied,
+            GrpcError::Unimplemented,
+        ] {
+            let label = format!("{kind:?}");
+            assert!(
+                matches!(
+                    classify_submission_error(&refused(kind)),
+                    SubmissionOutcome::NotProcessed { .. }
+                ),
+                "{label}"
+            );
+        }
+        for kind in [
+            GrpcError::InvalidArgument,
+            GrpcError::FailedPrecondition,
+            GrpcError::NotFound,
+            GrpcError::OutOfRange,
+        ] {
+            let label = format!("{kind:?}");
+            assert!(
+                matches!(
+                    classify_submission_error(&refused(kind)),
+                    SubmissionOutcome::Rejected { .. }
+                ),
+                "{label}"
+            );
+        }
     }
 }

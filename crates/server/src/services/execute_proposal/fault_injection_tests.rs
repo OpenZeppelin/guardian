@@ -831,16 +831,29 @@ async fn an_expiration_beyond_the_horizon_is_refused_before_proving() {
     }
 }
 
+/// A guardian switch changes the account's state, so the recheck after proving sees the account
+/// moved away from the base it was selected at.
 #[tokio::test]
 async fn a_guardian_switch_during_proving_fails_the_admissibility_recheck() {
-    let faults = Faults::new(Script::default()).await;
-    faults
-        .chain
-        .extract_guardian_commitment_responses
-        .lock()
-        .unwrap()
-        .push(Ok(Some("0xanother-guardian".to_string())));
+    let faults = Faults::new(Script {
+        proving_time: Duration::from_millis(300),
+        ..Script::default()
+    })
+    .await;
     faults.f.request().await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while faults.f.calls.lock().unwrap().prepared == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let mut switched = faults.f.state.storage.pull_state(ACCOUNT).await.unwrap();
+    switched.commitment = MOVED_ON.to_string();
+    faults
+        .f
+        .state
+        .storage
+        .submit_state(&switched)
+        .await
+        .unwrap();
     let (failed, _) = faults
         .f
         .settle(|state| state == ExecutionState::Failed)
@@ -855,7 +868,7 @@ async fn a_guardian_switch_during_proving_fails_the_admissibility_recheck() {
 #[tokio::test]
 async fn an_account_without_a_guardian_slot_is_inadmissible_before_any_chain_work() {
     let faults = Faults::new(Script::default()).await;
-    *faults.chain.guardian_commitment.lock().unwrap() = None;
+    *faults.f.guardian.lock().unwrap() = None;
     faults.f.request().await.unwrap();
     let (failed, _) = faults
         .f
