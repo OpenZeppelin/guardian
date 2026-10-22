@@ -1247,17 +1247,22 @@ export class Multisig {
    * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
    * accepted; {@link executionStatus} reports the outcome. The proposal must have been created
    * by a `guardian_executable` client and be held by this one: a proposal it does not hold
-   * throws `ProposalNotHeldLocallyError` without contacting Guardian. A proposal that must be
-   * executed locally throws `LocalExecutionRequiredError`: a `switch_guardian` proposal always,
-   * a private-note P2ID proposal unless `options.allowPrivateNote` says this caller delivers the
-   * note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
+   * throws `ProposalNotHeldLocallyError` without contacting Guardian, as does one whose
+   * metadata failed verification against its signed summary; an unchecked one is verified
+   * first. A proposal that must be executed locally throws `LocalExecutionRequiredError`: a
+   * `switch_guardian` proposal always, a private-note P2ID proposal unless
+   * `options.allowPrivateNote` says this caller delivers the note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
    * execution throws the same `LocalExecutionRequiredError`.
    */
   async requestGuardianExecution(
     proposalId: string,
     options: GuardianExecutionRequestOptions = {},
   ): Promise<ProposalExecution> {
-    assertGuardianMayExecute(proposalId, this.getLocalProposal(proposalId), options);
+    const proposal = this.getLocalProposal(proposalId);
+    if (proposal?.verification.status === 'unchecked') {
+      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
+    }
+    assertGuardianMayExecute(proposalId, proposal, options);
     return refusingExecutionWith(
       proposalId,
       this.guardian.executeDeltaProposal(this._accountId, proposalId, {

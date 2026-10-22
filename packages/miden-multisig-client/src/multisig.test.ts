@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { isProposalActionable, type Proposal } from './types/proposal.js';
+import { isProposalActionable, type Proposal, type ProposalType } from './types/proposal.js';
+import type { ProcedureName } from './procedures.js';
 import { Multisig } from './multisig.js';
 import {
   GuardianExecutionRefusedError,
@@ -799,6 +803,40 @@ describe('Multisig', () => {
       });
       expect(raised.getEffectiveThreshold('p2id')).toBe(3);
     });
+
+    interface ThresholdVector {
+      name: string;
+      threshold: number;
+      overrides: Record<string, number>;
+      expected: Record<string, number>;
+    }
+
+    const vectors = JSON.parse(
+      readFileSync(
+        fileURLToPath(
+          new URL('../../../fixtures/miden-multisig-client/threshold-vectors.json', import.meta.url),
+        ),
+        'utf8',
+      ),
+    ) as ThresholdVector[];
+
+    for (const vector of vectors) {
+      it(`matches the shared Rust threshold vector: ${vector.name}`, () => {
+        const multisig = createTestMultisig({
+          ...baseConfig,
+          threshold: vector.threshold,
+          procedureThresholds: Object.entries(vector.overrides).map(([procedure, threshold]) => ({
+            procedure: procedure as ProcedureName,
+            threshold,
+          })),
+        });
+        for (const [proposalType, expected] of Object.entries(vector.expected)) {
+          expect(multisig.getEffectiveThreshold(proposalType as ProposalType), proposalType).toBe(
+            expected,
+          );
+        }
+      });
+    }
   });
 
   describe('relayCollectedApprovals', () => {
@@ -8596,7 +8634,10 @@ describe('Multisig', () => {
       updatedAt: '2026-10-07T00:00:00Z',
     } satisfies ProposalExecution;
 
-    function holding(metadata: Proposal['metadata'] | null) {
+    function holding(
+      metadata: Proposal['metadata'] | null,
+      verification: Proposal['verification'] = { status: 'verified' },
+    ) {
       const multisig = createTestMultisig({
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -8611,12 +8652,48 @@ describe('Multisig', () => {
           txSummary: '',
           signatures: [],
           metadata,
-          verification: { status: 'verified' },
+          verification,
         } satisfies Proposal);
       }
       const execute = vi.spyOn(guardian, 'executeDeltaProposal').mockResolvedValue(accepted);
       return { multisig, execute };
     }
+
+    const publicP2id: Proposal['metadata'] = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xr',
+      faucetId: '0xf',
+      amount: '1',
+      noteType: 'public',
+    };
+
+    it('refuses a held proposal whose metadata failed verification, without calling GUARDIAN', async () => {
+      const { multisig, execute } = holding(
+        publicP2id,
+        { status: 'failed', retryable: false, message: 'metadata does not rebuild the summary' },
+      );
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('verifies an unchecked proposal before sending it, and refuses it when that fails', async () => {
+      const { multisig, execute } = holding(publicP2id, { status: 'unchecked' });
+      const check = vi
+        .spyOn(multisig as any, 'checkProposalMetadataBinding')
+        .mockRejectedValueOnce(new Error('metadata does not rebuild the summary'))
+        .mockResolvedValueOnce(proposalId);
+
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
+      expect(execute).not.toHaveBeenCalled();
+
+      (multisig as any).proposals.get(proposalId).verification = { status: 'unchecked' };
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
 
     const privateP2id: Proposal['metadata'] = {
       proposalType: 'p2id',

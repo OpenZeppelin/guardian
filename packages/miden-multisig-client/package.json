@@ -54,7 +54,7 @@
     "fake-indexeddb": "^6.2.5",
     "viem": "^2.47.5",
     "typescript": "^5.7.2",
-    "vite": "^6.4.4",
+    "vite": "^6.4.3",
     "vitest": "^5.0.0"
   },
   "engines": {
