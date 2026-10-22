@@ -32,7 +32,7 @@ import type { SignerInfo, ResolvedSigner } from './types';
 interface MidenWalletSignerOptions {
   wallet: WalletSigningContext;
   commitment: string;
-  publicKey: string;
+  publicKey?: string;
   scheme: SignatureScheme;
 }
 
@@ -410,6 +410,8 @@ function failedExecutionAdvice(error: ExecutionFailure): string {
       return 'Fix the cause before executing it again.';
     case 'GUARDIAN_EXECUTION_REQUEST_INVALID':
       return 'GUARDIAN cannot execute this request: execute it from this client instead.';
+    case 'GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED':
+      return 'The node refused the transaction without processing it: execute the proposal again.';
     case 'GUARDIAN_EXECUTION_SUBMISSION_REJECTED':
     case 'GUARDIAN_EXECUTION_CANDIDATE_DISCARDED':
     case 'GUARDIAN_EXECUTION_EXPIRED':

@@ -344,6 +344,20 @@ impl MetadataStore for FilesystemMetadataStore {
         self.persist(&cache).await
     }
 
+    async fn create(&self, metadata: AccountMetadata) -> Result<bool, String> {
+        let mut cache = self.cache.write().await;
+        if cache.contains_key(&metadata.account_id) {
+            return Ok(false);
+        }
+        let account_id = metadata.account_id.clone();
+        cache.insert(account_id.clone(), metadata);
+        if let Err(persist_error) = self.persist(&cache).await {
+            cache.remove(&account_id);
+            return Err(persist_error);
+        }
+        Ok(true)
+    }
+
     async fn list(&self) -> Result<Vec<String>, String> {
         let cache = self.cache.read().await;
         Ok(cache.keys().cloned().collect())
@@ -1676,6 +1690,54 @@ mod auth_state_tests {
             }
         }
         assert_eq!(accepted, 1, "exactly one concurrent request may win");
+    }
+
+    #[tokio::test]
+    async fn create_inserts_only_when_the_account_is_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert!(store.create(sample_metadata("acct")).await.unwrap());
+        let mut later = sample_metadata("acct");
+        later.auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![SIGNER_B.into()],
+        };
+        assert!(
+            !store.create(later).await.unwrap(),
+            "a second create for the same account must not claim it"
+        );
+        assert_eq!(
+            store.get("acct").await.unwrap().unwrap().auth,
+            sample_metadata("acct").auth,
+            "the losing create must leave the first one's row untouched"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_that_fails_to_persist_leaves_no_account_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_file(accounts_path(&dir));
+        std::fs::create_dir(accounts_path(&dir)).unwrap();
+        store
+            .create(sample_metadata("acct"))
+            .await
+            .expect_err("persisting over a directory must fail");
+        assert!(
+            store.get("acct").await.unwrap().is_none(),
+            "a create that was never persisted must not leave the account in memory"
+        );
+
+        std::fs::remove_dir(accounts_path(&dir)).unwrap();
+        assert!(
+            store.create(sample_metadata("acct")).await.unwrap(),
+            "the retry creates the account"
+        );
     }
 
     #[tokio::test]

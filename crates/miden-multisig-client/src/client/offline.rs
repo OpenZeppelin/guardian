@@ -290,13 +290,20 @@ impl MultisigClient {
             tx_summary_commitment,
             Some(&tx_summary),
         )?;
+        account.ensure_threshold_met(&proposal.transaction_type, signature_advice.len())?;
 
         // Cosigner signatures come from the document; the acknowledgement comes
         // from GUARDIAN, exactly as on the online path. Without this the
         // document could only ever execute a guardian switch, the one type that
         // needs no acknowledgement, which is what tied off-channel signature
-        // collection to that single type.
+        // collection to that single type. GUARDIAN acknowledges a multisig
+        // delta only when its stored proposal carries a threshold of verified
+        // approvals (issue #524), and approvals collected off channel exist
+        // only in the document, so they are relayed to the stored proposal
+        // before the acknowledgement is requested.
         if proposal.transaction_type.requires_guardian_ack() {
+            self.relay_collected_approvals(&proposal.id, &exported.signatures)
+                .await?;
             let guardian_advice = self
                 .get_guardian_ack_signature(
                     &account,
@@ -347,5 +354,176 @@ impl MultisigClient {
 
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
+    }
+
+    /// Relays the document's collected approvals to GUARDIAN's stored
+    /// proposal. The signing endpoint credits each approval to the cosigner
+    /// its signature cryptographically verifies for, so any configured
+    /// signer may relay them; an approval GUARDIAN already holds answers
+    /// with `proposal_already_signed` and is skipped. A refusal with
+    /// `invalid_proposal_signature` is skipped too: a server without the
+    /// gate accepts only the caller's own approval and acknowledges the
+    /// push without the rest, and a server with it does not count the
+    /// refused approval, so the push itself reports a missing threshold.
+    ///
+    /// The caller's own approval goes first: a server that credits every
+    /// approval to the request signer (before 0.18.1) then refuses the rest
+    /// as already signed. A response that stores a relayed approval under
+    /// another signer stops the relay.
+    async fn relay_collected_approvals(
+        &mut self,
+        proposal_id: &str,
+        signatures: &[ExportedSignature],
+    ) -> Result<()> {
+        let account_id = self.require_account()?.id();
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let caller = self.key_manager.commitment_hex();
+        let (own, others): (Vec<_>, Vec<_>) = signatures
+            .iter()
+            .partition(|collected| collected.signer_commitment.eq_ignore_ascii_case(&caller));
+        for collected in own.into_iter().chain(others) {
+            let signature = match collected.scheme {
+                guardian_shared::SignatureScheme::Falcon => {
+                    guardian_shared::ProposalSignature::Falcon {
+                        signature: collected.signature.clone(),
+                    }
+                }
+                guardian_shared::SignatureScheme::Ecdsa => {
+                    guardian_shared::ProposalSignature::Ecdsa {
+                        signature: collected.signature.clone(),
+                        public_key: collected.public_key_hex.clone(),
+                        message_format: collected.message_format,
+                    }
+                }
+            };
+            match guardian_client
+                .sign_delta_proposal(&account_id, proposal_id, signature)
+                .await
+            {
+                Ok(response) => {
+                    assert_approval_credited_to_its_signer(response.delta.as_ref(), collected)?
+                }
+                Err(error)
+                    if error.guardian_code().as_deref() == Some("proposal_already_signed") => {}
+                Err(error)
+                    if error.guardian_code().as_deref() == Some("invalid_proposal_signature") =>
+                {
+                    tracing::warn!(
+                        signer = %collected.signer_commitment,
+                        %error,
+                        "GUARDIAN refused a relayed approval; a server without the multisig \
+                         push gate accepts only the caller's own approval, otherwise the push \
+                         reports a missing threshold"
+                    );
+                }
+                Err(error) => {
+                    return Err(MultisigError::GuardianServer(format!(
+                        "failed to relay a collected approval to GUARDIAN: {error}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Refuses a relay whose response stores the relayed approval under another
+/// signer. A server before 0.18.1 credits every approval to the request
+/// signer, and other devices that load such an entry would execute with it.
+fn assert_approval_credited_to_its_signer(
+    stored: Option<&guardian_client::DeltaObject>,
+    relayed: &ExportedSignature,
+) -> Result<()> {
+    let Some(guardian_client::delta_status::Status::Pending(pending)) = stored
+        .and_then(|delta| delta.status.as_ref())
+        .and_then(|status| status.status.as_ref())
+    else {
+        return Ok(());
+    };
+    let relayed_signature = relayed.signature.trim_start_matches("0x");
+    let misattributed = pending.cosigner_sigs.iter().find(|stored| {
+        stored.signature.as_ref().is_some_and(|signature| {
+            signature
+                .signature
+                .trim_start_matches("0x")
+                .eq_ignore_ascii_case(relayed_signature)
+        }) && !stored
+            .signer_id
+            .eq_ignore_ascii_case(&relayed.signer_commitment)
+    });
+    match misattributed {
+        Some(stored) => Err(MultisigError::GuardianServer(format!(
+            "GUARDIAN stored the relayed approval of {} as {}; it does not verify relayed \
+             approvals (a server before 0.18.1). Upgrade the server before executing this proposal",
+            relayed.signer_commitment, stored.signer_id
+        ))),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use guardian_client::{
+        CosignerSignature, DeltaObject, DeltaStatus, PendingStatus, ProposalSignature, delta_status,
+    };
+    use guardian_shared::SignatureScheme;
+
+    use super::*;
+    use crate::export::ExportedSignature;
+
+    const CALLER: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const OTHER: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    fn relayed() -> ExportedSignature {
+        ExportedSignature {
+            signer_commitment: OTHER.to_string(),
+            signature: format!("0x{}", "e".repeat(128)),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
+            message_format: Default::default(),
+        }
+    }
+
+    fn stored_under(signer_id: &str) -> DeltaObject {
+        DeltaObject {
+            status: Some(DeltaStatus {
+                status: Some(delta_status::Status::Pending(PendingStatus {
+                    timestamp: "2026-01-01T00:00:00Z".to_string(),
+                    proposer_id: CALLER.to_string(),
+                    cosigner_sigs: vec![CosignerSignature {
+                        signer_id: signer_id.to_string(),
+                        signature: Some(ProposalSignature {
+                            scheme: "falcon".to_string(),
+                            signature: format!("0x{}", "E".repeat(128)),
+                            public_key: None,
+                            message_format: String::new(),
+                        }),
+                        timestamp: "2026-01-01T00:00:00Z".to_string(),
+                    }],
+                })),
+                discard_reason: String::new(),
+                retain_reason: String::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn accepts_a_relayed_approval_stored_under_its_signer() {
+        assert!(
+            assert_approval_credited_to_its_signer(Some(&stored_under(OTHER)), &relayed()).is_ok()
+        );
+    }
+
+    /// A server before 0.18.1 stores a relayed approval under the request
+    /// signer; the relay stops instead of leaving that entry for others.
+    #[test]
+    fn refuses_a_relayed_approval_stored_under_another_signer() {
+        let result =
+            assert_approval_credited_to_its_signer(Some(&stored_under(CALLER)), &relayed());
+        assert!(
+            matches!(&result, Err(MultisigError::GuardianServer(message)) if message.contains("stored the relayed approval")),
+            "{result:?}"
+        );
     }
 }

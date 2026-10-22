@@ -107,12 +107,68 @@ async fn status_at(server: &mut QueueServer, nonce: u64) -> Result<Option<Status
     Ok(stored_at(server, nonce).await?.map(|(status, _)| status))
 }
 
+/// Stores the proposal for `delta` and relays every cosigner's approval to
+/// it: GUARDIAN acknowledges a multisig delta only when its proposal carries
+/// the threshold of verified approvals (issue #524). Idempotent on a later
+/// pass: the stack's Postgres store keeps the first copy of a proposal (the
+/// filesystem store would overwrite it, and the approvals relayed next would
+/// restore it), and GUARDIAN answers an approval it already holds with
+/// `proposal_already_signed`.
+async fn authorize(
+    server: &mut QueueServer,
+    fixtures: &Fixtures,
+    delta: &ChainedDelta,
+) -> Result<(), ActionOutcome> {
+    let (payload, approvals) = match (
+        Fixtures::proposal_payload_for(&delta.payload),
+        fixtures.cosigner_approvals(&delta.payload),
+    ) {
+        (Ok(payload), Ok(approvals)) => (payload, approvals),
+        (Err(error), _) | (_, Err(error)) => {
+            return Err(ActionOutcome::failed_setup(format!(
+                "building the proposal for the delta at nonce {}: {error}",
+                delta.nonce
+            )));
+        }
+    };
+    let proposal_id = server
+        .client
+        .push_delta_proposal(&server.id, delta.nonce, &payload)
+        .await
+        .map_err(|error| {
+            ActionOutcome::failed_product(format!(
+                "proposing the delta at nonce {} was refused: {error}",
+                delta.nonce
+            ))
+        })?
+        .commitment;
+    for approval in approvals {
+        match server
+            .client
+            .sign_delta_proposal(&server.id, proposal_id.clone(), approval)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if error.guardian_code().as_deref() == Some("proposal_already_signed") => {}
+            Err(error) => {
+                return Err(ActionOutcome::failed_product(format!(
+                    "relaying a cosigner approval of the proposal at nonce {} was refused: \
+                     {error}",
+                    delta.nonce
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Makes sure `delta` is queued, pushing it when nothing is stored at its nonce
 /// yet or the worker parked an earlier pass's copy as retained: a fresh
 /// candidate supersedes a retained row. Anything else there means the server
 /// lost or resolved a candidate the stub chain can never confirm.
 async fn ensure_queued(
     server: &mut QueueServer,
+    fixtures: &Fixtures,
     delta: &ChainedDelta,
 ) -> Result<(), ActionOutcome> {
     match stored_at(server, delta.nonce).await? {
@@ -141,6 +197,7 @@ async fn ensure_queued(
             )));
         }
     }
+    authorize(server, fixtures, delta).await?;
     match server
         .client
         .push_delta(
@@ -229,7 +286,7 @@ pub async fn assert_cosigner_proposal_refused(runner: &Runner) -> ActionOutcome 
         return ActionOutcome::failed_setup("the fixtures carry no three-delta chain");
     };
 
-    if let Err(outcome) = ensure_queued(&mut server, first).await {
+    if let Err(outcome) = ensure_queued(&mut server, fixtures, first).await {
         return outcome;
     }
     // A later pass can find the queue already full. The nonce rule is still
@@ -329,7 +386,7 @@ pub async fn assert_depth_limit(runner: &Runner) -> ActionOutcome {
     };
 
     for delta in [first, second] {
-        if let Err(outcome) = ensure_queued(&mut server, delta).await {
+        if let Err(outcome) = ensure_queued(&mut server, fixtures, delta).await {
             return outcome;
         }
     }

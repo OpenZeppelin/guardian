@@ -317,6 +317,47 @@ pub enum CandidateSubmission {
     /// A Guardian execution holds the account's reservation; a client
     /// candidate cannot be admitted until it resolves.
     ExecutionReserved { proposal_id: String },
+    /// The account was paused after the request checked its status;
+    /// nothing was written. Read under the same lock the pause takes, so a
+    /// pause that returned never sees a later ack.
+    Paused {
+        paused_at: DateTime<Utc>,
+        paused_reason: Option<String>,
+    },
+    /// The account was released after the request checked its status;
+    /// nothing was written.
+    Released { released_at: DateTime<Utc> },
+}
+
+impl CandidateSubmission {
+    /// The refusal for an account whose lifecycle columns read as paused
+    /// or released, or `None` while it is active. Released wins over
+    /// paused, as in `services::account_status`.
+    pub(crate) fn refused_while_inactive(
+        released_at: Option<DateTime<Utc>>,
+        paused_at: Option<DateTime<Utc>>,
+        paused_reason: Option<String>,
+    ) -> Option<Self> {
+        match (released_at, paused_at) {
+            (Some(released_at), _) => Some(Self::Released { released_at }),
+            (None, Some(paused_at)) => Some(Self::Paused {
+                paused_at,
+                paused_reason,
+            }),
+            (None, None) => None,
+        }
+    }
+}
+
+/// Outcome of [`StorageBackend::replace_state`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateReplace {
+    /// The stored state still had the expected commitment and was replaced.
+    Replaced,
+    /// A concurrent writer (a promotion, another re-onboarding) replaced
+    /// the stored state after the caller read it; nothing was written.
+    /// `current` is the commitment now stored.
+    StateMoved { current: String },
 }
 
 /// The chain position of one queued candidate, as the submission gate
@@ -598,6 +639,24 @@ pub(crate) async fn promote_candidate_sequential(
     })
 }
 
+/// Single-process fallback for [`StorageBackend::replace_state`]: a
+/// plain read-then-write, acceptable only where no concurrent task can
+/// interleave. Its sole consumer is the cfg-gated mock backend, hence the
+/// dead-code allowance for non-test builds.
+#[allow(dead_code)]
+pub(crate) async fn replace_state_sequential(
+    storage: &dyn StorageBackend,
+    state: &StateObject,
+    expected_commitment: &str,
+) -> Result<StateReplace, String> {
+    let current = storage.pull_state_commitment(&state.account_id).await?;
+    if current != expected_commitment {
+        return Ok(StateReplace::StateMoved { current });
+    }
+    storage.submit_state(state).await?;
+    Ok(StateReplace::Replaced)
+}
+
 /// Single-process fallback for [`StorageBackend::discard_candidate`].
 /// A flag-clear failure is tolerated (warn) to match the historical
 /// discard path: the candidate row is already gone and the stuck flag
@@ -715,6 +774,16 @@ pub trait StorageBackend: Send + Sync {
     }
 
     async fn submit_state(&self, state: &StateObject) -> Result<(), String>;
+    /// Replace the stored state only while its commitment is still
+    /// `expected_commitment`, atomically with that check. Re-onboarding
+    /// through `/configure` writes this way, so a promotion that moved the
+    /// stored state after the request read it is never overwritten with
+    /// the older state.
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<StateReplace, String>;
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String>;
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String>;
     /// The commitment of the account's stored state, without its
@@ -909,6 +978,19 @@ pub trait StorageBackend: Send + Sync {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String>;
+    /// Replace the proposal only while its stored status still equals
+    /// `expected`, the status the caller read before building `proposal`.
+    /// `Ok(false)` when another write changed it first, or the row is
+    /// gone. Every approval lives in the status (`cosigner_sigs`), so two
+    /// concurrent signings cannot both commit from the same read and drop
+    /// each other's approval. The status is never encrypted at rest, so
+    /// the comparison holds through the encryption decorator.
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String>;
     async fn delete_delta_proposal(&self, account_id: &str, commitment: &str)
     -> Result<(), String>;
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String>;
@@ -1061,8 +1143,9 @@ pub trait StorageBackend: Send + Sync {
     ) -> Result<AdmissionWrite, String>;
 
     /// Resolve a boundary-crossed attempt as failed: discard its candidate,
-    /// delete its proposal, persist the outcome and release the reservation
-    /// as one commit.
+    /// delete its proposal when the cause ends it
+    /// (`ExecutionFailureCode::ends_proposal`), persist the outcome and release
+    /// the reservation as one commit.
     async fn resolve_execution(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,

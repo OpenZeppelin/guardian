@@ -86,15 +86,17 @@ export interface GuardianExecutionRequestOptions {
 
 /**
  * Throws unless GUARDIAN may execute the proposal this client holds under `proposalId`: a
- * proposal the client does not hold fails closed, a `switch_guardian` proposal always needs local
- * execution, and a private-note P2ID proposal needs it unless the request allows it.
+ * proposal the client does not hold, or holds without having verified it against its signed
+ * summary, fails closed as the Rust SDK's `ProposalNotHeldLocally` does; a `switch_guardian`
+ * proposal always needs local execution, and a private-note P2ID proposal needs it unless the
+ * request allows it.
  */
 export function assertGuardianMayExecute(
   proposalId: string,
-  proposal: Pick<Proposal, 'metadata'> | undefined,
+  proposal: Pick<Proposal, 'metadata' | 'verification'> | undefined,
   options: GuardianExecutionRequestOptions,
 ): void {
-  if (proposal === undefined) {
+  if (proposal === undefined || proposal.verification.status !== 'verified') {
     throw new ProposalNotHeldLocallyError(proposalId);
   }
   const reason = localExecutionReason(proposal);

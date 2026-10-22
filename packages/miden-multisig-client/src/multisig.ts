@@ -310,6 +310,31 @@ function approvalExpirationDeltaOf(
   return delta;
 }
 
+/**
+ * Refuses a relay whose response stores the relayed approval under another
+ * signer. A server before 0.18.1 credits every approval to the request
+ * signer, and other devices that load such an entry would execute with it.
+ */
+function assertApprovalCreditedToItsSigner(stored: DeltaObject, relayed: ProposalSignatureEntry): void {
+  if (stored.status.status !== 'pending') {
+    return;
+  }
+  const bare = (hex: string) => hex.replace(/^0x/i, '').toLowerCase();
+  const signature = bare(relayed.signature.signature);
+  const misattributed = stored.status.cosignerSigs.find(
+    (sig) =>
+      bare(sig.signature.signature) === signature &&
+      normalizeHexWord(sig.signerId) !== normalizeHexWord(relayed.signerId),
+  );
+  if (misattributed) {
+    throw new Error(
+      `GUARDIAN stored the relayed approval of ${relayed.signerId} as ${misattributed.signerId}; ` +
+        'it does not verify relayed approvals (a server before 0.18.1). Upgrade the server ' +
+        'before executing this proposal',
+    );
+  }
+}
+
 function summarySaltHex(summary: TransactionSummary): string {
   const salt = summarySalt(summary);
   try {
@@ -587,13 +612,18 @@ export class Multisig {
   /**
    * Get the effective threshold for a given proposal type.
    * Returns the procedure-specific threshold if configured, otherwise the default threshold.
+   * A P2ID transfer calls both `send_asset` and `create_note`, and the chain requires the
+   * higher of their thresholds.
    *
    * @param proposalType - The type of proposal
    * @returns The threshold that applies to this proposal type
    */
   getEffectiveThreshold(proposalType: ProposalType): number {
-    if (this.procedureThresholds.size === 0) {
-      return this.threshold;
+    if (proposalType === 'p2id') {
+      return Math.max(
+        this.getProcedureThreshold('send_asset'),
+        this.getProcedureThreshold('create_note'),
+      );
     }
 
     const procedure = this.getProposalProcedure(proposalType);
@@ -601,6 +631,10 @@ export class Multisig {
       return this.threshold;
     }
 
+    return this.getProcedureThreshold(procedure);
+  }
+
+  private getProcedureThreshold(procedure: ProcedureName): number {
     return this.procedureThresholds.get(procedure) ?? this.threshold;
   }
 
@@ -1213,17 +1247,22 @@ export class Multisig {
    * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
    * accepted; {@link executionStatus} reports the outcome. The proposal must have been created
    * by a `guardian_executable` client and be held by this one: a proposal it does not hold
-   * throws `ProposalNotHeldLocallyError` without contacting Guardian. A proposal that must be
-   * executed locally throws `LocalExecutionRequiredError`: a `switch_guardian` proposal always,
-   * a private-note P2ID proposal unless `options.allowPrivateNote` says this caller delivers the
-   * note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
+   * throws `ProposalNotHeldLocallyError` without contacting Guardian, as does one whose
+   * metadata failed verification against its signed summary; an unchecked one is verified
+   * first. A proposal that must be executed locally throws `LocalExecutionRequiredError`: a
+   * `switch_guardian` proposal always, a private-note P2ID proposal unless
+   * `options.allowPrivateNote` says this caller delivers the note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
    * execution throws the same `LocalExecutionRequiredError`.
    */
   async requestGuardianExecution(
     proposalId: string,
     options: GuardianExecutionRequestOptions = {},
   ): Promise<ProposalExecution> {
-    assertGuardianMayExecute(proposalId, this.getLocalProposal(proposalId), options);
+    const proposal = this.getLocalProposal(proposalId);
+    if (proposal?.verification.status === 'unchecked') {
+      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
+    }
+    assertGuardianMayExecute(proposalId, proposal, options);
     return refusingExecutionWith(
       proposalId,
       this.guardian.executeDeltaProposal(this._accountId, proposalId, {
@@ -2252,7 +2291,7 @@ export class Multisig {
    * @param proposalId - The proposal commitment/ID
    */
   async executeProposal(proposalId: string): Promise<void> {
-    const { metadata, finalRequest, proposal, executedBase } =
+    const { metadata, finalRequest, proposal, executedBase, servedSwitch, approvals } =
       await this.prepareProposalExecution(proposalId);
 
     if (metadata.proposalType === 'switch_guardian') {
@@ -2276,7 +2315,24 @@ export class Multisig {
       // Best-effort: an unreachable old GUARDIAN must not block the switch, so
       // errors are swallowed (mirrors the Rust execute path, which names the
       // state it executed on and sends the summary it holds; GUARDIAN assigns
-      // the status).
+      // the status). The pre-switch GUARDIAN acknowledges the delta only when
+      // its stored proposal carries a threshold of approvals (issue #524), so
+      // approvals collected off channel are relayed to it first. A switch it
+      // never stored (one created offline) cannot be relayed to, so that
+      // GUARDIAN refuses the push and releases the account through its
+      // release sweep instead. A failed relay still leaves the push to be
+      // tried: the stored proposal may already carry a threshold.
+      if (servedSwitch) {
+        try {
+          await this.relayCollectedApprovals(normalizeHexWord(proposal.id), approvals, servedSwitch);
+        } catch (error) {
+          console.warn(
+            'Relaying collected approvals to the pre-switch GUARDIAN failed; pushing the ' +
+              'switch delta with the approvals it already holds',
+            error,
+          );
+        }
+      }
       try {
         await this.guardian.pushDelta({
           accountId: this._accountId,
@@ -2563,6 +2619,7 @@ export class Multisig {
       adviceMap.insert(key, new FeltArray(values));
     }
 
+    await this.relayCollectedApprovals(normalizeHexWord(proposalId), signaturesForExecution, delta);
     const executionDelta = { ...delta, deltaPayload: delta.deltaPayload.txSummary };
     const pushResult = await this.guardian.pushDelta(executionDelta);
     const ackSigHex = pushResult.ackSig;
@@ -2610,6 +2667,69 @@ export class Multisig {
   }
 
   /**
+   * Relay locally collected approvals (signatures imported from an exported
+   * proposal document and verified into this client's cache) to GUARDIAN's
+   * stored proposal. GUARDIAN acknowledges a multisig delta only when its
+   * stored proposal carries a threshold of verified approvals (issue #524),
+   * and off-channel approvals exist only in the document, so each one the
+   * server does not yet hold is relayed through the signing endpoint before
+   * the acknowledgement push. The endpoint credits an approval to the
+   * cosigner its signature cryptographically verifies for, so any configured
+   * signer may relay; an approval GUARDIAN already holds answers
+   * `proposal_already_signed` and is skipped. A refusal with
+   * `invalid_proposal_signature` is skipped too: a server without the gate
+   * accepts only the caller's own approval and acknowledges the push without
+   * the rest, and a server with it does not count the refused approval, so
+   * the push itself reports a missing threshold.
+   */
+  private async relayCollectedApprovals(
+    proposalId: string,
+    signatures: ProposalSignatureEntry[],
+    delta: DeltaObject,
+  ): Promise<void> {
+    const alreadyHeld = new Set(
+      delta.status.status === 'pending'
+        ? delta.status.cosignerSigs.map((sig) => normalizeHexWord(sig.signerId))
+        : [],
+    );
+    // The caller's own approval goes first: a server that credits every
+    // approval to the request signer (before 0.18.1) then refuses the rest
+    // as already signed instead of storing them under the caller.
+    const caller = normalizeHexWord(this.signer.commitment);
+    const ordered = [
+      ...signatures.filter((entry) => normalizeHexWord(entry.signerId) === caller),
+      ...signatures.filter((entry) => normalizeHexWord(entry.signerId) !== caller),
+    ];
+    for (const entry of ordered) {
+      if (alreadyHeld.has(normalizeHexWord(entry.signerId))) {
+        continue;
+      }
+      try {
+        const stored = await this.guardian.signDeltaProposal({
+          accountId: this._accountId,
+          commitment: proposalId,
+          signature: entry.signature,
+        });
+        assertApprovalCreditedToItsSigner(stored, entry);
+      } catch (error) {
+        if (error instanceof GuardianHttpError && error.code === 'proposal_already_signed') {
+          continue;
+        }
+        if (error instanceof GuardianHttpError && error.code === 'invalid_proposal_signature') {
+          console.warn(
+            `GUARDIAN refused the relayed approval of ${entry.signerId}; a server without the ` +
+              'multisig push gate accepts only your own approval, otherwise the push reports ' +
+              'a missing threshold',
+            error,
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  /**
    * The returned request declares the block the signed summary binds, and
    * executes at the chain tip.
    */
@@ -2619,6 +2739,13 @@ export class Multisig {
     proposal: Proposal;
     /** The account state the request was built on: this client's record. */
     executedBase: string;
+    /**
+     * A switch_guardian proposal as the pre-switch GUARDIAN serves it, or
+     * `undefined` for another type or when that GUARDIAN does not serve it.
+     */
+    servedSwitch: DeltaObject | undefined;
+    /** The verified approvals the request carries. */
+    approvals: ProposalSignatureEntry[];
   }> {
     const proposal = this.getLocalProposal(proposalId);
     if (!proposal) {
@@ -2735,6 +2862,7 @@ export class Multisig {
     }
 
     if (!isSwitchGuardian && delta) {
+      await this.relayCollectedApprovals(normalizedProposalId, signaturesForExecution, delta);
       const executionDelta = {
         ...delta,
         deltaPayload: delta.deltaPayload.txSummary,
@@ -2793,7 +2921,14 @@ export class Multisig {
       binding,
       adviceMap,
     );
-    return { finalRequest, metadata, proposal, executedBase };
+    return {
+      finalRequest,
+      metadata,
+      proposal,
+      executedBase,
+      servedSwitch: isSwitchGuardian ? delta : undefined,
+      approvals: signaturesForExecution,
+    };
   }
 
   /**

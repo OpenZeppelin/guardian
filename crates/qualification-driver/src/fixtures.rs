@@ -1,8 +1,8 @@
 use anyhow::{Context, anyhow};
-use guardian_shared::FromJson;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
+use guardian_shared::{FromJson, ProposalSignature};
 use miden_multisig_client::ProposalPayload;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::transaction::TransactionSummary;
@@ -42,7 +42,9 @@ pub struct Fixtures {
     /// `queue_1`, `queue_2` and `queue_3`, in nonce order.
     pub chained: Vec<ChainedDelta>,
     signer_key: SecretKey,
-    /// Every cosigner key of the fixture account, signer 1 first.
+    /// Every cosigner key of the fixture account, signer 1 first, so a delta
+    /// can carry the threshold of approvals GUARDIAN requires before
+    /// acknowledging it (issue #524).
     cosigner_keys: Vec<SecretKey>,
     /// The operator identity the allowlist grants `accounts:pause`, kept whole
     /// so a dashboard challenge can be signed rather than only recognised.
@@ -106,22 +108,22 @@ impl Fixtures {
         let signer_key = SecretKey::read_from_bytes(&hex::decode(secret_hex)?)
             .map_err(|error| anyhow!("signer_1_secret_key is not a Falcon key: {error}"))?;
 
+        let cosigner_keys = (1..=3)
+            .map(|index| -> anyhow::Result<SecretKey> {
+                let hex_key = keys[format!("signer_{index}_secret_key")]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("keys.json has no signer_{index}_secret_key"))?;
+                SecretKey::read_from_bytes(&hex::decode(hex_key)?)
+                    .map_err(|error| anyhow!("signer_{index} is not a Falcon key: {error}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
         let cosigner_commitments = (1..=3)
             .map(|index| {
                 keys[format!("signer_{index}_commitment")]
                     .as_str()
                     .map(str::to_string)
                     .ok_or_else(|| anyhow!("keys.json has no signer_{index}_commitment"))
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
-
-        let cosigner_keys = (1..=3)
-            .map(|index| {
-                let hex = keys[format!("signer_{index}_secret_key")]
-                    .as_str()
-                    .ok_or_else(|| anyhow!("keys.json has no signer_{index}_secret_key"))?;
-                SecretKey::read_from_bytes(&hex::decode(hex)?)
-                    .map_err(|error| anyhow!("signer_{index} is not a Falcon key: {error}"))
             })
             .collect::<anyhow::Result<Vec<_>>>()?;
 
@@ -280,6 +282,26 @@ impl Fixtures {
                     .map_err(|error| anyhow!("cloning a fixture cosigner: {error}"))
             })
             .collect()
+    }
+
+    /// Every cosigner's approval of the fixture transaction `summary`, the
+    /// signatures a proposal needs before GUARDIAN acknowledges its delta.
+    pub fn cosigner_approvals(&self, summary: &Value) -> anyhow::Result<Vec<ProposalSignature>> {
+        let commitment = TransactionSummary::from_json(summary)
+            .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?
+            .to_commitment();
+        Ok(self
+            .cosigner_keys
+            .iter()
+            .map(|key| ProposalSignature::Falcon {
+                signature: format!(
+                    "0x{}",
+                    hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
+                        &key.sign(commitment)
+                    ))
+                ),
+            })
+            .collect())
     }
 
     pub fn proposal_nonce(&self) -> u64 {

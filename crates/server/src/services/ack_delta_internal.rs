@@ -28,7 +28,9 @@ pub(crate) async fn acknowledge_delta(
     delta: &DeltaObject,
 ) -> Result<AcknowledgedDelta> {
     let applied = apply_to_base(state, base_commitment, base_state_json, delta).await?;
-    acknowledge_applied(state, scheme, delta, applied).await
+    let proposal_match =
+        lookup_matching_proposal(state, &delta.account_id, delta.nonce, &delta.delta_payload).await;
+    acknowledge_applied(state, scheme, delta, applied, proposal_match.payload()).await
 }
 
 /// Verifies `delta` against the state it builds on and applies it, without signing anything.
@@ -50,29 +52,17 @@ pub(crate) async fn apply_to_base(
         .map_err(Into::into)
 }
 
-/// Derives the metadata of a delta already applied by [`apply_to_base`] and signs Guardian's
-/// acknowledgment of it.
+/// Derives the metadata of a delta already applied by [`apply_to_base`], lifting operator
+/// intent from `matching_proposal` when one matched, and signs Guardian's acknowledgment of it.
 pub(crate) async fn acknowledge_applied(
     state: &AppState,
     scheme: &SignatureScheme,
     delta: &DeltaObject,
     applied: AppliedState,
+    matching_proposal: Option<&Value>,
 ) -> Result<AcknowledgedDelta> {
-    // Unconditional lookup: for multisig pushes this lifts the matching proposal's metadata
-    // so `build_metadata` can preserve operator intent. For single-key pushes the lookup
-    // misses and returns `None`; the cost is one extra storage read per push.
-    let matching_proposal_payload = lookup_matching_proposal_payload(
-        state,
-        &delta.account_id,
-        delta.nonce,
-        &delta.delta_payload,
-    )
-    .await;
-
-    let derived_metadata = crate::delta_summary::build_metadata(
-        &delta.delta_payload,
-        matching_proposal_payload.as_ref(),
-    );
+    let derived_metadata =
+        crate::delta_summary::build_metadata(&delta.delta_payload, matching_proposal);
 
     let mut acknowledged = delta.clone();
     acknowledged.new_commitment = Some(applied.commitment.clone());
@@ -84,21 +74,37 @@ pub(crate) async fn acknowledge_applied(
     Ok(AcknowledgedDelta {
         delta: acknowledged,
         applied,
-        matched_proposal: matching_proposal_payload.is_some(),
+        matched_proposal: matching_proposal.is_some(),
     })
 }
 
-/// Look up the matching `delta_proposals` row's `delta_payload` for
-/// the delta being pushed. Returns `None` when no proposal matches.
-/// All failure paths are non-fatal so the push proceeds; the
-/// "no match" cases log at `debug`, real storage errors log at `warn`
-/// so silent metadata loss stays detectable in production.
-async fn lookup_matching_proposal_payload(
+/// The `delta_proposals` row matching a delta, as far as storage could tell.
+pub(crate) enum ProposalMatch {
+    Found(Box<DeltaObject>),
+    Missing,
+    Unavailable(String),
+}
+
+impl ProposalMatch {
+    /// The matching proposal's payload, which `build_metadata` lifts operator intent from.
+    /// A storage fault yields `None`: callers that must not proceed on it refuse first.
+    pub(crate) fn payload(&self) -> Option<&Value> {
+        match self {
+            Self::Found(proposal) => Some(&proposal.delta_payload),
+            Self::Missing | Self::Unavailable(_) => None,
+        }
+    }
+}
+
+/// Look up the `delta_proposals` row for a delta. A missing row is [`ProposalMatch::Missing`].
+/// A storage fault is [`ProposalMatch::Unavailable`] and is logged at `warn`; the caller
+/// decides whether that fault refuses the delta.
+pub(crate) async fn lookup_matching_proposal(
     state: &AppState,
     account_id: &str,
     nonce: u64,
     delta_payload: &Value,
-) -> Option<Value> {
+) -> ProposalMatch {
     let proposal_id = {
         let client = &state.network_client;
         match client.delta_proposal_id(account_id, nonce, delta_payload) {
@@ -111,7 +117,7 @@ async fn lookup_matching_proposal_payload(
                     "delta_proposal_id could not compute an id for this payload; \
                      persisting metadata without proposal block (EVM / malformed payload)"
                 );
-                return None;
+                return ProposalMatch::Missing;
             }
         }
     };
@@ -120,7 +126,7 @@ async fn lookup_matching_proposal_payload(
         .pull_delta_proposal(account_id, &proposal_id)
         .await
     {
-        Ok(proposal) => Some(proposal.delta_payload),
+        Ok(proposal) => ProposalMatch::Found(Box::new(proposal)),
         Err(err) => {
             if crate::storage::is_storage_not_found(&err) {
                 tracing::debug!(
@@ -129,18 +135,18 @@ async fn lookup_matching_proposal_payload(
                     proposal_id = %proposal_id,
                     "no matching delta_proposal row (single-key push or unrelated payload)"
                 );
+                ProposalMatch::Missing
             } else {
                 tracing::warn!(
                     account_id = %account_id,
                     nonce,
                     proposal_id = %proposal_id,
                     error = %err,
-                    "delta_proposals lookup errored during push_delta metadata derivation; \
-                     persisting metadata without proposal block (operator-stated intent lost \
-                     until storage recovers — investigate storage backend)"
+                    "delta_proposals lookup errored; a multisig push is refused, and a \
+                     single-key push or a Guardian execution continues without proposal metadata"
                 );
+                ProposalMatch::Unavailable(err)
             }
-            None
         }
     }
 }

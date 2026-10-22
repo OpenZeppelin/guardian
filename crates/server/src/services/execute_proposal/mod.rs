@@ -6,7 +6,7 @@ mod worker;
 
 pub use executor::{
     ExecutedTransactionInfo, ExecutionAttempt, ExecutionInput, GuardianAck, ProposalExecutor,
-    ProvenTransactionInfo, SendWindow, SignatureSelection, SubmissionOutcome,
+    ProvenTransactionInfo, SelectedProposal, SendWindow, SignatureSelection, SubmissionOutcome,
 };
 pub use service::{ExecutionState, RequestExecutionParams, request_execution};
 
