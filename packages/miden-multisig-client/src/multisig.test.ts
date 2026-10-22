@@ -8634,7 +8634,10 @@ describe('Multisig', () => {
       updatedAt: '2026-10-07T00:00:00Z',
     } satisfies ProposalExecution;
 
-    function holding(metadata: Proposal['metadata'] | null) {
+    function holding(
+      metadata: Proposal['metadata'] | null,
+      verification: Proposal['verification'] = { status: 'verified' },
+    ) {
       const multisig = createTestMultisig({
         threshold: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
@@ -8649,12 +8652,48 @@ describe('Multisig', () => {
           txSummary: '',
           signatures: [],
           metadata,
-          verification: { status: 'verified' },
+          verification,
         } satisfies Proposal);
       }
       const execute = vi.spyOn(guardian, 'executeDeltaProposal').mockResolvedValue(accepted);
       return { multisig, execute };
     }
+
+    const publicP2id: Proposal['metadata'] = {
+      proposalType: 'p2id',
+      description: '',
+      recipientId: '0xr',
+      faucetId: '0xf',
+      amount: '1',
+      noteType: 'public',
+    };
+
+    it('refuses a held proposal whose metadata failed verification, without calling GUARDIAN', async () => {
+      const { multisig, execute } = holding(
+        publicP2id,
+        { status: 'failed', retryable: false, message: 'metadata does not rebuild the summary' },
+      );
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('verifies an unchecked proposal before sending it, and refuses it when that fails', async () => {
+      const { multisig, execute } = holding(publicP2id, { status: 'unchecked' });
+      const check = vi
+        .spyOn(multisig as any, 'checkProposalMetadataBinding')
+        .mockRejectedValueOnce(new Error('metadata does not rebuild the summary'))
+        .mockResolvedValueOnce(proposalId);
+
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
+      expect(execute).not.toHaveBeenCalled();
+
+      (multisig as any).proposals.get(proposalId).verification = { status: 'unchecked' };
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      expect(check).toHaveBeenCalledTimes(2);
+      expect(execute).toHaveBeenCalledTimes(1);
+    });
 
     const privateP2id: Proposal['metadata'] = {
       proposalType: 'p2id',

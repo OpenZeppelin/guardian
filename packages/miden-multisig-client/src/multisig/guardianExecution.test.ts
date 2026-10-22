@@ -15,7 +15,7 @@ import {
   type BoundedRead,
   type WaitRuntime,
 } from './guardianExecution.js';
-import type { ProposalMetadata } from '../types/proposal.js';
+import type { Proposal, ProposalVerification } from '../types/proposal.js';
 
 class FakeRuntime implements WaitRuntime {
   nowMs = 0;
@@ -309,14 +309,19 @@ describe('ExecutionWait', () => {
 });
 
 describe('localExecutionReason', () => {
-  const p2id = (noteType: 'public' | 'private' | undefined): { metadata: ProposalMetadata } => ({
+  type Held = Pick<Proposal, 'metadata' | 'verification'>;
+  const verified: ProposalVerification = { status: 'verified' };
+  const p2id = (noteType: 'public' | 'private' | undefined): Held => ({
     metadata: { proposalType: 'p2id', description: '', recipientId: '0xr', faucetId: '0xf', amount: '1', noteType },
+    verification: verified,
   });
-  const switchGuardian: { metadata: ProposalMetadata } = {
+  const switchGuardian: Held = {
     metadata: { proposalType: 'switch_guardian', description: '', newGuardianPubkey: '0xpk' },
+    verification: verified,
   };
-  const addSigner: { metadata: ProposalMetadata } = {
+  const addSigner: Held = {
     metadata: { proposalType: 'add_signer', description: '', targetThreshold: 1, targetSignerCommitments: ['0xa'] },
+    verification: verified,
   };
 
   it('names the two proposals GUARDIAN must not execute and nothing else', () => {
@@ -361,5 +366,17 @@ describe('localExecutionReason', () => {
     expect(() => assertGuardianMayExecute('0xprop', undefined, { allowPrivateNote: true })).toThrow(
       ProposalNotHeldLocallyError,
     );
+  });
+
+  it('fails closed on a held proposal that is not verified, as the Rust SDK does', () => {
+    for (const verification of [
+      { status: 'unchecked' },
+      { status: 'failed', retryable: false, message: 'metadata does not rebuild the summary' },
+      { status: 'failed', retryable: true, message: 'node unavailable' },
+    ] satisfies ProposalVerification[]) {
+      expect(() => assertGuardianMayExecute('0xprop', { ...addSigner, verification }, {})).toThrow(
+        ProposalNotHeldLocallyError,
+      );
+    }
   });
 });
