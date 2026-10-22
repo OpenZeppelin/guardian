@@ -2400,6 +2400,43 @@ pub async fn assert_asset_sent(runner: &Runner) -> ActionOutcome {
     ActionOutcome::Passed
 }
 
+/// Proposes lowering the send override to one signature while the account
+/// threshold stays above it. A P2ID transfer also calls `create_note`, which
+/// keeps the account threshold, so the chain still needs that many signatures
+/// for a transfer: an SDK that asks for the send override alone gets an
+/// acknowledgement for a transfer the chain refuses (issue #524).
+pub async fn lower_procedure_threshold(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    if session.threshold < 2 {
+        return ActionOutcome::Skipped {
+            reason: "a 1-of-n account has no override below its threshold".to_string(),
+        };
+    }
+
+    match propose_when_settled(
+        &mut session.clients[0],
+        miden_multisig_client::TransactionType::UpdateProcedureThreshold {
+            procedure: OVERRIDE_PROCEDURE,
+            new_threshold: 1,
+        },
+    )
+    .await
+    {
+        Ok(proposal) => {
+            session.proposal_id = Some(proposal.id.clone());
+            session.expected_procedure = Some(OVERRIDE_PROCEDURE);
+            session.expected_procedure_threshold = Some(1);
+            ActionOutcome::Passed
+        }
+        Err(error) => ActionOutcome::failed_product(format!(
+            "proposing the lower procedure threshold override failed: {error}"
+        )),
+    }
+}
+
 /// Proposes requiring every signer for one procedure, leaving the account's own
 /// threshold alone. The override is what makes per-procedure policy testable:
 /// the account stays 2-of-3 while that one procedure needs 3.

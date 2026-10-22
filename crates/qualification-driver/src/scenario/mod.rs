@@ -268,6 +268,9 @@ impl Runner {
                 Action::AssetSend => Some(live::send_asset(self).await),
                 Action::AssetSendAssert => Some(live::assert_asset_sent(self).await),
                 Action::ProcedureThresholdSet => Some(live::set_procedure_threshold(self).await),
+                Action::ProcedureThresholdLower => {
+                    Some(live::lower_procedure_threshold(self).await)
+                }
                 Action::ProcedureThresholdAssert => {
                     Some(live::assert_procedure_threshold(self).await)
                 }

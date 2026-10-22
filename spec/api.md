@@ -17,17 +17,23 @@
 - The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
 - All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
 - `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
-- `POST /configure` enforces the same timestamp skew and replay CAS. A first-time
-  configuration seeds the verified signer's floor once the account metadata row
-  exists; reconfiguration consumes the timestamp before changing stored state.
-  The first-time seed is deliberately post-write because replay state has a
-  foreign key to account metadata. A crash in that narrow interval can leave the
-  new account without a floor, allowing any captured, still-fresh request signed
-  by that signer to initialize the floor and execute. Replaying the configure
-  itself only idempotently re-submits the same state, but the bounded first-write
-  window applies to other signed routes too. Concurrent first configurations are
-  not serialized across different signers; callers must not use `/configure` as
-  a general concurrent state-update mechanism.
+- `POST /configure` enforces the same timestamp skew and replay CAS, and every
+  configuration consumes its timestamp before it writes any state. A first-time
+  configuration first claims the account: it creates the metadata row only if
+  none exists, atomically, and only the request that created it proceeds as a
+  first configuration. Replay state has a foreign key to account metadata, so the
+  claim is what lets the timestamp be consumed before the state write. A request
+  that loses the claim (a concurrent duplicate or a replay of the signed request)
+  re-reads the account and is judged as a reconfiguration, so a replay from the
+  same signer is refused with `authentication_replay` before it writes anything.
+  A configuration from a different signer that loses the claim passes its own
+  replay check and reconfigures the account it lost to; callers must not use
+  `/configure` as a general concurrent state-update mechanism.
+- A first configuration that fails after its claim (a storage error before the
+  state write) leaves metadata with no stored state. Such an account is not
+  listed by `GET /state/lookup` and is skipped by the release sweep. A retry of
+  the same account id finishes it: the retry is held to the new-account scheme
+  policy and counted as the account's creation.
 - Migrated stores retain the former account-scoped value as a lower bound for
   signers first seen later, preventing a removed signer from regaining a replay
   window when it is authorized again.
@@ -409,9 +415,9 @@ For an EIP-712 Miden approval, the same endpoint and envelope use `"message_form
 Guardian verifies every Miden approval against the proposal's transaction summary before storing it:
 
 - Falcon and raw ECDSA approvals sign the transaction-summary commitment; EIP-712 approvals sign the typed-data hash above. The Falcon public key comes from the signature. ECDSA approvals must carry `public_key`; a raw approval's `v` must be `0/1` and recover to that key, as execution recovers it.
-- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must equal the request signer, so a cosigner can only approve for themselves.
+- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must be one of the account's configured cosigners, but it need not be the request signer: an authenticated signer may relay an approval another cosigner produced off channel (the SDK execute flows relay a proposal document's collected approvals this way before requesting the acknowledgement). The approval is credited to the cosigner the signature verifies for, never to the relaying caller, and one the proposal already holds for that cosigner is rejected with `proposal_already_signed`.
 - On `POST /delta/proposal`, `signatures` may carry at most the proposer's own approval. Other cosigners approve through `PUT /delta/proposal`.
-- A signature that does not parse or verify, or whose signer is not the request signer (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
+- A signature that does not parse or verify, or whose signer is not a cosigner of the account (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
 
 ### DeltaProposalEnvelope
 
@@ -465,7 +471,7 @@ component schemas.
 | Surface | Method & path | Auth | Summary |
 | --- | --- | --- | --- |
 | client | `POST /configure` | signed headers | Register an account with its auth set and initial state |
-| client | `POST /delta` | signed headers | Push a signed single-key delta |
+| client | `POST /delta` | signed headers | Push a delta; a multisig account must meet its cosigner threshold |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
 | client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
@@ -808,7 +814,7 @@ scrape_configs:
 ## Idempotency and Ordering
 
 - `push_delta` MAY be retried by clients; identical Miden deltas SHOULD be treated as idempotent when possible.
-- Miden `push_delta` enforces `prev_commitment` match.
+- Miden `push_delta` enforces `prev_commitment` match. A multisig push is also rejected with `insufficient_signatures` until the matching proposal's verified cosigner signatures meet the effective threshold of the procedures the pushed transaction invokes.
 - EVM proposal create is idempotent for duplicate active proposals with the same deterministic proposal ID.
 - EVM proposals remain active/pending-only in the EVM proposal store; expired or finalized proposals are lazily deleted.
 

@@ -228,4 +228,36 @@ describe('MidenWalletSigner', () => {
       expect(result).toBe('0xaabbcc');
     });
   });
+
+  describe('scheme tag check', () => {
+    const signWith = (scheme: 'ecdsa' | 'falcon', tag: number) => {
+      (mockWallet.signBytes as ReturnType<typeof vi.fn>).mockResolvedValue(
+        new Uint8Array([tag, 0xaa, 0xbb]),
+      );
+      return new MidenWalletSigner(mockWallet, '0xcommitment', scheme).signCommitment(
+        '0x' + 'cc'.repeat(32),
+      );
+    };
+
+    it('rejects an ECDSA signature for a Falcon signer and names the wallet scheme', async () => {
+      await expect(signWith('falcon', 1)).rejects.toThrow(
+        /signed with ecdsa \(3 bytes\) but this signer is configured for falcon; select ecdsa/,
+      );
+    });
+
+    it('rejects a Falcon signature for an ECDSA signer', async () => {
+      await expect(signWith('ecdsa', 2)).rejects.toThrow(
+        /signed with falcon .* configured for ecdsa; select falcon/,
+      );
+    });
+
+    it('accepts a signature whose tag matches the scheme', async () => {
+      await expect(signWith('ecdsa', 1)).resolves.toBe('0xaabb');
+      await expect(signWith('falcon', 2)).resolves.toBe('0xaabb');
+    });
+
+    it('accepts a signature with an unknown tag', async () => {
+      await expect(signWith('falcon', 0)).resolves.toBe('0xaabb');
+    });
+  });
 });

@@ -10,9 +10,10 @@ Revised 2026-09-30 for Miden 0.17 (spec revision 11, RFC revision 17): protocol 
 checked against source, **[RAN]** executed, **[INFERRED]** derived. No 0.17 row below is [RAN] by
 this feature's work yet.
 
-**Environments on 0.17.** Live rows run against **devnet** (node 0.17.0-rc.2). Testnet runs
-Miden 0.16, so testnet-equivalent rows run against a **local `miden-node`** from the pinned line
-with a locally run `miden-remote-prover`. Production qualification is gated on stable 0.17 plus
+**Environments on 0.17.** Live rows run against **devnet** (node 0.17.0 since 2026-10-06; it ran
+0.17.0-rc.2 for the earlier rows). Testnet runs node 0.17.1 (checked 2026-10-20); rows that
+need a local node run a **local `miden-node`** from the pinned line with a locally run
+`miden-remote-prover`. Production qualification is gated on stable 0.17 plus
 the re-pin (roots, fixtures, vectors).
 
 ## Gate 0 — architecture spike (**ratified, narrowed**)
@@ -347,7 +348,7 @@ happy-path tests:
   stays `canonical`; existing `candidate_landed` error codes are unchanged.
 - No v1 preparation, automatic execution, chaining or batching API is introduced.
 
-## Success criteria status (2026-10-06)
+## Success criteria status (2026-10-06, refreshed 2026-10-22)
 
 Where each criterion stands against the implementation on `254-execution-impl`. **Pass** names
 the passing evidence; **Partial** names what is covered and what is not; **Gap** has no test yet.
@@ -358,7 +359,7 @@ Test names are in `crates/server/src` unless another crate is named.
 | SC-001 | Pass | Live qualification `live-guardian-execute-2of3-{falcon,ecdsa}` commits on devnet with the cosigners only signing. `live-guardian-execute-base-client-2of3-ecdsa` takes the request and the polling over the base clients alone, on both SDKs, and the base-client dependency guards keep them free of any Miden client. Its live run passed on devnet on 2026-10-02 and again on 2026-10-06 (stable 0.17.0 pins), on both SDKs. |
 | SC-002 | Pass | `binding_tests::an_account_advanced_past_the_base_is_a_state_mismatch_before_any_chain_work`, `network::miden::execution::tests::executor::a_request_that_does_not_reproduce_the_signed_summary_is_a_binding_mismatch`. |
 | SC-003 | Pass | `execute_proposal::tests` refusals, `binding_tests::a_second_proposal_is_refused_while_another_holds_the_account`, `a_paused_account_is_refused_and_nothing_is_reserved`, `capability_tests`. |
-| SC-004 | Pass | `network::miden::execution::tests::threshold` (override versus default); readiness uses it in selection. |
+| SC-004 | Pass | `network::miden::execution::tests::threshold` (override versus default) and the shared vectors `fixtures/miden-multisig-client/threshold-vectors.json` over `guardian_shared::multisig_threshold`, which the executor and both SDKs follow; readiness uses it in selection. |
 | SC-005 | Pass | `concurrency_tests::two_concurrent_requests_for_one_proposal_start_one_execution`, `two_replicas_sharing_storage_prove_and_submit_once` (in-process replicas over one store). These replicas share one process: a real multi-process Postgres concurrency test is not written and is a named follow-up. |
 | SC-006 | Pass | `binding_tests::every_pre_boundary_failure_is_reported_leaves_no_trace_and_can_be_retried`. |
 | SC-007 | Pass | `fault_injection_tests::a_pre_boundary_lease_that_lapses_in_steady_state_is_lease_expired`, `an_attempt_interrupted_by_a_restart_is_abandoned_and_the_proposal_stays_executable`. |
@@ -366,10 +367,10 @@ Test names are in `crates/server/src` unless another crate is named.
 | SC-009 | Pass | Rust: `a_default_client_stores_no_request_and_signs_no_extra_bound`. TypeScript: `multisig.test.ts` `stores the request and both bounds only on a guardian_executable client` (the default payload has no `transaction_request`). |
 | SC-010 | Pass | `fixtures/miden-multisig-client/request-envelope.json` declares protocol line `0.16`; `guardian_shared::request_envelope` refuses it before decoding. |
 | SC-011 | Exception | Baseline telemetry, not a gate. **Recorded for 0.17 on 2026-10-01** (devnet, six Guardian executions from a live qualification run, no prover retries): proving about 2.0 s per execution (12.2 s over six, all under 5 s); chain view about 0.16 s (0.97 s over six, all between 0.1 and 0.25 s); seeding is in-memory inside the chain view. RFC 0001 Appendix A.4, finding 5. The qualification stack saves these histograms with every run (`execution-metrics.prom`). **2026-10-06, stable 0.17.0 pins** (devnet, ten Guardian executions, server log): request to submit 3.1 to 7.2 s, submit to canonical 1.5 to 5.1 s. |
-| SC-012 | Partial | Untouched paths are covered by the unchanged SDK suites (Rust 263, TS 730) and the example harnesses build: `examples/demo` compiles, `examples/smoke-web` typechecks and builds after a clean `npm ci` of it and `_shared/multisig-browser`. Missing: the interactive runs through both harnesses (T133), which need a 0.17 node (devnet, or a local node newer than the installed 0.15.1). |
+| SC-012 | Partial | Untouched paths are covered by the unchanged SDK suites (Rust 263, TS 730) and the example harnesses build: `examples/demo` compiles, `examples/smoke-web` typechecks and builds after a clean `npm ci` of it and `_shared/multisig-browser`. Missing: the interactive runs through both harnesses (T133); devnet runs node 0.17.0, so a node is no longer the blocker. |
 | SC-013 | Pass | TS drift guards against `guardian_shared::execution` and the Rust SDK constants (`execution.test.ts`, `error-codes.test.ts`, `transaction/expiration.test.ts`). |
 | SC-014 | Pass | `capability_tests::a_server_that_offers_no_execution_refuses_every_request_the_same_way`; qualification `det-guardian-execution-unavailable`. |
-| SC-015 | Partial | Built-in lifecycles proven by live qualification on devnet on both SDKs: consume-notes (`live-guardian-execute-2of3-{falcon,ecdsa}`), an add-signer change that GUARDIAN then authorizes (`live-guardian-execute-add-signer-2of3-falcon`), and a P2ID send executed 60 blocks after its bound block (`live-guardian-execute-p2id-late-2of3-ecdsa`), all passing Oct 1, 2026, and again on Oct 6, 2026 on the stable 0.17.0 pins (14/14 legs on both SDKs, adding consume-notes after the bound block, `live-guardian-execute-consume-late-2of3-falcon`). Custom type and the example harnesses missing (T135). |
+| SC-015 | Partial | Built-in lifecycles proven by live qualification on devnet on both SDKs: consume-notes (`live-guardian-execute-2of3-{falcon,ecdsa}`), an add-signer change that GUARDIAN then authorizes (`live-guardian-execute-add-signer-2of3-falcon`), and a P2ID send executed 60 blocks after its bound block (`live-guardian-execute-p2id-late-2of3-ecdsa`), all passing Oct 1, 2026, and again on Oct 6, 2026 on the stable 0.17.0 pins (14/14 legs on both SDKs, adding consume-notes after the bound block, `live-guardian-execute-consume-late-2of3-falcon`). Both example harnesses now drive Guardian execution for built-in types; missing are a recorded run through them and the custom type (#266) (T135). |
 | SC-016 | Pass | `api::execution_tests` (state strings on both transports); the envelope exposes only the five states. |
 | SC-017 | Pass | `api::execution_tests::a_conflict_names_the_blocking_proposal_on_both_transports`. |
 | SC-018 | Pass | `storage::execution_reservation_tests` (reservation versus client candidate, both orders) on filesystem and Postgres. |
