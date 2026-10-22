@@ -675,7 +675,9 @@ domain-separated from a signed status read (see [Miden Request Signing](api.md#m
 13. Re-validate the fence; a worker that lost ownership sends nothing. A storage error here
     leaves ownership unknown, so the fenced claim is retried while the worker's lease is held
     and the send window is open. The window is checked before every claim and again after the
-    one that succeeds: nothing is sent with less than 15 s of it left.
+    one that succeeds, and the send uses whatever is left of it: the 15 s minimum gates crossing
+    the boundary, not the send, since an attempt past the boundary that does not send loses its
+    proposal while a late send can only land, be rejected or leave an outcome the chain settles.
 14. Send the sealed, proven transaction once, waiting for the node's answer for up to 60 s and
     never past the window measured at step 11 (a node cut off mid-request drops the
     transaction). The worker keeps renewing its lease and reservation, recording `Sent`, while
