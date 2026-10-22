@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Multisig Push Gate"
+  short_description: "Model-check the #524 push gate's threshold and approval relay with TLA+"
+  default_prompt: "Use $verify-multisig-push-gate to model-check this change to the multisig push gate, proposal signing or approval relay."

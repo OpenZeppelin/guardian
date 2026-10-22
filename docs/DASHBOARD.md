@@ -355,6 +355,14 @@ and gRPC `FailedPrecondition`
 and `ConfigureAccount` remain available so an account can be
 reconfigured while paused.
 
+A pause also stops a `PushDelta` that passed its status check before the
+pause and was still applying its delta: on Postgres in candidate mode the
+candidate write re-reads `paused_at` / `released_at` under the account row
+lock the pause takes, so once the pause call returns no further ack is
+issued for the account. In optimistic mode, and on the filesystem
+backend, the status is re-read right before the write but not under a
+shared lock, which narrows that window without closing it.
+
 | Route | Permission | Body |
 |---|---|---|
 | `POST /dashboard/accounts/{id}/pause` | `accounts:pause` | `{ "reason": "<non-empty string>" }` — required and validated. |

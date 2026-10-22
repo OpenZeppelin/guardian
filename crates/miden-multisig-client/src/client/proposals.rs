@@ -363,6 +363,7 @@ impl MultisigClient {
             tx_summary_commitment,
             Some(&proposal.tx_summary),
         )?;
+        account.ensure_threshold_met(&proposal.transaction_type, signature_advice.len())?;
 
         if proposal.transaction_type.requires_guardian_ack() {
             // Get GUARDIAN ack signature and add to advice

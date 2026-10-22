@@ -8,6 +8,7 @@ use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
+use crate::services::multisig_admission::MultisigAccount;
 use crate::services::resolve_account;
 use crate::state::AppState;
 use crate::storage::ChainPosition;
@@ -133,6 +134,38 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let tail = chain.reconstruct_tail(state, &current_state).await?;
     candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
+    // One lookup serves both the multisig authorization gate and
+    // metadata. A multisig tail is acknowledged only when the matching
+    // proposal meets the threshold of the procedures the delta invokes;
+    // a miss or a storage fault refuses the push here, before the delta
+    // is verified or applied, so an under-signed push never consumes
+    // the CPU-heavy work below. A single-key tail keeps the previous
+    // behavior: a miss is metadata-only, and a storage fault does not
+    // block the push. Signature verification is CPU work, so it runs
+    // through the shared reconstruction gate, off the async threads.
+    let proposal_match = lookup_matching_proposal(
+        state,
+        &params.delta.account_id,
+        params.delta.nonce,
+        &params.delta.delta_payload,
+    )
+    .await;
+    if let Some(multisig) = MultisigAccount::from_state(&tail.state_json) {
+        let proposal = match &proposal_match {
+            ProposalMatch::Found(proposal) => Some(proposal.clone()),
+            ProposalMatch::Missing => None,
+            ProposalMatch::Unavailable(error) => {
+                return Err(GuardianError::StorageError(format!(
+                    "Failed to load the proposal authorizing this delta: {error}"
+                )));
+            }
+        };
+        let delta_payload = params.delta.delta_payload.clone();
+        crate::network::reconstructor()
+            .run(move || Ok(multisig.authorize(&delta_payload, proposal.as_deref())))
+            .await??;
+    }
+
     let applied = {
         let client = state.network_client.clone();
         let prev_commitment = tail.commitment.clone();
@@ -157,17 +190,10 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         return Err(GuardianError::ConflictPendingDelta);
     }
 
-    // Unconditional lookup: for multisig pushes this lifts the
-    // matching proposal's metadata so `build_metadata` can preserve
-    // operator intent. For single-key pushes the lookup misses and
-    // returns `None`; the cost is one extra storage read per push.
-    let matching_proposal_payload = lookup_matching_proposal_payload(
-        state,
-        &params.delta.account_id,
-        params.delta.nonce,
-        &params.delta.delta_payload,
-    )
-    .await;
+    let matching_proposal_payload = match &proposal_match {
+        ProposalMatch::Found(proposal) => Some(proposal.delta_payload.clone()),
+        ProposalMatch::Missing | ProposalMatch::Unavailable(_) => None,
+    };
 
     let derived_metadata = crate::delta_summary::build_metadata(
         &params.delta.delta_payload,
@@ -201,10 +227,10 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             applied,
         )
         .await?;
-    // Caveat: `lookup_matching_proposal_payload` swallows storage
-    // errors to `None` (non-fatal by design), so under storage faults
-    // a proposal commit can be labeled `direct`. Acceptable skew — the
-    // underlying fault is visible via
+    // Caveat: on a single-key account a storage fault during the
+    // proposal lookup is non-fatal, so that push can be labeled
+    // `direct`. A multisig account never reaches this point on that
+    // fault. The underlying fault is visible via
     // storage_operations_total{outcome="error"}.
     let kind = if matching_proposal_payload.is_some() {
         crate::metrics::labels::DeltaKind::ProposalCommit
@@ -222,17 +248,22 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     })
 }
 
-/// Look up the matching `delta_proposals` row's `delta_payload` for
-/// the delta being pushed. Returns `None` when no proposal matches.
-/// All failure paths are non-fatal so the push proceeds; the
-/// "no match" cases log at `debug`, real storage errors log at `warn`
-/// so silent metadata loss stays detectable in production.
-async fn lookup_matching_proposal_payload(
+enum ProposalMatch {
+    Found(Box<DeltaObject>),
+    Missing,
+    Unavailable(String),
+}
+
+/// Look up the `delta_proposals` row for the delta being pushed.
+/// A missing row is [`ProposalMatch::Missing`]. A storage fault is
+/// [`ProposalMatch::Unavailable`] and is logged at `warn`; the caller
+/// decides whether that fault refuses the push.
+async fn lookup_matching_proposal(
     state: &AppState,
     account_id: &str,
     nonce: u64,
     delta_payload: &Value,
-) -> Option<Value> {
+) -> ProposalMatch {
     let proposal_id = {
         let client = &state.network_client;
         match client.delta_proposal_id(account_id, nonce, delta_payload) {
@@ -245,7 +276,7 @@ async fn lookup_matching_proposal_payload(
                     "delta_proposal_id could not compute an id for this payload; \
                      persisting metadata without proposal block (EVM / malformed payload)"
                 );
-                return None;
+                return ProposalMatch::Missing;
             }
         }
     };
@@ -254,7 +285,7 @@ async fn lookup_matching_proposal_payload(
         .pull_delta_proposal(account_id, &proposal_id)
         .await
     {
-        Ok(proposal) => Some(proposal.delta_payload),
+        Ok(proposal) => ProposalMatch::Found(Box::new(proposal)),
         Err(err) => {
             if crate::storage::is_storage_not_found(&err) {
                 tracing::debug!(
@@ -263,18 +294,18 @@ async fn lookup_matching_proposal_payload(
                     proposal_id = %proposal_id,
                     "no matching delta_proposal row (single-key push or unrelated payload)"
                 );
+                ProposalMatch::Missing
             } else {
                 tracing::warn!(
                     account_id = %account_id,
                     nonce,
                     proposal_id = %proposal_id,
                     error = %err,
-                    "delta_proposals lookup errored during push_delta metadata derivation; \
-                     persisting metadata without proposal block (operator-stated intent lost \
-                     until storage recovers — investigate storage backend)"
+                    "delta_proposals lookup errored during push_delta; a multisig push is \
+                     refused and a single-key push continues without proposal metadata"
                 );
+                ProposalMatch::Unavailable(err)
             }
-            None
         }
     }
 }
@@ -1221,5 +1252,574 @@ mod tests {
             ),
             "{result:?}"
         );
+    }
+
+    fn word_from_hex(value: &str) -> miden_protocol::Word {
+        use miden_protocol::utils::serde::Deserializable;
+        let bytes = hex::decode(value.trim_start_matches("0x")).expect("commitment hex");
+        miden_protocol::Word::read_from_bytes(&bytes).expect("commitment word")
+    }
+
+    fn multisig_state(
+        approver_commitments: &[String],
+        threshold: u32,
+        procedure_overrides: &[(miden_protocol::Word, u32)],
+    ) -> serde_json::Value {
+        use guardian_shared::ToJson;
+        use miden_protocol::account::{
+            Account, AccountId, AccountIdVersion, AccountStorage, AccountType, StorageMap,
+            StorageMapKey, StorageSlot, StorageSlotName,
+        };
+        use miden_protocol::asset::AssetVault;
+        use miden_standards::account::auth::AuthGuardedMultisig;
+
+        fn slot_name(name: &str) -> StorageSlotName {
+            StorageSlotName::new(name).expect("slot name")
+        }
+
+        let approvers: Vec<miden_protocol::Word> = approver_commitments
+            .iter()
+            .map(|commitment| word_from_hex(commitment))
+            .collect();
+        let signer_entries = approvers.iter().enumerate().map(|(index, pubkey)| {
+            (
+                StorageMapKey::new(miden_protocol::Word::from([index as u32, 0, 0, 0])),
+                *pubkey,
+            )
+        });
+        let mut slots = vec![
+            StorageSlot::with_value(
+                slot_name(AuthGuardedMultisig::threshold_config_slot().as_str()),
+                miden_protocol::Word::from([threshold, approvers.len() as u32, 0, 0]),
+            ),
+            StorageSlot::with_map(
+                slot_name(AuthGuardedMultisig::approver_public_keys_slot().as_str()),
+                StorageMap::with_entries(signer_entries).expect("signer map"),
+            ),
+        ];
+        if !procedure_overrides.is_empty() {
+            let entries = procedure_overrides.iter().map(|(root, threshold)| {
+                (
+                    StorageMapKey::new(*root),
+                    miden_protocol::Word::from([*threshold, 0, 0, 0]),
+                )
+            });
+            slots.push(StorageSlot::with_map(
+                slot_name(AuthGuardedMultisig::procedure_thresholds_slot().as_str()),
+                StorageMap::with_entries(entries).expect("procedure thresholds"),
+            ));
+        }
+        let account_id = AccountId::dummy(
+            [3u8; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            miden_protocol::account::AssetCallbackFlag::Disabled,
+        );
+        Account::new_existing(
+            account_id,
+            AssetVault::new(&[]).expect("vault"),
+            AccountStorage::new(slots).expect("storage"),
+            wallet_code(),
+            miden_protocol::Felt::new_unchecked(1),
+        )
+        .to_json()
+    }
+
+    fn wallet_code() -> miden_protocol::account::AccountCode {
+        use miden_protocol::testing::noop_auth_component::NoopAuthComponent;
+        use miden_standards::account::wallets::BasicWallet;
+
+        miden_protocol::account::AccountCode::from_components(&[
+            NoopAuthComponent.into(),
+            BasicWallet.into(),
+        ])
+        .expect("wallet code")
+    }
+
+    fn pushed_summary() -> miden_protocol::transaction::TransactionSummary {
+        use guardian_shared::FromJson;
+        miden_protocol::transaction::TransactionSummary::from_json(
+            &crate::testing::helpers::create_test_delta_payload("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b"),
+        )
+        .expect("summary")
+    }
+
+    fn falcon_approval(
+        signer: &crate::testing::helpers::TestSigner,
+        summary: &miden_protocol::transaction::TransactionSummary,
+    ) -> crate::delta_object::CosignerSignature {
+        use crate::delta_object::ProposalSignature;
+        crate::delta_object::CosignerSignature {
+            signature: ProposalSignature::Falcon {
+                signature: signer.sign_word(summary.to_commitment()),
+            },
+            timestamp: "2026-05-25T07:59:00Z".into(),
+            signer_id: signer.commitment_hex.clone(),
+        }
+    }
+
+    fn ecdsa_approval(
+        signer: &crate::testing::helpers::TestEcdsaSigner,
+        summary: &miden_protocol::transaction::TransactionSummary,
+    ) -> crate::delta_object::CosignerSignature {
+        use crate::delta_object::ProposalSignature;
+        use guardian_shared::EcdsaMessageFormat;
+        crate::delta_object::CosignerSignature {
+            signature: ProposalSignature::Ecdsa {
+                signature: signer.sign_word(summary.to_commitment()),
+                public_key: Some(signer.pubkey_hex.clone()),
+                message_format: EcdsaMessageFormat::Raw,
+            },
+            timestamp: "2026-05-25T07:59:00Z".into(),
+            signer_id: signer.commitment_hex.clone(),
+        }
+    }
+
+    enum ProposalLookup {
+        Missing,
+        Signatures(Vec<crate::delta_object::CosignerSignature>),
+        NonPending,
+        OtherSummary {
+            tx_summary: serde_json::Value,
+            signatures: Vec<crate::delta_object::CosignerSignature>,
+        },
+        Error(String),
+    }
+
+    fn pending_status(
+        proposer_id: &str,
+        cosigner_sigs: Vec<crate::delta_object::CosignerSignature>,
+    ) -> crate::delta_object::DeltaStatus {
+        crate::delta_object::DeltaStatus::Pending {
+            timestamp: "2026-05-25T07:59:00Z".into(),
+            proposer_id: proposer_id.to_string(),
+            cosigner_sigs,
+        }
+    }
+
+    fn stored_proposal(
+        storage: MockStorageBackend,
+        account_id: &str,
+        prev_commitment: &str,
+        tx_summary: &serde_json::Value,
+        status: crate::delta_object::DeltaStatus,
+    ) -> MockStorageBackend {
+        storage.with_pull_delta_proposal(Ok(DeltaObject {
+            account_id: account_id.to_string(),
+            nonce: 1,
+            prev_commitment: prev_commitment.to_string(),
+            new_commitment: None,
+            delta_payload: serde_json::json!({
+                "tx_summary": tx_summary,
+                "metadata": { "proposal_type": "p2id" },
+                "signatures": [],
+            }),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status,
+            metadata: None,
+        }))
+    }
+
+    async fn push_on_multisig(
+        approvers: &[String],
+        threshold: u32,
+        procedure_overrides: &[(miden_protocol::Word, u32)],
+        lookup: ProposalLookup,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend) {
+        use crate::delta_object::DeltaStatus;
+        use crate::state_object::StateObject;
+        use crate::testing::helpers::TestSigner;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let tx_summary = crate::testing::helpers::create_test_delta_payload(&account_id);
+        let caller = TestSigner::new();
+        let (signature, timestamp) = caller.sign(&account_id);
+        let prev_commitment = "0xprev".to_string();
+        let storage = MockStorageBackend::new().with_pull_state(Ok(StateObject {
+            account_id: account_id.clone(),
+            state_json: multisig_state(approvers, threshold, procedure_overrides),
+            commitment: prev_commitment.clone(),
+            nonce: None,
+            created_at: "2026-05-25T08:00:00Z".into(),
+            updated_at: "2026-05-25T08:00:00Z".into(),
+            auth_scheme: String::new(),
+        }));
+        let storage = match lookup {
+            ProposalLookup::Missing => storage,
+            ProposalLookup::Error(error) => storage.with_pull_delta_proposal(Err(error)),
+            ProposalLookup::Signatures(cosigner_sigs) => stored_proposal(
+                storage,
+                &account_id,
+                &prev_commitment,
+                &tx_summary,
+                pending_status(&caller.commitment_hex, cosigner_sigs),
+            ),
+            ProposalLookup::NonPending => stored_proposal(
+                storage,
+                &account_id,
+                &prev_commitment,
+                &tx_summary,
+                DeltaStatus::Candidate {
+                    timestamp: "2026-05-25T07:59:00Z".into(),
+                    retry_count: 0,
+                    divergence_count: 0,
+                    abandon_requested_at: None,
+                    abandon_confirm_count: 0,
+                },
+            ),
+            ProposalLookup::OtherSummary {
+                tx_summary: proposal_summary,
+                signatures,
+            } => stored_proposal(
+                storage,
+                &account_id,
+                &prev_commitment,
+                &proposal_summary,
+                pending_status(&caller.commitment_hex, signatures),
+            ),
+        };
+        let storage = storage
+            .with_pull_deltas_after(Ok(Vec::new()))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new_state": true}),
+                "0xnew_commitment".to_string(),
+            )));
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![caller.commitment_hex.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        })));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta: DeltaObject {
+                    account_id,
+                    nonce: 1,
+                    prev_commitment,
+                    new_commitment: None,
+                    delta_payload: tx_summary,
+                    ack_sig: String::new(),
+                    ack_pubkey: String::new(),
+                    ack_scheme: String::new(),
+                    status: DeltaStatus::default(),
+                    metadata: None,
+                },
+                credentials: Credentials::signature(caller.pubkey_hex, signature, timestamp),
+            },
+        )
+        .await;
+        (result, storage)
+    }
+
+    fn assert_not_committed(storage: &MockStorageBackend) {
+        assert!(
+            storage.get_submit_delta_calls().is_empty(),
+            "a refused multisig push must not be stored"
+        );
+        assert!(
+            storage.get_submit_state_calls().is_empty(),
+            "a refused multisig push must not move account state"
+        );
+    }
+
+    fn assert_refused(
+        result: &Result<PushDeltaResult>,
+        storage: &MockStorageBackend,
+        expected_required: usize,
+        expected_got: usize,
+    ) {
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::InsufficientSignatures { required, got })
+                    if *required == expected_required && *got == expected_got
+            ),
+            "{result:?}"
+        );
+        assert_not_committed(storage);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_without_a_proposal_is_rejected() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let (result, storage) =
+            push_on_multisig(&[approver.commitment_hex], 1, &[], ProposalLookup::Missing).await;
+        assert_refused(&result, &storage, 1, 0);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_below_the_threshold_is_rejected() {
+        use crate::testing::helpers::TestSigner;
+
+        let first = TestSigner::new();
+        let second = TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_at_the_falcon_threshold_is_acknowledged() {
+        use crate::testing::helpers::TestSigner;
+
+        let first = TestSigner::new();
+        let second = TestSigner::new();
+        let summary = pushed_summary();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&first, &summary),
+                falcon_approval(&second, &summary),
+            ]),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_counts_a_verified_ecdsa_approver() {
+        let approver = crate::testing::helpers::TestEcdsaSigner::new();
+        let (result, storage) = push_on_multisig(
+            std::slice::from_ref(&approver.commitment_hex),
+            1,
+            &[],
+            ProposalLookup::Signatures(vec![ecdsa_approval(&approver, &pushed_summary())]),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_does_not_count_a_non_approver() {
+        use crate::testing::helpers::TestSigner;
+
+        let approver = TestSigner::new();
+        let outsider = TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            &[approver.commitment_hex],
+            1,
+            &[],
+            ProposalLookup::Signatures(vec![falcon_approval(&outsider, &pushed_summary())]),
+        )
+        .await;
+        assert_refused(&result, &storage, 1, 0);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_counts_each_approver_once() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let summary = pushed_summary();
+        let other = crate::testing::helpers::TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            &[approver.commitment_hex.clone(), other.commitment_hex],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&approver, &summary),
+                falcon_approval(&approver, &summary),
+            ]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_fails_closed_when_the_proposal_lookup_fails() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            &[approver.commitment_hex],
+            1,
+            &[],
+            ProposalLookup::Error("database unavailable".to_string()),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::StorageError(_))),
+            "{result:?}"
+        );
+        assert_not_committed(&storage);
+    }
+
+    /// The chain enforces the threshold of the procedures a transaction
+    /// calls; the gate only asks for the fewest signatures any transaction
+    /// on the account can need, so a lower override sets the floor for
+    /// every push.
+    #[tokio::test]
+    async fn multisig_push_requires_the_lowest_threshold_the_account_permits() {
+        use miden_standards::account::wallets::BasicWallet;
+
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let receive = BasicWallet::receive_asset_root().into();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            2,
+            &[(receive, 1)],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    /// An override of zero is no override, on chain as in the gate.
+    #[tokio::test]
+    async fn multisig_push_ignores_a_zero_override() {
+        use miden_standards::account::wallets::BasicWallet;
+
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let receive = BasicWallet::receive_asset_root().into();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            2,
+            &[(receive, 0)],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    /// The chain skips the auth procedure and never calls a root the
+    /// account code does not export, so overrides on either never lower
+    /// the floor.
+    #[tokio::test]
+    async fn multisig_push_ignores_overrides_outside_the_callable_procedures() {
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let auth = (*wallet_code().procedures()[0].mast_root(), 1);
+        let unknown = (miden_protocol::Word::from([7u32, 7, 7, 7]), 1);
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            2,
+            &[auth, unknown],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    /// An override above the default raises what some transactions need
+    /// on chain, never the floor.
+    #[tokio::test]
+    async fn multisig_push_floor_never_exceeds_the_default() {
+        use miden_standards::account::wallets::BasicWallet;
+
+        let first = crate::testing::helpers::TestSigner::new();
+        let second = crate::testing::helpers::TestSigner::new();
+        let receive = BasicWallet::receive_asset_root().into();
+        let (result, storage) = push_on_multisig(
+            &[first.commitment_hex.clone(), second.commitment_hex],
+            1,
+            &[(receive, 2)],
+            ProposalLookup::Signatures(vec![falcon_approval(&first, &pushed_summary())]),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_rejects_a_proposal_for_a_different_summary() {
+        use crate::testing::helpers::TestSigner;
+        use guardian_shared::ToJson;
+        use miden_protocol::account::{
+            AccountCodePatch, AccountDelta, AccountId, AccountVaultDelta,
+        };
+        use miden_protocol::transaction::{
+            InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
+        };
+        use miden_protocol::{Felt, Word, ZERO};
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let approver = TestSigner::new();
+        let delta = AccountDelta::new(
+            AccountId::from_hex(account_id).expect("account id"),
+            miden_protocol::account::AccountStoragePatch::default(),
+            AccountVaultDelta::default(),
+            AccountCodePatch::default(),
+            Felt::ZERO,
+        )
+        .expect("delta");
+        let other = TransactionSummary::new(
+            delta,
+            InputNotes::new(Vec::new()).unwrap(),
+            RawOutputNotes::new(Vec::new()).unwrap(),
+            miden_protocol::block::BlockNumber::from(1),
+            Word::from([ZERO; 4]),
+            0,
+            TransactionSummaryUserParams::new([ZERO; 6]),
+        );
+        let (result, storage) = push_on_multisig(
+            std::slice::from_ref(&approver.commitment_hex),
+            1,
+            &[],
+            ProposalLookup::OtherSummary {
+                tx_summary: other.to_json(),
+                signatures: vec![falcon_approval(&approver, &other)],
+            },
+        )
+        .await;
+        assert_ne!(other.to_commitment(), pushed_summary().to_commitment());
+        assert_refused(&result, &storage, 1, 0);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_counts_no_signatures_on_a_non_pending_proposal() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            std::slice::from_ref(&approver.commitment_hex),
+            1,
+            &[],
+            ProposalLookup::NonPending,
+        )
+        .await;
+        assert_refused(&result, &storage, 1, 0);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_rejects_a_zero_threshold() {
+        let approver = crate::testing::helpers::TestSigner::new();
+        let (result, storage) = push_on_multisig(
+            std::slice::from_ref(&approver.commitment_hex),
+            0,
+            &[],
+            ProposalLookup::Signatures(vec![falcon_approval(&approver, &pushed_summary())]),
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::InvalidDelta(_))),
+            "{result:?}"
+        );
+        assert_not_committed(&storage);
     }
 }

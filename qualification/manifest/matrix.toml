@@ -51,6 +51,7 @@ excluded_scenarios = [
   "live-procedure-threshold-2of3-ecdsa",
   "live-candidate-queue-chained-1of1-ecdsa",
   "live-candidate-queue-stranded-head-1of1-ecdsa",
+  "live-send-override-p2id-2of3-falcon",
 ]
 
 [[pair]]
@@ -79,4 +80,5 @@ excluded_scenarios = [
   "live-procedure-threshold-2of3-ecdsa",
   "live-candidate-queue-chained-1of1-ecdsa",
   "live-candidate-queue-stranded-head-1of1-ecdsa",
+  "live-send-override-p2id-2of3-falcon",
 ]

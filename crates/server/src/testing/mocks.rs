@@ -1,4 +1,4 @@
-use crate::delta_object::DeltaObject;
+use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::{AppliedState, NetworkClient, StateVerification};
@@ -430,6 +430,12 @@ pub struct MockStorageBackend {
     pub pool_status: Option<crate::storage::PoolStatus>,
     pub submit_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_state_calls: Arc<StdMutex<Vec<StateObject>>>,
+    pub replace_state_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::StateReplace, String>>>>,
+    pub replace_state_calls: Arc<StdMutex<Vec<(StateObject, String)>>>,
+    /// Served by `pull_state_head` instead of the peeked stored state: a
+    /// head read that sees an older state than the full read after it.
+    pub pull_state_head_override: Arc<StdMutex<Option<crate::state_object::StateHead>>>,
     pub submit_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_calls: Arc<StdMutex<Vec<DeltaObject>>>,
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
@@ -461,6 +467,10 @@ pub struct MockStorageBackend {
     pub pull_all_delta_proposals_calls: Arc<StdMutex<Vec<String>>>,
     pub update_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub update_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
+    /// Answers for `update_delta_proposal_if_status`, popped last first;
+    /// `Ok(true)` (the write committed) when empty. A committed write is
+    /// recorded in `update_delta_proposal_calls`.
+    pub update_delta_proposal_if_status_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
@@ -528,7 +538,7 @@ impl MockStorageBackend {
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or_else(|| "No state found".to_string()),
+                .ok_or_else(|| "State not found".to_string()),
         }
     }
 
@@ -544,6 +554,19 @@ impl MockStorageBackend {
 
     pub fn with_submit_state(self, response: StdResult<(), String>) -> Self {
         self.submit_state_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_pull_state_head(self, head: crate::state_object::StateHead) -> Self {
+        *self.pull_state_head_override.lock().unwrap() = Some(head);
+        self
+    }
+
+    pub fn with_replace_state(
+        self,
+        response: StdResult<crate::storage::StateReplace, String>,
+    ) -> Self {
+        self.replace_state_responses.lock().unwrap().push(response);
         self
     }
 
@@ -634,6 +657,10 @@ impl MockStorageBackend {
         self.submit_state_calls.lock().unwrap().clone()
     }
 
+    pub fn get_replace_state_calls(&self) -> Vec<(StateObject, String)> {
+        self.replace_state_calls.lock().unwrap().clone()
+    }
+
     /// Queue one `backfill_state_nonce` answer (LIFO). The default with an
     /// empty queue is `Ok(true)`: the row took the nonce.
     pub fn with_backfill_state_nonce(self, response: StdResult<bool, String>) -> Self {
@@ -686,6 +713,14 @@ impl MockStorageBackend {
 
     pub fn with_update_delta_proposal(self, response: StdResult<(), String>) -> Self {
         self.update_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_update_delta_proposal_if_status(self, response: StdResult<bool, String>) -> Self {
+        self.update_delta_proposal_if_status_responses
             .lock()
             .unwrap()
             .push(response);
@@ -898,6 +933,21 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or(Ok(()))
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> StdResult<crate::storage::StateReplace, String> {
+        self.replace_state_calls
+            .lock()
+            .unwrap()
+            .push((state.clone(), expected_commitment.to_string()));
+        if let Some(response) = self.replace_state_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::replace_state_sequential(self, state, expected_commitment).await
+    }
+
     async fn submit_delta(&self, delta: &DeltaObject) -> StdResult<(), String> {
         self.submit_delta_calls.lock().unwrap().push(delta.clone());
         self.submit_delta_responses
@@ -932,6 +982,9 @@ impl StorageBackend for MockStorageBackend {
         &self,
         _account_id: &str,
     ) -> StdResult<crate::state_object::StateHead, String> {
+        if let Some(head) = self.pull_state_head_override.lock().unwrap().clone() {
+            return Ok(head);
+        }
         self.peek_stored_state()
             .map(|state| crate::state_object::StateHead {
                 commitment: state.commitment,
@@ -1103,6 +1156,27 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
+    }
+
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        _expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let response = self
+            .update_delta_proposal_if_status_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true));
+        if matches!(response, Ok(true)) {
+            self.update_delta_proposal_calls
+                .lock()
+                .unwrap()
+                .push((commitment.to_string(), proposal.clone()));
+        }
+        response
     }
 
     async fn delete_delta_proposal(

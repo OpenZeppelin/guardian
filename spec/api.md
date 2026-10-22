@@ -433,9 +433,9 @@ For an EIP-712 Miden approval, the same endpoint and envelope use `"message_form
 Guardian verifies every Miden approval against the proposal's transaction summary before storing it:
 
 - Falcon and raw ECDSA approvals sign the transaction-summary commitment; EIP-712 approvals sign the typed-data hash above. The Falcon public key comes from the signature. ECDSA approvals must carry `public_key`; a raw approval's `v` must be `0/1` and recover to that key, as execution recovers it.
-- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must equal the request signer, so a cosigner can only approve for themselves.
+- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must be one of the account's configured cosigners, but it need not be the request signer: an authenticated signer may relay an approval another cosigner produced off channel (the SDK execute flows relay a proposal document's collected approvals this way before requesting the acknowledgement). The approval is credited to the cosigner the signature verifies for, never to the relaying caller, and one the proposal already holds for that cosigner is rejected with `proposal_already_signed`.
 - On `POST /delta/proposal`, `signatures` may carry at most the proposer's own approval. Other cosigners approve through `PUT /delta/proposal`.
-- A signature that does not parse or verify, or whose signer is not the request signer (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
+- A signature that does not parse or verify, or whose signer is not a cosigner of the account (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
 
 ### DeltaProposalEnvelope
 
@@ -489,7 +489,7 @@ component schemas.
 | Surface | Method & path | Auth | Summary |
 | --- | --- | --- | --- |
 | client | `POST /configure` | signed headers | Register an account with its auth set and initial state |
-| client | `POST /delta` | signed headers | Push a signed single-key delta |
+| client | `POST /delta` | signed headers | Push a delta; a multisig account must meet its cosigner threshold |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
 | client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
@@ -832,7 +832,7 @@ scrape_configs:
 ## Idempotency and Ordering
 
 - `push_delta` MAY be retried by clients; identical Miden deltas SHOULD be treated as idempotent when possible.
-- Miden `push_delta` enforces `prev_commitment` match.
+- Miden `push_delta` enforces `prev_commitment` match. A multisig push is also rejected with `insufficient_signatures` until the matching proposal's verified cosigner signatures meet the effective threshold of the procedures the pushed transaction invokes.
 - EVM proposal create is idempotent for duplicate active proposals with the same deterministic proposal ID.
 - EVM proposals remain active/pending-only in the EVM proposal store; expired or finalized proposals are lazily deleted.
 
