@@ -15,6 +15,7 @@ const OVERRIDE_TARGET_PROCEDURES = [
   'update_guardian',
   'send_asset',
   'receive_asset',
+  'create_note',
 ];
 
 async function buildInBrowser(page: import('@playwright/test').Page) {

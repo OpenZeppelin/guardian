@@ -147,6 +147,8 @@ async function runLiveAction(
       return live.assertAssetSent(context, scenario.id);
     case 'procedure-threshold-set':
       return live.setProcedureThreshold(context, scenario.id);
+    case 'procedure-threshold-lower':
+      return live.lowerProcedureThreshold(context, scenario.id);
     case 'procedure-threshold-assert':
       return live.assertProcedureThreshold(context, scenario.id);
     default:

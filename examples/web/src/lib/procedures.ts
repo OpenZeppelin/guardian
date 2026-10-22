@@ -19,6 +19,7 @@ export interface ProcedureInfo {
 export const USER_PROCEDURES: ProcedureInfo[] = [
   { name: 'receive_asset', label: 'Receive Assets', description: 'Accept incoming assets' },
   { name: 'send_asset', label: 'Send Assets', description: 'Send assets to other accounts' },
+  { name: 'create_note', label: 'Create Notes', description: 'Create output notes, including every transfer' },
   { name: 'update_signers', label: 'Update Signers', description: 'Add/remove signers or change threshold' },
   { name: 'update_procedure_threshold', label: 'Update Procedure Threshold', description: 'Set or clear threshold overrides' },
   { name: 'update_guardian', label: 'Update GUARDIAN', description: 'Change GUARDIAN server configuration' },
@@ -51,6 +52,8 @@ export function getProposalProcedure(proposalType: ProposalType): ProcedureName 
 
 /**
  * Get the effective threshold for a given proposal type.
+ * A P2ID transfer calls both `send_asset` and `create_note`, and the chain requires the
+ * higher of their thresholds.
  *
  * @param proposalType - The type of proposal
  * @param defaultThreshold - The default multisig threshold
@@ -62,8 +65,11 @@ export function getEffectiveThreshold(
   defaultThreshold: number,
   procedureThresholds?: Map<ProcedureName, number>,
 ): number {
-  if (!procedureThresholds || procedureThresholds.size === 0) {
-    return defaultThreshold;
+  const thresholdOf = (procedure: ProcedureName) =>
+    procedureThresholds?.get(procedure) ?? defaultThreshold;
+
+  if (proposalType === 'p2id') {
+    return Math.max(thresholdOf('send_asset'), thresholdOf('create_note'));
   }
 
   const procedure = getProposalProcedure(proposalType);
@@ -71,5 +77,5 @@ export function getEffectiveThreshold(
     return defaultThreshold;
   }
 
-  return procedureThresholds.get(procedure) ?? defaultThreshold;
+  return thresholdOf(procedure);
 }
