@@ -128,10 +128,37 @@ pub async fn lookup_account(
                 "Failed to look up accounts by cosigner commitment: {e}"
             ))
         })?;
+    let accounts = configured_accounts(state, accounts).await?;
     tracing::Span::current().record("match_count", accounts.len());
     tracing::debug!("Lookup completed");
 
     Ok(LookupAccountResult { accounts })
+}
+
+/// Drops accounts whose metadata exists without a stored state: a first
+/// configuration that claimed the account and failed before writing its
+/// state. Listing one would hand the caller an account whose state reads
+/// 404, which fails recovery of every account behind the key.
+async fn configured_accounts(state: &AppState, accounts: Vec<String>) -> Result<Vec<String>> {
+    let mut configured = Vec::with_capacity(accounts.len());
+    for account_id in accounts {
+        match state.storage.pull_state_commitment(&account_id).await {
+            Ok(_) => configured.push(account_id),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {
+                tracing::debug!(
+                    account_id = %account_id,
+                    "Lookup skipped an account whose first configuration has not finished"
+                );
+            }
+            Err(e) => {
+                tracing::error!(account_id = %account_id, error = %e, "Failed to read the stored state during lookup");
+                return Err(GuardianError::StorageError(format!(
+                    "Failed to read the stored state of {account_id}: {e}"
+                )));
+            }
+        }
+    }
+    Ok(configured)
 }
 
 /// Normalize a `0x`-prefixed (or unprefixed) hex commitment to the canonical

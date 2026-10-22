@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Auth Replay"
+  short_description: "Model-check Guardian's signed-request replay protection with TLA+"
+  default_prompt: "Use $verify-auth-replay to model-check this change to request timestamps, replay floors, sessions or configure."

@@ -599,8 +599,7 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
-        let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
+        let required_signatures = account.effective_threshold_for_p2id()? as usize;
 
         let asset = build_transfer_asset(faucet_id, amount)?;
 

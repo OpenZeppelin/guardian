@@ -1,0 +1,8 @@
+# tier cell group expected [note]
+quick configure-fresh accept PASS
+quick configure-fresh writes PASS
+quick configure-existing all PASS
+quick migrated all PASS
+quick session-bounded all PASS
+quick session-unbounded accept FAIL:AcceptedAtMostOnce [F2: a handler stalled past max TTL + skew outlives its session floor]
+deep session-mixed all PASS
