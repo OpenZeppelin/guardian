@@ -1,0 +1,83 @@
+name: Execution model drift
+
+# The execution TLA+ model (.agents/skills/verify-guardian-execution) mirrors
+# named Rust functions. This compares them with the fingerprints recorded at
+# the last model review. It is advisory: drift posts a warning and a job
+# summary naming the functions to review against the model, and never fails
+# the pull request, since most edits to these files leave the modeled
+# behavior alone. TLC itself is not run, so this needs no Java.
+#
+# The paths below are the files listed in mirrored.txt; keep them in step.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".agents/skills/verify-guardian-execution/**"
+      - "crates/server/src/builder/canonicalization.rs"
+      - "crates/server/src/coordination/execution_leases.rs"
+      - "crates/server/src/coordination/postgres/lease.rs"
+      - "crates/server/src/jobs/canonicalization/processor.rs"
+      - "crates/server/src/jobs/canonicalization/reconciliation.rs"
+      - "crates/server/src/jobs/execution_reconcile/mod.rs"
+      - "crates/server/src/network/miden/mod.rs"
+      - "crates/server/src/services/execute_proposal/service.rs"
+      - "crates/server/src/services/execute_proposal/worker.rs"
+      - "crates/server/src/storage/execution.rs"
+      - "crates/server/src/storage/filesystem.rs"
+      - "crates/server/src/storage/mod.rs"
+      - "crates/server/src/storage/postgres.rs"
+      - "crates/server/src/storage/postgres_execution.rs"
+
+concurrency:
+  group: execution-model-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Execution model drift (advisory)
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'OpenZeppelin'
+    steps:
+      - name: Harden the runner (Audit all outbound calls)
+        uses: step-security/harden-runner@95d9a5deda9de15063e7595e9719c11c38c90ae2 # v2.13.2
+        with:
+          egress-policy: audit
+
+      - name: Checkout code
+        uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Compare the mirrored Rust with the recorded fingerprints
+        run: |
+          set +e
+          output="$(.agents/skills/verify-guardian-execution/check.sh --drift-only 2>&1)"
+          status=$?
+          set -e
+          echo "$output"
+          case "$status" in
+            0)
+              echo "No drift: the mirrored Rust matches the reviewed model." >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            3)
+              echo "::warning title=Execution model drift::Functions the execution TLA+ model mirrors changed. Review them against model/GuardianExecution.tla, run check.sh, then check.sh --accept-drift."
+              {
+                echo "### Execution model drift"
+                echo
+                echo "Review the functions below against \`.agents/skills/verify-guardian-execution/model/GuardianExecution.tla\`,"
+                echo "run \`check.sh\`, then \`check.sh --accept-drift\`."
+                echo
+                echo '```'
+                echo "$output"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error title=Execution model drift check::check.sh --drift-only exited $status"
+              exit "$status"
+              ;;
+          esac

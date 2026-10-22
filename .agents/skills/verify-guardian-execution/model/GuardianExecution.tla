@@ -105,6 +105,14 @@ ResolveEffect(a) ==
     /\ cand' = IF res[a].ev THEN NoCand ELSE cand
     /\ proposals' = IF res[a].ev THEN proposals \ {res[a].p} ELSE proposals
 
+\* resolve_execution for SubmissionNotProcessed: the node refused the send
+\* without processing it, so the candidate goes and the proposal stays
+\* executable (ExecutionFailureCode::ends_proposal is false for it).
+ResolveKeepingProposal(a) ==
+    /\ res' = [res EXCEPT ![a].outcome = "failed", ![a].released = TRUE]
+    /\ cand' = NoCand
+    /\ UNCHANGED proposals
+
 \* commit_promoted_execution, run inside every promote_candidate transaction:
 \* the active reservation whose evidence names the promoted nonce and whose
 \* expected commitment is the promoted state is recorded committed and
@@ -324,13 +332,17 @@ WClaimRes(w) ==
             /\ UNCHANGED res
     /\ UNCHANGED <<chainVars, stored, cand, canon, parked, proposals, lease, wp, wtok, wref, rcVars, procVars, budgetVars>>
 
-\* submit: Accepted and Unknown both leave the transaction in flight.
+\* submit: Accepted and Unknown both leave the transaction in flight. A
+\* rejection and a refusal the node made without processing it (rate limit,
+\* authentication, an unimplemented call) leave nothing in flight.
 WSubmit(w) ==
     /\ wpc[w] = "send"
     /\ \/ /\ mempool' = mempool \cup {[kind |-> "exec", w |-> w, p |-> wp[w],
                                        target |-> Target(wp[w]), exp |-> res[w].exp]}
           /\ wpc' = [wpc EXCEPT ![w] = "release"]
        \/ /\ wpc' = [wpc EXCEPT ![w] = "rejected"]
+          /\ UNCHANGED mempool
+       \/ /\ wpc' = [wpc EXCEPT ![w] = "notProcessed"]
           /\ UNCHANGED mempool
     /\ UNCHANGED <<hist, landed, storeVars, wp, wtok, wref, rcVars, procVars, budgetVars>>
 
@@ -339,6 +351,16 @@ WResolveRejected(w) ==
     /\ wpc[w] = "rejected"
     /\ IF ResolveOk(w, w, wtok[w], TRUE)
        THEN ResolveEffect(w)
+       ELSE UNCHANGED <<res, cand, proposals>>
+    /\ wpc' = [wpc EXCEPT ![w] = "release"]
+    /\ UNCHANGED <<chainVars, stored, canon, parked, lease, wp, wtok, wref, rcVars, procVars, budgetVars>>
+
+\* SubmissionOutcome::NotProcessed -> resolve_execution under the worker's
+\* fence, keeping the proposal.
+WResolveNotProcessed(w) ==
+    /\ wpc[w] = "notProcessed"
+    /\ IF ResolveOk(w, w, wtok[w], TRUE)
+       THEN ResolveKeepingProposal(w)
        ELSE UNCHANGED <<res, cand, proposals>>
     /\ wpc' = [wpc EXCEPT ![w] = "release"]
     /\ UNCHANGED <<chainVars, stored, canon, parked, lease, wp, wtok, wref, rcVars, procVars, budgetVars>>
@@ -570,7 +592,7 @@ Next ==
     \/ \E w \in Workers :
         \/ ReqAcquire(w) \/ ReqCreate(w) \/ WPrepare(w) \/ WHeartbeat(w) \/ WFail(w)
         \/ WAdmit(w) \/ WClaimLease(w) \/ WClaimRes(w) \/ WSubmit(w)
-        \/ WResolveRejected(w) \/ WRelease(w)
+        \/ WResolveRejected(w) \/ WResolveNotProcessed(w) \/ WRelease(w)
     \/ \E r \in Reconcilers :
         \/ RcList(r) \/ RcAcquire(r) \/ RcClaim(r) \/ RcFailPre(r)
         \/ RcObserveFresh(r) \/ RcObserveAny(r) \/ RcRenewLease(r) \/ RcRenewRes(r) \/ RcAct(r)

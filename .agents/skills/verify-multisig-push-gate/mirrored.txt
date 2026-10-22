@@ -11,7 +11,7 @@ Cargo.lock @pin miden-standards
 #
 # ApprovalRelay, server
 crates/server/src/services/push_delta.rs push_delta
-crates/server/src/services/push_delta.rs lookup_matching_proposal
+crates/server/src/services/ack_delta_internal.rs lookup_matching_proposal
 crates/server/src/services/candidate_chain.rs ensure_tail_keeps_auth
 crates/server/src/services/sign_delta_proposal.rs sign_delta_proposal
 crates/server/src/services/sign_delta_proposal.rs load_pending_proposal

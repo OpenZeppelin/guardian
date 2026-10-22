@@ -77,8 +77,12 @@ every helper they call that decides an outcome the model represents
 `ProtectedByExecution` arms, the chain reads), plus the filesystem
 backend's copies of the E1 fix, which the model does not cover but which
 must stay in parity with Postgres. A new helper on a modeled path that
-decides a refusal, a verdict or a write belongs there too. No CI job runs
-the drift check, so run it yourself on any change to the paths above. Things the
+decides a refusal, a verdict or a write belongs there too. The advisory
+`Execution model drift` workflow (`.github/workflows/execution-model-drift.yml`)
+runs the drift check on pull requests that touch these files and posts a
+warning naming the drifted functions; it never fails the pull request, so
+the review is still yours. Its path list mirrors the files in
+`mirrored.txt`: add a new file to both. Things the
 model treats as one step, which must stay one step in the code:
 
 - `create_execution_reservation_tx`, `admit_execution_candidate_tx`,
@@ -174,7 +178,7 @@ Paths are relative to `crates/server/src/`.
 | `WFail` | any failure before the boundary (`approach_boundary`, `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
 | `WAdmit`, `RecoverableOnStored` | `cross_boundary` → `admit_execution_candidate_tx` (refuses with RecoverableDeltaPending while `recoverable_delta_on` the base; otherwise deletes rows at the nonce that cannot land, inserts the candidate and the evidence) |
 | `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`). A storage error is retried, fenced, while the lease and send window last; a retry is the same claim taken later, which the model already allows since workers get no fairness |
-| `WSubmit`, `WResolveRejected` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution` |
+| `WSubmit`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`) |
 | `WRelease` | `run_execution`'s `release_quietly` |
 | `RcList` | `jobs/execution_reconcile/mod.rs` `Reconciler::pass` (`list_active_executions`) and the Owned check at the top of `reconcile` |
 | `RcAcquire`, `RcClaim` | `take_ownership` (`try_acquire`, then `claim_execution_reservation_tx` unless the fence is already ours) |
