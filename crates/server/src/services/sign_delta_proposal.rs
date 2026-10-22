@@ -3,7 +3,9 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalS
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
-use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
+use crate::services::proposal_signature::{
+    ensure_cosigner_approval, proposal_tx_summary, verify_proposal_signature,
+};
 use crate::services::resolve_account_allowing_session;
 use crate::utils::normalize_commitment_hex;
 use guardian_shared::DeltaSignature;
@@ -64,25 +66,16 @@ pub async fn sign_delta_proposal(
     // on chain, where the executed transaction carries every collected
     // signature. The request itself is still authenticated above, so only
     // a configured signer can relay, and the approval must belong to one
-    // of the account's cosigners. The summary is fixed for a proposal id,
-    // so the signature is verified once, before any retry.
+    // of the account's cosigners, under the scheme the account verifies
+    // that cosigner with. The summary is fixed for a proposal id, so the
+    // signature is verified once, before any retry.
     let tx_summary = proposal_tx_summary(&delta_proposal.delta_payload)?;
     let approval_signer = verify_proposal_signature(&tx_summary, &signature)?;
     tracing::Span::current().record(
         "signer_commitment",
         tracing::field::display(&approval_signer),
     );
-    if !resolved
-        .metadata
-        .auth
-        .cosigner_commitments()
-        .iter()
-        .any(|cosigner| cosigner.eq_ignore_ascii_case(&approval_signer))
-    {
-        return Err(GuardianError::InvalidProposalSignature(
-            "Approval signer is not a cosigner of this account".to_string(),
-        ));
-    }
+    ensure_cosigner_approval(&resolved.metadata.auth, &approval_signer, &signature)?;
     if !approval_signer.eq_ignore_ascii_case(&resolved.signer_commitment) {
         tracing::info!(
             relayer = %resolved.signer_commitment,
@@ -232,7 +225,7 @@ mod tests {
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
     use crate::testing::helpers::{
-        TestSigner, create_test_app_state_with_mocks, create_test_delta_payload,
+        TestEcdsaSigner, TestSigner, create_test_app_state_with_mocks, create_test_delta_payload,
     };
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
@@ -934,6 +927,110 @@ mod tests {
         assert!(
             matches!(result, Err(GuardianError::InvalidProposalSignature(_))),
             "Expected InvalidProposalSignature, got: {result:?}"
+        );
+        assert!(storage.get_update_delta_proposal_calls().is_empty());
+    }
+
+    /// `caller` relays `signature` to the pending test proposal of an
+    /// account authorized by `auth`.
+    async fn relay_on(
+        auth: Auth,
+        caller: &TestSigner,
+        signature: ProposalSignature,
+    ) -> (Result<SignDeltaProposalResult>, MockStorageBackend) {
+        let (state, storage, _network, metadata) = create_test_state();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let (_summary, commitment) = proposal_summary(&account_id);
+        let _metadata =
+            metadata.with_get(Ok(Some(create_account_metadata(account_id.clone(), auth))));
+        let storage = storage
+            .with_pull_delta_proposal(Ok(create_pending_proposal(
+                account_id.clone(),
+                1,
+                caller.commitment_hex.clone(),
+                vec![],
+            )))
+            .with_update_delta_proposal_if_status(Ok(true));
+        let (request_signature, timestamp) = caller.sign(&account_id);
+        let params = SignDeltaProposalParams {
+            account_id,
+            commitment,
+            signature,
+            credentials: Credentials::signature(
+                caller.pubkey_hex.clone(),
+                request_signature,
+                timestamp,
+            ),
+        };
+        (sign_delta_proposal(&state, params).await, storage)
+    }
+
+    fn ecdsa_approval(signer: &TestEcdsaSigner) -> ProposalSignature {
+        let (summary, _commitment) = proposal_summary("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b");
+        ProposalSignature::Ecdsa {
+            signature: signer.sign_word(summary.to_commitment()),
+            public_key: Some(signer.pubkey_hex.clone()),
+            message_format: EcdsaMessageFormat::Raw,
+        }
+    }
+
+    /// On a mixed account a Falcon cosigner relays an ECDSA cosigner's
+    /// approval, made under the scheme the account registers it with.
+    #[tokio::test]
+    async fn test_sign_delta_proposal_accepts_a_mixed_accounts_approval_under_its_scheme() {
+        use crate::metadata::auth::MidenCosigner;
+        use guardian_shared::SignatureScheme;
+
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let auth = Auth::Miden {
+            cosigners: vec![
+                MidenCosigner {
+                    commitment: falcon.commitment_hex.clone(),
+                    scheme: SignatureScheme::Falcon,
+                },
+                MidenCosigner {
+                    commitment: ecdsa.commitment_hex.clone(),
+                    scheme: SignatureScheme::Ecdsa,
+                },
+            ],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+
+        let (result, storage) = relay_on(auth, &falcon, ecdsa_approval(&ecdsa)).await;
+
+        let result = result.expect("an approval under the registered scheme is accepted");
+        match &result.delta.status {
+            DeltaStatus::Pending { cosigner_sigs, .. } => {
+                assert_eq!(cosigner_sigs.len(), 1);
+                assert_eq!(cosigner_sigs[0].signer_id, ecdsa.commitment_hex);
+            }
+            _ => panic!("Expected Pending status"),
+        }
+        assert_eq!(storage.get_update_delta_proposal_calls().len(), 1);
+    }
+
+    /// An ECDSA key the account registers under Falcon (a mis-built
+    /// client's account): its ECDSA approval verifies to a cosigner's
+    /// commitment, but the chain verifies that cosigner as Falcon and would
+    /// refuse the transaction, so the approval is not stored.
+    #[tokio::test]
+    async fn test_sign_delta_proposal_rejects_an_approval_under_the_wrong_scheme() {
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![falcon.commitment_hex.clone(), ecdsa.commitment_hex.clone()],
+        };
+
+        let (result, storage) = relay_on(auth, &falcon, ecdsa_approval(&ecdsa)).await;
+
+        assert!(
+            matches!(
+                &result,
+                Err(GuardianError::InvalidProposalSignature(message))
+                    if message.contains("signed under ecdsa") && message.contains("under falcon")
+            ),
+            "{result:?}"
         );
         assert!(storage.get_update_delta_proposal_calls().is_empty());
     }

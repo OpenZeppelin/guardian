@@ -223,6 +223,38 @@ describe('GuardianHttpClient', () => {
       );
     });
 
+    it('sends a per-signer-scheme Miden auth as the server reads it (issue #563)', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'Account configured', ack_pubkey: '0x' + 'c'.repeat(66) }),
+      });
+      const auth = {
+        Miden: {
+          cosigners: [
+            { commitment: '0x' + 'e'.repeat(64), scheme: 'falcon' as const },
+            { commitment: '0x' + 'f'.repeat(64), scheme: 'ecdsa' as const },
+          ],
+          guardian_scheme: 'ecdsa' as const,
+        },
+      };
+      await client.configure({
+        accountId: '0x' + 'd'.repeat(30),
+        auth,
+        initialState: { data: 'base64data', accountId: '0x' + 'd'.repeat(30) },
+      });
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.auth).toEqual({
+        Miden: {
+          cosigners: [
+            { commitment: '0x' + 'e'.repeat(64), scheme: 'falcon' },
+            { commitment: '0x' + 'f'.repeat(64), scheme: 'ecdsa' },
+          ],
+          guardian_scheme: 'ecdsa',
+        },
+      });
+    });
+
     it('should throw error when no signer configured', async () => {
       const request = {
         accountId: '0x' + 'd'.repeat(30),

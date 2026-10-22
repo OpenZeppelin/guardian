@@ -1,7 +1,10 @@
+use guardian_shared::SignatureScheme;
 use miden_protocol::Word;
 use miden_protocol::account::{Account, StorageSlotName};
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::account::auth::AuthGuardedMultisig;
+
+use crate::metadata::auth::ChainCosigner;
 
 // `AuthGuardedMultisig` storage slot names (miden::standards::auth::*),
 // sourced from the component's `*_slot()` accessors so they cannot drift.
@@ -10,6 +13,19 @@ fn multisig_threshold_config_slot() -> &'static str {
 }
 fn multisig_approver_pubkeys_slot() -> &'static str {
     AuthGuardedMultisig::approver_public_keys_slot().as_str()
+}
+fn multisig_approver_schemes_slot() -> &'static str {
+    AuthGuardedMultisig::approver_scheme_ids_slot().as_str()
+}
+
+/// Slot name of the GUARDIAN scheme map (`miden::standards::auth::guardian::scheme`).
+pub fn guardian_scheme_slot_name() -> &'static str {
+    AuthGuardedMultisig::guardian_scheme_id_slot().as_str()
+}
+
+/// Slot name of the approver scheme map (`miden::standards::auth::multisig::approver_schemes`).
+pub fn approver_scheme_slot_name() -> &'static str {
+    multisig_approver_schemes_slot()
 }
 
 /// Slot name of the GUARDIAN public key map (`miden::standards::auth::guardian::pub_key`).
@@ -70,6 +86,49 @@ impl<'a> MidenAccountInspector<'a> {
         }
 
         pubkeys
+    }
+
+    /// The cosigners of the multisig signer map with the scheme the approver
+    /// scheme map stores for each, in signer-index order. A scheme entry that
+    /// is missing or names no supported scheme reads as `None`.
+    pub fn extract_chain_cosigners(&self) -> Vec<ChainCosigner> {
+        let commitments = self.extract_pubkeys();
+        let schemes = self.extract_approver_schemes(commitments.len());
+        commitments
+            .into_iter()
+            .zip(schemes)
+            .map(|(commitment, scheme)| ChainCosigner { commitment, scheme })
+            .collect()
+    }
+
+    /// The schemes of the first `count` approvers
+    /// (`miden::standards::auth::multisig::approver_schemes`,
+    /// `[i, 0, 0, 0] => [scheme_id, 0, 0, 0]`).
+    pub fn extract_approver_schemes(&self, count: usize) -> Vec<Option<SignatureScheme>> {
+        (0..count)
+            .map(|index| {
+                let key = Word::from([index as u32, 0, 0, 0]);
+                self.scheme_at(multisig_approver_schemes_slot(), key)
+            })
+            .collect()
+    }
+
+    /// Whether the state carries the approver scheme map at all. A guarded
+    /// multisig always does; a state built from bare slots may not.
+    pub fn has_approver_scheme_map(&self) -> bool {
+        StorageSlotName::new(multisig_approver_schemes_slot())
+            .is_ok_and(|name| self.account.storage().get(&name).is_some())
+    }
+
+    /// The GUARDIAN's scheme (`miden::standards::auth::guardian::scheme`),
+    /// or `None` when the entry is missing or names no supported scheme.
+    pub fn extract_guardian_scheme(&self) -> Option<SignatureScheme> {
+        self.scheme_at(guardian_scheme_slot_name(), Word::from([0u32, 0, 0, 0]))
+    }
+
+    fn scheme_at(&self, slot_name: &str, key: Word) -> Option<SignatureScheme> {
+        let value = self.get_map_item_by_name(slot_name, key)?;
+        SignatureScheme::from_auth_scheme_id(value[0].as_canonical_u64())
     }
 
     /// Check if a public key exists in the multisig signer map.
@@ -164,6 +223,61 @@ mod tests {
             AccountCode::mock(),
             miden_protocol::Felt::new_unchecked(1),
         )
+    }
+
+    #[test]
+    fn reads_each_approver_scheme_and_the_guardian_scheme() {
+        use crate::testing::helpers::build_guarded_multisig_account;
+        let account = build_guarded_multisig_account(
+            [4u8; 32],
+            2,
+            &[
+                (word(11), SignatureScheme::Falcon),
+                (word(12), SignatureScheme::Ecdsa),
+                (word(13), SignatureScheme::Falcon),
+            ],
+            (word(99), SignatureScheme::Ecdsa),
+        );
+        let inspector = MidenAccountInspector::new(&account);
+        let hex = |value: u32| format!("0x{}", hex::encode(word(value).to_bytes()));
+
+        assert_eq!(
+            inspector.extract_chain_cosigners(),
+            vec![
+                ChainCosigner {
+                    commitment: hex(11),
+                    scheme: Some(SignatureScheme::Falcon)
+                },
+                ChainCosigner {
+                    commitment: hex(12),
+                    scheme: Some(SignatureScheme::Ecdsa)
+                },
+                ChainCosigner {
+                    commitment: hex(13),
+                    scheme: Some(SignatureScheme::Falcon)
+                },
+            ]
+        );
+        assert_eq!(
+            inspector.extract_guardian_scheme(),
+            Some(SignatureScheme::Ecdsa)
+        );
+        // Asking past the signer set reads no scheme.
+        assert_eq!(
+            inspector.extract_approver_schemes(4)[3],
+            None,
+            "no approver at index 3"
+        );
+    }
+
+    #[test]
+    fn a_state_without_scheme_maps_reads_no_schemes() {
+        let account = build_account_with_signer_slots(vec![word(1), word(2)]);
+        let inspector = MidenAccountInspector::new(&account);
+        let cosigners = inspector.extract_chain_cosigners();
+        assert_eq!(cosigners.len(), 2);
+        assert!(cosigners.iter().all(|cosigner| cosigner.scheme.is_none()));
+        assert_eq!(inspector.extract_guardian_scheme(), None);
     }
 
     #[test]

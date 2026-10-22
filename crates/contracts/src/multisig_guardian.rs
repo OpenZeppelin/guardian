@@ -6,7 +6,7 @@
 
 use anyhow::{Result, anyhow};
 use miden_protocol::Word;
-use miden_protocol::account::auth::{AuthScheme, PublicKeyCommitment};
+use miden_protocol::account::auth::PublicKeyCommitment;
 use miden_protocol::account::{
     Account, AccountBuilder, AccountComponent, AccountProcedureRoot, AccountType,
 };
@@ -26,8 +26,15 @@ pub struct MultisigGuardianConfig {
     pub signer_commitments: Vec<Word>,
     /// GUARDIAN public key commitment.
     pub guardian_commitment: Word,
-    /// Signature scheme for the account (Falcon or ECDSA).
+    /// Default signature scheme (Falcon or ECDSA): every signer without an
+    /// entry in `signer_schemes` and, unless `guardian_scheme` is set, the
+    /// GUARDIAN use it.
     pub signature_scheme: SignatureScheme,
+    /// Per-signer schemes, index-aligned with `signer_commitments`. Empty
+    /// means every signer uses `signature_scheme`.
+    pub signer_schemes: Vec<SignatureScheme>,
+    /// The GUARDIAN's scheme; `None` means `signature_scheme`.
+    pub guardian_scheme: Option<SignatureScheme>,
     /// Account type, which also determines on-chain storage visibility
     /// (`Private` keeps state off-chain; defaults to `Private`).
     pub account_type: AccountType,
@@ -44,6 +51,8 @@ impl MultisigGuardianConfig {
             signer_commitments,
             guardian_commitment,
             signature_scheme: SignatureScheme::Falcon,
+            signer_schemes: Vec::new(),
+            guardian_scheme: None,
             account_type: AccountType::Private,
             proc_threshold_overrides: Vec::new(),
         }
@@ -53,6 +62,33 @@ impl MultisigGuardianConfig {
     pub fn with_signature_scheme(mut self, signature_scheme: SignatureScheme) -> Self {
         self.signature_scheme = signature_scheme;
         self
+    }
+
+    /// Gives each signer its own scheme, index-aligned with
+    /// `signer_commitments`, for an account whose approvers mix Falcon and
+    /// ECDSA keys.
+    pub fn with_signer_schemes(mut self, signer_schemes: Vec<SignatureScheme>) -> Self {
+        self.signer_schemes = signer_schemes;
+        self
+    }
+
+    /// Sets the GUARDIAN's scheme independently of the signers'.
+    pub fn with_guardian_scheme(mut self, guardian_scheme: SignatureScheme) -> Self {
+        self.guardian_scheme = Some(guardian_scheme);
+        self
+    }
+
+    /// The scheme of the signer at `index`.
+    pub fn signer_scheme(&self, index: usize) -> SignatureScheme {
+        self.signer_schemes
+            .get(index)
+            .copied()
+            .unwrap_or(self.signature_scheme)
+    }
+
+    /// The GUARDIAN's scheme.
+    pub fn effective_guardian_scheme(&self) -> SignatureScheme {
+        self.guardian_scheme.unwrap_or(self.signature_scheme)
     }
 
     /// Sets the account type (also controls on-chain storage visibility).
@@ -134,21 +170,18 @@ impl MultisigGuardianBuilder {
         Ok((self.seed, self.config.account_type, component))
     }
 
-    fn auth_scheme(&self) -> AuthScheme {
-        match self.config.signature_scheme {
-            SignatureScheme::Falcon => AuthScheme::Falcon512Poseidon2,
-            SignatureScheme::Ecdsa => AuthScheme::EcdsaK256Keccak,
-        }
-    }
-
     fn build_guarded_multisig_component(&self) -> Result<AccountComponent> {
-        let scheme = self.auth_scheme();
-
         let approvers: Vec<Approver> = self
             .config
             .signer_commitments
             .iter()
-            .map(|commitment| Approver::new(PublicKeyCommitment::from(*commitment), scheme))
+            .enumerate()
+            .map(|(index, commitment)| {
+                Approver::new(
+                    PublicKeyCommitment::from(*commitment),
+                    self.config.signer_scheme(index).auth_scheme(),
+                )
+            })
             .collect();
 
         let approver_set = ApproverSet::new(approvers, self.config.threshold)
@@ -156,7 +189,7 @@ impl MultisigGuardianBuilder {
 
         let guardian = GuardianConfig::new(Approver::new(
             PublicKeyCommitment::from(self.config.guardian_commitment),
-            scheme,
+            self.config.effective_guardian_scheme().auth_scheme(),
         ));
 
         let mut cfg = AuthGuardedMultisigConfig::new(approver_set, guardian)
@@ -185,6 +218,15 @@ impl MultisigGuardianBuilder {
         }
         if self.config.signer_commitments.is_empty() {
             return Err(anyhow!("at least one signer commitment is required"));
+        }
+        if !self.config.signer_schemes.is_empty()
+            && self.config.signer_schemes.len() != self.config.signer_commitments.len()
+        {
+            return Err(anyhow!(
+                "signer_schemes ({}) must be empty or match the number of signers ({})",
+                self.config.signer_schemes.len(),
+                self.config.signer_commitments.len()
+            ));
         }
 
         let mut seen_signers = std::collections::HashSet::new();
@@ -338,6 +380,100 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("must be at least 1")
+        );
+    }
+
+    fn scheme_id_at(
+        account: &Account,
+        slot: &miden_protocol::account::StorageSlotName,
+        index: u32,
+    ) -> u64 {
+        account
+            .storage()
+            .get_map_item(
+                slot,
+                miden_protocol::account::StorageMapKey::new(Word::from([index, 0, 0, 0])),
+            )
+            .expect("scheme map entry")[0]
+            .as_canonical_u64()
+    }
+
+    #[test]
+    fn test_build_mixed_scheme_account_stores_each_scheme() {
+        let config = MultisigGuardianConfig::new(
+            2,
+            vec![mock_commitment(1), mock_commitment(2), mock_commitment(3)],
+            mock_commitment(10),
+        )
+        .with_signer_schemes(vec![
+            SignatureScheme::Falcon,
+            SignatureScheme::Ecdsa,
+            SignatureScheme::Falcon,
+        ])
+        .with_guardian_scheme(SignatureScheme::Ecdsa);
+        let account = MultisigGuardianBuilder::new(config)
+            .with_seed([7u8; 32])
+            .build()
+            .expect("mixed account");
+
+        let approver_slot = AuthGuardedMultisig::approver_scheme_ids_slot();
+        assert_eq!(
+            [0, 1, 2].map(|index| scheme_id_at(&account, approver_slot, index)),
+            [
+                SignatureScheme::Falcon.auth_scheme_id(),
+                SignatureScheme::Ecdsa.auth_scheme_id(),
+                SignatureScheme::Falcon.auth_scheme_id(),
+            ]
+        );
+        assert_eq!(
+            scheme_id_at(&account, AuthGuardedMultisig::guardian_scheme_id_slot(), 0),
+            SignatureScheme::Ecdsa.auth_scheme_id()
+        );
+    }
+
+    #[test]
+    fn test_default_schemes_follow_signature_scheme() {
+        let config = MultisigGuardianConfig::new(
+            1,
+            vec![mock_commitment(1), mock_commitment(2)],
+            mock_commitment(10),
+        )
+        .with_signature_scheme(SignatureScheme::Ecdsa);
+        let explicit = config
+            .clone()
+            .with_signer_schemes(vec![SignatureScheme::Ecdsa, SignatureScheme::Ecdsa])
+            .with_guardian_scheme(SignatureScheme::Ecdsa);
+        let implicit = MultisigGuardianBuilder::new(config)
+            .with_seed([8u8; 32])
+            .build()
+            .expect("account");
+        let explicit = MultisigGuardianBuilder::new(explicit)
+            .with_seed([8u8; 32])
+            .build()
+            .expect("account");
+        assert_eq!(implicit.to_commitment(), explicit.to_commitment());
+        assert_eq!(
+            scheme_id_at(&implicit, AuthGuardedMultisig::guardian_scheme_id_slot(), 0),
+            SignatureScheme::Ecdsa.auth_scheme_id()
+        );
+    }
+
+    #[test]
+    fn test_validation_signer_schemes_length() {
+        let config = MultisigGuardianConfig::new(
+            1,
+            vec![mock_commitment(1), mock_commitment(2)],
+            mock_commitment(10),
+        )
+        .with_signer_schemes(vec![SignatureScheme::Ecdsa]);
+        let error = MultisigGuardianBuilder::new(config)
+            .build()
+            .expect_err("length mismatch");
+        assert!(
+            error
+                .to_string()
+                .contains("must be empty or match the number of signers"),
+            "{error}"
         );
     }
 

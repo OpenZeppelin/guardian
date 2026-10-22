@@ -63,9 +63,10 @@ section enforces.
 
 ### Account signature scheme
 
-Each account picks its signature scheme (Falcon or ECDSA) once, at creation;
-the choice selects the account's on-chain auth code and cannot change later.
-ECDSA is the scheme with hosted-signer support (the KMS backend above) and the
+Each account stores a signature scheme (Falcon or ECDSA) for each approver and
+for its GUARDIAN key; usually all of them share one scheme, chosen at creation.
+The GUARDIAN scheme selects which of this server's ACK keys signs the account's
+deltas. ECDSA is the scheme with hosted-signer support (the KMS backend above) and the
 default direction for Guardian; Falcon has no remote signer and is second-class.
 New production deployments should therefore accept only ECDSA registrations:
 
@@ -75,11 +76,12 @@ GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa      # Terraform: guardian_allowed_accoun
 
 The gate acts on `/configure` for accounts that do not exist yet, returning
 `signature_scheme_not_allowed` (HTTP 403) with the rejected scheme and the
-accepted set in `meta`. Accounts already configured on this Guardian are never
-affected (except the retry of a first `/configure` that failed before storing
-the account's state, which counts as new), because every later request is
-verified with the scheme stored for that account, so the variable is safe to set on a fleet that already has Falcon
-accounts. An on-chain Falcon account that this Guardian does not know yet (a
+accepted set in `meta`, and on a reconfiguration that adds a scheme the stored
+account does not use yet. Accounts already configured on this Guardian keep
+working under the schemes they use (the retry of a first `/configure` that
+failed before storing the account's state counts as new), because every later
+request is verified with the scheme stored for its signer, so the variable is
+safe to set on a fleet that already has Falcon accounts. An on-chain Falcon account that this Guardian does not know yet (a
 re-onboard after a metadata restore, or a `SwitchGuardian` from another
 Guardian) counts as new: widen the list to `falcon,ecdsa` for that migration
 and tighten it again afterwards.

@@ -26,6 +26,9 @@ pub struct StateObject {
     pub nonce: Option<u64>,
     pub created_at: String,
     pub updated_at: String,
+    /// `falcon` or `ecdsa` when the account's cosigners and GUARDIAN share
+    /// that scheme, `mixed` when they do not. Set on reads from the
+    /// account's auth; stored rows may carry an older value or none.
     #[serde(default)]
     pub auth_scheme: String,
 }

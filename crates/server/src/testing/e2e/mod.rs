@@ -4,6 +4,7 @@
 mod abandon_candidate;
 mod candidate_queue;
 mod configure_account;
+mod mixed_scheme_account;
 mod switch_guardian_canonicalization;
 mod switch_guardian_release_sweep;
 

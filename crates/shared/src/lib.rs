@@ -60,6 +60,14 @@ impl SignatureScheme {
         self.auth_scheme() as u64
     }
 
+    /// The scheme a guarded-multisig storage scheme id names (the inverse of
+    /// [`Self::auth_scheme_id`]), or `None` for an id no supported scheme uses.
+    pub fn from_auth_scheme_id(id: u64) -> Option<Self> {
+        [Self::Falcon, Self::Ecdsa]
+            .into_iter()
+            .find(|scheme| scheme.auth_scheme_id() == id)
+    }
+
     pub fn parse_signature_hex(self, signature_hex: &str) -> Result<AccountSignature, String> {
         match self {
             Self::Falcon => {
@@ -203,6 +211,15 @@ impl ProposalSignature {
         }
     }
 
+    /// The scheme the signature is made under. An EIP-712 approval is an
+    /// ECDSA signature.
+    pub const fn scheme(&self) -> SignatureScheme {
+        match self {
+            ProposalSignature::Falcon { .. } => SignatureScheme::Falcon,
+            ProposalSignature::Ecdsa { .. } => SignatureScheme::Ecdsa,
+        }
+    }
+
     /// Returns the public key hex if this is an ECDSA signature with a public key.
     pub fn public_key(&self) -> Option<&str> {
         match self {
@@ -321,6 +338,26 @@ mod tests {
     };
 
     #[test]
+    fn auth_scheme_id_round_trips_and_rejects_unknown_ids() {
+        for scheme in [SignatureScheme::Falcon, SignatureScheme::Ecdsa] {
+            assert_eq!(
+                SignatureScheme::from_auth_scheme_id(scheme.auth_scheme_id()),
+                Some(scheme)
+            );
+        }
+        assert_eq!(
+            SignatureScheme::from_auth_scheme_id(AuthScheme::EcdsaK256Keccak as u64),
+            Some(SignatureScheme::Ecdsa)
+        );
+        assert_eq!(
+            SignatureScheme::from_auth_scheme_id(AuthScheme::Falcon512Poseidon2 as u64),
+            Some(SignatureScheme::Falcon)
+        );
+        assert_eq!(SignatureScheme::from_auth_scheme_id(0), None);
+        assert_eq!(SignatureScheme::from_auth_scheme_id(99), None);
+    }
+
+    #[test]
     fn test_account_json_round_trip() {
         // Create a test account
         let secret_key = SecretKey::new();
@@ -376,6 +413,28 @@ mod tests {
         let error = SignatureScheme::from("unknown").unwrap_err();
 
         assert!(error.contains("unsupported signature scheme"));
+    }
+
+    #[test]
+    fn proposal_signature_scheme_names_the_signature_scheme() {
+        assert_eq!(
+            ProposalSignature::Falcon {
+                signature: "0x00".into()
+            }
+            .scheme(),
+            SignatureScheme::Falcon
+        );
+        for message_format in [EcdsaMessageFormat::Raw, EcdsaMessageFormat::Eip712] {
+            assert_eq!(
+                ProposalSignature::Ecdsa {
+                    signature: "0x00".into(),
+                    public_key: None,
+                    message_format,
+                }
+                .scheme(),
+                SignatureScheme::Ecdsa
+            );
+        }
     }
 
     #[test]

@@ -1119,6 +1119,71 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     );
   });
 
+  function signerChangeDetail(proposal: Record<string, unknown>) {
+    return okJson({
+      account_id: '0xacc',
+      nonce: 7,
+      status: 'candidate',
+      status_timestamp: '2026-10-22T09:00:00Z',
+      prev_commitment: '0xaaaa',
+      new_commitment: '0xbbbb',
+      category: 'account_storage_change',
+      proposal,
+      input_notes: [],
+      output_notes: [],
+      vault_changes: [],
+      storage_changes: [],
+    });
+  }
+
+  it('parses the per-signer schemes of a mixed update-signers proposal (issue #563)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      signerChangeDetail({
+        proposal_type: 'add_signer',
+        target_threshold: 2,
+        signer_commitments: ['0xfa1c', '0xec0a'],
+        signer_schemes: ['falcon', 'ecdsa'],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const detail = await client.getAccountDeltaDetail('0xacc', 7);
+    expect(detail.proposal).toEqual({
+      proposalType: 'add_signer',
+      targetThreshold: 2,
+      signerCommitments: ['0xfa1c', '0xec0a'],
+      signerSchemes: ['falcon', 'ecdsa'],
+    });
+  });
+
+  it('leaves signerSchemes unset for a single-scheme update-signers proposal', async () => {
+    mockFetch.mockResolvedValueOnce(
+      signerChangeDetail({
+        proposal_type: 'add_signer',
+        target_threshold: 2,
+        signer_commitments: ['0xfa1c', '0xfa1d'],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const detail = await client.getAccountDeltaDetail('0xacc', 7);
+    expect(detail.proposal?.signerCommitments).toEqual(['0xfa1c', '0xfa1d']);
+    expect(detail.proposal).not.toHaveProperty('signerSchemes');
+  });
+
+  it.each([
+    ['a string', 'falcon'],
+    ['a non-string entry', ['falcon', 2]],
+  ])('rejects signer_schemes that is %s (contract drift)', async (_label, signerSchemes) => {
+    mockFetch.mockResolvedValueOnce(
+      signerChangeDetail({
+        proposal_type: 'add_signer',
+        signer_commitments: ['0xfa1c', '0xec0a'],
+        signer_schemes: signerSchemes,
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.getAccountDeltaDetail('0xacc', 7)).rejects.toThrow(/signer_schemes/);
+  });
+
   it('serializes a large safe-integer nonce in the URL path', async () => {
     const safeNonce = Number.MAX_SAFE_INTEGER;
     mockFetch.mockResolvedValueOnce(

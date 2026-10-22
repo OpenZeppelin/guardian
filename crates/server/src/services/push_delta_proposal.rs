@@ -4,7 +4,9 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
-use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
+use crate::services::proposal_signature::{
+    ensure_cosigner_approval, proposal_tx_summary, verify_proposal_signature,
+};
 use crate::services::{normalize_payload, resolve_account_allowing_session};
 use guardian_shared::DeltaSignature;
 use std::sync::Arc;
@@ -242,6 +244,10 @@ pub async fn push_delta_proposal(
                 "Signature does not belong to the proposer".to_string(),
             ));
         }
+        // Request auth already verified the proposer under its registered
+        // scheme, so its own approval passes; checked as on the signing path
+        // so the rule does not rest on request auth.
+        ensure_cosigner_approval(&resolved.metadata.auth, &approval_signer, &parsed.signature)?;
 
         cosigner_sigs.push(CosignerSignature {
             signature: parsed.signature,
@@ -1918,8 +1924,15 @@ mod tests {
     async fn test_push_delta_proposal_refused_behind_a_signer_changing_candidate() {
         let account_id = &fixture_account_id();
         let binding = |signers: &[&str]| crate::network::AuthBinding {
-            signers: signers.iter().map(|s| s.to_string()).collect(),
+            signers: signers
+                .iter()
+                .map(|s| crate::metadata::auth::ChainCosigner {
+                    commitment: s.to_string(),
+                    scheme: None,
+                })
+                .collect(),
             guardian: Some("0xguardian".to_string()),
+            ..Default::default()
         };
         let setup = queued_proposal_setup_with(
             4,

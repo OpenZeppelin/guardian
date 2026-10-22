@@ -8,9 +8,10 @@ pub const ENV_ALLOWED_ACCOUNT_SCHEMES: &str = "GUARDIAN_ALLOWED_ACCOUNT_SCHEMES"
 
 /// Signature schemes this Guardian accepts for **new** account registrations.
 ///
-/// The scheme is fixed per account at creation and baked into its on-chain
-/// auth code, and every later request is verified with the scheme stored in
-/// that account's metadata. Restricting this set therefore only affects
+/// An account's schemes (each cosigner's and the GUARDIAN's) are stored on
+/// chain, and every later request is verified with the scheme stored for
+/// its signer in that account's metadata. A new account must use only
+/// allowed schemes. Restricting this set therefore only affects
 /// `configure_account` for accounts that do not exist yet; accounts already
 /// registered keep working whatever their scheme.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

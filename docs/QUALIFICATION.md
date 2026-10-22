@@ -676,7 +676,9 @@ test one.
 
 **Mixed-scheme accounts.** Both account builders assign one configured scheme to
 every signer, so no mixed-scheme account can be constructed. The on-chain
-storage layout supports one; closing the gap is separate SDK work.
+storage layout supports one, and the server registers and operates one (issue
+#563, covered by its integration and e2e tests); closing the gap here waits on
+the SDKs (#549, and the TypeScript follow-up to #540).
 
 **Whether accounts created under an earlier contract pin are still drivable.** A
 deployed Miden account is immutable and its procedure roots fix at creation, so a

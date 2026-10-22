@@ -78,6 +78,7 @@ message AuthConfig {
   oneof auth_type {
     MidenFalconRpoAuth miden_falcon_rpo = 1;
     MidenEcdsaAuth miden_ecdsa = 2;
+    MidenAuth miden = 4;
   }
 }
 
@@ -89,6 +90,22 @@ message MidenFalconRpoAuth {
 // Miden ECDSA secp256k1 authentication config
 message MidenEcdsaAuth {
   repeated string cosigner_commitments = 1;
+}
+
+// One cosigner of a MidenAuth account and the scheme its signatures are
+// verified under.
+message MidenCosigner {
+  string commitment = 1;
+  string scheme = 2; // "falcon" or "ecdsa"
+}
+
+// Miden authentication config whose cosigners each carry their own signature
+// scheme, with the GUARDIAN's scheme set independently. Clients send it only
+// when the cosigners and the GUARDIAN do not all share one scheme; the
+// single-scheme configs above serve the accounts that do.
+message MidenAuth {
+  repeated MidenCosigner cosigners = 1;
+  string guardian_scheme = 2; // "falcon" or "ecdsa"
 }
 
 // Configure request

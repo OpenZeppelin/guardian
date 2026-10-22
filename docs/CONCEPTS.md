@@ -78,7 +78,7 @@ The two primitives Guardian works with:
 
 - **State** — a snapshot of an account at a point in time. Guardian
   tracks the account ID, current commitment, nonce, and authentication
-  scheme. The full state payload is opaque to Guardian; the client
+  schemes (each cosigner's and the GUARDIAN's, usually all one scheme). The full state payload is opaque to Guardian; the client
   supplies it.
 - **Delta** — an append-only change to that state. Every delta
   references the previous commitment (`prev_commitment`) and produces a

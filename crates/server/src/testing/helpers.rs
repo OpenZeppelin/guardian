@@ -222,6 +222,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _expected_guardian_commitment: &str,
+        _expected_guardian_scheme: guardian_shared::SignatureScheme,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -302,6 +303,10 @@ impl NetworkClient for IntegrationMockNetworkClient {
         state_json: &serde_json::Value,
     ) -> Result<Option<crate::network::AuthBinding>, String> {
         self.miden_client.account_auth_binding(state_json)
+    }
+
+    fn validate_approver_schemes(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_approver_schemes(state_json)
     }
 
     async fn should_update_auth(
@@ -465,6 +470,48 @@ pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
     let fixture_string =
         serde_json::to_string(&fixture_json).expect("Failed to serialize fixture JSON");
     (account_id, account_id_hex, fixture_string)
+}
+
+/// A guarded-multisig account built straight from the upstream
+/// `AuthGuardedMultisig` component (plus a `BasicWallet`), whose approvers
+/// and GUARDIAN each carry their own scheme, as `miden-standards` stores
+/// them. Available under every feature set, unlike the contracts crate.
+pub fn build_guarded_multisig_account(
+    seed: [u8; 32],
+    threshold: u32,
+    approvers: &[(Word, guardian_shared::SignatureScheme)],
+    guardian: (Word, guardian_shared::SignatureScheme),
+) -> miden_protocol::account::Account {
+    use miden_protocol::account::AccountBuilder;
+    use miden_protocol::account::auth::PublicKeyCommitment;
+    use miden_standards::account::auth::{
+        Approver, ApproverSet, AuthGuardedMultisig, AuthGuardedMultisigConfig, GuardianConfig,
+    };
+    use miden_standards::account::wallets::BasicWallet;
+
+    let approver = |(commitment, scheme): (Word, guardian_shared::SignatureScheme)| {
+        Approver::new(PublicKeyCommitment::from(commitment), scheme.auth_scheme())
+    };
+    let approver_set =
+        ApproverSet::new(approvers.iter().copied().map(approver).collect(), threshold)
+            .expect("valid approver set");
+    let config =
+        AuthGuardedMultisigConfig::new(approver_set, GuardianConfig::new(approver(guardian)))
+            .expect("valid guarded-multisig config");
+    let component: miden_protocol::account::AccountComponent = AuthGuardedMultisig::new(config)
+        .expect("valid guarded multisig")
+        .into();
+    AccountBuilder::new(seed)
+        .with_component(component)
+        .with_component(BasicWallet)
+        .build()
+        .expect("account builds")
+}
+
+/// A key commitment parsed from its `0x` hex.
+pub fn word_from_commitment_hex(hex: &str) -> Word {
+    use guardian_shared::hex::FromHex;
+    Word::from_hex(hex).expect("valid commitment hex")
 }
 
 /// Signer 1 of the fixture account and the account's full cosigner set, in

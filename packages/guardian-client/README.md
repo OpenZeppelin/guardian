@@ -104,6 +104,23 @@ await client.configure({
 });
 ```
 
+An account whose cosigners do not all use one signature scheme (for example
+an ECDSA wallet and a locally held Falcon key) declares each cosigner's scheme
+and the GUARDIAN's scheme with the `Miden` variant. Keep the single-scheme
+variants for every other account: Guardian versions before this variant reject it.
+
+```typescript
+const auth: AuthConfig = {
+  Miden: {
+    cosigners: [
+      { commitment: walletCommitment, scheme: 'ecdsa' },
+      { commitment: falconCommitment, scheme: 'falcon' },
+    ],
+    guardian_scheme: 'ecdsa',
+  },
+};
+```
+
 ### Get Account State
 
 ```typescript
