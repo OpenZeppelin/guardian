@@ -52,7 +52,8 @@ async fn two_replicas_sharing_storage_prove_and_submit_once() {
     );
     joined_one_execution([first, second]);
     f.settle(is_submitted_or_terminal).await;
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -69,7 +70,8 @@ async fn guardian_admits_its_own_candidate_under_its_own_reservation() {
     f.request().await.unwrap();
     let (settled, observed) = f.settle(is_submitted_or_terminal).await;
     assert_eq!(settled.state, ExecutionState::Submitted, "{observed:?}");
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -122,7 +124,8 @@ async fn a_client_push_is_refused_while_an_execution_holds_the_account() {
         other => panic!("before the boundary: expected an execution conflict, got {other:?}"),
     }
     f.settle(is_submitted_or_terminal).await;
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }

@@ -250,7 +250,8 @@ async fn a_live_worker_is_left_alone() {
     .await;
     faults.f.request().await.unwrap();
     faults.f.settle(is_submitted_or_terminal).await;
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if faults.f.calls.lock().unwrap().submitted > 0 {
             break;
         }
@@ -875,7 +876,8 @@ async fn a_worker_whose_reservation_moved_on_writes_and_sends_nothing() {
     })
     .await;
     faults.f.request().await.unwrap();
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if faults.f.calls.lock().unwrap().proved > 0 {
             break;
         }
@@ -1085,7 +1087,8 @@ async fn a_send_longer_than_the_lease_keeps_the_reservation() {
     })
     .await;
     faults.f.request().await.unwrap();
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if faults.f.calls.lock().unwrap().submitted > 0 {
             break;
         }

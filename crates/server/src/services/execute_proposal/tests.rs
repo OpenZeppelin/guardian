@@ -486,8 +486,11 @@ impl Fixture {
         &self,
         until: impl Fn(ExecutionState) -> bool,
     ) -> (ExecutionEnvelope, Vec<ExecutionState>) {
+        // A deadline rather than a poll count: a loaded CI runner can take seconds to reach a
+        // state, and a settled execution still returns at its first poll.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         let mut observed = Vec::new();
-        for _ in 0..200 {
+        while tokio::time::Instant::now() < deadline {
             let envelope = self.read().await.unwrap();
             if observed.last() != Some(&envelope.state) {
                 observed.push(envelope.state);
@@ -497,7 +500,7 @@ impl Fixture {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("the execution did not settle: {observed:?}");
+        panic!("the execution did not settle within 30s: {observed:?}");
     }
 
     pub(crate) async fn promote(&self) -> PromoteWrite {
@@ -559,7 +562,8 @@ async fn a_threshold_met_proposal_is_executed_submitted_and_committed_by_promoti
         submitted.error
     );
     assert_eq!(submitted.delta_nonce, Some(1));
-    for _ in 0..200 {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         if f.calls.lock().unwrap().submitted > 0 {
             break;
         }
