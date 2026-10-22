@@ -1073,10 +1073,39 @@ async fn with_send_claim_failures(failures: usize) -> Faults {
     faults
 }
 
+/// Past the boundary, not sending guarantees the proposal is lost, so a claim that succeeds
+/// after the window ran below the pre-boundary minimum still sends with what is left.
 #[tokio::test]
-async fn a_send_claim_that_succeeds_after_the_window_ran_short_never_sends() {
+async fn a_send_claim_that_succeeds_after_the_window_ran_short_still_sends() {
     let faults = with_send_claim_failures(2).await;
-    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+    let calls = faults.f.calls.lock().unwrap();
+    assert_eq!(calls.submitted, 1);
+    assert!(
+        calls.send_deadlines[0] < super::SendWindow::MIN_SEND,
+        "{:?}",
+        calls.send_deadlines[0]
+    );
+}
+
+/// Five blocks of three seconds left: exactly the pre-boundary minimum. The claim, a few
+/// milliseconds later, has slightly less, and must still send.
+#[tokio::test]
+async fn a_window_exactly_at_the_minimum_crosses_the_boundary_and_sends() {
+    let faults = Faults::new(Script {
+        tip: Ok(349),
+        expiration_block: 356,
+        block_interval: Duration::from_secs(3),
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(reported.state, ExecutionState::Submitted);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while faults.f.calls.lock().unwrap().submitted == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 1);
 }
 
 #[tokio::test]

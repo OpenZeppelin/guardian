@@ -651,9 +651,10 @@ async fn cross_boundary(
 /// only a worker whose fence still matches the persisted reservation sends. A storage error
 /// leaves ownership unknown, so the claim is retried, each time fenced, while the lease is still
 /// held and the send window still open; past either an unsent transaction is safe where a second
-/// owner's is not. The window is checked before every claim and after the one that succeeds, so
-/// a send always starts with at least [`SendWindow::MIN_SEND`] left. Returns how long the send
-/// may wait for the node and how long the lease is held.
+/// owner's is not. The window is checked before every claim and after the one that succeeds, and
+/// the send uses whatever is left of it: [`SendWindow::MIN_SEND`] gates crossing the boundary,
+/// not the send after it, since an attempt past the boundary that does not send loses its
+/// proposal. Returns how long the send may wait for the node and how long the lease is held.
 async fn claim_send(
     state: &AppState,
     job: &ExecutionJob,
@@ -661,13 +662,13 @@ async fn claim_send(
     window_closes: tokio::time::Instant,
 ) -> Option<(std::time::Duration, DateTime<Utc>)> {
     let deadline = || {
-        SendWindow::deadline_within(
+        SendWindow::deadline_after_boundary(
             window_closes.saturating_duration_since(tokio::time::Instant::now()),
         )
     };
     loop {
         if deadline().is_none() {
-            tracing::warn!(account_id = %job.account_id, "too little of the send window is left to send; not sending");
+            tracing::warn!(account_id = %job.account_id, "the send window closed before the send was recorded; not sending");
             return None;
         }
         let error = match job.renew(state, ExecutionPhase::Sent).await {
