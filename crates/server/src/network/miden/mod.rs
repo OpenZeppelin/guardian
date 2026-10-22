@@ -2,7 +2,8 @@ pub mod account_inspector;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
-    MidenAccountInspector, guardian_public_key_slot_name, guardian_scheme_slot_name,
+    MidenAccountInspector, approver_scheme_slot_name, guardian_public_key_slot_name,
+    guardian_scheme_slot_name,
 };
 use crate::network::{
     AppliedState, MidenRpcSettings, NetworkClient, NetworkType, OnChainGuardianBinding,
@@ -679,6 +680,27 @@ impl NetworkClient for MidenNetworkClient {
             Err(format!(
                 "Slot '{scheme_slot}' mismatch: expected {expected_guardian_scheme}, got {actual_guardian_scheme}"
             ))
+        }
+    }
+
+    fn validate_approver_schemes(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        let account = Account::from_json(state_json)?;
+        let inspector = MidenAccountInspector::new(&account);
+        if !inspector.has_multisig_auth() {
+            return Ok(());
+        }
+        match inspector
+            .extract_chain_cosigners()
+            .into_iter()
+            .enumerate()
+            .find(|(_, cosigner)| cosigner.scheme.is_none())
+        {
+            Some((index, cosigner)) => Err(format!(
+                "Missing or unsupported entry {index} in slot '{}' for approver {}",
+                approver_scheme_slot_name(),
+                cosigner.commitment
+            )),
+            None => Ok(()),
         }
     }
 
@@ -1896,6 +1918,110 @@ mod tests {
             .validate_guardian_commitment(&state_json, &guardian, SignatureScheme::Falcon)
             .unwrap_err();
         assert!(error.contains("expected falcon, got ecdsa"), "{error}");
+    }
+
+    /// A state with two approvers whose scheme map holds `scheme_ids`
+    /// (`None` leaves the entry out), carrying the multisig threshold slot
+    /// only when `multisig`.
+    fn approver_state(scheme_ids: &[Option<u32>], multisig: bool) -> serde_json::Value {
+        use miden_protocol::account::{
+            AccountCode, AccountIdVersion, AccountStorage, AccountType, StorageMap, StorageMapKey,
+            StorageSlot, StorageSlotName,
+        };
+        use miden_protocol::asset::AssetVault;
+        use miden_protocol::testing::noop_auth_component::NoopAuthComponent;
+        use miden_standards::account::auth::AuthGuardedMultisig;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let slot = |name: &str| StorageSlotName::new(name).expect("slot name");
+        let key = |index: usize| StorageMapKey::new(Word::from([index as u32, 0, 0, 0]));
+        let approvers = (0..scheme_ids.len())
+            .map(|index| (key(index), Word::from([40 + index as u32, 1, 2, 3])));
+        let schemes: Vec<_> = scheme_ids
+            .iter()
+            .enumerate()
+            .filter_map(|(index, id)| id.map(|id| (key(index), Word::from([id, 0, 0, 0]))))
+            .collect();
+        let mut slots = vec![
+            StorageSlot::with_map(
+                slot(AuthGuardedMultisig::approver_public_keys_slot().as_str()),
+                StorageMap::with_entries(approvers).expect("approver map"),
+            ),
+            StorageSlot::with_map(
+                slot(approver_scheme_slot_name()),
+                StorageMap::with_entries(schemes).expect("scheme map"),
+            ),
+        ];
+        if multisig {
+            slots.push(StorageSlot::with_value(
+                slot(AuthGuardedMultisig::threshold_config_slot().as_str()),
+                Word::from([1, scheme_ids.len() as u32, 0, 0]),
+            ));
+        }
+        Account::new_existing(
+            AccountId::dummy(
+                [5u8; 15],
+                AccountIdVersion::Version1,
+                AccountType::Private,
+                miden_protocol::account::AssetCallbackFlag::Disabled,
+            ),
+            AssetVault::new(&[]).expect("vault"),
+            AccountStorage::new(slots).expect("storage"),
+            AccountCode::from_components(&[NoopAuthComponent.into(), BasicWallet.into()])
+                .expect("code"),
+            Felt::new_unchecked(1),
+        )
+        .to_json()
+    }
+
+    #[tokio::test]
+    async fn validate_approver_schemes_accepts_every_approver_with_a_supported_scheme() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let (mixed, _, _, _) = mixed_account_json();
+        assert_eq!(client.validate_approver_schemes(&mixed), Ok(()));
+        let fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON).unwrap();
+        assert_eq!(client.validate_approver_schemes(&fixture), Ok(()));
+        let ids = [
+            Some(SignatureScheme::Falcon.auth_scheme_id() as u32),
+            Some(SignatureScheme::Ecdsa.auth_scheme_id() as u32),
+        ];
+        assert_eq!(
+            client.validate_approver_schemes(&approver_state(&ids, true)),
+            Ok(())
+        );
+    }
+
+    /// The chain verifies an approver under the scheme the state stores,
+    /// so a multisig approver without a supported one is refused.
+    #[tokio::test]
+    async fn validate_approver_schemes_rejects_a_missing_or_unknown_approver_scheme() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let ecdsa = Some(SignatureScheme::Ecdsa.auth_scheme_id() as u32);
+        for ids in [[ecdsa, None], [ecdsa, Some(99)]] {
+            let error = client
+                .validate_approver_schemes(&approver_state(&ids, true))
+                .unwrap_err();
+            assert!(error.contains("entry 1"), "{error}");
+            assert!(error.contains(approver_scheme_slot_name()), "{error}");
+            assert!(
+                error.contains(&format!(
+                    "0x{}",
+                    hex::encode(Word::from([41u32, 1, 2, 3]).to_bytes())
+                )),
+                "{error}"
+            );
+        }
+    }
+
+    /// Only a multisig verifies approvers by scheme.
+    #[tokio::test]
+    async fn validate_approver_schemes_ignores_a_state_without_the_multisig() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        assert_eq!(
+            client.validate_approver_schemes(&approver_state(&[None, None], false)),
+            Ok(())
+        );
     }
 
     /// The right key stored under the wrong scheme is refused: the account

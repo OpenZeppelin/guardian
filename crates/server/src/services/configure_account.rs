@@ -98,10 +98,18 @@ pub async fn configure_account(
     };
     // The GUARDIAN's scheme selects this server's ACK identity for the
     // account; every scheme the account uses, its cosigners' included, is
-    // held to the policy for new accounts.
+    // held to the policy for new accounts. A reconfiguration is held to it
+    // for every scheme the stored auth does not use yet, so an account
+    // cannot register under an allowed scheme and then switch to another;
+    // re-onboarding under the schemes it already has stays open, whatever
+    // the policy is now.
     let guardian_scheme = params.auth.guardian_scheme();
-    if existing.is_none() || unfinished_claim {
-        for scheme in params.auth.schemes_in_use() {
+    let registered_schemes = match &existing {
+        Some(metadata) if !unfinished_claim => metadata.auth.schemes_in_use(),
+        _ => Vec::new(),
+    };
+    for scheme in params.auth.schemes_in_use() {
+        if !registered_schemes.contains(&scheme) {
             reject_disallowed_scheme(state, scheme)?;
         }
     }
@@ -137,6 +145,23 @@ pub async fn configure_account(
                 );
                 GuardianError::AuthorizationFailed(format!(
                     "Unauthorized account configuration: {e}"
+                ))
+            })?;
+
+        // The chain verifies each approver under the scheme the state stores
+        // for it, so a state missing one would fail every transaction that
+        // approver signs. Without this check the cosigner comparison below
+        // would take the declared scheme for such an approver and pass.
+        client
+            .validate_approver_schemes(&params.initial_state)
+            .map_err(|e| {
+                tracing::warn!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "Approver scheme missing from initial_state in configure_account"
+                );
+                GuardianError::InvalidInput(format!(
+                    "Invalid approver schemes in initial_state: {e}"
                 ))
             })?;
 
@@ -764,6 +789,166 @@ mod tests {
             result.is_ok(),
             "existing Falcon account must reconfigure: {result:?}"
         );
+    }
+
+    fn configured(account_id_hex: &str, auth: Auth) -> AccountMetadata {
+        AccountMetadata {
+            account_id: account_id_hex.to_string(),
+            auth,
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2024-01-01T00:00:00Z".to_string(),
+            updated_at: "2024-01-01T00:00:00Z".to_string(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        }
+    }
+
+    /// Reconfigures an account stored with `stored` to `auth` on an
+    /// ECDSA-only server, signed by the Falcon key `signer` returns.
+    async fn reconfigure_on_an_ecdsa_only_server(
+        account_id_hex: &str,
+        stored: Auth,
+        auth: Auth,
+        signer: (String, String, i64),
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockStorageBackend,
+        MockMetadataStore,
+    ) {
+        use crate::config::account_schemes::AllowedAccountSchemes;
+
+        let (pubkey_hex, signature_hex, timestamp) = signer;
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_head(Ok(head("0x5678", 3)));
+        let storage_backend = MockStorageBackend::new()
+            .with_pull_state(Ok(stored_state(account_id_hex, "0x1234")))
+            .with_submit_state(Ok(()));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(configured(account_id_hex, stored))))
+            .with_set(Ok(()));
+        let mut state = create_test_app_state(
+            network_client,
+            storage_backend.clone(),
+            metadata_store.clone(),
+        )
+        .await;
+        state.ack = state
+            .ack
+            .clone()
+            .with_account_schemes(AllowedAccountSchemes::parse("ecdsa").unwrap());
+
+        let initial_state: serde_json::Value =
+            serde_json::from_str(include_str!("../testing/fixtures/account.json")).unwrap();
+        let params = ConfigureAccountParams {
+            account_id: account_id_hex.to_string(),
+            auth,
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            initial_state,
+            credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+        };
+        (
+            configure_account(&state, params).await,
+            storage_backend,
+            metadata_store,
+        )
+    }
+
+    /// The scheme policy holds for every scheme a reconfiguration adds:
+    /// registering under an allowed scheme and then reconfiguring the same
+    /// account under another, alone or next to the first, is refused
+    /// before anything is written.
+    #[tokio::test]
+    async fn reconfiguration_to_a_scheme_the_account_does_not_use_is_held_to_the_policy() {
+        use crate::metadata::auth::MidenCosigner;
+        use crate::testing::helpers::{TestEcdsaSigner, generate_falcon_signature};
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let ecdsa = TestEcdsaSigner::new();
+        let stored = Auth::MidenEcdsa {
+            cosigner_commitments: vec![ecdsa.commitment_hex.clone()],
+        };
+        let (pubkey_hex, falcon_commitment, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let switched = Auth::MidenFalconRpo {
+            cosigner_commitments: vec![falcon_commitment.clone()],
+        };
+        let widened = Auth::Miden {
+            cosigners: vec![
+                MidenCosigner {
+                    commitment: ecdsa.commitment_hex.clone(),
+                    scheme: SignatureScheme::Ecdsa,
+                },
+                MidenCosigner {
+                    commitment: falcon_commitment,
+                    scheme: SignatureScheme::Falcon,
+                },
+            ],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+
+        for auth in [switched, widened] {
+            let (result, storage, metadata) = reconfigure_on_an_ecdsa_only_server(
+                account_id_hex,
+                stored.clone(),
+                auth.clone(),
+                (pubkey_hex.clone(), signature_hex.clone(), timestamp),
+            )
+            .await;
+            match result {
+                Err(GuardianError::SignatureSchemeNotAllowed {
+                    scheme,
+                    allowed_schemes,
+                }) => {
+                    assert_eq!(scheme, "falcon", "{auth:?}");
+                    assert_eq!(allowed_schemes, vec!["ecdsa".to_string()]);
+                }
+                other => panic!("expected SignatureSchemeNotAllowed for {auth:?}, got {other:?}"),
+            }
+            assert!(storage.get_submit_state_calls().is_empty());
+            assert!(storage.get_replace_state_calls().is_empty());
+            assert!(metadata.get_set_calls().is_empty());
+        }
+    }
+
+    /// A mixed account keeps re-onboarding under the schemes it already
+    /// uses after the policy narrows to one of them.
+    #[tokio::test]
+    async fn reconfiguration_under_the_schemes_an_account_already_uses_is_not_held_to_the_policy() {
+        use crate::metadata::auth::MidenCosigner;
+        use crate::testing::helpers::{TestEcdsaSigner, generate_falcon_signature};
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let ecdsa = TestEcdsaSigner::new();
+        let (pubkey_hex, falcon_commitment, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let mixed = Auth::Miden {
+            cosigners: vec![
+                MidenCosigner {
+                    commitment: ecdsa.commitment_hex.clone(),
+                    scheme: SignatureScheme::Ecdsa,
+                },
+                MidenCosigner {
+                    commitment: falcon_commitment,
+                    scheme: SignatureScheme::Falcon,
+                },
+            ],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+
+        let (result, _storage, metadata) = reconfigure_on_an_ecdsa_only_server(
+            account_id_hex,
+            mixed.clone(),
+            mixed.clone(),
+            (pubkey_hex, signature_hex, timestamp),
+        )
+        .await;
+
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(metadata.get_set_calls().len(), 1);
+        assert_eq!(metadata.get_set_calls()[0].auth, mixed);
     }
 
     #[tokio::test]
@@ -2234,6 +2419,55 @@ mod tests {
             storage_backend.get_submit_state_calls().is_empty(),
             "state should not be persisted on unauthorized configuration"
         );
+    }
+
+    /// A multisig approver without a supported scheme in the state is
+    /// refused before the account is claimed or anything is written: the
+    /// chain could never verify that approver's signatures.
+    #[tokio::test]
+    async fn test_configure_account_rejects_a_missing_approver_scheme() {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_validate_approver_schemes(Err("Missing or unsupported entry 1 in slot \
+                 'miden::standards::auth::multisig::approver_schemes' for approver 0x01"
+                .to_string()));
+        let storage_backend = MockStorageBackend::new();
+        let metadata_store = MockMetadataStore::new().with_get(Ok(None));
+        let state = create_test_app_state(
+            network_client,
+            storage_backend.clone(),
+            metadata_store.clone(),
+        )
+        .await;
+
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment_hex],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::json!({"balance": 100}),
+                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+            },
+        )
+        .await;
+
+        match result {
+            Err(GuardianError::InvalidInput(message)) => {
+                assert!(message.starts_with("Invalid approver schemes in initial_state"));
+                assert!(message.contains("approver_schemes"), "{message}");
+            }
+            other => panic!("Expected InvalidInput, got: {other:?}"),
+        }
+        assert!(metadata_store.get_create_calls().is_empty());
+        assert!(storage_backend.get_submit_state_calls().is_empty());
     }
 
     #[tokio::test]

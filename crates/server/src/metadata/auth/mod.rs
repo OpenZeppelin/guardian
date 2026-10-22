@@ -86,6 +86,12 @@ impl Auth {
 
     /// The scheme a cosigner is registered under, or `None` when
     /// `commitment` is not a Miden cosigner of the account.
+    ///
+    /// EVM accounts have no Miden cosigners, so this is always `None` for
+    /// them. Session verification never sees one, because
+    /// `resolve_account_with` refuses an EVM account before it verifies a
+    /// session, and the filesystem cosigner lookup relies on this `None` to
+    /// leave EVM accounts out.
     pub fn signer_scheme(&self, commitment: &str) -> Option<SignatureScheme> {
         match self {
             Auth::MidenFalconRpo {

@@ -211,6 +211,15 @@ impl ProposalSignature {
         }
     }
 
+    /// The scheme the signature is made under. An EIP-712 approval is an
+    /// ECDSA signature.
+    pub const fn scheme(&self) -> SignatureScheme {
+        match self {
+            ProposalSignature::Falcon { .. } => SignatureScheme::Falcon,
+            ProposalSignature::Ecdsa { .. } => SignatureScheme::Ecdsa,
+        }
+    }
+
     /// Returns the public key hex if this is an ECDSA signature with a public key.
     pub fn public_key(&self) -> Option<&str> {
         match self {
@@ -404,6 +413,28 @@ mod tests {
         let error = SignatureScheme::from("unknown").unwrap_err();
 
         assert!(error.contains("unsupported signature scheme"));
+    }
+
+    #[test]
+    fn proposal_signature_scheme_names_the_signature_scheme() {
+        assert_eq!(
+            ProposalSignature::Falcon {
+                signature: "0x00".into()
+            }
+            .scheme(),
+            SignatureScheme::Falcon
+        );
+        for message_format in [EcdsaMessageFormat::Raw, EcdsaMessageFormat::Eip712] {
+            assert_eq!(
+                ProposalSignature::Ecdsa {
+                    signature: "0x00".into(),
+                    public_key: None,
+                    message_format,
+                }
+                .scheme(),
+                SignatureScheme::Ecdsa
+            );
+        }
     }
 
     #[test]

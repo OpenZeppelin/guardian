@@ -305,6 +305,10 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.account_auth_binding(state_json)
     }
 
+    fn validate_approver_schemes(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_approver_schemes(state_json)
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,

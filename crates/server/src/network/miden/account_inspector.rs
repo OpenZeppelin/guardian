@@ -23,6 +23,11 @@ pub fn guardian_scheme_slot_name() -> &'static str {
     AuthGuardedMultisig::guardian_scheme_id_slot().as_str()
 }
 
+/// Slot name of the approver scheme map (`miden::standards::auth::multisig::approver_schemes`).
+pub fn approver_scheme_slot_name() -> &'static str {
+    multisig_approver_schemes_slot()
+}
+
 /// Slot name of the GUARDIAN public key map (`miden::standards::auth::guardian::pub_key`).
 pub fn guardian_public_key_slot_name() -> &'static str {
     AuthGuardedMultisig::guardian_public_key_slot().as_str()
@@ -106,6 +111,13 @@ impl<'a> MidenAccountInspector<'a> {
                 self.scheme_at(multisig_approver_schemes_slot(), key)
             })
             .collect()
+    }
+
+    /// Whether the state carries the approver scheme map at all. A guarded
+    /// multisig always does; a state built from bare slots may not.
+    pub fn has_approver_scheme_map(&self) -> bool {
+        StorageSlotName::new(multisig_approver_schemes_slot())
+            .is_ok_and(|name| self.account.storage().get(&name).is_some())
     }
 
     /// The GUARDIAN's scheme (`miden::standards::auth::guardian::scheme`),

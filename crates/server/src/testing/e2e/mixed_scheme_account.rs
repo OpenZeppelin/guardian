@@ -8,9 +8,11 @@
 //!    GUARDIAN's scheme. Each cosigner then authenticates under its own
 //!    scheme, and only under it.
 //! 2. A real `update_signers_and_threshold` transaction that adds a Falcon
-//!    signer to an ECDSA account, pushed for the server's ack, executed on a
-//!    mock chain and canonicalized, promotes the account's single-scheme auth
-//!    to `Auth::Miden`, after which the new Falcon signer authenticates.
+//!    signer to an ECDSA account, proposed with the ECDSA signer's approval
+//!    and pushed for the server's ack, executed on a mock chain and
+//!    canonicalized, promotes the account's single-scheme auth to
+//!    `Auth::Miden`. The new Falcon signer then authenticates, and its
+//!    approval alone gets the next transaction acknowledged.
 
 use std::sync::Arc;
 
@@ -18,7 +20,7 @@ use guardian_shared::auth_request_eip712::request_digest;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
-use guardian_shared::{SignatureScheme, ToJson};
+use guardian_shared::{EcdsaMessageFormat, ProposalSignature, SignatureScheme, ToJson};
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
@@ -48,7 +50,8 @@ use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
 use crate::services::{
     ConfigureAccountParams, ConfigureAccountResult, GetStateParams, PushDeltaParams,
-    configure_account, get_state, process_canonicalizations_now, push_delta,
+    PushDeltaProposalParams, PushDeltaResult, configure_account, get_state,
+    process_canonicalizations_now, push_delta, push_delta_proposal,
 };
 use crate::state::AppState;
 use crate::testing::helpers::{IntegrationMockNetworkClient, create_test_app_state};
@@ -114,6 +117,79 @@ fn eip712_credentials(key: &EcdsaSecretKey, account_id_hex: &str) -> Credentials
         timestamp,
     )
     .with_auth_format(RequestAuthFormat::Eip712)
+}
+
+fn falcon_approval(key: &FalconSecretKey, message: Word) -> ProposalSignature {
+    ProposalSignature::Falcon {
+        signature: format!("0x{}", hex::encode(key.sign(message).to_bytes())),
+    }
+}
+
+fn ecdsa_approval(key: &EcdsaSecretKey, message: Word) -> ProposalSignature {
+    ProposalSignature::Ecdsa {
+        signature: format!("0x{}", hex::encode(key.sign(message).to_bytes())),
+        public_key: Some(format!("0x{}", hex::encode(key.public_key().to_bytes()))),
+        message_format: EcdsaMessageFormat::Raw,
+    }
+}
+
+/// Creates the proposal for `summary` with the proposer's own approval
+/// attached, as the SDKs do before pushing for the acknowledgement.
+async fn propose(
+    state: &AppState,
+    account_id_hex: &str,
+    nonce: u64,
+    summary: &miden_protocol::transaction::TransactionSummary,
+    proposer: Word,
+    approval: ProposalSignature,
+    credentials: Credentials,
+) -> Result<(), GuardianError> {
+    push_delta_proposal(
+        state,
+        PushDeltaProposalParams {
+            account_id: account_id_hex.to_string(),
+            nonce,
+            delta_payload: serde_json::json!({
+                "tx_summary": summary.to_json(),
+                "signatures": [{
+                    "signer_id": commitment_hex(proposer),
+                    "signature": approval,
+                }],
+                "metadata": { "proposal_type": "custom" },
+            }),
+            credentials,
+        },
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Pushes `summary` on `base` for this server's acknowledgement.
+async fn push(
+    state: &AppState,
+    base: &Account,
+    summary: &miden_protocol::transaction::TransactionSummary,
+    credentials: Credentials,
+) -> Result<PushDeltaResult, GuardianError> {
+    push_delta(
+        state,
+        PushDeltaParams {
+            delta: DeltaObject {
+                account_id: base.id().to_hex(),
+                nonce: base.nonce().as_canonical_u64() + 1,
+                prev_commitment: account_commitment_hex(base),
+                new_commitment: None,
+                delta_payload: summary.to_json(),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: Default::default(),
+                metadata: None,
+            },
+            credentials,
+        },
+    )
+    .await
 }
 
 fn cosigner(commitment: Word, scheme: SignatureScheme) -> MidenCosigner {
@@ -500,32 +576,33 @@ async fn adding_a_falcon_signer_on_chain_promotes_an_ecdsa_account() {
     };
     let message = summary.as_ref().to_commitment();
 
-    // The ECDSA signer pushes the summary for this server's acknowledgement,
-    // as the SDKs do, over the IntegrationMock chain for the canonicalizer.
+    // The ECDSA signer proposes the summary with its approval and pushes it
+    // for this server's acknowledgement, as the SDKs do, over the
+    // IntegrationMock chain for the canonicalizer. The push gate counts the
+    // approval under the ECDSA scheme the state stores for its signer.
     let chain = Arc::new(IntegrationMockNetworkClient::new(
         MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal),
     ));
     state.network_client = chain.clone();
-    let pushed = push_delta(
+    propose(
         &state,
-        PushDeltaParams {
-            delta: DeltaObject {
-                account_id: account_id_hex.clone(),
-                nonce: account.nonce().as_canonical_u64() + 1,
-                prev_commitment: account_commitment_hex(&account),
-                new_commitment: None,
-                delta_payload: summary.as_ref().to_json(),
-                ack_sig: String::new(),
-                ack_pubkey: String::new(),
-                ack_scheme: String::new(),
-                status: Default::default(),
-                metadata: None,
-            },
-            credentials: ecdsa_credentials(&ecdsa, &account_id_hex),
-        },
+        &account_id_hex,
+        account.nonce().as_canonical_u64() + 1,
+        &summary,
+        ecdsa_commitment,
+        ecdsa_approval(&ecdsa, message),
+        ecdsa_credentials(&ecdsa, &account_id_hex),
     )
     .await
-    .expect("push_delta acknowledges the signer change");
+    .expect("the ECDSA signer proposes the signer change");
+    let pushed = push(
+        &state,
+        &account,
+        &summary,
+        ecdsa_credentials(&ecdsa, &account_id_hex),
+    )
+    .await
+    .expect("push_delta acknowledges the approved signer change");
     assert_eq!(pushed.delta.ack_scheme, "ecdsa");
 
     let signer_signature =
@@ -628,4 +705,65 @@ async fn adding_a_falcon_signer_on_chain_promotes_an_ecdsa_account() {
         .is_ok(),
         "the ECDSA signer keeps authenticating"
     );
+
+    // A transaction on the now mixed account, approved by the new Falcon
+    // signer alone (threshold 1): the push gate counts the approval under
+    // the Falcon scheme the state stores for it, and the GUARDIAN's ECDSA
+    // key acknowledges.
+    let mixed_chain = MockChainBuilder::with_accounts([executed_account.clone()])
+        .expect("mock chain accepts the mixed account")
+        .build()
+        .expect("mock chain builds");
+    let mixed_auth_args = MultisigAuthArgs::new(
+        mixed_chain.latest_block_header().block_num(),
+        Word::from([Felt::new_unchecked(6); 4]),
+    );
+    let second = match mixed_chain
+        .build_transaction(executed_account.id())
+        .authenticator(None)
+        .multisig_auth_args(&mixed_auth_args)
+        .build()
+        .expect("tx builds")
+        .execute()
+        .await
+        .unwrap_err()
+    {
+        TransactionExecutorError::Unauthorized(summary) => summary,
+        error => panic!("expected abort with tx effects: {error:?}"),
+    };
+    let second_message = second.as_ref().to_commitment();
+    assert!(matches!(
+        push(
+            &state,
+            &executed_account,
+            &second,
+            falcon_credentials(&falcon, &account_id_hex),
+        )
+        .await,
+        Err(GuardianError::InsufficientSignatures {
+            required: 1,
+            got: 0
+        })
+    ));
+    propose(
+        &state,
+        &account_id_hex,
+        executed_account.nonce().as_canonical_u64() + 1,
+        &second,
+        falcon_commitment,
+        falcon_approval(&falcon, second_message),
+        falcon_credentials(&falcon, &account_id_hex),
+    )
+    .await
+    .expect("the Falcon signer proposes on the mixed account");
+    let acknowledged = push(
+        &state,
+        &executed_account,
+        &second,
+        falcon_credentials(&falcon, &account_id_hex),
+    )
+    .await
+    .expect("the gate counts the Falcon approval on the mixed account");
+    assert_eq!(acknowledged.delta.ack_scheme, "ecdsa");
+    assert_eq!(acknowledged.delta.ack_pubkey, guardian_public_key_hex);
 }
