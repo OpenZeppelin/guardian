@@ -571,6 +571,19 @@ pub struct MockStorageBackend {
 }
 
 impl MockStorageBackend {
+    /// Whether no execution was reserved or admitted through this backend.
+    pub fn reserved_nothing(&self) -> bool {
+        self.create_execution_reservation_calls
+            .lock()
+            .unwrap()
+            .is_empty()
+            && self
+                .admit_execution_candidate_calls
+                .lock()
+                .unwrap()
+                .is_empty()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
