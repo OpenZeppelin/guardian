@@ -52,7 +52,10 @@ guardian's scheme differs from the acting signer's.
   types). The Rust SDK registers mixed accounts and builds per-signer update-signers advice
   (resolves #549). The TS SDK lifts the #540 refusal once this ships (separate PR after #540 merges).
 - FR-9 `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` applies to every scheme a new account uses (each
-  cosigner's and the guardian's).
+  cosigner's and the guardian's), and to every scheme a reconfiguration adds to the stored auth.
+- FR-10 A proposal approval counts only under the scheme the account stores for its signer:
+  `PUT`/`POST /delta/proposal` refuse any other, and the multisig push gate does not count it.
+- FR-11 `/configure` requires a supported scheme for every approver of a multisig state.
 
 ## Non-goals
 
@@ -90,8 +93,9 @@ guardian's scheme differs from the acting signer's.
   S; otherwise it becomes `Miden { cosigners, guardian_scheme: S }`. A `Miden` auth is rebuilt as
   `Miden` with its stored guardian scheme. A missing or unknown scheme entry (no 0.17 state has
   one; synthetic test states do) keeps the scheme the current auth registers that commitment
-  under, else the guardian scheme. The rule is total so canonicalization never stalls on it, and
-  it is safe: a wrong scheme can only lock that cosigner out, since no key of another scheme has
+  under, else the guardian scheme. `/configure` refuses such a multisig state (D15), so the
+  fallback serves canonicalization and synthetic test states. The rule is total so
+  canonicalization never stalls on it, and it is safe: a wrong scheme can only lock that cosigner out, since no key of another scheme has
   its commitment. It runs at both sync points: `should_update_auth` (`/configure`) and
   `AppliedState::updated_auth` (candidate promotion, which reads `AppliedState.cosigner_schemes`
   from the same decode as the commitments).
@@ -105,6 +109,9 @@ guardian's scheme differs from the acting signer's.
   using it during a rolling deploy. Filesystem lookup iterates the cosigners of every variant.
 - **D9 Allowlist.** `reject_disallowed_scheme` runs for each distinct scheme in
   `Auth::schemes_in_use()` (cosigners ∪ guardian); the error names the first disallowed scheme.
+  A reconfiguration skips the schemes the stored auth already uses and checks the rest, so an
+  account cannot register under an allowed scheme and then reconfigure to another, while
+  re-onboarding under its own schemes stays open whatever the policy is now (review of #565).
 - **D10 No new error codes.** Malformed auth ⇒ `invalid_input`; verification failures ⇒
   `authentication_failed`; binding failures ⇒ `authorization_failed` (as today);
   allowlist ⇒ `signature_scheme_not_allowed`.
@@ -117,6 +124,24 @@ guardian's scheme differs from the acting signer's.
   account registers the session's signer under (was: of the account's single scheme).
 - **D14 Candidate-queue binding** (`AuthBinding`) carries each signer's scheme and the guardian
   scheme, so nothing chains behind a candidate that only re-registers a key under another scheme.
+- **D15 Approver schemes at `/configure`.** `NetworkClient::validate_approver_schemes` refuses a
+  multisig state (threshold slot present) with an approver whose scheme entry is missing or
+  unknown, as `invalid_input`; the chain verifies each approver under that entry. Only
+  `/configure` calls it.
+- **D16 Proposal approvals by scheme.** `ensure_cosigner_approval` (sign and create proposal)
+  requires `ProposalSignature::scheme()` to equal the scheme the account registers the
+  approval's signer with. The push gate counts approvals against `extract_chain_cosigners()` and
+  skips one whose approver's stored scheme differs or is missing, since the chain aborts on an
+  unsupported scheme id (a state without the scheme map at all, bare test slots, leaves it
+  unchecked). A correctly registered key always passes, since its commitment is derived under its
+  own scheme; the check matters for an account that registers a key under the wrong scheme, whose
+  approvals the chain would refuse. On `POST` request auth already pins the proposer's key to its
+  registered scheme, so the check there is defence in depth.
+- **D17 Scheme names over HTTP stay lowercase.** gRPC parses scheme names in any case, HTTP JSON
+  only in lowercase. Parsing HTTP names case-insensitively was tried and dropped: HTTP request
+  auth signs the canonical JSON of the parsed body, so `"ECDSA"` re-serialized as `"ecdsa"` and
+  the request failed with `authentication_failed` instead of the clearer parse error (checked
+  live). gRPC signs the protobuf bytes as sent, so it can accept any case.
 
 ## Acceptance scenarios
 
@@ -137,6 +162,8 @@ guardian's scheme differs from the acting signer's.
    declaration of a mixed state with an ECDSA guardian fails the guardian check first.
 5. Allowlist: `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` rejects scenario 1 with
    `signature_scheme_not_allowed`, `meta.scheme = "falcon"`; an all-ECDSA `Miden` registration passes.
+   An existing ECDSA account reconfigured to Falcon, or with a Falcon cosigner added, is rejected
+   the same way; an existing mixed account re-configuring under its own schemes passes.
 6. Uniform set via `Miden`: all-ECDSA cosigners, guardian ecdsa ⇒ accepted; `auth_scheme: "ecdsa"`;
    `method_label` `"miden"`.
 7. Canonicalization promotion: a `MidenEcdsa` account whose canonical state now holds a Falcon
@@ -149,3 +176,8 @@ guardian's scheme differs from the acting signer's.
    `signer_commitments`. Existing proposals without `signer_schemes` lift as before (empty).
 10. Compatibility: every existing unit/integration/e2e test passes unchanged; legacy JSON fixtures
     round-trip to identical bytes; OpenAPI regenerates with the new `oneOf` arm only.
+11. Approval schemes: an ECDSA approval from a key the account registers as Falcon is refused with
+    `invalid_proposal_signature` and not counted by the push gate; on a mixed account each
+    approver's approval under its own scheme is accepted and counted.
+12. Approver schemes: `/configure` of a multisig state whose approver has no supported scheme entry
+    ⇒ 400 `invalid_input`, nothing stored.

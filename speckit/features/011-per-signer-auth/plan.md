@@ -135,6 +135,23 @@ on the branch; section 6 lists the follow-up PRs. Where this plan and `data-mode
 19. CHANGELOG/release notes if the repo keeps them for the next release PR (none at the root
     today; the release PR template carries notes).
 
+## 5b. Review round (#565)
+
+20. Merge `main` (#536 push gate, #561): route the e2e promotion test through
+    `push_delta_proposal` with the ECDSA signer's approval, then push; extend it with a second
+    transaction on the promoted mixed account approved by the Falcon signer alone (refused
+    without a proposal, acknowledged with one, ECDSA ack).
+21. `ProposalSignature::scheme()` (shared); `services/proposal_signature.rs::ensure_cosigner_approval`
+    called from `sign_delta_proposal` and `push_delta_proposal`; `multisig_admission.rs`
+    `verified_approver_count` over `extract_chain_cosigners()` (D16).
+22. `NetworkClient::validate_approver_schemes` (default `Ok`, Miden impl, mocks), called in
+    `configure_account` after the GUARDIAN binding (D15).
+23. Allowlist on reconfiguration (D9), `packages/guardian-operator-client` `signerSchemes` on
+    `DashboardDeltaProposalMetadata`; HTTP scheme names stay lowercase (D17).
+24. Verify skills: model review and `--accept-drift` for `verify-auth-replay`,
+    `verify-guardian-switch` and `verify-multisig-push-gate` (code maps updated for the scheme
+    checks), plus `--deep` / `--mutants` for the push gate.
+
 ## 6. Follow-up PRs (not in PR A)
 
 - **PR B, Rust SDK (`crates/miden-multisig-client`), closes #549**: `MultisigAccount::cosigners()

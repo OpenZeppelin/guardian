@@ -138,9 +138,23 @@ single-scheme accounts keep their wire and storage shape.
   reads `mixed` for such an account. Servers up to 0.18.3 reject the variant, so
   upgrade the server before clients register mixed accounts; clients keep sending
   the single-scheme variants for every other account.
-- **`/configure` also checks the GUARDIAN scheme slot**, for every variant: the
-  account must store the GUARDIAN under the scheme of the ACK key it holds. An
-  account that does not would fail every transaction on chain.
+- **`/configure` also checks the scheme slots**, for every variant: the account
+  must store the GUARDIAN under the scheme of the ACK key it holds
+  (`authorization_failed`), and a supported scheme for every multisig approver
+  (`invalid_input`). An account that does not would fail every transaction on
+  chain, or every one that approver signs.
+- **Approvals are checked against the approver's scheme.** `PUT` and `POST
+  /delta/proposal` refuse an approval made under another scheme than the account
+  registers its signer with (`invalid_proposal_signature`), and the multisig push
+  gate does not count one. A correctly registered account is unaffected, since a
+  key's commitment is derived under its own scheme; an account that registers a
+  key under the wrong scheme now gets the refusal instead of an acknowledgement
+  for a transaction the chain refuses.
+- **The scheme policy holds for reconfigurations too.** With
+  `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` set, a reconfiguration that adds a scheme
+  the stored account does not use yet is refused with
+  `signature_scheme_not_allowed`; re-configuring under the schemes an account
+  already uses keeps working.
 - **Canonicalization keeps schemes in step with the chain.** A single-scheme
   account that gains a cosigner of the other scheme is stored as `Miden` from then
   on, and that cosigner can authenticate.

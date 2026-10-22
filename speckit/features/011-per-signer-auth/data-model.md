@@ -109,6 +109,21 @@ WHERE COALESCE(<legacy arms>, '[]'::jsonb) @> to_jsonb($1::text)
 - `AuthBinding { signers: Vec<ChainCosigner> (sorted by commitment), guardian, guardian_scheme }`;
   the refusal log reports `signers_changed`, `signer_schemes_changed`, `guardian_changed` and
   `guardian_scheme_changed`.
+- `NetworkClient::validate_approver_schemes(state) -> Result<(), String>`: the Miden client
+  refuses a multisig state with an approver whose scheme entry is missing or unknown; the
+  default (and non-multisig states) accept. Called by `/configure` only (D15).
+
+## Proposal approvals
+
+- `ProposalSignature::scheme() -> SignatureScheme` (shared crate): `Falcon` for a Falcon approval,
+  `Ecdsa` for raw and EIP-712 ECDSA approvals.
+- `services::proposal_signature::ensure_cosigner_approval(auth, signer, signature)`: the signer
+  must be a cosigner of `auth` (case-insensitive) and `signature.scheme()` its registered scheme;
+  `invalid_proposal_signature` otherwise.
+- `multisig_admission::verified_approver_count(summary, signatures, &[ChainCosigner], scheme_map)`:
+  counts a verified approver once, skipping an approval whose approver's stored scheme differs,
+  or is `None` while the state has the approver scheme map
+  (`MidenAccountInspector::has_approver_scheme_map`) (D16).
 
 ## Account inspector (`crates/server/src/network/miden/account_inspector.rs`)
 
