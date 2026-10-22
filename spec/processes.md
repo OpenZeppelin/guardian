@@ -398,7 +398,7 @@ sequenceDiagram
   nonce rule and, at execution, the SDKs keep a proposal from executing
   anywhere but on the tail: both SDKs refuse to execute a proposal pinned
   to a state the client does not hold (TypeScript 0.18.0 and earlier
-  pushed the pinned base regardless, and the Rust SDK through 0.18.2
+  pushed the pinned base regardless, and the Rust SDK through 0.18.3
   executed on its own state without the check; a switch proposal is
   checked while the pre-switch GUARDIAN serves it), and both push the state they
   executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the

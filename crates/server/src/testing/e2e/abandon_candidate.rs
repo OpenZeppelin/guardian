@@ -96,7 +96,7 @@ struct StrandedCandidateSetup {
     state: AppState,
     account_id_hex: String,
     candidate_nonce: u64,
-    cosigner_key: SecretKey,
+    cosigner_keys: Vec<SecretKey>,
     api_pubkey_hex: String,
     delta_payload: serde_json::Value,
     /// Commitment of the candidate's expected post-state, as the server
@@ -110,7 +110,7 @@ impl StrandedCandidateSetup {
     fn credentials(&mut self) -> Credentials {
         self.next_timestamp += 1;
         falcon_credentials(
-            &self.cosigner_key,
+            &self.cosigner_keys[0],
             &self.api_pubkey_hex,
             &self.account_id_hex,
             self.next_timestamp,
@@ -241,7 +241,7 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         state,
         account_id_hex: account_id_hex.clone(),
         candidate_nonce: multisig_account.nonce().as_canonical_u64() + 1,
-        cosigner_key: cosigner_keys[0].clone(),
+        cosigner_keys: cosigner_keys.clone(),
         api_pubkey_hex,
         delta_payload: delta_payload.clone(),
         expected_commitment_hex,
@@ -510,27 +510,35 @@ async fn abandon_and_resubmit(
         .await
         .expect("state readable")
         .commitment;
+    let delta = DeltaObject {
+        account_id: setup.account_id_hex.clone(),
+        nonce: setup.candidate_nonce,
+        prev_commitment: initial_commitment,
+        new_commitment: None,
+        delta_payload: setup.delta_payload.clone(),
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    let authorization = crate::testing::helpers::store_authorizing_proposal(
+        &setup.state,
+        &delta,
+        &setup.cosigner_keys,
+    )
+    .await;
     let creds = setup.credentials();
     let resubmitted = push_delta(
         &setup.state,
         PushDeltaParams {
-            delta: DeltaObject {
-                account_id: setup.account_id_hex.clone(),
-                nonce: setup.candidate_nonce,
-                prev_commitment: initial_commitment,
-                new_commitment: None,
-                delta_payload: setup.delta_payload.clone(),
-                ack_sig: String::new(),
-                ack_pubkey: String::new(),
-                ack_scheme: String::new(),
-                status: Default::default(),
-                metadata: None,
-            },
+            delta,
             credentials: creds,
         },
     )
     .await
     .expect("push_delta accepts the resubmission over the client-abandoned row");
+    authorization.restore(&setup.state).await;
     assert!(resubmitted.delta.status.is_candidate());
 
     let deltas = setup

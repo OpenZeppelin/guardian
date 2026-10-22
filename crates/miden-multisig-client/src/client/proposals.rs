@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 
+use guardian_client::DeltaObject;
 use guardian_shared::{ProposalSignature, ToJson};
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::Word;
@@ -77,6 +78,32 @@ impl MultisigClient {
         account_id: &miden_protocol::account::AccountId,
         proposal_id: &str,
     ) -> Result<(Proposal, Word)> {
+        let (raw_proposal, pinned_base) = self
+            .get_raw_pinned_proposal(account_id, proposal_id)
+            .await?;
+        let mut proposal = Proposal::from(&raw_proposal)?;
+        self.verify_proposal_summary_binding(&mut proposal).await?;
+        Ok((proposal, pinned_base))
+    }
+
+    /// The state GUARDIAN pinned a stored proposal to, for a caller that
+    /// already holds the proposal itself (an imported document).
+    pub(super) async fn get_pinned_base(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<Word> {
+        let (_, pinned_base) = self
+            .get_raw_pinned_proposal(account_id, proposal_id)
+            .await?;
+        Ok(pinned_base)
+    }
+
+    async fn get_raw_pinned_proposal(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<(DeltaObject, Word)> {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
             .get_delta_proposal(account_id, proposal_id)
@@ -89,9 +116,7 @@ impl MultisigClient {
         Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
         let pinned_base =
             word_from_hex(&raw_proposal.prev_commitment).map_err(MultisigError::HexDecode)?;
-        let mut proposal = Proposal::from(&raw_proposal)?;
-        self.verify_proposal_summary_binding(&mut proposal).await?;
-        Ok((proposal, pinned_base))
+        Ok((raw_proposal, pinned_base))
     }
 
     /// Refuses to execute a proposal GUARDIAN pinned to a state other than
@@ -103,7 +128,7 @@ impl MultisigClient {
     /// account has since left would apply its intent again, and one pinned
     /// to a queued candidate's post-state this client does not hold would
     /// land without that candidate.
-    fn ensure_executes_on_pinned_base(
+    pub(super) fn ensure_executes_on_pinned_base(
         account: &MultisigAccount,
         proposal_id: &str,
         pinned_base: Word,

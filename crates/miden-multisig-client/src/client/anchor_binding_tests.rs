@@ -1657,3 +1657,74 @@ async fn built_in_proposals_write_the_bound_block_num() {
         assert!(payload["metadata"].get("chain_anchor").is_none());
     }
 }
+
+/// An imported proposal GUARDIAN pinned to a state other than the one this
+/// client holds is refused before any approval is relayed or any
+/// acknowledgement requested, as `execute_proposal` refuses it. The mock's
+/// sign handler is left unconfigured, so a relay attempted first would fail
+/// with a GUARDIAN error instead of the base mismatch.
+#[tokio::test]
+async fn execute_imported_proposal_refuses_a_proposal_pinned_to_another_state() {
+    use guardian_client::GetDeltaProposalResponse;
+
+    use crate::export::{ExportedProposal, ExportedSignature};
+    use crate::procedures::ProcedureName;
+
+    let mut setup = client_with_summary(61).await;
+    let payload = ProposalPayload::new(&setup.tx_summary)
+        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&setup.salt))
+        .with_required_signatures(1)
+        .to_json();
+    let proposals = list_served(&mut setup, payload.clone()).await;
+    assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
+    let exported = ExportedProposal::from_proposal(&proposals[0], setup.account.id())
+        .unwrap()
+        .with_signatures(vec![ExportedSignature {
+            signer_commitment: word_to_hex(&setup.signer_commitment),
+            signature: setup
+                .client
+                .key_manager
+                .sign_word_hex(setup.tx_summary.to_commitment()),
+            scheme: guardian_shared::SignatureScheme::Falcon,
+            public_key_hex: None,
+            message_format: Default::default(),
+        }]);
+
+    let foreign_base = word_to_hex(&Word::from([7u32, 7, 7, 7]));
+    setup
+        .guardian
+        .set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            proposal: Some(guardian_client::DeltaObject {
+                prev_commitment: foreign_base.clone(),
+                ..pending_proto_delta(
+                    &setup.account,
+                    1,
+                    payload.to_string(),
+                    &word_to_hex(&setup.signer_commitment),
+                )
+            }),
+        });
+
+    let refused = setup
+        .client
+        .execute_imported_proposal(&exported)
+        .await
+        .expect_err("an imported proposal pinned to another state must not execute");
+    assert!(
+        matches!(
+            &refused,
+            crate::error::MultisigError::ProposalBaseMismatch { pinned, .. } if *pinned == foreign_base
+        ),
+        "unexpected error: {refused}"
+    );
+    assert!(
+        !setup
+            .guardian
+            .calls()
+            .iter()
+            .any(|call| call == "push_delta"),
+        "no acknowledgement is requested for a refused proposal"
+    );
+}

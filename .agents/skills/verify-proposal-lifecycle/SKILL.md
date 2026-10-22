@@ -172,10 +172,14 @@ commitment rather than the proposal's pin (acking the pin breaks
 Rust `execute_proposal` used to refuse only `proposal.nonce <=
 account.nonce()` and never compared the proposal's `prev_commitment` with
 its own state, while TS refuses unless they are equal. Rust now refuses
-too: `execute_proposal` and `prepare_custom_execution` call
+too: `execute_proposal`, `prepare_custom_execution` and, for the types
+Guardian acknowledges, `execute_imported_proposal` call
 `ensure_executes_on_pinned_base` (`MultisigError::ProposalBaseMismatch`),
 covered by `execute_proposal_refuses_a_proposal_pinned_to_another_state`
-in `client/switch_recovery_tests.rs`. The counterexamples the model found
+in `client/switch_recovery_tests.rs` and
+`execute_imported_proposal_refuses_a_proposal_pinned_to_another_state` in
+`client/anchor_binding_tests.rs`. The imported path is outside the model
+(offline import/export is out of scope) but shares the guard. The counterexamples the model found
 before the fix:
 
 1. Depth 2, honest labels. A device executes proposal A from state S

@@ -102,9 +102,12 @@ struct Recoverable {
 /// is backed out and the next one tried. Backing out matters once archived
 /// superseded deltas take part: an archived row and the row that replaced it
 /// share a nonce and a base, and only the one that landed reaches the chain.
-/// Returns the rows on the path, base-first, or an empty path when the hints
-/// do not link the base to the chain head. No two rows on a path share a
-/// nonce, and the walk is bounded by the number of rows.
+/// Rows that share a nonce and a hint at the same hop (an archived row and
+/// its identical resubmission) lead to the same subtree, so only the first
+/// is walked; retrying each copy would cost copies^depth when the chain head
+/// is unreachable. Returns the rows on the path, base-first, or an empty
+/// path when the hints do not link the base to the chain head. No two rows
+/// on a path share a nonce, and the walk is bounded by the number of rows.
 fn select_recoverable_path(
     stored_commitment: &str,
     on_chain: &str,
@@ -131,13 +134,18 @@ fn select_recoverable_path(
                 delta.nonce,
             )
         });
+        let mut tried: Vec<(u64, &str)> = Vec::new();
         for index in chaining {
-            path.push(index);
-            let next = live[index]
-                .delta
+            let delta = &live[index].delta;
+            let next = delta
                 .new_commitment
                 .as_deref()
                 .expect("filtered to rows with a stored hint");
+            if tried.contains(&(delta.nonce, next)) {
+                continue;
+            }
+            tried.push((delta.nonce, next));
+            path.push(index);
             if next == on_chain || walk(next, on_chain, live, path) {
                 return true;
             }
@@ -872,6 +880,35 @@ mod tests {
         assert!(select_recoverable_path("0xbase", "0xc3", &live).is_empty());
         assert!(select_recoverable_path("0xbase", "0xc9", &live).is_empty());
         assert!(select_recoverable_path("0xbase", "0xc1", &[]).is_empty());
+    }
+
+    #[test]
+    fn recoverable_path_walks_identical_copies_of_a_hop_once() {
+        // Every hop is held three times (an archived row and identical
+        // resubmissions). Walking each copy would visit 3^16 paths before
+        // giving up on an unreachable head; one walk per (nonce, hint)
+        // returns at once and still promotes the first copy of each hop.
+        let hints: Vec<String> = (0..=16).map(|hop| format!("0xc{hop}")).collect();
+        let live: Vec<Recoverable> = (1..=16u64)
+            .flat_map(|nonce| {
+                let prev = if nonce == 1 {
+                    "0xbase"
+                } else {
+                    hints[nonce as usize - 1].as_str()
+                };
+                let new = hints[nonce as usize].as_str();
+                (0..3).map(move |copy| {
+                    let mut row = recoverable(nonce, prev, Some(new));
+                    row.age_seconds = copy;
+                    row
+                })
+            })
+            .collect();
+
+        assert!(select_recoverable_path("0xbase", "0xelsewhere", &live).is_empty());
+        let path = select_recoverable_path("0xbase", "0xc16", &live);
+        assert_eq!(nonces(&path), (1..=16).collect::<Vec<_>>());
+        assert!(path.iter().all(|row| row.age_seconds == 0));
     }
 
     #[test]
