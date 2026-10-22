@@ -82,9 +82,28 @@ impl DeltaCommitStrategy {
                             actual: delta.prev_commitment.clone(),
                         })
                     }
+                    CandidateSubmission::Paused {
+                        paused_at,
+                        paused_reason,
+                    } => Err(GuardianError::AccountPaused {
+                        paused_at,
+                        paused_reason,
+                    }),
+                    CandidateSubmission::Released { released_at } => {
+                        Err(GuardianError::AccountReleased { released_at })
+                    }
                 }
             }
             DeltaCommitStrategy::Optimistic => {
+                // The status re-read right before the writes. Optimistic
+                // writes take no account lock, so a pause landing between
+                // this read and the writes is not fenced; candidate mode on
+                // Postgres reads it under the lock the pause takes.
+                crate::services::account_status::ensure_account_active(
+                    ctx.state,
+                    &delta.account_id,
+                )
+                .await?;
                 delta.status = DeltaStatus::canonical(ctx.now.clone());
 
                 let new_state = StateObject {
@@ -192,7 +211,7 @@ impl DeltaCommitStrategy {
                 crate::services::release_on_switch::release_if_guardian_switched(
                     ctx.state,
                     &ctx.resolved.metadata,
-                    &new_state.state_json,
+                    applied.guardian_commitment.as_deref(),
                     delta.nonce,
                     &new_state.commitment,
                 )
@@ -245,6 +264,8 @@ mod tests {
             state_json: serde_json::json!({"new": "state"}),
             commitment: "new_commitment".to_string(),
             nonce: Some(2),
+            cosigner_commitments: Vec::new(),
+            guardian_commitment: None,
         }
     }
 
@@ -302,6 +323,90 @@ mod tests {
         let err = result.unwrap_err();
         assert!(matches!(err, GuardianError::StorageError(_)));
         assert!(err.to_string().contains("Storage unavailable"));
+    }
+
+    async fn commit_with_submission(outcome: CandidateSubmission) -> Result<(), GuardianError> {
+        let state = create_test_app_state_with_mocks(
+            Arc::new(MockStorageBackend::new().with_submit_candidate(Ok(outcome))),
+            Arc::new(MockNetworkClient::new()),
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())))),
+        );
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            storage: state.storage.clone(),
+            signer_commitment: String::new(),
+        };
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+        DeltaCommitStrategy::Candidate
+            .commit(ctx, &mut create_test_delta(), applied_state())
+            .await
+    }
+
+    #[tokio::test]
+    async fn candidate_commit_refuses_an_account_paused_under_the_lock() {
+        let paused_at = chrono::Utc::now();
+        match commit_with_submission(CandidateSubmission::Paused {
+            paused_at,
+            paused_reason: Some("compliance".to_string()),
+        })
+        .await
+        {
+            Err(GuardianError::AccountPaused {
+                paused_at: at,
+                paused_reason,
+            }) => {
+                assert_eq!(at, paused_at);
+                assert_eq!(paused_reason.as_deref(), Some("compliance"));
+            }
+            other => panic!("expected AccountPaused, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn candidate_commit_refuses_an_account_released_under_the_lock() {
+        let released_at = chrono::Utc::now();
+        match commit_with_submission(CandidateSubmission::Released { released_at }).await {
+            Err(GuardianError::AccountReleased { released_at: at }) => {
+                assert_eq!(at, released_at)
+            }
+            other => panic!("expected AccountReleased, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn optimistic_commit_rereads_the_status_before_writing() {
+        let mut paused = create_test_metadata();
+        paused.paused_at = Some(chrono::Utc::now());
+        let storage = Arc::new(MockStorageBackend::new());
+        let state = create_test_app_state_with_mocks(
+            storage.clone(),
+            Arc::new(MockNetworkClient::new()),
+            Arc::new(MockMetadataStore::new().with_get(Ok(Some(paused)))),
+        );
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            storage: state.storage.clone(),
+            signer_commitment: String::new(),
+        };
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(ctx, &mut create_test_delta(), applied_state())
+            .await;
+        assert!(matches!(result, Err(GuardianError::AccountPaused { .. })));
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(storage.get_submit_delta_calls().is_empty());
     }
 
     #[tokio::test]
@@ -552,6 +657,61 @@ mod tests {
         assert_eq!(stored[0].commitment, "new_commitment");
         assert_eq!(stored[0].nonce, Some(2));
         assert_eq!(stored[0].state_json, serde_json::json!({"new": "state"}));
+    }
+
+    #[tokio::test]
+    async fn test_optimistic_releases_on_foreign_guardian_binding() {
+        let mock_storage = MockStorageBackend::new()
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let mock_network = MockNetworkClient::new();
+        let mock_metadata = MockMetadataStore::new().with_get(Ok(Some(create_test_metadata())));
+
+        let state = create_test_app_state_with_mocks(
+            Arc::new(mock_storage),
+            Arc::new(mock_network),
+            Arc::new(mock_metadata.clone()),
+        );
+
+        let resolved = ResolvedAccount {
+            metadata: create_test_metadata(),
+            storage: state.storage.clone(),
+            signer_commitment: String::new(),
+        };
+
+        let current_state = create_test_state_object();
+        let ctx = CommitContext {
+            state: &state,
+            resolved: &resolved,
+            current_state: &current_state,
+            now: "2024-01-01T12:00:00Z".to_string(),
+        };
+
+        let applied = AppliedState {
+            guardian_commitment: Some("0xforeign_guardian".to_string()),
+            ..applied_state()
+        };
+
+        let mut delta = create_test_delta();
+        let result = DeltaCommitStrategy::Optimistic
+            .commit(ctx, &mut delta, applied)
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(
+            mock_metadata.set_released_calls.lock().unwrap().clone(),
+            vec!["0xtest_account_id".to_string()],
+            "a foreign guardian binding on the applied state must release the account"
+        );
+        assert_eq!(
+            mock_metadata
+                .set_released_expected_states
+                .lock()
+                .unwrap()
+                .clone(),
+            vec!["new_commitment".to_string()],
+            "the release is proved against the state the commit just stored"
+        );
     }
 
     #[tokio::test]

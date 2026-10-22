@@ -265,28 +265,35 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     .expect("configure_account succeeds");
 
     // Push the approved delta: it becomes the pending candidate whose
-    // transaction (in the `landed = false` case) will never land.
+    // transaction (in the `landed = false` case) will never land. The
+    // multisig push gate requires a matching threshold-satisfying
+    // proposal, stored first.
+    let delta = DeltaObject {
+        account_id: account_id_hex.clone(),
+        nonce: setup.candidate_nonce,
+        prev_commitment: initial_commitment,
+        new_commitment: None,
+        delta_payload,
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    let authorization =
+        crate::testing::helpers::store_authorizing_proposal(&setup.state, &delta, &cosigner_keys)
+            .await;
     let creds = setup.credentials();
     let push_result = push_delta(
         &setup.state,
         PushDeltaParams {
-            delta: DeltaObject {
-                account_id: account_id_hex.clone(),
-                nonce: setup.candidate_nonce,
-                prev_commitment: initial_commitment,
-                new_commitment: None,
-                delta_payload,
-                ack_sig: String::new(),
-                ack_pubkey: String::new(),
-                ack_scheme: String::new(),
-                status: Default::default(),
-                metadata: None,
-            },
+            delta,
             credentials: creds,
         },
     )
     .await
     .expect("push_delta accepts the delta");
+    authorization.restore(&setup.state).await;
     assert!(
         push_result.delta.status.is_candidate(),
         "delta should await canonicalization, got {:?}",

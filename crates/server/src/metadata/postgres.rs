@@ -197,6 +197,47 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(())
     }
 
+    async fn create(&self, metadata: AccountMetadata) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let created_at: chrono::DateTime<chrono::Utc> = metadata
+            .created_at
+            .parse()
+            .map_err(|e| format!("Failed to parse created_at: {e}"))?;
+        let updated_at: chrono::DateTime<chrono::Utc> = metadata
+            .updated_at
+            .parse()
+            .map_err(|e| format!("Failed to parse updated_at: {e}"))?;
+        let auth_json = serde_json::to_value(&metadata.auth)
+            .map_err(|e| format!("Failed to serialize auth: {e}"))?;
+        let network_config_json = serde_json::to_value(&metadata.network_config)
+            .map_err(|e| format!("Failed to serialize network_config: {e}"))?;
+
+        let inserted = diesel::insert_into(account_metadata::table)
+            .values(&NewMetadata {
+                account_id: &metadata.account_id,
+                auth: auth_json,
+                network_config: network_config_json,
+                created_at,
+                updated_at,
+                has_pending_candidate: metadata.has_pending_candidate,
+                paused_at: metadata.paused_at,
+                paused_reason: metadata.paused_reason.clone(),
+                released_at: metadata.released_at,
+            })
+            .on_conflict(account_metadata::account_id)
+            .do_nothing()
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to create metadata: {e}"))?;
+
+        Ok(inserted == 1)
+    }
+
     async fn list(&self) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
@@ -1725,6 +1766,56 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn create_inserts_only_when_the_account_is_absent() {
+        let url = test_database_url().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xcreate{}", Utc::now().timestamp_micros());
+        let now = Utc::now().to_rfc3339();
+        let metadata = |cosigner: &str| AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![cosigner.to_string()],
+            },
+            network_config: NetworkConfig::miden_default(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+        let first = format!("0x{}", "aa".repeat(32));
+        let second = format!("0x{}", "bb".repeat(32));
+
+        assert!(store.create(metadata(&first)).await.expect("first create"));
+        assert!(
+            !store
+                .create(metadata(&second))
+                .await
+                .expect("second create"),
+            "a second create for the same account must not claim it"
+        );
+        assert_eq!(
+            store
+                .get(&account_id)
+                .await
+                .expect("read")
+                .expect("row")
+                .auth,
+            metadata(&first).auth,
+            "the losing create must leave the first one's row untouched"
+        );
+
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup");
     }
 
     #[tokio::test]

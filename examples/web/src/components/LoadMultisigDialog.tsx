@@ -30,6 +30,7 @@ interface LoadMultisigDialogProps {
   defaultScheme: SignatureScheme;
   onLoad: (accountId: string, scheme: SignatureScheme) => void;
   walletSource?: WalletSource;
+  schemeSelectable?: boolean;
 }
 
 export function LoadMultisigDialog({
@@ -41,6 +42,7 @@ export function LoadMultisigDialog({
   defaultScheme,
   onLoad,
   walletSource = 'local',
+  schemeSelectable = walletSource === 'local',
 }: LoadMultisigDialogProps) {
   const [accountIdInput, setAccountIdInput] = useState('');
   const [signatureScheme, setSignatureScheme] = useState<SignatureScheme>(defaultScheme);
@@ -92,7 +94,7 @@ export function LoadMultisigDialog({
             <Select
               value={signatureScheme}
               onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}
-              disabled={walletSource !== 'local'}
+              disabled={!schemeSelectable}
             >
               <SelectTrigger className="w-full" size="sm">
                 <SelectValue />
@@ -103,7 +105,11 @@ export function LoadMultisigDialog({
               </SelectContent>
             </Select>
             {walletSource === 'miden-wallet' && (
-              <p className="text-xs text-muted-foreground">Miden Wallet scheme: {defaultScheme}</p>
+              <p className="text-xs text-muted-foreground">
+                {schemeSelectable
+                  ? 'Miden Wallet shares only a key commitment: pick the scheme of the wallet account.'
+                  : `Miden Wallet scheme: ${defaultScheme}`}
+              </p>
             )}
           </div>
 
