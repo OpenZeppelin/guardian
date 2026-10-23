@@ -50,7 +50,7 @@ impl DeltaCommitStrategy {
                     ctx.state
                         .canonicalization
                         .as_ref()
-                        .is_some_and(|config| config.retained_ttl_seconds > 0),
+                        .is_some_and(crate::builder::canonicalization::CanonicalizationConfig::archives_superseded),
                 );
                 let outcome = ctx
                     .resolved
@@ -80,6 +80,11 @@ impl DeltaCommitStrategy {
                         Err(GuardianError::CommitmentMismatch {
                             expected,
                             actual: delta.prev_commitment.clone(),
+                        })
+                    }
+                    CandidateSubmission::ExecutionReserved { proposal_id } => {
+                        Err(GuardianError::ExecutionConflict {
+                            blocking_proposal_id: proposal_id,
                         })
                     }
                     CandidateSubmission::Paused {
