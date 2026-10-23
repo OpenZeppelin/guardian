@@ -1109,6 +1109,7 @@ impl DeltasProcessorBase {
                     self.canonicalize_verified_delta(
                         delta,
                         applied,
+                        crate::storage::PromotableKind::Candidate,
                         crate::metrics::labels::CandidateOutcome::Canonicalized,
                     )
                     .await
@@ -1937,6 +1938,7 @@ impl DeltasProcessorBase {
         self.canonicalize_verified_delta(
             delta.clone(),
             applied,
+            crate::storage::PromotableKind::Candidate,
             crate::metrics::labels::CandidateOutcome::Canonicalized,
         )
         .await?;

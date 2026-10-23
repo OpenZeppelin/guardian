@@ -987,7 +987,7 @@ async fn clear_pending_flag_if_none(
 /// `superseded_deltas`, stamped `superseded_at`, inside the caller's
 /// transaction. The payload moves as stored, so an encrypted payload stays
 /// encrypted. Returns how many rows were archived (0 or 1).
-async fn archive_parked_delta(
+pub(super) async fn archive_parked_delta(
     conn: &mut AsyncPgConnection,
     account_id: &str,
     nonce: u64,
@@ -2353,13 +2353,22 @@ impl StorageBackend for PostgresService {
                     // The base gate lives in the UPDATE predicate itself, not
                     // a prior read: `submit_state` writers take no account
                     // lock, so only the row-level write lock makes the
-                    // comparison race-proof. Zero rows means the state moved
-                    // (or vanished) since this pass read it — the delta flip
-                    // above must not survive that, hence the explicit
-                    // rollback mapped to `StaleBase` below.
+                    // comparison race-proof. A state already at this
+                    // promotion's target (a `/configure` re-onboarding to the
+                    // chain's state before promotion) is a resumed promotion,
+                    // as on the filesystem backend: refusing it would leave a
+                    // candidate no pass can ever promote, and an execution
+                    // owning it reserved for good. Zero rows means the state
+                    // moved elsewhere (or vanished) since this pass read it,
+                    // and the delta flip above must not survive that, hence
+                    // the explicit rollback mapped to `StaleBase` below.
                     let advanced = diesel::update(states::table)
                         .filter(states::account_id.eq(&state.account_id))
-                        .filter(states::commitment.eq(&delta.prev_commitment))
+                        .filter(
+                            states::commitment
+                                .eq(&delta.prev_commitment)
+                                .or(states::commitment.eq(&state.commitment)),
+                        )
                         .set((
                             states::state_json.eq(&state.state_json),
                             states::commitment.eq(&state.commitment),
@@ -4762,7 +4771,9 @@ mod tests {
                 .promote_candidate(&metadata_store, restore())
                 .await
                 .expect("restore resolves"),
-            PromoteWrite::Applied
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
         );
         let row = service
             .pull_delta(&account_id, 1)

@@ -50,7 +50,7 @@ impl DeltaCommitStrategy {
                     ctx.state
                         .canonicalization
                         .as_ref()
-                        .is_some_and(|config| config.retained_ttl_seconds > 0),
+                        .is_some_and(crate::builder::canonicalization::CanonicalizationConfig::archives_superseded),
                 );
                 let outcome = ctx
                     .resolved
