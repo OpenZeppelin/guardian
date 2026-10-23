@@ -151,7 +151,8 @@ Propose(d) ==
 (* a proposal executes only from the state it was built on.               *)
 (*  Rust (client/proposals.rs execute_proposal): sync first (the guard     *)
 (*  below is evaluated on the synced view by the separate sync steps),    *)
-(*  refuse a nonce not above local, push_delta with prev = local          *)
+(*  refuse a nonce not above local or a pinned base other than local     *)
+(*  (ProposalBaseMismatch), push_delta with prev = local                 *)
 (*  (helpers.rs get_guardian_ack_signature), then finalize_transaction.  *)
 (*  TS (multisig.ts prepareProposalExecution / executeProposal): refuse   *)
 (*  unless local is the pinned base (assertExecutesOnPinnedBase), readiness*)
@@ -167,7 +168,7 @@ Execute(d) ==
     /\ \E p \in props :
          /\ st[p.post].p = local[d]
          /\ Nonce(p.post) > Nonce(local[d])
-         /\ d = "ts" => p.base = local[d]
+         /\ p.base = local[d]
          /\ local[d] = stored
          /\ cand = 0
          /\ cand' = p.post

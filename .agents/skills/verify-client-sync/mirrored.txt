@@ -24,7 +24,7 @@ packages/miden-multisig-client/src/multisig.ts guardianIsNotAhead
 packages/miden-multisig-client/src/multisig.ts refreshConfigFromAccount
 packages/miden-multisig-client/src/multisig.ts refreshConfigFromStore
 packages/miden-multisig-client/src/multisig.ts adoptConfigFromAccount
-packages/miden-multisig-client/src/multisig.ts assertPinnedBase
+packages/miden-multisig-client/src/multisig.ts assertExecutesOnPinnedBase
 packages/miden-multisig-client/src/multisig.ts createAddSignerProposal
 packages/miden-multisig-client/src/multisig.ts createRemoveSignerProposal
 packages/miden-multisig-client/src/multisig.ts registerOnGuardian

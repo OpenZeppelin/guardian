@@ -365,7 +365,7 @@ const UNREPORTED_LISTING_MISS_LIMIT = 2;
  * post-state) would be admitted behind that candidate while the transaction
  * itself lands on the older state, leaving GUARDIAN behind the chain.
  */
-function assertPinnedBase(proposalId: string, localCommitment: string, pinnedBase: string): string {
+function assertExecutesOnPinnedBase(proposalId: string, localCommitment: string, pinnedBase: string): string {
   const pinned = normalizeHexWord(pinnedBase);
   if (localCommitment !== pinned) {
     throw new Error(
@@ -2444,7 +2444,7 @@ export class Multisig {
         `Proposal is not ready for execution: have ${signaturesForExecution.length} of ${effectiveThreshold} required signatures.`,
       );
     }
-    assertPinnedBase(proposalId, localCommitment, delta.prevCommitment);
+    assertExecutesOnPinnedBase(proposalId, localCommitment, delta.prevCommitment);
 
     const txSummary = TransactionSummary.deserialize(
       base64ToUint8Array(delta.deltaPayload.txSummary.data),
@@ -2724,7 +2724,7 @@ export class Multisig {
       txSummaryBase64 = delta.deltaPayload.txSummary.data;
     }
     const executedBase = delta
-      ? assertPinnedBase(proposalId, localCommitment, delta.prevCommitment)
+      ? assertExecutesOnPinnedBase(proposalId, localCommitment, delta.prevCommitment)
       : localCommitment;
 
     const txSummaryBytes = base64ToUint8Array(txSummaryBase64);

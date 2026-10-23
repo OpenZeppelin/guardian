@@ -146,10 +146,10 @@ place the two SDKs make different decisions on the same inputs
   does not.
 - Listing: Rust drops proposals with `nonce <= local nonce`; TS lists
   everything Guardian returns and blocks stale ones at execution.
-- Execution: TS checks local == the pinned base and echoes Guardian's
-  `prev_commitment`; Rust checks `nonce > local nonce` and pushes its
-  local commitment (PR #559, not on this branch, adds the pinned-base
-  refusal to Rust).
+- Execution: both check local == the pinned base (Rust
+  `ProposalBaseMismatch`, TS `assertExecutesOnPinnedBase`); TS echoes
+  Guardian's `prev_commitment`, Rust also checks `nonce > local nonce` and
+  pushes its local commitment.
 - Switch: Rust pushes the switch delta to the old Guardian before
   submitting, TS after.
 - Equal-nonce divergence on sync: Rust keeps local quietly, TS throws.
@@ -207,7 +207,7 @@ paths under `packages/miden-multisig-client/src/`.
 | `RefreshConfig` | (none: the config is read from the account each time) | `multisig.ts` `refreshConfigFromAccount`, from `syncState` / `syncNetworkOnly` |
 | `SyncChainUndo` | miden-client `sync_state` (sqlite store `undo_account_state`) for recorded transactions | the same, through the WASM client |
 | `Propose` | `client/proposals.rs` `propose_transaction_with_options` (label local + 1) | `multisig.ts` `createProposal`, `resolveProposalNonce` |
-| `Execute` | `client/proposals.rs` `execute_proposal`, `client/helpers.rs` `get_guardian_ack_signature`, `finalize_transaction` (untracked for `rebuilds_local_state_from_delta` types, recorded as an `UntrackedSubmission`) | `multisig.ts` `prepareProposalExecution` / `prepareCustomExecution` (store read, `adoptConfigFromAccount`, `assertPinnedBase`), `executeProposal`, `prover/workflow.ts` `submit` |
+| `Execute` | `client/proposals.rs` `execute_proposal`, `client/helpers.rs` `get_guardian_ack_signature`, `finalize_transaction` (untracked for `rebuilds_local_state_from_delta` types, recorded as an `UntrackedSubmission`) | `multisig.ts` `prepareProposalExecution` / `prepareCustomExecution` (store read, `adoptConfigFromAccount`, `assertExecutesOnPinnedBase`), `executeProposal`, `prover/workflow.ts` `submit` |
 | `Land`, `Drop` | the node: include a pending transaction built on the chain head, or drop one | |
 | `Promote`, `Retire` | Guardian's canonicalization: promote the candidate once the chain holds it; retire it as retained (also while its transaction may still be pending, on exhausted retries or a lagging read) | |
 | `ReconcilePromote`, `Expire` | Guardian's reconcile pass: promote a retained delta the chain head shows landed; drop it after `retained_ttl_seconds` once its transaction is gone | |
