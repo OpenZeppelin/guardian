@@ -506,11 +506,18 @@ pub fn gate_candidate_submission(
 /// superseded promotion a no-op (`NotCandidate`) instead. Candidate
 /// rows cannot be superseded (only the lease-holding worker deletes
 /// them), so the candidate arm is as safe as it always was.
+///
+/// `Superseded` is an archived row (`superseded_deltas`): a retained or
+/// client-abandoned delta that a resubmission at its nonce replaced. Its
+/// promotion does not flip a `deltas` row in place; it writes the archived
+/// delta back as the canonical row at its nonce, replacing a retained or
+/// client-abandoned row there (never a candidate or canonical one).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromotableKind {
     Candidate,
     Retained,
     ClientAbandoned,
+    Superseded,
 }
 
 impl PromotableKind {
@@ -527,11 +534,45 @@ impl PromotableKind {
     }
 
     /// Whether a stored status still is the row this promotion targets.
+    /// For an archived row, whether the `deltas` row now at its nonce may
+    /// be replaced by it: only a parked one, retained or client-abandoned.
     pub fn matches(&self, status: &DeltaStatus) -> bool {
         match self {
             PromotableKind::Candidate => status.is_candidate(),
             PromotableKind::Retained => status.is_retained(),
             PromotableKind::ClientAbandoned => status.is_client_abandoned(),
+            PromotableKind::Superseded => status.is_retained() || status.is_client_abandoned(),
+        }
+    }
+}
+
+/// An archived superseded delta (see [`CandidatePolicy`]) and when a
+/// resubmission replaced it. The retention TTL and the reconcile probe
+/// cadence both count from `superseded_at`, not from the status timestamp
+/// the delta carried when it was parked.
+#[derive(Debug, Clone)]
+pub struct SupersededDelta {
+    pub delta: DeltaObject,
+    pub superseded_at: DateTime<Utc>,
+}
+
+/// How a candidate submission treats the account's queue and a parked
+/// (retained or client-abandoned) row it supersedes at its nonce.
+/// `archive_superseded` moves that row to the superseded-delta archive,
+/// where the reconcile pass can still recover its transaction if it lands
+/// late; without it (retention disabled, so nothing is ever reconciled)
+/// the row is deleted as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CandidatePolicy {
+    pub max_pending_candidates: usize,
+    pub archive_superseded: bool,
+}
+
+impl CandidatePolicy {
+    pub fn new(max_pending_candidates: usize, archive_superseded: bool) -> Self {
+        Self {
+            max_pending_candidates,
+            archive_superseded,
         }
     }
 }
@@ -567,7 +608,7 @@ pub(crate) async fn submit_candidate_sequential(
     metadata: &dyn crate::metadata::MetadataStore,
     delta: &DeltaObject,
     now: &str,
-    _max_pending_candidates: usize,
+    _policy: CandidatePolicy,
 ) -> Result<CandidateSubmission, String> {
     // The queue admission gate (`gate_candidate_submission`) is not
     // re-evaluated here: the mock backend replays canned reads, and a
@@ -940,10 +981,33 @@ pub trait StorageBackend: Send + Sync {
     /// `has_pending_candidate` flag — by design, so they never re-lock
     /// the account — so the reconcile pass needs its own scan to find
     /// them.
+    ///
+    /// Accounts holding any archived superseded delta are listed too,
+    /// whatever its age, so the reconcile pass can both recover from the
+    /// fresh ones and prune the expired ones.
     async fn list_accounts_with_recoverable_deltas(
         &self,
         abandoned_since: DateTime<Utc>,
     ) -> Result<Vec<String>, String>;
+
+    /// Archived superseded deltas of an account (see [`CandidatePolicy`])
+    /// superseded at or after `since`, nonce ascending. Each delta keeps the
+    /// status it had when it was superseded. The reconcile pass treats
+    /// them as recoverable and promotes one with
+    /// [`PromotableKind::Superseded`].
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<SupersededDelta>, String>;
+
+    /// Delete an account's archived superseded deltas superseded before
+    /// `before` (past the retention TTL), returning how many were removed.
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: DateTime<Utc>,
+    ) -> Result<u64, String>;
 
     async fn submit_delta_proposal(
         &self,
@@ -1029,18 +1093,21 @@ pub trait StorageBackend: Send + Sync {
     /// never selects (flag false) while new submissions stay rejected
     /// (row exists): a permanent wedge. Fencing backends additionally
     /// re-evaluate the queue admission gate
-    /// ([`gate_candidate_submission`], with `max_pending_candidates` as
-    /// the account's queue depth) under the account lock and check that
-    /// the nonce is unoccupied, returning [`CandidateSubmission::Conflict`]
-    /// instead of overwriting — two racing submissions that both passed
-    /// the service-layer gate must not both commit, and a delayed
-    /// submission must never overwrite canonical history at its nonce.
+    /// ([`gate_candidate_submission`], with the policy's
+    /// `max_pending_candidates` as the account's queue depth) under the
+    /// account lock and check that the nonce is unoccupied, returning
+    /// [`CandidateSubmission::Conflict`] instead of overwriting — two
+    /// racing submissions that both passed the service-layer gate must not
+    /// both commit, and a delayed submission must never overwrite canonical
+    /// history at its nonce. A retained or client-abandoned row at the
+    /// nonce is superseded: archived when the policy says so (see
+    /// [`CandidatePolicy`]), deleted otherwise.
     async fn submit_candidate(
         &self,
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: CandidatePolicy,
     ) -> Result<CandidateSubmission, String>;
 
     /// Promote a verified candidate: advance the account state, sync

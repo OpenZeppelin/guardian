@@ -40,12 +40,6 @@ pub enum GuardianError {
     },
     InvalidDelta(String),
     ConflictPendingDelta,
-    /// A Guardian execution is refused because a parked delta (`retained`, or a recent
-    /// client-abandoned discard) built on the account's current state could still land.
-    /// Executing beside it would race it, and Guardian would lose its record of that delta if it
-    /// won. Same stable code as [`Self::ConflictPendingDelta`] with `meta.reason`
-    /// `parked_delta`; it clears once reconciliation promotes or drops the parked delta.
-    ConflictParkedDelta,
     ConflictPendingProposal,
     PendingProposalsLimit {
         limit: usize,
@@ -255,9 +249,7 @@ impl GuardianError {
             GuardianError::StateNotFound(_) => StatusCode::NOT_FOUND,
             GuardianError::ProposalNotFound { .. } => StatusCode::NOT_FOUND,
             GuardianError::AccountAlreadyExists(_) => StatusCode::CONFLICT,
-            GuardianError::ConflictPendingDelta | GuardianError::ConflictParkedDelta => {
-                StatusCode::CONFLICT
-            }
+            GuardianError::ConflictPendingDelta => StatusCode::CONFLICT,
             GuardianError::ConflictPendingProposal => StatusCode::CONFLICT,
             GuardianError::PendingProposalsLimit { .. } => StatusCode::CONFLICT,
             GuardianError::ProposalAlreadySigned { .. } => StatusCode::CONFLICT,
@@ -316,9 +308,7 @@ impl GuardianError {
             GuardianError::StateNotFound(_) => tonic::Code::NotFound,
             GuardianError::ProposalNotFound { .. } => tonic::Code::NotFound,
             GuardianError::AccountAlreadyExists(_) => tonic::Code::AlreadyExists,
-            GuardianError::ConflictPendingDelta | GuardianError::ConflictParkedDelta => {
-                tonic::Code::FailedPrecondition
-            }
+            GuardianError::ConflictPendingDelta => tonic::Code::FailedPrecondition,
             GuardianError::ConflictPendingProposal => tonic::Code::FailedPrecondition,
             GuardianError::PendingProposalsLimit { .. } => tonic::Code::FailedPrecondition,
             GuardianError::ProposalAlreadySigned { .. } => tonic::Code::AlreadyExists,
@@ -381,9 +371,7 @@ impl GuardianError {
             GuardianError::StateNotFound(_) => "state_not_found",
             GuardianError::DeltaNotFound { .. } => "delta_not_found",
             GuardianError::InvalidDelta(_) => "invalid_delta",
-            GuardianError::ConflictPendingDelta | GuardianError::ConflictParkedDelta => {
-                "conflict_pending_delta"
-            }
+            GuardianError::ConflictPendingDelta => "conflict_pending_delta",
             GuardianError::ConflictPendingProposal => "conflict_pending_proposal",
             GuardianError::PendingProposalsLimit { .. } => "pending_proposals_limit",
             GuardianError::CommitmentMismatch { .. } => "commitment_mismatch",
@@ -486,9 +474,6 @@ impl GuardianError {
             | GuardianError::ConflictPendingProposal
             | GuardianError::PendingProposalsLimit { .. } => {
                 "There's already a pending change for this account. Finish or cancel it first."
-            }
-            GuardianError::ConflictParkedDelta => {
-                "An earlier change to this account may still land. Try again once it settles."
             }
             GuardianError::AuthenticationFailed(_) => {
                 "Guardian could not authenticate this request. Please authenticate again."
@@ -635,12 +620,6 @@ impl fmt::Display for GuardianError {
                 write!(
                     f,
                     "Cannot push new delta: there is already a non-canonical delta pending"
-                )
-            }
-            GuardianError::ConflictParkedDelta => {
-                write!(
-                    f,
-                    "Cannot execute: a parked delta on the account's state may still land"
                 )
             }
             GuardianError::ConflictPendingProposal => {
@@ -877,8 +856,7 @@ struct ErrorMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     proposal_type: Option<String>,
     /// Why the request was refused: `switch_guardian` or `private_note` for
-    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `parked_delta` for a `conflict_pending_delta`
-    /// refusing a Guardian execution. Absent for every other error.
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. Absent for every other error.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,
 }
@@ -951,7 +929,6 @@ impl GuardianError {
                 proposal_type,
                 reason,
             } => (Some(proposal_type.clone()), Some(reason.as_str())),
-            GuardianError::ConflictParkedDelta => (None, Some("parked_delta")),
             _ => (None, None),
         };
         ErrorMeta {
@@ -1304,19 +1281,6 @@ mod tests {
         let other = serde_json::to_value(GuardianError::AuthenticationReplay.error_body()).unwrap();
         assert!(other["meta"].get("scheme").is_none());
         assert!(other["meta"].get("allowed_schemes").is_none());
-    }
-
-    #[test]
-    fn a_parked_delta_conflict_keeps_the_pending_delta_code_and_names_its_reason() {
-        let err = GuardianError::ConflictParkedDelta;
-        assert_eq!(err.http_status(), StatusCode::CONFLICT);
-        assert_eq!(err.grpc_status(), tonic::Code::FailedPrecondition);
-        let body = serde_json::to_value(err.error_body()).unwrap();
-        assert_eq!(body["code"], "conflict_pending_delta");
-        assert_eq!(body["meta"]["reason"], "parked_delta");
-        assert_eq!(body["meta"]["retryable"], serde_json::Value::Bool(false));
-        let plain = serde_json::to_value(GuardianError::ConflictPendingDelta.error_body()).unwrap();
-        assert!(plain["meta"].get("reason").is_none());
     }
 
     #[test]
@@ -1781,7 +1745,6 @@ mod tests {
             },
             GuardianError::InvalidDelta("postgres://secret@host/db".into()),
             GuardianError::ConflictPendingDelta,
-            GuardianError::ConflictParkedDelta,
             GuardianError::ConflictPendingProposal,
             GuardianError::PendingProposalsLimit { limit: 7 },
             GuardianError::CommitmentMismatch {

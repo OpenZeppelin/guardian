@@ -153,13 +153,10 @@ impl Default for CanonicalizationConfig {
 }
 
 impl CanonicalizationConfig {
-    /// The oldest client-abandoned discard the reconcile pass still recovers at `now`; see
-    /// [`crate::storage::abandoned_cutoff`].
-    pub fn abandoned_cutoff(
-        &self,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> chrono::DateTime<chrono::Utc> {
-        crate::storage::abandoned_cutoff(self.retained_ttl_seconds, now)
+    /// Whether a parked row replaced at its nonce is archived for late landings rather than
+    /// deleted: only while retention is on, since nothing reconciles an archive otherwise.
+    pub fn archives_superseded(&self) -> bool {
+        self.retained_ttl_seconds > 0
     }
 
     /// Create a new canonicalization config with custom settings

@@ -439,6 +439,13 @@ regardless. The pre-check needs a GUARDIAN server that serves `GET /state/nonce`
 (issue #191); against an older server `syncState()` fails rather than falling back
 to the full fetch, so deploy the server first.
 
+`multisig.threshold` and `multisig.signerCommitments` are a cache of the local
+store. Every call that decides from them (creating, signing, importing, listing,
+submitting and executing proposals, registration) re-reads the store first, after its own
+chain sync when it makes one, since an execution or a chain sync that undoes a
+dropped transaction can change the signer set under the cache. A store record
+whose config cannot be read in full makes the call throw instead.
+
 ### Creating Proposals
 
 Every `create*Proposal` method takes its required arguments followed by a

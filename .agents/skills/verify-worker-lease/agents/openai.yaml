@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Worker Lease"
+  short_description: "Model-check the Postgres worker lease and fenced writes with TLA+"
+  default_prompt: "Use $verify-worker-lease to model-check this change to lease acquire, renew, fencing or fenced writes."

@@ -328,30 +328,6 @@ async fn attempt_has_outcome(
     .await
 }
 
-/// Whether a retained delta, or a client-abandoned discard recorded at or after
-/// `abandoned_since`, was built on `base_commitment`: its transaction spends the same state an
-/// execution would and can still land. Callers must hold the account lock.
-async fn recoverable_delta_on(
-    conn: &mut AsyncPgConnection,
-    account_id: &str,
-    base_commitment: &str,
-    abandoned_since: DateTime<Utc>,
-) -> TxResult<bool> {
-    diesel::select(diesel::dsl::exists(
-        deltas::table
-            .filter(deltas::account_id.eq(account_id))
-            .filter(deltas::prev_commitment.eq(base_commitment))
-            .filter(
-                deltas::status_kind.eq("retained").or(deltas::status_kind
-                    .eq("discarded")
-                    .and(client_abandoned_reason())
-                    .and(deltas::status_timestamp.ge(abandoned_since))),
-            ),
-    ))
-    .get_result(conn)
-    .await
-}
-
 /// Whether `fence` is both the reservation's owner and a current lease.
 async fn owns_live_reservation(
     conn: &mut AsyncPgConnection,
@@ -536,21 +512,6 @@ impl PostgresService {
                 if candidate_exists {
                     return Ok(ReservationWrite::CandidateExists);
                 }
-                let current_commitment = states::table
-                    .filter(states::account_id.eq(&reservation.account_id))
-                    .select(states::commitment)
-                    .first::<String>(conn)
-                    .await?;
-                if recoverable_delta_on(
-                    conn,
-                    &reservation.account_id,
-                    &current_commitment,
-                    reservation.recoverable_since,
-                )
-                .await?
-                {
-                    return Ok(ReservationWrite::RecoverableDeltaPending);
-                }
                 let proposal_exists: bool = diesel::select(diesel::dsl::exists(
                     delta_proposals::table
                         .filter(delta_proposals::account_id.eq(&reservation.account_id))
@@ -720,7 +681,7 @@ impl PostgresService {
             delta,
             evidence,
             now,
-            recoverable_since,
+            archive_parked,
         } = admission;
         let attempt = to_i32(evidence.attempt, "attempt")?;
         let status_json = serde_json::to_value(&delta.status)
@@ -774,15 +735,8 @@ impl PostgresService {
                 if candidate_exists {
                     return Ok(AdmissionWrite::CandidateExists);
                 }
-                if recoverable_delta_on(
-                    conn,
-                    &delta.account_id,
-                    &delta.prev_commitment,
-                    recoverable_since,
-                )
-                .await?
-                {
-                    return Ok(AdmissionWrite::RecoverableDeltaPending);
+                if archive_parked {
+                    super::archive_parked_delta(conn, &delta.account_id, delta.nonce, now).await?;
                 }
                 diesel::delete(deltas::table)
                     .filter(deltas::account_id.eq(&delta.account_id))

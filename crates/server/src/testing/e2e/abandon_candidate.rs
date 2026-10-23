@@ -96,7 +96,7 @@ struct StrandedCandidateSetup {
     state: AppState,
     account_id_hex: String,
     candidate_nonce: u64,
-    cosigner_key: SecretKey,
+    cosigner_keys: Vec<SecretKey>,
     api_pubkey_hex: String,
     delta_payload: serde_json::Value,
     /// Commitment of the candidate's expected post-state, as the server
@@ -110,7 +110,7 @@ impl StrandedCandidateSetup {
     fn credentials(&mut self) -> Credentials {
         self.next_timestamp += 1;
         falcon_credentials(
-            &self.cosigner_key,
+            &self.cosigner_keys[0],
             &self.api_pubkey_hex,
             &self.account_id_hex,
             self.next_timestamp,
@@ -241,7 +241,7 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         state,
         account_id_hex: account_id_hex.clone(),
         candidate_nonce: multisig_account.nonce().as_canonical_u64() + 1,
-        cosigner_key: cosigner_keys[0].clone(),
+        cosigner_keys: cosigner_keys.clone(),
         api_pubkey_hex,
         delta_payload: delta_payload.clone(),
         expected_commitment_hex,
@@ -480,4 +480,131 @@ async fn test_abandon_refused_when_candidate_transaction_landed() {
         .await
         .expect("state readable");
     assert_eq!(final_state.commitment, setup.expected_commitment_hex);
+}
+
+/// Abandon the stranded candidate, let the worker discard it as
+/// client-abandoned, then resubmit the same delta at its nonce through
+/// `push_delta`. Returns every archived superseded delta of the account.
+async fn abandon_and_resubmit(
+    setup: &mut StrandedCandidateSetup,
+) -> Vec<crate::storage::SupersededDelta> {
+    let creds = setup.credentials();
+    abandon_candidate(
+        &setup.state,
+        AbandonCandidateParams {
+            account_id: setup.account_id_hex.clone(),
+            nonce: setup.candidate_nonce,
+            credentials: creds,
+        },
+    )
+    .await
+    .expect("abandon_candidate accepts the intent for a never-landing candidate");
+    process_canonicalizations_now(&setup.state)
+        .await
+        .expect("canonicalization run succeeds");
+
+    let initial_commitment = setup
+        .state
+        .storage
+        .pull_state(&setup.account_id_hex)
+        .await
+        .expect("state readable")
+        .commitment;
+    let delta = DeltaObject {
+        account_id: setup.account_id_hex.clone(),
+        nonce: setup.candidate_nonce,
+        prev_commitment: initial_commitment,
+        new_commitment: None,
+        delta_payload: setup.delta_payload.clone(),
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    let authorization = crate::testing::helpers::store_authorizing_proposal(
+        &setup.state,
+        &delta,
+        &setup.cosigner_keys,
+    )
+    .await;
+    let creds = setup.credentials();
+    let resubmitted = push_delta(
+        &setup.state,
+        PushDeltaParams {
+            delta,
+            credentials: creds,
+        },
+    )
+    .await
+    .expect("push_delta accepts the resubmission over the client-abandoned row");
+    authorization.restore(&setup.state).await;
+    assert!(resubmitted.delta.status.is_candidate());
+
+    let deltas = setup
+        .state
+        .storage
+        .pull_deltas_after(&setup.account_id_hex, 0)
+        .await
+        .expect("deltas readable");
+    let at_nonce = deltas
+        .iter()
+        .find(|d| d.nonce == setup.candidate_nonce)
+        .expect("the resubmission is stored at the nonce");
+    assert!(
+        at_nonce.status.is_candidate(),
+        "the resubmission replaces the abandoned row, got {:?}",
+        at_nonce.status
+    );
+
+    setup
+        .state
+        .storage
+        .pull_superseded_deltas(
+            &setup.account_id_hex,
+            chrono::DateTime::<chrono::Utc>::MIN_UTC,
+        )
+        .await
+        .expect("archive readable")
+}
+
+#[tokio::test]
+async fn test_resubmission_archives_the_client_abandoned_row() {
+    let mut setup = stranded_candidate_setup(false).await;
+
+    let archived = abandon_and_resubmit(&mut setup).await;
+
+    assert_eq!(
+        archived.len(),
+        1,
+        "the superseded client-abandoned row is archived, not deleted"
+    );
+    let row = &archived[0];
+    assert_eq!(row.delta.nonce, setup.candidate_nonce);
+    assert!(
+        row.delta.status.is_client_abandoned(),
+        "the archived row keeps its status, got {:?}",
+        row.delta.status
+    );
+    assert_eq!(
+        row.delta.new_commitment.as_deref(),
+        Some(setup.expected_commitment_hex.as_str())
+    );
+}
+
+#[tokio::test]
+async fn test_resubmission_without_retention_deletes_the_client_abandoned_row() {
+    let mut setup = stranded_candidate_setup(false).await;
+    setup.state.canonicalization = Some(
+        crate::canonicalization::CanonicalizationConfig::default()
+            .with_max_pending_candidates_per_account(1)
+            .with_retained_ttl_seconds(0),
+    );
+
+    let archived = abandon_and_resubmit(&mut setup).await;
+
+    assert!(
+        archived.is_empty(),
+        "with retention disabled nothing is reconciled, so nothing is archived: {archived:?}"
+    );
 }
