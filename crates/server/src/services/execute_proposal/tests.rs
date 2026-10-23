@@ -832,7 +832,7 @@ async fn a_switch_guardian_proposal_executes_locally_and_reserves_nothing() {
 }
 
 #[tokio::test]
-async fn a_parked_delta_that_can_still_land_refuses_execution_and_reserves_nothing() {
+async fn a_parked_delta_that_can_still_land_no_longer_refuses_execution() {
     let f = Fixture::new(Script::default()).await;
     f.state
         .storage
@@ -853,20 +853,10 @@ async fn a_parked_delta_that_can_still_land_refuses_execution_and_reserves_nothi
         })
         .await
         .unwrap();
-    let result = f.request().await;
-    assert!(
-        matches!(result, Err(GuardianError::ConflictParkedDelta)),
-        "{result:?}"
-    );
-    assert_nothing_reserved(&f).await;
-    assert!(
-        f.state
-            .storage
-            .pull_delta_proposal(ACCOUNT, PROPOSAL)
-            .await
-            .is_ok(),
-        "the proposal can be executed once the parked delta settles"
-    );
+    let accepted = f.request().await.unwrap();
+    assert!(accepted.newly_accepted);
+    let (settled, _) = f.settle(is_submitted_or_terminal).await;
+    assert_eq!(settled.state, ExecutionState::Submitted);
 }
 
 async fn assert_nothing_reserved(f: &Fixture) {
