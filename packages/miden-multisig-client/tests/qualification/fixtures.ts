@@ -27,6 +27,11 @@ function readFixture(name: string): unknown {
   return JSON.parse(readFileSync(join(FIXTURE_DIR, name), 'utf8'));
 }
 
+/** The fixture delta the deterministic proposal is pushed from. */
+export function readFixtureDelta(): { delta_payload: { data: string }; nonce: number } {
+  return readFixture('delta_1.json') as { delta_payload: { data: string }; nonce: number };
+}
+
 export interface FixtureAccount {
   readonly account_id: string;
   readonly data: string;
