@@ -548,6 +548,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage,
             metadata: Arc::new(metadata_store),

@@ -18,6 +18,7 @@
 //! ([`config`]).
 
 pub mod config;
+pub mod execution;
 pub mod grpc;
 pub mod http;
 pub mod labels;

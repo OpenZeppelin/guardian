@@ -5,6 +5,8 @@
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 
+use crate::config::execution::ExecutionUnavailable;
+
 /// Response body for `GET /status`. Safe to expose unauthenticated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct StatusResponse {
@@ -21,10 +23,37 @@ pub struct StatusResponse {
     pub started_at: String,
     /// Whole seconds since `started_at`; clamped to 0 on clock skew.
     pub uptime_seconds: u64,
+    /// Whether this server accepts Guardian execution requests.
+    pub execution: ExecutionStatus,
     /// Session authentication for Miden accounts (issue #219). Present on
     /// every Guardian that accepts session grants; SDKs treat its absence as
     /// "no sessions".
     pub sessions: SessionsStatus,
+}
+
+/// Whether `POST /delta/proposal/execution` is offered. It reflects configuration, the same
+/// check the endpoint makes, not whether the prover is reachable right now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct ExecutionStatus {
+    pub enabled: bool,
+    /// Why execution is off; absent when it is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<ExecutionUnavailable>,
+}
+
+impl ExecutionStatus {
+    pub fn of(availability: Result<(), ExecutionUnavailable>) -> Self {
+        match availability {
+            Ok(()) => Self {
+                enabled: true,
+                reason: None,
+            },
+            Err(reason) => Self {
+                enabled: false,
+                reason: Some(reason),
+            },
+        }
+    }
 }
 
 /// Session parameters a client needs before it builds a grant.
@@ -35,12 +64,13 @@ pub struct SessionsStatus {
 }
 
 /// Assemble the status response. Pure so it is unit-testable without an
-/// `AppState`: the handler supplies `environment`, `started_at`, `now`, and
-/// `sessions`.
+/// `AppState`: the handler supplies `environment`, `started_at`, `now`, the
+/// execution capability, and `sessions`.
 pub fn build_status(
     environment: &str,
     started_at: DateTime<Utc>,
     now: DateTime<Utc>,
+    execution: ExecutionStatus,
     sessions: SessionsStatus,
 ) -> StatusResponse {
     let uptime_seconds = (now - started_at).num_seconds().max(0) as u64;
@@ -51,6 +81,7 @@ pub fn build_status(
         environment: environment.to_string(),
         started_at: started_at.to_rfc3339(),
         uptime_seconds,
+        execution,
         sessions,
     }
 }
@@ -75,7 +106,13 @@ mod tests {
     fn computes_uptime_and_carries_fields() {
         let started = at("2026-06-17T10:00:00Z");
         let now = at("2026-06-17T11:00:00Z");
-        let resp = build_status("devnet", started, now, sessions());
+        let resp = build_status(
+            "devnet",
+            started,
+            now,
+            ExecutionStatus::of(Ok(())),
+            sessions(),
+        );
 
         assert_eq!(resp.status, "ok");
         assert_eq!(resp.version, crate::build_info::VERSION);
@@ -86,10 +123,40 @@ mod tests {
     }
 
     #[test]
+    fn execution_reports_a_reason_only_when_it_is_off() {
+        assert_eq!(
+            serde_json::to_value(ExecutionStatus::of(Ok(()))).unwrap(),
+            serde_json::json!({ "enabled": true })
+        );
+        for (reason, wire) in [
+            (
+                ExecutionUnavailable::ProverNotConfigured,
+                "prover_not_configured",
+            ),
+            (ExecutionUnavailable::Disabled, "disabled"),
+            (
+                ExecutionUnavailable::CanonicalizationDisabled,
+                "canonicalization_disabled",
+            ),
+        ] {
+            assert_eq!(
+                serde_json::to_value(ExecutionStatus::of(Err(reason))).unwrap(),
+                serde_json::json!({ "enabled": false, "reason": wire })
+            );
+        }
+    }
+
+    #[test]
     fn negative_uptime_is_clamped_to_zero() {
         let started = at("2026-06-17T11:00:00Z");
         let now = at("2026-06-17T10:00:00Z");
-        let resp = build_status("local", started, now, sessions());
+        let resp = build_status(
+            "local",
+            started,
+            now,
+            ExecutionStatus::of(Ok(())),
+            sessions(),
+        );
         assert_eq!(resp.uptime_seconds, 0);
     }
 
@@ -99,6 +166,7 @@ mod tests {
             "devnet",
             at("2026-06-17T10:00:00Z"),
             at("2026-06-17T10:00:01Z"),
+            ExecutionStatus::of(Ok(())),
             sessions(),
         );
         let json = serde_json::to_value(&resp).unwrap();
@@ -109,6 +177,7 @@ mod tests {
             keys,
             [
                 "environment",
+                "execution",
                 "git_commit",
                 "sessions",
                 "started_at",

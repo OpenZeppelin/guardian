@@ -1,11 +1,10 @@
-use guardian_shared::SignatureScheme;
-use serde_json::Value;
-use std::sync::Arc;
-
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
+use crate::services::ack_delta_internal::{
+    ProposalMatch, acknowledge_applied, apply_to_base, lookup_matching_proposal,
+};
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
 use crate::services::multisig_admission::MultisigAccount;
@@ -53,6 +52,18 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             );
             GuardianError::StorageError(format!("Failed to fetch account state: {e}"))
         })?;
+
+    if state.canonicalization.is_some()
+        && let Some(active) = resolved
+            .storage
+            .load_active_execution(&params.delta.account_id)
+            .await
+            .map_err(GuardianError::StorageError)?
+    {
+        return Err(GuardianError::ExecutionConflict {
+            blocking_proposal_id: active.reservation.proposal_id,
+        });
+    }
 
     // Queue admission (issue #17), in the order the storage gate applies
     // under the account lock (`storage::gate_candidate_submission`), so
@@ -166,17 +177,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
             .await??;
     }
 
-    let applied = {
-        let client = state.network_client.clone();
-        let prev_commitment = tail.commitment.clone();
-        let prev_state_json = tail.state_json.clone();
-        let delta_payload = Arc::new(params.delta.delta_payload.clone());
-        crate::network::reconstructor()
-            .run(move || {
-                client.verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
-            })
-            .await?
-    };
+    let applied = apply_to_base(state, &tail.commitment, &tail.state_json, &params.delta).await?;
     if !chain.is_empty()
         && let Some(applied_nonce) = applied.nonce
         && applied_nonce != params.delta.nonce
@@ -189,28 +190,18 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
-
-    let matching_proposal_payload = match &proposal_match {
-        ProposalMatch::Found(proposal) => Some(proposal.delta_payload.clone()),
-        ProposalMatch::Missing | ProposalMatch::Unavailable(_) => None,
-    };
-
-    let derived_metadata = crate::delta_summary::build_metadata(
-        &params.delta.delta_payload,
-        matching_proposal_payload.as_ref(),
-    );
-
-    let mut result_delta = params.delta.clone();
-    result_delta.new_commitment = Some(applied.commitment.clone());
-    result_delta.metadata = derived_metadata;
     let scheme = resolved.metadata.auth.scheme();
-    result_delta = state.ack.ack_delta(result_delta, &scheme).await?;
-    result_delta.ack_pubkey = state.ack.pubkey(&scheme);
-    result_delta.ack_scheme = match scheme {
-        SignatureScheme::Falcon => "falcon",
-        SignatureScheme::Ecdsa => "ecdsa",
-    }
-    .to_string();
+    let acknowledged = acknowledge_applied(
+        state,
+        &scheme,
+        &params.delta,
+        applied,
+        proposal_match.payload(),
+    )
+    .await?;
+    let matched_proposal = acknowledged.matched_proposal;
+    let mut result_delta = acknowledged.delta;
+    let applied = acknowledged.applied;
 
     let now = state.clock.now_rfc3339();
     let commit_strategy = DeltaCommitStrategy::from_app_state(state);
@@ -231,7 +222,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     // `direct`. A multisig account never reaches this point on that
     // fault. The underlying fault is visible via
     // storage_operations_total{outcome="error"}.
-    let kind = if matching_proposal_payload.is_some() {
+    let kind = if matched_proposal {
         crate::metrics::labels::DeltaKind::ProposalCommit
     } else {
         crate::metrics::labels::DeltaKind::Direct
@@ -245,68 +236,6 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     Ok(PushDeltaResult {
         delta: result_delta,
     })
-}
-
-enum ProposalMatch {
-    Found(Box<DeltaObject>),
-    Missing,
-    Unavailable(String),
-}
-
-/// Look up the `delta_proposals` row for the delta being pushed.
-/// A missing row is [`ProposalMatch::Missing`]. A storage fault is
-/// [`ProposalMatch::Unavailable`] and is logged at `warn`; the caller
-/// decides whether that fault refuses the push.
-async fn lookup_matching_proposal(
-    state: &AppState,
-    account_id: &str,
-    nonce: u64,
-    delta_payload: &Value,
-) -> ProposalMatch {
-    let proposal_id = {
-        let client = &state.network_client;
-        match client.delta_proposal_id(account_id, nonce, delta_payload) {
-            Ok(id) => id,
-            Err(err) => {
-                tracing::debug!(
-                    account_id = %account_id,
-                    nonce,
-                    error = %err,
-                    "delta_proposal_id could not compute an id for this payload; \
-                     persisting metadata without proposal block (EVM / malformed payload)"
-                );
-                return ProposalMatch::Missing;
-            }
-        }
-    };
-    match state
-        .storage
-        .pull_delta_proposal(account_id, &proposal_id)
-        .await
-    {
-        Ok(proposal) => ProposalMatch::Found(Box::new(proposal)),
-        Err(err) => {
-            if crate::storage::is_storage_not_found(&err) {
-                tracing::debug!(
-                    account_id = %account_id,
-                    nonce,
-                    proposal_id = %proposal_id,
-                    "no matching delta_proposal row (single-key push or unrelated payload)"
-                );
-                ProposalMatch::Missing
-            } else {
-                tracing::warn!(
-                    account_id = %account_id,
-                    nonce,
-                    proposal_id = %proposal_id,
-                    error = %err,
-                    "delta_proposals lookup errored during push_delta; a multisig push is \
-                     refused and a single-key push continues without proposal metadata"
-                );
-                ProposalMatch::Unavailable(err)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
