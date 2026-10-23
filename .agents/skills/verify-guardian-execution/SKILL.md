@@ -241,12 +241,16 @@ Each of these breaks a property (mutations run against this model):
   `StoredOnChain`.
 - admission deleting the parked row instead of archiving it (the code
   before the E1 fix): `LandedStepRecorded`.
-- `commit_promoted_execution` matching on the nonce alone, not the
-  evidence's `expected_commitment`: restoring the archived row records
-  the execution `committed` though its transaction never landed,
-  `CommittedMeansLanded`.
 
 Not load-bearing for these properties, alone:
+
+- the `expected_commitment` match in `commit_promoted_execution`: an
+  archived row is restored only once the execution's candidate has left
+  its nonce, which happens only when the execution resolves, so no
+  promotion of another transition meets a live execution. It was
+  load-bearing when the parked row could sit beside the execution's
+  candidate (`CommittedMeansLanded` failed with a nonce-only match), and
+  stays as defence in depth.
 
 - `claim_send`'s renewals: a worker that sends after losing its
   reservation is still safe, because only workers send, a late
