@@ -205,6 +205,30 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
+        timed(
+            "pull_superseded_deltas",
+            self.inner.pull_superseded_deltas(account_id, since),
+        )
+        .await
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, String> {
+        timed(
+            "prune_superseded_deltas",
+            self.inner.prune_superseded_deltas(account_id, before),
+        )
+        .await
+    }
+
     async fn list_accounts_with_recoverable_deltas(
         &self,
         abandoned_since: chrono::DateTime<chrono::Utc>,
@@ -323,12 +347,11 @@ impl StorageBackend for InstrumentedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<CandidateSubmission, String> {
         timed(
             "submit_candidate",
-            self.inner
-                .submit_candidate(metadata, delta, now, max_pending_candidates),
+            self.inner.submit_candidate(metadata, delta, now, policy),
         )
         .await
     }

@@ -104,6 +104,7 @@ pub struct MockGuardianService {
     sign_delta_proposal_response: Arc<StdMutex<Option<Result<SignDeltaProposalResponse, Status>>>>,
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
+    get_delta_requests: Arc<StdMutex<Vec<GetDeltaRequest>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
     get_delta_history_response: Arc<StdMutex<Option<Result<GetDeltaHistoryResponse, Status>>>>,
     get_delta_history_requests: Arc<StdMutex<Vec<(GetDeltaHistoryRequest, i64, String)>>>,
@@ -208,6 +209,12 @@ impl MockGuardianService {
     pub fn with_get_delta(self, response: Result<GetDeltaResponse, Status>) -> Self {
         *self.get_delta_response.lock().unwrap() = Some(response);
         self
+    }
+
+    /// Requests seen by `get_delta`, in arrival order, so tests can assert
+    /// which nonce was asked for.
+    pub fn get_delta_requests_handle(&self) -> Arc<StdMutex<Vec<GetDeltaRequest>>> {
+        self.get_delta_requests.clone()
     }
 
     pub fn with_get_delta_since(self, response: Result<GetDeltaSinceResponse, Status>) -> Self {
@@ -504,8 +511,12 @@ impl Guardian for MockGuardianService {
 
     async fn get_delta(
         &self,
-        _request: Request<GetDeltaRequest>,
+        request: Request<GetDeltaRequest>,
     ) -> Result<Response<GetDeltaResponse>, Status> {
+        self.get_delta_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
         let response = self
             .get_delta_response
             .lock()
