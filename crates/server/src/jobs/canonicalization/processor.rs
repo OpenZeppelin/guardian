@@ -948,6 +948,7 @@ impl DeltasProcessorBase {
                 self.canonicalize_verified_delta(
                     delta,
                     applied,
+                    crate::storage::PromotableKind::Candidate,
                     crate::metrics::labels::CandidateOutcome::Canonicalized,
                 )
                 .await
@@ -996,6 +997,7 @@ impl DeltasProcessorBase {
                 self.canonicalize_verified_delta(
                     delta,
                     applied,
+                    crate::storage::PromotableKind::Candidate,
                     crate::metrics::labels::CandidateOutcome::Canonicalized,
                 )
                 .await
@@ -1134,6 +1136,7 @@ impl DeltasProcessorBase {
         self.canonicalize_verified_delta(
             delta,
             applied,
+            crate::storage::PromotableKind::Candidate,
             crate::metrics::labels::CandidateOutcome::Canonicalized,
         )
         .await
@@ -1745,11 +1748,13 @@ impl DeltasProcessorBase {
 
     /// Promote `delta` to canonical with the state `applied` carries: the
     /// state its reconstruction produced, whose commitment the caller just
-    /// verified against the chain.
+    /// verified against the chain. `source` is the lifecycle kind of the row
+    /// the pass verified: the write only promotes a row still in that kind.
     async fn canonicalize_verified_delta(
         &self,
         delta: DeltaObject,
         applied: AppliedState,
+        source: crate::storage::PromotableKind,
         success_outcome: crate::metrics::labels::CandidateOutcome,
     ) -> Result<()> {
         tracing::info!(
@@ -1817,10 +1822,7 @@ impl DeltasProcessorBase {
                     new_auth,
                     now: now.clone(),
                     fence: self.fence(),
-                    // Derived from the status the verification read: the
-                    // write must only flip a row still in that exact
-                    // lifecycle kind (see `PromotableKind`).
-                    source: crate::storage::PromotableKind::of(&delta.status),
+                    source,
                 },
             )
             .await
@@ -4842,6 +4844,77 @@ mod tests {
                 .iter()
                 .any(|d| d.status.is_canonical()),
             "the abandoned delta ends canonical"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_landing_superseded_delta_reconciles_from_the_archive() {
+        // A resubmission at an abandoned row's nonce archived that row;
+        // the abandoned transaction then landed after all. The archived
+        // row is the only record of that step, and the reconcile pass
+        // promotes it with the `Superseded` kind, which writes it back as
+        // the canonical row at its nonce.
+        let account_id = "0xtest_account";
+        let mut archived = create_candidate_delta(account_id, 1);
+        archived.status =
+            DeltaStatus::discarded_client_abandoned("2024-01-01T00:00:00Z".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_recoverable_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_recoverable_deltas(Ok(vec![]))
+                .with_pull_superseded_deltas(Ok(vec![crate::storage::SupersededDelta {
+                    delta: archived,
+                    superseded_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 5, 0).unwrap(),
+                }]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "new_commitment".to_string(),
+                }))
+                .with_should_update_auth(Ok(None)),
+        );
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network,
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let processor = reconcile_processor(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert_eq!(
+            storage.get_promote_candidate_sources(),
+            vec![crate::storage::PromotableKind::Superseded],
+            "the archived row is promoted as superseded"
+        );
+        let states = storage.get_submit_state_calls();
+        assert_eq!(states.len(), 1, "the late-landed state is recovered");
+        assert_eq!(states[0].commitment, "new_commitment");
+        assert_eq!(
+            storage.prune_superseded_calls.lock().unwrap().len(),
+            1,
+            "expired archived rows are pruned on every visit"
         );
     }
 

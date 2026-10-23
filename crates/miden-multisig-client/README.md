@@ -363,6 +363,19 @@ them, load at the tip, so a proposal stays verifiable however long it waits
 for signatures, even after the node has pruned the bound block's account
 state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`; this SDK and the TypeScript one read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees.
 
+GUARDIAN pins every proposal to the account state its transaction must
+execute on. `execute_proposal`, `prepare_custom_execution` and
+`execute_imported_proposal` refuse a proposal pinned to a state other than
+the one this client holds with `MultisigError::ProposalBaseMismatch`, as
+the TypeScript SDK does: sync and retry, or create a new proposal if the
+account has moved past that state. Executing it anyway would run its
+transaction on a state its signers did not approve it for. A
+`switch_guardian` proposal is checked against the pre-switch GUARDIAN that
+serves it by `execute_proposal`; `execute_imported_proposal` reads the pin
+from GUARDIAN only for the types it acknowledges, so an imported switch is
+not checked. Releases up to 0.18.3 did not check and executed on the
+client's own state whatever state GUARDIAN had pinned.
+
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,

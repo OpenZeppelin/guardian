@@ -211,6 +211,11 @@ impl MultisigClient {
     /// `SwitchGuardian` and `Custom`, so the caller needs a synced store and,
     /// for consume-notes, the node.
     ///
+    /// Every type GUARDIAN acknowledges is refused with
+    /// [`MultisigError::ProposalBaseMismatch`] when GUARDIAN pinned the
+    /// proposal to a state other than the one this client holds, as
+    /// [`MultisigClient::execute_proposal`] refuses it.
+    ///
     /// For `SwitchGuardian` only, deliberately skips the pre-switch
     /// proposal-note import (issue #417): it would contact the very GUARDIAN
     /// that flow exists to avoid. When the old GUARDIAN is in fact still
@@ -298,6 +303,8 @@ impl MultisigClient {
         // only in the document, so they are relayed to the stored proposal
         // before the acknowledgement is requested.
         if proposal.transaction_type.requires_guardian_ack() {
+            let pinned_base = self.get_pinned_base(&account_id, &proposal.id).await?;
+            Self::ensure_executes_on_pinned_base(&account, &proposal.id, pinned_base)?;
             self.relay_collected_approvals(&proposal.id, &exported.signatures)
                 .await?;
             let guardian_advice = self

@@ -45,6 +45,22 @@ pub enum MultisigError {
         bound: BlockNumber,
     },
 
+    /// GUARDIAN pinned the proposal to an account state other than the one
+    /// this client holds, so executing it here would run its transaction on
+    /// a state its signers did not approve it for. Sync the account and
+    /// retry, or create a new proposal if the account has moved past the
+    /// pinned state.
+    #[error(
+        "proposal {proposal_id} was made for account state {pinned}, but this client's account \
+         is at {local}: sync the account and retry, or create a new proposal if the account has \
+         moved past that state"
+    )]
+    ProposalBaseMismatch {
+        proposal_id: String,
+        pinned: String,
+        local: String,
+    },
+
     /// A multisig request binds a block in its auth args without declaring it
     /// through `TransactionRequestBuilder::block_numbers`. A proposal executes
     /// at the chain tip, where the auth procedure can read the bound block only

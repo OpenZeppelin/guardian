@@ -14,6 +14,14 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
+/// One archived superseded delta on disk: the delta as it was stored when
+/// a resubmission replaced it, and when that happened.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ArchivedDelta {
+    superseded_at: DateTime<Utc>,
+    delta: DeltaObject,
+}
+
 pub struct FilesystemService {
     app_path: PathBuf,
     /// Serializes delta-status writes against the conditional candidate
@@ -155,6 +163,133 @@ impl FilesystemService {
     /// Get the path for an account's state file
     fn get_state_path(&self, account_id: &str) -> PathBuf {
         self.app_path.join(account_id).join("state.json")
+    }
+
+    /// Directory of an account's archived superseded deltas (the filesystem
+    /// twin of the `superseded_deltas` table).
+    fn superseded_dir(&self, account_id: &str) -> PathBuf {
+        self.app_path.join(account_id).join("superseded")
+    }
+
+    /// Archive `delta` as superseded at `superseded_at`. Callers hold
+    /// `delta_write_lock`.
+    async fn archive_delta_holding_lock(
+        &self,
+        delta: &DeltaObject,
+        superseded_at: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let dir = self.superseded_dir(&delta.account_id);
+        let stamp = superseded_at.timestamp_micros();
+        let mut index = 0u32;
+        let path = loop {
+            let candidate = dir.join(format!("{}-{stamp}-{index}.json", delta.nonce));
+            if !candidate.exists() {
+                break candidate;
+            }
+            index += 1;
+        };
+        let content = serde_json::to_string_pretty(&ArchivedDelta {
+            superseded_at,
+            delta: delta.clone(),
+        })
+        .map_err(|e| format!("Failed to serialize superseded delta: {e}"))?;
+        self.write(&path, &content).await
+    }
+
+    /// Every archived superseded delta of an account, with its file path.
+    async fn read_archived(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<(PathBuf, ArchivedDelta)>, String> {
+        let dir = self.superseded_dir(account_id);
+        let mut entries = match fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("Failed to read superseded deltas: {e}")),
+        };
+        let mut archived = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("Failed to read superseded deltas: {e}"))?
+        {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let content = fs::read_to_string(&path)
+                .await
+                .map_err(|e| format!("Failed to read superseded delta: {e}"))?;
+            let row: ArchivedDelta = serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to deserialize superseded delta: {e}"))?;
+            archived.push((path, row));
+        }
+        archived.sort_by_key(|(_, row)| (row.delta.nonce, row.superseded_at));
+        Ok(archived)
+    }
+
+    /// The `Superseded` arm of `promote_candidate`, under `delta_write_lock`:
+    /// write an archived delta back as the canonical row at its nonce,
+    /// replacing only a parked (retained or client-abandoned) row there,
+    /// which is archived in turn.
+    async fn restore_superseded_holding_lock(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: crate::storage::CandidatePromotion,
+    ) -> Result<crate::storage::PromoteWrite, String> {
+        let account_id = promotion.state.account_id.clone();
+        let current = match self.pull_delta(&account_id, promotion.delta.nonce).await {
+            Ok(existing) => Some(existing),
+            Err(e) if crate::storage::is_storage_not_found(&e) => None,
+            Err(e) => return Err(e),
+        };
+        if current
+            .as_ref()
+            .is_some_and(|existing| !promotion.source.matches(&existing.status))
+        {
+            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        }
+        let restored: Vec<PathBuf> = self
+            .read_archived(&account_id)
+            .await?
+            .into_iter()
+            .filter(|(_, row)| {
+                row.delta.nonce == promotion.delta.nonce
+                    && row.delta.prev_commitment == promotion.delta.prev_commitment
+                    && row.delta.new_commitment == promotion.delta.new_commitment
+            })
+            .map(|(path, _)| path)
+            .collect();
+        if restored.is_empty() {
+            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        }
+        let current_state = self.pull_state(&account_id).await?;
+        if current_state.commitment != promotion.delta.prev_commitment {
+            return Ok(crate::storage::PromoteWrite::StaleBase);
+        }
+
+        let now: DateTime<Utc> = promotion
+            .now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+        if let Some(existing) = &current {
+            self.archive_delta_holding_lock(existing, now).await?;
+        }
+        self.submit_state(&promotion.state).await?;
+        if let Some(new_auth) = promotion.new_auth {
+            metadata
+                .update_auth(&account_id, new_auth, &promotion.now)
+                .await?;
+        }
+        self.write_delta_holding_lock(&promotion.delta).await?;
+        for path in restored {
+            fs::remove_file(&path)
+                .await
+                .map_err(|e| format!("Failed to remove superseded delta: {e}"))?;
+        }
+        self.release_pending_flag_if_queue_empty(metadata, &account_id, &promotion.now)
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied)
     }
 
     /// Get the path for a delta file
@@ -730,12 +865,20 @@ impl StorageBackend for FilesystemService {
             // Per-account tolerance: one unreadable delta file must not
             // silently disable reconciliation (and TTL expiry) for every
             // other account in the store.
-            match self
+            let listed = match self
                 .pull_recoverable_deltas(&account_id, abandoned_since)
                 .await
             {
-                Ok(recoverable) if !recoverable.is_empty() => with_recoverable.push(account_id),
-                Ok(_) => {}
+                Ok(recoverable) if !recoverable.is_empty() => Ok(true),
+                Ok(_) => self
+                    .read_archived(&account_id)
+                    .await
+                    .map(|archived| !archived.is_empty()),
+                Err(e) => Err(e),
+            };
+            match listed {
+                Ok(true) => with_recoverable.push(account_id),
+                Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(
                         account_id = %account_id,
@@ -747,6 +890,44 @@ impl StorageBackend for FilesystemService {
             }
         }
         Ok(with_recoverable)
+    }
+
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
+        Ok(self
+            .read_archived(account_id)
+            .await?
+            .into_iter()
+            .filter(|(_, row)| row.superseded_at >= since)
+            .map(|(_, row)| crate::storage::SupersededDelta {
+                delta: row.delta,
+                superseded_at: row.superseded_at,
+            })
+            .collect())
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: DateTime<Utc>,
+    ) -> Result<u64, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let mut pruned = 0;
+        for (path, row) in self.read_archived(account_id).await? {
+            if row.superseded_at < before {
+                fs::remove_file(&path)
+                    .await
+                    .map_err(|e| format!("Failed to prune superseded delta: {e}"))?;
+                pruned += 1;
+            }
+        }
+        if pruned > 0 && self.read_archived(account_id).await?.is_empty() {
+            let _ = fs::remove_dir(self.superseded_dir(account_id)).await;
+        }
+        Ok(pruned)
     }
 
     // Delta proposal methods - stored separately from executed deltas
@@ -942,7 +1123,7 @@ impl StorageBackend for FilesystemService {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         let _guard = self.delta_write_lock.lock().await;
 
@@ -977,7 +1158,7 @@ impl StorageBackend for FilesystemService {
             &current_state.commitment,
             &queue,
             delta,
-            max_pending_candidates,
+            policy.max_pending_candidates,
         ) {
             return Ok(refused);
         }
@@ -990,11 +1171,22 @@ impl StorageBackend for FilesystemService {
             Ok(existing)
                 if existing.status.is_retained() || existing.status.is_client_abandoned() =>
             {
+                // The superseded row is the only record of its
+                // transaction: archive it so the reconcile pass can still
+                // promote it if that transaction lands after all.
+                if policy.archive_superseded {
+                    let superseded_at: DateTime<Utc> = now
+                        .parse()
+                        .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+                    self.archive_delta_holding_lock(&existing, superseded_at)
+                        .await?;
+                }
                 self.delete_delta(&delta.account_id, delta.nonce).await?;
                 tracing::info!(
                     event = "reconcile_superseded",
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
+                    archived = policy.archive_superseded,
                     "Recoverable row superseded by a new candidate at its nonce"
                 );
             }
@@ -1019,6 +1211,12 @@ impl StorageBackend for FilesystemService {
         promotion: crate::storage::CandidatePromotion,
     ) -> Result<crate::storage::PromoteWrite, String> {
         let _guard = self.delta_write_lock.lock().await;
+
+        if promotion.source == crate::storage::PromotableKind::Superseded {
+            return self
+                .restore_superseded_holding_lock(metadata, promotion)
+                .await;
+        }
 
         // Source-kind gate under the lock: a superseded row cannot be
         // stamped canonical, and a promoted row cannot be superseded
@@ -1717,8 +1915,8 @@ mod tests {
     #[tokio::test]
     async fn test_submit_candidate_supersedes_retained_row() {
         // A fresh candidate at a retained row's nonce replaces it: the
-        // client re-supplied its intent for that slot, and the reconcile
-        // pass must never resurrect a base under the new candidate.
+        // client re-supplied its intent for that slot. The replaced row is
+        // archived, never written back over the new candidate.
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
@@ -1741,7 +1939,12 @@ mod tests {
         let mut candidate = create_test_delta(account_id, 1);
         candidate.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
         let submission = storage
-            .submit_candidate(&metadata_store, &candidate, "2024-11-14T12:10:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &candidate,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
@@ -1781,7 +1984,12 @@ mod tests {
         let mut rebuilt = create_test_delta(account_id, 2);
         rebuilt.status = DeltaStatus::candidate("2024-11-14T12:30:00Z".to_string());
         let submission = storage
-            .submit_candidate(&metadata_store, &rebuilt, "2024-11-14T12:30:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &rebuilt,
+                "2024-11-14T12:30:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
@@ -1792,6 +2000,191 @@ mod tests {
         assert!(
             stored.status.is_candidate(),
             "the rebuilt candidate replaced the abandoned discard"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn superseded_delta_is_archived_and_restored_when_it_lands_late() {
+        use crate::storage::{CandidatePolicy, CandidatePromotion, PromotableKind, PromoteWrite};
+
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7c7c7c7a7c7c7c017c7c7c7c7c7c7c";
+        seed_account(&storage, &metadata_store, account_id).await;
+        let cutoff: DateTime<Utc> = "2024-11-13T12:00:00Z".parse().unwrap();
+
+        let mut abandoned = create_test_delta(account_id, 1);
+        abandoned.new_commitment = Some("0xa1".to_string());
+        abandoned.delta_payload = serde_json::json!({"intent": "A"});
+        abandoned.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:00:00Z".to_string());
+        storage
+            .submit_delta(&abandoned)
+            .await
+            .expect("abandoned row");
+
+        let mut resubmission = create_test_delta(account_id, 1);
+        resubmission.new_commitment = Some("0xb1".to_string());
+        resubmission.delta_payload = serde_json::json!({"intent": "B"});
+        resubmission.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        assert_eq!(
+            storage
+                .submit_candidate(
+                    &metadata_store,
+                    &resubmission,
+                    "2024-11-14T12:10:00Z",
+                    CandidatePolicy::new(1, true),
+                )
+                .await
+                .expect("resubmission resolves"),
+            crate::storage::CandidateSubmission::Submitted
+        );
+        let archived = storage
+            .pull_superseded_deltas(account_id, cutoff)
+            .await
+            .expect("archive read");
+        assert_eq!(
+            archived.len(),
+            1,
+            "the superseded row is archived, not deleted"
+        );
+        assert_eq!(
+            archived[0].delta.delta_payload,
+            serde_json::json!({"intent": "A"})
+        );
+        assert!(
+            storage
+                .list_accounts_with_recoverable_deltas(cutoff)
+                .await
+                .expect("account scan")
+                .contains(&account_id.to_string())
+        );
+
+        let mut landed_state = create_test_state(account_id);
+        landed_state.commitment = "0xa1".to_string();
+        let mut canonical_a = archived[0].delta.clone();
+        canonical_a.status = DeltaStatus::canonical("2024-11-14T12:20:00Z".to_string());
+        let restore = || CandidatePromotion {
+            state: landed_state.clone(),
+            delta: canonical_a.clone(),
+            new_auth: None,
+            now: "2024-11-14T12:20:00Z".to_string(),
+            fence: None,
+            source: PromotableKind::Superseded,
+        };
+        assert_eq!(
+            storage
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("restore over a candidate resolves"),
+            PromoteWrite::NotCandidate,
+            "an archived row never replaces a live candidate"
+        );
+
+        storage
+            .update_candidate_status(
+                account_id,
+                1,
+                DeltaStatus::retained(
+                    "2024-11-14T12:15:00Z".to_string(),
+                    crate::delta_object::RetainReason::Diverged,
+                ),
+                None,
+            )
+            .await
+            .expect("park B");
+        assert_eq!(
+            storage
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("restore resolves"),
+            PromoteWrite::Applied
+        );
+        let row = storage
+            .pull_delta(account_id, 1)
+            .await
+            .expect("row readable");
+        assert!(row.status.is_canonical());
+        assert_eq!(row.delta_payload, serde_json::json!({"intent": "A"}));
+        assert_eq!(
+            storage
+                .pull_state(account_id)
+                .await
+                .expect("state")
+                .commitment,
+            "0xa1"
+        );
+        let archived = storage
+            .pull_superseded_deltas(account_id, cutoff)
+            .await
+            .expect("archive read");
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].delta.new_commitment.as_deref(), Some("0xb1"));
+
+        assert_eq!(
+            storage
+                .prune_superseded_deltas(account_id, "2024-11-15T00:00:00Z".parse().unwrap())
+                .await
+                .expect("prune"),
+            1
+        );
+        assert!(
+            storage
+                .pull_superseded_deltas(account_id, cutoff)
+                .await
+                .expect("archive read")
+                .is_empty()
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn a_resubmission_without_archiving_deletes_the_superseded_row() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7d7d7d7a7d7d7d017d7d7d7d7d7d7d";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut abandoned = create_test_delta(account_id, 1);
+        abandoned.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:00:00Z".to_string());
+        storage
+            .submit_delta(&abandoned)
+            .await
+            .expect("abandoned row");
+        let mut resubmission = create_test_delta(account_id, 1);
+        resubmission.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        storage
+            .submit_candidate(
+                &metadata_store,
+                &resubmission,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(1, false),
+            )
+            .await
+            .expect("resubmission resolves");
+        assert!(
+            storage
+                .pull_superseded_deltas(account_id, DateTime::<Utc>::MIN_UTC)
+                .await
+                .expect("archive read")
+                .is_empty(),
+            "with retention off nothing is archived"
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);
@@ -1821,8 +2214,18 @@ mod tests {
         second.new_commitment = Some("0xbbb".to_string());
 
         let (left, right) = tokio::join!(
-            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z", 4),
-            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z", 4),
+            storage.submit_candidate(
+                &metadata_store,
+                &first,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
+            storage.submit_candidate(
+                &metadata_store,
+                &second,
+                "2024-11-14T12:10:01Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
         );
         let outcomes = [left.expect("resolves"), right.expect("resolves")];
         assert_eq!(
@@ -1873,8 +2276,18 @@ mod tests {
         second.status = DeltaStatus::candidate("2024-11-14T12:10:01Z".to_string());
 
         let (left, right) = tokio::join!(
-            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z", 4),
-            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z", 4),
+            storage.submit_candidate(
+                &metadata_store,
+                &first,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
+            storage.submit_candidate(
+                &metadata_store,
+                &second,
+                "2024-11-14T12:10:01Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
         );
         let outcomes = [left.expect("resolves"), right.expect("resolves")];
         assert_eq!(
@@ -1922,7 +2335,12 @@ mod tests {
             .await
             .expect("pause");
         match storage
-            .submit_candidate(&metadata_store, &delta, now, 1)
+            .submit_candidate(
+                &metadata_store,
+                &delta,
+                now,
+                crate::storage::CandidatePolicy::new(1, true),
+            )
             .await
             .expect("resolves")
         {
@@ -1945,7 +2363,12 @@ mod tests {
             .expect("unpause");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &delta, now, 1)
+                .submit_candidate(
+                    &metadata_store,
+                    &delta,
+                    now,
+                    crate::storage::CandidatePolicy::new(1, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -1984,7 +2407,12 @@ mod tests {
         let first = chained(1, "0x123", "0xc1");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &first, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &first,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -1994,7 +2422,12 @@ mod tests {
         let competing = chained(2, "0x123", "0xother");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &competing, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &competing,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -2004,7 +2437,12 @@ mod tests {
         let second = chained(2, "0xc1", "0xc2");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &second, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &second,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -2014,7 +2452,12 @@ mod tests {
         let third = chained(3, "0xc2", "0xc3");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &third, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &third,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -2023,7 +2466,12 @@ mod tests {
         let stale_nonce = chained(2, "0xc2", "0xc3");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &stale_nonce, now, 4)
+                .submit_candidate(
+                    &metadata_store,
+                    &stale_nonce,
+                    now,
+                    crate::storage::CandidatePolicy::new(4, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -2032,7 +2480,12 @@ mod tests {
         let unrelated = chained(3, "0xzzz", "0xc3");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &unrelated, now, 4)
+                .submit_candidate(
+                    &metadata_store,
+                    &unrelated,
+                    now,
+                    crate::storage::CandidatePolicy::new(4, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::CommitmentMismatch {
@@ -2041,7 +2494,12 @@ mod tests {
         );
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &third, now, 3)
+                .submit_candidate(
+                    &metadata_store,
+                    &third,
+                    now,
+                    crate::storage::CandidatePolicy::new(3, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -2067,7 +2525,12 @@ mod tests {
         // with a candidate in flight is the historical single-candidate gate.
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &chained(4, "0xzzz", "0xc4"), now, 3)
+                .submit_candidate(
+                    &metadata_store,
+                    &chained(4, "0xzzz", "0xc4"),
+                    now,
+                    crate::storage::CandidatePolicy::new(3, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -2094,7 +2557,12 @@ mod tests {
         for (prev, label) in [("0xc3", "the orphaned tail"), ("0x123", "the stored base")] {
             assert_eq!(
                 storage
-                    .submit_candidate(&metadata_store, &chained(4, prev, "0xc4"), now, 8)
+                    .submit_candidate(
+                        &metadata_store,
+                        &chained(4, prev, "0xc4"),
+                        now,
+                        crate::storage::CandidatePolicy::new(8, true)
+                    )
                     .await
                     .expect("resolves"),
                 crate::storage::CandidateSubmission::Conflict,
@@ -2150,7 +2618,12 @@ mod tests {
         for delta in [&first, &second] {
             assert_eq!(
                 storage
-                    .submit_candidate(&metadata_store, delta, now, 4)
+                    .submit_candidate(
+                        &metadata_store,
+                        delta,
+                        now,
+                        crate::storage::CandidatePolicy::new(4, true)
+                    )
                     .await
                     .expect("resolves"),
                 crate::storage::CandidateSubmission::Submitted
@@ -2220,7 +2693,12 @@ mod tests {
         stale.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
         stale.prev_commitment = "0xstale".to_string();
         let submission = storage
-            .submit_candidate(&metadata_store, &stale, "2024-11-14T12:10:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &stale,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(
@@ -2240,7 +2718,12 @@ mod tests {
         let mut late = create_test_delta(account_id, 1);
         late.status = DeltaStatus::candidate("2024-11-14T12:20:00Z".to_string());
         let submission = storage
-            .submit_candidate(&metadata_store, &late, "2024-11-14T12:20:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &late,
+                "2024-11-14T12:20:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(submission, crate::storage::CandidateSubmission::Conflict);
