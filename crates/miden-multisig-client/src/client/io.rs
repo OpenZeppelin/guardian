@@ -8,7 +8,7 @@
 use guardian_client::delta_status::Status;
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::note::NoteFile;
-use miden_client::store::NoteExportType;
+use miden_client::store::{NoteExportType, NoteFilter, OutputNoteRecord};
 use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::Serializable;
 
@@ -196,18 +196,13 @@ impl MultisigClient {
         let note_id = NoteId::try_from_hex(note_id.trim())
             .map_err(|e| MultisigError::InvalidConfig(format!("invalid note id: {}", e)))?;
 
-        let record = self
-            .miden_client
-            .get_output_note(note_id)
-            .await
-            .map_err(|e| MultisigError::MidenClient(format!("failed to get output note: {}", e)))?
-            .ok_or_else(|| {
-                MultisigError::MidenClient(format!(
-                    "output note {} not found in the local store; only notes created by \
+        let record = self.output_note_record(note_id).await?.ok_or_else(|| {
+            MultisigError::MidenClient(format!(
+                "output note {} not found in the local store; only notes created by \
                      this client can be exported",
-                    note_id.to_hex()
-                ))
-            })?;
+                note_id.to_hex()
+            ))
+        })?;
 
         let export_type = if record.inclusion_proof().is_some() {
             NoteExportType::NoteWithProof
@@ -220,6 +215,34 @@ impl MultisigClient {
         })?;
 
         Ok(note_file.to_bytes())
+    }
+
+    /// The output note `note_id` from the current store, or from a store a
+    /// rollback or reset replaced this session.
+    async fn output_note_record(&self, note_id: NoteId) -> Result<Option<OutputNoteRecord>> {
+        if let Some(record) = self
+            .miden_client
+            .get_output_note(note_id)
+            .await
+            .map_err(|e| MultisigError::MidenClient(format!("failed to get output note: {}", e)))?
+        {
+            return Ok(Some(record));
+        }
+        for store in &self.replaced_stores {
+            let found = store
+                .get_output_notes(NoteFilter::Unique(note_id))
+                .await
+                .map_err(|e| {
+                    MultisigError::MidenClient(format!(
+                        "failed to get output note from a replaced store: {}",
+                        e
+                    ))
+                })?;
+            if let Some(record) = found.into_iter().next() {
+                return Ok(Some(record));
+            }
+        }
+        Ok(None)
     }
 
     /// Imports a note file received out-of-band (issue #356) so the note can

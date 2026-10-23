@@ -10,14 +10,16 @@
 //! survive the repoint to a new GUARDIAN that serves nothing.
 use std::sync::Arc;
 
-use guardian_client::testing::mocks::{MockGuardianService, start_mock_server};
+use guardian_client::testing::mocks::{MockGuardianHandle, MockGuardianService, start_mock_server};
 use guardian_client::{GetDeltaProposalResponse, GetDeltaProposalsResponse};
 use guardian_shared::FromJson;
 use miden_client::store::NoteFilter as StoreNoteFilter;
 use miden_client::transaction::TransactionSummary;
+use miden_client_sqlite_store::SqliteStore;
 use miden_protocol::Word;
 use miden_protocol::note::NoteType;
 
+use super::MultisigClient;
 use super::note_recovery::NoteRecoveryOptions;
 use super::proposal_note_import::NoteImportStatus;
 use super::test_support::{
@@ -25,6 +27,7 @@ use super::test_support::{
     offline_client_with_node_parts, p2id_note_for, pending_proto_delta, registered_state,
 };
 use crate::account::MultisigAccount;
+use crate::error::MultisigError;
 use crate::execution::build_final_transaction_request;
 use crate::keystore::{GuardianKeyStore, KeyManager};
 use crate::payload::ProposalPayload;
@@ -214,15 +217,19 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     );
 }
 
-/// Issue #417 wiring: the online `execute_proposal` switch path invokes the
-/// pre-switch proposal-note import against the old GUARDIAN — after the
-/// proposal fetch, before the switch-delta push (and so before anything
-/// switch-related lands on the old GUARDIAN, and before the switch
-/// transaction executes). Asserted from the mock GUARDIAN's own
-/// cross-endpoint call log, so removing the `execute_proposal` call site
-/// fails this test regardless of client-side logging.
-#[tokio::test]
-async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
+/// A client holding a multisig account and a ready `SwitchGuardian`
+/// proposal, served (fetch and listing) by a mock pre-switch GUARDIAN that
+/// pins it to `pinned_base`, or to the account's own state when `None`. The
+/// temp dir and store must outlive the client.
+async fn ready_switch_proposal_on_pre_switch_guardian(
+    pinned_base: Option<Word>,
+) -> (
+    MultisigClient,
+    String,
+    MockGuardianHandle,
+    tempfile::TempDir,
+    Arc<SqliteStore>,
+) {
     let keystore = Arc::new(GuardianKeyStore::generate());
     let signer_commitment = keystore.commitment();
     let guardian_commitment = Word::from([9u32, 9, 9, 9]);
@@ -289,12 +296,15 @@ async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
     let handle_a = service_a.handle();
     let endpoint_a = start_mock_server(service_a).await.unwrap();
     handle_a.set_persistent_get_state(registered_state(&account));
-    let switch_delta = pending_proto_delta(
+    let mut switch_delta = pending_proto_delta(
         &account,
         1,
         switch_payload,
         &word_to_hex(&signer_commitment),
     );
+    if let Some(pinned_base) = pinned_base {
+        switch_delta.prev_commitment = word_to_hex(&pinned_base);
+    }
     handle_a.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
         success: true,
         message: String::new(),
@@ -309,6 +319,20 @@ async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
         .set_guardian_endpoint(&endpoint_a, false)
         .await
         .unwrap();
+    (client, switch_id, handle_a, dir, _store)
+}
+
+/// Issue #417 wiring: the online `execute_proposal` switch path invokes the
+/// pre-switch proposal-note import against the old GUARDIAN — after the
+/// proposal fetch, before the switch-delta push (and so before anything
+/// switch-related lands on the old GUARDIAN, and before the switch
+/// transaction executes). Asserted from the mock GUARDIAN's own
+/// cross-endpoint call log, so removing the `execute_proposal` call site
+/// fails this test regardless of client-side logging.
+#[tokio::test]
+async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
+    let (mut client, switch_id, handle_a, _dir, _store) =
+        ready_switch_proposal_on_pre_switch_guardian(None).await;
 
     // Drive the online switch execution. Everything #417 touches runs for
     // real — binding verification, signature advice, the pre-switch import,
@@ -342,4 +366,34 @@ async fn execute_proposal_runs_the_pre_switch_import_before_the_delta_push() {
             "unexpected execute_proposal failure: {error}"
         );
     }
+}
+
+/// A proposal GUARDIAN pinned to a state this client does not hold (the
+/// post-state of a candidate queued from another device, or a state the
+/// account has left) is refused before anything is pushed, as the
+/// TypeScript SDK's `assertExecutesOnPinnedBase` refuses it: executing it
+/// would run its transaction on a state its signers did not approve it for.
+#[tokio::test]
+async fn execute_proposal_refuses_a_proposal_pinned_to_another_state() {
+    let foreign_base = Word::from([7u32, 7, 7, 7]);
+    let (mut client, switch_id, handle_a, _dir, _store) =
+        ready_switch_proposal_on_pre_switch_guardian(Some(foreign_base)).await;
+
+    let error = client
+        .execute_proposal(&switch_id)
+        .await
+        .expect_err("a proposal pinned to another state must not execute");
+    assert!(
+        matches!(
+            &error,
+            MultisigError::ProposalBaseMismatch { proposal_id, pinned, .. }
+                if *proposal_id == switch_id && *pinned == word_to_hex(&foreign_base)
+        ),
+        "unexpected error: {error}"
+    );
+    let calls = handle_a.calls();
+    assert!(
+        !calls.iter().any(|call| call == "push_delta"),
+        "nothing may be pushed for a refused proposal; calls: {calls:?}"
+    );
 }

@@ -90,6 +90,50 @@ error, not a silent fall-through to the full fetch, so the GUARDIAN server must
 serve `GetCanonicalNonce` (issue #191) before this SDK version is rolled out
 against it.
 
+A local state ahead of GUARDIAN is normally a transaction this client
+executed that GUARDIAN has not canonicalized yet, and it is kept. Membership,
+threshold and switch transactions are written to the local store without a
+miden-client transaction record, so miden-client cannot undo one the node drops
+(expired, or evicted with a dropped dependency). Sync therefore rolls the local
+account back to GUARDIAN's state once the conditions below hold. The
+client records each such submission, and judges it dropped by miden-client's own
+discard rule for the transactions it does record: the transaction expired
+(proof), or is still unconfirmed 20 blocks after submission (a heuristic, the
+same one miden-client applies to recorded transactions). On top of that,
+GUARDIAN is not ahead, the chain holds GUARDIAN's state, and miden-client has
+no pending transaction for the account. A transaction that did not expire also
+needs GUARDIAN not to hold the local state as a candidate or retained delta,
+since the 20-block rule alone proves nothing; an expired one cannot land, so
+GUARDIAN is not asked. GUARDIAN's absence of the delta alone proves
+nothing (it can drop a delta whose transaction is still pending), and a failed
+GUARDIAN, chain or store read keeps the local state. A state this client did not
+submit in the current session (the store is per process) is never rolled back
+this way, and neither is a switch to a new endpoint, which registers the
+switched state on the new GUARDIAN.
+
+How soon the rollback happens depends on the proposal. A proposal created with
+`ProposalOptions::approval_expiration_delta` gives its transaction that
+expiration, and the first sync after it expires rolls back. A proposal without
+one (the default) relies on the 20-block rule, so GUARDIAN's veto applies and
+it keeps the delta until its canonicalization gives up and the retained delta
+expires (`GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`, 24 hours by
+default); the first sync after that rolls back. To recover at once, restart
+the client, which starts a fresh store (the store is per process), and pull the
+account. `pull_account` on the current store does not: miden-client refuses to
+replace an account with one at a lower nonce.
+
+The rollback starts from a fresh local store, as a restarted client does,
+carrying the unconsumed input notes over; when a note cannot be tracked again
+(its tag is unknown) the local state is kept instead. The fresh store is synced
+to the chain tip, which re-authenticates the carried notes, and replaces the
+current one only once it holds the account and every carried note, so a failed
+rollback keeps the current store for the next sync to retry. A fresh store
+cannot take over output-note records, so the client keeps the replaced store
+for the session and `export_note_to_bytes` reads a note created before the
+rollback from it. The replaced store file is left in the account directory and
+named in the logged warning: should the transaction land after all, it still
+holds the local state.
+
 ### Signing Guardian requests with a session
 
 The key manager signs every Guardian request unless a session is active.
@@ -319,6 +363,19 @@ them, load at the tip, so a proposal stays verifiable however long it waits
 for signatures, even after the node has pruned the bound block's account
 state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`; this SDK and the TypeScript one read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees.
 
+GUARDIAN pins every proposal to the account state its transaction must
+execute on. `execute_proposal`, `prepare_custom_execution` and
+`execute_imported_proposal` refuse a proposal pinned to a state other than
+the one this client holds with `MultisigError::ProposalBaseMismatch`, as
+the TypeScript SDK does: sync and retry, or create a new proposal if the
+account has moved past that state. Executing it anyway would run its
+transaction on a state its signers did not approve it for. A
+`switch_guardian` proposal is checked against the pre-switch GUARDIAN that
+serves it by `execute_proposal`; `execute_imported_proposal` reads the pin
+from GUARDIAN only for the types it acknowledges, so an imported switch is
+not checked. Releases up to 0.18.3 did not check and executed on the
+client's own state whatever state GUARDIAN had pinned.
+
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
@@ -375,10 +432,8 @@ is `committed` or `failed`, backing off from 1 s to 10 s, retries reads that fai
 retryable or transport error (honouring the server's retry-after hint), returns any other error,
 and gives up after 15 minutes with `MultisigError::GuardianExecutionWaitTimedOut`, which carries
 the last execution it read. A refusal surfaces as `MultisigError::GuardianExecutionRefused {
-code, message, retryable, retry_after, blocking_proposal_id, reason }`, where `code` is the wire
-string (for example `GUARDIAN_EXECUTION_CONFLICT`) and `reason` is the server's `meta.reason`.
-`conflict_pending_delta` with `reason` `parked_delta` means a cosigner's parked delta on the
-account's state may still land; request execution again once it settles.
+code, message, retryable, retry_after, blocking_proposal_id }`, where `code` is the wire string
+(for example `GUARDIAN_EXECUTION_CONFLICT`).
 
 A Guardian-executable client still executes two proposal types itself, and
 `request_guardian_execution` refuses them before contacting Guardian with
