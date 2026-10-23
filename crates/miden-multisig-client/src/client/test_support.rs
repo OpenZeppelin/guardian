@@ -61,8 +61,9 @@ pub(crate) async fn offline_client_parts_with_keystore(
     transport: Option<Arc<dyn NoteTransportClient>>,
     keystore: Arc<dyn KeyManager>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
+    let store_path = dir.join("store.sqlite3");
     let store = Arc::new(
-        SqliteStore::new(dir.join("store.sqlite3"))
+        SqliteStore::new(store_path.clone())
             .await
             .expect("sqlite store opens"),
     );
@@ -90,6 +91,7 @@ pub(crate) async fn offline_client_parts_with_keystore(
     let client = MultisigClient::new(
         miden_client,
         store.clone(),
+        store_path,
         keystore,
         "http://localhost:1".to_string(),
         dir.to_path_buf(),

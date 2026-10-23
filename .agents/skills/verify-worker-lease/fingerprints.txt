@@ -1,0 +1,17 @@
+crates/server/src/coordination/postgres/lease.rs try_acquire acd5be995d0ebf4f
+crates/server/src/coordination/postgres/lease.rs renew f311f5201db6fcf9
+crates/server/src/coordination/postgres/lease.rs verify_held 9b1375ae8a8b8cde
+crates/server/src/coordination/postgres/lease.rs release ae61460b23826bb9
+crates/server/src/coordination/leader.rs supports_fencing beb7276922c7d8cb
+crates/server/src/jobs/canonicalization/worker.rs run_worker 461beb3ee46a4677
+crates/server/src/jobs/canonicalization/worker.rs spawn_renewal 25b5e60b3124269f
+crates/server/src/jobs/canonicalization/processor.rs fence 902718c050154ab3
+crates/server/src/storage/postgres.rs lease_fence_is_current 951aa94931bd4c54
+crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
+crates/server/src/storage/postgres.rs promote_candidate 3de435365e312d2a
+crates/server/src/storage/postgres.rs discard_candidate b20a564870424d13
+crates/server/src/storage/postgres.rs update_candidate_status 3ee992cfd204ab19
+crates/server/src/coordination/postgres/stats_store.rs lease_is_current 3a5be33e2177bd20
+crates/server/src/coordination/postgres/stats_store.rs publish fd112c099bd159c1
+crates/server/src/builder/canonicalization.rs lease_ttl 7b41638acbeb0bf0
+crates/server/src/builder/storage.rs build 4ebc25b29f093d12

@@ -7,10 +7,14 @@ use std::collections::HashSet;
 
 use base64::Engine;
 use guardian_client::{
-    AuthConfig, MidenEcdsaAuth, MidenFalconRpoAuth, TryIntoTxSummary, auth_config::AuthType,
+    AuthConfig, GuardianClient, MidenEcdsaAuth, MidenFalconRpoAuth, TryIntoTxSummary,
+    auth_config::AuthType,
 };
 use guardian_shared::SignatureScheme;
 use miden_client::account::Account;
+use miden_client::note::{NoteFile, NoteSyncHint};
+use miden_client::store::{InputNoteState, NoteFilter, TransactionFilter};
+use miden_client::transaction::TransactionStatus;
 use miden_client::{Deserializable, Serializable};
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
@@ -324,6 +328,85 @@ impl MultisigClient {
             ))),
         }
     }
+
+    /// Whether the local state is a transaction that will not land, so that
+    /// sync may roll it back to GUARDIAN's state even though GUARDIAN is not
+    /// ahead. Execution writes membership, threshold and switch transactions
+    /// to the store without a miden-client record
+    /// (`rebuilds_local_state_from_delta`), so miden-client cannot undo them
+    /// when the node drops them. The drop is judged as miden-client judges its
+    /// own transactions
+    /// ([`UntrackedSubmission::dropped_at`](super::UntrackedSubmission::dropped_at)):
+    /// expiry is proof, the stale window a heuristic. GUARDIAN can forget a
+    /// delta whose transaction is still pending (an expired retained row,
+    /// retention disabled, a best-effort switch push that failed), so its
+    /// absence alone proves nothing. All must hold: this client submitted the
+    /// local state and that transaction is dropped by the store's sync
+    /// height, miden-client has no pending record for the account, and the
+    /// chain sits at GUARDIAN's canonical state. A transaction dropped only by
+    /// the stale window also needs GUARDIAN not to hold the local state as a
+    /// delta that may still land (`delta_may_still_land_as`); an expired one
+    /// cannot land, so GUARDIAN is not asked. A failed read keeps local.
+    async fn local_state_abandoned(
+        &self,
+        guardian_client: &mut GuardianClient,
+        account_id: AccountId,
+        local_nonce: u64,
+        local_commitment: Word,
+        guardian_commitment: Word,
+    ) -> Result<bool> {
+        let Some(submission) = self
+            .untracked_submission
+            .filter(|submission| submission.commitment == local_commitment)
+        else {
+            return Ok(false);
+        };
+        let sync_height = match self.miden_client.get_sync_height().await {
+            Ok(sync_height) => sync_height,
+            Err(error) => {
+                tracing::warn!(%error, "failed to read the store's sync height; keeping the local state");
+                return Ok(false);
+            }
+        };
+        if !submission.dropped_at(sync_height) {
+            return Ok(false);
+        }
+
+        let records = match self
+            .miden_client
+            .get_transactions(TransactionFilter::Uncommitted)
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                tracing::warn!(%error, "failed to read pending transactions; keeping the local state");
+                return Ok(false);
+            }
+        };
+        if records.into_iter().any(|record| {
+            record.details.account_id == account_id
+                && matches!(record.status, TransactionStatus::Pending)
+        }) {
+            return Ok(false);
+        }
+
+        match self.try_get_on_chain_account_commitment(account_id).await {
+            Ok(Some(on_chain)) if on_chain == guardian_commitment => {}
+            Ok(_) | Err(_) => return Ok(false),
+        }
+        if submission.expired_at(sync_height) {
+            return Ok(true);
+        }
+
+        match guardian_client.get_delta(&account_id, local_nonce).await {
+            Ok(response) => Ok(!response
+                .delta
+                .is_some_and(|delta| delta_may_still_land_as(&delta, local_commitment))),
+            Err(e) if e.is_not_found() => Ok(true),
+            Err(_) => Ok(false),
+        }
+    }
+
     /// Internal sync from GUARDIAN that returns whether the account was updated.
     ///
     /// Starts with the canonical-nonce pre-check (issue #191): when GUARDIAN's
@@ -348,8 +431,23 @@ impl MultisigClient {
                     e
                 ))
             })?;
-        if CanonicalHead::from_response(&head)?.is_not_ahead_of(local_nonce, local_commitment) {
-            return Ok(false);
+        let head = CanonicalHead::from_response(&head)?;
+        let mut abandoned_against = None;
+        if head.is_not_ahead_of(local_nonce, local_commitment) {
+            if head.commitment == local_commitment
+                || !self
+                    .local_state_abandoned(
+                        &mut guardian_client,
+                        account_id,
+                        local_nonce,
+                        local_commitment,
+                        head.commitment,
+                    )
+                    .await?
+            {
+                return Ok(false);
+            }
+            abandoned_against = Some(head.commitment);
         }
 
         let state_response = guardian_client.get_state(&account_id).await.map_err(|e| {
@@ -388,33 +486,140 @@ impl MultisigClient {
         // Compare nonces - if local is newer or equal, don't overwrite with GUARDIAN's older state.
         // This happens after executing a transaction before GUARDIAN canonicalizes.
         let guardian_nonce = fresh_account.nonce().as_canonical_u64();
-        if local_nonce >= guardian_nonce {
-            // Local state is newer, skip GUARDIAN update
+        let rolling_back = local_nonce >= guardian_nonce;
+        if rolling_back
+            && abandoned_against != Some(guardian_commitment)
+            && !self
+                .local_state_abandoned(
+                    &mut guardian_client,
+                    account_id,
+                    local_nonce,
+                    local_commitment,
+                    guardian_commitment,
+                )
+                .await?
+        {
             return Ok(false);
         }
 
         self.ensure_safe_to_overwrite_local_state(account_id, fresh_account.to_commitment())
             .await?;
 
-        // GUARDIAN has newer state - try to add/update.
-        // If we get a commitment mismatch (locked state), reset and retry.
-        match self.add_or_update_account(&fresh_account, true).await {
-            Ok(()) => {}
-            Err(e)
-                if e.to_string()
-                    .contains("doesn't match the imported account commitment") =>
-            {
-                // Reset miden-client and try again with fresh state
-                self.reset_miden_client().await?;
-                self.add_or_update_account(&fresh_account, true).await?;
+        if rolling_back {
+            let Some(notes) = self.input_notes_to_carry().await? else {
+                tracing::warn!(
+                    account_id = %account_id,
+                    "Local state is a transaction that will not land, but an unconsumed input note \
+                     could not be carried to a fresh store; keeping the local state"
+                );
+                return Ok(false);
+            };
+            tracing::warn!(
+                account_id = %account_id,
+                local_nonce,
+                local_commitment = %word_to_hex(&local_commitment),
+                guardian_nonce,
+                guardian_commitment = %guardian_commitment_hex,
+                replaced_store = %self.miden_store_path.display(),
+                "Local state is a transaction that will not land; rolling back to GUARDIAN's state. \
+                 The replaced store keeps the local state: should the transaction land after all, \
+                 recover it from there"
+            );
+            self.roll_back_store(&fresh_account, &notes).await?;
+        } else {
+            // GUARDIAN has newer state - try to add/update.
+            // If we get a commitment mismatch (locked state), reset and retry.
+            match self.add_or_update_account(&fresh_account, true).await {
+                Ok(()) => {}
+                Err(e)
+                    if e.to_string()
+                        .contains("doesn't match the imported account commitment") =>
+                {
+                    // Reset miden-client and try again with fresh state
+                    self.reset_miden_client().await?;
+                    self.add_or_update_account(&fresh_account, true).await?;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         }
 
         let multisig_account = MultisigAccount::new(fresh_account);
         self.account = Some(multisig_account);
 
         Ok(true)
+    }
+
+    /// Replace the store with a fresh one holding `account` and `notes`, as a
+    /// restarted client starts (miden-client and its store refuse to overwrite
+    /// an account with a lower nonce). The fresh client is synced to the chain
+    /// tip, which re-authenticates the carried notes, and installed only once
+    /// all of that succeeded, so a failure keeps the current store, with every
+    /// note it holds, for the next sync to retry.
+    pub(crate) async fn roll_back_store(
+        &mut self,
+        account: &Account,
+        notes: &[NoteFile],
+    ) -> Result<()> {
+        let (mut fresh_client, fresh_store, fresh_store_path) = self.fresh_miden_client().await?;
+        fresh_client.add_account(account, true).await.map_err(|e| {
+            MultisigError::miden_client_with_context(
+                "failed to store the rolled-back account in a fresh store",
+                e,
+            )
+        })?;
+        if !notes.is_empty() {
+            fresh_client.import_notes(notes).await.map_err(|e| {
+                MultisigError::miden_client_with_context(
+                    "failed to carry input notes over to the rolled-back store",
+                    e,
+                )
+            })?;
+        }
+        fresh_client.sync_state().await.map_err(|e| {
+            MultisigError::miden_client_with_context("failed to sync the rolled-back store", e)
+        })?;
+        self.miden_client = fresh_client;
+        let replaced = std::mem::replace(&mut self.miden_store, fresh_store);
+        self.replaced_stores.insert(0, replaced);
+        self.miden_store_path = fresh_store_path;
+        self.untracked_submission = None;
+        Ok(())
+    }
+
+    /// The store's unconsumed input notes, as files a fresh store re-imports:
+    /// each note's details and the tag sync finds it by (the inclusion proof is
+    /// fetched again). `None` when a note's tag is unknown, so it could not be
+    /// tracked again.
+    async fn input_notes_to_carry(&self) -> Result<Option<Vec<NoteFile>>> {
+        let records = self
+            .miden_client
+            .get_input_notes(NoteFilter::All)
+            .await
+            .map_err(|e| {
+                MultisigError::miden_client_with_context("failed to read input notes", e)
+            })?;
+        let mut files = Vec::new();
+        for record in records.iter().filter(|record| !record.is_consumed()) {
+            let expected = match record.state() {
+                InputNoteState::Expected(expected) => Some(expected),
+                _ => None,
+            };
+            let Some(tag) = record
+                .metadata()
+                .map(|metadata| metadata.tag())
+                .or_else(|| expected.and_then(|expected| expected.tag))
+            else {
+                return Ok(None);
+            };
+            let after_block_num = expected
+                .map(|expected| expected.after_block_num)
+                .unwrap_or_default();
+            files.push(NoteFile::ExpectedNote {
+                details: record.details().clone(),
+                sync_hint: NoteSyncHint::new(after_block_num, tag),
+            });
+        }
+        Ok(Some(files))
     }
 
     /// Fetches deltas from GUARDIAN since the current local nonce and applies them to the local account.
@@ -596,6 +801,23 @@ impl MultisigClient {
 pub(crate) struct CanonicalHead {
     nonce: u64,
     commitment: Word,
+}
+
+/// Whether GUARDIAN holds `local_commitment` as a delta that may still land:
+/// one recording that state in any status but discarded. A commitment that
+/// does not parse may be it.
+fn delta_may_still_land_as(delta: &guardian_client::DeltaObject, local_commitment: Word) -> bool {
+    use guardian_client::delta_status::Status;
+    if matches!(
+        delta
+            .status
+            .as_ref()
+            .and_then(|status| status.status.as_ref()),
+        Some(Status::DiscardedAt(_))
+    ) {
+        return false;
+    }
+    word_from_hex(&delta.new_commitment).map_or(true, |recorded| recorded == local_commitment)
 }
 
 impl CanonicalHead {
