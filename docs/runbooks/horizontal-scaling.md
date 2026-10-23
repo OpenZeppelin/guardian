@@ -68,6 +68,14 @@ start** rather than falling back to per-process state.
   shutdown hook yet — so after replacing the lease holder, canonicalization
   pauses for up to one TTL (~30s at the default 10s check interval) before the
   new holder takes over. This is a stall, never a correctness issue.
+- **Guardian executions** run on the replica that accepted them, under a
+  per-account lease. On SIGTERM a replica stops accepting executions
+  (`GUARDIAN_EXECUTION_BUSY`, so the client retries and lands elsewhere),
+  fails its attempts short of the no-retry boundary with
+  `GUARDIAN_EXECUTION_ABANDONED` and releases their accounts, and gives
+  attempts past it up to 8 seconds to send before exiting. A stop without
+  SIGTERM, or an attempt whose local transaction execution outlasts the
+  grace, leaves the account held until its lease lapses.
 - **Rate limiting** is per-process but partitioned (see below).
 
 ## Failure modes (by design)

@@ -153,6 +153,7 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
         None,
         Some(&[]),
         scheme,
+        None,
     )
     .await
     .expect("switch request builds");

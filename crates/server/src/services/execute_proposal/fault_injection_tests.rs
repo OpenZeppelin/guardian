@@ -1,0 +1,1433 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use chrono::Utc;
+
+use crate::jobs::execution_reconcile::{PassKind, Reconciled, Reconciler};
+use crate::network::{StateVerification, TransactionSearch};
+use crate::services::execution_status::ExecutionState;
+use crate::storage::{
+    ExecutionFailureCode, LeaseFence, NewExecutionReservation, PromoteWrite, ReservationWrite,
+};
+use crate::testing::mocks::MockNetworkClient;
+
+use super::SubmissionOutcome;
+use super::tests::{
+    ACCOUNT, BASE, Fixture, NEW_COMMITMENT, PROPOSAL, Script, is_submitted_or_terminal,
+};
+
+const LEASE: Duration = Duration::from_millis(300);
+
+/// A state that is neither the base nor the submitted one, such as a guardian switch leaves.
+const MOVED_ON: &str = "0x9999";
+const SWITCH_PROPOSAL: &str = "0x5151515151515151515151515151515151515151515151515151515151515151";
+const NEW_GUARDIAN: &str = "0x7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e7e";
+
+struct Faults {
+    f: Fixture,
+    chain: MockNetworkClient,
+}
+
+impl Faults {
+    async fn new(script: Script) -> Self {
+        let mut f = Fixture::new(script).await;
+        let chain = f.chain.clone();
+        f.state.execution.config.lease = LEASE;
+        Self { f, chain }
+    }
+
+    /// Drives an execution to `submitted` and lets its worker's lease lapse, which is what a
+    /// crash right after the send leaves behind.
+    async fn submitted_and_abandoned(script: Script) -> Self {
+        let faults = Self::new(Script {
+            submission: SubmissionOutcome::Unknown {
+                reason: "connection reset".to_string(),
+            },
+            ..script
+        })
+        .await;
+        faults.f.request().await.unwrap();
+        let (submitted, _) = faults.f.settle(is_submitted_or_terminal).await;
+        assert_eq!(submitted.state, ExecutionState::Submitted);
+        faults.wait_for_submit_then_lease_expiry().await;
+        faults
+    }
+
+    /// Waits until the worker sent and exited and its reservation's deadline passed, so the
+    /// next reconciliation finds the attempt abandoned however slowly the worker ran.
+    async fn wait_for_submit_then_lease_expiry(&self) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let execution = &self.f.state.execution;
+        loop {
+            let sent = self.f.calls.lock().unwrap().submitted > 0;
+            let exited = execution.capacity.available_permits()
+                == execution.config.max_concurrent_executions as usize;
+            let lapsed = self
+                .f
+                .state
+                .storage
+                .load_active_execution(ACCOUNT)
+                .await
+                .unwrap()
+                .is_none_or(|record| record.reservation.lease_expires_at < Utc::now());
+            if sent && exited && lapsed {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the worker did not send, exit and let its reservation lapse within 30s \
+                 (sent {sent}, exited {exited}, lapsed {lapsed})"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    fn chain_shows(&self, verification: Result<StateVerification, String>) {
+        self.chain
+            .verify_commitment_responses
+            .lock()
+            .unwrap()
+            .push(verification);
+    }
+
+    fn history_shows(&self, search: Result<TransactionSearch, String>) {
+        self.chain
+            .find_transaction_ending_at_responses
+            .lock()
+            .unwrap()
+            .push(search);
+    }
+
+    /// A pending `switch_guardian` proposal the cosigners built on the submitted state, as they
+    /// would after the execution landed.
+    async fn store_switch_from_submitted_state(&self) {
+        self.f
+            .state
+            .storage
+            .submit_delta_proposal(
+                SWITCH_PROPOSAL,
+                &crate::delta_object::DeltaObject {
+                    account_id: ACCOUNT.to_string(),
+                    nonce: 2,
+                    prev_commitment: NEW_COMMITMENT.to_string(),
+                    new_commitment: None,
+                    delta_payload: serde_json::json!({
+                        "tx_summary": { "data": "switch" },
+                        "signatures": [],
+                        "metadata": { "proposal_type": "switch_guardian" },
+                    }),
+                    ack_sig: String::new(),
+                    ack_pubkey: String::new(),
+                    ack_scheme: String::new(),
+                    status: crate::delta_object::DeltaStatus::Pending {
+                        timestamp: "2026-09-30T12:00:00Z".to_string(),
+                        proposer_id: "0xproposer".to_string(),
+                        cosigner_sigs: vec![],
+                    },
+                    metadata: None,
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    /// Applying the switch proposal to the stored state reaches `commitment`, with `guardian`
+    /// as the account's guardian key; the stored state itself names no guardian key.
+    fn chain_applies_switch_to(&self, commitment: &str, guardian: &str) {
+        self.chain
+            .apply_delta_responses
+            .lock()
+            .unwrap()
+            .push(Ok(crate::network::AppliedState {
+                state_json: serde_json::json!({ "switched": true }),
+                commitment: commitment.to_string(),
+                nonce: None,
+                cosigner_commitments: Vec::new(),
+                guardian_commitment: Some(guardian.to_string()),
+            }));
+        let mut keys = self
+            .chain
+            .extract_guardian_commitment_responses
+            .lock()
+            .unwrap();
+        keys.push(Ok(Some(guardian.to_string())));
+        keys.push(Ok(None));
+    }
+
+    /// The block the chain's next account reads report they were taken at.
+    fn chain_at(&self, block: u32) {
+        *self.chain.observed_block.lock().unwrap() = block;
+    }
+
+    /// How long the chain's next account reads take to answer.
+    fn chain_answers_after(&self, delay: Duration) {
+        *self.chain.observation_delay.lock().unwrap() = delay;
+    }
+
+    async fn reconcile(&self, kind: PassKind) -> Reconciled {
+        let report = Reconciler::new(&self.f.state)
+            .pass(&self.f.state, kind)
+            .await
+            .unwrap();
+        let mine: Vec<_> = report
+            .into_iter()
+            .filter(|(record, _)| record.reservation.account_id == ACCOUNT)
+            .map(|(_, outcome)| outcome)
+            .collect();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        mine[0]
+    }
+
+    async fn state(&self) -> ExecutionState {
+        self.f.read().await.unwrap().state
+    }
+
+    async fn reservation_held(&self) -> bool {
+        self.f
+            .state
+            .storage
+            .load_active_execution(ACCOUNT)
+            .await
+            .unwrap()
+            .is_some()
+    }
+
+    fn never_reproduced_again(&self) {
+        let calls = self.f.calls.lock().unwrap();
+        assert_eq!(
+            (calls.prepared, calls.proved, calls.submitted),
+            (1, 1, 1),
+            "a boundary-crossed attempt is never retried"
+        );
+    }
+
+    /// A reservation a killed replica left before the boundary, its lease already lapsed.
+    async fn crashed_before_the_boundary(&self) {
+        let lease = self
+            .f
+            .state
+            .execution
+            .leases
+            .elector(ACCOUNT, "replica-dead:worker")
+            .try_acquire(Duration::from_millis(50))
+            .await
+            .unwrap()
+            .unwrap();
+        let now = Utc::now();
+        let written = self
+            .f
+            .state
+            .storage
+            .create_execution_reservation(NewExecutionReservation {
+                account_id: ACCOUNT.to_string(),
+                proposal_id: PROPOSAL.to_string(),
+                fence: LeaseFence {
+                    lease_name: lease.name,
+                    holder_id: lease.holder_id,
+                    fence_token: lease.fence_token,
+                },
+                lease_expires_at: lease.expires_at,
+                ignored_signatures: 0,
+                now,
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(matches!(written, ReservationWrite::Created { .. }));
+    }
+}
+
+#[tokio::test]
+async fn a_live_worker_is_left_alone() {
+    let faults = Faults::new(Script {
+        submission: SubmissionOutcome::Unknown {
+            reason: "timeout".to_string(),
+        },
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    faults.f.settle(is_submitted_or_terminal).await;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        if faults.f.calls.lock().unwrap().submitted > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    faults
+        .f
+        .state
+        .storage
+        .renew_execution_reservation(
+            ACCOUNT,
+            &faults
+                .f
+                .state
+                .storage
+                .load_active_execution(ACCOUNT)
+                .await
+                .unwrap()
+                .unwrap()
+                .reservation
+                .fence,
+            Utc::now() + chrono::Duration::seconds(60),
+            crate::storage::ExecutionPhase::Sent,
+        )
+        .await
+        .unwrap();
+    assert_eq!(faults.reconcile(PassKind::Steady).await, Reconciled::Owned);
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+}
+
+#[tokio::test]
+async fn an_unknown_submission_is_settled_only_by_the_chain_and_never_resent() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: BASE.to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+
+    faults.chain_at(357);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: BASE.to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired)
+    );
+    let settled = faults.f.read().await.unwrap();
+    assert_eq!(settled.state, ExecutionState::Failed);
+    assert_eq!(
+        settled.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_EXPIRED".to_string())
+    );
+    assert!(!settled.proposal_exists);
+    assert!(!faults.reservation_held().await);
+    faults.never_reproduced_again();
+}
+
+#[tokio::test]
+async fn switching_execution_off_still_settles_the_executions_in_flight() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    let mut switched_off = faults.f.state.clone();
+    switched_off.execution.executor = None;
+    faults.chain_at(356);
+    faults.chain_shows(Ok(StateVerification::Absent));
+    let report = Reconciler::new(&switched_off)
+        .pass(&switched_off, PassKind::Startup)
+        .await
+        .unwrap();
+    assert!(report.iter().any(|(record, outcome)| {
+        record.reservation.account_id == ACCOUNT
+            && *outcome == Reconciled::Resolved(ExecutionFailureCode::Expired)
+    }));
+    assert!(!faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn the_block_before_the_expiration_still_waits() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(355);
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+}
+
+#[tokio::test]
+async fn reaching_the_expiration_block_at_the_base_settles_expired() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(356);
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired)
+    );
+}
+
+#[tokio::test]
+async fn a_read_from_before_the_execution_block_is_a_lagging_node_not_evidence() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(99);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: "0x9999".to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    assert!(faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn an_account_moved_elsewhere_without_the_submission_in_its_history_discards_it() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(100);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: None,
+        resume_from_block: 101,
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::CandidateDiscarded)
+    );
+    assert_eq!(
+        faults.chain.get_find_transaction_ending_at_calls(),
+        vec![(ACCOUNT.to_string(), NEW_COMMITMENT.to_string(), 100)],
+        "the search starts at the block the transaction executed against"
+    );
+    assert!(!faults.reservation_held().await);
+    faults.never_reproduced_again();
+}
+
+#[tokio::test]
+async fn history_that_does_not_yet_reach_the_read_block_waits() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(120);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: None,
+        resume_from_block: 120,
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn unsearchable_history_keeps_a_moved_account_submitted() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(120);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Err("transaction history unavailable".to_string()));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::ObservationUnavailable
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+}
+
+/// The transaction lands (base to the submitted state) and the cosigners switch the guardian
+/// before Guardian promotes it, so the chain shows a third state. History proves the
+/// transaction landed: reconciliation leaves it to promotion instead of discarding it, and the
+/// canonicalization pass promotes the candidate, which commits the execution and moves the
+/// stored state through the submitted one. A private account shows the chain nothing but its
+/// commitment, so the history search is the only evidence that the transaction landed, and the
+/// release sweep recognizes the switch only by applying it to the submitted state, which the
+/// sweep at the end of the test does.
+#[tokio::test]
+async fn a_submission_that_landed_before_a_guardian_switch_commits_through_promotion() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(130);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: Some(110),
+        resume_from_block: 111,
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::AwaitingPromotion
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.history_shows(Ok(TransactionSearch {
+        found_in_block: Some(110),
+        resume_from_block: 111,
+    }));
+    crate::jobs::canonicalization::process_canonicalizations_now(&faults.f.state)
+        .await
+        .unwrap();
+
+    assert_eq!(faults.state().await, ExecutionState::Committed);
+    assert!(!faults.reservation_held().await);
+    let stored = faults.f.state.storage.pull_state(ACCOUNT).await.unwrap();
+    assert_eq!(stored.commitment, NEW_COMMITMENT);
+    let delta = faults.f.state.storage.pull_delta(ACCOUNT, 1).await.unwrap();
+    assert!(delta.status.is_canonical(), "{:?}", delta.status);
+    faults.never_reproduced_again();
+
+    faults.store_switch_from_submitted_state().await;
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: MOVED_ON.to_string(),
+    }));
+    faults.chain_applies_switch_to(MOVED_ON, NEW_GUARDIAN);
+    crate::jobs::release_sweep::run_release_sweep_now(&faults.f.state)
+        .await
+        .unwrap();
+
+    let metadata = faults.f.state.metadata.get(ACCOUNT).await.unwrap().unwrap();
+    assert!(
+        metadata.released_at.is_some(),
+        "the switch built on the submitted state releases the private account"
+    );
+    assert_eq!(
+        faults.chain.get_fetch_on_chain_guardian_binding_calls(),
+        Vec::<String>::new(),
+        "the switch is recognized from its commitment, not from published storage"
+    );
+}
+
+#[tokio::test]
+async fn an_account_at_the_submitted_state_waits_for_promotion_which_alone_commits() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Ok(StateVerification::Match));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::AwaitingPromotion
+    );
+    assert_eq!(
+        faults.state().await,
+        ExecutionState::Submitted,
+        "reconciliation never writes committed"
+    );
+    assert_eq!(
+        faults.f.promote().await,
+        PromoteWrite::Applied {
+            settled_execution: true
+        }
+    );
+    assert_eq!(faults.state().await, ExecutionState::Committed);
+    assert!(!faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn an_unobservable_chain_keeps_the_execution_submitted_until_it_recovers() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Err("node unavailable".to_string()));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::ObservationUnavailable
+    );
+
+    faults.chain_shows(Err("node unavailable".to_string()));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::ObservationUnavailable,
+        "passing the expiration height by the clock settles nothing"
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+
+    faults.chain_at(400);
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired)
+    );
+}
+
+#[tokio::test]
+async fn a_reconciler_whose_own_lease_lapsed_between_passes_still_settles() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    tokio::time::sleep(LEASE + Duration::from_millis(100)).await;
+    faults.chain_at(400);
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired),
+        "a pass later than the lease must still be able to write its verdict"
+    );
+    assert!(!faults.reservation_held().await);
+}
+
+/// What a promotion that does not settle the execution leaves: a replica that predates
+/// execution, or a filesystem promotion interrupted after its delta write.
+async fn promote_without_settling(faults: &Faults) {
+    let storage = &faults.f.state.storage;
+    let mut delta = storage.pull_delta(ACCOUNT, 1).await.unwrap();
+    delta.status = crate::delta_object::DeltaStatus::canonical(Utc::now().to_rfc3339());
+    storage.submit_delta(&delta).await.unwrap();
+    let mut account = storage.pull_state(ACCOUNT).await.unwrap();
+    account.commitment = super::tests::NEW_COMMITMENT.to_string();
+    storage.submit_state(&account).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_promotion_that_left_the_execution_held_is_settled_committed() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    promote_without_settling(&faults).await;
+    faults.chain_shows(Ok(StateVerification::Match));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Committed
+    );
+    assert_eq!(faults.state().await, ExecutionState::Committed);
+    assert!(!faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn an_account_at_the_submitted_state_before_promotion_is_left_to_promotion() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Ok(StateVerification::Match));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::AwaitingPromotion,
+        "a candidate not yet canonical is promotion's to settle"
+    );
+    assert!(faults.reservation_held().await);
+}
+
+#[tokio::test]
+async fn a_reconciler_that_already_holds_the_attempt_keeps_it_across_passes() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    faults.chain_shows(Ok(StateVerification::Absent));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Waiting
+    );
+    let holder = faults
+        .f
+        .state
+        .storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .unwrap()
+        .reservation
+        .fence
+        .holder_id;
+    assert!(holder.ends_with(":reconcile"), "{holder}");
+}
+
+#[tokio::test]
+async fn a_restart_faster_than_the_lease_still_reports_the_attempt_abandoned() {
+    let faults = Faults::new(Script::default()).await;
+    let dead = faults
+        .f
+        .state
+        .execution
+        .leases
+        .elector(ACCOUNT, "replica-dead:worker")
+        .try_acquire(Duration::from_secs(3600))
+        .await
+        .unwrap()
+        .unwrap();
+    let written = faults
+        .f
+        .state
+        .storage
+        .create_execution_reservation(NewExecutionReservation {
+            account_id: ACCOUNT.to_string(),
+            proposal_id: PROPOSAL.to_string(),
+            fence: LeaseFence {
+                lease_name: dead.name,
+                holder_id: dead.holder_id,
+                fence_token: dead.fence_token,
+            },
+            lease_expires_at: dead.expires_at,
+            ignored_signatures: 0,
+            now: Utc::now(),
+        })
+        .await
+        .unwrap();
+    assert!(matches!(written, ReservationWrite::Created { .. }));
+
+    let mut restarted = faults.f.state.clone();
+    restarted.execution.leases = Arc::new(crate::coordination::InMemoryExecutionLeases::new());
+    let report = Reconciler::new(&restarted)
+        .pass(&restarted, PassKind::Startup)
+        .await
+        .unwrap();
+    assert!(report.iter().any(|(record, outcome)| {
+        record.reservation.account_id == ACCOUNT
+            && *outcome == Reconciled::Released(ExecutionFailureCode::Abandoned)
+    }));
+}
+
+#[tokio::test]
+async fn an_attempt_interrupted_by_a_restart_is_abandoned_and_the_proposal_stays_executable() {
+    let faults = Faults::new(Script::default()).await;
+    faults.crashed_before_the_boundary().await;
+    assert_eq!(
+        faults.reconcile(PassKind::Startup).await,
+        Reconciled::Released(ExecutionFailureCode::Abandoned)
+    );
+    let failed = faults.f.read().await.unwrap();
+    assert_eq!(
+        failed.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_ABANDONED".to_string())
+    );
+    assert!(failed.proposal_exists);
+    assert!(faults.f.request().await.unwrap().newly_accepted);
+}
+
+#[tokio::test]
+async fn a_pre_boundary_lease_that_lapses_in_steady_state_is_lease_expired() {
+    let faults = Faults::new(Script::default()).await;
+    faults.crashed_before_the_boundary().await;
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Released(ExecutionFailureCode::LeaseExpired)
+    );
+    assert!(!faults.reservation_held().await);
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+}
+
+#[tokio::test]
+async fn a_proof_that_outlasts_its_lease_keeps_the_reservation() {
+    let faults = Faults::new(Script {
+        proving_time: LEASE * 3,
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    tokio::time::sleep(LEASE * 2).await;
+    assert_eq!(faults.reconcile(PassKind::Steady).await, Reconciled::Owned);
+    let (settled, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(settled.state, ExecutionState::Submitted);
+}
+
+/// Leases whose renewals fail a set number of times before reaching the real store, as a
+/// database pool timeout would.
+struct FlakyRenewals {
+    inner: crate::coordination::InMemoryExecutionLeases,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct FlakyElector {
+    inner: Arc<dyn crate::coordination::LeaderElector>,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl crate::coordination::ExecutionLeases for FlakyRenewals {
+    fn elector(
+        &self,
+        account_id: &str,
+        holder_id: &str,
+    ) -> Arc<dyn crate::coordination::LeaderElector> {
+        Arc::new(FlakyElector {
+            inner: self.inner.elector(account_id, holder_id),
+            failures: self.failures.clone(),
+        })
+    }
+
+    fn is_shared(&self) -> bool {
+        false
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::coordination::LeaderElector for FlakyElector {
+    async fn try_acquire(
+        &self,
+        ttl: Duration,
+    ) -> crate::error::Result<Option<crate::coordination::Lease>> {
+        self.inner.try_acquire(ttl).await
+    }
+
+    async fn renew(
+        &self,
+        lease: &crate::coordination::Lease,
+        ttl: Duration,
+    ) -> crate::error::Result<bool> {
+        use std::sync::atomic::Ordering;
+        if self
+            .failures
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err(crate::error::GuardianError::StorageError(
+                "pool timed out".to_string(),
+            ));
+        }
+        self.inner.renew(lease, ttl).await
+    }
+
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        self.inner.verify_held(lease).await
+    }
+
+    async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {
+        self.inner.release(lease).await
+    }
+
+    fn supports_fencing(&self) -> bool {
+        false
+    }
+}
+
+#[tokio::test]
+async fn a_transient_renewal_failure_does_not_lose_a_long_proof() {
+    let mut faults = Faults::new(Script {
+        proving_time: LEASE * 3,
+        ..Script::default()
+    })
+    .await;
+    faults.f.state.execution.leases = Arc::new(FlakyRenewals {
+        inner: crate::coordination::InMemoryExecutionLeases::new(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+    });
+    faults.f.request().await.unwrap();
+    tokio::time::sleep(LEASE * 2).await;
+    assert_eq!(faults.reconcile(PassKind::Steady).await, Reconciled::Owned);
+    let (settled, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(settled.state, ExecutionState::Submitted);
+}
+
+#[tokio::test]
+async fn an_expiration_beyond_the_horizon_is_refused_before_proving() {
+    for expiration_block in [100 + 28_800, u32::MAX] {
+        let faults = Faults::new(Script {
+            expiration_block,
+            ..Script::default()
+        })
+        .await;
+        faults.f.request().await.unwrap();
+        let (failed, _) = faults
+            .f
+            .settle(|state| state == ExecutionState::Failed)
+            .await;
+        assert_eq!(
+            failed.error.map(|error| error.code),
+            Some("GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON".to_string())
+        );
+        assert_eq!(
+            faults.f.calls.lock().unwrap().proved,
+            0,
+            "refused before any proving"
+        );
+        assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+        assert!(faults.f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+    }
+}
+
+/// A guardian switch changes the account's state, so the recheck after proving sees the account
+/// moved away from the base it was selected at.
+#[tokio::test]
+async fn a_guardian_switch_during_proving_fails_the_admissibility_recheck() {
+    let faults = Faults::new(Script {
+        proving_time: Duration::from_millis(300),
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while faults.f.calls.lock().unwrap().prepared == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let mut switched = faults.f.state.storage.pull_state(ACCOUNT).await.unwrap();
+    switched.commitment = MOVED_ON.to_string();
+    faults
+        .f
+        .state
+        .storage
+        .submit_state(&switched)
+        .await
+        .unwrap();
+    let (failed, _) = faults
+        .f
+        .settle(|state| state == ExecutionState::Failed)
+        .await;
+    assert_eq!(
+        failed.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE".to_string())
+    );
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+}
+
+#[tokio::test]
+async fn an_account_without_a_guardian_slot_is_inadmissible_before_any_chain_work() {
+    let faults = Faults::new(Script::default()).await;
+    *faults.f.guardian.lock().unwrap() = None;
+    faults.f.request().await.unwrap();
+    let (failed, _) = faults
+        .f
+        .settle(|state| state == ExecutionState::Failed)
+        .await;
+    assert_eq!(
+        failed.error.map(|error| error.code),
+        Some("GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE".to_string())
+    );
+    assert_eq!(faults.f.calls.lock().unwrap().prepared, 0);
+}
+
+#[tokio::test]
+async fn a_worker_whose_reservation_moved_on_writes_and_sends_nothing() {
+    let faults = Faults::new(Script {
+        sealing_time: Duration::from_millis(200),
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        if faults.f.calls.lock().unwrap().proved > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let worker = faults
+        .f
+        .state
+        .storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .unwrap()
+        .reservation
+        .fence;
+    let usurper = LeaseFence {
+        holder_id: "replica-c:reconcile".to_string(),
+        fence_token: worker.fence_token + 1,
+        ..worker.clone()
+    };
+    faults
+        .f
+        .state
+        .storage
+        .claim_execution_reservation(
+            ACCOUNT,
+            &worker,
+            &usurper,
+            Utc::now() + chrono::Duration::seconds(60),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        faults.f.calls.lock().unwrap().submitted,
+        0,
+        "a stale worker never sends"
+    );
+    assert!(
+        faults.f.state.storage.pull_delta(ACCOUNT, 1).await.is_err(),
+        "a stale worker never crosses the boundary"
+    );
+    let record = faults
+        .f
+        .state
+        .storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .expect("the new owner still holds the attempt");
+    assert_eq!(record.reservation.fence, usurper);
+    assert!(
+        record.outcome.is_none(),
+        "the stale worker wrote no outcome"
+    );
+}
+
+/// Leases whose renewals fail a set number of times once the boundary is crossed, as a database
+/// pool timeout at the send claim would.
+struct FlakyAfterBoundary {
+    leases: crate::coordination::InMemoryExecutionLeases,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+struct FlakyAfterBoundaryElector {
+    inner: Arc<dyn crate::coordination::LeaderElector>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+    failures: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl crate::coordination::LeaderElector for FlakyAfterBoundaryElector {
+    async fn try_acquire(
+        &self,
+        ttl: Duration,
+    ) -> crate::error::Result<Option<crate::coordination::Lease>> {
+        self.inner.try_acquire(ttl).await
+    }
+    async fn renew(
+        &self,
+        lease: &crate::coordination::Lease,
+        ttl: Duration,
+    ) -> crate::error::Result<bool> {
+        use std::sync::atomic::Ordering;
+        if boundary_crossed(self.storage.as_ref()).await
+            && self
+                .failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+        {
+            return Err(crate::error::GuardianError::StorageError(
+                "pool timed out".to_string(),
+            ));
+        }
+        self.inner.renew(lease, ttl).await
+    }
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        self.inner.verify_held(lease).await
+    }
+    async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {
+        self.inner.release(lease).await
+    }
+    fn supports_fencing(&self) -> bool {
+        self.inner.supports_fencing()
+    }
+}
+
+impl crate::coordination::ExecutionLeases for FlakyAfterBoundary {
+    fn elector(
+        &self,
+        account_id: &str,
+        holder_id: &str,
+    ) -> Arc<dyn crate::coordination::LeaderElector> {
+        Arc::new(FlakyAfterBoundaryElector {
+            inner: self.leases.elector(account_id, holder_id),
+            storage: self.storage.clone(),
+            failures: self.failures.clone(),
+        })
+    }
+
+    fn is_shared(&self) -> bool {
+        self.leases.is_shared()
+    }
+}
+
+#[tokio::test]
+async fn a_transient_failure_at_the_send_claim_is_retried_and_the_transaction_sent() {
+    let mut faults = Faults::new(Script::default()).await;
+    faults.f.state.execution.leases = Arc::new(FlakyAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(1)),
+    });
+    faults.f.request().await.unwrap();
+    faults.wait_for_submit_then_lease_expiry().await;
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 1);
+}
+
+#[tokio::test]
+async fn a_send_claim_that_keeps_failing_until_the_lease_lapses_never_sends() {
+    let mut faults = Faults::new(Script::default()).await;
+    faults.f.state.execution.leases = Arc::new(FlakyAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX)),
+    });
+    faults.f.request().await.unwrap();
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(reported.state, ExecutionState::Submitted);
+    tokio::time::sleep(LEASE * 3).await;
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+}
+
+/// One second per block and 18 blocks to the expiration: 16 s of window past the 2-block
+/// reserve, one more than a send needs.
+fn barely_sendable() -> Script {
+    Script {
+        tip: Ok(338),
+        expiration_block: 356,
+        block_interval: Duration::from_secs(1),
+        ..Script::default()
+    }
+}
+
+async fn with_send_claim_failures(failures: usize) -> Faults {
+    let mut faults = Faults::new(barely_sendable()).await;
+    faults.f.state.execution.config.lease = Duration::from_secs(30);
+    faults.f.state.execution.leases = Arc::new(FlakyAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+        failures: Arc::new(std::sync::atomic::AtomicUsize::new(failures)),
+    });
+    faults.f.request().await.unwrap();
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(reported.state, ExecutionState::Submitted);
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    faults
+}
+
+/// Past the boundary, not sending guarantees the proposal is lost, so a claim that succeeds
+/// after the window ran below the pre-boundary minimum still sends with what is left.
+#[tokio::test]
+async fn a_send_claim_that_succeeds_after_the_window_ran_short_still_sends() {
+    let faults = with_send_claim_failures(2).await;
+    let calls = faults.f.calls.lock().unwrap();
+    assert_eq!(calls.submitted, 1);
+    assert!(
+        calls.send_deadlines[0] < super::SendWindow::MIN_SEND,
+        "{:?}",
+        calls.send_deadlines[0]
+    );
+}
+
+/// Five blocks of three seconds left: exactly the pre-boundary minimum. The claim, a few
+/// milliseconds later, has slightly less, and must still send.
+#[tokio::test]
+async fn a_window_exactly_at_the_minimum_crosses_the_boundary_and_sends() {
+    let faults = Faults::new(Script {
+        tip: Ok(349),
+        expiration_block: 356,
+        block_interval: Duration::from_secs(3),
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(reported.state, ExecutionState::Submitted);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while faults.f.calls.lock().unwrap().submitted == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 1);
+}
+
+#[tokio::test]
+async fn a_send_claim_that_succeeds_in_time_sends_with_what_is_left_of_the_window() {
+    let faults = with_send_claim_failures(0).await;
+    let calls = faults.f.calls.lock().unwrap();
+    assert_eq!(calls.submitted, 1);
+    assert!(
+        calls.send_deadlines[0] >= super::SendWindow::MIN_SEND
+            && calls.send_deadlines[0] <= Duration::from_secs(16),
+        "{:?}",
+        calls.send_deadlines[0]
+    );
+}
+
+#[tokio::test]
+async fn a_send_longer_than_the_lease_keeps_the_reservation() {
+    let faults = Faults::new(Script {
+        sending_time: LEASE * 4,
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        if faults.f.calls.lock().unwrap().submitted > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    tokio::time::sleep(LEASE * 2).await;
+    assert_eq!(faults.reconcile(PassKind::Steady).await, Reconciled::Owned);
+}
+
+#[tokio::test]
+async fn too_little_of_the_window_left_to_send_is_refused_before_the_boundary() {
+    let faults = Faults::new(Script {
+        tip: Ok(350),
+        expiration_block: 356,
+        ..Script::default()
+    })
+    .await;
+    faults.f.request().await.unwrap();
+    let (failed, _) = faults
+        .f
+        .settle(|state| state == ExecutionState::Failed)
+        .await;
+    let error = failed.error.expect("the attempt failed");
+    assert_eq!(error.code, "GUARDIAN_EXECUTION_EXPIRATION_REACHED");
+    assert!(failed.proposal_exists, "the proposal can be retried");
+    assert_eq!(faults.f.calls.lock().unwrap().submitted, 0);
+    assert!(faults.f.state.storage.pull_delta(ACCOUNT, 1).await.is_err());
+}
+
+#[tokio::test]
+async fn the_send_waits_as_long_as_the_window_allows_up_to_its_cap() {
+    for (tip, longest) in [
+        (340, Duration::from_secs(3 * (356 - 340 - 2))),
+        (100, super::SendWindow::MAX_SEND),
+    ] {
+        let faults = Faults::new(Script {
+            tip: Ok(tip),
+            expiration_block: 356,
+            ..Script::default()
+        })
+        .await;
+        faults.f.request().await.unwrap();
+        faults.wait_for_submit_then_lease_expiry().await;
+        let deadline = faults.f.calls.lock().unwrap().send_deadlines[0];
+        assert!(
+            deadline <= longest && deadline > longest - Duration::from_secs(2),
+            "tip {tip}: {deadline:?}"
+        );
+    }
+}
+
+/// Leases that work until the boundary commit and are gone at the renewal that gates the send:
+/// the state a worker is in when its lease lapses or is taken between the commit and the send.
+struct LostAfterBoundary {
+    leases: crate::coordination::InMemoryExecutionLeases,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+}
+
+struct LostElector {
+    inner: Arc<dyn crate::coordination::LeaderElector>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+}
+
+async fn boundary_crossed(storage: &dyn crate::storage::StorageBackend) -> bool {
+    storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .is_some_and(|record| record.evidence.is_some())
+}
+
+#[async_trait::async_trait]
+impl crate::coordination::LeaderElector for LostElector {
+    async fn try_acquire(
+        &self,
+        ttl: Duration,
+    ) -> crate::error::Result<Option<crate::coordination::Lease>> {
+        self.inner.try_acquire(ttl).await
+    }
+    async fn renew(
+        &self,
+        lease: &crate::coordination::Lease,
+        ttl: Duration,
+    ) -> crate::error::Result<bool> {
+        if boundary_crossed(self.storage.as_ref()).await {
+            return Ok(false);
+        }
+        self.inner.renew(lease, ttl).await
+    }
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        self.inner.verify_held(lease).await
+    }
+    async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {
+        self.inner.release(lease).await
+    }
+    fn supports_fencing(&self) -> bool {
+        self.inner.supports_fencing()
+    }
+}
+
+impl crate::coordination::ExecutionLeases for LostAfterBoundary {
+    fn elector(
+        &self,
+        account_id: &str,
+        holder_id: &str,
+    ) -> Arc<dyn crate::coordination::LeaderElector> {
+        Arc::new(LostElector {
+            inner: self.leases.elector(account_id, holder_id),
+            storage: self.storage.clone(),
+        })
+    }
+
+    fn is_shared(&self) -> bool {
+        self.leases.is_shared()
+    }
+}
+
+#[tokio::test]
+async fn a_worker_that_loses_its_lease_after_the_boundary_never_sends() {
+    let mut faults = Faults::new(Script::default()).await;
+    faults.f.state.execution.leases = Arc::new(LostAfterBoundary {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+    });
+    faults.f.request().await.unwrap();
+
+    let (reported, _) = faults.f.settle(is_submitted_or_terminal).await;
+    assert_eq!(
+        reported.state,
+        ExecutionState::Submitted,
+        "the boundary commit happened"
+    );
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        faults.f.calls.lock().unwrap().submitted,
+        0,
+        "a worker that no longer owns the attempt never sends"
+    );
+    let record = faults
+        .f
+        .state
+        .storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .expect("the attempt is left to reconciliation");
+    assert!(
+        record.evidence.is_some(),
+        "the submission evidence is durable"
+    );
+    assert!(
+        record.outcome.is_none(),
+        "the stale worker wrote no outcome"
+    );
+    assert!(
+        faults
+            .f
+            .state
+            .storage
+            .pull_delta(ACCOUNT, 1)
+            .await
+            .unwrap()
+            .status
+            .is_candidate(),
+        "the candidate is durable"
+    );
+}
+
+/// Leases whose renewal at the send passes but hands the reservation to another holder first: a
+/// takeover that lands between the worker's lease renewal and its fenced send claim.
+struct TakenOverAtTheSend {
+    leases: crate::coordination::InMemoryExecutionLeases,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+}
+
+struct TakingElector {
+    inner: Arc<dyn crate::coordination::LeaderElector>,
+    storage: Arc<dyn crate::storage::StorageBackend>,
+}
+
+#[async_trait::async_trait]
+impl crate::coordination::LeaderElector for TakingElector {
+    async fn try_acquire(
+        &self,
+        ttl: Duration,
+    ) -> crate::error::Result<Option<crate::coordination::Lease>> {
+        self.inner.try_acquire(ttl).await
+    }
+    async fn renew(
+        &self,
+        lease: &crate::coordination::Lease,
+        ttl: Duration,
+    ) -> crate::error::Result<bool> {
+        if !boundary_crossed(self.storage.as_ref()).await {
+            return self.inner.renew(lease, ttl).await;
+        }
+        let current = self
+            .storage
+            .load_active_execution(ACCOUNT)
+            .await
+            .unwrap()
+            .expect("the attempt holds a reservation")
+            .reservation
+            .fence;
+        let successor = LeaseFence {
+            holder_id: "successor".to_string(),
+            fence_token: current.fence_token + 1,
+            ..current.clone()
+        };
+        let claimed = self
+            .storage
+            .claim_execution_reservation(
+                ACCOUNT,
+                &current,
+                &successor,
+                Utc::now() + chrono::Duration::seconds(60),
+            )
+            .await
+            .unwrap();
+        assert_eq!(claimed, crate::storage::ClaimWrite::Claimed);
+        self.inner.renew(lease, ttl).await
+    }
+    async fn verify_held(&self, lease: &crate::coordination::Lease) -> crate::error::Result<bool> {
+        self.inner.verify_held(lease).await
+    }
+    async fn release(&self, lease: crate::coordination::Lease) -> crate::error::Result<()> {
+        self.inner.release(lease).await
+    }
+    fn supports_fencing(&self) -> bool {
+        self.inner.supports_fencing()
+    }
+}
+
+impl crate::coordination::ExecutionLeases for TakenOverAtTheSend {
+    fn elector(
+        &self,
+        account_id: &str,
+        holder_id: &str,
+    ) -> Arc<dyn crate::coordination::LeaderElector> {
+        Arc::new(TakingElector {
+            inner: self.leases.elector(account_id, holder_id),
+            storage: self.storage.clone(),
+        })
+    }
+
+    fn is_shared(&self) -> bool {
+        self.leases.is_shared()
+    }
+}
+
+#[tokio::test]
+async fn a_worker_whose_reservation_is_taken_just_before_the_send_never_sends() {
+    let mut faults = Faults::new(Script::default()).await;
+    faults.f.state.execution.leases = Arc::new(TakenOverAtTheSend {
+        leases: crate::coordination::InMemoryExecutionLeases::new(),
+        storage: faults.f.state.storage.clone(),
+    });
+    faults.f.request().await.unwrap();
+
+    faults.f.settle(is_submitted_or_terminal).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(
+        faults.f.calls.lock().unwrap().submitted,
+        0,
+        "the fenced renewal refuses the stale worker, so it never sends"
+    );
+    let record = faults
+        .f
+        .state
+        .storage
+        .load_active_execution(ACCOUNT)
+        .await
+        .unwrap()
+        .expect("the attempt is left to its new owner");
+    assert_eq!(record.reservation.fence.holder_id, "successor");
+    assert!(record.outcome.is_none(), "the stale worker wrote nothing");
+}
+
+#[tokio::test]
+async fn a_chain_read_slower_than_half_the_lease_settles_nothing_and_keeps_the_reservation() {
+    let faults = Faults::submitted_and_abandoned(Script::default()).await;
+    faults.chain_at(357);
+    faults.chain_answers_after(LEASE);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: BASE.to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::ObservationUnavailable
+    );
+    assert_eq!(faults.state().await, ExecutionState::Submitted);
+    assert!(faults.reservation_held().await);
+
+    faults.chain_answers_after(LEASE / 4);
+    faults.chain_shows(Ok(StateVerification::Mismatch {
+        on_chain: BASE.to_string(),
+    }));
+    assert_eq!(
+        faults.reconcile(PassKind::Steady).await,
+        Reconciled::Resolved(ExecutionFailureCode::Expired)
+    );
+}

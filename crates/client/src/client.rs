@@ -1,12 +1,14 @@
 use crate::auth::Auth;
 use crate::error::{ClientError, ClientResult};
+use crate::execution::ProposalExecution;
 use crate::keystore::Signer;
 use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
-    ConfigureResponse, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
-    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetDeltaHistoryRequest,
-    GetDeltaHistoryResponse, GetDeltaProposalRequest, GetDeltaProposalResponse,
+    ConfigureResponse, ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest,
+    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
+    GetCurrentExecutionRequest, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalExecutionRequest, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
     GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
@@ -16,7 +18,7 @@ use crate::proto::{
 use chrono::Utc;
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use guardian_shared::auth_request_message::AuthRequestMessage;
-use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use guardian_shared::hex::{FromHex, IntoHex};
 use guardian_shared::lookup_auth_message::LookupAuthMessage;
 use guardian_shared::session_grant::{SessionGrant, SessionLogoutMessage, SessionRevokeAllMessage};
@@ -192,9 +194,9 @@ impl GuardianClient {
         &self,
         request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
+        request_payload: AuthRequestPayload,
         mode: AuthMode,
     ) -> ClientResult<Option<String>> {
-        let request_payload = AuthRequestPayload::from_protobuf_message(request.get_ref());
         let timestamp = self.next_timestamp();
 
         if mode == AuthMode::Session {
@@ -280,7 +282,28 @@ impl GuardianClient {
             tonic::Request<Req>,
         ) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
-        self.send_with_replay_retry_as(account_id, message, AuthMode::Wallet, send)
+        let payload = AuthRequestPayload::from_protobuf_message(&message);
+        self.send_with_replay_retry_as(account_id, message, payload, AuthMode::Wallet, send)
+            .await
+    }
+
+    /// [`Self::send_with_replay_retry`] for a request signed over `payload` rather than its
+    /// plain encoding.
+    async fn send_signed_with_replay_retry<Req, Resp, F>(
+        &mut self,
+        account_id: &AccountId,
+        message: Req,
+        payload: AuthRequestPayload,
+        send: F,
+    ) -> ClientResult<Resp>
+    where
+        Req: prost::Message + Clone + std::fmt::Debug,
+        F: AsyncFnMut(
+            &mut GuardianGrpcClient<Channel>,
+            tonic::Request<Req>,
+        ) -> Result<tonic::Response<Resp>, tonic::Status>,
+    {
+        self.send_with_replay_retry_as(account_id, message, payload, AuthMode::Wallet, send)
             .await
     }
 
@@ -299,18 +322,21 @@ impl GuardianClient {
             tonic::Request<Req>,
         ) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
-        self.send_with_replay_retry_as(account_id, message, AuthMode::Session, send)
+        let payload = AuthRequestPayload::from_protobuf_message(&message);
+        self.send_with_replay_retry_as(account_id, message, payload, AuthMode::Session, send)
             .await
     }
 
-    /// Sends with `mode`, retrying `authentication_replay`. A session Guardian
-    /// ended or no longer accepts (unknown key after a restart, rotated
-    /// Guardian key or network) is dead for good, so it is dropped and the
-    /// wallet signs from then on; the caller can start a new one.
+    /// Sends with `mode`, signing over `payload` and retrying
+    /// `authentication_replay`. A session Guardian ended or no longer accepts
+    /// (unknown key after a restart, rotated Guardian key or network) is dead
+    /// for good, so it is dropped and the wallet signs from then on; the
+    /// caller can start a new one.
     async fn send_with_replay_retry_as<Req, Resp, F>(
         &mut self,
         account_id: &AccountId,
         message: Req,
+        payload: AuthRequestPayload,
         mode: AuthMode,
         mut send: F,
     ) -> ClientResult<Resp>
@@ -325,7 +351,8 @@ impl GuardianClient {
         let mut retries_left = REPLAY_RETRY_LIMIT;
         loop {
             let mut request = tonic::Request::new(message.clone());
-            let session_key = self.add_auth_metadata(&mut request, account_id, mode)?;
+            let session_key =
+                self.add_auth_metadata(&mut request, account_id, payload.clone(), mode)?;
             match send(&mut self.client, request).await {
                 Ok(response) => return Ok(response.into_inner()),
                 Err(status) => {
@@ -913,6 +940,73 @@ impl GuardianClient {
         }
 
         Ok(inner)
+    }
+
+    /// Ask Guardian to prove and submit a threshold-met proposal. Returns once the request is
+    /// accepted; poll [`Self::get_delta_proposal_execution`] for the outcome. Repeating the
+    /// request while the execution runs returns it with `newly_accepted: false`.
+    ///
+    /// Guardian refuses a transaction that creates a private output note with
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `private_note`) unless
+    /// `allow_private_note` is set. The flag is part of the signed request.
+    pub async fn execute_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        proposal_id: &str,
+        allow_private_note: bool,
+    ) -> ClientResult<ProposalExecution> {
+        let message = ExecuteDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+            allow_private_note,
+        };
+        let payload = AuthRequestPayload::for_operation(
+            SignedOperation::ExecuteDeltaProposal,
+            &prost::Message::encode_to_vec(&message),
+        );
+        let response = self
+            .send_signed_with_replay_retry(account_id, message, payload, async |client, request| {
+                client.execute_delta_proposal(request).await
+            })
+            .await?;
+        crate::execution::required(response.execution)
+    }
+
+    /// The latest execution attempt of a proposal.
+    pub async fn get_delta_proposal_execution(
+        &mut self,
+        account_id: &AccountId,
+        proposal_id: &str,
+    ) -> ClientResult<ProposalExecution> {
+        let message = GetDeltaProposalExecutionRequest {
+            account_id: account_id.to_string(),
+            proposal_id: proposal_id.to_string(),
+        };
+        let response = self
+            .send_allowing_session(account_id, message, async |client, request| {
+                client.get_delta_proposal_execution(request).await
+            })
+            .await?;
+        crate::execution::required(response.execution)
+    }
+
+    /// The account's in-flight execution, if any. A finished execution is not in flight.
+    pub async fn get_current_execution(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<Option<ProposalExecution>> {
+        let message = GetCurrentExecutionRequest {
+            account_id: account_id.to_string(),
+        };
+        let response = self
+            .send_allowing_session(account_id, message, async |client, request| {
+                client.get_current_execution(request).await
+            })
+            .await?;
+        response
+            .execution
+            .map(ProposalExecution::try_from)
+            .transpose()
     }
 }
 

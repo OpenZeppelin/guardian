@@ -1,4 +1,7 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+
 import type { RequestAuthPayload } from './auth-request.js';
+import type { ServerExecutionCapability } from './execution.js';
 
 export interface Signer {
   readonly commitment: string;
@@ -245,6 +248,8 @@ export interface DeltaObject {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Absent on a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
   ackSig?: string;
   ackPubkey?: string;
@@ -310,6 +315,11 @@ export interface StatusResponse {
   environment: string;
   startedAt: string;
   uptimeSeconds: number;
+  /**
+   * Whether the server accepts Guardian execution requests. Absent on a Guardian that predates
+   * Guardian execution: it does not offer it.
+   */
+  execution?: ServerExecutionCapability;
   /** Present on every Guardian that accepts session grants; absent on older servers. */
   sessions?: SessionsStatus;
 }
@@ -321,6 +331,8 @@ export interface DeltaProposalRequest {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Omit for a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
 }
 

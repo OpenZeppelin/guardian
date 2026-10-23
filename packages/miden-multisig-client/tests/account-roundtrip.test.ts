@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { Account } from '@miden-sdk/miden-sdk';
 
@@ -48,6 +48,12 @@ function hexToBytes(hex: string): Uint8Array {
 // the accessors against the SDK's actual storage read semantics (empty word
 // for missing map keys, undefined for absent slots) instead of mocks.
 describe('AccountInspector round-trip against a Rust-built account', () => {
+  // The fixture comes from `cargo run`, which compiles first on a cold cache: build it once here
+  // under a long timeout instead of inside a test bound by the default one.
+  beforeAll(() => {
+    loadFixture();
+  }, 300_000);
+
   it('reads the signer commitments in signer-index order', () => {
     const fixture = loadFixture();
     const account = Account.deserialize(hexToBytes(fixture.account_hex));

@@ -1,5 +1,7 @@
 //! Multisig configuration advice and transaction building.
 
+use std::num::NonZeroU16;
+
 use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
@@ -10,7 +12,7 @@ use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
-use crate::transaction::TransactionRequestBuilderExt;
+use crate::transaction::{TransactionRequestBuilderExt, expiration_instructions};
 
 /// Builds the multisig configuration advice map entry.
 ///
@@ -51,25 +53,30 @@ pub fn build_multisig_config_advice(
     (config_hash, payload)
 }
 
-/// Builds the update_signers transaction script.
+/// Builds the update_signers transaction script, applying `expiration_delta` first.
 ///
 /// The guarded-multisig library is scheme-agnostic: each signer's scheme lives in
 /// account storage, so the script is identical for Falcon and ECDSA accounts.
-pub fn build_update_signers_script() -> Result<TransactionScript> {
+pub fn build_update_signers_script(
+    expiration_delta: Option<NonZeroU16>,
+) -> Result<TransactionScript> {
     let standards_lib: Package = StandardsLib::default().into();
 
-    let tx_script_code = "
+    let expiration = expiration_instructions(expiration_delta);
+    let tx_script_code = format!(
+        "
         use miden::standards::auth::multisig
         @transaction_script
         pub proc main
-            call.multisig::update_signers_and_threshold
+            {expiration}call.multisig::update_signers_and_threshold
         end
-    ";
+    "
+    );
 
     let tx_script = CodeBuilder::new()
         .with_dynamically_linked_package(standards_lib)
         .map_err(|e| MultisigError::TransactionExecution(format!("failed to link library: {}", e)))?
-        .compile_tx_script(tx_script_code)
+        .compile_tx_script(&tx_script_code)
         .map_err(|e| {
             MultisigError::TransactionExecution(format!("failed to compile script: {}", e))
         })?;
@@ -77,7 +84,7 @@ pub fn build_update_signers_script() -> Result<TransactionScript> {
     Ok(tx_script)
 }
 
-/// Builds an update_signers transaction request.
+/// Builds an update_signers transaction request whose script applies `expiration_delta`.
 ///
 /// Returns (TransactionRequest, config_hash) tuple.
 pub fn build_update_signers_transaction_request<I>(
@@ -86,13 +93,14 @@ pub fn build_update_signers_transaction_request<I>(
     auth_args: &MultisigAuthArgs,
     extra_advice: I,
     scheme: SignatureScheme,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<(TransactionRequest, Word)>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
     let (config_hash, config_values) =
         build_multisig_config_advice(threshold, signer_commitments, scheme);
-    let script = build_update_signers_script()?;
+    let script = build_update_signers_script(expiration_delta)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
@@ -105,20 +113,22 @@ where
     Ok((request, config_hash))
 }
 
-/// Builds the update_procedure_threshold transaction script.
+/// Builds the update_procedure_threshold transaction script, applying `expiration_delta` first.
 pub fn build_update_procedure_threshold_script(
     procedure: ProcedureName,
     threshold: u32,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionScript> {
     let standards_lib: Package = StandardsLib::default().into();
 
     let procedure_root = procedure.root();
+    let expiration = expiration_instructions(expiration_delta);
     let tx_script_code = format!(
         r#"
         use miden::standards::auth::multisig
         @transaction_script
         pub proc main
-            push.{procedure_root}
+            {expiration}push.{procedure_root}
             push.{threshold}
             call.multisig::set_procedure_threshold
             dropw
@@ -138,7 +148,8 @@ pub fn build_update_procedure_threshold_script(
     Ok(tx_script)
 }
 
-/// Builds an update_procedure_threshold transaction request.
+/// Builds an update_procedure_threshold transaction request whose script applies
+/// `expiration_delta`.
 ///
 /// `set_procedure_threshold` reads its `[proc_threshold, PROC_ROOT]` inputs from the operand
 /// stack (pushed by the script), so only the auth signature advice is attached here.
@@ -147,11 +158,12 @@ pub fn build_update_procedure_threshold_transaction_request<I>(
     threshold: u32,
     auth_args: &MultisigAuthArgs,
     extra_advice: I,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let script = build_update_procedure_threshold_script(procedure, threshold)?;
+    let script = build_update_procedure_threshold_script(procedure, threshold, expiration_delta)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)

@@ -69,7 +69,8 @@ await client.revokeAllSessions(); // wallet-signed: ends every session of the si
 The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getDelta`,
 `getDeltaSince`, `getDeltaHistory`), proposal reads and proposal create/sign
 (`getDeltaProposals`, `getDeltaProposal`, `pushDeltaProposal`,
-`signDeltaProposal`). Every other route uses the wallet signer, including
+`signDeltaProposal`) and execution status reads (`getDeltaProposalExecution`,
+`getCurrentExecution`). Every other route uses the wallet signer, including
 `configure`, `pushDelta`, `abandonCandidate`, account lookup and
 `revokeAllSessions`; the server rejects session credentials there with
 `wallet_signature_required`.
@@ -246,6 +247,38 @@ const result = await client.pushDelta({
   status: { status: 'pending', timestamp: '...', proposer_id: '0x...', cosigner_sigs: [] },
 });
 ```
+
+### Execute a Proposal Through Guardian
+
+A proposal pushed with a `transactionRequest` (a Guardian-executable proposal) can be proved,
+submitted and committed by Guardian once it has enough signatures. Fetched proposals keep the
+stored request in `deltaPayload.transactionRequest`.
+
+```typescript
+import { isTerminalExecutionState } from '@openzeppelin/guardian-client';
+
+let execution = await client.executeDeltaProposal(accountId, proposalId, {
+  allowPrivateNote: false,
+});
+while (!isTerminalExecutionState(execution.state)) {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  execution = await client.getDeltaProposalExecution(accountId, proposalId);
+}
+
+// The account's in-flight execution, or null
+const current = await client.getCurrentExecution(accountId);
+```
+
+Guardian refuses a transaction that creates a private output note with
+`proposal_executes_locally` (`meta.reason` `private_note`) unless `allowPrivateNote` is set;
+the flag is always sent and signed.
+
+A refusal throws a `GuardianHttpError` whose `rawCode` is the wire code (for example
+`GUARDIAN_EXECUTION_CONFLICT`, with `meta.blockingProposalId`). `getStatus()` reports in
+`execution` whether the server offers Guardian execution at all; a Guardian that predates
+Guardian execution sends none, and `execution` is then absent: it does not offer it. The multisig SDK adds a
+`waitForGuardianExecution` helper with backoff, retries and a deadline; see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
 
 ### Get Deltas
 
