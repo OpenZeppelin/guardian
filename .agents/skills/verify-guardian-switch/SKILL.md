@@ -159,7 +159,7 @@ Paths are relative to `crates/server/src/`.
 | `ChainForeign` | a transaction under the other guardian, including a rotation back to this server |
 | `PushRead` | `services/push_delta.rs` `push_delta` up to the ack: `resolve_account`, `ensure_account_active_metadata`, the queue reads, `verify_and_apply_delta` |
 | `PushCommit` | `ack_delta`, then `storage/postgres.rs` `submit_candidate`: the status read under the account row lock (`CandidateSubmission::refused_while_inactive`), then `storage/mod.rs` `gate_candidate_submission`; the response carries the ack |
-| `Promote` | `jobs/canonicalization/processor.rs` promotion through `storage/postgres.rs` `promote_candidate` (CAS on the base commitment) |
+| `Promote` | `jobs/canonicalization/processor.rs` promotion through `storage/postgres.rs` `promote_candidate` (CAS on the base commitment, or resumed when `/configure` already wrote the candidate's target) |
 | `Retire` | `handle_diverged_candidate` (Retained), a stale base, or `max_retries` exhausted after the grace period |
 | `ReconcilePromote` | `jobs/canonicalization/reconciliation.rs` `reconcile_chain_advance`: a recoverable path that ends at the chain head |
 | `HookRelease`, `HookSkip` | `services/release_on_switch.rs` `release_if_guardian_switched` from `canonicalize_verified_delta`; the write may fail |
