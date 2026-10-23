@@ -2,9 +2,11 @@ use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
     ConfigureResponse, CreateSessionRequest, CreateSessionResponse,
-    DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
-    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
+    DeltaObject as ProtoDeltaObject, ExecuteDeltaProposalRequest, ExecuteDeltaProposalResponse,
+    ExecutionEnvelope, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
+    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetCurrentExecutionRequest,
+    GetCurrentExecutionResponse, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalExecutionRequest, GetDeltaProposalExecutionResponse, GetDeltaProposalRequest,
     GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
     GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
     GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
@@ -37,6 +39,9 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// Every `execute_delta_proposal` request with the auth metadata it carried, in arrival
+    /// order.
+    execute_requests: Arc<StdMutex<Vec<SignedExecuteRequest>>>,
     /// The `scheme` field of every `get_pubkey` request, in arrival order.
     get_pubkey_schemes: Arc<StdMutex<Vec<Option<String>>>>,
     persistent_get_pubkey: Arc<StdMutex<Option<String>>>,
@@ -55,6 +60,11 @@ impl MockGuardianHandle {
     /// Every `push_delta_proposal` request received so far.
     pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
         self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// Every `execute_delta_proposal` request received so far.
+    pub fn execute_requests(&self) -> Vec<SignedExecuteRequest> {
+        self.execute_requests.lock().unwrap().clone()
     }
 
     /// The signature scheme each `get_pubkey` call asked for, in arrival
@@ -93,6 +103,16 @@ impl MockGuardianHandle {
     }
 }
 
+/// An `execute_delta_proposal` request as the mock received it.
+#[derive(Clone, Debug)]
+pub struct SignedExecuteRequest {
+    pub request: ExecuteDeltaProposalRequest,
+    pub signature_hex: String,
+    pub timestamp: i64,
+}
+
+type CurrentExecutionResult = Result<Option<ExecutionEnvelope>, Status>;
+
 #[derive(Default)]
 pub struct MockGuardianService {
     handle: MockGuardianHandle,
@@ -115,6 +135,8 @@ pub struct MockGuardianService {
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
         Arc<StdMutex<Option<Result<AbandonDeltaCandidateResponse, Status>>>>,
+    execution_responses: Arc<StdMutex<Vec<Result<ExecutionEnvelope, Status>>>>,
+    current_execution_response: Arc<StdMutex<Option<CurrentExecutionResult>>>,
     create_session_requests: Arc<StdMutex<Vec<CreateSessionRequest>>>,
     /// (x-pubkey, x-signature, x-timestamp) of each RevokeSession call.
     revoke_session_auth: Arc<StdMutex<Vec<(String, String, i64)>>>,
@@ -275,6 +297,30 @@ impl MockGuardianService {
     ) -> Self {
         *self.abandon_delta_candidate_response.lock().unwrap() = Some(response);
         self
+    }
+
+    /// Queue the envelopes `ExecuteDeltaProposal` and `GetDeltaProposalExecution` answer with,
+    /// in order.
+    pub fn with_execution(self, response: Result<ExecutionEnvelope, Status>) -> Self {
+        self.execution_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_current_execution(
+        self,
+        response: Result<Option<ExecutionEnvelope>, Status>,
+    ) -> Self {
+        *self.current_execution_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    fn next_execution(&self, method: &str) -> Result<Response<ExecutionEnvelope>, Status> {
+        self.record_call(method);
+        let mut responses = self.execution_responses.lock().unwrap();
+        if responses.is_empty() {
+            return Err(Status::not_found("no scripted execution"));
+        }
+        responses.remove(0).map(Response::new)
     }
 
     /// Clone the post-start control surface before moving the service into
@@ -452,6 +498,57 @@ impl Guardian for MockGuardianService {
             });
 
         response.map(Response::new)
+    }
+
+    async fn execute_delta_proposal(
+        &self,
+        request: Request<ExecuteDeltaProposalRequest>,
+    ) -> Result<Response<ExecuteDeltaProposalResponse>, Status> {
+        let metadata = |key: &str| {
+            request
+                .metadata()
+                .get(key)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let signed = SignedExecuteRequest {
+            signature_hex: metadata("x-signature"),
+            timestamp: metadata("x-timestamp").parse().unwrap_or_default(),
+            request: request.get_ref().clone(),
+        };
+        self.handle.execute_requests.lock().unwrap().push(signed);
+        self.next_execution("execute_delta_proposal")
+            .map(|envelope| {
+                Response::new(ExecuteDeltaProposalResponse {
+                    execution: Some(envelope.into_inner()),
+                })
+            })
+    }
+
+    async fn get_delta_proposal_execution(
+        &self,
+        _request: Request<GetDeltaProposalExecutionRequest>,
+    ) -> Result<Response<GetDeltaProposalExecutionResponse>, Status> {
+        self.next_execution("get_delta_proposal_execution")
+            .map(|envelope| {
+                Response::new(GetDeltaProposalExecutionResponse {
+                    execution: Some(envelope.into_inner()),
+                })
+            })
+    }
+
+    async fn get_current_execution(
+        &self,
+        _request: Request<GetCurrentExecutionRequest>,
+    ) -> Result<Response<GetCurrentExecutionResponse>, Status> {
+        self.record_call("get_current_execution");
+        self.current_execution_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(Ok(None))
+            .map(|execution| Response::new(GetCurrentExecutionResponse { execution }))
     }
 
     async fn abandon_delta_candidate(

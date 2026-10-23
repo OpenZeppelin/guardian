@@ -91,6 +91,7 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         None,
         Some(&[]),
         author.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();

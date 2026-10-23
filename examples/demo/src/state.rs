@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use miden_multisig_client::{
     ExportedProposal, MidenCedar, MultisigClient, MultisigClientBuilder, P2ideHeights,
-    SignatureScheme,
+    ProposalExecutionMode, SignatureScheme,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -41,6 +41,8 @@ pub struct SessionState {
     /// Network the configured Miden endpoint belongs to, used to render account
     /// IDs as bech32m addresses (the format faucets expect).
     network: DemoNetwork,
+    /// Who proves and submits this session's proposals: the demo itself, or GUARDIAN.
+    execution_mode: ProposalExecutionMode,
 }
 
 /// Miden network the demo talks to. Cedar and mainnet share the `mm` address
@@ -86,7 +88,16 @@ impl SessionState {
             custom_recipes: HashMap::new(),
             signature_scheme: SignatureScheme::Falcon,
             network: DemoNetwork::Devnet,
+            execution_mode: ProposalExecutionMode::SelfExecuted,
         })
+    }
+
+    /// Whether this session's proposals are proved and submitted by GUARDIAN.
+    pub fn guardian_executes(&self) -> bool {
+        match self.execution_mode {
+            ProposalExecutionMode::GuardianExecutable => true,
+            ProposalExecutionMode::SelfExecuted => false,
+        }
     }
 
     /// Initializes the MultisigClient from `builder`, which carries every
@@ -97,11 +108,15 @@ impl SessionState {
         builder: MultisigClientBuilder,
         signature_scheme: SignatureScheme,
         network: DemoNetwork,
+        execution_mode: ProposalExecutionMode,
     ) -> Result<(), String> {
         self.signature_scheme = signature_scheme;
         self.network = network;
+        self.execution_mode = execution_mode;
 
-        let builder = builder.account_dir(self.account_directory.path().to_path_buf());
+        let builder = builder
+            .account_dir(self.account_directory.path().to_path_buf())
+            .execution_mode(execution_mode);
         let mut client = match signature_scheme {
             SignatureScheme::Falcon => builder.generate_key(),
             SignatureScheme::Ecdsa => builder.generate_ecdsa_key(),

@@ -7,26 +7,30 @@
 //! signatures — no current-guardian signature — matching `docs/CONCEPTS.md`
 //! cold-key recovery.
 
+use std::num::NonZeroU16;
+
 use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
 use miden_protocol::{Felt, Word};
 use miden_standards::account::auth::{AuthGuardedMultisig, MultisigAuthArgs};
 
-use super::TransactionRequestBuilderExt;
+use super::{TransactionRequestBuilderExt, expiration_instructions};
 use crate::error::{MultisigError, Result};
 
-/// Builds the update_guardian_public_key transaction script.
+/// Builds the update_guardian_public_key transaction script, applying `expiration_delta` first.
 ///
 /// Pushes the new guardian key word and scheme id as stack args, calls the
 /// component procedure, then drops the five pushed felts (the call leaves them).
 pub fn build_update_guardian_script(
     new_guardian_pubkey: Word,
     scheme: SignatureScheme,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionScript> {
     let scheme_id = scheme.auth_scheme_id();
+    let expiration = expiration_instructions(expiration_delta);
     let tx_script_code = format!(
-        "@transaction_script\npub proc main\n    push.{new_guardian_pubkey}\n    push.{scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
+        "@transaction_script\npub proc main\n    {expiration}push.{new_guardian_pubkey}\n    push.{scheme_id}\n    call.::miden::standards::components::auth::guarded_multisig::update_guardian_public_key\n    drop\n    dropw\nend"
     );
 
     let tx_script = CodeBuilder::new()
@@ -40,25 +44,22 @@ pub fn build_update_guardian_script(
     Ok(tx_script)
 }
 
-/// Builds a transaction request to rotate the GUARDIAN public key.
+/// Builds a transaction request to rotate the GUARDIAN public key, whose script applies
+/// `expiration_delta`.
 ///
-/// # Arguments
-///
-/// * `new_guardian_pubkey` - The new GUARDIAN public key commitment
-/// * `scheme` - The signature scheme of the new guardian key
-/// * `auth_args` - The multisig auth args the summary binds (salt, bound block, expiration)
-/// * `signature_advice` - Iterator of (key, values) pairs for the multisig
-///   threshold signature advice (no guardian signature is required)
+/// * `signature_advice` - the multisig threshold signature advice (no guardian signature is
+///   required)
 pub fn build_update_guardian_transaction_request<I>(
     new_guardian_pubkey: Word,
     scheme: SignatureScheme,
     auth_args: &MultisigAuthArgs,
     signature_advice: I,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionRequest>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let script = build_update_guardian_script(new_guardian_pubkey, scheme)?;
+    let script = build_update_guardian_script(new_guardian_pubkey, scheme, expiration_delta)?;
 
     let request = TransactionRequestBuilder::new()
         .custom_script(script)
