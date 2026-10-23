@@ -45,17 +45,17 @@ impl DeltaCommitStrategy {
                 // race-proof form of the pre-commit queue-admission
                 // gate: the losing side of two concurrent submissions
                 // gets the same 409 it would have gotten arriving late.
-                let max_pending_candidates =
-                    crate::services::candidate_chain::max_pending_candidates(ctx.state);
+                let policy = crate::storage::CandidatePolicy::new(
+                    crate::services::candidate_chain::max_pending_candidates(ctx.state),
+                    ctx.state
+                        .canonicalization
+                        .as_ref()
+                        .is_some_and(crate::builder::canonicalization::CanonicalizationConfig::archives_superseded),
+                );
                 let outcome = ctx
                     .resolved
                     .storage
-                    .submit_candidate(
-                        ctx.state.metadata.as_ref(),
-                        delta,
-                        &ctx.now,
-                        max_pending_candidates,
-                    )
+                    .submit_candidate(ctx.state.metadata.as_ref(), delta, &ctx.now, policy)
                     .await
                     .map_err(|e| {
                         error!(

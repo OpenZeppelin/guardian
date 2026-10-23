@@ -1,0 +1,23 @@
+# tier name max_states max_nonce max_drops expiring mutation expected invariants properties
+#
+# A cell expected to FAIL checks one property so its verdict names it.
+# "-" means none. A cell whose properties include DeviceConverges runs
+# FairSpec (syncs, the node and Guardian keep running); every other cell
+# runs Spec.
+#
+# Findings C1 and C2 (SKILL.md) are fixed. m1 drops the Rust rollback,
+# m2 makes TS decide from its cached config, m3 rolls back on Guardian's
+# word alone (no node-side drop), which Forget makes unsafe; each must fail.
+# expiring TRUE gives every config proposal an approval expiration, so the
+# Rust rollback skips Guardian's veto (an expired transaction cannot land).
+quick converges          4 2 1 FALSE none PASS                           - DeviceConverges
+quick converges-expiring 4 2 1 TRUE none PASS                           - DeviceConverges
+quick safety             5 3 1 FALSE none PASS                           ConfigFresh NeverRollsBackPending
+quick safety-expiring    5 3 1 TRUE none PASS                           ConfigFresh NeverRollsBackPending
+deep  converges-5        5 3 1 FALSE none PASS                           - DeviceConverges
+deep  converges-2drops   5 3 2 FALSE none PASS                           - DeviceConverges
+deep  safety-6           6 4 1 FALSE none PASS                           ConfigFresh NeverRollsBackPending
+mutation m1              4 2 1 FALSE m1   FAIL:temporal                  - DeviceConverges
+mutation m2              5 3 1 FALSE m2   FAIL:ConfigFresh               ConfigFresh -
+mutation m3              5 3 1 FALSE m3   FAIL:NeverRollsBackPending     - NeverRollsBackPending
+mutation m3-expiring     5 3 1 TRUE m3   FAIL:NeverRollsBackPending     - NeverRollsBackPending

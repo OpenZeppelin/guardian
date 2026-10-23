@@ -2,9 +2,7 @@ export { GuardianHttpClient, GuardianHttpError } from './http.js';
 export type {
   ExecuteDeltaProposalOptions,
   GuardianErrorMeta,
-  GuardianErrorReason,
   LocalExecutionReason,
-  PendingDeltaReason,
 } from './http.js';
 export {
   GUARDIAN_ERROR_CODES,

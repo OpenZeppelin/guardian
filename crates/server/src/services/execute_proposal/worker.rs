@@ -600,10 +600,9 @@ async fn cross_boundary(
         },
         delta: candidate,
         now,
-        recoverable_since: state
-            .canonicalization
-            .as_ref()
-            .map_or(now, |config| config.abandoned_cutoff(now)),
+        archive_parked: state.canonicalization.as_ref().is_some_and(
+            crate::builder::canonicalization::CanonicalizationConfig::archives_superseded,
+        ),
     };
     let outcome = state
         .storage
@@ -627,12 +626,6 @@ async fn cross_boundary(
         AdmissionWrite::AccountInactive => Err(ExecutionFailure::new(
             ExecutionFailureCode::AccountInadmissible,
             "the account was paused or released before the boundary commit",
-        )
-        .into()),
-        AdmissionWrite::RecoverableDeltaPending => Err(ExecutionFailure::new(
-            ExecutionFailureCode::AccountInadmissible,
-            "a parked delta on the account's state may still land; request execution again \
-             once it is settled",
         )
         .into()),
         AdmissionWrite::CandidateExists | AdmissionWrite::NonceOccupied => {

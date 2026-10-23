@@ -367,7 +367,9 @@ describe('MultisigClient', () => {
       const multisig = await client.load(accountId, mockSigner);
 
       await expect(multisig.registerOnGuardian()).resolves.toBeUndefined();
-      expect(webClient.accounts.get).toHaveBeenCalledTimes(1);
+      // `load` reads the store once; registration reads it again so it sends
+      // the cosigner list the store holds rather than a cached one.
+      expect(webClient.accounts.get).toHaveBeenCalledTimes(2);
       expect(webClient.accounts.insert).toHaveBeenCalledTimes(1);
     });
 

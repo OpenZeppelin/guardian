@@ -16,10 +16,10 @@ crates/server/src/storage/postgres.rs update_delta_proposal de621c9ddaf3f34c
 crates/server/src/storage/filesystem.rs update_delta_proposal 6b9667af9fcdb0bc
 crates/server/src/storage/filesystem.rs submit_delta_proposal 75fa735e3e524970
 crates/miden-multisig-client/src/client/offline.rs relay_collected_approvals 1d005033639f3296
-crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal d6dbe028c5a700f7
-crates/miden-multisig-client/src/client/proposals.rs execute_proposal 5e01fa2dba1b9738
+crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 9079e4250aa3a5fe
+crates/miden-multisig-client/src/client/proposals.rs execute_proposal 1f57f9945cf6c69b
 packages/miden-multisig-client/src/multisig.ts relayCollectedApprovals a04503eb321ced3c
-packages/miden-multisig-client/src/multisig.ts prepareProposalExecution aa19ead7f431220e
+packages/miden-multisig-client/src/multisig.ts prepareProposalExecution d0fdbe70c1d6f1e6
 packages/miden-multisig-client/src/multisig.ts executeProposal 895eebc853f39c06
 packages/miden-multisig-client/src/multisig.ts assembleCustomAdvice 856dc08cfb05b1a8
 packages/miden-multisig-client/src/multisig.ts servedSwitchProposal 1d20c761856c0524
