@@ -738,10 +738,7 @@ Stable error codes include:
   `GUARDIAN_EXECUTION_NOT_FOUND`,
   `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`, `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`. An
   execution request gets `commitment_mismatch` when the proposal builds on a state other than
-  the account's current one, and `conflict_pending_delta` while a client candidate is pending, and
-  the same code with `meta.reason` `parked_delta` while a parked delta (`retained`, or a recent
-  client-abandoned discard) built on the account's state could still land; nothing is reserved
-  and the request succeeds once reconciliation promotes or drops that delta. Their
+  the account's current one, and `conflict_pending_delta` while a client candidate is pending. Their
   HTTP and gRPC status pairs are verified by `crates/server/src/api/execution_tests.rs`.
 - `signer_not_authorized`
 - `wallet_signature_required` (session credentials on a wallet-only route; HTTP 403 / gRPC `PermissionDenied`)
