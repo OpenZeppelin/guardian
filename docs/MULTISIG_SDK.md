@@ -775,12 +775,9 @@ while !execution.state.is_terminal() {
 
 A failed execution carries a stable `error.code`. A refusal from the multisig SDKs' execution
 methods surfaces in Rust as `MultisigError::GuardianExecutionRefused { code, message, retryable,
-retry_after, blocking_proposal_id, reason }` and in TypeScript as a `GuardianExecutionRefusedError`
-with the same fields (`code`, `userMessage`, `retryable`, `retryAfterSecs`, `blockingProposalId`,
-`reason`). `code` is the wire string, such as `GUARDIAN_EXECUTION_CONFLICT`, in both.
-`conflict_pending_delta` with `reason` `parked_delta` means a cosigner's parked delta on the
-account's state may still land: request execution again once Guardian reconciles it, or execute
-the proposal locally meanwhile. A refusal to store a new proposal, such as
+retry_after, blocking_proposal_id }` and in TypeScript as a `GuardianExecutionRefusedError`
+with the same fields (`code`, `userMessage`, `retryable`, `retryAfterSecs`, `blockingProposalId`).
+`code` is the wire string, such as `GUARDIAN_EXECUTION_CONFLICT`, in both. A refusal to store a new proposal, such as
 `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` or `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`, surfaces from
 the Rust `propose_*` methods and `propose_custom_transaction` as
 `MultisigError::GuardianProposalRefused { code, message, retryable, retry_after }`, with the same

@@ -665,14 +665,11 @@ once come back synchronously and create nothing.
   changed the serialization. A proposal created by an SDK on a different `miden-client` than the
   server may not decode, or may decode to a different transaction, which execution refuses
   before proving. Run the same `miden-client` on both sides, or execute the proposal from an SDK.
-- **`409 conflict_pending_delta` with `meta.reason` `parked_delta` on the execution request, or
-  `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` with "a parked delta on the account's state may
-  still land".** A cosigner's earlier delta on the same state was parked (`retained`, or
-  abandoned within `GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`) and its transaction can
-  still land. Guardian does not execute beside it: if that transaction won, Guardian would lose
-  its only record of it. Reconciliation promotes it once it lands, or drops it when the TTL
-  passes; request execution again then. The operator dashboard's per-account delta feed
-  (`GET /dashboard/accounts/{account_id}/deltas`) shows the parked row; see also
+- **An execution ends `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` while a cosigner's delta was
+  parked on the same state.** A parked delta (`retained`, or client-abandoned) does not block
+  execution: admission moves it to the superseded-delta archive. If its transaction lands
+  instead of Guardian's, the execution ends `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` and
+  reconciliation restores the parked delta's step, so Guardian matches the chain. See
   [Candidates are being retained or discarded](#candidates-are-being-retained-or-discarded).
 - **An execution stays `submitted`.** The send's outcome is unknown and reconciliation waits for
   the chain: it resolves `committed` through promotion, `EXPIRED` once the chain reaches the
@@ -813,7 +810,7 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, a delta behind a queued candidate is labelled with a nonce other than the one it leaves the account at (a client labelling with a timestamp), the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. On a Guardian execution request, `meta.reason` `parked_delta` instead means a parked delta on the account's state may still land (see [Guardian execution fails or never starts](#guardian-execution-fails-or-never-starts)). Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, a delta behind a queued candidate is labelled with a nonce other than the one it leaves the account at (a client labelling with a timestamp), the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. A parked (`retained` or client-abandoned) delta does not refuse a Guardian execution request. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |

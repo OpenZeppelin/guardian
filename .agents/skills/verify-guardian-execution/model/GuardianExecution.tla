@@ -45,7 +45,7 @@ VARIABLES
     stored,     \* states.commitment
     cand,       \* the candidate delta at the next nonce (depth 1)
     canon,      \* target of the canonical delta at the next nonce, or None
-    parked,     \* retained rows at the next nonce
+    parked,     \* retained rows at the next nonce, or their superseded_deltas copies
     proposals,  \* delta_proposals rows
     res,        \* execution_reservations + execution_submissions + execution_outcomes, per attempt
     lease,      \* the worker_leases row "execution:<account>"
@@ -123,11 +123,6 @@ CommitPromotedRes(promoted) ==
         IF Settles(a, promoted)
         THEN [res[a] EXCEPT !.outcome = "committed", !.released = TRUE]
         ELSE res[a]]
-
-\* recoverable_delta_on: a retained (or recently client-abandoned) row built
-\* on the stored state, whose transaction can still land. Every parked row
-\* in this model is built on the base.
-RecoverableOnStored == parked # {} /\ stored = Base
 
 -----------------------------------------------------------------------------
 Init ==
@@ -250,7 +245,6 @@ ReqCreate(w) ==
     /\ IF /\ LeaseCurrent(w, wtok[w])
           /\ Active = {}
           /\ cand.kind = None
-          /\ ~RecoverableOnStored
           /\ wp[w] \in proposals
        THEN /\ res' = [res EXCEPT ![w] = [NoRes EXCEPT !.used = TRUE, !.p = wp[w],
                                           !.holder = w, !.tok = wtok[w], !.live = TRUE]]
@@ -293,10 +287,9 @@ WFail(w) ==
     /\ UNCHANGED <<chainVars, stored, canon, parked, lease, wp, wtok, wref, rcVars, procVars, budgetVars>>
 
 \* cross_boundary -> admit_execution_candidate_tx: the candidate and the
-\* evidence commit together. A recoverable row on the base refuses it
-\* (RecoverableDeltaPending -> a pre-boundary failure); the rows it still
-\* deletes at the nonce (built on another state, or abandoned before the
-\* cutoff) cannot land and are not modeled.
+\* evidence commit together. A parked row at the nonce moves to the
+\* superseded_deltas archive (archive_parked_delta), where reconciliation
+\* can still restore it, so `parked` keeps it.
 WAdmit(w) ==
     /\ wpc[w] = "prepared"
     /\ IF ~(w \in Active /\ res[w].holder = w /\ ~res[w].ev)
@@ -305,7 +298,7 @@ WAdmit(w) ==
        ELSE IF ~OwnsLive(w, w, wtok[w])
        THEN /\ wpc' = [wpc EXCEPT ![w] = "release"]
             /\ UNCHANGED <<cand, parked, res>>
-       ELSE IF stored # Base \/ cand.kind # None \/ canon # None \/ RecoverableOnStored
+       ELSE IF stored # Base \/ cand.kind # None \/ canon # None
        THEN /\ wpc' = [wpc EXCEPT ![w] = "failing"]
             /\ UNCHANGED <<cand, parked, res>>
        ELSE /\ cand' = [kind |-> "exec", target |-> Target(wp[w]), w |-> w]
@@ -570,12 +563,16 @@ PWrite ==
     /\ UNCHANGED <<chainVars, parked, proposals, lease, workerVars, rcVars, psnap, budgetVars>>
 
 \* jobs/canonicalization/reconciliation.rs: a retained row whose post-state
-\* the chain reached is promoted (PromotableKind::Retained), through the
-\* same promote_candidate transaction.
+\* the chain reached is promoted (PromotableKind::Retained, or
+\* PromotableKind::Superseded for an archived copy), through the same
+\* promote_candidate transaction. An archived row never replaces a candidate
+\* still at its nonce (restore_superseded), so it waits for the execution
+\* that archived it to resolve.
 PReconcileRetained ==
     /\ ClientTarget \in parked
     /\ stored = Base
     /\ canon = None
+    /\ cand.kind = None
     /\ \E b \in Blocks : At(b) = ClientTarget
     /\ stored' = ClientTarget
     /\ canon' = ClientTarget

@@ -639,10 +639,7 @@ whatever the request sets), the proposal stores no request
 (`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), the transaction creates a private output note
 and the request did not set `allow_private_note` (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`,
 `meta.reason` `private_note`), another execution holds the account
-(`GUARDIAN_EXECUTION_CONFLICT`), a client candidate is pending, a parked delta built on the
-account's current state could still land (a `retained` delta, or a `discarded { client_abandoned }`
-one within `retained_ttl_seconds`; `409 conflict_pending_delta` with `meta.reason`
-`parked_delta`, until reconciliation promotes or drops it), the proposal builds on a state other
+(`GUARDIAN_EXECUTION_CONFLICT`), a client candidate is pending, the proposal builds on a state other
 than the account's current one (`commitment_mismatch`; the proposal can never execute),
 or the valid, distinct cosigner signatures fall short of the effective per-procedure threshold
 (`GUARDIAN_PROPOSAL_NOT_READY`). The checks run in that order, so a proposal that must execute
@@ -686,9 +683,10 @@ domain-separated from a signed status read (see [Miden Request Signing](api.md#m
     its own block timestamps, with 2 blocks below the expiration held in reserve.
 12. **The no-retry boundary.** In one storage write, admit the candidate delta and record the
     submission evidence (transaction id, expected commitment, expiration block). The same write
-    refuses while a parked delta on the account's state could still land
-    (`GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE`): executing beside it would race it, and Guardian
-    would lose its record of that delta if it won. Nothing after this point is proved or sent
+    moves a parked (`retained` or client-abandoned) row at the candidate's nonce to the
+    superseded-delta archive, from which reconciliation restores it if its transaction lands
+    instead of Guardian's (the execution then resolves `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`);
+    with retention disabled the row is deleted. Nothing after this point is proved or sent
     again.
 13. Re-validate the fence; a worker that lost ownership sends nothing. A storage error here
     leaves ownership unknown, so the fenced claim is retried while the worker's lease is held

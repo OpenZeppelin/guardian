@@ -4451,7 +4451,7 @@
               "string",
               "null"
             ],
-            "description": "Why the request was refused, for the codes that name one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`) and, on a\nGuardian execution request, `conflict_pending_delta` (`parked_delta`: a parked delta on\nthe account's state may still land)."
+            "description": "Why the request was refused, for the code that names one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`)."
           },
           "released_at": {
             "type": [

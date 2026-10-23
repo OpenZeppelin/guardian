@@ -32,9 +32,7 @@ pub enum MultisigError {
     /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. `retryable` is the
     /// server's `meta.retryable`; `retry_after` is the server's backoff hint, when it sent one;
     /// `blocking_proposal_id` names the proposal whose execution holds the account, on a
-    /// conflict; `reason` is the server's `meta.reason`, such as `parked_delta` on a
-    /// `conflict_pending_delta` (a parked delta on the account's state may still land: request
-    /// execution again once it settles).
+    /// conflict.
     #[error("GUARDIAN refused execution ({code}): {message}")]
     GuardianExecutionRefused {
         code: String,
@@ -42,7 +40,6 @@ pub enum MultisigError {
         retryable: bool,
         retry_after: Option<std::time::Duration>,
         blocking_proposal_id: Option<String>,
-        reason: Option<String>,
     },
 
     /// GUARDIAN refused to store a new proposal with a stable code, such as

@@ -103,7 +103,6 @@ impl Harness {
             lease_expires_at: Utc::now() + chrono::Duration::minutes(5),
             ignored_signatures: 0,
             now: Utc::now(),
-            recoverable_since: Utc::now() - chrono::Duration::days(1),
         }
     }
 
@@ -172,7 +171,7 @@ impl Harness {
                 committed_at: now,
             },
             now,
-            recoverable_since: now - chrono::Duration::days(1),
+            archive_parked: true,
         }
     }
 
@@ -896,135 +895,237 @@ fn parked(h: &Harness, nonce: u64, prev_commitment: &str, status: DeltaStatus) -
     delta
 }
 
-/// A retained or recently client-abandoned delta on the account's state can still land, so an
-/// execution on that state would race it and, if it won, delete Guardian's only record of it.
-async fn reservation_is_refused_while_a_parked_delta_on_its_base_can_land(h: &Harness) {
-    let proposal = proposal_commitment(1);
-    h.ensure_proposal(&proposal).await;
+/// A retained or client-abandoned delta on the account's state no longer holds execution back:
+/// admission archives it, so reconciliation can still restore it if it lands instead.
+async fn a_parked_delta_on_its_base_does_not_refuse_execution(h: &Harness) {
     let now = Utc::now().to_rfc3339();
-    for status in [
+    for (index, status) in [
         DeltaStatus::retained(
             now.clone(),
             crate::delta_object::RetainReason::RetryExhausted,
         ),
         DeltaStatus::discarded_client_abandoned(now.clone()),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         h.storage
             .submit_delta(&parked(h, 1, BASE, status))
             .await
             .expect("parked delta");
-        let fence = h.lease("worker-a", Duration::from_secs(60)).await;
+        let proposal = proposal_commitment(u8::try_from(index).unwrap() + 1);
+        let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+        let attempt = h.reserve(&proposal, &owner).await;
         assert_eq!(
             h.storage
-                .create_execution_reservation(h.new_reservation(&proposal, &fence))
+                .admit_execution_candidate(
+                    h.metadata.as_ref(),
+                    h.admission(&proposal, attempt, &owner, 1),
+                )
                 .await
                 .unwrap(),
-            ReservationWrite::RecoverableDeltaPending
+            AdmissionWrite::Admitted
+        );
+        assert!(h.delta_at(1).await.unwrap().status.is_candidate());
+        assert_eq!(
+            h.storage
+                .resolve_execution(
+                    h.metadata.as_ref(),
+                    h.resolution(
+                        &proposal,
+                        attempt,
+                        &owner,
+                        ExecutionFailureCode::SubmissionRejected
+                    ),
+                )
+                .await
+                .unwrap(),
+            ResolveWrite::Resolved
         );
         h.leases
             .elector(&h.account_id, "worker-a")
             .release(crate::coordination::Lease {
-                name: fence.lease_name.clone(),
-                holder_id: fence.holder_id.clone(),
-                fence_token: fence.fence_token,
+                name: owner.lease_name.clone(),
+                holder_id: owner.holder_id.clone(),
+                fence_token: owner.fence_token,
                 expires_at: Utc::now(),
             })
             .await
             .unwrap();
-        assert!(
-            h.delta_at(1).await.is_some(),
-            "the refusal leaves the parked delta in place"
-        );
     }
-    assert!(
+}
+
+async fn archived(h: &Harness) -> Vec<crate::storage::SupersededDelta> {
+    h.storage
+        .pull_superseded_deltas(&h.account_id, Utc::now() - chrono::Duration::days(1))
+        .await
+        .expect("archive readable")
+}
+
+/// Admission moves a parked row at its nonce to the superseded-delta archive, and deletes it
+/// outright only when archiving is off (retention disabled, so nothing would reconcile it).
+async fn admission_archives_a_parked_delta_at_its_nonce(h: &Harness) {
+    for archive_parked in [true, false] {
         h.storage
-            .load_active_execution(&h.account_id)
+            .submit_delta(&parked(
+                h,
+                1,
+                BASE,
+                DeltaStatus::retained(
+                    Utc::now().to_rfc3339(),
+                    crate::delta_object::RetainReason::RetryExhausted,
+                ),
+            ))
+            .await
+            .expect("parked delta");
+        let proposal = proposal_commitment(if archive_parked { 1 } else { 2 });
+        let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+        let attempt = h.reserve(&proposal, &owner).await;
+        let before = archived(h).await.len();
+        assert_eq!(
+            h.storage
+                .admit_execution_candidate(
+                    h.metadata.as_ref(),
+                    CandidateAdmission {
+                        archive_parked,
+                        ..h.admission(&proposal, attempt, &owner, 1)
+                    },
+                )
+                .await
+                .unwrap(),
+            AdmissionWrite::Admitted
+        );
+        assert!(h.delta_at(1).await.unwrap().status.is_candidate());
+        assert_eq!(
+            archived(h).await.len(),
+            before + usize::from(archive_parked),
+            "archive_parked = {archive_parked}"
+        );
+        h.storage
+            .resolve_execution(
+                h.metadata.as_ref(),
+                h.resolution(
+                    &proposal,
+                    attempt,
+                    &owner,
+                    ExecutionFailureCode::SubmissionRejected,
+                ),
+            )
+            .await
+            .unwrap();
+        h.leases
+            .elector(&h.account_id, "worker-a")
+            .release(crate::coordination::Lease {
+                name: owner.lease_name.clone(),
+                holder_id: owner.holder_id.clone(),
+                fence_token: owner.fence_token,
+                expires_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+    }
+}
+
+/// The finding the old refusal guarded against (E1): the parked delta's transaction lands
+/// instead of Guardian's. Once reconciliation resolves the execution, the archived row is
+/// restored as the step the chain took, and the execution is never recorded `committed`.
+async fn a_parked_delta_that_lands_instead_is_restored_after_the_execution_resolves(h: &Harness) {
+    let landed = "0xc11e47";
+    let mut client = parked(
+        h,
+        1,
+        BASE,
+        DeltaStatus::retained(
+            Utc::now().to_rfc3339(),
+            crate::delta_object::RetainReason::RetryExhausted,
+        ),
+    );
+    client.new_commitment = Some(landed.to_string());
+    h.storage.submit_delta(&client).await.expect("parked delta");
+    let proposal = proposal_commitment(1);
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let attempt = h.reserve(&proposal, &owner).await;
+    h.storage
+        .admit_execution_candidate(
+            h.metadata.as_ref(),
+            h.admission(&proposal, attempt, &owner, 1),
+        )
+        .await
+        .unwrap();
+
+    let now = Utc::now();
+    let mut restored = client.clone();
+    restored.status = DeltaStatus::canonical(now.to_rfc3339());
+    let restore = || CandidatePromotion {
+        state: StateObject {
+            account_id: h.account_id.clone(),
+            commitment: landed.to_string(),
+            nonce: None,
+            state_json: serde_json::json!({ "state": "landed" }),
+            created_at: "2026-09-30T12:00:00Z".to_string(),
+            updated_at: now.to_rfc3339(),
+            auth_scheme: String::new(),
+        },
+        delta: restored.clone(),
+        new_auth: None,
+        now: now.to_rfc3339(),
+        fence: h.canonicalization_fence.clone(),
+        source: PromotableKind::Superseded,
+    };
+    assert_eq!(
+        h.storage
+            .promote_candidate(h.metadata.as_ref(), restore())
+            .await
+            .unwrap(),
+        PromoteWrite::NotCandidate,
+        "the archived row waits while the execution's candidate holds its nonce"
+    );
+    assert_eq!(
+        h.storage
+            .resolve_execution(
+                h.metadata.as_ref(),
+                h.resolution(
+                    &proposal,
+                    attempt,
+                    &owner,
+                    ExecutionFailureCode::CandidateDiscarded
+                ),
+            )
+            .await
+            .unwrap(),
+        ResolveWrite::Resolved
+    );
+    assert_eq!(
+        h.storage
+            .promote_candidate(h.metadata.as_ref(), restore())
+            .await
+            .unwrap(),
+        PromoteWrite::Applied {
+            settled_execution: false
+        }
+    );
+    let row = h.delta_at(1).await.expect("the landed step is recorded");
+    assert!(row.status.is_canonical());
+    assert_eq!(row.new_commitment.as_deref(), Some(landed));
+    assert_eq!(
+        h.storage
+            .pull_state(&h.account_id)
             .await
             .unwrap()
-            .is_none()
+            .commitment,
+        landed
     );
-}
-
-/// A parked delta built on another state can never land, and an abandoned one older than the
-/// reconcile pass's cutoff is history: neither holds execution back, and admission still clears
-/// the nonce of such a row.
-async fn parked_deltas_that_cannot_land_do_not_hold_execution_back(h: &Harness) {
-    let stale = (Utc::now() - chrono::Duration::days(2)).to_rfc3339();
-    h.storage
-        .submit_delta(&parked(
-            h,
-            1,
-            BASE,
-            DeltaStatus::discarded_client_abandoned(stale),
-        ))
-        .await
-        .expect("old abandoned delta");
-    h.storage
-        .submit_delta(&parked(
-            h,
-            2,
-            "0xelsewhere",
-            DeltaStatus::retained(
-                Utc::now().to_rfc3339(),
-                crate::delta_object::RetainReason::Diverged,
-            ),
-        ))
-        .await
-        .expect("retained delta on another state");
-
-    let proposal = proposal_commitment(1);
-    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
-    let attempt = h.reserve(&proposal, &owner).await;
-    assert_eq!(
-        h.storage
-            .admit_execution_candidate(
-                h.metadata.as_ref(),
-                h.admission(&proposal, attempt, &owner, 1),
-            )
-            .await
-            .unwrap(),
-        AdmissionWrite::Admitted
-    );
-    assert!(h.delta_at(1).await.unwrap().status.is_candidate());
-}
-
-async fn admission_refuses_a_parked_delta_on_its_base(h: &Harness) {
-    let proposal = proposal_commitment(1);
-    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
-    let attempt = h.reserve(&proposal, &owner).await;
-    h.storage
-        .submit_delta(&parked(
-            h,
-            1,
-            BASE,
-            DeltaStatus::retained(
-                Utc::now().to_rfc3339(),
-                crate::delta_object::RetainReason::RetryExhausted,
-            ),
-        ))
-        .await
-        .expect("parked delta");
-    assert_eq!(
-        h.storage
-            .admit_execution_candidate(
-                h.metadata.as_ref(),
-                h.admission(&proposal, attempt, &owner, 1),
-            )
-            .await
-            .unwrap(),
-        AdmissionWrite::RecoverableDeltaPending
-    );
-    assert!(
-        h.delta_at(1).await.unwrap().status.is_retained(),
-        "the parked delta is kept for reconciliation"
-    );
-    let active = h
+    let latest = h
         .storage
-        .load_active_execution(&h.account_id)
+        .load_latest_execution(&h.account_id, &proposal)
         .await
         .unwrap()
-        .expect("still reserved");
-    assert!(active.evidence.is_none(), "nothing crossed the boundary");
+        .unwrap();
+    assert!(matches!(
+        latest.outcome.map(|outcome| outcome.terminal),
+        Some(crate::storage::ExecutionTerminal::Failed { failure })
+            if failure.code == ExecutionFailureCode::CandidateDiscarded
+    ));
 }
 
 /// Only a promotion to the state the execution's transaction produces settles it: another
@@ -1637,6 +1738,55 @@ fn promotion(h: &Harness) -> CandidatePromotion {
     }
 }
 
+/// A `/configure` re-onboarding (`replace_state`) can move the stored state to an execution
+/// candidate's target before promotion. Promotion then finds the account already there and
+/// must finish as a resumed promotion, settling the execution, rather than report a stale base
+/// on every pass while the reservation holds the account forever.
+async fn a_promotion_resumes_when_re_onboarding_already_reached_its_target(h: &Harness) {
+    let proposal = proposal_commitment(1);
+    let owner = h.lease("worker-a", Duration::from_secs(60)).await;
+    let attempt = h.reserve(&proposal, &owner).await;
+    h.storage
+        .admit_execution_candidate(
+            h.metadata.as_ref(),
+            h.admission(&proposal, attempt, &owner, 1),
+        )
+        .await
+        .unwrap();
+    let target = promotion(h).state;
+    assert_eq!(
+        h.storage.replace_state(&target, BASE).await.unwrap(),
+        crate::storage::StateReplace::Replaced
+    );
+    assert_eq!(
+        h.storage
+            .promote_candidate(h.metadata.as_ref(), promotion(h))
+            .await
+            .unwrap(),
+        PromoteWrite::Applied {
+            settled_execution: true
+        }
+    );
+    assert!(h.delta_at(1).await.unwrap().status.is_canonical());
+    assert!(
+        h.storage
+            .load_active_execution(&h.account_id)
+            .await
+            .unwrap()
+            .is_none(),
+        "the reservation is released"
+    );
+    assert!(!h.pending_flag().await);
+    assert_eq!(
+        h.storage
+            .promote_candidate(h.metadata.as_ref(), promotion(h))
+            .await
+            .unwrap(),
+        PromoteWrite::NotCandidate,
+        "a second pass finds nothing left to promote"
+    );
+}
+
 /// Runs `terminal` once and reports whether it wrote its outcome.
 async fn write_terminal(
     h: &Harness,
@@ -1716,9 +1866,10 @@ mod filesystem {
         canonicalization_cannot_discard_an_executing_candidate,
         a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner,
         promotion_commits_and_releases_the_execution,
-        reservation_is_refused_while_a_parked_delta_on_its_base_can_land,
-        parked_deltas_that_cannot_land_do_not_hold_execution_back,
-        admission_refuses_a_parked_delta_on_its_base,
+        a_parked_delta_on_its_base_does_not_refuse_execution,
+        admission_archives_a_parked_delta_at_its_nonce,
+        a_parked_delta_that_lands_instead_is_restored_after_the_execution_resolves,
+        a_promotion_resumes_when_re_onboarding_already_reached_its_target,
         a_promotion_to_another_state_settles_nothing,
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,
@@ -2176,9 +2327,10 @@ mod postgres {
         canonicalization_cannot_discard_an_executing_candidate,
         a_canonical_candidate_under_a_held_reservation_is_settled_by_its_owner,
         promotion_commits_and_releases_the_execution,
-        reservation_is_refused_while_a_parked_delta_on_its_base_can_land,
-        parked_deltas_that_cannot_land_do_not_hold_execution_back,
-        admission_refuses_a_parked_delta_on_its_base,
+        a_parked_delta_on_its_base_does_not_refuse_execution,
+        admission_archives_a_parked_delta_at_its_nonce,
+        a_parked_delta_that_lands_instead_is_restored_after_the_execution_resolves,
+        a_promotion_resumes_when_re_onboarding_already_reached_its_target,
         a_promotion_to_another_state_settles_nothing,
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,

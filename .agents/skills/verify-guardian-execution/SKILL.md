@@ -51,8 +51,7 @@ no fairness.
 
 ## Related skills
 
-These live with PR #560 (`fix/canonicalization-superseded-archive`) until
-it merges, and this model leans on what they prove:
+These came in with PR #560, and this model leans on what they prove:
 
 - `verify-worker-lease`: a fenced write that locks then checks the fence
   commits in token order. Here every execution write is one atomic step
@@ -72,10 +71,10 @@ Yes if the diff changes any function in `mirrored.txt`; the drift check
 lists the ones that changed, so when unsure, run `check.sh --drift-only`
 (seconds, python3 only). `mirrored.txt` lists the modeled functions and
 every helper they call that decides an outcome the model represents
-(`recoverable_delta_on`, `attempt_evidence`, `owns_candidate`,
-`storage::abandoned_cutoff`, `gate_candidate_submission`, the processor's
-`ProtectedByExecution` arms, the chain reads), plus the filesystem
-backend's copies of the E1 fix, which the model does not cover but which
+(`archive_parked_delta`, `restore_superseded`, `attempt_evidence`,
+`owns_candidate`, `storage::abandoned_cutoff`, `gate_candidate_submission`,
+the processor's `ProtectedByExecution` arms, the chain reads), plus the
+filesystem backend's copies of the E1 fix, which the model does not cover but which
 must stay in parity with Postgres. A new helper on a modeled path that
 decides a refusal, a verdict or a write belongs there too. The advisory
 `Execution model drift` workflow (`.github/workflows/execution-model-drift.yml`)
@@ -114,7 +113,8 @@ is `FAIL:temporal`), and an expected failure must name the same one, so a
 different violation still shows as a `DIFF`. Exit codes: 0 every cell
 matches and nothing drifted; 1 a cell changed verdict; 2 setup error; 3
 cells match but mirrored Rust changed. Every cell passes today; the
-`parked=TRUE` cells guard the fix for finding E1 below.
+`parked=TRUE` cells guard the fix for finding E1 below: a parked delta
+whose transaction can still land sits on the base when execution starts.
 
 It needs `java` (`brew install openjdk`) and `python3`. The first run
 downloads `tla2tools.jar` 1.7.4 to `~/.cache/guardian-tla/` (shared with
@@ -172,11 +172,11 @@ Paths are relative to `crates/server/src/`.
 | Model action | Code |
 |---|---|
 | `ReqAcquire` | `services/execute_proposal/service.rs` `request_execution`: `elector.try_acquire` under a fresh `new_holder_id` (the unlocked pre-checks only refuse early and are not modeled) |
-| `ReqCreate` | `storage/postgres_execution.rs` `create_execution_reservation_tx` (StaleLease, AlreadyReserved, CandidateExists, RecoverableDeltaPending via `recoverable_delta_on`, ProposalGone, Created) |
+| `ReqCreate` | `storage/postgres_execution.rs` `create_execution_reservation_tx` (StaleLease, AlreadyReserved, CandidateExists, ProposalGone, Created) |
 | `WPrepare` | `services/execute_proposal/worker.rs` `approach_boundary`: execute and prove fix the reference block and the expiration |
 | `WHeartbeat` | `worker.rs` `Heartbeat` / `Heartbeat::advance` → `coordination/execution_leases.rs` `Renewal::attempt` → `renew_execution_reservation_tx`; before the boundary, and again (recording `Sent`) while `submit` waits for the node |
 | `WFail` | any failure before the boundary (`approach_boundary`, `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
-| `WAdmit`, `RecoverableOnStored` | `cross_boundary` → `admit_execution_candidate_tx` (refuses with RecoverableDeltaPending while `recoverable_delta_on` the base; otherwise deletes rows at the nonce that cannot land, inserts the candidate and the evidence) |
+| `WAdmit` | `cross_boundary` → `admit_execution_candidate_tx`: moves a parked row at the nonce to `superseded_deltas` (`archive_parked_delta`, when retention is on) and deletes it, inserts the candidate and the evidence |
 | `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`). A storage error is retried, fenced, while the lease and send window last; a retry is the same claim taken later, which the model already allows since workers get no fairness |
 | `WSubmit`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`) |
 | `WRelease` | `run_execution`'s `release_quietly` |
@@ -188,7 +188,7 @@ Paths are relative to `crates/server/src/`.
 | `RcAct` | `settle_promoted_execution_tx`, `hold`, or `resolve_execution` with the verdict's code |
 | `PObserveFresh`, `PObserveAny`, `ProcVerdict` | `jobs/canonicalization/processor.rs`: the chain check, `executed_candidate_landed`, the divergence path |
 | `PWrite`, `CommitPromotedRes` | `canonicalize_verified_delta` → `storage/postgres.rs` `promote_candidate` (with `commit_promoted_execution`, which settles only an execution whose `expected_commitment` is the promoted state), or `discard_candidate` / `update_candidate_status` refused with `ProtectedByExecution` |
-| `PReconcileRetained` | `jobs/canonicalization/reconciliation.rs` promoting a retained row (`PromotableKind::Retained`) through `promote_candidate` |
+| `PReconcileRetained` | `jobs/canonicalization/reconciliation.rs` promoting a retained row (`PromotableKind::Retained`), or restoring its archived copy (`PromotableKind::Superseded`, `restore_superseded`, which never replaces a candidate at the nonce), through `promote_candidate` |
 | `ClientPush` | `storage/postgres.rs` `submit_candidate` (`ExecutionReserved`, the candidate gate, the retained-row supersede) |
 | `LapseWorkerLease`, `LapseWorkerRes`, `LapseOther` | time passing: a `worker_leases.expires_at` or `execution_reservations.lease_expires_at` running out |
 | `Land`, `NewBlock`, `ExternalMove` | the chain |
@@ -243,10 +243,11 @@ Each of these breaks a property (mutations run against this model):
   `ExecutionExcludesClientCandidate`.
 - promoting a candidate while the chain is still at its base:
   `StoredOnChain`.
-- both recoverable-delta refusals removed, with admission deleting the
-  parked row (the code before the E1 fix): `LandedStepRecorded`.
-- both refusals removed, the parked row kept (as an archive would), and
-  `commit_promoted_execution` matching on the nonce alone:
+- admission deleting the parked row instead of archiving it (the code
+  before the E1 fix): `LandedStepRecorded`.
+- `commit_promoted_execution` matching on the nonce alone, not the
+  evidence's `expected_commitment`: restoring the archived row records
+  the execution `committed` though its transaction never landed,
   `CommittedMeansLanded`.
 
 Not load-bearing for these properties, alone:
@@ -257,13 +258,6 @@ Not load-bearing for these properties, alone:
   resolves from the chain alone. The gate saves a pointless send.
 - the lease check in `admit_execution_candidate_tx`: the holder check in
   the same transaction already refuses a superseded worker.
-- either recoverable-delta refusal alone: the one at reservation and the
-  one at admission each suffice, since nothing parks a delta while an
-  account is reserved.
-- the commitment match in `commit_promoted_execution`, while the
-  refusals stand. With both refusals removed and the parked row kept, it
-  is what keeps `CommittedMeansLanded`, so an archive-based design (as in
-  #560) stays safe with it.
 - the reservation check in `create_execution_reservation_tx`:
   `OneLandableExecution` still holds without it, and without both checks
   at create, because admission refuses while a candidate exists. It fails
@@ -289,16 +283,18 @@ could not land, the reconciler resolved it
 `B` for good (`LandedStepRecorded` and `GuardianCatchesUp` both failed).
 It was the bug class PR #560 fixes for client resubmissions.
 
-The fix (both backends): `create_execution_reservation_tx` and
-`admit_execution_candidate_tx` refuse (`RecoverableDeltaPending`, served
-as `409 conflict_pending_delta` and `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE`)
-while a `retained` delta, or a client-abandoned one within
-`storage::abandoned_cutoff` (the reconcile pass's own cutoff), is built
-on the account's current state; and `commit_promoted_execution` settles
-only an execution whose evidence's `expected_commitment` is the promoted
-state. Regression tests in `storage/execution_reservation_tests.rs`:
-`reservation_is_refused_while_a_parked_delta_on_its_base_can_land`,
-`admission_refuses_a_parked_delta_on_its_base`,
-`a_promotion_to_another_state_settles_nothing`, and
-`parked_deltas_that_cannot_land_do_not_hold_execution_back` (no false
-refusals).
+The fix (both backends): `admit_execution_candidate_tx` moves the parked
+row to #560's `superseded_deltas` archive instead of deleting it (deleting
+only when retention is off, since nothing would reconcile an archive), and
+`commit_promoted_execution` settles only an execution whose evidence's
+`expected_commitment` is the promoted state. If the parked transaction
+lands first, reconciliation resolves the execution
+`GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` and then restores the archived row
+(`PromotableKind::Superseded`), so Guardian catches up. A first fix refused
+execution while such a row existed; it blocked Guardian execution for up to
+the retention TTL and was replaced once #560 merged. Regression tests in
+`storage/execution_reservation_tests.rs`:
+`a_parked_delta_on_its_base_does_not_refuse_execution`,
+`admission_archives_a_parked_delta_at_its_nonce`,
+`a_parked_delta_that_lands_instead_is_restored_after_the_execution_resolves`
+and `a_promotion_to_another_state_settles_nothing`.

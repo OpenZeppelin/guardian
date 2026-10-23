@@ -261,10 +261,6 @@ pub async fn request_execution(
         lease_expires_at: lease.expires_at,
         ignored_signatures: selection.ignored,
         now,
-        recoverable_since: state
-            .canonicalization
-            .as_ref()
-            .map_or(now, |config| config.abandoned_cutoff(now)),
     };
     let written = state
         .storage
@@ -304,10 +300,6 @@ pub async fn request_execution(
         ReservationWrite::CandidateExists => {
             release_quietly(elector.as_ref(), lease).await;
             return Err(GuardianError::ConflictPendingDelta);
-        }
-        ReservationWrite::RecoverableDeltaPending => {
-            release_quietly(elector.as_ref(), lease).await;
-            return Err(GuardianError::ConflictParkedDelta);
         }
         ReservationWrite::ProposalGone => {
             release_quietly(elector.as_ref(), lease).await;
