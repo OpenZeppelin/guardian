@@ -398,8 +398,9 @@ sequenceDiagram
   nonce rule and, at execution, the SDKs keep a proposal from executing
   anywhere but on the tail: both SDKs refuse to execute a proposal pinned
   to a state the client does not hold (TypeScript 0.18.0 and earlier
-  pushed the pinned base regardless; a switch proposal is checked while
-  the pre-switch GUARDIAN serves it), and both push the state they
+  pushed the pinned base regardless, and the Rust SDK through 0.18.3
+  executed on its own state without the check; a switch proposal is
+  checked while the pre-switch GUARDIAN serves it), and both push the state they
   executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the
   tail's) count toward the pending-proposal limit, which is checked before
   the tail replay. Promotion of the oldest candidate
@@ -522,16 +523,30 @@ sequenceDiagram
     promoted in order, base-first. Anything else waits for a later tick
     — the TTL is the only bound.
   - A new candidate submission at a retained or client-abandoned delta's
-    nonce supersedes (deletes) that row inside the submission
-    transaction — without the abandoned-row supersede, the resubmission
-    the abandon endpoint exists to enable would be refused forever at
-    the nonce's unique constraint. Deltas are unique per
-    `(account_id, nonce)` and admission requires chaining from the
-    account's queue tail (the canonical head when nothing is queued), so
-    same-nonce supersede is the only
-    replacement path; a retained row orphaned by an out-of-band base
-    move (e.g. `configure`) can never promote — the base gate rules it
-    out — and ages out through the TTL.
+    nonce supersedes that row inside the submission transaction —
+    without the supersede, the resubmission the abandon endpoint exists
+    to enable would be refused forever at the nonce's unique
+    constraint. Deltas are unique per `(account_id, nonce)` and
+    admission requires chaining from the account's queue tail (the
+    canonical head when nothing is queued), so same-nonce supersede is
+    the only replacement path. The superseded row is moved to the
+    `superseded_deltas` archive, not deleted (with retention disabled,
+    `retained_ttl_seconds = 0`, nothing is reconciled and it is
+    deleted): its transaction may still land, and the row is then the
+    only record of that step. The reconcile pass treats archived rows as
+    recoverable for the retention TTL, counted from the supersede, and
+    prunes older ones; accounts holding archived rows are visited even
+    when nothing else is recoverable. The recoverable-path walk backs
+    out of a hop that leads nowhere, because an archived row and the row
+    that replaced it share a nonce and a base and only the one that
+    landed reaches the chain. Promoting an archived row writes it back
+    as the canonical row at its nonce, in one locked, fenced write: only
+    while the row now at that nonce is retained or client-abandoned
+    (never over a candidate, which first diverges and is parked, or a
+    canonical row), archiving the replaced row in turn, and gated on the
+    stored state still sitting at its base. A retained row orphaned by
+    an out-of-band base move (e.g. `configure`) can never promote — the
+    base gate rules it out — and ages out through the TTL.
 
 - Release on guardian switch, push path (issue #305): when a delta
   commits (optimistic mode) or canonicalizes (candidate mode) and the
@@ -591,10 +606,13 @@ sequenceDiagram
 
 ### State Machine
 - candidate -> canonical | retained | discarded; retained -> canonical
-  (reconciled) | superseded (deleted by a new submission at its nonce) |
+  (reconciled) | superseded (archived by a new submission at its nonce) |
   dropped (TTL expiry); discarded{client_abandoned} -> canonical
   (late-landing reconcile, within the TTL) | superseded (new submission
-  at its nonce). Discarded deltas MUST NOT be returned by default APIs.
+  at its nonce); superseded -> canonical (late-landing reconcile, within
+  the TTL from the supersede, replacing a retained or client-abandoned
+  row at its nonce) | pruned (TTL expiry). Discarded and superseded
+  deltas MUST NOT be returned by default APIs.
 
 ### Failure Handling
 - Transient failures SHOULD be retried with backoff. Malformed candidates SHOULD be quarantined with logs/metrics.

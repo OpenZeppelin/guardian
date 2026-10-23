@@ -49,8 +49,8 @@ crates/server/src/storage/postgres.rs lease_fence_is_current 951aa94931bd4c54
 crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
 crates/server/src/storage/postgres.rs clear_pending_flag_if_none ab1f451ea9f18cad
 crates/server/src/storage/postgres.rs pull_recoverable_deltas 3a397123c23e5839
-crates/server/src/storage/postgres.rs submit_candidate c75fa2e59d2a903a
-crates/server/src/storage/postgres.rs promote_candidate c5e6b3870b224a88
+crates/server/src/storage/postgres.rs submit_candidate 78fce4c0773b9421
+crates/server/src/storage/postgres.rs promote_candidate 2040db8553802931
 crates/server/src/storage/postgres.rs discard_candidate 96eb99645d435499
 crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7
 crates/server/src/jobs/execution_reconcile/mod.rs pass 56d789d1e89af925
@@ -60,8 +60,8 @@ crates/server/src/jobs/execution_reconcile/mod.rs observe 4673e188710dde56
 crates/server/src/jobs/execution_reconcile/mod.rs moved_on e7f1420c943edaf0
 crates/server/src/jobs/execution_reconcile/mod.rs renew_after_observing 2f4f6eca8f233a5a
 crates/server/src/jobs/execution_reconcile/mod.rs hold e7c15121733d9a0a
-crates/server/src/jobs/canonicalization/processor.rs process_full_candidate a8b3f0f39bf98268
-crates/server/src/jobs/canonicalization/processor.rs process_recent_candidate ab92d60eb1818a38
+crates/server/src/jobs/canonicalization/processor.rs process_full_candidate 88e7cfa2dba4b500
+crates/server/src/jobs/canonicalization/processor.rs process_recent_candidate d5883ea1c7b83b15
 crates/server/src/jobs/canonicalization/processor.rs landed_through_successor 166225b1cef5afed
 crates/server/src/jobs/canonicalization/processor.rs executed_candidate_landed aa6e917ece3654df
 crates/server/src/jobs/canonicalization/processor.rs park_candidate 320c1132c5c00531
@@ -70,10 +70,10 @@ crates/server/src/jobs/canonicalization/processor.rs finalize_abandoned_candidat
 crates/server/src/jobs/canonicalization/processor.rs reset_divergence_streak df78c5c7a495703b
 crates/server/src/jobs/canonicalization/processor.rs handle_diverged_candidate 999b92210bb640b0
 crates/server/src/jobs/canonicalization/processor.rs handle_unverified_candidate ff448e1294bc8fed
-crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 6235a1975d55b66a
+crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 02f72218c5298266
 crates/server/src/jobs/canonicalization/reconciliation.rs abandoned_cutoff 70d1a8d70619e321
-crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path 7a132b53248e9701
-crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance 29b83278a35d3d6f
+crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path 29ec5c6d03466450
+crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance a9652aaef66374ce
 crates/server/src/network/miden/mod.rs observe_commitment b0fa6eef4adcbfe2
 crates/server/src/network/miden/mod.rs scan_transaction_page 87fbc1732740d079
 crates/server/src/network/miden/mod.rs find_transaction_ending_at a4ced1c6e1772859
@@ -83,6 +83,6 @@ crates/server/src/storage/filesystem.rs execution_owns_candidate 0f641e4e0eaf97e
 crates/server/src/storage/filesystem.rs commit_promoted_execution ec5115ab55e054bb
 crates/server/src/storage/filesystem.rs create_execution_reservation e341bfc5ab00528c
 crates/server/src/storage/filesystem.rs admit_execution_candidate 1a63c6fc3f1b03c8
-crates/server/src/storage/filesystem.rs promote_candidate 9e53daecdd1ae1a6
+crates/server/src/storage/filesystem.rs promote_candidate 328d758106d61638
 crates/server/src/storage/filesystem.rs discard_candidate a3ac04c2ef5caeb3
 crates/server/src/storage/filesystem.rs update_candidate_status 5d11395be1eda897
