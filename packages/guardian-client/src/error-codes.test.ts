@@ -54,7 +54,20 @@ describe('drift guard against GuardianError::code()', () => {
     const nextFn = errorRs.indexOf('pub fn', codeFnStart + 1);
     const codeFn = errorRs.slice(codeFnStart, nextFn === -1 ? undefined : nextFn);
 
-    const serverWireCodes = [...codeFn.matchAll(/"([A-Za-z_]+)"/g)].map((m) => m[1]);
+    const executionRs = readFileSync(
+      join(here, '../../../crates/shared/src/execution.rs'),
+      'utf8'
+    );
+    const refusalCodes = new Map(
+      [...executionRs.matchAll(/pub const ([A-Z_]+): &str =\s*"([A-Z_]+)"/g)].map((m) => [m[1], m[2]])
+    );
+    const literalCodes = [...codeFn.matchAll(/"([A-Za-z_]+)"/g)].map((m) => m[1]);
+    const constantCodes = [...codeFn.matchAll(/refusal_codes::([A-Z_]+)/g)].map((m) => {
+      const wire = refusalCodes.get(m[1]);
+      expect(wire, `refusal_codes::${m[1]} is defined in guardian-shared`).toBeDefined();
+      return wire as string;
+    });
+    const serverWireCodes = [...literalCodes, ...constantCodes];
     expect(serverWireCodes.length).toBeGreaterThan(0);
 
     const normalizedServerCodes = new Set(
