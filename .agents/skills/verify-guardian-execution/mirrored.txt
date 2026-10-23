@@ -12,7 +12,6 @@ crates/server/src/services/execute_proposal/worker.rs cross_boundary
 crates/server/src/services/execute_proposal/worker.rs claim_send
 crates/server/src/services/execute_proposal/worker.rs submit
 crates/server/src/services/execute_proposal/worker.rs fail
-crates/server/src/builder/canonicalization.rs abandoned_cutoff
 crates/server/src/coordination/execution_leases.rs attempt
 crates/server/src/coordination/execution_leases.rs release_quietly
 crates/server/src/coordination/postgres/lease.rs try_acquire
@@ -33,7 +32,6 @@ crates/server/src/storage/postgres_execution.rs active_reservation
 crates/server/src/storage/postgres_execution.rs attempt_reservation
 crates/server/src/storage/postgres_execution.rs attempt_evidence
 crates/server/src/storage/postgres_execution.rs attempt_has_outcome
-crates/server/src/storage/postgres_execution.rs recoverable_delta_on
 crates/server/src/storage/postgres_execution.rs owns_live_reservation
 crates/server/src/storage/postgres_execution.rs release_reservation
 crates/server/src/storage/postgres_execution.rs owning_reservation
@@ -56,6 +54,9 @@ crates/server/src/storage/postgres.rs submit_candidate
 crates/server/src/storage/postgres.rs promote_candidate
 crates/server/src/storage/postgres.rs discard_candidate
 crates/server/src/storage/postgres.rs update_candidate_status
+crates/server/src/storage/postgres.rs archive_parked_delta
+crates/server/src/storage/postgres.rs restore_superseded
+crates/server/src/builder/canonicalization.rs archives_superseded
 crates/server/src/jobs/execution_reconcile/mod.rs pass
 crates/server/src/jobs/execution_reconcile/mod.rs reconcile
 crates/server/src/jobs/execution_reconcile/mod.rs take_ownership
@@ -84,7 +85,6 @@ crates/server/src/network/miden/mod.rs find_transaction_ending_at
 # ProtectedByExecution refusal there, so drift means re-checking parity
 # with their Postgres counterparts above.
 crates/server/src/storage/filesystem.rs pull_recoverable_deltas
-crates/server/src/storage/filesystem.rs recoverable_delta_on
 crates/server/src/storage/filesystem.rs execution_owns_candidate
 crates/server/src/storage/filesystem.rs commit_promoted_execution
 crates/server/src/storage/filesystem.rs create_execution_reservation
@@ -92,3 +92,5 @@ crates/server/src/storage/filesystem.rs admit_execution_candidate
 crates/server/src/storage/filesystem.rs promote_candidate
 crates/server/src/storage/filesystem.rs discard_candidate
 crates/server/src/storage/filesystem.rs update_candidate_status
+crates/server/src/storage/filesystem.rs archive_delta_holding_lock
+crates/server/src/storage/filesystem.rs restore_superseded_holding_lock
