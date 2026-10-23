@@ -207,8 +207,11 @@ pub trait MetadataStore: Send + Sync {
     /// selects accounts by this flag while the submission gate scans delta
     /// rows, a wrongly-cleared flag makes the account invisible to the worker
     /// *and* keeps new submissions rejected: a permanent wedge. Backends that
-    /// can check the delta table in the same statement MUST override this with
-    /// an atomic conditional write. This default (a plain clear) is only
+    /// can check the delta table MUST override this with a conditional write
+    /// that first takes the lock every candidate submission holds until it
+    /// commits; a single conditional statement is not enough under READ
+    /// COMMITTED, where it can wait on that lock and still judge the delta
+    /// table from its pre-wait snapshot. This default (a plain clear) is only
     /// acceptable for single-process backends, where the residual in-process
     /// window is the pre-existing one.
     async fn clear_pending_candidate_if_none(
