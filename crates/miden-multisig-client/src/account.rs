@@ -1,5 +1,6 @@
 //! Multisig account wrapper with storage inspection helpers.
 
+use guardian_shared::SignatureScheme;
 use miden_client::Serializable;
 use miden_protocol::Word;
 use miden_protocol::account::{
@@ -11,6 +12,8 @@ use miden_standards::account::auth::{ApproverSet, AuthGuardedMultisig};
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
 use crate::proposal::TransactionType;
+use crate::signers::SignerSpec;
+use crate::transaction::word_to_hex;
 
 /// `AuthGuardedMultisig` storage slot names (`miden::standards::auth::*`), sourced from the
 /// component's `*_slot()` accessors so they cannot drift.
@@ -20,11 +23,17 @@ fn multisig_threshold_config_slot() -> &'static str {
 fn multisig_approver_pubkeys_slot() -> &'static str {
     AuthGuardedMultisig::approver_public_keys_slot().as_str()
 }
+fn multisig_approver_schemes_slot() -> &'static str {
+    AuthGuardedMultisig::approver_scheme_ids_slot().as_str()
+}
 fn multisig_procedure_thresholds_slot() -> &'static str {
     AuthGuardedMultisig::procedure_thresholds_slot().as_str()
 }
 fn guardian_public_key_slot() -> &'static str {
     AuthGuardedMultisig::guardian_public_key_slot().as_str()
+}
+fn guardian_scheme_slot() -> &'static str {
+    AuthGuardedMultisig::guardian_scheme_id_slot().as_str()
 }
 
 /// Wrapper around a Miden Account with multisig-specific helpers.
@@ -32,10 +41,12 @@ fn guardian_public_key_slot() -> &'static str {
 /// This provides convenient access to multisig configuration stored in account storage:
 /// - Threshold config slot: `[threshold, num_signers, 0, 0]`
 /// - Signer commitments map slot: `[index, 0, 0, 0] => COMMITMENT`
+/// - Signer schemes map slot: `[index, 0, 0, 0] => [scheme_id, 0, 0, 0]`
 /// - Executed transactions map slot (replay protection)
 /// - Procedure threshold overrides map slot: `PROC_ROOT => [threshold, 0, 0, 0]`
 /// - GUARDIAN public key map slot (the guardian is always present in the upstream
 ///   `AuthGuardedMultisig` component — there is no enable/disable selector)
+/// - GUARDIAN scheme map slot: `[0, 0, 0, 0] => [scheme_id, 0, 0, 0]`
 #[derive(Debug, Clone)]
 pub struct MultisigAccount {
     account: Account,
@@ -280,6 +291,67 @@ impl MultisigAccount {
         self.cosigner_commitments().contains(commitment)
     }
 
+    /// Returns the cosigners with the scheme the account verifies each one
+    /// under, in signer-index order.
+    ///
+    /// Fails when an approver's scheme entry is missing or names no supported
+    /// scheme: building an update or registering the account without it would
+    /// have to guess, and a wrong guess locks that approver out.
+    pub fn cosigners(&self) -> Result<Vec<SignerSpec>> {
+        self.cosigner_schemes()
+            .into_iter()
+            .enumerate()
+            .map(|(index, (commitment, scheme))| {
+                scheme
+                    .map(|scheme| SignerSpec::new(commitment, scheme))
+                    .ok_or_else(|| {
+                        MultisigError::AccountStorage(format!(
+                            "approver {index} ({}) has no supported scheme in slot '{}'",
+                            word_to_hex(&commitment),
+                            multisig_approver_schemes_slot()
+                        ))
+                    })
+            })
+            .collect()
+    }
+
+    /// The cosigners whose approvals the chain can verify: those with a
+    /// supported stored scheme, in signer-index order. Unlike
+    /// [`Self::cosigners`], an approver with a missing or unknown entry is left
+    /// out rather than failing the read, as GUARDIAN's push gate leaves it
+    /// out of its count.
+    pub(crate) fn verifiable_cosigners(&self) -> Vec<SignerSpec> {
+        self.cosigner_schemes()
+            .into_iter()
+            .filter_map(|(commitment, scheme)| {
+                scheme.map(|scheme| SignerSpec::new(commitment, scheme))
+            })
+            .collect()
+    }
+
+    /// The scheme the account stores for cosigner `commitment`, or `None`
+    /// when it is not a cosigner or its entry names no supported scheme.
+    pub fn cosigner_scheme(&self, commitment: &Word) -> Option<SignatureScheme> {
+        self.cosigner_schemes()
+            .into_iter()
+            .find(|(cosigner, _)| cosigner == commitment)
+            .and_then(|(_, scheme)| scheme)
+    }
+
+    fn cosigner_schemes(&self) -> Vec<(Word, Option<SignatureScheme>)> {
+        self.cosigner_commitments()
+            .into_iter()
+            .enumerate()
+            .map(|(index, commitment)| {
+                let key = Word::from([index as u32, 0, 0, 0]);
+                (
+                    commitment,
+                    self.scheme_at(multisig_approver_schemes_slot(), key),
+                )
+            })
+            .collect()
+    }
+
     /// Returns the GUARDIAN server commitment from GUARDIAN public key map slot.
     pub fn guardian_commitment(&self) -> Result<Word> {
         let key = Word::from([0u32, 0, 0, 0]);
@@ -287,6 +359,23 @@ impl MultisigAccount {
             .ok_or_else(|| {
                 MultisigError::AccountStorage("GUARDIAN public key slot not found".to_string())
             })
+    }
+
+    /// Returns the scheme the account verifies the GUARDIAN's acknowledgements
+    /// under, which selects the GUARDIAN key the account registers with.
+    pub fn guardian_scheme(&self) -> Result<SignatureScheme> {
+        self.scheme_at(guardian_scheme_slot(), Word::from([0u32, 0, 0, 0]))
+            .ok_or_else(|| {
+                MultisigError::AccountStorage(format!(
+                    "no supported GUARDIAN scheme in slot '{}'",
+                    guardian_scheme_slot()
+                ))
+            })
+    }
+
+    fn scheme_at(&self, slot_name: &str, key: Word) -> Option<SignatureScheme> {
+        let value = self.get_map_item_by_name(slot_name, key)?;
+        SignatureScheme::from_auth_scheme_id(value[0].as_canonical_u64())
     }
 
     pub fn with_procedure_threshold(
@@ -632,9 +721,7 @@ mod tests {
         );
         assert_eq!(
             account
-                .effective_threshold_for_transaction(&TransactionType::AddCosigner {
-                    new_commitment: word(10),
-                })
+                .effective_threshold_for_transaction(&TransactionType::add_cosigner(word(10)))
                 .expect("threshold"),
             3
         );
@@ -685,6 +772,91 @@ mod tests {
         let account = build_account_with_signer_slots(Vec::new());
 
         assert!(account.cosigner_commitments().is_empty());
+    }
+
+    #[test]
+    fn cosigners_and_guardian_scheme_read_each_stored_scheme() {
+        let config = MultisigGuardianConfig::new(2, vec![word(1), word(2), word(3)], word(99))
+            .with_signer_schemes(vec![
+                SignatureScheme::Falcon,
+                SignatureScheme::Ecdsa,
+                SignatureScheme::Falcon,
+            ])
+            .with_guardian_scheme(SignatureScheme::Ecdsa);
+        let account = MultisigAccount::new(
+            MultisigGuardianBuilder::new(config)
+                .with_seed([5u8; 32])
+                .build()
+                .expect("account builds"),
+        );
+
+        assert_eq!(
+            account.cosigners().expect("schemes are stored"),
+            vec![
+                SignerSpec::new(word(1), SignatureScheme::Falcon),
+                SignerSpec::new(word(2), SignatureScheme::Ecdsa),
+                SignerSpec::new(word(3), SignatureScheme::Falcon),
+            ]
+        );
+        assert_eq!(
+            account
+                .guardian_scheme()
+                .expect("guardian scheme is stored"),
+            SignatureScheme::Ecdsa
+        );
+    }
+
+    /// A state built from bare slots can lack the scheme maps. The readers
+    /// refuse rather than guess, since a guessed scheme written back would
+    /// lock that signer out.
+    #[test]
+    fn cosigners_and_guardian_scheme_refuse_a_missing_scheme_entry() {
+        let account = build_account_with_signer_slots(vec![word(11), word(12)]);
+        let (id, vault, storage, code, nonce, seed) = account.into_inner().into_parts();
+        let storage_slots = storage
+            .into_slots()
+            .into_iter()
+            .filter(|slot| {
+                slot.name().as_str() != multisig_approver_schemes_slot()
+                    && slot.name().as_str() != guardian_scheme_slot()
+            })
+            .collect();
+        let storage = AccountStorage::new(storage_slots).expect("valid storage");
+        let account = MultisigAccount::new(Account::new_unchecked(
+            id, vault, storage, code, nonce, seed,
+        ));
+
+        let err = account.cosigners().unwrap_err();
+        assert!(
+            matches!(&err, MultisigError::AccountStorage(message) if message.contains("approver 0")),
+            "got {err}"
+        );
+        assert!(matches!(
+            account.guardian_scheme(),
+            Err(MultisigError::AccountStorage(_))
+        ));
+        assert!(account.verifiable_cosigners().is_empty());
+        assert_eq!(account.cosigner_scheme(&word(11)), None);
+    }
+
+    /// Counting approvals skips an approver the chain cannot verify, while
+    /// the others still count, as in GUARDIAN's push gate.
+    #[test]
+    fn verifiable_cosigners_leave_out_only_an_unreadable_entry() {
+        // The base account stores a scheme for approver 0 only.
+        let account = build_account_with_signer_slots(vec![word(1), word(12)]);
+
+        assert_eq!(
+            account.verifiable_cosigners(),
+            vec![SignerSpec::new(word(1), SignatureScheme::Falcon)]
+        );
+        assert_eq!(
+            account.cosigner_scheme(&word(1)),
+            Some(SignatureScheme::Falcon)
+        );
+        assert_eq!(account.cosigner_scheme(&word(12)), None);
+        assert_eq!(account.cosigner_scheme(&word(99)), None);
+        assert!(account.cosigners().is_err());
     }
 
     #[test]

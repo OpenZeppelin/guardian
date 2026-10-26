@@ -81,6 +81,10 @@ pub struct ExportedMetadata {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signer_commitments_hex: Vec<String>,
 
+    /// Mirrors `ProposalMetadataPayload::signer_schemes`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signer_schemes: Vec<String>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recipient_hex: Option<String>,
 
@@ -139,6 +143,7 @@ impl ExportedProposal {
             proposal_type: Some(self.metadata.proposal_type.clone()),
             new_threshold: self.metadata.new_threshold,
             signer_commitments_hex: self.metadata.signer_commitments_hex.clone(),
+            signer_scheme_names: self.metadata.signer_schemes.clone(),
             salt_hex: self.metadata.salt_hex.clone(),
             recipient_hex: self.metadata.recipient_hex.clone(),
             faucet_id_hex: self.metadata.faucet_id_hex.clone(),
@@ -307,6 +312,7 @@ impl ExportedProposal {
             salt_hex: proposal.metadata.salt_hex.clone(),
             new_threshold: proposal.metadata.new_threshold,
             signer_commitments_hex: proposal.metadata.signer_commitments_hex.clone(),
+            signer_schemes: proposal.metadata.signer_scheme_names.clone(),
             recipient_hex: proposal.metadata.recipient_hex.clone(),
             faucet_id_hex: proposal.metadata.faucet_id_hex.clone(),
             amount: proposal.metadata.amount,
@@ -528,6 +534,7 @@ mod tests {
             salt_hex: Some("0x123".to_string()),
             new_threshold: Some(2),
             signer_commitments_hex: vec!["0xabc".to_string()],
+            signer_schemes: Vec::new(),
             recipient_hex: None,
             faucet_id_hex: None,
             amount: None,
@@ -982,7 +989,7 @@ mod tests {
         let proposal = Proposal::new(
             tx_summary.clone(),
             1,
-            TransactionType::AddCosigner { new_commitment },
+            TransactionType::add_cosigner(new_commitment),
             ProposalMetadata {
                 tx_summary_json: Some(tx_summary.to_json()),
                 new_threshold: Some(2),
@@ -1014,6 +1021,46 @@ mod tests {
         assert_eq!(
             imported.metadata.proposal_type.as_deref(),
             Some("add_signer")
+        );
+    }
+
+    /// The target signer schemes travel with the document, so a cosigner that
+    /// signs or executes it off channel rebuilds every approver under the
+    /// scheme the proposer wrote.
+    #[test]
+    fn from_proposal_roundtrip_preserves_signer_schemes() {
+        let new_commitment = Word::from_hex(&valid_word_hex()).expect("valid signer commitment");
+        let tx_summary = create_test_tx_summary();
+        let proposal = Proposal::new(
+            tx_summary.clone(),
+            1,
+            TransactionType::add_cosigner_with_scheme(new_commitment, SignatureScheme::Ecdsa),
+            ProposalMetadata {
+                tx_summary_json: Some(tx_summary.to_json()),
+                new_threshold: Some(1),
+                signer_commitments_hex: vec![valid_word_hex()],
+                signer_scheme_names: vec!["ecdsa".to_string()],
+                required_signatures: Some(1),
+                ..Default::default()
+            },
+        );
+        let account_id = AccountId::from_hex(&valid_account_id()).expect("valid account id");
+        let exported =
+            ExportedProposal::from_proposal(&proposal, account_id).expect("proposal should export");
+
+        let json: serde_json::Value =
+            serde_json::from_str(&exported.to_json().expect("export serializes")).unwrap();
+        assert_eq!(
+            json["metadata"]["signer_schemes"],
+            serde_json::json!(["ecdsa"])
+        );
+
+        let imported = ExportedProposal::from_json(&exported.to_json().unwrap())
+            .and_then(|document| document.to_proposal())
+            .expect("document imports");
+        assert_eq!(
+            imported.metadata.signer_schemes().unwrap(),
+            vec![SignatureScheme::Ecdsa]
         );
     }
 

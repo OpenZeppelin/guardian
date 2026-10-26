@@ -26,6 +26,8 @@ mod delta_history;
 mod endpoint_scheme_tests;
 mod helpers;
 mod io;
+#[cfg(test)]
+mod mixed_scheme_tests;
 mod note_recovery;
 mod notes;
 mod offline;
