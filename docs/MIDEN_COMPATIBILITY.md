@@ -167,22 +167,30 @@ single-scheme accounts keep their wire and storage shape.
   whole, and on Postgres every request for that account fails. During a rolling
   deploy, older replicas fail requests for such an account until they are
   replaced, so finish the rollout before clients register mixed accounts.
-- **SDKs.** The base clients can send the variant. The Rust multisig SDK (#549)
-  creates such accounts (`create_account_with_signers`), registers the schemes an
-  account stores, and keeps every approver's and the GUARDIAN's scheme through
-  signer updates and GUARDIAN switches. Its update-signers proposals carry
-  `signer_schemes` unless every target signer uses the proposer's scheme and the
-  scheme of the approvers it keeps, and it refuses a proposal that would rewrite a kept approver's scheme, such as
-  one from an older SDK, which wrote its own scheme for every approver. Older
-  Rust SDKs and the TypeScript multisig SDK (until it adopts the variant after
-  #540) ignore `signer_schemes`, so on a mixed account they may not reproduce
-  such a proposal and then refuse to sign it.
+- **SDKs.** The base clients can send the variant. Both multisig SDKs, Rust
+  (#549) and TypeScript (#576), create such accounts (Rust
+  `create_account_with_signers`, TypeScript `SignerSpec` signers), register the
+  schemes an account stores (the per-signer variant only when an approver's
+  scheme differs from the GUARDIAN's), and keep every approver's and the
+  GUARDIAN's scheme through signer updates and GUARDIAN switches. Their
+  update-signers proposals carry `signer_schemes` unless every target signer uses
+  the proposer's scheme and the scheme of the approvers it keeps, and both refuse
+  a proposal that would rewrite a kept approver's scheme, such as one from an
+  older SDK, which wrote its own scheme for every approver. Older SDKs ignore
+  `signer_schemes`, so on a mixed account they may not reproduce such a proposal
+  and then refuse to sign it. The TypeScript SDK reports a server up to 0.18.3
+  refusing the variant as `GuardianMixedSchemesUnsupportedError`.
 - **Rust SDK API.** `TransactionType::AddCosigner` gains `scheme` (`None` takes
   the proposer's; `add_cosigner` is unchanged), `ProposalMetadata` gains
   `signer_scheme_names` and `ExportedMetadata` `signer_schemes`, and
   `build_update_signers_transaction_request` takes `SignerSpec`s in place of
   commitments and one scheme. Code that matches the variant without `..`, or
   builds the metadata structs without `..Default::default()`, needs updating.
+- **TypeScript SDK API.** `SignerSchemeMismatchError` now reports a signer update
+  that would change a kept approver's scheme (`changes`), and is no longer thrown
+  for mixed accounts; `KeySchemeMismatchError` and
+  `GuardianMixedSchemesUnsupportedError` are new.
+  `UpdateSignersProposalMetadata` gains `targetSignerSchemes`.
 
 **Upgrading from 0.18.2 to 0.18.3: patched CA trust store.** The Miden pins, the
 `auth_tx` procedure root, stored data, existing contracts and the wire contract are

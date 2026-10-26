@@ -3,7 +3,7 @@
 **Issue**: #563 (the server follow-up of #539, filed as its sub-issue). The client half is PR #540
 (TS SDK); the Rust SDK advice rewrite is #549. **Branch**: `539-server-per-signer-schemes`.
 **Status**: PR A (server, contracts, base clients, docs) merged (#565); PR B (Rust SDK, #549)
-implemented; PR C (TS SDK, after #540) pending.
+merged (#577); PR C (TS SDK, #576) implemented.
 
 ## Problem
 
