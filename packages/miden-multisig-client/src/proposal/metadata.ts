@@ -59,6 +59,7 @@ export class ProposalMetadataCodec {
           ...base,
           targetThreshold: metadata.targetThreshold,
           signerCommitments: metadata.targetSignerCommitments,
+          signerSchemes: metadata.targetSignerSchemes,
         };
       case 'custom':
         // Round-trip the original server label rather than the 'custom' bucket.
@@ -146,6 +147,7 @@ export class ProposalMetadataCodec {
           proposalType: guardian.proposalType as 'add_signer' | 'remove_signer' | 'change_threshold',
           targetThreshold: guardian.targetThreshold,
           targetSignerCommitments: guardian.signerCommitments,
+          targetSignerSchemes: guardian.signerSchemes,
         };
       default:
         // Any proposal type the SDK does not model collapses to the 'custom'
