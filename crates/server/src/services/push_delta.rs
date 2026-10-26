@@ -190,7 +190,8 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
-    let scheme = resolved.metadata.auth.scheme();
+    // The account verifies acknowledgements under its GUARDIAN's scheme.
+    let scheme = resolved.metadata.auth.guardian_scheme();
     let acknowledged = acknowledge_applied(
         state,
         &scheme,
@@ -246,6 +247,7 @@ mod tests {
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
+    use guardian_shared::SignatureScheme;
     use std::sync::Arc;
 
     fn paused_metadata(account_id: &str, cosigner_commitment: String) -> AccountMetadata {
@@ -559,6 +561,98 @@ mod tests {
         );
     }
 
+    /// A Falcon cosigner of an account with an ECDSA GUARDIAN pushes, and the
+    /// delta is acknowledged with the ECDSA key the account verifies.
+    #[tokio::test]
+    async fn mixed_account_delta_is_acknowledged_with_the_guardian_scheme() {
+        use crate::delta_object::DeltaStatus;
+        use crate::state_object::StateObject;
+        use crate::testing::helpers::create_test_delta_payload;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(StateObject {
+                account_id: account_id.clone(),
+                state_json: serde_json::json!({}),
+                commitment: "0xprev".to_string(),
+                nonce: None,
+                created_at: "2026-05-25T08:00:00Z".into(),
+                updated_at: "2026-05-25T08:00:00Z".into(),
+                auth_scheme: String::new(),
+            }))
+            .with_pull_deltas_after(Ok(Vec::new()))
+            .with_pull_delta_proposal(Err("no matching proposal".to_string()))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new_state": true}),
+                "0xnew_commitment".to_string(),
+            )));
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::Miden {
+                cosigners: vec![crate::metadata::auth::MidenCosigner {
+                    commitment: signer_commitment,
+                    scheme: SignatureScheme::Falcon,
+                }],
+                guardian_scheme: SignatureScheme::Ecdsa,
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        })));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta: DeltaObject {
+                    account_id: account_id.clone(),
+                    nonce: 1,
+                    prev_commitment: "0xprev".to_string(),
+                    new_commitment: None,
+                    delta_payload: create_test_delta_payload(&account_id),
+                    ack_sig: String::new(),
+                    ack_pubkey: String::new(),
+                    ack_scheme: String::new(),
+                    status: DeltaStatus::default(),
+                    metadata: None,
+                },
+                credentials: Credentials::signature(
+                    signer_pubkey,
+                    signer_signature,
+                    signer_timestamp,
+                ),
+            },
+        )
+        .await
+        .expect("the Falcon cosigner's push is acknowledged");
+        assert_eq!(result.delta.ack_scheme, "ecdsa");
+        assert_eq!(
+            result.delta.ack_pubkey,
+            state.ack.pubkey(&SignatureScheme::Ecdsa)
+        );
+        assert!(
+            state
+                .ack
+                .acked_with_current_key(&result.delta, &SignatureScheme::Ecdsa),
+            "the ack is an ECDSA signature by this server's key"
+        );
+    }
+
     #[tokio::test]
     async fn paused_account_returns_auth_error_for_unauthenticated_caller() {
         let storage = MockStorageBackend::new();
@@ -838,7 +932,7 @@ mod tests {
             state_json,
             commitment: commitment.to_string(),
             nonce: Some(nonce),
-            cosigner_commitments: Vec::new(),
+            cosigners: Vec::new(),
             guardian_commitment: None,
         }
     }
@@ -909,8 +1003,15 @@ mod tests {
 
     fn binding(signers: &[&str]) -> crate::network::AuthBinding {
         crate::network::AuthBinding {
-            signers: signers.iter().map(|s| s.to_string()).collect(),
+            signers: signers
+                .iter()
+                .map(|s| crate::metadata::auth::ChainCosigner {
+                    commitment: s.to_string(),
+                    scheme: None,
+                })
+                .collect(),
             guardian: Some("0xguardian".to_string()),
+            ..Default::default()
         }
     }
 
@@ -1089,8 +1190,11 @@ mod tests {
         miden_protocol::Word::read_from_bytes(&bytes).expect("commitment word")
     }
 
+    /// A multisig state whose approvers carry `approver_schemes` in the
+    /// approver scheme map; an empty list leaves the map out.
     fn multisig_state(
         approver_commitments: &[String],
+        approver_schemes: &[guardian_shared::SignatureScheme],
         threshold: u32,
         procedure_overrides: &[(miden_protocol::Word, u32)],
     ) -> serde_json::Value {
@@ -1126,6 +1230,18 @@ mod tests {
                 StorageMap::with_entries(signer_entries).expect("signer map"),
             ),
         ];
+        if !approver_schemes.is_empty() {
+            let entries = approver_schemes.iter().enumerate().map(|(index, scheme)| {
+                (
+                    StorageMapKey::new(miden_protocol::Word::from([index as u32, 0, 0, 0])),
+                    miden_protocol::Word::from([scheme.auth_scheme_id() as u32, 0, 0, 0]),
+                )
+            });
+            slots.push(StorageSlot::with_map(
+                slot_name(AuthGuardedMultisig::approver_scheme_ids_slot().as_str()),
+                StorageMap::with_entries(entries).expect("approver schemes"),
+            ));
+        }
         if !procedure_overrides.is_empty() {
             let entries = procedure_overrides.iter().map(|(root, threshold)| {
                 (
@@ -1257,6 +1373,16 @@ mod tests {
         procedure_overrides: &[(miden_protocol::Word, u32)],
         lookup: ProposalLookup,
     ) -> (Result<PushDeltaResult>, MockStorageBackend) {
+        push_on_multisig_with_schemes(approvers, &[], threshold, procedure_overrides, lookup).await
+    }
+
+    async fn push_on_multisig_with_schemes(
+        approvers: &[String],
+        approver_schemes: &[guardian_shared::SignatureScheme],
+        threshold: u32,
+        procedure_overrides: &[(miden_protocol::Word, u32)],
+        lookup: ProposalLookup,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend) {
         use crate::delta_object::DeltaStatus;
         use crate::state_object::StateObject;
         use crate::testing::helpers::TestSigner;
@@ -1268,7 +1394,7 @@ mod tests {
         let prev_commitment = "0xprev".to_string();
         let storage = MockStorageBackend::new().with_pull_state(Ok(StateObject {
             account_id: account_id.clone(),
-            state_json: multisig_state(approvers, threshold, procedure_overrides),
+            state_json: multisig_state(approvers, approver_schemes, threshold, procedure_overrides),
             commitment: prev_commitment.clone(),
             nonce: None,
             created_at: "2026-05-25T08:00:00Z".into(),
@@ -1445,6 +1571,81 @@ mod tests {
         .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    /// A mixed account's approvers are each counted under the scheme the
+    /// state stores for them.
+    #[tokio::test]
+    async fn multisig_push_counts_mixed_approvers_under_their_stored_schemes() {
+        use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
+        use guardian_shared::SignatureScheme;
+
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let summary = pushed_summary();
+        let (result, storage) = push_on_multisig_with_schemes(
+            &[falcon.commitment_hex.clone(), ecdsa.commitment_hex.clone()],
+            &[SignatureScheme::Falcon, SignatureScheme::Ecdsa],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&falcon, &summary),
+                ecdsa_approval(&ecdsa, &summary),
+            ]),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    /// An approval under another scheme than the state stores for its
+    /// approver (an ECDSA key registered as Falcon) would be refused on
+    /// chain, so it is not counted.
+    #[tokio::test]
+    async fn multisig_push_does_not_count_an_approval_under_the_wrong_scheme() {
+        use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
+        use guardian_shared::SignatureScheme;
+
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let summary = pushed_summary();
+        let (result, storage) = push_on_multisig_with_schemes(
+            &[falcon.commitment_hex.clone(), ecdsa.commitment_hex.clone()],
+            &[SignatureScheme::Falcon, SignatureScheme::Falcon],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&falcon, &summary),
+                ecdsa_approval(&ecdsa, &summary),
+            ]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
+    }
+
+    /// An approver the state's scheme map stores no scheme for can never
+    /// sign on chain (an unsupported scheme id aborts), so its approval is
+    /// not counted; only a state without the map counts on signatures.
+    #[tokio::test]
+    async fn multisig_push_does_not_count_an_approver_without_a_stored_scheme() {
+        use crate::testing::helpers::{TestEcdsaSigner, TestSigner};
+        use guardian_shared::SignatureScheme;
+
+        let falcon = TestSigner::new();
+        let ecdsa = TestEcdsaSigner::new();
+        let summary = pushed_summary();
+        let (result, storage) = push_on_multisig_with_schemes(
+            &[falcon.commitment_hex.clone(), ecdsa.commitment_hex.clone()],
+            &[SignatureScheme::Falcon],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&falcon, &summary),
+                ecdsa_approval(&ecdsa, &summary),
+            ]),
+        )
+        .await;
+        assert_refused(&result, &storage, 2, 1);
     }
 
     #[tokio::test]

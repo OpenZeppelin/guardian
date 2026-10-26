@@ -157,7 +157,7 @@ Paths are relative to `crates/server/src/`.
 | `ChainLand` | a transaction this server acked executes on chain |
 | `ChainSwitch` | the cosigners rotate the guardian key away without pushing the delta here (offline switch), optionally after creating it as a proposal here (`push_delta_proposal`) |
 | `ChainForeign` | a transaction under the other guardian, including a rotation back to this server |
-| `PushRead` | `services/push_delta.rs` `push_delta` up to the ack: `resolve_account`, `ensure_account_active_metadata`, the queue reads, `verify_and_apply_delta` |
+| `PushRead` | `services/push_delta.rs` `push_delta` up to the ack: `resolve_account`, `ensure_account_active_metadata`, the queue reads, the multisig gate (`MultisigAccount::authorize`; a refused push writes nothing, like a switch never pushed here, which `ChainSwitch` covers), `verify_and_apply_delta`. The ack is made with the key of the account's GUARDIAN scheme (`Auth::guardian_scheme`) |
 | `PushCommit` | `ack_delta`, then `storage/postgres.rs` `submit_candidate`: the status read under the account row lock (`CandidateSubmission::refused_while_inactive`), then `storage/mod.rs` `gate_candidate_submission`; the response carries the ack |
 | `Promote` | `jobs/canonicalization/processor.rs` promotion through `storage/postgres.rs` `promote_candidate` (CAS on the base commitment, or resumed when `/configure` already wrote the candidate's target) |
 | `Retire` | `handle_diverged_candidate` (Retained), a stale base, or `max_retries` exhausted after the grace period |
@@ -165,7 +165,7 @@ Paths are relative to `crates/server/src/`.
 | `HookRelease`, `HookSkip` | `services/release_on_switch.rs` `release_if_guardian_switched` from `canonicalize_verified_delta`; the write may fail |
 | `SweepRead` | `jobs/release_sweep/sweep.rs` `visit`: `check_stored_state` / `promoting_delta_nonce` (Delta), `visit_diverged` with `switch_candidates` and `precompute_switch` (ProposalMatch, RecoverableDelta), `fetch_on_chain_guardian_binding` with `classify_key` (ChainSweep) |
 | `SweepWrite`, `SweepWriteFails` | `release_switched_account` through `metadata/postgres.rs` `set_released_if_state` |
-| `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read, the stored head read (`stored_base`) and the binding validation of the submitted state, any state the chain held that binds the account to this server |
+| `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read, the stored head read (`stored_base`) and the binding validation of the submitted state, any state the chain held that binds the account to this server. The scheme checks before the claim (the allowlist, the GUARDIAN and approver scheme slots, the declared cosigner schemes) only refuse, before anything is written |
 | `CfgSubmit` | `storage/postgres.rs` `replace_state` over the commitment read (the following `metadata.set` never touches lifecycle columns) |
 | `CfgRefused` | `stored_state_landed` refuses an older state, or `replace_state` returns `StateMoved`: `400 commitment_mismatch`, nothing written |
 | `CfgClear` | `metadata/postgres.rs` `clear_released_if_state` |

@@ -402,6 +402,45 @@ describe('conversion', () => {
       });
     });
 
+    it('carries per-signer schemes in ProposalMetadata both ways (issue #563)', () => {
+      const server: ServerProposalMetadata = {
+        proposal_type: 'add_signer',
+        target_threshold: 2,
+        signer_commitments: ['0x1', '0x2'],
+        signer_schemes: ['falcon', 'ecdsa'],
+      };
+      const meta = fromServerProposalMetadata(server);
+      expect(meta.signerSchemes).toEqual(['falcon', 'ecdsa']);
+      expect(toServerProposalMetadata(meta).signer_schemes).toEqual(['falcon', 'ecdsa']);
+
+      // Absent on the wire stays absent: single-scheme proposals are unchanged.
+      const legacy = toServerProposalMetadata(
+        fromServerProposalMetadata({ proposal_type: 'add_signer', signer_commitments: ['0x1'] }),
+      );
+      expect(JSON.parse(JSON.stringify(legacy))).toEqual({
+        proposal_type: 'add_signer',
+        signer_commitments: ['0x1'],
+      });
+    });
+
+    it('passes a per-signer-scheme Miden auth through ConfigureRequest unchanged', () => {
+      const auth = {
+        Miden: {
+          cosigners: [
+            { commitment: '0x1', scheme: 'falcon' as const },
+            { commitment: '0x2', scheme: 'ecdsa' as const },
+          ],
+          guardian_scheme: 'ecdsa' as const,
+        },
+      };
+      const result = toServerConfigureRequest({
+        accountId: '0xaccount',
+        auth,
+        initialState: { data: 'statedata', accountId: '0xaccount' },
+      });
+      expect(result.auth).toEqual(auth);
+    });
+
     it('converts ConfigureRequest', () => {
       const req: ConfigureRequest = {
         accountId: '0xaccount',

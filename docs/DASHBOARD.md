@@ -182,7 +182,9 @@ The response carries:
 
 - `accounts` — unfiltered counts: `total`, mutually exclusive
   `by_lifecycle` (`released` if `released_at` is set, else `paused` if
-  `paused_at` is set, else `active`), `by_auth_method`,
+  `paused_at` is set, else `active`), `by_auth_method` (keys
+  `miden_falcon`, `miden_ecdsa`, `miden` for accounts whose cosigners
+  each carry their own scheme, and `evm`),
   `by_auth_method_and_signer_count` (so a consumer can reproduce its own
   account-shape heuristics without Guardian claiming what client a shape
   belongs to), and `updated_within_7d` / `updated_within_30d` anchored to

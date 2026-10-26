@@ -6,6 +6,8 @@
 - Miden credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` and the same keys in gRPC metadata.
 - Miden `x-pubkey` is interpreted by the account auth policy:
   - Miden Falcon/ECDSA accounts use the serialized public key or its commitment.
+  - Per-signer-scheme (`Miden`) accounts use either scheme's serialized public key or its commitment.
+- On a per-signer-scheme (`Miden`) account each request is verified under the scheme its signer is registered with, against only the cosigners registered under that scheme: a raw signature of exactly 1524 bytes is Falcon and one of exactly 65 bytes (`r || s || v`) is ECDSA, any other length is rejected, and `x-auth-format: eip712` is ECDSA.
 - EVM HTTP requests under `/evm/*` use a `guardian_evm_session` cookie. The session EOA is recovered from a wallet signature and is checked against the configured account signer set or proposal signer snapshot.
 - Miden per-account requests MAY instead be signed by a delegated signer registered through `POST /session` (`x-auth-format: session`, see [Session Authentication](#session-authentication)).
 - Replay protection applies to every Miden signed request. EVM challenge nonces are single-use and time-limited, and EVM sessions expire.
@@ -245,12 +247,28 @@ HTTP JSON uses externally tagged variants:
 ```
 
 ```json
+{
+  "Miden": {
+    "cosigners": [
+      { "commitment": "0x...", "scheme": "ecdsa" },
+      { "commitment": "0x...", "scheme": "falcon" }
+    ],
+    "guardian_scheme": "ecdsa"
+  }
+}
+```
+
+```json
 { "EvmEcdsa": { "signers": ["0x..."] } }
 ```
 
+`MidenFalconRpo` and `MidenEcdsa` bind every cosigner and the GUARDIAN to one scheme. `Miden` declares each cosigner's scheme (`"falcon"` or `"ecdsa"`) and the GUARDIAN's scheme separately, for an account whose approvers mix Falcon and ECDSA keys (issue #563). Clients send `Miden` only when the cosigners and the GUARDIAN do not all share one scheme; servers before #563 reject it, and the single-scheme variants keep their wire shape. The server accepts `Miden` for a uniform set too and stores the declared variant as is.
+
+For every variant `/configure` checks the declaration against `initial_state`: the cosigner commitments must equal the approver map in index order, every approver must have a supported scheme in the approver scheme map (`invalid_input` otherwise; the chain verifies each approver under that scheme), each cosigner's scheme must equal it, the GUARDIAN slot must hold this server's ACK commitment for the GUARDIAN scheme, and the GUARDIAN scheme slot must store that scheme. Over HTTP the scheme names are lowercase (`"falcon"`, `"ecdsa"`): the request signature covers the canonical JSON of the parsed body, so a name in another case could not authenticate and is rejected when the body is parsed. gRPC signs the message as sent and accepts any case. The GUARDIAN scheme selects the ACK key the account's deltas are acknowledged with. When canonicalization syncs the cosigners from a new canonical state it keeps the GUARDIAN scheme and the schemes the state stores: a single-scheme auth whose cosigners all keep its scheme stays single-scheme, and one that gains a cosigner of another scheme becomes `Miden`.
+
 The contract may expose EVM-shaped auth metadata, but `/configure` and the Miden delta routes only accept Miden auth variants. EVM account registration derives signer metadata from the validator module through `/evm/accounts`.
 
-gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa}` for schema compatibility, while EVM behavior remains HTTP-only under `/evm/*`.
+gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa, miden}` for schema compatibility (`MidenAuth { repeated MidenCosigner cosigners; string guardian_scheme }`, `MidenCosigner { string commitment; string scheme }`; scheme names are case-insensitive), while EVM behavior remains HTTP-only under `/evm/*`.
 
 ### NetworkConfig
 
@@ -290,7 +308,7 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 }
 ```
 
-`auth_scheme` may be `"falcon"` or `"ecdsa"` when present.
+`auth_scheme` may be `"falcon"` or `"ecdsa"` when the account's cosigners and GUARDIAN share that scheme, and `"mixed"` when they do not.
 
 ### DeltaObject
 
@@ -444,9 +462,9 @@ For an EIP-712 Miden approval, the same endpoint and envelope use `"message_form
 Guardian verifies every Miden approval against the proposal's transaction summary before storing it:
 
 - Falcon and raw ECDSA approvals sign the transaction-summary commitment; EIP-712 approvals sign the typed-data hash above. The Falcon public key comes from the signature. ECDSA approvals must carry `public_key`; a raw approval's `v` must be `0/1` and recover to that key, as execution recovers it.
-- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must be one of the account's configured cosigners, but it need not be the request signer: an authenticated signer may relay an approval another cosigner produced off channel (the SDK execute flows relay a proposal document's collected approvals this way before requesting the acknowledgement). The approval is credited to the cosigner the signature verifies for, never to the relaying caller, and one the proposal already holds for that cosigner is rejected with `proposal_already_signed`.
+- The verified key's commitment is the approval's signer. It must be signed under the scheme the account registers that signer with: a key the account stores under the other scheme is refused, since the chain verifies each approver under its stored scheme. On `PUT /delta/proposal` it must be one of the account's configured cosigners, but it need not be the request signer: an authenticated signer may relay an approval another cosigner produced off channel (the SDK execute flows relay a proposal document's collected approvals this way before requesting the acknowledgement). The approval is credited to the cosigner the signature verifies for, never to the relaying caller, and one the proposal already holds for that cosigner is rejected with `proposal_already_signed`.
 - On `POST /delta/proposal`, `signatures` may carry at most the proposer's own approval. Other cosigners approve through `PUT /delta/proposal`.
-- A signature that does not parse or verify, or whose signer is not a cosigner of the account (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
+- A signature that does not parse or verify, whose signer is not a cosigner of the account (`PUT`) or the proposer (`POST`), or that is made under another scheme than the account registers its signer with, is rejected with `invalid_proposal_signature`.
 
 ### ProposalExecution
 
@@ -709,7 +727,7 @@ Stable error codes include:
 - `authentication_failed`
 - `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
-- `signature_scheme_not_allowed` (new-account registration used a scheme excluded by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`; HTTP 403 / gRPC `PermissionDenied`, `meta.scheme` + `meta.allowed_schemes`)
+- `signature_scheme_not_allowed` (a new-account registration, or a reconfiguration adding a scheme the account did not use, used a scheme excluded by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`; HTTP 403 / gRPC `PermissionDenied`, `meta.scheme` + `meta.allowed_schemes`)
 - `invalid_input`
 - `storage_error`
 - `network_error`

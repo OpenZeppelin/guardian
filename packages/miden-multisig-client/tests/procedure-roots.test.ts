@@ -1,6 +1,7 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { promisify } from 'node:util';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { PROCEDURE_ROOTS } from '../src/procedures.js';
 
@@ -14,30 +15,28 @@ interface GeneratedProcedureRoots {
   procedure_roots: GeneratedProcedureRoot[];
 }
 
-let cachedRoots: GeneratedProcedureRoots | null = null;
+// `cargo run` compiles the example first when the target dir does not hold it yet: CI prebuilds
+// it, but a cold local run takes tens of seconds, far past the default per-test budget.
+const FIXTURE_BUILD_TIMEOUT_MS = 600_000;
 
-function loadGeneratedProcedureRoots(): GeneratedProcedureRoots {
-  if (cachedRoots) {
-    return cachedRoots;
-  }
-
+async function loadGeneratedProcedureRoots(): Promise<GeneratedProcedureRoots> {
   const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
-  const output = execFileSync(
+  const { stdout } = await promisify(execFile)(
     'cargo',
     ['run', '--quiet', '--example', 'procedure_roots', '-p', 'miden-multisig-client', '--', '--json'],
-    {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    },
+    { cwd: repoRoot, encoding: 'utf8' },
   );
-
-  cachedRoots = JSON.parse(output) as GeneratedProcedureRoots;
-  return cachedRoots;
+  return JSON.parse(stdout) as GeneratedProcedureRoots;
 }
 
 describe('procedure roots', () => {
+  let generated: GeneratedProcedureRoots;
+
+  beforeAll(async () => {
+    generated = await loadGeneratedProcedureRoots();
+  }, FIXTURE_BUILD_TIMEOUT_MS);
+
   it('match the compiled account procedure hashes in SDK hex format', () => {
-    const generated = loadGeneratedProcedureRoots();
     const expected = Object.fromEntries(
       generated.procedure_roots.map((procedure) => [procedure.name, procedure.typescript_hex]),
     );
@@ -46,7 +45,6 @@ describe('procedure roots', () => {
   }, 120_000);
 
   it('do not use the Rust display encoding', () => {
-    const generated = loadGeneratedProcedureRoots();
     const sendAsset = generated.procedure_roots.find(
       (procedure) => procedure.name === 'send_asset',
     );

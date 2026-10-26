@@ -291,6 +291,54 @@ const multisig = await client.create(config, signer);
 console.log('Account ID:', multisig.accountId);
 ```
 
+### Mixed Signature Schemes Per Approver
+
+Each approver of the guarded multisig carries its own signature scheme on
+chain (`approver_schemes` in `miden-standards`), so an ECDSA wallet or
+hardware signer and a locally held Falcon key can share one account. Give an
+approver its scheme with a `SignerSpec`; a bare commitment keeps using
+`signatureScheme` (default `'falcon'`), which also remains the GUARDIAN's
+scheme:
+
+```typescript
+import { createMultisigAccount, type MultisigConfig } from '@openzeppelin/miden-multisig-client';
+
+const config: MultisigConfig = {
+  threshold: 2,
+  signerCommitments: [
+    { commitment: walletSigner.commitment, scheme: 'ecdsa' },
+    { commitment: falconSigner.commitment, scheme: 'falcon' },
+  ],
+  guardianCommitment,
+  signatureScheme: 'ecdsa', // GUARDIAN's scheme and the default for bare commitments
+};
+
+const { account } = await createMultisigAccount(midenClient, config);
+```
+
+`buildUpdateSignersTransactionRequest` and the `updateSigners` transaction type
+accept the same `string | SignerSpec` entries, and
+`AccountInspector.fromAccount` returns each approver's stored scheme in
+`signers` (and the guardian's in `guardianScheme`) next to the unchanged
+`signerCommitments`. `Multisig.signers` holds the same list.
+
+GUARDIAN currently binds one scheme to each account, so a mixed-scheme account
+cannot yet be registered or operated through it:
+`Multisig.registerOnGuardian()`, the add-signer, remove-signer and
+change-threshold proposals, and the switch-GUARDIAN proposals throw
+`SignerSchemeMismatchError` (`code: 'signer_scheme_mismatch'`) whenever an
+approver's registered scheme, or the guardian's (`Multisig.guardianScheme`),
+differs from the acting signer's, instead of rewriting the other schemes. The
+guardian check matters even for a single-scheme approver set: all-ECDSA
+`SignerSpec`s with `signatureScheme` omitted get a Falcon guardian, and
+registering that account under ECDSA would have GUARDIAN sign acknowledgements
+the account verifies as Falcon.
+
+`createAddSignerProposal` adds the new signer under the acting signer's
+scheme. Pass a `SignerSpec` to state the new signer's scheme: one that differs
+from the acting signer's throws `SignerSchemeMismatchError` before the
+proposal is built.
+
 ### Register on GUARDIAN
 
 After creating the account, register it on the GUARDIAN server:
@@ -455,7 +503,7 @@ optional parameters:
 ```typescript
 createP2idProposal(recipientId, faucetId, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)
 createConsumeNotesProposal(noteIds, { nonce }?)
-createAddSignerProposal(commitment, { nonce, newThreshold }?)
+createAddSignerProposal(commitmentOrSignerSpec, { nonce, newThreshold }?)
 createRemoveSignerProposal(commitment, { nonce, newThreshold }?)
 createChangeThresholdProposal(threshold, { nonce }?)
 createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)

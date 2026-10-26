@@ -62,8 +62,12 @@ pub enum Runtime {
     Browser,
 }
 
-/// `Mixed` exists so a manifest naming a mixed signer set fails validation with
-/// a message about the capability gap, rather than a bare deserialization error.
+/// `Mixed` is a signer set whose approvers do not share one scheme. Only the
+/// deterministic Rust leg can build one (its own builder, not an SDK's), so
+/// validation refuses it anywhere else with a message about the capability gap,
+/// rather than a bare deserialization error. Any other spelling is
+/// `Unrecognized`, which validation always refuses: a typo must not become a
+/// scheme a scenario runs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scheme {
@@ -72,6 +76,7 @@ pub enum Scheme {
     Mixed,
     #[serde(rename = "n/a")]
     NotApplicable,
+    Unrecognized,
 }
 
 impl From<String> for Scheme {
@@ -79,8 +84,9 @@ impl From<String> for Scheme {
         match raw.as_str() {
             "falcon" => Self::Falcon,
             "ecdsa" => Self::Ecdsa,
+            "mixed" => Self::Mixed,
             "n/a" | "none" => Self::NotApplicable,
-            _ => Self::Mixed,
+            _ => Self::Unrecognized,
         }
     }
 }
@@ -188,6 +194,12 @@ pub enum Action {
     QueueTransfersChained,
     QueueHeadBlocksProposal,
     QueueHeadAbandonRecover,
+    MixedSchemeDeclarationsRefused,
+    MixedSchemeRegister,
+    MixedSchemeCosignersAuthenticate,
+    MixedSchemeReported,
+    MixedSchemeApprovals,
+    MixedSchemeGate,
     Unknown(String),
 }
 
@@ -255,8 +267,29 @@ impl From<String> for Action {
             "queue-transfers-chained" => Self::QueueTransfersChained,
             "queue-head-blocks-proposal" => Self::QueueHeadBlocksProposal,
             "queue-head-abandon-recover" => Self::QueueHeadAbandonRecover,
+            "mixed-scheme-declarations-refused" => Self::MixedSchemeDeclarationsRefused,
+            "mixed-scheme-register" => Self::MixedSchemeRegister,
+            "mixed-scheme-cosigners-authenticate" => Self::MixedSchemeCosignersAuthenticate,
+            "mixed-scheme-reported" => Self::MixedSchemeReported,
+            "mixed-scheme-approvals" => Self::MixedSchemeApprovals,
+            "mixed-scheme-gate" => Self::MixedSchemeGate,
             other => Self::Unknown(other.to_string()),
         }
+    }
+}
+
+impl Action {
+    /// Whether this action drives the driver's own mixed-scheme account.
+    pub fn is_mixed_scheme(&self) -> bool {
+        matches!(
+            self,
+            Self::MixedSchemeDeclarationsRefused
+                | Self::MixedSchemeRegister
+                | Self::MixedSchemeCosignersAuthenticate
+                | Self::MixedSchemeReported
+                | Self::MixedSchemeApprovals
+                | Self::MixedSchemeGate
+        )
     }
 }
 
@@ -498,6 +531,7 @@ mod tests {
             Scheme::Ecdsa,
             Scheme::Mixed,
             Scheme::NotApplicable,
+            Scheme::Unrecognized,
         ] {
             let rendered = serde_json::to_string(&scheme).expect("serializes");
             let parsed: Scheme = serde_json::from_str(&rendered).expect("round-trips");

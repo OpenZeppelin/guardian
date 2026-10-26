@@ -26,6 +26,8 @@ pub struct DashboardAccountSummary {
     /// parse as a 15-byte id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id_bech32: Option<String>,
+    /// `falcon` or `ecdsa` when the account's cosigners and GUARDIAN share
+    /// that scheme, `mixed` when they do not.
     pub auth_scheme: String,
     pub authorized_signer_count: usize,
     pub has_pending_candidate: bool,
@@ -46,6 +48,8 @@ pub struct DashboardAccountDetail {
     pub account_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id_bech32: Option<String>,
+    /// `falcon` or `ecdsa` when the account's cosigners and GUARDIAN share
+    /// that scheme, `mixed` when they do not.
     pub auth_scheme: String,
     pub authorized_signer_count: usize,
     pub authorized_signer_ids: Vec<String>,
@@ -258,7 +262,7 @@ impl DashboardAccountSummary {
         Self {
             account_id: metadata.account_id.clone(),
             account_id_bech32: bech32_for_account(metadata, network_type),
-            auth_scheme: metadata.auth.scheme().to_string(),
+            auth_scheme: metadata.auth.auth_scheme_label().to_string(),
             authorized_signer_count: normalized_authorized_signer_ids(&metadata.auth).len(),
             has_pending_candidate: metadata.has_pending_candidate,
             current_commitment,
@@ -283,7 +287,7 @@ impl DashboardAccountDetail {
         Self {
             account_id: metadata.account_id.clone(),
             account_id_bech32: bech32_for_account(metadata, network_type),
-            auth_scheme: metadata.auth.scheme().to_string(),
+            auth_scheme: metadata.auth.auth_scheme_label().to_string(),
             authorized_signer_count: authorized_signer_ids.len(),
             authorized_signer_ids,
             has_pending_candidate: metadata.has_pending_candidate,
@@ -330,15 +334,7 @@ pub fn normalized_authorized_signer_count(auth: &Auth) -> usize {
 }
 
 fn normalized_authorized_signer_ids(auth: &Auth) -> Vec<String> {
-    let mut signer_ids = match auth {
-        Auth::MidenFalconRpo {
-            cosigner_commitments,
-        }
-        | Auth::MidenEcdsa {
-            cosigner_commitments,
-        } => cosigner_commitments.clone(),
-        Auth::EvmEcdsa { signers } => signers.clone(),
-    };
+    let mut signer_ids = auth.cosigner_commitments();
     signer_ids.sort();
     signer_ids.dedup();
     signer_ids
@@ -460,6 +456,37 @@ mod tests {
     /// and batches state reads via `pull_states_batch`. Pre-fix the
     /// service called `metadata.list()` + N `metadata.get()` + N
     /// `pull_state()` per page.
+    #[test]
+    fn summary_reports_a_mixed_account_and_counts_every_cosigner() {
+        use guardian_shared::SignatureScheme;
+        let mut metadata = miden_meta("acc-mixed", "2026-05-08T12:00:00Z");
+        metadata.auth = Auth::Miden {
+            cosigners: vec![
+                crate::metadata::auth::MidenCosigner {
+                    commitment: "0xc2".into(),
+                    scheme: SignatureScheme::Falcon,
+                },
+                crate::metadata::auth::MidenCosigner {
+                    commitment: "0xc1".into(),
+                    scheme: SignatureScheme::Ecdsa,
+                },
+            ],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+        let summary = DashboardAccountSummary::from_parts(
+            &metadata,
+            None,
+            DashboardAccountStateStatus::Unavailable,
+            NetworkType::MidenTestnet,
+        );
+        assert_eq!(summary.auth_scheme, "mixed");
+        assert_eq!(summary.authorized_signer_count, 2);
+        assert_eq!(
+            normalized_authorized_signer_ids(&metadata.auth),
+            vec!["0xc1".to_string(), "0xc2".to_string()]
+        );
+    }
+
     #[tokio::test]
     async fn cursor_walks_every_page_no_skip_no_repeat() {
         let dir = TempDir::new().expect("tempdir");

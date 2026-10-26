@@ -2,6 +2,7 @@ pub mod account;
 pub mod error_envelope;
 pub mod identity;
 pub mod live;
+pub mod mixed_scheme;
 pub mod queue;
 pub mod restart_handoff;
 pub mod signers;
@@ -386,6 +387,20 @@ impl Runner {
                     Some(queue::assert_cosigner_proposal_refused(self).await)
                 }
                 Action::QueueDepthLimit => Some(queue::assert_depth_limit(self).await),
+                Action::MixedSchemeDeclarationsRefused => {
+                    Some(mixed_scheme::assert_declarations_refused(self).await)
+                }
+                Action::MixedSchemeRegister => Some(mixed_scheme::register(self).await),
+                Action::MixedSchemeCosignersAuthenticate => {
+                    Some(mixed_scheme::assert_cosigners_authenticate(self).await)
+                }
+                Action::MixedSchemeReported => {
+                    Some(mixed_scheme::assert_reported_mixed(self).await)
+                }
+                Action::MixedSchemeApprovals => {
+                    Some(mixed_scheme::assert_per_scheme_approvals(self).await)
+                }
+                Action::MixedSchemeGate => Some(mixed_scheme::assert_mixed_scheme_gate(self).await),
                 _ => None,
             }
         };

@@ -40,7 +40,9 @@ vi.mock('./inspector.js', async (importOriginal) => {
         threshold: 2,
         numSigners: 2,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        signers: [{ commitment: '0x' + 'a'.repeat(64), scheme: 'falcon' as const }, { commitment: '0x' + 'b'.repeat(64), scheme: 'falcon' as const }],
         guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianScheme: 'falcon' as const,
         vaultBalances: [],
         procedureThresholds: new Map(),
       })),
@@ -269,7 +271,9 @@ describe('MultisigClient', () => {
         threshold: 2,
         numSigners: 3,
         signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
+        signers: [{ commitment: '0x' + 'a'.repeat(64), scheme: 'falcon' as const }, { commitment: '0x' + 'b'.repeat(64), scheme: 'falcon' as const }],
         guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianScheme: 'falcon' as const,
         vaultBalances: [],
         procedureThresholds: new Map(),
       });
@@ -290,6 +294,68 @@ describe('MultisigClient', () => {
       );
     });
 
+    it('keeps the detected guardian scheme on the loaded multisig', async () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+
+      const { AccountInspector } = await import('./inspector.js');
+      vi.mocked(AccountInspector.fromAccount).mockReturnValueOnce({
+        threshold: 1,
+        numSigners: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        signers: [{ commitment: '0x' + 'a'.repeat(64), scheme: 'ecdsa' as const }],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianScheme: 'ecdsa' as const,
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      const multisig = await client.load('0x' + 'd'.repeat(30), mockSigner);
+
+      expect(multisig.guardianScheme).toBe('ecdsa');
+    });
+
+    it('fails closed when the guardian scheme could not be read', async () => {
+      const client = new MultisigClient(webClient, CLIENT_CONFIG);
+
+      const { AccountInspector } = await import('./inspector.js');
+      vi.mocked(AccountInspector.fromAccount).mockReturnValueOnce({
+        threshold: 1,
+        numSigners: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        signers: [{ commitment: '0x' + 'a'.repeat(64), scheme: 'falcon' as const }],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        guardianScheme: null,
+        vaultBalances: [],
+        procedureThresholds: new Map(),
+      });
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'd'.repeat(30),
+          commitment: '0x' + 'e'.repeat(64),
+          state_json: { data: 'base64state' },
+          created_at: '2024-01-01T00:00:00Z',
+          updated_at: '2024-01-02T00:00:00Z',
+        }),
+      });
+
+      await expect(client.load('0x' + 'd'.repeat(30), mockSigner)).rejects.toThrow(
+        /missing guardian scheme/,
+      );
+    });
+
     it('fails closed when the guardian commitment is missing', async () => {
       const client = new MultisigClient(webClient, CLIENT_CONFIG);
 
@@ -298,7 +364,9 @@ describe('MultisigClient', () => {
         threshold: 1,
         numSigners: 1,
         signerCommitments: ['0x' + 'a'.repeat(64)],
+        signers: [{ commitment: '0x' + 'a'.repeat(64), scheme: 'falcon' as const }],
         guardianCommitment: null,
+        guardianScheme: null,
         vaultBalances: [],
         procedureThresholds: new Map(),
       });

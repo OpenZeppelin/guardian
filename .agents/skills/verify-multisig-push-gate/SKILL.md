@@ -156,14 +156,14 @@ ApprovalRelay:
 | Definition | Code |
 |---|---|
 | `Init` `toRelay` | TS `relayCollectedApprovals` skips signers the served proposal holds; Rust `relay_collected_approvals` sends all and the server answers held ones `proposal_already_signed` |
-| `Response` | `services/sign_delta_proposal.rs` `sign_delta_proposal` (this branch: credit to the verified key, `proposal_already_signed` when that key is held); 0.18.2 (`main` before this PR): already-signed check on the caller first, then `invalid_proposal_signature` unless the approval is the caller's |
+| `Response` | `services/sign_delta_proposal.rs` `sign_delta_proposal` (this branch: credit to the verified key, `proposal_already_signed` when that key is held; `ensure_cosigner_approval` refuses an approval from a non-cosigner or under another scheme than the account registers its signer with, `invalid_proposal_signature`, which the chain would not count either, so every modelled approval passes it); 0.18.2 (`main` before this PR): already-signed check on the caller first, then `invalid_proposal_signature` unless the approval is the caller's |
 | `RelayContinues` | the two `guardian_code()` / `GuardianHttpError.code` arms both relays skip |
 | `RelayRead` / `LateRead` | `load_pending_proposal` in `sign_delta_proposal` |
 | `Commits` | this branch: `update_delta_proposal_if_status` (`storage/postgres.rs` one UPDATE filtered on `status = expected`; `storage/filesystem.rs` read, compare and write under `proposal_write_lock`; the encryption decorator passes the plaintext status through); 0.18.2: `update_delta_proposal`, unconditional |
 | `RelayWrite` / `LateWrite` | the committed write of `with_approval`'s row |
 | `RelayRetry` / `LateRetry` | a refused conditional write, then `load_pending_proposal` again (`MAX_SIGN_ATTEMPTS` bounds it in the code; each refusal means another write committed) |
 | `RelayRead` when `~Stored` | `proposal_not_found`; TS `executeProposal` switch path catches it and still pushes |
-| `Push` | `push_delta` → `lookup_matching_proposal` → `MultisigAccount::authorize` against `Required` (the floor); 0.18.2 acknowledges without counting |
+| `Push` | `push_delta` → `lookup_matching_proposal` → `MultisigAccount::authorize` against `Required` (the floor), counting each approver of `extract_chain_cosigners()` once under its stored scheme (one with no supported stored scheme is not counted when the state has the approver scheme map); 0.18.2 acknowledges without counting |
 
 ## Scope and assumptions
 
@@ -176,8 +176,9 @@ ApprovalRelay:
 - Both sides read the pre-transaction state. The chain does this through
   `get_initial_*`. The gate reads the queue tail, which is the state the
   delta executes on. Signature verification itself (Falcon, ECDSA
-  recovery, dedup by key) is not modeled. It is covered by the
-  `multisig_push_*` unit tests in `push_delta.rs`.
+  recovery, dedup by key, the approver's stored scheme) is not modeled.
+  It is covered by the `multisig_push_*` unit tests in `push_delta.rs`
+  and the `ensure_cosigner_approval` tests in `proposal_signature.rs`.
 - Accepted residual, by design: a push that meets the floor but not the
   chain's requirement is acknowledged, refused on chain, and holds the
   candidate slot until canonicalization drops it. On an account with a

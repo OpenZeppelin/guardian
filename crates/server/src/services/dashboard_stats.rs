@@ -43,7 +43,8 @@ pub struct DashboardLifecycleCounts {
 /// Guardian asserting which client a shape belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardAuthMethodSignerCount {
-    /// Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`, `evm`).
+    /// Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`,
+    /// `miden`, `evm`).
     pub auth_method: String,
     /// Distinct authorized signers, as on `DashboardAccountSummary`.
     pub authorized_signer_count: u64,

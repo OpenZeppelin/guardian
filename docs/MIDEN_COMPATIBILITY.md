@@ -125,6 +125,52 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
+**Moving past 0.18.3: accounts that mix Falcon and ECDSA cosigners (issue #563).**
+GUARDIAN can now register and operate a guarded multisig whose approvers use
+different schemes, for example an ECDSA wallet or hardware signer next to a
+locally held Falcon key. Existing stored data needs no migration, and
+single-scheme accounts keep their wire and storage shape.
+
+- **A new auth variant.** `/configure` (HTTP and gRPC) accepts `Miden { cosigners:
+  [{ commitment, scheme }], guardian_scheme }` next to `MidenFalconRpo` and
+  `MidenEcdsa`. Each request is verified under its signer's registered scheme,
+  deltas are acknowledged with the GUARDIAN scheme's ACK key, and `auth_scheme`
+  reads `mixed` for such an account. Servers up to 0.18.3 reject the variant, so
+  upgrade the server before clients register mixed accounts; clients keep sending
+  the single-scheme variants for every other account.
+- **`/configure` also checks the scheme slots**, for every variant: the account
+  must store the GUARDIAN under the scheme of the ACK key it holds
+  (`authorization_failed`), and a supported scheme for every multisig approver
+  (`invalid_input`). An account that does not would fail every transaction on
+  chain, or every one that approver signs.
+- **Approvals are checked against the approver's scheme.** `PUT` and `POST
+  /delta/proposal` refuse an approval made under another scheme than the account
+  registers its signer with (`invalid_proposal_signature`), and the multisig push
+  gate does not count one. A correctly registered account is unaffected, since a
+  key's commitment is derived under its own scheme; an account that registers a
+  key under the wrong scheme now gets the refusal instead of an acknowledgement
+  for a transaction the chain refuses.
+- **The scheme policy holds for reconfigurations too.** With
+  `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` set, a reconfiguration that adds a scheme
+  the stored account does not use yet is refused with
+  `signature_scheme_not_allowed`; re-configuring under the schemes an account
+  already uses keeps working.
+- **Canonicalization keeps schemes in step with the chain.** A single-scheme
+  account that gains a cosigner of the other scheme is stored as `Miden` from then
+  on, and that cosigner can authenticate.
+- **Postgres** gains the index `idx_account_metadata_miden_cosigners` (embedded
+  migration `2026-10-20-000001_miden_auth_cosigner_index`) so `GET /state/lookup`
+  and session grants find the cosigners of such accounts.
+- **No rollback once a mixed account is stored.** Servers up to 0.18.3 cannot
+  read a stored `Miden` auth, whether `/configure` wrote it or canonicalization
+  promoted an account to it: a filesystem metadata store then fails to load as a
+  whole, and on Postgres every request for that account fails. During a rolling
+  deploy, older replicas fail requests for such an account until they are
+  replaced, so finish the rollout before clients register mixed accounts.
+- **SDKs.** The base clients can send the variant. The Rust multisig SDK (#549) and
+  the TypeScript multisig SDK (after #540) still build and register single-scheme
+  accounts until they adopt it.
+
 **Upgrading from 0.18.2 to 0.18.3: patched CA trust store.** The Miden pins, the
 `auth_tx` procedure root, stored data, existing contracts and the wire contract are
 unchanged, so accounts and stores carry over and 0.18.2 SDKs keep working against a

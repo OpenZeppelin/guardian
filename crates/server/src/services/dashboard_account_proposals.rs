@@ -85,8 +85,8 @@ impl DashboardProposalEntry {
 
 /// Derive the `signatures_required` count for a proposal per FR-019.
 ///
-/// - `MidenFalconRpo` / `MidenEcdsa` → number of declared
-///   `cosigner_commitments`.
+/// - `MidenFalconRpo` / `MidenEcdsa` / `Miden` → number of declared
+///   cosigners.
 /// - `EvmEcdsa` → never reached on this endpoint; EVM accounts
 ///   short-circuit to an empty page in [`list_account_proposals`].
 ///   Returning `0` here is defensive.
@@ -98,6 +98,7 @@ pub(crate) fn signatures_required(auth: &Auth) -> u32 {
         | Auth::MidenEcdsa {
             cosigner_commitments,
         } => cosigner_commitments.len() as u32,
+        Auth::Miden { cosigners, .. } => cosigners.len() as u32,
         Auth::EvmEcdsa { .. } => 0,
     }
 }

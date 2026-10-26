@@ -91,7 +91,7 @@ pub async fn register(runner: &Runner) -> ActionOutcome {
 /// GUARDIAN's rendering and the fixture's are both hex words, but nothing
 /// guarantees the same case or the same `0x`, and a comparison that tripped on
 /// either would fail for a reason that is not a defect.
-fn same_commitment(left: &str, right: &str) -> bool {
+pub(super) fn same_commitment(left: &str, right: &str) -> bool {
     fn canonical(value: &str) -> String {
         value
             .trim()

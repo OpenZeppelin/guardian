@@ -14,6 +14,8 @@ mod lookup_helpers;
 mod lookup_http;
 mod metrics_http;
 mod miden_rpc_integration;
+mod mixed_scheme_grpc;
+mod mixed_scheme_http;
 mod proposals_grpc;
 mod proposals_http;
 mod rate_limit_grpc;

@@ -257,7 +257,7 @@ aws_region = "us-east-1"
 # guardian_evm_rpc_urls = "1=https://ethereum-rpc.publicnode.com,11155111=https://ethereum-sepolia-rpc.publicnode.com"
 # guardian_evm_entrypoint_address = "0x433709009b8330fda32311df1c2afa402ed8d009"
 # guardian_cors_allowed_origins = "https://accounts.openzeppelin.com"
-# guardian_allowed_account_schemes = "ecdsa"   # new accounts only; existing Falcon accounts keep working
+# guardian_allowed_account_schemes = "ecdsa"   # new accounts and added schemes; existing Falcon accounts keep working
 
 # Optional: stage/runtime capacity overrides
 # deployment_stage = "prod"
@@ -965,7 +965,7 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 | `guardian_tx_prover_url_secret_arn` | Secrets Manager ARN the server reads its prover URL from; empty when execution is not configured |
 | `guardian_evm_entrypoint_address` | Shared EVM EntryPoint address configured for the server |
 | `guardian_cors_allowed_origins` | Explicit CORS origins configured for the server |
-| `guardian_allowed_account_schemes` | Signature schemes new accounts may register with (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`); empty keeps every scheme |
+| `guardian_allowed_account_schemes` | Signature schemes new accounts may register with, and a reconfiguration may add (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`); empty keeps every scheme |
 | `ack_falcon_secret_name` | Secrets Manager name for the Falcon ack key |
 | `ack_ecdsa_secret_name` | Secrets Manager name for the ECDSA ack key |
 | `dashboard_cursor_secret_name` | Secrets Manager name for the shared dashboard cursor key |

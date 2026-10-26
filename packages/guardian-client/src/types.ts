@@ -156,6 +156,12 @@ export type ProposalSignature = FalconSignature | EcdsaSignature;
 
 export type SignatureScheme = 'falcon' | 'ecdsa';
 
+/** One cosigner of a {@link AuthConfig} `Miden` auth and the scheme Guardian verifies its signatures under. */
+export interface MidenCosignerConfig {
+  commitment: string;
+  scheme: SignatureScheme;
+}
+
 export type AuthConfig =
   | {
       MidenFalconRpo: {
@@ -165,6 +171,18 @@ export type AuthConfig =
   | {
       MidenEcdsa: {
         cosigner_commitments: string[];
+      };
+    }
+  /**
+   * Cosigners that each carry their own scheme, and the GUARDIAN's scheme
+   * (issue #563). Send it only for an account whose cosigners and GUARDIAN
+   * do not all share one scheme; servers before #563 reject it, and the
+   * single-scheme variants keep serving the accounts that do.
+   */
+  | {
+      Miden: {
+        cosigners: MidenCosignerConfig[];
+        guardian_scheme: SignatureScheme;
       };
     };
 
@@ -209,6 +227,15 @@ export interface ProposalMetadata {
   targetThreshold?: number;
   requiredSignatures?: number;
   signerCommitments?: string[];
+  /**
+   * Target signer schemes (`"falcon"` / `"ecdsa"`), index-aligned with
+   * `signerCommitments`, for an update-signers proposal whose signers do not
+   * all share one scheme (issue #563). Absent => every target signer keeps the
+   * proposer's scheme. GUARDIAN stores the proposer's values as sent, so a
+   * consumer validates them, as it validates the rest of the metadata against
+   * the transaction summary, before relying on them.
+   */
+  signerSchemes?: string[];
   targetProcedure?: string;
   salt?: string;
   description?: string;
@@ -273,6 +300,7 @@ export interface StateObject {
   stateJson: { data: string };
   createdAt: string;
   updatedAt: string;
+  /** `falcon` or `ecdsa` when the account's cosigners and GUARDIAN share that scheme, `mixed` when they do not. */
   authScheme?: string;
 }
 

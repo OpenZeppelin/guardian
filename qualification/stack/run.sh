@@ -549,10 +549,12 @@ if [[ -n "${UPGRADE_FROM}" ]]; then
     # database from a fresh one proves nothing, and it is also what makes a
     # silently empty seed phase visible here.
     #
-    # `--upgrade-target` because the older release cannot write everything a
-    # second pass reads back: it has no Guardian execution, so the refusals
-    # scenario runs its own first pass here and the restart pass below reads
-    # what that left.
+    # `--upgrade-target` because this is the one post-restart pass whose earlier
+    # writes came from the release being upgraded from, not from this image: a
+    # scenario the seed phase does not run (and an older release could not)
+    # finds nothing of its own here, and must not read that as data lost. The
+    # older release has no Guardian execution, so the refusals scenario runs its
+    # own first pass here and the restart pass below reads what that left.
     qual_run_phase "${QUAL_RUN_ID}" "${OUT_DIR}" \
       "${SERVER_DIGEST}" "${IMAGE_REVISION}" selected \
       "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart --upgrade-target

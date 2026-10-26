@@ -15,6 +15,9 @@ import type {
   ProposalMetadata,
   ProposalSignatureEntry,
   ProposalType,
+  SignatureScheme,
+  SignerInput,
+  SignerSpec,
 } from './types.js';
 import { BoundBlockMismatchError, ProposalSaltMalformedError } from './multisig/authArgErrors.js';
 import {
@@ -75,6 +78,7 @@ import {
 } from './transaction/expiration.js';
 import type { MultisigRequestOptions } from './transaction/options.js';
 import { validateMultisigConfig } from './account/builder.js';
+import { DEFAULT_SIGNATURE_SCHEME, resolveSignerSpecs, SignerSchemeMismatchError } from './account/signers.js';
 import { ensureNotesAuthenticated } from './transaction/noteAuthentication.js';
 import {
   CONSUME_NOTES_METADATA_VERSION_V2,
@@ -401,7 +405,11 @@ export class Multisig {
   account: Account;
   threshold: number;
   signerCommitments: string[];
+  /** The approvers with their registered schemes, index-aligned with `signerCommitments`. */
+  signers: SignerSpec[];
   guardianCommitment: string;
+  /** The scheme the account verifies the guardian's acknowledgements under. */
+  guardianScheme: SignatureScheme;
   procedureThresholds: Map<ProcedureName, number>;
   guardianPublicKey?: string;
 
@@ -450,8 +458,12 @@ export class Multisig {
     this.executionMode = executionMode;
     this.account = account;
     this.threshold = config.threshold;
-    this.signerCommitments = config.signerCommitments;
+    this.signers = resolveSignerSpecs(config);
+    this.signerCommitments = this.signers.map((signer) => signer.commitment);
     this.guardianCommitment = config.guardianCommitment;
+    // The account builder writes `signatureScheme` (default Falcon) into the
+    // guardian slot, whatever schemes the approvers carry.
+    this.guardianScheme = config.signatureScheme ?? DEFAULT_SIGNATURE_SCHEME;
     this.guardianPublicKey = config.guardianPublicKey;
     this.procedureThresholds = new Map(
       (config.procedureThresholds ?? []).map((pt) => [pt.procedure, pt.threshold])
@@ -698,6 +710,41 @@ export class Multisig {
       summaryBase64: uint8ArrayToBase64(summary.serialize()),
       boundBlockNum: summaryBoundBlockNum(summary),
     };
+  }
+
+  /**
+   * Refuses to act when an approver's or the guardian's registered scheme
+   * differs from this signer's. Rewriting the approver set or the guardian (or
+   * registering with GUARDIAN, which binds one scheme per account and signs its
+   * acknowledgements under it) under this signer's scheme would otherwise
+   * silently change the other schemes; a guardian registered under a scheme the
+   * account does not verify it with would fail every transaction on-chain.
+   */
+  private assertSignerSchemesMatch(): void {
+    const mismatched = this.signers.filter((signer) => signer.scheme !== this.signer.scheme);
+    const guardian =
+      this.guardianScheme !== this.signer.scheme
+        ? { commitment: this.guardianCommitment, scheme: this.guardianScheme }
+        : undefined;
+    if (mismatched.length > 0 || guardian) {
+      throw new SignerSchemeMismatchError(this.signer.scheme, mismatched, guardian);
+    }
+  }
+
+  /**
+   * The commitment of a signer being added. The update writes it under this
+   * signer's scheme, so a spec naming another scheme is refused rather than
+   * silently rewritten.
+   */
+  private newSignerCommitment(newSigner: SignerInput): string {
+    if (typeof newSigner === 'string') {
+      return newSigner;
+    }
+    const [spec] = resolveSignerSpecs({ signerCommitments: [newSigner] });
+    if (spec.scheme !== this.signer.scheme) {
+      throw new SignerSchemeMismatchError(this.signer.scheme, [spec]);
+    }
+    return newSigner.commitment;
   }
 
   private warnOnOverrideDilution(newNumSigners: number): void {
@@ -957,7 +1004,9 @@ export class Multisig {
     this.account = account;
     this.threshold = detected.threshold;
     this.signerCommitments = detected.signerCommitments;
+    this.signers = detected.signers;
     this.guardianCommitment = detected.guardianCommitment;
+    this.guardianScheme = detected.guardianScheme;
     this.procedureThresholds = new Map(detected.procedureThresholds);
   }
 
@@ -971,6 +1020,7 @@ export class Multisig {
    */
   async registerOnGuardian(initialStateBase64?: string): Promise<void> {
     await this.refreshConfigFromStore();
+    this.assertSignerSchemesMatch();
     // Serialize the account to bytes and base64-encode
     const stateData =
       initialStateBase64 ?? uint8ArrayToBase64(this.account.serialize());
@@ -1325,17 +1375,26 @@ export class Multisig {
   /**
    * Create an "add signer" proposal.
    *
-   * @param newCommitment - Commitment of the new signer (hex)
+   * The new signer takes this signer's scheme, which every current approver
+   * and the guardian already use (the proposal is refused otherwise). A
+   * {@link SignerSpec} states the new signer's scheme explicitly; one that
+   * differs from this signer's is refused with {@link SignerSchemeMismatchError}
+   * before anything is built, until GUARDIAN supports per-signer schemes
+   * (issue #563).
+   *
+   * @param newSigner - Commitment of the new signer (hex), or a {@link SignerSpec}
    * @param options - Optional settings: `nonce`, `newThreshold` (defaults to
    *   current threshold)
    */
   async createAddSignerProposal(
-    newCommitment: string,
+    newSigner: SignerInput,
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createAddSignerProposal', options, legacyArgs);
+    this.assertSignerSchemesMatch();
+    const newCommitment = this.newSignerCommitment(newSigner);
     const targetThreshold = options.newThreshold ?? this.threshold;
     const targetSignerCommitments = [...this.signerCommitments, newCommitment];
     // What `update_signers_and_threshold` rejects on-chain, and what the auth
@@ -1386,6 +1445,7 @@ export class Multisig {
   ): Promise<Proposal> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createRemoveSignerProposal', options, legacyArgs);
+    this.assertSignerSchemesMatch();
     const normalizedRemove = signerToRemove.toLowerCase();
     const targetSignerCommitments = this.signerCommitments.filter(
       (c) => c.toLowerCase() !== normalizedRemove
@@ -1442,6 +1502,7 @@ export class Multisig {
   ): Promise<Proposal> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createChangeThresholdProposal', options);
+    this.assertSignerSchemesMatch();
     if (newThreshold < 1 || newThreshold > this.signerCommitments.length) {
       throw new Error(
         `Invalid threshold ${newThreshold}. Must be between 1 and ${this.signerCommitments.length}`
@@ -1545,6 +1606,9 @@ export class Multisig {
   ): Promise<Proposal> {
     assertProposalOptionsBag('createSwitchGuardianProposal', options);
     await this.refreshConfigFromStore();
+    // The rotation writes this signer's scheme into the guardian slot and asks
+    // the new endpoint for a key of that scheme.
+    this.assertSignerSchemesMatch();
     const { summaryBase64, metadata } = await this.buildSwitchGuardianSummary(
       newGuardianEndpoint,
       newGuardianPubkey,
@@ -1648,6 +1712,9 @@ export class Multisig {
     // state — or a readiness threshold read from stale config — would only
     // fail at execution, after the whole side-channel cosigning ceremony.
     const synced = await this.syncNetworkOnly();
+    // After the refresh, so the schemes checked are the ones the summary is
+    // built against.
+    this.assertSignerSchemesMatch();
     const proposalNonce = await this.resolveProposalNonce(
       'createSwitchGuardianProposalOffline',
       options,
@@ -3439,6 +3506,7 @@ export class Multisig {
       case 'add_signer':
       case 'remove_signer':
       case 'change_threshold': {
+        this.assertSignerSchemesMatch();
         const { request } = await buildUpdateSignersTransactionRequest(
           this.midenClient,
           metadata.targetThreshold,
@@ -3448,6 +3516,7 @@ export class Multisig {
         return request;
       }
       case 'switch_guardian': {
+        this.assertSignerSchemesMatch();
         const { request } = await buildUpdateGuardianTransactionRequest(
           this.midenClient,
           metadata.newGuardianPubkey,

@@ -319,14 +319,11 @@ async fn verify_session_request(
             "Session grant names another Guardian key or network".to_string(),
         ));
     }
-    let same_scheme = names_ack_key(&metadata.auth.scheme());
+    // The grant names this Guardian's key of the wallet's scheme, which
+    // must be the scheme the account registers that signer under.
     let signer_commitment = session.signer_commitment;
-    if !same_scheme
-        || !metadata
-            .auth
-            .cosigner_commitments()
-            .contains(&signer_commitment)
-    {
+    let registered_scheme = metadata.auth.signer_scheme(&signer_commitment);
+    if !registered_scheme.as_ref().is_some_and(names_ack_key) {
         tracing::warn!(
             account_id = %account_id,
             signer_commitment = %signer_commitment,
@@ -341,7 +338,7 @@ async fn verify_session_request(
 
 /// Longest wallet signature a session route accepts: a Falcon signature with
 /// its embedded public key.
-const MAX_WALLET_SIGNATURE_BYTES: usize = 1524;
+const MAX_WALLET_SIGNATURE_BYTES: usize = crate::metadata::auth::FALCON_SIGNATURE_LEN;
 
 /// Rejects a wallet signature on an unauthenticated session route
 /// (`POST /session`, `POST /session/revoke-all`) unless it is even-length hex

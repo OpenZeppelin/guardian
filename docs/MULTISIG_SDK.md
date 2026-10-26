@@ -960,6 +960,21 @@ stay loaded for existing accounts. Always pass the scheme of the account you
 are creating, usually `signer.scheme`. A Falcon commitment in an ECDSA account
 is refused at registration with an authorization error, not a scheme mismatch.
 
+An approver may use its own signature scheme: pass `{ commitment, scheme }`
+(a `SignerSpec`) instead of a bare commitment, which keeps using
+`signatureScheme` (default `'falcon'`, also the GUARDIAN's scheme). The account
+then stores one scheme per approver in `approver_schemes`, as
+`miden-standards` does. GUARDIAN binds one scheme to each account, so
+`registerOnGuardian()`, the signer-update proposals and the switch-GUARDIAN
+proposals refuse an account whose approvers or guardian (`Multisig.guardianScheme`)
+use a scheme other than the acting signer's, with `SignerSchemeMismatchError`,
+until the server supports per-signer schemes (issue #563). Note that
+`signatureScheme` also sets the guardian's scheme: all-ECDSA `SignerSpec`s with
+it omitted build a Falcon guardian, which the guard then refuses to register
+under ECDSA. `createAddSignerProposal` adds the new signer under the acting
+signer's scheme; a `SignerSpec` naming another scheme is refused the same way.
+The Rust SDK still builds single-scheme accounts (issue #549).
+
 ### Loading Existing Accounts
 
 ```typescript
@@ -1542,7 +1557,7 @@ Authentication).
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `recoverNotes(options?)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
 | `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
-| `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
+| `createAddSignerProposal(commitmentOrSignerSpec, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold). The new signer takes the acting signer's scheme; a `SignerSpec` with another scheme throws `SignerSchemeMismatchError` |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Change the account-wide threshold (not a per-procedure override) |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
@@ -1583,7 +1598,9 @@ Authentication).
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
+- `signers`: { commitment, scheme }[] (each approver's stored scheme, signer-index order)
 - `guardianCommitment`: string | null
+- `guardianScheme`: 'falcon' | 'ecdsa' | null
 - `vaultBalances`: { faucetId, amount }[]
 
 > **Reading an account's keys:** since the account uses the upstream

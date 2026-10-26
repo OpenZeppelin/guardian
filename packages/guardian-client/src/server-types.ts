@@ -46,6 +46,11 @@ export interface ServerProposalMetadata {
   target_threshold?: number;
   required_signatures?: number;
   signer_commitments?: string[];
+  /**
+   * Target signer schemes (`"falcon"` / `"ecdsa"`), index-aligned with
+   * `signer_commitments` (issue #563). Proposer-supplied and stored as sent.
+   */
+  signer_schemes?: string[];
   target_procedure?: string;
   salt?: string;
   description?: string;
@@ -125,7 +130,13 @@ export interface ServerCanonicalNonceResponse {
 
 export type ServerAuthConfig =
   | { MidenFalconRpo: { cosigner_commitments: string[] } }
-  | { MidenEcdsa: { cosigner_commitments: string[] } };
+  | { MidenEcdsa: { cosigner_commitments: string[] } }
+  | {
+      Miden: {
+        cosigners: { commitment: string; scheme: 'falcon' | 'ecdsa' }[];
+        guardian_scheme: 'falcon' | 'ecdsa';
+      };
+    };
 
 export interface ServerConfigureRequest {
   account_id: string;

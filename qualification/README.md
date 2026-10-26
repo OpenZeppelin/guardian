@@ -48,6 +48,11 @@ that ships with the driver is a switch that can be left on.
 | A full queue judges a delta's base first | in `push_delta.rs` and `storage::gate_candidate_submission`, let an unknown base past the full-queue check | `det-candidate-queue`: `failed` / `product`, naming `commitment_mismatch` where `conflict_pending_delta` was due |
 | The server does not queue chained candidates | run the queue server at `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT=1` | `live-candidate-queue-chained-1of1-ecdsa`: `failed` / `product`, naming the refused second transfer |
 | The TypeScript SDK executes a proposal pinned to a state its client does not hold | in `packages/miden-multisig-client/src/multisig.ts`, drop the `assertExecutesOnPinnedBase` calls | `live-candidate-queue-stranded-head-1of1-ecdsa` (TypeScript): `failed` / `product`, naming the executed proposal labelled past the head |
+| A mixed-scheme account is reported under one scheme | in `crates/server/src/metadata/auth/mod.rs`, make `auth_scheme_label` return the GUARDIAN's scheme instead of `mixed` | `det-mixed-scheme-account`: `failed` / `product`, naming the reported `ecdsa` |
+| Requests are verified under one scheme for every cosigner | in `Auth::verify`'s `Miden` arm, authorize only the Falcon cosigners | `det-mixed-scheme-account`: `failed` / `product`, naming the ECDSA cosigner that was not authenticated under its own scheme |
+| The scheme gate checks only the GUARDIAN's scheme | in `configure_account.rs`, gate `[params.auth.guardian_scheme()]` instead of `schemes_in_use()` | `det-mixed-scheme-gate`: `failed` / `product`, naming the admitted Falcon approver; `det-scheme-gate` still passes, so only the mixed account exposes it |
+| A GUARDIAN key stored under the wrong scheme is accepted | in `network/miden/mod.rs`, make `validate_guardian_commitment` accept any `guardian::scheme` | `det-mixed-scheme-account`: `failed` / `product`, naming the account whose GUARDIAN slot stores the ECDSA key under the Falcon scheme |
+| Declared cosigner schemes are not checked against the state | in `configure_account.rs`, compare the declared and stored auth by commitments only | `det-mixed-scheme-account`: `failed` / `product`, naming the single-scheme ECDSA declaration it registered |
 
 ```bash
 cd packages/miden-multisig-client
@@ -65,6 +70,16 @@ passes again. A control that fails in both directions proves nothing.
 The candidate-queue controls were run against a local Miden node, since devnet
 had moved past the pinned client when they were added, with the server built
 from the branch, and each passed again once reverted.
+
+The mixed-scheme controls edit the server rather than the driver and need no
+chain: each was run as a deterministic scenario against a server built from the
+branch with that one line changed (the gate control on a server started with
+`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`), and each passed again once reverted.
+Two data-loss controls back the post-restart pass: deleting the stored proposal
+files between the passes fails `det-mixed-scheme-account` naming the proposal
+that is gone, and running the post-restart pass against an empty database fails
+it naming the account that is gone, while the same pass with `--upgrade-target`
+registers the account and passes.
 
 Two of these controls found real defects when they were first run, and both
 fixes carry their reasoning at the code: `account-register` is a no-op on a

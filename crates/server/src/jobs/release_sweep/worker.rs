@@ -594,6 +594,7 @@ mod tests {
             &self,
             _: &serde_json::Value,
             _: &str,
+            _: guardian_shared::SignatureScheme,
         ) -> std::result::Result<(), String> {
             unimplemented!()
         }

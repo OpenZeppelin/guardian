@@ -1,6 +1,7 @@
 //! Multisig gate for `push_delta`. A candidate is acknowledged only when
 //! the matching proposal carries verified cosigner signatures over the
-//! pushed transaction, at least as many as the lowest threshold the
+//! pushed transaction, each under the scheme the account stores for its
+//! approver, at least as many as the lowest threshold the
 //! account permits for any transaction it can execute. The chain enforces the exact
 //! threshold of the procedures a transaction calls; this floor never asks
 //! for more than the chain will, so the gate never refuses a transaction
@@ -14,6 +15,7 @@ use serde_json::Value;
 
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
+use crate::metadata::auth::ChainCosigner;
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use guardian_shared::FromJson;
@@ -59,10 +61,12 @@ impl MultisigAccount {
         if summary.to_commitment() != pushed.to_commitment() {
             return self.reject(required, 0);
         }
+        let inspector = MidenAccountInspector::new(&self.account);
         let got = verified_approver_count(
             &summary,
             pending_signatures(proposal),
-            &MidenAccountInspector::new(&self.account).extract_pubkeys(),
+            &inspector.extract_chain_cosigners(),
+            inspector.has_approver_scheme_map(),
         );
         if got < required {
             return self.reject(required, got);
@@ -123,20 +127,34 @@ fn pending_signatures(proposal: &DeltaObject) -> &[CosignerSignature] {
     }
 }
 
+/// The approvers with a verified signature over `summary`, each counted
+/// once. The chain verifies an approver under the scheme the account
+/// stores for it and refuses one it stores no supported scheme for, so
+/// neither an approval under the other scheme nor one from such an
+/// approver is counted. A state without the approver scheme map at all
+/// (bare slots, never a guarded multisig) is counted on signatures alone.
 fn verified_approver_count(
     summary: &TransactionSummary,
     signatures: &[CosignerSignature],
-    approvers: &[String],
+    approvers: &[ChainCosigner],
+    scheme_map: bool,
 ) -> usize {
     let mut seen = BTreeSet::new();
     for signature in signatures {
         let Ok(signer) = verify_proposal_signature(summary, &signature.signature) else {
             continue;
         };
-        if !approvers
+        let Some(approver) = approvers
             .iter()
-            .any(|approver| approver.eq_ignore_ascii_case(&signer))
-        {
+            .find(|approver| approver.commitment.eq_ignore_ascii_case(&signer))
+        else {
+            continue;
+        };
+        let counted = match approver.scheme {
+            Some(scheme) => scheme == signature.signature.scheme(),
+            None => !scheme_map,
+        };
+        if !counted {
             continue;
         }
         seen.insert(signer.to_ascii_lowercase());

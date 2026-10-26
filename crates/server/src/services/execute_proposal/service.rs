@@ -320,7 +320,7 @@ pub async fn request_execution(
         attempt,
         nonce: proposal.nonce,
         base_commitment: proposal.prev_commitment,
-        scheme: resolved.metadata.auth.scheme(),
+        scheme: resolved.metadata.auth.guardian_scheme(),
         fence,
         lease,
         elector,
