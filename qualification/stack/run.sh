@@ -533,9 +533,14 @@ if [[ -n "${UPGRADE_FROM}" ]]; then
     # against an empty database. An upgrade check that cannot tell a migrated
     # database from a fresh one proves nothing, and it is also what makes a
     # silently empty seed phase visible here.
+    #
+    # `--upgrade-target` because this is the one post-restart pass whose earlier
+    # writes came from the release being upgraded from, not from this image: a
+    # scenario the seed phase does not run (and an older release could not)
+    # finds nothing of its own here, and must not read that as data lost.
     qual_run_phase "${QUAL_RUN_ID}" "${OUT_DIR}" \
       "${SERVER_DIGEST}" "${IMAGE_REVISION}" selected \
-      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart
+      "${SELECTED_SCENARIOS[@]+"${SELECTED_SCENARIOS[@]}"}" --post-restart --upgrade-target
     DRIVER_EXIT=${PHASE_EXIT}
   fi
 else

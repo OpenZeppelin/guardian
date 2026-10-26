@@ -90,7 +90,7 @@ pub async fn register(runner: &Runner) -> ActionOutcome {
 /// GUARDIAN's rendering and the fixture's are both hex words, but nothing
 /// guarantees the same case or the same `0x`, and a comparison that tripped on
 /// either would fail for a reason that is not a defect.
-fn same_commitment(left: &str, right: &str) -> bool {
+pub(super) fn same_commitment(left: &str, right: &str) -> bool {
     fn canonical(value: &str) -> String {
         value
             .trim()
@@ -350,6 +350,17 @@ pub async fn assert_durability(runner: &Runner) -> ActionOutcome {
     }
 }
 
+/// The ECDSA-only GUARDIAN the stack runs, or why a gate scenario cannot run.
+pub(super) fn scheme_gated_endpoint() -> Result<String, ActionOutcome> {
+    std::env::var("QUAL_GUARDIAN_SCHEME_GATED_GRPC").map_err(|_| {
+        ActionOutcome::EnvironmentBlocked {
+            reason: "QUAL_GUARDIAN_SCHEME_GATED_GRPC is unset, so no scheme-gated GUARDIAN is \
+                 running to exercise the gate against"
+                .to_string(),
+        }
+    })
+}
+
 /// Exercises `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` as configured, not as parsed.
 ///
 /// Runs against the stack's third GUARDIAN, restricted to ECDSA. That is the
@@ -367,12 +378,9 @@ pub async fn assert_scheme_gate(runner: &Runner) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
-    let Ok(endpoint) = std::env::var("QUAL_GUARDIAN_SCHEME_GATED_GRPC") else {
-        return ActionOutcome::EnvironmentBlocked {
-            reason: "QUAL_GUARDIAN_SCHEME_GATED_GRPC is unset, so no scheme-gated GUARDIAN is \
-                     running to exercise the gate against"
-                .to_string(),
-        };
+    let endpoint = match scheme_gated_endpoint() {
+        Ok(endpoint) => endpoint,
+        Err(outcome) => return outcome,
     };
     let id = match account_id(fixtures) {
         Ok(id) => id,

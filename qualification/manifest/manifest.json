@@ -97,6 +97,42 @@
     },
     {
       "actions": [
+        "mixed-scheme-declarations-refused",
+        "mixed-scheme-register",
+        "mixed-scheme-cosigners-authenticate",
+        "mixed-scheme-reported",
+        "mixed-scheme-approvals"
+      ],
+      "core": false,
+      "id": "det-mixed-scheme-account",
+      "mode": "online",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "mixed",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT2M",
+      "title": "A Falcon + ECDSA account registers per signer, each cosigner authenticates and approves under its own scheme"
+    },
+    {
+      "actions": [
+        "mixed-scheme-gate"
+      ],
+      "core": false,
+      "id": "det-mixed-scheme-gate",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "mixed",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M",
+      "title": "An ECDSA-only GUARDIAN refuses an account with one Falcon approver"
+    },
+    {
+      "actions": [
         "account-register",
         "account-paused-refuses"
       ],

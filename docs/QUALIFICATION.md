@@ -199,6 +199,13 @@ idempotent and would pass just as happily against an empty database, and an
 upgrade check that cannot tell a migrated database from a fresh one proves
 nothing.
 
+It also passes `--upgrade-target`, the one post-restart pass whose earlier
+writes came from the older release rather than this image. A scenario the seed
+phase does not run, such as `det-mixed-scheme-account` (an older release cannot
+register a per-signer declaration at all), stores its data there instead of
+reading it as lost. After a plain restart, and on the restart that follows this
+phase, the same scenario requires what it stored.
+
 Needs no treasury, so it belongs to the deterministic profile, and is refused
 on the live profile, where it would fund every scenario twice. The
 `Qualification (deterministic)` workflow takes the same value as its
@@ -298,7 +305,7 @@ title = "A signer is removed and the account reports the smaller set"
 profile = "live"                 # live | deterministic
 sdk = "both"                     # both | rust | typescript
 runtime = "server-side"
-scheme = "falcon"                # falcon | ecdsa | n/a
+scheme = "falcon"                # falcon | ecdsa | mixed | n/a (mixed: deterministic Rust only)
 shape = "2-of-3"
 mode = "online"                  # online | offline | n/a
 actions = ["account-create", "account-register", "asset-transfer",
@@ -674,11 +681,17 @@ move. No scenario covers this, deliberately, because asserting the current
 behaviour would enshrine an answer that is a product decision rather than a
 test one.
 
-**Mixed-scheme accounts.** Both account builders assign one configured scheme to
-every signer, so no mixed-scheme account can be constructed. The on-chain
-storage layout supports one, and the server registers and operates one (issue
-#563, covered by its integration and e2e tests); closing the gap here waits on
-the SDKs (#549, and the TypeScript follow-up to #540).
+**Mixed-scheme accounts through the SDKs.** Both multisig SDKs assign one
+configured scheme to every signer, so neither can construct a mixed-scheme
+account yet (#549, and the TypeScript follow-up to #540). The server half (issue
+#563) is qualified anyway: `det-mixed-scheme-account` and `det-mixed-scheme-gate`
+build a Falcon + ECDSA account in the Rust driver, straight from the upstream
+component, and drive registration, per-scheme authentication and approvals, the
+`mixed` label and the scheme gate against the image under test. What stays
+uncovered is every flow an SDK owns: creating, proposing, executing and updating
+signers on such an account, which the live profile will cover once the SDKs can.
+The manifest refuses `scheme = "mixed"` anywhere but the deterministic Rust leg
+for that reason.
 
 **Whether accounts created under an earlier contract pin are still drivable.** A
 deployed Miden account is immutable and its procedure roots fix at creation, so a

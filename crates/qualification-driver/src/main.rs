@@ -160,6 +160,11 @@ enum Command {
         filtered: bool,
         #[arg(long, default_value = "false")]
         post_restart: bool,
+        /// With `--post-restart`: this pass is the first against an image upgraded
+        /// in place, so data an earlier pass of this image would have written is
+        /// not there to find.
+        #[arg(long, default_value = "false", requires = "post_restart")]
+        upgrade_target: bool,
         #[arg(long)]
         run_id: String,
         #[arg(long, value_enum, default_value = "dispatch")]
@@ -678,6 +683,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
             core_only,
             filtered,
             post_restart,
+            upgrade_target,
             run_id,
             trigger,
             requested_by,
@@ -699,6 +705,7 @@ async fn main() -> anyhow::Result<std::process::ExitCode> {
                 core_only,
                 filtered,
                 post_restart,
+                upgrade_target,
                 run_id,
                 trigger: trigger.into(),
                 requested_by,
