@@ -1,0 +1,18 @@
+# Rust functions modeled in model/WorkerLease.tla: "<path> <fn name>".
+crates/server/src/coordination/postgres/lease.rs try_acquire
+crates/server/src/coordination/postgres/lease.rs renew
+crates/server/src/coordination/postgres/lease.rs verify_held
+crates/server/src/coordination/postgres/lease.rs release
+crates/server/src/coordination/leader.rs supports_fencing
+crates/server/src/jobs/canonicalization/worker.rs run_worker
+crates/server/src/jobs/canonicalization/worker.rs spawn_renewal
+crates/server/src/jobs/canonicalization/processor.rs fence
+crates/server/src/storage/postgres.rs lease_fence_is_current
+crates/server/src/storage/postgres.rs lock_account_metadata
+crates/server/src/storage/postgres.rs promote_candidate
+crates/server/src/storage/postgres.rs discard_candidate
+crates/server/src/storage/postgres.rs update_candidate_status
+crates/server/src/coordination/postgres/stats_store.rs lease_is_current
+crates/server/src/coordination/postgres/stats_store.rs publish
+crates/server/src/builder/canonicalization.rs lease_ttl
+crates/server/src/builder/storage.rs build

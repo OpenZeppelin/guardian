@@ -501,6 +501,10 @@ pub struct MockStorageBackend {
     // falls through to the single-process sequential helper so
     // existing tests keep observing the underlying submit/delete/
     // update calls.
+    pub promote_candidate_sources: Arc<StdMutex<Vec<crate::storage::PromotableKind>>>,
+    pub pull_superseded_deltas_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<crate::storage::SupersededDelta>, String>>>>,
+    pub prune_superseded_calls: Arc<StdMutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>,
     pub submit_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CandidateSubmission, String>>>>,
     pub promote_candidate_responses:
@@ -793,6 +797,17 @@ impl MockStorageBackend {
         self.update_delta_status_calls.lock().unwrap().clone()
     }
 
+    pub fn with_pull_superseded_deltas(
+        self,
+        response: StdResult<Vec<crate::storage::SupersededDelta>, String>,
+    ) -> Self {
+        self.pull_superseded_deltas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn with_submit_candidate(
         self,
         response: StdResult<crate::storage::CandidateSubmission, String>,
@@ -835,6 +850,10 @@ impl MockStorageBackend {
             .unwrap()
             .push(response);
         self
+    }
+
+    pub fn get_promote_candidate_sources(&self) -> Vec<crate::storage::PromotableKind> {
+        self.promote_candidate_sources.lock().unwrap().clone()
     }
 
     pub fn get_promote_candidate_fences(&self) -> Vec<Option<crate::storage::LeaseFence>> {
@@ -1106,6 +1125,30 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
+    async fn pull_superseded_deltas(
+        &self,
+        _account_id: &str,
+        _since: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<Vec<crate::storage::SupersededDelta>, String> {
+        self.pull_superseded_deltas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<u64, String> {
+        self.prune_superseded_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), before));
+        Ok(0)
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -1252,19 +1295,12 @@ impl StorageBackend for MockStorageBackend {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         if let Some(response) = self.submit_candidate_responses.lock().unwrap().pop() {
             return response;
         }
-        crate::storage::submit_candidate_sequential(
-            self,
-            metadata,
-            delta,
-            now,
-            max_pending_candidates,
-        )
-        .await
+        crate::storage::submit_candidate_sequential(self, metadata, delta, now, policy).await
     }
 
     async fn promote_candidate(
@@ -1276,6 +1312,10 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .push(promotion.fence.clone());
+        self.promote_candidate_sources
+            .lock()
+            .unwrap()
+            .push(promotion.source);
         if let Some(response) = self.promote_candidate_responses.lock().unwrap().pop() {
             return response;
         }
