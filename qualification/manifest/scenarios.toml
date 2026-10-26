@@ -72,6 +72,45 @@ step_budget = "60s"
 required = true
 core = false
 
+# Per-signer schemes (issue #563): one Falcon and one ECDSA approver. Rust only,
+# and against the server alone: neither SDK can build a mixed-scheme account yet
+# (#549, and the TypeScript follow-up to #540), so the driver builds it from the
+# upstream component. The refusals run before the registration, on accounts
+# GUARDIAN has never seen; the registered one is fixed, so after a restart the
+# scenario requires the account and approvals the first pass stored instead of
+# writing them again (an upgrade's target phase, which the seed never prepared,
+# registers it there).
+[[scenario]]
+id = "det-mixed-scheme-account"
+title = "A Falcon + ECDSA account registers per signer, each cosigner authenticates and approves under its own scheme"
+profile = "deterministic"
+sdk = "rust"
+scheme = "mixed"
+shape = "n/a"
+mode = "online"
+actions = ["mixed-scheme-declarations-refused", "mixed-scheme-register",
+           "mixed-scheme-cosigners-authenticate", "mixed-scheme-reported",
+           "mixed-scheme-approvals"]
+step_budget = "120s"
+required = true
+core = false
+
+# Separate from det-scheme-gate so each names what it proves: that one refuses a
+# single-scheme Falcon account, this one an account where only one approver uses
+# the excluded scheme, registered by its allowed (ECDSA) approver.
+[[scenario]]
+id = "det-mixed-scheme-gate"
+title = "An ECDSA-only GUARDIAN refuses an account with one Falcon approver"
+profile = "deterministic"
+sdk = "rust"
+scheme = "mixed"
+shape = "n/a"
+mode = "n/a"
+actions = ["mixed-scheme-gate"]
+step_budget = "60s"
+required = true
+core = false
+
 # Rust only, and one action rather than three: the fixture account is shared by
 # every scenario in the run, so pause, attempt and unpause have to stay together
 # or a failure between them leaves the account paused for whatever runs next.

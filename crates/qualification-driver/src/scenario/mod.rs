@@ -2,6 +2,7 @@ pub mod account;
 pub mod error_envelope;
 pub mod identity;
 pub mod live;
+pub mod mixed_scheme;
 pub mod queue;
 pub mod signers;
 
@@ -102,6 +103,10 @@ pub struct Runner {
     pub http: reqwest::Client,
     pub fixtures: Option<Fixtures>,
     pub post_restart: bool,
+    /// The post-restart pass that first meets an image upgraded in place: what
+    /// this image would have stored before the restart was written, if at all,
+    /// by the release it replaced.
+    pub upgrade_target: bool,
     pub live: Option<live::LiveContext>,
     /// Scoped to one scenario: its actions share the account they act on, and
     /// it is cleared between scenarios so no run can inherit another's state.
@@ -123,6 +128,7 @@ impl Runner {
             http,
             fixtures: None,
             post_restart: false,
+            upgrade_target: false,
             live: None,
             session: tokio::sync::Mutex::new(None),
         })
@@ -135,6 +141,11 @@ impl Runner {
 
     pub fn post_restart(mut self, post_restart: bool) -> Self {
         self.post_restart = post_restart;
+        self
+    }
+
+    pub fn upgrade_target(mut self, upgrade_target: bool) -> Self {
+        self.upgrade_target = upgrade_target;
         self
     }
 
@@ -292,6 +303,20 @@ impl Runner {
                     Some(queue::assert_cosigner_proposal_refused(self).await)
                 }
                 Action::QueueDepthLimit => Some(queue::assert_depth_limit(self).await),
+                Action::MixedSchemeDeclarationsRefused => {
+                    Some(mixed_scheme::assert_declarations_refused(self).await)
+                }
+                Action::MixedSchemeRegister => Some(mixed_scheme::register(self).await),
+                Action::MixedSchemeCosignersAuthenticate => {
+                    Some(mixed_scheme::assert_cosigners_authenticate(self).await)
+                }
+                Action::MixedSchemeReported => {
+                    Some(mixed_scheme::assert_reported_mixed(self).await)
+                }
+                Action::MixedSchemeApprovals => {
+                    Some(mixed_scheme::assert_per_scheme_approvals(self).await)
+                }
+                Action::MixedSchemeGate => Some(mixed_scheme::assert_mixed_scheme_gate(self).await),
                 _ => None,
             }
         };
