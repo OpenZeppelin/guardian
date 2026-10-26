@@ -4291,6 +4291,34 @@
           },
           {
             "type": "object",
+            "description": "Miden cosigners that each carry their own signature scheme, and the\nGUARDIAN's scheme, set independently. Clients send it for an account\nwhose cosigners and GUARDIAN do not all share one scheme; the two\nsingle-scheme variants keep serving the accounts that do.",
+            "required": [
+              "Miden"
+            ],
+            "properties": {
+              "Miden": {
+                "type": "object",
+                "description": "Miden cosigners that each carry their own signature scheme, and the\nGUARDIAN's scheme, set independently. Clients send it for an account\nwhose cosigners and GUARDIAN do not all share one scheme; the two\nsingle-scheme variants keep serving the accounts that do.",
+                "required": [
+                  "cosigners",
+                  "guardian_scheme"
+                ],
+                "properties": {
+                  "cosigners": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/MidenCosigner"
+                    }
+                  },
+                  "guardian_scheme": {
+                    "$ref": "#/components/schemas/SignatureScheme"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "EVM ECDSA account signer snapshot",
             "required": [
               "EvmEcdsa"
@@ -4604,7 +4632,8 @@
             ]
           },
           "auth_scheme": {
-            "type": "string"
+            "type": "string",
+            "description": "`falcon` or `ecdsa` when the account's cosigners and GUARDIAN share\nthat scheme, `mixed` when they do not."
           },
           "authorized_signer_count": {
             "type": "integer",
@@ -4778,7 +4807,8 @@
             "description": "Bech32m encoding of the Miden `AccountId` using the HRP of the\nnetwork this server is configured against (e.g. `mtst...`,\n`mdev...`, `mm...`). `None` for EVM accounts (no bech32 in that\naddressing scheme) and for any Miden `account_id` that fails to\nparse as a 15-byte id."
           },
           "auth_scheme": {
-            "type": "string"
+            "type": "string",
+            "description": "`falcon` or `ecdsa` when the account's cosigners and GUARDIAN share\nthat scheme, `mixed` when they do not."
           },
           "authorized_signer_count": {
             "type": "integer",
@@ -4894,7 +4924,7 @@
         "properties": {
           "auth_method": {
             "type": "string",
-            "description": "Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`, `evm`)."
+            "description": "Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`,\n`miden`, `evm`)."
           },
           "authorized_signer_count": {
             "type": "integer",
@@ -6480,6 +6510,23 @@
           }
         }
       },
+      "MidenCosigner": {
+        "type": "object",
+        "description": "One cosigner of a per-signer-scheme (`Miden`) auth: its public-key\ncommitment and the scheme the account verifies its signatures under.",
+        "required": [
+          "commitment",
+          "scheme"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string",
+            "description": "`0x` followed by 64 lowercase hex digits."
+          },
+          "scheme": {
+            "$ref": "#/components/schemas/SignatureScheme"
+          }
+        }
+      },
       "MidenNetworkType": {
         "type": "string",
         "enum": [
@@ -6648,7 +6695,8 @@
                   "description": "Bech32m encoding of the Miden `AccountId` using the HRP of the\nnetwork this server is configured against (e.g. `mtst...`,\n`mdev...`, `mm...`). `None` for EVM accounts (no bech32 in that\naddressing scheme) and for any Miden `account_id` that fails to\nparse as a 15-byte id."
                 },
                 "auth_scheme": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "`falcon` or `ecdsa` when the account's cosigners and GUARDIAN share\nthat scheme, `mixed` when they do not."
                 },
                 "authorized_signer_count": {
                   "type": "integer",
@@ -7287,6 +7335,13 @@
               "type": "string"
             }
           },
+          "signer_schemes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Target signer schemes (`\"falcon\"` / `\"ecdsa\"`), index-aligned with\n`signer_commitments`, for an update-signers proposal whose signers\ndo not all share one scheme (issue #563). Absent => every target\nsigner keeps the proposer's scheme (pre-#563 proposals)."
+          },
           "target_procedure": {
             "type": [
               "string",
@@ -7623,7 +7678,8 @@
             "type": "string"
           },
           "auth_scheme": {
-            "type": "string"
+            "type": "string",
+            "description": "`falcon` or `ecdsa` when the account's cosigners and GUARDIAN share\nthat scheme, `mixed` when they do not. Set on reads from the\naccount's auth; stored rows may carry an older value or none."
           },
           "commitment": {
             "type": "string"

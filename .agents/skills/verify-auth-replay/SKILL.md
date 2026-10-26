@@ -139,7 +139,7 @@ Paths are relative to `crates/server/src/`.
 | `Sign` | a client signing an `AuthRequestMessage` with its own clock |
 | `PMeta`, `PSkew`, `PFind`, `PCas` | `services/mod.rs` `resolve_account_with`: `metadata.get`, `validate_request_timestamp`, `verify_session_request`, `consume_auth_timestamp` |
 | `PWrite` | the route's write after `resolve_account` (for example `push_delta`) |
-| `CSkew`, `CExisting`, `CClaim`, `CCasFirst`, `CState`, `CMeta` | `services/configure_account.rs` `configure_account`: `validate_request_timestamp`, `metadata.get`, `metadata.create` (`metadata/postgres.rs` / `metadata/filesystem.rs` `create`), CAS, `submit_state`, `metadata.set` (existing account or lost claim) |
+| `CSkew`, `CExisting`, `CClaim`, `CCasFirst`, `CState`, `CMeta` | `services/configure_account.rs` `configure_account`: `validate_request_timestamp`, `metadata.get`, `metadata.create` (`metadata/postgres.rs` / `metadata/filesystem.rs` `create`), CAS, `submit_state`, `metadata.set` (existing account or lost claim). The checks between `metadata.get` and the claim (the scheme policy, which reads the schemes of the metadata `metadata.get` returned, and the state's GUARDIAN, approver and cosigner checks) only refuse, before any write or CAS |
 | `Tick` with `MaxStall` | wall-clock time; `MaxStall` bounds how long a handler sits between its skew check and its last step |
 
 ## Scope and assumptions

@@ -13,6 +13,10 @@ accounts. It provides:
 - `MultisigGuardianConfig` / `MultisigGuardianBuilder` — the single source of truth
   for constructing guarded-multisig accounts (validation, storage layout, signature
   scheme mapping) across the server, SDKs, examples, and benchmarks.
+  `with_signature_scheme` sets one scheme for every signer and the GUARDIAN;
+  `with_signer_schemes` (index-aligned with the signer commitments) and
+  `with_guardian_scheme` override it for an account whose approvers mix Falcon and
+  ECDSA keys.
 - The MockChain behavior test suite (`tests/`) exercising the upstream component's
   authentication paths: update signers, per-procedure thresholds, guardian-key
   rotation, and replay protection.

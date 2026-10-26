@@ -197,6 +197,24 @@ mod tests {
     }
 
     #[test]
+    fn build_with_mixed_scheme_add_signer_proposal_lifts_signer_schemes() {
+        let delta_payload = create_test_delta_payload(TEST_ACCOUNT_ID_HEX);
+        let proposal_payload = synthetic_proposal_payload(json!({
+            "proposal_type": "add_signer",
+            "target_threshold": 2,
+            "signer_commitments": ["0xc1", "0xc2"],
+            "signer_schemes": ["falcon", "ecdsa"],
+        }));
+        let metadata =
+            build_metadata(&delta_payload, Some(&proposal_payload)).expect("metadata built");
+        let proposal = metadata.proposal.as_ref().expect("proposal lifted");
+        assert_eq!(proposal.signer_commitments, vec!["0xc1", "0xc2"]);
+        assert_eq!(proposal.signer_schemes, vec!["falcon", "ecdsa"]);
+        let wire = serde_json::to_value(proposal).expect("serializes");
+        assert_eq!(wire["signer_schemes"], json!(["falcon", "ecdsa"]));
+    }
+
+    #[test]
     fn build_with_add_signer_proposal_collapses_to_account_storage_change() {
         let delta_payload = create_test_delta_payload(TEST_ACCOUNT_ID_HEX);
         let proposal_payload = synthetic_proposal_payload(json!({
@@ -216,6 +234,9 @@ mod tests {
         assert_eq!(proposal.proposal_type, "add_signer");
         assert_eq!(proposal.target_threshold, Some(2));
         assert_eq!(proposal.signer_commitments.len(), 2);
+        assert!(proposal.signer_schemes.is_empty());
+        let wire = serde_json::to_value(proposal).expect("serializes");
+        assert!(wire.get("signer_schemes").is_none());
     }
 
     #[test]

@@ -126,6 +126,8 @@ pub struct MockGuardianService {
     get_state_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     /// x-auth-format of each Configure call.
     configure_auth_formats: Arc<StdMutex<Vec<String>>>,
+    /// Each Configure request, as the server received it.
+    configure_requests: Arc<StdMutex<Vec<ConfigureRequest>>>,
 }
 
 impl MockGuardianService {
@@ -152,6 +154,10 @@ impl MockGuardianService {
 
     pub fn configure_auth_formats_handle(&self) -> Arc<StdMutex<Vec<String>>> {
         self.configure_auth_formats.clone()
+    }
+
+    pub fn configure_requests_handle(&self) -> Arc<StdMutex<Vec<ConfigureRequest>>> {
+        self.configure_requests.clone()
     }
 
     pub fn with_get_pubkey(self, response: Result<String, Status>) -> Self {
@@ -341,6 +347,10 @@ impl Guardian for MockGuardianService {
             .lock()
             .unwrap()
             .push(auth_format);
+        self.configure_requests
+            .lock()
+            .unwrap()
+            .push(request.get_ref().clone());
         self.record_call("configure");
         let response = self
             .configure_response

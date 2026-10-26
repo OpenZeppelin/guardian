@@ -130,6 +130,47 @@ async fn test_configure_success() {
     assert_eq!(response.ack_pubkey, "test_pubkey_123");
 }
 
+/// A per-signer-scheme auth (issue #563) reaches the server as sent: each
+/// cosigner with its scheme, and the GUARDIAN's scheme.
+#[tokio::test]
+async fn test_configure_sends_a_per_signer_scheme_auth() {
+    let service = MockGuardianService::default();
+    let requests = service.configure_requests_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let auth_config = AuthConfig {
+        auth_type: Some(AuthType::Miden(crate::proto::MidenAuth {
+            cosigners: vec![
+                crate::proto::MidenCosigner {
+                    commitment: format!("0x{}", "aa".repeat(32)),
+                    scheme: "falcon".to_string(),
+                },
+                crate::proto::MidenCosigner {
+                    commitment: format!("0x{}", "bb".repeat(32)),
+                    scheme: "ecdsa".to_string(),
+                },
+            ],
+            guardian_scheme: "ecdsa".to_string(),
+        })),
+    };
+    client
+        .configure(
+            &create_test_account_id(),
+            auth_config.clone(),
+            serde_json::json!({"balance": 1000}),
+        )
+        .await
+        .expect("configure succeeds");
+
+    let received = requests.lock().unwrap().clone();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].auth, Some(auth_config));
+}
+
 #[tokio::test]
 async fn test_configure_server_error() {
     let service = MockGuardianService::default().with_configure(Ok(ConfigureResponse {

@@ -187,6 +187,12 @@ pub struct ProposalMetadata {
     pub target_threshold: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signer_commitments: Vec<String>,
+    /// Target signer schemes (`"falcon"` / `"ecdsa"`), index-aligned with
+    /// `signer_commitments`, for an update-signers proposal whose signers
+    /// do not all share one scheme (issue #563). Absent => every target
+    /// signer keeps the proposer's scheme (pre-#563 proposals).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signer_schemes: Vec<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub new_guardian_pubkey: Option<String>,

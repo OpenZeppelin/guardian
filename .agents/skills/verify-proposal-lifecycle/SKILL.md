@@ -144,7 +144,10 @@ TLC could not run the model; its first error lines are printed.
   Signature collection and thresholds are not modeled (enforced on
   chain, and by Guardian's push gate in `push_delta`, which
   `verify-multisig-push-gate` checks; the gate only refuses pushes, so
-  it removes behaviours here). Pausing and release are not modeled
+  it removes behaviours here). Neither is the per-signer scheme check on
+  approvals in `push_delta_proposal` (an honest proposer's approval is
+  always under its registered scheme), nor which ACK key signs: the
+  GUARDIAN scheme's (`Auth::guardian_scheme`). Pausing and release are not modeled
   either: `submit_candidate` refusing an inactive account only removes
   behaviours.
 - Retention is on and nothing expires through the TTL. A transaction

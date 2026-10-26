@@ -686,7 +686,7 @@ come from
 | `wallet_signature_required` | 403 | A wallet-only route (delta push, candidate abandon, configure, lookup, revoke-all) was called with session (delegated-signer) credentials. Sign it with the wallet. |
 | `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
 | `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
-| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already configured on this Guardian are never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
+| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account, or a reconfiguration adding a scheme the account does not use yet, used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. Every scheme the account uses counts: each cosigner's and the GUARDIAN's, so a mixed Falcon + ECDSA account needs both allowed. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Re-configuring an account under the schemes it already uses is never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
 ### Resource lookup
@@ -720,7 +720,7 @@ come from
 | `invalid_delta` | 400 | Delta payload failed schema or commitment validation. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
 | `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
-| `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload. |
+| `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload, its signer is not a cosigner of the account, or it is made under another scheme than the account registers that cosigner with (an ECDSA approval for a key the account stores as Falcon, which the chain would refuse). |
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |
 | `invalid_limit` | 400 | Pagination limit out of range. |
