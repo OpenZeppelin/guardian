@@ -408,6 +408,7 @@ impl Guardian for GuardianService {
                 state: response.state.as_str().to_string(),
                 abandon_requested_at: response.abandon_requested_at.unwrap_or_default(),
                 error_code: String::new(),
+                commitment: response.commitment,
             })),
             Err(e) => Ok(Response::new(AbandonDeltaCandidateResponse {
                 success: false,
@@ -417,6 +418,7 @@ impl Guardian for GuardianService {
                 state: String::new(),
                 abandon_requested_at: String::new(),
                 error_code: e.code().to_string(),
+                commitment: String::new(),
             })),
         }
     }
@@ -1126,6 +1128,7 @@ mod tests {
         assert_eq!(response.nonce, 1);
         assert_eq!(response.state, "pending");
         assert!(!response.abandon_requested_at.is_empty());
+        assert_eq!(response.commitment, "0x456");
         assert!(response.error_code.is_empty());
         // Intent only: nothing is deleted at request time.
         assert!(storage.get_delete_delta_calls().is_empty());

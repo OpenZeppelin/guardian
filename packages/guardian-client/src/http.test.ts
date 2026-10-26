@@ -877,6 +877,7 @@ describe('GuardianHttpClient', () => {
           nonce: 7,
           state: 'pending',
           abandon_requested_at: '2026-07-14T12:00:00Z',
+          commitment: '0x' + 'c'.repeat(64),
         }),
       });
 
@@ -887,6 +888,7 @@ describe('GuardianHttpClient', () => {
         nonce: 7,
         state: 'pending',
         abandonRequestedAt: '2026-07-14T12:00:00Z',
+        commitment: '0x' + 'c'.repeat(64),
       });
 
       // Wire format is snake_case
@@ -899,6 +901,24 @@ describe('GuardianHttpClient', () => {
             nonce: 7,
           }),
         })
+      );
+    });
+
+    it('refuses a response without the abandoned commitment', async () => {
+      client.setSigner(mockSigner);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: '0x' + 'a'.repeat(30),
+          nonce: 7,
+          state: 'pending',
+          abandon_requested_at: '2026-07-14T12:00:00Z',
+        }),
+      });
+
+      await expect(client.abandonCandidate('0x' + 'a'.repeat(30), 7)).rejects.toThrow(
+        'abandon response carries no commitment',
       );
     });
 
@@ -953,10 +973,12 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('abandonStatus', () => {
+    const abandoned = '0x' + 'c'.repeat(64);
     const serverDelta = (status: object) => ({
       account_id: '0x' + 'a'.repeat(30),
       nonce: 7,
       prev_commitment: '0x' + 'b'.repeat(64),
+      new_commitment: abandoned,
       delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [] },
       status,
     });
@@ -968,7 +990,7 @@ describe('GuardianHttpClient', () => {
         json: async () =>
           serverDelta({ status: 'candidate', timestamp: '2026-07-14T12:00:00Z' }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('waiting');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('waiting');
     });
 
     it('classifies a canonicalized delta as landed', async () => {
@@ -978,7 +1000,7 @@ describe('GuardianHttpClient', () => {
         json: async () =>
           serverDelta({ status: 'canonical', timestamp: '2026-07-14T12:00:00Z' }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('landed');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('landed');
     });
 
     it('classifies a retained delta as retained, not abandoned (issue #345)', async () => {
@@ -996,7 +1018,7 @@ describe('GuardianHttpClient', () => {
             reason: 'retry_exhausted',
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('retained');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('retained');
     });
 
     it('classifies a client-abandoned discard as abandoned', async () => {
@@ -1010,7 +1032,7 @@ describe('GuardianHttpClient', () => {
             reason: 'client_abandoned',
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('abandoned');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('abandoned');
     });
 
     it('classifies a reasonless discard and a missing delta as unexpected', async () => {
@@ -1020,7 +1042,7 @@ describe('GuardianHttpClient', () => {
         json: async () =>
           serverDelta({ status: 'discarded', timestamp: '2026-07-14T12:00:00Z' }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('unexpected');
 
       mockFetch.mockResolvedValueOnce({
         ok: false,
@@ -1034,7 +1056,45 @@ describe('GuardianHttpClient', () => {
             meta: { retryable: false },
           }),
       });
-      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7)).toBe('unexpected');
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('unexpected');
+    });
+
+    it('classifies another delta at the nonce by its status, never as landed', async () => {
+      // A Guardian execution archives the abandoned delta and takes its
+      // nonce: its canonical delta means the abandoned transaction can no
+      // longer land.
+      const successor = '0x' + 'd'.repeat(64);
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...serverDelta({ status: 'canonical', timestamp: '2026-07-14T12:00:00Z' }),
+          new_commitment: successor,
+        }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('abandoned');
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...serverDelta({ status: 'candidate', timestamp: '2026-07-14T12:00:00Z' }),
+          new_commitment: successor,
+        }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('waiting');
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...serverDelta({
+            status: 'retained',
+            timestamp: '2026-07-14T12:00:00Z',
+            reason: 'retry_exhausted',
+          }),
+          new_commitment: successor,
+        }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('unexpected');
     });
   });
 
@@ -2184,6 +2244,7 @@ describe('GuardianHttpClient sessions', () => {
         nonce: 1,
         state: 'abandon_requested',
         abandon_requested_at: '2024-01-01T00:00:00Z',
+        commitment: '0x' + 'd'.repeat(64),
       }),
     });
     await client.abandonCandidate('0xabc', 1);

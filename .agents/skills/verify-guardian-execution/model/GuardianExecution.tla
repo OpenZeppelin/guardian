@@ -543,14 +543,16 @@ PObserveFresh == PObserveWith(Tip, Tip)
 PObserveAny == \E b, t \in Blocks : PObserveWith(b, t)
 
 \* promote_candidate (base gate, kind gate) or discard_candidate /
-\* update_candidate_status (refused with ProtectedByExecution).
+\* update_candidate_status (refused with ProtectedByExecution). The base gate
+\* also admits a stored state already at the candidate's target: a resumed
+\* promotion, as after a /configure re-onboarding to the chain's state.
 PWrite ==
     /\ ppc = "write"
     /\ ppc' = "idle"
     /\ IF cand # psnap.cand
        THEN UNCHANGED <<stored, cand, canon, res>>
        ELSE IF psnap.verdict = "promote"
-       THEN IF stored = Base
+       THEN IF stored \in {Base, cand.target}
             THEN /\ stored' = cand.target
                  /\ canon' = cand.target
                  /\ cand' = NoCand

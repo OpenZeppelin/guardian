@@ -2028,7 +2028,8 @@
         "required": [
           "account_id",
           "nonce",
-          "state"
+          "state",
+          "commitment"
         ],
         "properties": {
           "abandon_requested_at": {
@@ -2040,6 +2041,10 @@
           },
           "account_id": {
             "type": "string"
+          },
+          "commitment": {
+            "type": "string",
+            "description": "The `new_commitment` of the delta this request abandoned. Another\ndelta can later take the same nonce (a Guardian execution archives\nthe abandoned one), so a poll of the nonce compares against this."
           },
           "nonce": {
             "type": "integer",

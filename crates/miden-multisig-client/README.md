@@ -390,17 +390,20 @@ one), and any candidate queued behind it can never land. Record an abandon inten
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};
 
 // The nonce the proposal was pushed with (committed account nonce + 1).
-let state = client.abandon_candidate(nonce).await?;
-assert_eq!(state, AbandonRequestState::Pending);
+let request = client.abandon_candidate(nonce).await?;
+assert_eq!(request.state, AbandonRequestState::Pending);
 
 // The guardian's worker confirms over a short quarantine (typically well
 // under a minute) that the transaction did not land, then releases the
 // account.
 loop {
-    match client.abandon_status(nonce).await? {
+    // The commitment identifies the abandoned delta: a Guardian execution can
+    // archive it and take its nonce.
+    match client.abandon_status(nonce, &request.commitment).await? {
         AbandonStatus::Waiting => tokio::time::sleep(Duration::from_secs(5)).await,
         AbandonStatus::Abandoned => break,           // account released
         AbandonStatus::Landed => break,              // tx landed after all
+        AbandonStatus::Retained => break,            // released, outcome still uncertain
         AbandonStatus::Unexpected => anyhow::bail!("unexpected candidate state"),
     }
 }
@@ -444,7 +447,14 @@ unless the request opts in with `GuardianExecutionRequest { allow_private_note: 
 the caller delivers the note itself. Execute those with `execute_proposal`. The check uses the
 proposal this client already holds (listed, fetched, signed, created or imported); any other proposal
 fails closed with `MultisigError::ProposalNotHeldLocally { proposal_id }`. Call
-`LocalExecutionReason::of(&proposal.transaction_type)` to route a proposal up front. See
+`LocalExecutionReason::of(&proposal.transaction_type)` to route a proposal up front.
+
+For a proposal signed off channel, call
+`request_imported_guardian_execution(&exported, GuardianExecutionRequest::default())` with the
+signed document: it relays the document's approvals to Guardian before requesting execution, as
+`execute_imported_proposal` does before the acknowledgement. Guardian executes a proposal only once
+its stored copy carries a threshold of approvals, so `request_guardian_execution` alone answers
+`GUARDIAN_PROPOSAL_NOT_READY` for one whose approvals exist only in the document. See
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
 ### Fallback to Offline (if GUARDIAN unavailable)

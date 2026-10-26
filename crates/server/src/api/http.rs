@@ -137,6 +137,10 @@ pub struct AbandonCandidateResponse {
     /// return the original timestamp; absent once resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abandon_requested_at: Option<String>,
+    /// The `new_commitment` of the delta this request abandoned. Another
+    /// delta can later take the same nonce (a Guardian execution archives
+    /// the abandoned one), so a poll of the nonce compares against this.
+    pub commitment: String,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -811,6 +815,7 @@ pub async fn abandon_candidate(
             nonce: response.nonce,
             state: response.state.as_str().to_string(),
             abandon_requested_at: response.abandon_requested_at,
+            commitment: response.commitment,
         }),
     ))
 }

@@ -341,7 +341,7 @@ Nothing stored under Miden 0.16 survives:
 
 ### Guardian execution
 
-Guardian 0.18.x adds server-side execution of Guardian-executable proposals on this line. A
+Guardian releases after 0.18.3 add server-side execution of Guardian-executable proposals on this line. A
 stored request declaring a protocol line other than `0.17` is refused before it is decoded.
 Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
 release candidates changed it, so the SDK that created a proposal and the server should run the
@@ -366,13 +366,16 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
   - `LocalExecutionRequired { proposal_id, reason }`: the proposal must be executed by a
     client, not by Guardian; `reason` is a `LocalExecutionReason`.
   - `ProposalNotHeldLocally { proposal_id }`: execution was requested for a proposal this
-    client has not listed, fetched, signed or created, so it cannot check it first.
+    client has not listed, fetched, signed, created or imported, so it cannot check it first.
   - `GuardianExecutionWaitTimedOut { proposal_id, deadline, last_observed }`: from
     `wait_for_guardian_execution`, whose deadline passed while the execution kept running.
   - `GuardianProposalRefused { code, message, retryable, retry_after }`: Guardian refused a
     proposal push with a stable code, carried as the wire string (for example
     `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`); a push failure
     without a Guardian code stays `GuardianServer`.
+  - `ProposalBaseMismatch { proposal_id, pinned, local }`: GUARDIAN pinned the proposal to an
+    account state other than the one this client holds, so executing it would build on the
+    wrong base; sync the account and retry, or create a new proposal.
   <!-- multisig-error-variants:end -->
 - `guardian_client::GuardianClient::execute_delta_proposal` is new:
   `execute_delta_proposal(account_id, proposal_id, allow_private_note: bool)`. Guardian refuses a transaction that creates a private output note
@@ -383,6 +386,15 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
   `AcknowledgementFailed` (`GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`): Guardian could not sign
   or record its acknowledgement, a failure on Guardian's side that leaves the proposal
   retryable.
+- `MultisigClient::request_imported_guardian_execution(&exported, request)` is new: it relays
+  an exported document's approvals to Guardian before requesting execution, which
+  `request_guardian_execution` alone cannot do for approvals collected off channel.
+- `MultisigClient::abandon_candidate` returns `AbandonRequest { state, commitment }` instead of
+  `AbandonRequestState`, and `abandon_status` takes `(nonce, commitment)`. A Guardian execution
+  can archive an abandoned delta and take its nonce, so the commitment identifies the abandoned
+  delta; once another delta at the nonce is canonical, the status is `Abandoned`. An abandon
+  response without a commitment (a Guardian server from 0.18.3 or earlier) is refused, so this
+  SDK needs a server from the same release.
 
 Source-level changes in the TypeScript packages:
 
@@ -408,8 +420,19 @@ Source-level changes in the TypeScript packages:
   example `GUARDIAN_EXECUTION_CONFLICT`), instead of the base client's `GuardianHttpError`, which
   stays available as `cause`. `waitForGuardianExecution` throws
   `GuardianExecutionWaitTimeoutError` when its deadline passes.
+- `requestGuardianExecution` relays the held proposal's approvals to Guardian before the
+  request, so an imported, offline-signed proposal can be executed by Guardian. A Guardian
+  refusal while relaying throws `GuardianExecutionRefusedError`, as one of the request does.
+- `AbandonCandidateResponse` carries `commitment`, and `abandonStatus` takes it:
+  `abandonStatus(nonce, commitment)` on `Multisig`, `abandonStatus(accountId, nonce,
+  commitment)` on `GuardianHttpClient`. Once another delta at the nonce is canonical, the status
+  is `'abandoned'`. `abandonCandidate` throws on a response without a commitment (a Guardian
+  server from 0.18.3 or earlier).
 
 Server behavior that changes for every client:
+
+- The abandon response (`AbandonDeltaCandidateResponse`, HTTP `POST /delta/candidate/abandon`)
+  carries the abandoned delta's `commitment`.
 
 - Pushing a proposal that already exists answers with the proposal as stored, not an echo of
   the push, and is refused as an invalid delta when its `transaction_request` differs from the

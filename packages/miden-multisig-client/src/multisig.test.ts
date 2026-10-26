@@ -9677,6 +9677,55 @@ describe('Multisig', () => {
       noteType: 'public',
     };
 
+    it('relays the approvals it holds before asking GUARDIAN to execute', async () => {
+      // An imported, offline-signed proposal: its approvals exist only in this client, and
+      // GUARDIAN executes only a stored proposal carrying a threshold of them.
+      const { multisig, execute } = holding(publicP2id);
+      const signer = '0x' + 'a'.repeat(64);
+      const approval = {
+        signerId: signer,
+        signature: { scheme: 'falcon' as const, signature: '0x' + 'f'.repeat(128) },
+        timestamp: '2024-01-01T00:00:00Z',
+      };
+      (multisig as any).proposals.get(proposalId).signatures = [approval];
+      const pending = (cosignerSigs: (typeof approval)[]): any => ({
+        status: { status: 'pending', timestamp: '2024-01-01T00:00:00Z', proposerId: signer, cosignerSigs },
+      });
+      vi.spyOn(guardian, 'getDeltaProposal').mockResolvedValueOnce(pending([]));
+      const sign = vi.spyOn(guardian, 'signDeltaProposal').mockResolvedValueOnce(pending([approval]));
+
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      expect(sign).toHaveBeenCalledTimes(1);
+      expect(sign.mock.invocationCallOrder[0]).toBeLessThan(execute.mock.invocationCallOrder[0]);
+    });
+
+    it('maps a refusal while relaying the approvals to GuardianExecutionRefusedError', async () => {
+      const { multisig, execute } = holding(publicP2id);
+      (multisig as any).proposals.get(proposalId).signatures = [
+        {
+          signerId: '0x' + 'a'.repeat(64),
+          signature: { scheme: 'falcon' as const, signature: '0x' + 'f'.repeat(128) },
+          timestamp: '2024-01-01T00:00:00Z',
+        },
+      ];
+      vi.spyOn(guardian, 'getDeltaProposal').mockRejectedValueOnce(
+        new GuardianHttpError(
+          404,
+          'Not Found',
+          JSON.stringify({
+            code: 'GUARDIAN_PROPOSAL_NOT_FOUND',
+            message: 'proposal not found',
+            meta: { retryable: false },
+          }),
+        ),
+      );
+
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GuardianExecutionRefusedError);
+      expect((error as GuardianExecutionRefusedError).code).toBe('GUARDIAN_PROPOSAL_NOT_FOUND');
+      expect(execute).not.toHaveBeenCalled();
+    });
+
     it('refuses a held proposal whose metadata failed verification, without calling GUARDIAN', async () => {
       const { multisig, execute } = holding(
         publicP2id,

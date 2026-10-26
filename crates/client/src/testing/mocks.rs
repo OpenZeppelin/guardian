@@ -494,6 +494,7 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<SignDeltaProposalRequest>,
     ) -> Result<Response<SignDeltaProposalResponse>, Status> {
+        self.record_call("sign_delta_proposal");
         let response = self
             .sign_delta_proposal_response
             .lock()
@@ -584,6 +585,7 @@ impl Guardian for MockGuardianService {
                     state: "pending".to_string(),
                     abandon_requested_at: "2026-07-14T12:00:00Z".to_string(),
                     error_code: String::new(),
+                    commitment: String::new(),
                 })
             });
 

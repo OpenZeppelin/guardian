@@ -845,18 +845,23 @@ This is an admission/execution policy, not a universal property of signed summar
   - **Promotion** — the existing fenced promotion, extended to persist `committed` and release
     the reservation.
   - **`resolve_execution`** — post-boundary failure: discard the candidate, **delete its
-    matching proposal**, persist the outcome, release the reservation.
+    matching proposal when the cause ends it** (`ExecutionFailureCode::ends_proposal`), persist
+    the outcome, release the reservation.
   - **`fail_execution`** — pre-boundary failure: persist the outcome and release the
     reservation. No candidate exists on this path, so there is nothing to discard, but the
     two writes MUST still be one commit — a crash between them would otherwise expose either a
     terminal execution still holding a reservation, or a released account with no durable
     outcome to report.
-  **`resolve_execution` MUST delete the matching proposal**, not leave it to a later step.
-  Canonicalization's existing discard deletes the proposal *after* its transaction commits and
-  tolerates failure with a warning; a post-boundary execution cannot inherit that, because a
-  surviving proposal reports `proposal_exists: true`, which FR-042's contract makes indication
-  of a permitted retry. A definitely-rejected transaction advertised as retryable is the
-  failure this rule prevents.
+  **`resolve_execution` MUST delete the matching proposal in the same commit when the cause
+  ends it**, not leave it to a later step. The causes that end it are a transaction the node
+  rejected (`SUBMISSION_REJECTED`) and one the chain shows never landed (`CANDIDATE_DISCARDED`,
+  `EXPIRED`). Canonicalization's existing discard deletes the proposal *after* its transaction
+  commits and tolerates failure with a warning; a post-boundary execution cannot inherit that,
+  because a surviving proposal reports `proposal_exists: true`, which FR-042's contract makes
+  indication of a permitted retry. A definitely-rejected transaction advertised as retryable is
+  the failure this rule prevents. Every other post-boundary cause keeps the proposal: a send
+  the node refused before processing it (`SUBMISSION_NOT_PROCESSED`) cannot land, so the
+  proposal stays executable and `proposal_exists: true` correctly permits the retry.
 - **FR-054 — who may release a reservation**: Promotion runs under the **canonicalization**
   lease, not the account's execution lease, yet FR-038 requires every durable mutation to
   validate the execution fence. Promotion is therefore **explicitly authorized** to persist
@@ -1433,9 +1438,10 @@ This is an admission/execution policy, not a universal property of signed summar
   writes of a terminal transition never leaves a terminal execution holding a reservation, nor
   a released reservation without a durable outcome — verified by fault injection on all three
   operations (FR-053).
-- **SC-037**: A post-boundary failure deletes its matching proposal in the same commit, so the
-  execution reports `proposal_exists: false` and no client is told a definitely-rejected
-  transaction may be retried (FR-053, FR-042).
+- **SC-037**: A post-boundary failure whose cause ends the proposal (a rejected or never-landed
+  transaction) deletes its matching proposal in the same commit, so the execution reports
+  `proposal_exists: false` and no client is told a definitely-rejected transaction may be
+  retried; a send the node never processed keeps it (FR-053, FR-042).
 - **SC-038**: Promotion and `resolve_execution` racing on one account produce exactly one
   terminal outcome and one release, with the loser writing nothing — verified by a concurrent
   test on Postgres (FR-054).

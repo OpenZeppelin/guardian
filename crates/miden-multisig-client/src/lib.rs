@@ -65,7 +65,7 @@ pub(crate) type MidenSdkClient = Client<FilesystemKeyStore>;
 
 // Main client
 pub use builder::MultisigClientBuilder;
-pub use client::{AbandonRequestState, AbandonStatus};
+pub use client::{AbandonRequest, AbandonRequestState, AbandonStatus};
 pub use client::{
     BlockRange, ConsumableNote, ExecutionWaitOptions, HistoryAssetKind, HistoryDecodeSection,
     HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus, HistoryNote, HistoryNoteAsset,

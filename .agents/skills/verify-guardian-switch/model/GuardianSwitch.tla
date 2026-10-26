@@ -192,7 +192,8 @@ Promote ==
 (* or it never landed                                                       *)
 (* and used up max_retries after submission_grace_period_seconds. It stays *)
 (* recoverable (within retained_ttl_seconds) for the reconcile pass and    *)
-(* the sweep.                                                              *)
+(* the sweep, also once a resubmission at its nonce archives it to         *)
+(* superseded_deltas.                                                      *)
 Retire ==
     /\ cand # 0
     /\ ~CanPromote

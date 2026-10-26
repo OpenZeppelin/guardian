@@ -28,15 +28,29 @@ pub enum AbandonRequestState {
     Retained,
 }
 
+/// An abandon request as GUARDIAN recorded it: its immediate state and the
+/// delta it abandoned, which [`MultisigClient::abandon_status`] polls for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbandonRequest {
+    pub state: AbandonRequestState,
+    /// The abandoned delta's `new_commitment`. Another delta can later take
+    /// the same nonce (a GUARDIAN execution archives the abandoned one), so
+    /// the nonce alone does not identify it.
+    pub commitment: String,
+}
+
 /// Resolution of an abandon request, as observed via the delta feed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbandonStatus {
-    /// The delta is still a candidate; the quarantine is running.
+    /// The delta is still a candidate; the quarantine is running. Also
+    /// reported while another delta holds the nonce as a candidate.
     Waiting,
     /// The transaction landed after all; the delta canonicalized.
     Landed,
     /// The abandon completed; the delta is discarded as client-abandoned
-    /// and the account is released.
+    /// and the account is released. Also reported once another delta at
+    /// the same nonce is canonical: the abandoned transaction can no
+    /// longer land.
     Abandoned,
     /// GUARDIAN stopped verifying and released the account slot, but the
     /// on-chain outcome is still uncertain — "unlocked but unresolved",
@@ -855,7 +869,7 @@ impl MultisigClient {
     /// guardian's canonicalization worker confirms over a short
     /// quarantine (typically well under a minute) that the transaction
     /// did not land, then releases the account. Poll [`Self::abandon_status`]
-    /// for the resolution.
+    /// with the returned commitment for the resolution.
     ///
     /// `nonce` pins the exact candidate to release; it is the nonce the
     /// proposal was pushed with (committed account nonce + 1). Retries
@@ -867,7 +881,7 @@ impl MultisigClient {
     /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will
     /// canonicalize it shortly), if no candidate exists at this nonce,
     /// or if GUARDIAN cannot be reached.
-    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<AbandonRequestState> {
+    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<AbandonRequest> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
@@ -878,16 +892,28 @@ impl MultisigClient {
                 MultisigError::GuardianServer(format!("failed to abandon candidate: {}", e))
             })?;
 
-        Ok(match response.state.as_str() {
+        if response.commitment.is_empty() {
+            return Err(MultisigError::GuardianServer(
+                "abandon response carries no commitment; abandon_status needs a GUARDIAN \
+                 server that returns it"
+                    .to_string(),
+            ));
+        }
+        let state = match response.state.as_str() {
             "abandoned" => AbandonRequestState::Abandoned,
             "retained" => AbandonRequestState::Retained,
             _ => AbandonRequestState::Pending,
+        };
+        Ok(AbandonRequest {
+            state,
+            commitment: response.commitment,
         })
     }
 
     /// Polls GUARDIAN for the resolution of an abandon request made with
-    /// [`Self::abandon_candidate`].
-    pub async fn abandon_status(&mut self, nonce: u64) -> Result<AbandonStatus> {
+    /// [`Self::abandon_candidate`], identified by its nonce and the
+    /// commitment that request returned.
+    pub async fn abandon_status(&mut self, nonce: u64, commitment: &str) -> Result<AbandonStatus> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
@@ -909,11 +935,14 @@ impl MultisigClient {
         let Some(delta) = response.delta else {
             return Ok(AbandonStatus::Unexpected);
         };
-        let Some(status) = delta.status else {
+        let Some(status) = &delta.status else {
             return Ok(AbandonStatus::Unexpected);
         };
+        if !delta.new_commitment.eq_ignore_ascii_case(commitment) {
+            return Ok(classify_successor_status(status));
+        }
 
-        Ok(classify_abandon_status(&status))
+        Ok(classify_abandon_status(status))
     }
 }
 
@@ -931,6 +960,18 @@ fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStat
         // `Abandoned`, which would wrongly imply the transaction
         // definitively did not land.
         Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Retained,
+        _ => AbandonStatus::Unexpected,
+    }
+}
+
+/// Maps the status of another delta that took the abandoned delta's nonce.
+/// Once it is canonical the abandoned transaction can no longer land; while
+/// it is a candidate the nonce is still contested.
+fn classify_successor_status(status: &guardian_client::DeltaStatus) -> AbandonStatus {
+    use guardian_client::delta_status::Status as ProtoStatus;
+    match status.status {
+        Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Abandoned,
+        Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
         _ => AbandonStatus::Unexpected,
     }
 }
@@ -977,7 +1018,7 @@ mod tests {
     };
     use miden_protocol::{Felt, Word, ZERO};
 
-    use super::{AbandonStatus, classify_abandon_status};
+    use super::{AbandonStatus, classify_abandon_status, classify_successor_status};
     use crate::error::{MultisigError, Result};
     use crate::proposal::Proposal;
 
@@ -1136,6 +1177,36 @@ mod tests {
         );
         assert_eq!(
             classify_abandon_status(&status(None, "")),
+            AbandonStatus::Unexpected
+        );
+    }
+
+    #[test]
+    fn abandon_status_classifies_a_successor_at_the_nonce() {
+        use guardian_client::DeltaStatus;
+        use guardian_client::delta_status::Status as ProtoStatus;
+
+        let status = |status: Option<ProtoStatus>| DeltaStatus {
+            status,
+            discard_reason: String::new(),
+            retain_reason: String::new(),
+        };
+
+        let ts = "2026-07-28T00:00:00Z".to_string();
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::CanonicalAt(ts.clone())))),
+            AbandonStatus::Abandoned
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::CandidateAt(ts.clone())))),
+            AbandonStatus::Waiting
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::RetainedAt(ts.clone())))),
+            AbandonStatus::Unexpected
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::DiscardedAt(ts)))),
             AbandonStatus::Unexpected
         );
     }

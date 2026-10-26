@@ -569,7 +569,7 @@ component schemas.
 | client | `GET /delta/proposal` | signed headers | List pending proposals (without `transaction_request`; see [Proposal Payloads](#proposal-payloads)) |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
-| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
+| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine). The response carries the abandoned delta's `commitment`, which tells it apart from a delta that later takes the same nonce |
 | client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id, allow_private_note}`; all three are required and signed, `allow_private_note` as `false` when the caller does not opt in |
 | client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |

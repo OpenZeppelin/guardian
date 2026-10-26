@@ -163,7 +163,7 @@ Paths are relative to `crates/server/src/`.
 | `Retire` | `handle_diverged_candidate` (Retained), a stale base, or `max_retries` exhausted after the grace period |
 | `ReconcilePromote` | `jobs/canonicalization/reconciliation.rs` `reconcile_chain_advance`: a recoverable path that ends at the chain head |
 | `HookRelease`, `HookSkip` | `services/release_on_switch.rs` `release_if_guardian_switched` from `canonicalize_verified_delta`; the write may fail |
-| `SweepRead` | `jobs/release_sweep/sweep.rs` `visit`: `check_stored_state` / `promoting_delta_nonce` (Delta), `visit_diverged` with `switch_candidates` and `precompute_switch` (ProposalMatch, RecoverableDelta), `fetch_on_chain_guardian_binding` with `classify_key` (ChainSweep) |
+| `SweepRead` | `jobs/release_sweep/sweep.rs` `visit`: `check_stored_state` / `promoting_delta_nonce` (Delta), `visit_diverged` with `switch_candidates` (recoverable deltas and archived `superseded_deltas` both) and `precompute_switch` (ProposalMatch, RecoverableDelta), `fetch_on_chain_guardian_binding` with `classify_key` (ChainSweep) |
 | `SweepWrite`, `SweepWriteFails` | `release_switched_account` through `metadata/postgres.rs` `set_released_if_state` |
 | `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read, the stored head read (`stored_base`) and the binding validation of the submitted state, any state the chain held that binds the account to this server. The scheme checks before the claim (the allowlist, the GUARDIAN and approver scheme slots, the declared cosigner schemes) only refuse, before anything is written |
 | `CfgSubmit` | `storage/postgres.rs` `replace_state` over the commitment read (the following `metadata.set` never touches lifecycle columns) |

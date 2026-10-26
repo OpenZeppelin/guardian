@@ -703,7 +703,8 @@ A failure before step 12 records a `failed` outcome with its code and releases t
 the proposal stays executable. A definite rejection at step 14 deletes the candidate and the
 proposal; no delta is kept with a `discarded` status. A refusal the node made before processing
 the send (a rate limit that outlasted the client's retries, authentication, permission, an
-unimplemented call) is `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED`: the transaction cannot land,
+unimplemented call, inputs sealed against an encryption key the validator no longer holds) is
+`GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED`: the transaction cannot land,
 so the candidate is deleted but the proposal is kept and can be executed again. An unknown outcome
 leaves the execution `submitted`.
 

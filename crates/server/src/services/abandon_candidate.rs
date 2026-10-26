@@ -53,6 +53,9 @@ pub struct AbandonCandidateResult {
     /// return the original timestamp — the quarantine never restarts.
     /// `None` once the abandon is already resolved.
     pub abandon_requested_at: Option<String>,
+    /// The abandoned delta's `new_commitment`, which tells it apart from a
+    /// delta that later takes the same nonce.
+    pub commitment: String,
 }
 
 /// Read the delta at `nonce` while distinguishing "absent" from "backend
@@ -110,6 +113,11 @@ pub async fn abandon_candidate(
     ensure_account_active_metadata(&resolved.metadata)?;
 
     let delta = pull_delta_at_nonce(&resolved.storage, &account_id, nonce).await?;
+    let commitment = delta.new_commitment.clone().ok_or_else(|| {
+        GuardianError::StorageError(format!(
+            "Delta at nonce {nonce} of account {account_id} has no new_commitment"
+        ))
+    })?;
 
     match &delta.status {
         DeltaStatus::Candidate { .. } => {}
@@ -123,6 +131,7 @@ pub async fn abandon_candidate(
                 nonce,
                 state: AbandonState::Abandoned,
                 abandon_requested_at: None,
+                commitment,
             });
         }
         DeltaStatus::Retained { .. } => {
@@ -139,6 +148,7 @@ pub async fn abandon_candidate(
                 nonce,
                 state: AbandonState::Retained,
                 abandon_requested_at: None,
+                commitment,
             });
         }
         _ => {
@@ -216,6 +226,7 @@ pub async fn abandon_candidate(
                 nonce,
                 state: AbandonState::Pending,
                 abandon_requested_at: Some(now),
+                commitment,
             })
         }
         AbandonIntent::AlreadyRequested { requested_at } => Ok(AbandonCandidateResult {
@@ -223,6 +234,7 @@ pub async fn abandon_candidate(
             nonce,
             state: AbandonState::Pending,
             abandon_requested_at: Some(requested_at),
+            commitment,
         }),
         AbandonIntent::NotCandidate => {
             // Resolved between our read and the write: classify precisely.
@@ -237,6 +249,7 @@ pub async fn abandon_candidate(
                     nonce,
                     state: AbandonState::Abandoned,
                     abandon_requested_at: None,
+                    commitment,
                 })
             } else if delta.status.is_retained() {
                 Ok(AbandonCandidateResult {
@@ -244,6 +257,7 @@ pub async fn abandon_candidate(
                     nonce,
                     state: AbandonState::Retained,
                     abandon_requested_at: None,
+                    commitment,
                 })
             } else {
                 Err(GuardianError::CandidateLanded { account_id, nonce })
@@ -379,6 +393,7 @@ mod tests {
         assert_eq!(result.nonce, 1);
         assert_eq!(result.state, AbandonState::Pending);
         assert!(result.abandon_requested_at.is_some());
+        assert_eq!(result.commitment, "0x456");
 
         // Intent only: the endpoint never deletes or discards anything —
         // resolution belongs to the canonicalization worker.

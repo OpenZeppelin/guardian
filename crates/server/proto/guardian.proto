@@ -409,6 +409,10 @@ message AbandonDeltaCandidateResponse {
   // return the original timestamp; empty once resolved.
   string abandon_requested_at = 6;
   string error_code = 7;
+  // The `new_commitment` of the delta this request abandoned. Another
+  // delta can later take the same nonce (a Guardian execution archives
+  // the abandoned one), so a poll of the nonce compares against this.
+  string commitment = 8;
 }
 
 // History request (issue #413). `limit` defaults to 50, max 500;

@@ -2364,8 +2364,9 @@ export async function abandonAndAssertHidden(
     };
   }
 
+  let abandoned: string;
   try {
-    await session.multisig.abandonCandidate(nonce);
+    abandoned = (await session.multisig.abandonCandidate(nonce)).commitment;
   } catch (error) {
     return {
       kind: 'failed',
@@ -2379,7 +2380,7 @@ export async function abandonAndAssertHidden(
   let state = 'never answered';
   for (;;) {
     try {
-      const status = await session.multisig.abandonStatus(nonce);
+      const status = await session.multisig.abandonStatus(nonce, abandoned);
       if (status === 'abandoned') break;
       if (status === 'landed') {
         return {
@@ -2884,12 +2885,11 @@ export async function assertStrandedHeadBlocksProposal(
   const head = session.customNonce;
 
   try {
-    const status = await session.multisig.abandonStatus(head);
-    if (status !== 'waiting') {
+    if ((await candidateAdmittedAt(session, head)) === undefined) {
       return {
         kind: 'failed',
         classification: 'setup',
-        reason: `the prepared head at nonce ${head} is ${status}, not a queued candidate`,
+        reason: `the prepared head at nonce ${head} is not a queued candidate`,
       };
     }
   } catch (error) {
@@ -2999,8 +2999,9 @@ export async function abandonStrandedHeadAndRecover(
   }
   const head = session.customNonce;
 
+  let abandoned: string;
   try {
-    await session.multisig.abandonCandidate(head);
+    abandoned = (await session.multisig.abandonCandidate(head)).commitment;
   } catch (error) {
     return {
       kind: 'failed',
@@ -3013,7 +3014,7 @@ export async function abandonStrandedHeadAndRecover(
   let state = 'never answered';
   for (;;) {
     try {
-      const status = await session.multisig.abandonStatus(head);
+      const status = await session.multisig.abandonStatus(head, abandoned);
       if (status === 'abandoned') break;
       if (status === 'landed') {
         return {

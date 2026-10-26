@@ -1,4 +1,4 @@
-crates/server/src/services/execute_proposal/service.rs request_execution 57b1b87042f1776d
+crates/server/src/services/execute_proposal/service.rs request_execution 7b5b1974f5282827
 crates/server/src/services/execute_proposal/worker.rs run_execution e7c8bb2181f51ea7
 crates/server/src/services/execute_proposal/worker.rs run_to_boundary 8bef28647e656733
 crates/server/src/services/execute_proposal/worker.rs approach_boundary a248e9dcb6395278
@@ -9,6 +9,8 @@ crates/server/src/services/execute_proposal/worker.rs cross_boundary b58bff42ad1
 crates/server/src/services/execute_proposal/worker.rs claim_send d18c0a5a097fad39
 crates/server/src/services/execute_proposal/worker.rs submit 616fae8fe329d651
 crates/server/src/services/execute_proposal/worker.rs fail 401af65c37945fa8
+crates/server/src/network/miden/execution/attempt.rs classify_submission_error 79c4779dd0bda7d6
+crates/shared/src/execution.rs ends_proposal eda192d5bc234edd
 crates/server/src/coordination/execution_leases.rs attempt 7c6506df2503b815
 crates/server/src/coordination/execution_leases.rs release_quietly 44f6e42959e727ba
 crates/server/src/coordination/postgres/lease.rs try_acquire acd5be995d0ebf4f
@@ -48,11 +50,12 @@ crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
 crates/server/src/storage/postgres.rs clear_pending_flag_if_none ab1f451ea9f18cad
 crates/server/src/storage/postgres.rs pull_recoverable_deltas 3a397123c23e5839
 crates/server/src/storage/postgres.rs submit_candidate 78fce4c0773b9421
-crates/server/src/storage/postgres.rs promote_candidate 2040db8553802931
+crates/server/src/storage/postgres.rs promote_candidate 7723aa1795b4c94a
 crates/server/src/storage/postgres.rs discard_candidate 96eb99645d435499
 crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7
 crates/server/src/storage/postgres.rs archive_parked_delta ab03f8c79a990dc6
 crates/server/src/storage/postgres.rs restore_superseded 5ae2a5e38baf32e6
+crates/server/src/storage/postgres.rs pull_superseded_deltas b050cc3f5fe9d3b8
 crates/server/src/builder/canonicalization.rs archives_superseded f304c6a39fa148b0
 crates/server/src/jobs/execution_reconcile/mod.rs pass 56d789d1e89af925
 crates/server/src/jobs/execution_reconcile/mod.rs reconcile af57fca9f7d1e5e1
@@ -88,3 +91,6 @@ crates/server/src/storage/filesystem.rs discard_candidate a3ac04c2ef5caeb3
 crates/server/src/storage/filesystem.rs update_candidate_status 5d11395be1eda897
 crates/server/src/storage/filesystem.rs archive_delta_holding_lock 590f7a4e60b5c52c
 crates/server/src/storage/filesystem.rs restore_superseded_holding_lock 178e80f72d813daf
+crates/server/src/storage/filesystem.rs read_archived 352dd6d9fa2c0cee
+crates/server/src/storage/filesystem.rs pull_superseded_deltas 0076e5f6f19fe475
+crates/server/src/storage/filesystem.rs resolve_execution 803cd0f6b8ad484b

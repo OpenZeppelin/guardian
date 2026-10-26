@@ -16,7 +16,10 @@ use super::tests::{
     ACCOUNT, BASE, Fixture, NEW_COMMITMENT, PROPOSAL, Script, is_submitted_or_terminal,
 };
 
-const LEASE: Duration = Duration::from_millis(300);
+/// Long enough that a worker starved of CPU (the suite run beside others) still renews before
+/// it lapses: a lapse between the boundary and the send is a real outcome, and a worker that
+/// meets it correctly declines to send, which the fixtures here do not script.
+const LEASE: Duration = Duration::from_millis(1000);
 
 /// A state that is neither the base nor the submitted one, such as a guardian switch leaves.
 const MOVED_ON: &str = "0x9999";

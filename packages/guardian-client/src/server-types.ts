@@ -181,6 +181,7 @@ export interface ServerAbandonCandidateResponse {
   nonce: number;
   state: 'pending' | 'abandoned' | 'retained';
   abandon_requested_at?: string;
+  commitment: string;
 }
 
 export interface ServerSignProposalRequest {

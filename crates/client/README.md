@@ -37,10 +37,21 @@ knows the transaction will never land:
 let response = client.abandon_candidate(&account_id, nonce).await?;
 assert_eq!(response.state, "pending");
 
-// Poll the delta for the resolution: still `candidate` -> waiting,
-// `canonical` -> the tx landed after all, `discarded` with reason
-// `client_abandoned` -> the account is released.
-let delta = client.get_delta(&account_id, nonce).await?;
+// Poll the delta for the resolution. Compare its commitment with the one
+// the abandon returned first: a Guardian execution can take the nonce
+// with a delta of its own, which says nothing about the abandoned tx.
+match client.get_delta(&account_id, nonce).await?.delta {
+    Some(delta) if delta.new_commitment.eq_ignore_ascii_case(&response.commitment) => {
+        // `candidate` -> waiting, `canonical` -> the tx landed after all,
+        // `discarded` with reason `client_abandoned` -> the account is
+        // released.
+    }
+    Some(_) => {
+        // Another delta holds the nonce: `canonical` -> the abandoned tx
+        // can no longer land, `candidate` -> waiting on that delta.
+    }
+    None => {}
+}
 ```
 
 ### Canonical Nonce

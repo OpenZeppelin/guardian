@@ -586,8 +586,8 @@ console.log(accepted.state); // 'pending'
 // The guardian's worker confirms over a short quarantine (typically well
 // under a minute) that the transaction did not land, then releases the
 // account.
-const status = await multisig.abandonStatus(nonce);
-// 'waiting' | 'landed' | 'abandoned' | 'unexpected'
+const status = await multisig.abandonStatus(nonce, accepted.commitment);
+// 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
 
 ### Delta History
@@ -747,6 +747,10 @@ without the flag, with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, which the SDK throw
 `LocalExecutionRequiredError`. `localExecutionReason(proposal)` returns the same
 `LocalExecutionReason`, or `null` when Guardian can execute the proposal, and
 `describeLocalExecutionReason(reason)` explains it, so an app can route a proposal before asking.
+
+Before the request it relays the held proposal's approvals to Guardian, which executes a proposal
+only once its stored copy carries a threshold of them. An imported, offline-signed proposal can
+therefore be sent to Guardian like any other.
 
 `client.guardianClient` is the raw base client and skips the SDK's check: its
 `executeDeltaProposal` sends any proposal id and rejects with a plain `GuardianHttpError`. Guardian

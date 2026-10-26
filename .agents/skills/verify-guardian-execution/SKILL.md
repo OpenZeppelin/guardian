@@ -174,7 +174,7 @@ Paths are relative to `crates/server/src/`.
 | `WFail` | any failure before the boundary (`approach_boundary`, `ensure_guarded_by_this_guardian`, `ensure_admissible`, `ensure_sendable`, a failed admission, shutdown) → `fail` → `fail_execution` = `resolve_execution_tx(.., false)` |
 | `WAdmit` | `cross_boundary` → `admit_execution_candidate_tx`: moves a parked row at the nonce to `superseded_deltas` (`archive_parked_delta`, when retention is on) and deletes it, inserts the candidate and the evidence |
 | `WClaimLease`, `WClaimRes` | `claim_send` → `Renewal::attempt` (lease `renew`, then `renew_execution_reservation_tx` recording `Sent`). A storage error is retried, fenced, while the lease and send window last; a retry is the same claim taken later, which the model already allows since workers get no fairness |
-| `WSubmit`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`) |
+| `WSubmit`, `WResolveRejected`, `WResolveNotProcessed` | `submit`: Accepted and Unknown leave the transaction in flight; Rejected → `resolve_execution`, deleting the proposal; NotProcessed (a refusal before the node processed the send, a stale transaction encryption key included) → `resolve_execution` keeping the proposal (`ExecutionFailureCode::ends_proposal`). `network/miden/execution/attempt.rs` `classify_submission_error` picks the branch |
 | `WRelease` | `run_execution`'s `release_quietly` |
 | `RcList` | `jobs/execution_reconcile/mod.rs` `Reconciler::pass` (`list_active_executions`) and the Owned check at the top of `reconcile` |
 | `RcAcquire`, `RcClaim` | `take_ownership` (`try_acquire`, then `claim_execution_reservation_tx` unless the fence is already ours) |
@@ -184,7 +184,7 @@ Paths are relative to `crates/server/src/`.
 | `RcAct` | `settle_promoted_execution_tx`, `hold`, or `resolve_execution` with the verdict's code |
 | `PObserveFresh`, `PObserveAny`, `ProcVerdict` | `jobs/canonicalization/processor.rs`: the chain check, `executed_candidate_landed`, the divergence path |
 | `PWrite`, `CommitPromotedRes` | `canonicalize_verified_delta` → `storage/postgres.rs` `promote_candidate` (with `commit_promoted_execution`, which settles only an execution whose `expected_commitment` is the promoted state), or `discard_candidate` / `update_candidate_status` refused with `ProtectedByExecution` |
-| `PReconcileRetained` | `jobs/canonicalization/reconciliation.rs` promoting a retained row (`PromotableKind::Retained`), or restoring its archived copy (`PromotableKind::Superseded`, `restore_superseded`, which never replaces a candidate at the nonce), through `promote_candidate` |
+| `PReconcileRetained` | `jobs/canonicalization/reconciliation.rs` promoting a retained row (`PromotableKind::Retained`), or restoring its archived copy (read with `pull_superseded_deltas`; `PromotableKind::Superseded`, `restore_superseded`, which never replaces a candidate at the nonce), through `promote_candidate` |
 | `ClientPush` | `storage/postgres.rs` `submit_candidate` (`ExecutionReserved`, the candidate gate, the retained-row supersede) |
 | `LapseWorkerLease`, `LapseWorkerRes`, `LapseOther` | time passing: a `worker_leases.expires_at` or `execution_reservations.lease_expires_at` running out |
 | `Land`, `NewBlock`, `ExternalMove` | the chain |

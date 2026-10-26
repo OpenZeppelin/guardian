@@ -621,6 +621,22 @@ async fn cosigner_served(
     tempfile::TempDir,
     Arc<miden_client_sqlite_store::SqliteStore>,
 ) {
+    let (cosigner, dir, store, _handle) =
+        cosigner_served_by(proposed, payload, MockGuardianService::default()).await;
+    (cosigner, dir, store)
+}
+
+/// [`cosigner_served`] against `guardian`, returning its handle too.
+async fn cosigner_served_by(
+    proposed: &PinnedProposal,
+    payload: &serde_json::Value,
+    guardian: MockGuardianService,
+) -> (
+    MultisigClient,
+    tempfile::TempDir,
+    Arc<miden_client_sqlite_store::SqliteStore>,
+    MockGuardianHandle,
+) {
     let served = || {
         super::test_support::pending_proto_delta(
             &proposed.account,
@@ -629,13 +645,12 @@ async fn cosigner_served(
             &crate::transaction::word_to_hex(&proposed.signer_commitment),
         )
     };
-    let guardian = MockGuardianService::default().with_sign_delta_proposal(Ok(
-        guardian_client::SignDeltaProposalResponse {
+    let guardian =
+        guardian.with_sign_delta_proposal(Ok(guardian_client::SignDeltaProposalResponse {
             success: true,
             message: String::new(),
             delta: Some(served()),
-        },
-    ));
+        }));
     let handle = guardian.handle();
     let endpoint = start_mock_server(guardian).await.unwrap();
     handle.set_persistent_get_state(registered_state(&proposed.account));
@@ -670,7 +685,7 @@ async fn cosigner_served(
         .unwrap();
     cosigner.account = Some(MultisigAccount::new(proposed.account.clone()));
     cosigner.miden_client.sync_state().await.unwrap();
-    (cosigner, cosigner_dir, store)
+    (cosigner, cosigner_dir, store, handle)
 }
 
 /// A self-executed cosigner lists, verifies and exports a Guardian-executable proposal exactly as
@@ -744,6 +759,71 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
     assert!(
         admit(&cosigner).is_ok(),
         "an imported proposal is held for a GUARDIAN execution request"
+    );
+}
+
+/// Approvals collected off channel exist only in the exported document, and GUARDIAN executes a
+/// proposal only once its stored copy carries a threshold of them, so an imported proposal's
+/// approvals reach GUARDIAN before the execution request does.
+#[tokio::test]
+async fn an_imported_proposal_relays_its_approvals_before_requesting_execution() {
+    let dir = tempfile::tempdir().unwrap();
+    let proposed = pinned_consume_proposal(dir.path()).await;
+    let proposal_id = proposed.summary.to_commitment().to_hex();
+    let accepted = guardian_client::ExecutionEnvelope {
+        account_id: proposed.account.id().to_string(),
+        proposal_id: proposal_id.clone(),
+        state: "pending".to_string(),
+        error: None,
+        delta_nonce: None,
+        newly_accepted: true,
+        proposal_exists: true,
+        ignored_signatures: 0,
+        updated_at: "2026-10-07T12:00:00Z".to_string(),
+    };
+    let (mut cosigner, _cosigner_dir, _store, handle) = cosigner_served_by(
+        &proposed,
+        &proposed.payload,
+        MockGuardianService::default().with_execution(Ok(accepted)),
+    )
+    .await;
+
+    let listed = cosigner.list_proposals().await.unwrap();
+    let document = cosigner
+        .export_proposal_to_string(&listed[0].id)
+        .await
+        .unwrap();
+    cosigner.known_proposals = crate::local_execution::KnownProposals::default();
+    let mut exported = cosigner
+        .import_proposal_from_string(&document)
+        .await
+        .unwrap();
+    cosigner
+        .sign_imported_proposal(&mut exported)
+        .await
+        .unwrap();
+    assert!(
+        exported.is_ready(),
+        "the document carries a threshold of approvals"
+    );
+    let before = handle.calls().len();
+
+    cosigner
+        .request_imported_guardian_execution(
+            &exported,
+            crate::local_execution::GuardianExecutionRequest::default(),
+        )
+        .await
+        .expect("an imported, threshold-met proposal is sent to GUARDIAN");
+
+    let calls = handle.calls()[before..].to_vec();
+    let relayed = calls.iter().position(|call| call == "sign_delta_proposal");
+    let executed = calls
+        .iter()
+        .position(|call| call == "execute_delta_proposal");
+    assert!(
+        matches!((relayed, executed), (Some(relayed), Some(executed)) if relayed < executed),
+        "the approvals are relayed before execution is requested: {calls:?}"
     );
 }
 
@@ -1099,5 +1179,33 @@ mod local_execution {
             Err(MultisigError::ProposalNotHeldLocally { .. })
         ));
         assert!(!requester.guardian_was_asked());
+    }
+}
+
+/// An abandon response without the abandoned delta's commitment (a server that predates it)
+/// is refused: `abandon_status` could not tell the abandoned delta from one that took its nonce.
+#[tokio::test]
+async fn an_abandon_response_without_a_commitment_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, _handle, _signers) = proposing_client(
+        dir.path(),
+        ProposalExecutionMode::default(),
+        AccountShape::OneSigner,
+        MockGuardianService::default().with_abandon_delta_candidate(Ok(
+            guardian_client::AbandonDeltaCandidateResponse {
+                success: true,
+                state: "pending".to_string(),
+                nonce: 1,
+                ..Default::default()
+            },
+        )),
+    )
+    .await;
+
+    match client.abandon_candidate(1).await {
+        Err(crate::error::MultisigError::GuardianServer(message)) => {
+            assert!(message.contains("carries no commitment"), "{message}");
+        }
+        other => panic!("expected GuardianServer, got {other:?}"),
     }
 }

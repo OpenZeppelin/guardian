@@ -91,11 +91,11 @@ export interface GuardianExecutionRequestOptions {
  * proposal always needs local execution, and a private-note P2ID proposal needs it unless the
  * request allows it.
  */
-export function assertGuardianMayExecute(
+export function assertGuardianMayExecute<P extends Pick<Proposal, 'metadata' | 'verification'>>(
   proposalId: string,
-  proposal: Pick<Proposal, 'metadata' | 'verification'> | undefined,
+  proposal: P | undefined,
   options: GuardianExecutionRequestOptions,
-): void {
+): asserts proposal is P {
   if (proposal === undefined || proposal.verification.status !== 'verified') {
     throw new ProposalNotHeldLocallyError(proposalId);
   }

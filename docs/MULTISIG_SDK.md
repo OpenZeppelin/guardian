@@ -591,6 +591,13 @@ Guardian commits the transaction and pushes its delta, so the local account is b
 client syncs: sync once the execution is `committed`, as the snippets do, before reading the
 account or proposing again.
 
+Guardian executes a proposal only once its stored copy carries a threshold of approvals, so
+approvals collected off channel are relayed to it before the request, as local execution relays
+them before Guardian's acknowledgement. TypeScript's `requestGuardianExecution` relays the
+approvals of the proposal it holds, an imported one included. In Rust, pass the signed document
+to `request_imported_guardian_execution(&exported, request)`, the counterpart of
+`execute_imported_proposal`; `request_guardian_execution` sends only the proposal id.
+
 #### Proposals a Guardian-executable client still executes locally
 
 Two proposal types do client-side work when executed that Guardian execution skips, so both
@@ -1544,8 +1551,8 @@ Authentication).
 | `syncState()` | Reconcile the local store with GUARDIAN; pre-checks GUARDIAN's canonical nonce (`getCanonicalNonce`) and skips the state fetch when that nonce is below the local nonce, or equal to it at the same commitment. Returns `{ source: 'guardian', state }` or `{ source: 'local', localNonce, guardianNonce }` |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
 | `syncProposals()` | Sync proposals from GUARDIAN, pruning ones it no longer reports (TS-only cache reconciliation; the Rust `list_proposals` builds a fresh list per call and has no cache to prune) |
-| `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
-| `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
+| `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine); returns the abandoned delta's `commitment` |
+| `abandonStatus(nonce, commitment)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `retained` / `unexpected`. Once another delta (a Guardian execution) takes the nonce, its being canonical reports `abandoned` |
 | `deltaHistory({ limit?, cursor? }?)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `listProposals()` | Get proposals from the most recent sync plus not-yet-reported local creates/imports |
 | `createP2idProposal(recipient, faucet, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`; presence of `reclaimHeight`/`timelockHeight` creates a P2IDE note, issue #366) |
@@ -2171,8 +2178,8 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 | `list_proposals()` | List pending proposals |
 | `sign_proposal(id)` | Sign a proposal |
 | `execute_proposal(id)` | Execute ready proposal |
-| `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
-| `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
+| `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine); returns an `AbandonRequest` with the abandoned delta's `commitment` |
+| `abandon_status(nonce, commitment)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Retained` / `Unexpected`. Once another delta (a Guardian execution) takes the nonce, its being canonical reports `Abandoned` |
 | `delta_history(limit, cursor)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |

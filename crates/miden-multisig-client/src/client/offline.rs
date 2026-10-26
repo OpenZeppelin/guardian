@@ -377,7 +377,7 @@ impl MultisigClient {
     /// approval to the request signer (before 0.18.1) then refuses the rest
     /// as already signed. A response that stores a relayed approval under
     /// another signer stops the relay.
-    async fn relay_collected_approvals(
+    pub(super) async fn relay_collected_approvals(
         &mut self,
         proposal_id: &str,
         signatures: &[ExportedSignature],

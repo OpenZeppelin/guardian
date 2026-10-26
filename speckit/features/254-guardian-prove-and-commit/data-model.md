@@ -139,8 +139,8 @@ on the pair alone cannot represent two attempts.
 
 An earlier revision keyed submissions and outcomes on the pair alone. In practice the
 collision was hard to trigger (pre-boundary failures write no outcome row, and a
-post-boundary failure deletes the proposal, so a second post-boundary attempt cannot
-arise), but the schema still could not express a retry, and the contract never said which
+post-boundary failure deleted the proposal, so a second post-boundary attempt could not
+arise; a send the node never processed now keeps it, so one can), but the schema still could not express a retry, and the contract never said which
 attempt a read reports.
 
 ### Retention
@@ -329,7 +329,7 @@ into check-then-act (FR-037).
 | **Create reservation** | Acquire the `execution:{account_id}` lease, then insert the reservation iff no candidate exists and no active reservation | `ReservationWrite` |
 | **Admit candidate + record evidence** (step 12) | Persist candidate, set `has_pending_candidate`, insert evidence, **as one commit** | `AdmissionWrite` |
 | **Promote candidate + resolve** | Existing fenced promotion, **extended** to upsert `ExecutionOutcome { committed }` and release the reservation in the same transaction. Owns `committed` (FR-053, FR-054) | `PromoteWrite` |
-| **`resolve_execution`** | Post-boundary failure: validate execution ownership + fence, discard the candidate, **delete its matching proposal**, upsert `ExecutionOutcome`, release the reservation, **one transaction** | `ResolveWrite` |
+| **`resolve_execution`** | Post-boundary failure: validate execution ownership + fence, discard the candidate, **delete its matching proposal when the cause ends it** (`ends_proposal`), upsert `ExecutionOutcome`, release the reservation, **one transaction** | `ResolveWrite` |
 | **`fail_execution`** | Pre-boundary failure: upsert `ExecutionOutcome` and release the reservation as **one commit**. No candidate exists, so nothing to discard | `ResolveWrite` |
 | **Claim ownership** (FR-052) | Compare-and-set `holder_id` / `fence_token` on a live reservation; fails rather than steals on a stale expectation | `ReservationWrite` |
 | **Renew / release** | Update expiry, or mark `released_at` | `ReservationWrite` |
@@ -356,7 +356,7 @@ would let a crash between them expose either a terminal execution still holding 
 a released account with no outcome to report. There is no `record_execution_outcome` that writes
 an outcome without also releasing: every terminal transition is one atomic operation (FR-053).
 
-### `resolve_execution` must delete the matching proposal
+### `resolve_execution` must delete the matching proposal when the cause ends it
 
 Canonicalization's `remove_candidate` deletes the candidate inside its transaction and then
 derives and deletes the matching proposal **afterwards**, tolerating failure with a warning
@@ -366,6 +366,12 @@ derives and deletes the matching proposal **afterwards**, tolerating failure wit
 a permitted retry. If `resolve_execution` discarded the candidate but left the proposal, a
 **definitely rejected** transaction would be advertised to the client as retryable. So proposal
 deletion is part of the resolution commit, not a follow-up step.
+
+Only causes that end the proposal delete it (`ExecutionFailureCode::ends_proposal`): a rejected
+submission (`SUBMISSION_REJECTED`) and a transaction the chain shows never landed
+(`CANDIDATE_DISCARDED`, `EXPIRED`). A send the node refused before processing it
+(`SUBMISSION_NOT_PROCESSED`) also crosses the boundary, but that transaction cannot land, so the
+proposal is kept and `proposal_exists: true` is a true statement that a retry is permitted.
 
 ### Promotion is explicitly authorized to release (FR-054)
 

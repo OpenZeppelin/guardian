@@ -166,9 +166,14 @@ console.log(accepted.state); // 'pending'
 
 // The guardian's worker confirms over a short quarantine that the tx did
 // not land, then releases the account.
-const status = await client.abandonStatus(accountId, nonce);
+const status = await client.abandonStatus(accountId, nonce, accepted.commitment);
 // 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
+
+Pass the `commitment` the abandon returned: a Guardian execution can archive
+the abandoned delta and take its nonce, so the nonce alone does not identify
+it. Once that other delta is canonical the status is `'abandoned'`, since the
+abandoned transaction can no longer land.
 
 `'retained'` means the guardian stopped actively verifying the candidate
 and released the account slot, but the on-chain outcome is still

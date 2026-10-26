@@ -932,14 +932,19 @@ fn block_interval(reference: &BlockHeader, genesis: &BlockHeader, tip: &BlockHea
 /// Past the boundary a rejection deletes the proposal, so only a node that answered and refused
 /// the transaction itself is a rejection. A refusal issued before the node processed anything (a
 /// rate limit the client's own retries outlasted, authentication, permission, an unimplemented
-/// call) says nothing about the proposal, which stays executable. A response that failed to
-/// arrive or to decode may still have been accepted, and a node reporting the transaction as
-/// already known may hold it, so both are left for the chain to settle.
+/// call, inputs sealed against an encryption key the validator no longer holds) says nothing
+/// about the proposal, which stays executable: each attempt seals against a freshly fetched key.
+/// A response that failed to arrive or to decode may still have been accepted, and a node
+/// reporting the transaction as already known may hold it, so both are left for the chain to
+/// settle.
 fn classify_submission_error(error: &miden_client::rpc::RpcError) -> SubmissionOutcome {
     use miden_client::rpc::{GrpcError, RpcError};
     let reason = error.to_string();
     if error.is_indeterminate_submission() {
         return SubmissionOutcome::Unknown { reason };
+    }
+    if error.is_stale_transaction_encryption_key() {
+        return SubmissionOutcome::NotProcessed { reason };
     }
     match error {
         RpcError::RequestError {
@@ -1154,6 +1159,7 @@ mod submission_classification_tests {
             GrpcError::Unauthenticated,
             GrpcError::PermissionDenied,
             GrpcError::Unimplemented,
+            GrpcError::FailedPrecondition,
         ] {
             let label = format!("{kind:?}");
             assert!(
@@ -1166,7 +1172,6 @@ mod submission_classification_tests {
         }
         for kind in [
             GrpcError::InvalidArgument,
-            GrpcError::FailedPrecondition,
             GrpcError::NotFound,
             GrpcError::OutOfRange,
         ] {

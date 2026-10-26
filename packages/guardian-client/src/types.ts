@@ -397,13 +397,22 @@ export interface AbandonCandidateResponse {
    * return the original timestamp; absent once resolved.
    */
   abandonRequestedAt?: string;
+  /**
+   * The abandoned delta's `new_commitment`. Another delta can later take
+   * the same nonce (a Guardian execution archives the abandoned one), so
+   * pass this to `abandonStatus` to poll for this delta.
+   */
+  commitment: string;
 }
 
 /**
  * Resolution of an abandon request, as observed via the delta feed.
  * `'retained'` means the account slot is released but the on-chain
  * outcome is still uncertain — "unlocked but unresolved", never to be
- * read as "the transaction did not land".
+ * read as "the transaction did not land". When another delta has taken
+ * the nonce, `'abandoned'` means it is canonical (the abandoned
+ * transaction can no longer land) and `'waiting'` that it is still a
+ * candidate.
  */
 export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected';
 

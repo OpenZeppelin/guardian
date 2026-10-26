@@ -1331,6 +1331,11 @@ export class Multisig {
    * `switch_guardian` proposal always, a private-note P2ID proposal unless
    * `options.allowPrivateNote` says this caller delivers the note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
    * execution throws the same `LocalExecutionRequiredError`.
+   *
+   * GUARDIAN executes a proposal only once its stored copy carries a threshold of approvals.
+   * Approvals collected off channel (an imported, offline-signed proposal) exist only in this
+   * client, so the held proposal's verified approvals are relayed to GUARDIAN first, as
+   * {@link executeProposal} relays them before its acknowledgement.
    */
   async requestGuardianExecution(
     proposalId: string,
@@ -1341,12 +1346,33 @@ export class Multisig {
       await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
     }
     assertGuardianMayExecute(proposalId, proposal, options);
-    return refusingExecutionWith(
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    const approvals = new ProposalSignatures(
+      proposal.signatures,
+      this.signerCommitments,
+      `Invalid proposal signatures for ${proposalId}`,
+    ).entries();
+    return refusingExecutionWith(proposalId, this.relayThenRequestExecution(
       proposalId,
-      this.guardian.executeDeltaProposal(this._accountId, proposalId, {
-        allowPrivateNote: options.allowPrivateNote === true,
-      }),
-    );
+      normalizedProposalId,
+      approvals,
+      options,
+    ));
+  }
+
+  private async relayThenRequestExecution(
+    proposalId: string,
+    normalizedProposalId: string,
+    approvals: ProposalSignatureEntry[],
+    options: GuardianExecutionRequestOptions,
+  ): Promise<ProposalExecution> {
+    if (approvals.length > 0) {
+      const stored = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+      await this.relayCollectedApprovals(normalizedProposalId, approvals, stored);
+    }
+    return this.guardian.executeDeltaProposal(this._accountId, proposalId, {
+      allowPrivateNote: options.allowPrivateNote === true,
+    });
   }
 
   /** The latest Guardian execution of a proposal. */
@@ -2289,8 +2315,8 @@ export class Multisig {
    * Records an abandon *intent* on GUARDIAN: the account stays locked
    * until the guardian's canonicalization worker confirms over a short
    * quarantine (typically well under a minute) that the transaction did
-   * not land, then releases the account. Poll {@link abandonStatus} for
-   * the resolution.
+   * not land, then releases the account. Poll {@link abandonStatus} with
+   * the returned `commitment` for the resolution.
    *
    * `nonce` pins the exact candidate to release; it is the nonce the
    * proposal was pushed with. Retries are idempotent and preserve the
@@ -2306,10 +2332,12 @@ export class Multisig {
    * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
    * `'landed'` if the transaction landed after all, `'abandoned'` once
    * the account is released, `'unexpected'` for any state no abandon
-   * flow produces.
+   * flow produces. `commitment` is the one {@link abandonCandidate}
+   * returned: once another delta canonicalizes at the nonce the abandoned
+   * transaction can no longer land, which reports `'abandoned'`.
    */
-  async abandonStatus(nonce: number): Promise<AbandonStatus> {
-    return this.guardian.abandonStatus(this._accountId, nonce);
+  async abandonStatus(nonce: number, commitment: string): Promise<AbandonStatus> {
+    return this.guardian.abandonStatus(this._accountId, nonce, commitment);
   }
 
   /**

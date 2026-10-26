@@ -654,11 +654,17 @@ export class GuardianHttpClient {
       body: JSON.stringify(serverRequest),
     }, accountId, serverRequest);
     const server = (await response.json()) as ServerAbandonCandidateResponse;
+    if (typeof server.commitment !== 'string' || server.commitment.length === 0) {
+      throw new Error(
+        'abandon response carries no commitment; abandonStatus needs a GUARDIAN server that returns it',
+      );
+    }
     return {
       accountId: server.account_id,
       nonce: server.nonce,
       state: server.state,
       abandonRequestedAt: server.abandon_requested_at,
+      commitment: server.commitment,
     };
   }
 
@@ -673,8 +679,14 @@ export class GuardianHttpClient {
    * delta until its retention TTL expires — sync and check chain before
    * replacing it), `'unexpected'` for any state no abandon flow
    * produces (including a missing delta).
+   *
+   * `commitment` is the one {@link abandonCandidate} returned. Another
+   * delta can take the nonce (a Guardian execution archives the abandoned
+   * one): once it is canonical the abandoned transaction can no longer
+   * land (`'abandoned'`), and while it is a candidate the nonce is still
+   * contested (`'waiting'`).
    */
-  async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
+  async abandonStatus(accountId: string, nonce: number, commitment: string): Promise<AbandonStatus> {
     let delta: DeltaObject;
     try {
       delta = await this.getDelta(accountId, nonce);
@@ -683,6 +695,16 @@ export class GuardianHttpClient {
         return 'unexpected';
       }
       throw e;
+    }
+    if (delta.newCommitment?.toLowerCase() !== commitment.toLowerCase()) {
+      switch (delta.status.status) {
+        case 'canonical':
+          return 'abandoned';
+        case 'candidate':
+          return 'waiting';
+        default:
+          return 'unexpected';
+      }
     }
     switch (delta.status.status) {
       case 'candidate':

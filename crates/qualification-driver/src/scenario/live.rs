@@ -2183,15 +2183,18 @@ pub async fn abandon_and_assert_hidden(runner: &Runner) -> ActionOutcome {
         }
     }
 
-    if let Err(error) = client.abandon_candidate(nonce).await {
-        return ActionOutcome::failed_product(format!(
-            "abandoning the candidate at nonce {nonce} failed: {error}"
-        ));
-    }
+    let abandoned = match client.abandon_candidate(nonce).await {
+        Ok(request) => request,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "abandoning the candidate at nonce {nonce} failed: {error}"
+            ));
+        }
+    };
 
     let deadline = std::time::Instant::now() + ABANDON_DEADLINE;
     loop {
-        let state = match client.abandon_status(nonce).await {
+        let state = match client.abandon_status(nonce, &abandoned.commitment).await {
             Ok(AbandonStatus::Abandoned) => break,
             Ok(AbandonStatus::Landed) => {
                 return ActionOutcome::failed_product(
@@ -3236,13 +3239,19 @@ pub async fn assert_stranded_head_blocks_proposal(runner: &Runner) -> ActionOutc
             "the account was never funded, so it holds nothing to send",
         );
     };
-    let client = &mut session.clients[0];
-
-    match client.abandon_status(head).await {
-        Ok(AbandonStatus::Waiting) => {}
-        Ok(other) => {
+    let account_id = match session.clients[0].account() {
+        Some(account) => account.id(),
+        None => return ActionOutcome::failed_setup("the scenario's client holds no account"),
+    };
+    let queued = match delta_reader(session).await {
+        Ok(mut reader) => candidate_admitted_at(&mut reader, &account_id, head).await,
+        Err(error) => Err(error),
+    };
+    match queued {
+        Ok(Some(_)) => {}
+        Ok(None) => {
             return ActionOutcome::failed_setup(format!(
-                "the prepared head at nonce {head} is {other:?}, not a queued candidate"
+                "the prepared head at nonce {head} is not a queued candidate"
             ));
         }
         Err(error) => {
@@ -3251,6 +3260,7 @@ pub async fn assert_stranded_head_blocks_proposal(runner: &Runner) -> ActionOutc
             ));
         }
     }
+    let client = &mut session.clients[0];
 
     match client
         .propose_transaction(
@@ -3301,14 +3311,17 @@ pub async fn abandon_stranded_head_and_recover(runner: &Runner) -> ActionOutcome
     };
     let client = &mut session.clients[0];
 
-    if let Err(error) = client.abandon_candidate(head).await {
-        return ActionOutcome::failed_product(format!(
-            "abandoning the stranded head at nonce {head} failed: {error}"
-        ));
-    }
+    let abandoned = match client.abandon_candidate(head).await {
+        Ok(request) => request,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "abandoning the stranded head at nonce {head} failed: {error}"
+            ));
+        }
+    };
     let deadline = std::time::Instant::now() + ABANDON_DEADLINE;
     loop {
-        let state = match client.abandon_status(head).await {
+        let state = match client.abandon_status(head, &abandoned.commitment).await {
             Ok(AbandonStatus::Abandoned) => break,
             Ok(AbandonStatus::Landed) => {
                 return ActionOutcome::failed_product(

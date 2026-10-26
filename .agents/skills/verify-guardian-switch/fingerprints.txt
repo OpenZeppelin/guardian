@@ -33,7 +33,7 @@ crates/server/src/jobs/release_sweep/sweep.rs check_stored_state fbeb999917f801a
 crates/server/src/jobs/release_sweep/sweep.rs promoting_delta_nonce f40636c8b5ae7261
 crates/server/src/jobs/release_sweep/sweep.rs visit_diverged 6e1064eedd79244e
 crates/server/src/jobs/release_sweep/sweep.rs classify_key 33c8c049584cc948
-crates/server/src/jobs/release_sweep/sweep.rs switch_candidates 2766c81e57ade749
+crates/server/src/jobs/release_sweep/sweep.rs switch_candidates 0eb160fd949a3435
 crates/server/src/jobs/release_sweep/sweep.rs candidate_bases 6c0ce3c48879c76b
 crates/server/src/jobs/release_sweep/sweep.rs find_executed_switch dd11120074935a0d
 crates/server/src/jobs/release_sweep/sweep.rs precompute_switch ed3c0d99a07de888

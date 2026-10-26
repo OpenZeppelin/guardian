@@ -8,6 +8,7 @@ use miden_protocol::account::AccountId;
 
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
+use crate::export::ExportedProposal;
 use crate::local_execution::{GuardianExecutionRequest, LocalExecutionReason};
 
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
@@ -280,6 +281,39 @@ impl MultisigClient {
             .execute_delta_proposal(&account_id, proposal_id, request.allow_private_note)
             .await
             .map_err(|error| execution_refusal(error, proposal_id))
+    }
+
+    /// Asks Guardian to execute a proposal imported from an exported document, as
+    /// [`request_guardian_execution`](Self::request_guardian_execution) does for a proposal
+    /// signed on Guardian. Guardian executes only a proposal whose stored copy carries a threshold
+    /// of approvals, and approvals collected off channel exist only in the document, so they are
+    /// relayed to the stored proposal first, as
+    /// [`execute_imported_proposal`](Self::execute_imported_proposal) relays them before its
+    /// acknowledgement. Pass the document as it stands after the last signature: approvals added
+    /// after the import are relayed too.
+    ///
+    /// The proposal must have been imported, and the same refusals apply as for
+    /// [`request_guardian_execution`](Self::request_guardian_execution), checked before any
+    /// approval is relayed.
+    pub async fn request_imported_guardian_execution(
+        &mut self,
+        exported: &ExportedProposal,
+        request: GuardianExecutionRequest,
+    ) -> Result<ProposalExecution> {
+        let account_id = self.require_account()?.id();
+        exported.validate(Some(account_id))?;
+        if !exported.is_ready() {
+            return Err(MultisigError::ProposalNotReady {
+                collected: exported.signatures_collected(),
+                required: exported.signatures_required,
+            });
+        }
+        let proposal_id = exported.to_proposal()?.id;
+        self.known_proposals
+            .admit(account_id, &proposal_id, request)?;
+        self.relay_collected_approvals(&proposal_id, &exported.signatures)
+            .await?;
+        self.request_guardian_execution(&proposal_id, request).await
     }
 
     /// The latest Guardian execution of a proposal.
