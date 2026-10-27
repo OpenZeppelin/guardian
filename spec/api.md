@@ -47,10 +47,15 @@
   stored one. Until the chain holds the submitted state the
   request fails with `state_not_on_chain` (HTTP 409 / gRPC
   `FailedPrecondition`, `meta.retryable: true`), for example right after the
-  transaction is submitted; retry once it lands. Both SDKs retry it for about
-  45 seconds. One head read decides, so a state the chain has already moved
-  past fails the same way, and its retries keep failing until the client
-  submits the account's current state. `rpc_unavailable` when the chain
+  transaction is submitted; retry once it lands. After a guardian switch both
+  SDKs wait for the chain to hold the switched state (a chain read, about 45
+  seconds at most) before they register on the new GUARDIAN; a registration
+  itself is not retried. One head read decides, so a state the chain has
+  already moved past fails the same way, and its retries keep failing until the client
+  submits the account's current state. A state older than the stored one
+  is refused from the same read with `commitment_mismatch` (not retryable)
+  when a stored cosigner submits it and the chain sits at the stored state;
+  otherwise it gets `state_not_on_chain`. `rpc_unavailable` when the chain
   cannot be read. A
   configuration that skipped the chain read fails with `state_not_on_chain`
   when the account was released while it ran and its state is not the chain
@@ -681,7 +686,7 @@ Stable error codes include:
 - `conflict_pending_proposal`
 - `pending_proposals_limit`
 - `commitment_mismatch`
-- `state_not_on_chain` (a reconfiguration that must submit the account's on-chain state submitted one the chain does not hold yet; HTTP 409 / gRPC `FailedPrecondition`, retryable, as is a state the chain has moved past)
+- `state_not_on_chain` (a reconfiguration that must submit the account's on-chain state submitted one the chain does not hold yet; HTTP 409 / gRPC `FailedPrecondition`, retryable, as is a state the chain has moved past, unless a stored cosigner submits a state older than the stored one while the chain sits at the stored state, which is `commitment_mismatch`)
 - `invalid_commitment`
 - `authentication_failed`
 - `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))

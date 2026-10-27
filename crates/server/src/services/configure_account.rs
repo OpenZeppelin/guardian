@@ -318,7 +318,16 @@ pub async fn configure_account(
         _ => Vouch::Chain,
     };
     match vouch {
-        Vouch::Chain => ensure_on_chain_state(state, &params.account_id, &head.commitment).await?,
+        Vouch::Chain => {
+            let stored_cosigner = existing
+                .as_ref()
+                .is_some_and(|existing| existing.auth.signer_scheme(&signer_commitment).is_some());
+            let newer_stored = stored_base.as_ref().filter(|stored| {
+                stored_cosigner
+                    && matches!((stored.nonce, head.nonce), (Some(stored_nonce), Some(submitted_nonce)) if submitted_nonce < stored_nonce)
+            });
+            ensure_on_chain_state(state, &params.account_id, &head.commitment, newer_stored).await?
+        }
         Vouch::FirstState => state
             .network_client
             .validate_first_state(&params.initial_state)
@@ -466,7 +475,8 @@ pub async fn configure_account(
                     submitted = %account_state.commitment,
                     "The account was released while it was reconfigured without a chain read"
                 );
-                ensure_on_chain_state(state, &params.account_id, &account_state.commitment).await?;
+                ensure_on_chain_state(state, &params.account_id, &account_state.commitment, None)
+                    .await?;
                 true
             } else {
                 false
@@ -616,7 +626,21 @@ enum Vouch {
 /// since. One head read decides; telling a state the chain moved past from
 /// one still on its way would take a search of the account's history, which
 /// any caller could make the server run with a made-up state.
-async fn ensure_on_chain_state(state: &AppState, account_id: &str, commitment: &str) -> Result<()> {
+///
+/// `newer_stored` is the stored state, given only to a stored cosigner and
+/// only when it is newer than the submitted one. When the chain sits at it,
+/// the submitted state is a stale wallet's that can never land, and is
+/// refused as a mismatch rather than as a state on its way. A stored state
+/// the chain has not reached (optimistic mode) is no such evidence: the
+/// submitted state may still land. The refusal names the stored commitment
+/// and tells the stored nonce is above the submitted one, so no other key
+/// gets it.
+async fn ensure_on_chain_state(
+    state: &AppState,
+    account_id: &str,
+    commitment: &str,
+    newer_stored: Option<&StateHead>,
+) -> Result<()> {
     let verification = state
         .network_client
         .verify_commitment(account_id, commitment, RpcReadMode::Configured)
@@ -626,6 +650,26 @@ async fn ensure_on_chain_state(state: &AppState, account_id: &str, commitment: &
                 "Could not check the submitted state against the chain: {e}"
             ))
         })?;
+    let stale_against = match (&verification, newer_stored) {
+        (StateVerification::Mismatch { on_chain }, Some(stored))
+            if stored.commitment == *on_chain =>
+        {
+            Some(stored)
+        }
+        _ => None,
+    };
+    if let Some(stored) = stale_against {
+        tracing::warn!(
+            account_id = %account_id,
+            stored = %stored.commitment,
+            submitted = %commitment,
+            "Configuration state is older than the stored state and not on chain"
+        );
+        return Err(GuardianError::CommitmentMismatch {
+            expected: stored.commitment.clone(),
+            actual: commitment.to_string(),
+        });
+    }
     match verification {
         StateVerification::Match => Ok(()),
         StateVerification::Absent | StateVerification::Mismatch { .. } => {
@@ -718,11 +762,13 @@ mod tests {
     }
 
     /// A first configuration of an account at `nonce`, which the chain
-    /// answers `chain` for. With `squatted`, another key already claimed the
+    /// answers `chain` for and the network judges `first_state` as a new
+    /// account's state. With `squatted`, another key already claimed the
     /// account id with a configuration that never stored a state.
     async fn first_configuration_at(
         nonce: u64,
         chain: StateVerification,
+        first_state: std::result::Result<(), String>,
         squatted: bool,
     ) -> (
         Result<ConfigureAccountResult>,
@@ -738,7 +784,8 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_get_state_head(Ok(head("0x5678", nonce)))
-            .with_verify_commitment(Ok(chain));
+            .with_verify_commitment(Ok(chain))
+            .with_validate_first_state(first_state);
         let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
         let claimed = squatted.then(|| {
             configured(
@@ -783,7 +830,7 @@ mod tests {
     #[tokio::test]
     async fn first_configuration_past_nonce_zero_requires_the_on_chain_state() {
         let (result, _, storage, _) =
-            first_configuration_at(1, StateVerification::Absent, false).await;
+            first_configuration_at(1, StateVerification::Absent, Ok(()), false).await;
         assert!(
             matches!(&result, Err(error @ GuardianError::StateNotOnChain { .. }) if error.retryable()),
             "{result:?}"
@@ -791,7 +838,7 @@ mod tests {
         assert!(storage.get_submit_state_calls().is_empty());
 
         let (result, network, storage, _) =
-            first_configuration_at(1, StateVerification::Match, false).await;
+            first_configuration_at(1, StateVerification::Match, Ok(()), false).await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(network.get_verify_commitment_calls().len(), 1);
         assert_eq!(storage.get_submit_state_calls().len(), 1);
@@ -802,10 +849,29 @@ mod tests {
     #[tokio::test]
     async fn first_configuration_at_nonce_zero_needs_no_chain_read() {
         let (result, network, storage, _) =
-            first_configuration_at(0, StateVerification::Absent, false).await;
+            first_configuration_at(0, StateVerification::Absent, Ok(()), false).await;
         assert!(result.is_ok(), "{result:?}");
         assert!(network.get_verify_commitment_calls().is_empty());
         assert_eq!(storage.get_submit_state_calls().len(), 1);
+    }
+
+    /// A nonce-0 state stands in for the chain only when it is a new
+    /// account's: one with assets in its vault, or not really at nonce 0,
+    /// is refused before it is stored.
+    #[tokio::test]
+    async fn first_configuration_at_nonce_zero_refuses_a_state_that_is_not_a_new_accounts() {
+        let (result, _, storage, _) = first_configuration_at(
+            0,
+            StateVerification::Absent,
+            Err("vault is not empty".to_string()),
+            false,
+        )
+        .await;
+        assert!(
+            matches!(&result, Err(GuardianError::InvalidInput(message)) if message.contains("vault is not empty")),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
     }
 
     /// A claim another key left behind, refused before it stored a state,
@@ -815,7 +881,7 @@ mod tests {
     #[tokio::test]
     async fn first_configuration_at_nonce_zero_registers_over_a_squatted_claim() {
         let (result, network, storage, metadata) =
-            first_configuration_at(0, StateVerification::Absent, true).await;
+            first_configuration_at(0, StateVerification::Absent, Ok(()), true).await;
         assert!(result.is_ok(), "{result:?}");
         assert!(network.get_verify_commitment_calls().is_empty());
         assert_eq!(storage.get_submit_state_calls().len(), 1);
@@ -2219,7 +2285,7 @@ mod tests {
             .with_clear_released(Ok(ClearTransition::Cleared));
         let state = create_test_app_state(
             network_client,
-            MockStorageBackend::new().with_submit_state(Ok(())),
+            MockStorageBackend::new().with_pull_state(Ok(stored_state(account_id_hex, "0x5678"))),
             metadata_store.clone(),
         )
         .await;
@@ -2723,6 +2789,105 @@ mod tests {
         )
         .await;
         assert_refused_as_stale(result, &storage);
+    }
+
+    /// A stale wallet's state, older than the stored state and not the chain
+    /// head, can never land: the vouch's own head read refuses it as a
+    /// mismatch, which is not retried, rather than as a state still on its
+    /// way, once the chain sits at the stored state. A stored state the chain
+    /// has not reached proves nothing, and only a stored cosigner learns so:
+    /// the refusal names the stored commitment.
+    #[tokio::test]
+    async fn an_older_state_is_refused_as_stale_from_the_vouch_head_read() {
+        for (on_chain, stored_cosigner, stale) in [
+            ("0x1234", true, true),
+            ("0x9999", true, false),
+            ("0x1234", false, false),
+            ("0x9999", false, false),
+        ] {
+            let (result, network, storage) =
+                reconfigure_with_older_state(on_chain, stored_cosigner).await;
+            let case = format!("chain at {on_chain}, stored cosigner {stored_cosigner}");
+            assert_eq!(network.get_verify_commitment_calls().len(), 1, "{case}");
+            assert!(
+                network
+                    .find_transaction_ending_at_calls
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "{case}"
+            );
+            if stale {
+                assert!(
+                    matches!(&result, Err(error @ GuardianError::CommitmentMismatch { .. }) if !error.retryable()),
+                    "{case}: {result:?}"
+                );
+                assert_refused_as_stale(result, &storage);
+            } else {
+                assert!(
+                    matches!(&result, Err(GuardianError::StateNotOnChain { .. })),
+                    "{case}: {result:?}"
+                );
+                assert!(storage.get_replace_state_calls().is_empty(), "{case}");
+            }
+        }
+    }
+
+    /// Reconfigures a released account, whose stored state `0x1234` is at
+    /// nonce 2, with its state at nonce 1, while the chain sits at
+    /// `on_chain`. With `stored_cosigner`, the requesting key is one of the
+    /// stored signers.
+    async fn reconfigure_with_older_state(
+        on_chain: &str,
+        stored_cosigner: bool,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockNetworkClient,
+        MockStorageBackend,
+    ) {
+        use crate::testing::helpers::{TestSigner, generate_falcon_signature};
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let stored_signer = match stored_cosigner {
+            true => commitment_hex.clone(),
+            false => TestSigner::new().commitment_hex,
+        };
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_head(Ok(head("0x0101", 1)))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: on_chain.to_string(),
+            }));
+        let storage_backend =
+            MockStorageBackend::new().with_pull_state(Ok(stored_state(account_id_hex, "0x1234")));
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(Some(released_account(account_id_hex, &stored_signer))));
+        let state = create_test_app_state(
+            network_client.clone(),
+            storage_backend.clone(),
+            metadata_store,
+        )
+        .await;
+
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment_hex],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::from_str(include_str!(
+                    "../testing/fixtures/account.json"
+                ))
+                .unwrap(),
+                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+            },
+        )
+        .await;
+        (result, network_client, storage_backend)
     }
 
     #[tokio::test]

@@ -265,8 +265,9 @@ impl MultisigClient {
     /// GUARDIAN stores a state only when the chain holds it, unless it is a
     /// new account's nonce-0 state or the state GUARDIAN already stores. A
     /// state whose transaction has not landed yet, such as one right after a
-    /// guardian switch, is refused as not on chain, so the registration is
-    /// retried with backoff, about 45 seconds in all.
+    /// guardian switch, is refused as not on chain; register again once the
+    /// transaction lands. A guardian switch waits for that itself before it
+    /// registers on the new GUARDIAN.
     pub async fn push_account(&mut self) -> Result<()> {
         let account = self
             .account
@@ -287,24 +288,38 @@ impl MultisigClient {
 
         let account_id = account.id();
 
-        let mut retry = 0;
-        loop {
-            match guardian_client
-                .configure(&account_id, auth_config.clone(), &initial_state)
-                .await
-            {
-                Ok(_) => return Ok(()),
-                Err(e) if e.is_state_not_on_chain() && retry + 1 < REGISTRATION_ATTEMPTS => {
-                    tokio::time::sleep(retry_delay(retry, rand::random())).await;
-                    retry += 1;
-                }
-                Err(e) => {
-                    return Err(MultisigError::GuardianServer(format!(
-                        "failed to configure account: {e}"
-                    )));
-                }
+        // Configure account on GUARDIAN
+        guardian_client
+            .configure(&account_id, auth_config, initial_state)
+            .await
+            .map_err(|e| {
+                MultisigError::GuardianServer(format!("failed to configure account: {}", e))
+            })?;
+
+        Ok(())
+    }
+
+    /// Polls the chain until it holds `commitment` for the account, about 45
+    /// seconds in all. GUARDIAN registers a state past nonce 0 only once the
+    /// chain holds it, and a read of the chain needs no wallet signature, so a
+    /// guardian switch waits here and registers on the new GUARDIAN once.
+    pub(crate) async fn wait_for_on_chain_state(
+        &self,
+        account_id: AccountId,
+        commitment: Word,
+    ) -> Result<()> {
+        for poll in 0..LANDING_POLLS {
+            if self.try_get_on_chain_account_commitment(account_id).await? == Some(commitment) {
+                return Ok(());
+            }
+            if poll + 1 < LANDING_POLLS {
+                tokio::time::sleep(retry_delay(poll, rand::random())).await;
             }
         }
+        Err(MultisigError::GuardianServer(format!(
+            "account {account_id} state {} has not reached the chain; register again once its transaction lands",
+            word_to_hex(&commitment)
+        )))
     }
 
     /// Syncs state with the Miden network.
@@ -867,10 +882,10 @@ impl MultisigClient {
     }
 }
 
-/// Registration attempts while GUARDIAN reports the submitted state as not
-/// on chain yet. With [`retry_delay`]'s backoff the last one runs about 45
-/// seconds after the first, past the time a transaction takes to land.
-const REGISTRATION_ATTEMPTS: u32 = 10;
+/// Chain reads while waiting for a state to land. With [`retry_delay`]'s
+/// backoff the last one runs about 45 seconds after the first, past the time
+/// a transaction takes to land.
+const LANDING_POLLS: u32 = 10;
 
 /// The nonce and commitment GUARDIAN reports for its canonical state
 /// (`get_canonical_nonce`), parsed at the transport boundary.

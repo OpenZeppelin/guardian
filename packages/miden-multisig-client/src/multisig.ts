@@ -133,7 +133,7 @@ import {
 } from './rpc/config.js';
 import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
-import { productionRetryRuntime, retryTransient } from './retry/runtime.js';
+import { productionRetryRuntime, retryDelay } from './retry/runtime.js';
 import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 
 /**
@@ -369,12 +369,11 @@ const MAX_BLOCK_NUM = 0xffff_ffff;
 const UNREPORTED_LISTING_MISS_LIMIT = 2;
 
 /**
- * Registration attempts while GUARDIAN reports the submitted state as not on
- * chain yet. With `retryDelay`'s backoff the last one runs about 45 seconds
- * after the first, past the time a transaction takes to land. Mirrors the
- * Rust SDK's `REGISTRATION_ATTEMPTS`.
+ * Chain reads while waiting for a state to land. With `retryDelay`'s backoff
+ * the last one runs about 45 seconds after the first, past the time a
+ * transaction takes to land. Mirrors the Rust SDK's `LANDING_POLLS`.
  */
-const REGISTRATION_ATTEMPTS = 10;
+const LANDING_POLLS = 10;
 
 /**
  * Refuses to execute a proposal GUARDIAN pinned to a state other than the one
@@ -939,6 +938,28 @@ export class Multisig {
     });
   }
 
+  /**
+   * Poll the chain until it holds `commitment` for this account, about 45
+   * seconds in all. GUARDIAN registers a state past nonce 0 only once the
+   * chain holds it, and a read of the chain needs no wallet signature, so a
+   * guardian switch waits here and registers on the new GUARDIAN once.
+   */
+  private async waitForOnChainState(commitment: string): Promise<void> {
+    const accountId = AccountId.fromHex(this._accountId);
+    for (let poll = 0; poll < LANDING_POLLS; poll += 1) {
+      if ((await this.getOnChainCommitment(accountId)) === commitment) {
+        return;
+      }
+      if (poll + 1 < LANDING_POLLS) {
+        await productionRetryRuntime.sleep(retryDelay(poll, productionRetryRuntime.unitRandom()));
+      }
+    }
+    throw new Error(
+      `Account ${this._accountId} state ${commitment} has not reached the chain; ` +
+        'register again once its transaction lands'
+    );
+  }
+
   private async getOnChainCommitment(accountId: AccountId): Promise<string | null> {
     return readOnChainCommitment(this.getMidenRpcEndpoint(), accountId, this.rpcConfig);
   }
@@ -1025,10 +1046,11 @@ export class Multisig {
    * GUARDIAN stores a state only when the chain holds it, unless it is a new
    * account's nonce-0 state or the state GUARDIAN already stores. A state
    * whose transaction has not landed yet, such as one right after a guardian
-   * switch, is refused as `state_not_on_chain`, so the registration is retried
-   * with backoff, about 45 seconds in all.
+   * switch, is refused as `state_not_on_chain`; register again once the
+   * transaction lands. A guardian switch waits for that itself before it
+   * registers on the new GUARDIAN.
    *
-   * @param initialStateBase64 - Optional base64-encoded serialized Account.¡
+   * @param initialStateBase64 - Optional base64-encoded serialized Account.
    */
   async registerOnGuardian(initialStateBase64?: string): Promise<void> {
     await this.refreshConfigFromStore();
@@ -1040,17 +1062,11 @@ export class Multisig {
 
     let response;
     try {
-      response = await retryTransient(
-        () =>
-          this.guardian.configure({
-            accountId: this._accountId,
-            auth,
-            initialState: { data: stateData, accountId: this._accountId },
-          }),
-        REGISTRATION_ATTEMPTS,
-        (error) => error instanceof GuardianHttpError && error.code === 'state_not_on_chain',
-        productionRetryRuntime,
-      );
+      response = await this.guardian.configure({
+        accountId: this._accountId,
+        auth,
+        initialState: { data: stateData, accountId: this._accountId },
+      });
     } catch (error) {
       if ('Miden' in auth && isMidenAuthVariantRejection(error)) {
         throw new GuardianMixedSchemesUnsupportedError({ cause: error });
@@ -2414,6 +2430,7 @@ export class Multisig {
         this.setGuardianClient(nextGuardian);
         this.guardianPublicKey = metadata.newGuardianPubkey;
 
+        await this.waitForOnChainState(normalizeHexWord(updatedAccount.to_commitment().toHex()));
         await this.registerOnGuardian(updatedStateBase64);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

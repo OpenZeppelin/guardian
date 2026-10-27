@@ -1788,6 +1788,35 @@ describe('GuardianHttpClient sessions', () => {
     expect(client.getSession()).toBe(session);
   });
 
+  it('re-signs a push with the wallet when Guardian takes it only from the wallet', async () => {
+    client.setSession(session);
+    rejectWith('wallet_signature_required', 403);
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        account_id: '0xabc',
+        nonce: 1,
+        new_commitment: '0x' + 'd'.repeat(64),
+        ack_sig: '0x' + 'f'.repeat(128),
+      }),
+    });
+
+    const result = await client.pushDelta({
+      accountId: '0xabc',
+      nonce: 1,
+      prevCommitment: '0x' + 'b'.repeat(64),
+      deltaPayload: { data: 'AAAA' },
+      status: { status: 'pending', timestamp: '2026-01-01T00:00:00Z', proposerId: '0x01', cosignerSigs: [] },
+    });
+
+    expect(result.ackSig).toBe('0x' + 'f'.repeat(128));
+    const [first, second] = mockFetch.mock.calls.map(([, init]) => init.headers);
+    expect(first['x-auth-format']).toBe('session');
+    expect(second['x-pubkey']).toBe(mockSigner.publicKey);
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
   it('does not use a session granted by another wallet', async () => {
     client.setSession({ ...session, signerCommitment: '0x' + '9'.repeat(64) });
     expect(client.getSession()).toBeNull();

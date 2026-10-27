@@ -13,10 +13,8 @@ pub const AUTHENTICATION_REPLAY_CODE: &str = "authentication_replay";
 pub const SESSION_EXPIRED_CODE: &str = "session_expired";
 /// The delegated signer's session was ended by logout or revoke-all.
 pub const SESSION_REVOKED_CODE: &str = "session_revoked";
-/// The submitted account state is not on chain yet: Guardian needs the
-/// on-chain state for this reconfiguration, and the transaction that
-/// produced the submitted state has not landed.
-pub const STATE_NOT_ON_CHAIN_CODE: &str = "state_not_on_chain";
+/// Guardian takes the request only signed by the wallet, not by a session.
+pub const WALLET_SIGNATURE_REQUIRED_CODE: &str = "wallet_signature_required";
 const AUTHENTICATION_FAILED_CODE: &str = "authentication_failed";
 
 /// Errors that can occur when using the GUARDIAN client.
@@ -113,11 +111,10 @@ impl ClientError {
         self.guardian_code().as_deref() == Some(AUTHENTICATION_REPLAY_CODE)
     }
 
-    /// Whether Guardian refused a reconfiguration because the submitted
-    /// state is not on chain yet ([`STATE_NOT_ON_CHAIN_CODE`]). The same
-    /// request succeeds once the transaction that produced it lands.
-    pub fn is_state_not_on_chain(&self) -> bool {
-        self.guardian_code().as_deref() == Some(STATE_NOT_ON_CHAIN_CODE)
+    /// Whether Guardian refused a session-signed request because it takes
+    /// that route only from the wallet ([`WALLET_SIGNATURE_REQUIRED_CODE`]).
+    pub fn is_wallet_signature_required(&self) -> bool {
+        self.guardian_code().as_deref() == Some(WALLET_SIGNATURE_REQUIRED_CODE)
     }
 
     /// Whether Guardian reported the delegated signer's session as expired

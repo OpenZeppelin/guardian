@@ -39,6 +39,7 @@ pub struct MockNetworkClient {
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_guardian_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_multisig_auth_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_first_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
@@ -80,6 +81,14 @@ impl MockNetworkClient {
 
     pub fn with_validate_guardian_commitment(self, response: StdResult<(), String>) -> Self {
         self.validate_guardian_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_validate_first_state(self, response: StdResult<(), String>) -> Self {
+        self.validate_first_state_responses
             .lock()
             .unwrap()
             .push(response);
@@ -336,7 +345,11 @@ impl NetworkClient for MockNetworkClient {
     }
 
     fn validate_first_state(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
-        Ok(())
+        self.validate_first_state_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
     }
 
     fn validate_multisig_auth(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {

@@ -190,6 +190,17 @@ pub(crate) fn chain_with_notes(
     api
 }
 
+/// A mock chain whose state for `account` is `account` itself.
+pub(crate) fn chain_holding(account: Account) -> Arc<MockRpcApi> {
+    let mut builder = miden_client::testing::MockChain::builder();
+    builder
+        .add_account(account)
+        .expect("mock chain takes the account");
+    let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
+    api.advance_blocks(4);
+    api
+}
+
 /// A guarded-multisig account, the account shape every create path builds requests for.
 pub(crate) fn guarded_multisig_account() -> Account {
     let signer_commitment = SecretKey::new().public_key().to_commitment();

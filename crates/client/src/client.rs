@@ -576,7 +576,11 @@ impl GuardianClient {
     /// This makes the delta canonical and triggers the canonicalization workflow.
     /// Signed by the delegated signer while a session is active: GUARDIAN
     /// acknowledges a multisig delta only once its proposal carries enough
-    /// verified cosigner approvals, which the wallet signs.
+    /// verified cosigner approvals, which the wallet signs. A GUARDIAN that
+    /// takes this route only from the wallet (an older release, or an account
+    /// without a multisig state) answers `wallet_signature_required`, and the
+    /// wallet signs the push again; the session stays in use for every other
+    /// route.
     pub async fn push_delta(
         &mut self,
         account_id: &AccountId,
@@ -593,11 +597,20 @@ impl GuardianClient {
             delta_payload: delta_payload_json,
         };
 
-        let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
+        let inner = match self
+            .send_allowing_session(account_id, message.clone(), async |client, request| {
                 client.push_delta(request).await
             })
-            .await?;
+            .await
+        {
+            Err(error) if error.is_wallet_signature_required() => {
+                self.send_with_replay_retry(account_id, message, async |client, request| {
+                    client.push_delta(request).await
+                })
+                .await?
+            }
+            result => result?,
+        };
 
         if !inner.success {
             return Err(ClientError::ServerError(inner.message.clone()));

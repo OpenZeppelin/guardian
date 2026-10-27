@@ -616,14 +616,26 @@ export class GuardianHttpClient {
    * Push a delta for Guardian's acknowledgement. Signed by the session while
    * one is set: Guardian acknowledges a multisig delta only once its
    * proposal carries enough verified cosigner approvals, which the wallet
-   * signs.
+   * signs. A Guardian that takes this route only from the wallet (an older
+   * release, or an account without a multisig state) answers
+   * `wallet_signature_required`, and the wallet signs the push again; the
+   * session stays in use for every other route.
    */
   async pushDelta(delta: ExecutionDelta): Promise<PushDeltaResponse> {
     const serverDelta = toServerExecutionDelta(delta);
-    const response = await this.fetchAuthenticated('/delta', {
-      method: 'POST',
-      body: JSON.stringify(serverDelta),
-    }, delta.accountId, serverDelta, 'session');
+    const init = { method: 'POST', body: JSON.stringify(serverDelta) };
+    const response = await this.fetchAuthenticated(
+      '/delta',
+      init,
+      delta.accountId,
+      serverDelta,
+      'session'
+    ).catch((err: unknown) => {
+      if (err instanceof GuardianHttpError && err.code === 'wallet_signature_required') {
+        return this.fetchAuthenticated('/delta', init, delta.accountId, serverDelta, 'wallet');
+      }
+      throw err;
+    });
     const server = (await response.json()) as ServerPushDeltaResponse;
     return {
       accountId: server.account_id,

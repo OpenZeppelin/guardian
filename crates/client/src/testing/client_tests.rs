@@ -1060,6 +1060,37 @@ async fn test_push_delta_uses_the_session_and_abandon_the_wallet() {
 }
 
 #[tokio::test]
+async fn test_a_push_guardian_takes_only_from_the_wallet_is_re_signed_by_the_wallet() {
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_push_delta(Err(guardian_auth_status(
+            "wallet_signature_required",
+            false,
+        )));
+    let formats = service.push_and_abandon_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    client
+        .push_delta(&create_test_account_id(), 1, "0x00", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        formats.lock().unwrap().as_slice(),
+        [
+            ("push_delta".to_string(), "session".to_string()),
+            ("push_delta".to_string(), String::new()),
+        ]
+    );
+    assert!(client.session().is_some());
+}
+
+#[tokio::test]
 async fn test_revoke_all_sessions_is_wallet_signed_and_drops_the_active_session() {
     let service =
         MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
