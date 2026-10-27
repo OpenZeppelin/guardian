@@ -11,6 +11,7 @@ use guardian_client::{
     auth_config::AuthType,
 };
 use guardian_shared::SignatureScheme;
+use guardian_shared::retry::retry_delay;
 use miden_client::account::Account;
 use miden_client::note::{NoteFile, NoteSyncHint};
 use miden_client::store::{InputNoteState, NoteFilter, TransactionFilter};
@@ -194,6 +195,12 @@ impl MultisigClient {
     }
 
     /// Pushes the current account to GUARDIAN for initial registration.
+    ///
+    /// GUARDIAN reconfigures an account it already holds from the on-chain
+    /// state when it cannot vouch for the submitted one: the account was
+    /// released, or the state changes its signers or thresholds. A state
+    /// whose transaction has not landed yet is refused as not on chain, so
+    /// the registration is retried with backoff, about 45 seconds in all.
     pub async fn push_account(&mut self) -> Result<()> {
         let account = self
             .account
@@ -224,15 +231,24 @@ impl MultisigClient {
 
         let account_id = account.id();
 
-        // Configure account on GUARDIAN
-        guardian_client
-            .configure(&account_id, auth_config, initial_state)
-            .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to configure account: {}", e))
-            })?;
-
-        Ok(())
+        let mut retry = 0;
+        loop {
+            match guardian_client
+                .configure(&account_id, auth_config.clone(), &initial_state)
+                .await
+            {
+                Ok(_) => return Ok(()),
+                Err(e) if e.is_state_not_on_chain() && retry + 1 < REGISTRATION_ATTEMPTS => {
+                    tokio::time::sleep(retry_delay(retry, rand::random())).await;
+                    retry += 1;
+                }
+                Err(e) => {
+                    return Err(MultisigError::GuardianServer(format!(
+                        "failed to configure account: {e}"
+                    )));
+                }
+            }
+        }
     }
 
     /// Syncs state with the Miden network.
@@ -794,6 +810,11 @@ impl MultisigClient {
         Ok(())
     }
 }
+
+/// Registration attempts while GUARDIAN reports the submitted state as not
+/// on chain yet. With [`retry_delay`]'s backoff the last one runs about 45
+/// seconds after the first, past the time a transaction takes to land.
+const REGISTRATION_ATTEMPTS: u32 = 10;
 
 /// The nonce and commitment GUARDIAN reports for its canonical state
 /// (`get_canonical_nonce`), parsed at the transport boundary.

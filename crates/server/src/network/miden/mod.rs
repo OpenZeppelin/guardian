@@ -683,11 +683,14 @@ impl NetworkClient for MidenNetworkClient {
         }
     }
 
-    fn validate_approver_schemes(&self, state_json: &serde_json::Value) -> Result<(), String> {
+    fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
         if !inspector.has_multisig_auth() {
-            return Ok(());
+            return Err(format!(
+                "Account is not a guarded multisig: slot '{}' is missing",
+                AuthGuardedMultisig::threshold_config_slot().as_str()
+            ));
         }
         match inspector
             .extract_chain_cosigners()
@@ -856,16 +859,19 @@ impl NetworkClient for MidenNetworkClient {
         state_json: &serde_json::Value,
     ) -> Result<Option<crate::network::AuthBinding>, String> {
         let account = Account::from_json(state_json)?;
+        Ok(Some(MidenAccountInspector::new(&account).auth_binding()))
+    }
+
+    fn approval_rules(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<crate::network::ApprovalRules, String> {
+        let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
-        // Sorted, so that two bindings compare as sets: a membership change
-        // re-packs the signer map's indices, and only who may sign matters.
-        let mut signers = inspector.extract_chain_cosigners();
-        signers.sort_unstable_by(|a, b| a.commitment.cmp(&b.commitment));
-        Ok(Some(crate::network::AuthBinding {
-            signers,
-            guardian: inspector.extract_guardian_public_key(),
-            guardian_scheme: inspector.extract_guardian_scheme(),
-        }))
+        Ok(crate::network::ApprovalRules {
+            binding: inspector.auth_binding(),
+            thresholds: inspector.approval_thresholds(),
+        })
     }
 
     async fn should_update_auth(
@@ -1845,6 +1851,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approval_rules_change_with_the_signers_or_the_threshold() {
+        use crate::testing::helpers::build_guarded_multisig_account;
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let signer = |value: u32| (Word::from([value, 1, 2, 3]), SignatureScheme::Falcon);
+        let guardian = (Word::from([29u32, 1, 2, 3]), SignatureScheme::Falcon);
+        let rules = |threshold: u32, signers: &[(Word, SignatureScheme)]| {
+            let account = build_guarded_multisig_account([6u8; 32], threshold, signers, guardian);
+            client.approval_rules(&account.to_json()).unwrap()
+        };
+        let two_of_three = [signer(21), signer(22), signer(23)];
+
+        assert_eq!(rules(2, &two_of_three), rules(2, &two_of_three));
+        assert_ne!(rules(2, &two_of_three), rules(1, &two_of_three));
+        assert_ne!(
+            rules(2, &two_of_three),
+            rules(2, &[signer(21), signer(22), signer(24)])
+        );
+    }
+
+    #[tokio::test]
     async fn should_update_auth_promotes_a_single_scheme_auth_of_a_mixed_state() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
         let (state_json, falcon, ecdsa, _) = mixed_account_json();
@@ -1975,19 +2001,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_approver_schemes_accepts_every_approver_with_a_supported_scheme() {
+    async fn validate_multisig_auth_accepts_every_approver_with_a_supported_scheme() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
         let (mixed, _, _, _) = mixed_account_json();
-        assert_eq!(client.validate_approver_schemes(&mixed), Ok(()));
+        assert_eq!(client.validate_multisig_auth(&mixed), Ok(()));
         let fixture: serde_json::Value =
             serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON).unwrap();
-        assert_eq!(client.validate_approver_schemes(&fixture), Ok(()));
+        assert_eq!(client.validate_multisig_auth(&fixture), Ok(()));
         let ids = [
             Some(SignatureScheme::Falcon.auth_scheme_id() as u32),
             Some(SignatureScheme::Ecdsa.auth_scheme_id() as u32),
         ];
         assert_eq!(
-            client.validate_approver_schemes(&approver_state(&ids, true)),
+            client.validate_multisig_auth(&approver_state(&ids, true)),
             Ok(())
         );
     }
@@ -1995,12 +2021,12 @@ mod tests {
     /// The chain verifies an approver under the scheme the state stores,
     /// so a multisig approver without a supported one is refused.
     #[tokio::test]
-    async fn validate_approver_schemes_rejects_a_missing_or_unknown_approver_scheme() {
+    async fn validate_multisig_auth_rejects_a_missing_or_unknown_approver_scheme() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
         let ecdsa = Some(SignatureScheme::Ecdsa.auth_scheme_id() as u32);
         for ids in [[ecdsa, None], [ecdsa, Some(99)]] {
             let error = client
-                .validate_approver_schemes(&approver_state(&ids, true))
+                .validate_multisig_auth(&approver_state(&ids, true))
                 .unwrap_err();
             assert!(error.contains("entry 1"), "{error}");
             assert!(error.contains(approver_scheme_slot_name()), "{error}");
@@ -2014,13 +2040,17 @@ mod tests {
         }
     }
 
-    /// Only a multisig verifies approvers by scheme.
+    /// Guardian registers only guarded multisig accounts.
     #[tokio::test]
-    async fn validate_approver_schemes_ignores_a_state_without_the_multisig() {
+    async fn validate_multisig_auth_rejects_a_state_without_the_multisig() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
-        assert_eq!(
-            client.validate_approver_schemes(&approver_state(&[None, None], false)),
-            Ok(())
+        let error = client
+            .validate_multisig_auth(&approver_state(&[None, None], false))
+            .unwrap_err();
+        assert!(error.contains("not a guarded multisig"), "{error}");
+        assert!(
+            error.contains(AuthGuardedMultisig::threshold_config_slot().as_str()),
+            "{error}"
         );
     }
 

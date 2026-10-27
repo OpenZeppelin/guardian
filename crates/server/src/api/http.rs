@@ -172,7 +172,8 @@ pub struct ConfigureResponse {
         (status = 400, description = "Invalid request", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "New account uses a signature scheme excluded by GUARDIAN_ALLOWED_ACCOUNT_SCHEMES (`signature_scheme_not_allowed`; meta.scheme and meta.allowed_schemes)", body = crate::openapi::ApiErrorResponse),
-        (status = 502, description = "Re-onboarding with a state older than the stored one, and the chain could not be read to check whether the stored state landed (`rpc_unavailable`)", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "A reconfiguration that must submit the account's on-chain state (released account, key the stored auth does not list, or changed signers or thresholds) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)", body = crate::openapi::ApiErrorResponse),
+        (status = 502, description = "The chain could not be read to check whether the stored state landed (re-onboarding with an older state) or whether a reconfiguration's state is on chain (`rpc_unavailable`)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn configure(
@@ -211,6 +212,7 @@ pub async fn configure(
         (status = 200, description = "Delta accepted", body = DeltaObject),
         (status = 400, description = "Invalid delta payload, or a multisig push below the cosigner threshold", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Signed by a delegated signer onto an account without the multisig auth (`wallet_signature_required`)", body = crate::openapi::ApiErrorResponse),
         (status = 409, description = "Conflicting pending delta/proposal", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -499,8 +501,9 @@ pub struct RevokeSessionResponse {
 ///
 /// The wallet signs a session grant once; afterwards the delegated signer
 /// signs per-account requests with `x-auth-format: session`. Wallet-only
-/// routes (`POST /delta`, `/delta/candidate/abandon`, `/configure`,
-/// `/state/lookup`, `/session/revoke-all`) reject session credentials with
+/// routes (`/delta/candidate/abandon`, `/configure`, `/state/lookup`,
+/// `/session/revoke-all`, and `POST /delta` onto an account without the
+/// multisig auth) reject session credentials with
 /// `wallet_signature_required`. Re-submitting the grant of a live session
 /// succeeds.
 #[utoipa::path(

@@ -1,7 +1,7 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
 use crate::metadata::auth::{Auth, Credentials};
-use crate::network::{AppliedState, NetworkClient, StateVerification};
+use crate::network::{AppliedState, ApprovalRules, NetworkClient, StateVerification};
 use crate::state_object::{StateHead, StateObject};
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
@@ -38,7 +38,10 @@ pub struct MockNetworkClient {
     pub get_state_head_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_guardian_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
-    pub validate_approver_schemes_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_multisig_auth_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    /// Answers for `approval_rules`, consumed last first. Once none is
+    /// queued every state reads as the same default rules.
+    pub approval_rules_responses: Arc<StdMutex<Vec<StdResult<ApprovalRules, String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
@@ -86,11 +89,16 @@ impl MockNetworkClient {
         self
     }
 
-    pub fn with_validate_approver_schemes(self, response: StdResult<(), String>) -> Self {
-        self.validate_approver_schemes_responses
+    pub fn with_validate_multisig_auth(self, response: StdResult<(), String>) -> Self {
+        self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .push(response);
+        self
+    }
+
+    pub fn with_approval_rules(self, response: StdResult<ApprovalRules, String>) -> Self {
+        self.approval_rules_responses.lock().unwrap().push(response);
         self
     }
 
@@ -335,12 +343,20 @@ impl NetworkClient for MockNetworkClient {
             .unwrap_or(Ok(()))
     }
 
-    fn validate_approver_schemes(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
-        self.validate_approver_schemes_responses
+    fn validate_multisig_auth(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
+        self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
+    }
+
+    fn approval_rules(&self, _state_json: &serde_json::Value) -> StdResult<ApprovalRules, String> {
+        self.approval_rules_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(ApprovalRules::default()))
     }
 
     fn extract_guardian_commitment(
@@ -999,7 +1015,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No state found".to_string()));
+            .unwrap_or_else(|| Err("State not found".to_string()));
         if let Ok(state) = &response {
             *self.last_pulled_state.lock().unwrap() = Some(state.clone());
         }

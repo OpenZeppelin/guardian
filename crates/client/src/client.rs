@@ -127,7 +127,8 @@ const SESSION_EXPIRY_MARGIN_SECS: u64 = 30;
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AuthMode {
     /// The delegated signer when a session is active, the wallet otherwise:
-    /// reads, proposal list/get and proposal create/sign (issue #219).
+    /// reads, proposal list/get, proposal create/sign and delta pushes
+    /// (issue #219).
     Session,
     /// Always the wallet.
     Wallet,
@@ -346,8 +347,8 @@ impl GuardianClient {
     }
 
     /// Generates a delegated signer, has the configured wallet sign its grant,
-    /// and registers it. Afterwards per-account reads and proposal requests
-    /// are signed by the session key; `configure`, `push_delta`,
+    /// and registers it. Afterwards per-account reads, proposal requests and
+    /// `push_delta` are signed by the session key; `configure`,
     /// `abandon_candidate`, account lookup and `revoke_all_sessions` keep
     /// using the wallet. A session already active is replaced, not revoked.
     /// The lifetime counts in whole seconds, and the grant names no website:
@@ -573,6 +574,9 @@ impl GuardianClient {
     /// Pushes a delta (state change) to the GUARDIAN server.
     ///
     /// This makes the delta canonical and triggers the canonicalization workflow.
+    /// Signed by the delegated signer while a session is active: GUARDIAN
+    /// acknowledges a multisig delta only once its proposal carries enough
+    /// verified cosigner approvals, which the wallet signs.
     pub async fn push_delta(
         &mut self,
         account_id: &AccountId,
@@ -590,7 +594,7 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_with_replay_retry(account_id, message, async |client, request| {
+            .send_allowing_session(account_id, message, async |client, request| {
                 client.push_delta(request).await
             })
             .await?;

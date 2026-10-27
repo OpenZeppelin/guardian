@@ -413,6 +413,15 @@ behavior:
   restarting a container from an older image keeps the old trust store. No
   data reset, and no SDK upgrade is needed
   ([release notes](https://github.com/OpenZeppelin/guardian/releases/tag/v0.18.3)).
+- **The release after 0.18.3** gates multisig pushes on stored approvals,
+  lets sessions sign delta pushes, registers only guarded multisig accounts,
+  and adds the retryable `409 state_not_on_chain` for reconfigurations that
+  must use the chain's state (a released account, a key the stored auth does
+  not list, or a change of signers or thresholds); the new SDKs retry it,
+  older SDKs fail a switch back until the user registers again. Multisig pushes want the SDKs released first,
+  session-signed pushes want the server first; see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-after-0183)
+  for which clients that affects.
 
 ## Upgrading to Miden 0.16
 

@@ -165,10 +165,11 @@ Paths are relative to `crates/server/src/`.
 | `HookRelease`, `HookSkip` | `services/release_on_switch.rs` `release_if_guardian_switched` from `canonicalize_verified_delta`; the write may fail |
 | `SweepRead` | `jobs/release_sweep/sweep.rs` `visit`: `check_stored_state` / `promoting_delta_nonce` (Delta), `visit_diverged` with `switch_candidates` and `precompute_switch` (ProposalMatch, RecoverableDelta), `fetch_on_chain_guardian_binding` with `classify_key` (ChainSweep) |
 | `SweepWrite`, `SweepWriteFails` | `release_switched_account` through `metadata/postgres.rs` `set_released_if_state` |
-| `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read, the stored head read (`stored_base`) and the binding validation of the submitted state, any state the chain held that binds the account to this server. The scheme checks before the claim (the allowlist, the GUARDIAN and approver scheme slots, the declared cosigner schemes) only refuse, before anything is written |
+| `CfgRead` | `services/configure_account.rs` `configure_account`: the existing metadata read, the vouch (`v`: a released account, a key the stored auth does not list or a change of approval rules requires the head; otherwise no chain read), the stored head read (`stored_base`) and the binding validation of the submitted state, any state the chain held that binds the account to this server. The scheme checks before the claim (the allowlist, the GUARDIAN and approver scheme slots, the declared cosigner schemes) only refuse, before anything is written |
 | `CfgSubmit` | `storage/postgres.rs` `replace_state` over the commitment read (the following `metadata.set` never touches lifecycle columns) |
 | `CfgRefused` | `stored_state_landed` refuses an older state, or `replace_state` returns `StateMoved`: `400 commitment_mismatch`, nothing written |
-| `CfgClear` | `metadata/postgres.rs` `clear_released_if_state` |
+| `CfgClear` | `metadata/postgres.rs` `clear_released_if_state`, after a configure the chain vouched for (`Vouch::Chain`: `ensure_on_chain_state` found the submitted state at the head) |
+| `CfgRecheck` | a configure that skipped the chain read (`Vouch::StoredRules` / `NoStoredState`): the `released_at` re-read after the write, then, when a release appeared, `ensure_on_chain_state` and `clear_released_if_state`; a state that is not the head is refused and the release stands |
 | `Pause`, `Unpause` | `services/pause_account.rs` `pause` and `services/unpause_account.rs` `unpause` through `set_pause` / `clear_pause` |
 
 ## Scope and assumptions

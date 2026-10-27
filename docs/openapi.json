@@ -321,6 +321,16 @@
               }
             }
           },
+          "409": {
+            "description": "A reconfiguration that must submit the account's on-chain state (released account, key the stored auth does not list, or changed signers or thresholds) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body exceeds the configured size limit",
             "content": {
@@ -342,7 +352,7 @@
             }
           },
           "502": {
-            "description": "Re-onboarding with a state older than the stored one, and the chain could not be read to check whether the stored state landed (`rpc_unavailable`)",
+            "description": "The chain could not be read to check whether the stored state landed (re-onboarding with an older state) or whether a reconfiguration's state is on chain (`rpc_unavailable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1839,6 +1849,16 @@
           },
           "401": {
             "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Signed by a delegated signer onto an account without the multisig auth (`wallet_signature_required`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3462,7 +3482,7 @@
           "client"
         ],
         "summary": "Register a wallet-authorized P-256 delegated signer.",
-        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session`. Wallet-only\nroutes (`POST /delta`, `/delta/candidate/abandon`, `/configure`,\n`/state/lookup`, `/session/revoke-all`) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
+        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session`. Wallet-only\nroutes (`/delta/candidate/abandon`, `/configure`, `/state/lookup`,\n`/session/revoke-all`, and `POST /delta` onto an account without the\nmultisig auth) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
         "operationId": "create_session",
         "requestBody": {
           "content": {

@@ -5,6 +5,7 @@ use miden_protocol::utils::serde::Serializable;
 use miden_standards::account::auth::AuthGuardedMultisig;
 
 use crate::metadata::auth::ChainCosigner;
+use crate::network::AuthBinding;
 
 // `AuthGuardedMultisig` storage slot names (miden::standards::auth::*),
 // sourced from the component's `*_slot()` accessors so they cannot drift.
@@ -129,6 +130,38 @@ impl<'a> MidenAccountInspector<'a> {
     fn scheme_at(&self, slot_name: &str, key: Word) -> Option<SignatureScheme> {
         let value = self.get_map_item_by_name(slot_name, key)?;
         SignatureScheme::from_auth_scheme_id(value[0].as_canonical_u64())
+    }
+
+    /// The signer set and GUARDIAN key the account binds. The signers are
+    /// sorted, so that two bindings compare as sets: a membership change
+    /// re-packs the signer map's indices, and only who may sign matters.
+    pub fn auth_binding(&self) -> AuthBinding {
+        let mut signers = self.extract_chain_cosigners();
+        signers.sort_unstable_by(|a, b| a.commitment.cmp(&b.commitment));
+        AuthBinding {
+            signers,
+            guardian: self.extract_guardian_public_key(),
+            guardian_scheme: self.extract_guardian_scheme(),
+        }
+    }
+
+    /// What decides how many approvals a transaction needs: the default
+    /// threshold, the per-procedure overrides (by map root) and the account
+    /// code whose procedures the overrides name. A slot the state lacks
+    /// reads as empty.
+    pub fn approval_thresholds(&self) -> Vec<String> {
+        let storage = self.account.storage();
+        let slot_value = |name: &StorageSlotName| {
+            storage
+                .get(name)
+                .map(|slot| slot.value().to_hex())
+                .unwrap_or_default()
+        };
+        vec![
+            slot_value(AuthGuardedMultisig::threshold_config_slot()),
+            slot_value(AuthGuardedMultisig::procedure_thresholds_slot()),
+            self.account.code().commitment().to_hex(),
+        ]
     }
 
     /// Check if a public key exists in the multisig signer map.

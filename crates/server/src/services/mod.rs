@@ -145,8 +145,9 @@ pub async fn resolve_account(
 }
 
 /// Resolves an account and authenticates a request on a session-eligible
-/// route: reads, proposal list/get and proposal create/sign (FR-008 of
-/// issue #219). The wallet may always sign these too.
+/// route: reads, proposal list/get, proposal create/sign and delta pushes
+/// (FR-008 of issue #219). The wallet may always sign these
+/// too.
 pub async fn resolve_account_allowing_session(
     state: &AppState,
     account_id: &str,

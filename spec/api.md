@@ -29,8 +29,31 @@
   re-reads the account and is judged as a reconfiguration, so a replay from the
   same signer is refused with `authentication_replay` before it writes anything.
   A configuration from a different signer that loses the claim passes its own
-  replay check and reconfigures the account it lost to; callers must not use
-  `/configure` as a general concurrent state-update mechanism.
+  replay check and reconfigures the account it lost to, under the rule below;
+  callers must not use `/configure` as a general concurrent state-update
+  mechanism.
+- `POST /configure` registers only guarded multisig accounts: an
+  `initial_state` without the multisig threshold slot is refused with
+  `invalid_input`.
+- A reconfiguration of an existing account is accepted only when
+  `initial_state` is the account's current on-chain state if any of these
+  holds: the account was released; the request is signed by a key its stored
+  auth does not list; or `initial_state` changes the stored state's approval
+  rules (its signers, their schemes, its default or per-procedure thresholds,
+  its GUARDIAN key or its code). Until the chain holds the submitted state the
+  request fails with `state_not_on_chain` (HTTP 409 / gRPC
+  `FailedPrecondition`, `meta.retryable: true`), for example right after the
+  transaction is submitted; retry once it lands. Both SDKs retry it for about
+  45 seconds. A state the chain has already moved past fails with
+  `commitment_mismatch` (`expected` is the on-chain commitment), since waiting
+  does not help. `rpc_unavailable` when the chain cannot be read. A stored
+  cosigner of an active account that keeps the stored approval rules
+  reconfigures without a chain read, from a state ahead of the chain
+  included. Such a reconfiguration fails with `commitment_mismatch` when a
+  delta was promoted after the stored rules were compared, and with
+  `state_not_on_chain` when the account was released while it ran; the
+  retry of the latter is held to the chain. A nonce-0 state is bound to its account id by the account
+  seed, which decoding checks.
 - A first configuration that fails after its claim (a storage error before the
   state write) leaves metadata with no stored state. Such an account is not
   listed by `GET /state/lookup` and is skipped by the release sweep. A retry of
@@ -162,14 +185,22 @@ approval prompts: the wallet still signs every transaction summary.
 - **Routes.** Session credentials are accepted only on the session-eligible
   routes: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
   `GET /delta/history`, `GET /delta/proposal`, `GET /delta/proposal/single`,
-  `POST /delta/proposal` and `PUT /delta/proposal` (and their gRPC twins).
+  `POST /delta/proposal`, `PUT /delta/proposal` and `POST /delta` (and their
+  gRPC twins).
   Every other route is wallet-only by default, including routes added later:
   after the delegated signature verifies and the session resolves (an ended
   session gets its own code first), it is rejected with
   `wallet_signature_required` (HTTP 403, gRPC `PERMISSION_DENIED`) before any
   state change. An unverifiable delegated signature is `authentication_failed`.
-  `POST /delta` stays wallet-only until Guardian verifies cosigner signatures
-  and threshold when it admits a candidate (#524).
+  A session-signed `POST /delta` meets the same cosigner signature gate as a
+  wallet-signed one (`insufficient_signatures` below the floor), so a
+  delegated signer cannot push a transaction the cosigners did not approve.
+  A tail without the multisig auth, which that gate does not cover (an
+  account registered before `/configure` required the multisig), keeps
+  `POST /delta` wallet-only: it answers `wallet_signature_required` before
+  the delta is applied or acknowledged. The candidate-queue checks run first,
+  so such a push can be refused with `conflict_pending_delta` or
+  `commitment_mismatch` before it is refused as session-signed.
 - **Ended sessions.** A request from an expired session fails with
   `session_expired`, from a revoked one with `session_revoked` (both HTTP 401,
   gRPC `UNAUTHENTICATED`). An unknown key (an expired one whose record was
@@ -649,6 +680,7 @@ Stable error codes include:
 - `conflict_pending_proposal`
 - `pending_proposals_limit`
 - `commitment_mismatch`
+- `state_not_on_chain` (a reconfiguration that must submit the account's on-chain state submitted one the chain does not hold yet; HTTP 409 / gRPC `FailedPrecondition`, retryable; a state the chain has moved past is `commitment_mismatch` instead)
 - `invalid_commitment`
 - `authentication_failed`
 - `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))

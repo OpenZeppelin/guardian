@@ -241,6 +241,8 @@ impl Runner {
                 Action::CommitmentVerify => Some(live::verify_registration(self).await),
                 Action::ProposalCreate => Some(live::create_proposal(self).await),
                 Action::ProposalSign => Some(live::sign_proposal(self).await),
+                Action::SessionStart => Some(live::start_sessions(self).await),
+                Action::SessionAssert => Some(live::assert_sessions_active(self).await),
                 Action::ProposalExecute => Some(live::execute_proposal(self).await),
                 Action::ProposalRejectBelowThreshold => {
                     Some(live::reject_below_threshold(self).await)
@@ -259,6 +261,10 @@ impl Runner {
                 Action::GuardianMigrate => Some(live::assert_guardian_migration(self).await),
                 Action::GuardianSwitchOnline => Some(live::switch_guardian_online(self).await),
                 Action::GuardianSwitchAssert => Some(live::assert_guardian_switched(self).await),
+                Action::GuardianSwitchBack => Some(live::switch_guardian_back(self).await),
+                Action::GuardianSwitchBackAssert => {
+                    Some(live::assert_guardian_switched_back(self).await)
+                }
                 Action::PausedRefusesExecution => {
                     Some(live::assert_paused_refuses_execution(self).await)
                 }

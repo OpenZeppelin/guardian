@@ -273,6 +273,16 @@ pub struct AuthBinding {
     pub guardian_scheme: Option<SignatureScheme>,
 }
 
+/// The approval rules an account state stores: its [`AuthBinding`] and
+/// the thresholds the signers are held to, in the network's own encoding,
+/// which is compared and never read. Two states of one account compare
+/// equal when they let the same signers approve under the same thresholds.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApprovalRules {
+    pub binding: AuthBinding,
+    pub thresholds: Vec<String>,
+}
+
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Commitment (hex) and nonce of the account encoded in `state_json`,
@@ -358,16 +368,22 @@ pub trait NetworkClient: Send + Sync {
         expected_guardian_scheme: SignatureScheme,
     ) -> Result<(), String>;
 
-    /// Validate that every approver of the multisig in `state_json` has a
-    /// supported scheme stored for it: the chain verifies an approver's
-    /// signatures under that scheme, so one without it can never sign.
-    /// `/configure` checks this; canonicalization does not, and keeps an
-    /// approver's registered scheme when the state stores none. The default
-    /// accepts every state.
-    fn validate_approver_schemes(&self, state_json: &serde_json::Value) -> Result<(), String> {
-        let _ = state_json;
-        Ok(())
-    }
+    /// Validate that `state_json` carries the guarded multisig auth and that
+    /// every approver has a supported scheme stored for it. Guardian
+    /// acknowledges a delta only after the multisig push gate counts verified
+    /// cosigner approvals, so it registers no other account. The chain
+    /// verifies an approver's signatures under its stored scheme, so one
+    /// without it can never sign. `/configure` checks this; canonicalization
+    /// does not, and keeps an approver's registered scheme when the state
+    /// stores none.
+    fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String>;
+
+    /// Who may approve the account's transactions and how many approvals
+    /// each needs, as the state in `state_json` stores them (see
+    /// [`ApprovalRules`]). `/configure` compares the submitted state's rules
+    /// with the stored state's before it trusts a stored cosigner's state
+    /// without reading the chain.
+    fn approval_rules(&self, state_json: &serde_json::Value) -> Result<ApprovalRules, String>;
 
     /// Extract the guardian public key commitment stored in the account
     /// state, or `Ok(None)` when the state carries no guardian binding

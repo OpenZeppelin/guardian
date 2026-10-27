@@ -123,6 +123,7 @@ import {
 } from './rpc/config.js';
 import { isTransientRpcError } from './rpc/errors.js';
 import { retryRpcRead } from './rpc/retry.js';
+import { productionRetryRuntime, retryTransient } from './retry/runtime.js';
 import { isSafeToAdoptGuardianState, readOnChainCommitment } from './state/adopt.js';
 
 /**
@@ -356,6 +357,14 @@ const MAX_BLOCK_NUM = 0xffff_ffff;
  * orphaned by a GUARDIAN repoint) before the sync prunes it.
  */
 const UNREPORTED_LISTING_MISS_LIMIT = 2;
+
+/**
+ * Registration attempts while GUARDIAN reports the submitted state as not on
+ * chain yet. With `retryDelay`'s backoff the last one runs about 45 seconds
+ * after the first, past the time a transaction takes to land. Mirrors the
+ * Rust SDK's `REGISTRATION_ATTEMPTS`.
+ */
+const REGISTRATION_ATTEMPTS = 10;
 
 /**
  * Refuses to execute a proposal GUARDIAN pinned to a state other than the one
@@ -976,6 +985,12 @@ export class Multisig {
    * The initial state must be the serialized Account bytes (base64-encoded).
    * If not provided, the account's serialize() method is used.
    *
+   * GUARDIAN reconfigures an account it already holds from the on-chain
+   * state when it cannot vouch for the submitted one: the account was
+   * released, or the state changes its signers or thresholds. A state whose
+   * transaction has not landed yet is refused as `state_not_on_chain`, so the
+   * registration is retried with backoff, about 45 seconds in all.
+   *
    * @param initialStateBase64 - Optional base64-encoded serialized Account.¡
    */
   async registerOnGuardian(initialStateBase64?: string): Promise<void> {
@@ -998,11 +1013,17 @@ export class Multisig {
             },
           };
 
-    const response = await this.guardian.configure({
-      accountId: this._accountId,
-      auth,
-      initialState: { data: stateData, accountId: this._accountId },
-    });
+    const response = await retryTransient(
+      () =>
+        this.guardian.configure({
+          accountId: this._accountId,
+          auth,
+          initialState: { data: stateData, accountId: this._accountId },
+        }),
+      REGISTRATION_ATTEMPTS,
+      (error) => error instanceof GuardianHttpError && error.code === 'state_not_on_chain',
+      productionRetryRuntime,
+    );
 
     if (!response.success) {
       throw new Error(`Failed to register on GUARDIAN: ${response.message}`);

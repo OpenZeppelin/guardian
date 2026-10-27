@@ -1032,10 +1032,10 @@ async fn test_configure_keeps_using_the_wallet_while_a_session_is_active() {
 }
 
 #[tokio::test]
-async fn test_push_delta_and_abandon_keep_using_the_wallet_while_a_session_is_active() {
+async fn test_push_delta_uses_the_session_and_abandon_the_wallet() {
     let service =
         MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
-    let formats = service.wallet_route_auth_formats_handle();
+    let formats = service.push_and_abandon_auth_formats_handle();
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = GuardianClient::connect(endpoint)
         .await
@@ -1053,7 +1053,7 @@ async fn test_push_delta_and_abandon_keep_using_the_wallet_while_a_session_is_ac
     assert_eq!(
         formats.lock().unwrap().as_slice(),
         [
-            ("push_delta".to_string(), String::new()),
+            ("push_delta".to_string(), "session".to_string()),
             ("abandon_delta_candidate".to_string(), String::new()),
         ]
     );

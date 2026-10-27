@@ -1833,7 +1833,7 @@ describe('GuardianHttpClient sessions', () => {
     expect(session.signRequest).not.toHaveBeenCalled();
   });
 
-  it('keeps pushDelta and abandonCandidate on the wallet while a session is set', async () => {
+  it('signs pushDelta with the session and keeps abandonCandidate on the wallet', async () => {
     client.setSession(session);
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -1859,8 +1859,11 @@ describe('GuardianHttpClient sessions', () => {
         cosignerSigs: [],
       },
     });
-    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
-    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+    expect(lastHeaders()).toMatchObject({
+      'x-pubkey': sessionPublicKey,
+      'x-auth-format': 'session',
+    });
+    expect(session.signRequest).toHaveBeenCalledOnce();
 
     mockFetch.mockResolvedValueOnce({
       ok: true,
@@ -1874,7 +1877,7 @@ describe('GuardianHttpClient sessions', () => {
     await client.abandonCandidate('0xabc', 1);
     expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
     expect(lastHeaders()['x-auth-format']).toBeUndefined();
-    expect(session.signRequest).not.toHaveBeenCalled();
+    expect(session.signRequest).toHaveBeenCalledOnce();
   });
 
   it('revokes every session with a wallet signature and stops using the session', async () => {

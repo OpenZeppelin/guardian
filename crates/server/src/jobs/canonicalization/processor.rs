@@ -2491,6 +2491,15 @@ mod tests {
             unreachable!()
         }
 
+        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+        fn approval_rules(
+            &self,
+            _: &serde_json::Value,
+        ) -> std::result::Result<crate::network::ApprovalRules, String> {
+            unreachable!()
+        }
         fn validate_guardian_commitment(
             &self,
             _state_json: &serde_json::Value,

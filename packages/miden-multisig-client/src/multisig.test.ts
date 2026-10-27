@@ -1679,6 +1679,43 @@ describe('Multisig', () => {
       await expect(multisig.registerOnGuardian('base64initialstate')).resolves.toBeUndefined();
     });
 
+    it('retries registration until the submitted state reaches the chain', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      const notOnChain = guardianRefusal(409, 'state_not_on_chain');
+      mockFetch.mockResolvedValueOnce(notOnChain).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'Account configured' }),
+      });
+
+      vi.useFakeTimers();
+      try {
+        const registration = multisig.registerOnGuardian();
+        await vi.runAllTimersAsync();
+        await expect(registration).resolves.toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry any other registration refusal', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockFetch.mockResolvedValueOnce(guardianRefusal(409, 'commitment_mismatch'));
+
+      await expect(multisig.registerOnGuardian()).rejects.toMatchObject({
+        code: 'commitment_mismatch',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('should throw on GUARDIAN registration failure', async () => {
       const config = {
         threshold: 1,
