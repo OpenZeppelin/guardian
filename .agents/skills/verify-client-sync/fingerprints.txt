@@ -11,13 +11,13 @@ crates/miden-multisig-client/src/client/account.rs roll_back_store 5f46a0058036a
 crates/miden-multisig-client/src/client/helpers.rs fresh_miden_client ff55b02b7854bac8
 crates/miden-multisig-client/src/client/helpers.rs reset_miden_client b7ebd76158dcf15a
 crates/miden-multisig-client/src/client/account.rs refresh_cached_account_from_store f84880103ebe7f28
-crates/miden-multisig-client/src/client/helpers.rs finalize_transaction b7d721d673157a2a
+crates/miden-multisig-client/src/client/helpers.rs finalize_transaction 91878e8c4c1e42ec
 crates/miden-multisig-client/src/client/helpers.rs rebuilds_local_state_from_delta e505dcca5111be28
 crates/miden-multisig-client/src/client/helpers.rs submit_transaction_at_tip 868a7b51b15f9fa7
 crates/miden-multisig-client/src/client/helpers.rs get_guardian_ack_signature c95d133cba082b6a
-crates/miden-multisig-client/src/client/proposals.rs execute_proposal d0f7c1395310d86f
-crates/miden-multisig-client/src/client/proposals.rs propose_transaction_with_options 96e049c894526722
-crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 3de9bb97bb3fbdbd
+crates/miden-multisig-client/src/client/proposals.rs execute_proposal ef33e0a0698400e7
+crates/miden-multisig-client/src/client/proposals.rs propose_transaction_with_options d6b80590e5420104
+crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 022cf09014a55624
 packages/miden-multisig-client/src/multisig.ts syncState 252041231e9081ca
 packages/miden-multisig-client/src/multisig.ts guardianIsNotAhead a82c485575fba4fb
 packages/miden-multisig-client/src/multisig.ts refreshConfigFromAccount 960b589470a50b96

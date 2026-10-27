@@ -3,7 +3,6 @@
 use std::collections::HashSet;
 
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
-use miden_client::account::Account;
 use miden_client::transaction::TransactionRequest;
 use miden_protocol::account::AccountId;
 use miden_protocol::account::auth::Signature as AccountSignature;
@@ -16,9 +15,12 @@ use miden_standards::account::auth::Eip712TransactionSummary;
 use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::MidenSdkClient;
+use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::proposal::TransactionType;
+use crate::signers::SignerSpec;
+use crate::transaction::word_to_hex;
 
 /// Signature advice entry: (key, prepared_signature_values)
 pub type SignatureAdvice = (Word, Vec<Felt>);
@@ -82,12 +84,14 @@ impl SignatureInput {
 
 /// Collects and validates cosigner signatures into advice entries.
 ///
-/// Filters signatures to only include those from required signers, skips duplicates,
-/// and converts to the format needed for transaction advice.
+/// Keeps only signatures from `approvers`, each under the scheme the account
+/// stores for its approver: the auth procedure verifies an approver under
+/// that scheme alone, and GUARDIAN's push gate counts nothing else. Skips
+/// duplicates and converts to the format needed for transaction advice.
 ///
 /// # Arguments
 /// * `signatures` - Raw signature inputs to process
-/// * `required_commitments` - Set of valid signer commitments (lowercase hex)
+/// * `approvers` - The account's current approvers with their stored schemes
 /// * `tx_summary_commitment` - The transaction summary commitment being signed
 /// * `tx_summary` - Required for EIP-712 signatures to derive their digest and advice key
 ///
@@ -95,18 +99,31 @@ impl SignatureInput {
 /// Vector of (key, prepared_signature) tuples for transaction advice.
 pub fn collect_signature_advice(
     signatures: impl IntoIterator<Item = SignatureInput>,
-    required_commitments: &HashSet<String>,
+    approvers: &[SignerSpec],
     tx_summary_commitment: Word,
     tx_summary: Option<&TransactionSummary>,
 ) -> Result<Vec<SignatureAdvice>> {
     let mut advice = Vec::new();
     let mut added_signers: HashSet<String> = HashSet::new();
+    let approvers: Vec<(String, SignatureScheme)> = approvers
+        .iter()
+        .map(|approver| (word_to_hex(&approver.commitment), approver.scheme))
+        .collect();
 
     for sig_input in signatures {
-        if !required_commitments
+        let Some((_, stored)) = approvers
             .iter()
-            .any(|c| c.eq_ignore_ascii_case(&sig_input.signer_commitment))
-        {
+            .find(|(commitment, _)| commitment.eq_ignore_ascii_case(&sig_input.signer_commitment))
+        else {
+            continue;
+        };
+        if *stored != sig_input.scheme {
+            tracing::warn!(
+                signer = %sig_input.signer_commitment,
+                stored = %stored,
+                signed = %sig_input.scheme,
+                "skipping an approval made under another scheme than the account stores for its signer"
+            );
             continue;
         }
 
@@ -159,19 +176,18 @@ pub fn build_transfer_asset(faucet_id: AccountId, amount: u64) -> Result<Fungibl
 
 /// Builds the final transaction request based on transaction type.
 ///
-#[expect(
-    clippy::too_many_arguments,
-    reason = "execution needs transaction metadata and signature scheme to stay explicit"
-)]
+/// A signer update writes `target_signers`, the approver set its proposal
+/// resolves to (see [`crate::Proposal::target_signers`]). A GUARDIAN switch
+/// keeps the account's GUARDIAN scheme: the proposal does not carry one, so
+/// every cosigner rebuilds it under the scheme the account stores.
 pub async fn build_final_transaction_request(
     client: &MidenSdkClient,
     transaction_type: &TransactionType,
-    account: &Account,
+    account: &MultisigAccount,
     auth_args: &MultisigAuthArgs,
     signature_advice: Vec<SignatureAdvice>,
     metadata_threshold: Option<u64>,
-    metadata_signer_commitments: Option<&[Word]>,
-    scheme: SignatureScheme,
+    target_signers: Option<&[SignerSpec]>,
 ) -> Result<TransactionRequest> {
     match transaction_type {
         TransactionType::P2ID {
@@ -184,7 +200,7 @@ pub async fn build_final_transaction_request(
             let asset = build_transfer_asset(*faucet_id, *amount)?;
 
             crate::transaction::build_p2id_transaction_request(
-                account,
+                account.inner(),
                 *recipient,
                 vec![asset.into()],
                 *note_type,
@@ -258,7 +274,7 @@ pub async fn build_final_transaction_request(
         TransactionType::SwitchGuardian { new_commitment, .. } => {
             crate::transaction::build_update_guardian_transaction_request(
                 *new_commitment,
-                scheme,
+                account.guardian_scheme()?,
                 auth_args,
                 signature_advice,
             )
@@ -281,7 +297,7 @@ pub async fn build_final_transaction_request(
         | TransactionType::RemoveCosigner { .. }
         | TransactionType::UpdateSigners { .. } => {
             // Signer update transactions need threshold and signer commitments from metadata
-            let signer_commitments = metadata_signer_commitments.ok_or_else(|| {
+            let target_signers = target_signers.ok_or_else(|| {
                 MultisigError::MissingConfig("signer_commitments for signer update".to_string())
             })?;
             let new_threshold = metadata_threshold
@@ -289,10 +305,9 @@ pub async fn build_final_transaction_request(
 
             let (tx_request, _) = crate::transaction::build_update_signers_transaction_request(
                 new_threshold,
-                signer_commitments,
+                target_signers,
                 auth_args,
                 signature_advice,
-                scheme,
             )?;
 
             Ok(tx_request)
@@ -350,7 +365,10 @@ mod tests {
         let eip_commitment = eip_key.public_key().to_commitment();
         let raw_hex = format!("0x{}", hex::encode(raw_commitment.to_bytes()));
         let eip_hex = format!("0x{}", hex::encode(eip_commitment.to_bytes()));
-        let required = [raw_hex.clone(), eip_hex.clone()].into_iter().collect();
+        let required = [
+            SignerSpec::new(raw_commitment, SignatureScheme::Ecdsa),
+            SignerSpec::new(eip_commitment, SignatureScheme::Ecdsa),
+        ];
         let inputs = vec![
             SignatureInput {
                 signer_commitment: raw_hex,
@@ -402,9 +420,13 @@ mod tests {
         assert_eq!(other_advice, vec![advice[1].clone()]);
     }
 
+    fn approver(v: u32) -> SignerSpec {
+        SignerSpec::new(Word::from([v, 0, 0, 0]), SignatureScheme::Falcon)
+    }
+
     #[test]
     fn test_collect_signature_advice_filters_by_required() {
-        let required: HashSet<String> = ["0xabc", "0xdef"].iter().map(|s| s.to_string()).collect();
+        let required = [approver(1), approver(2)];
 
         // Note: This test validates the filtering logic structure.
         // Full integration requires valid signatures which need real keys.
@@ -427,18 +449,19 @@ mod tests {
 
     #[test]
     fn test_collect_signature_advice_skips_duplicates() {
-        let required: HashSet<String> = ["0xabc"].iter().map(|s| s.to_string()).collect();
+        let required = [approver(10)];
+        let signer = word_to_hex(&required[0].commitment);
 
         let signatures = vec![
             SignatureInput {
-                signer_commitment: "0xABC".to_string(), // uppercase
+                signer_commitment: signer.to_uppercase().replacen("0X", "0x", 1), // uppercase
                 signature_hex: "0x1234".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
                 message_format: EcdsaMessageFormat::Raw,
             },
             SignatureInput {
-                signer_commitment: "0xabc".to_string(), // lowercase duplicate
+                signer_commitment: signer, // lowercase duplicate
                 signature_hex: "0x5678".to_string(),
                 scheme: SignatureScheme::Falcon,
                 public_key_hex: None,
@@ -465,7 +488,7 @@ mod tests {
         let signature = secret_key.sign(msg);
         let signature_hex = format!("0x{}", hex::encode(signature.to_bytes()));
 
-        let required: HashSet<String> = [commitment_hex.clone()].into_iter().collect();
+        let required = [SignerSpec::new(commitment, SignatureScheme::Falcon)];
         let signatures = vec![SignatureInput {
             signer_commitment: commitment_hex,
             signature_hex,
@@ -476,6 +499,33 @@ mod tests {
 
         let advice =
             collect_signature_advice(signatures, &required, msg, None).expect("valid advice");
+        assert_eq!(advice.len(), 1);
+    }
+
+    /// The chain verifies an approver under the scheme it stores for it, so
+    /// an approval under the other scheme never counts toward the threshold.
+    #[test]
+    fn approvals_under_another_scheme_than_the_stored_one_are_not_counted() {
+        let ecdsa_key = SigningKey::new();
+        let commitment = ecdsa_key.public_key().to_commitment();
+        let msg = Word::default();
+        let signature = || SignatureInput {
+            signer_commitment: word_to_hex(&commitment),
+            signature_hex: format!("0x{}", hex::encode(ecdsa_key.sign(msg).to_bytes())),
+            scheme: SignatureScheme::Ecdsa,
+            public_key_hex: Some(format!(
+                "0x{}",
+                hex::encode(ecdsa_key.public_key().to_bytes())
+            )),
+            message_format: EcdsaMessageFormat::Raw,
+        };
+
+        let stored_falcon = [SignerSpec::new(commitment, SignatureScheme::Falcon)];
+        let advice = collect_signature_advice([signature()], &stored_falcon, msg, None).unwrap();
+        assert!(advice.is_empty());
+
+        let stored_ecdsa = [SignerSpec::new(commitment, SignatureScheme::Ecdsa)];
+        let advice = collect_signature_advice([signature()], &stored_ecdsa, msg, None).unwrap();
         assert_eq!(advice.len(), 1);
     }
 }

@@ -85,12 +85,11 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
     let tx_request = build_final_transaction_request(
         &author.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        author.key_manager.scheme(),
     )
     .await
     .unwrap();

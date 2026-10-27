@@ -137,6 +137,37 @@ pub enum MultisigError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// A signer update would write an approver under another signature scheme
+    /// than the one the account stores for it. The approver's key verifies
+    /// only under its own scheme, so the update would lock it out. Raised for
+    /// a proposal that names such a scheme, and for one that names none (any
+    /// from before per-signer schemes) on an account whose kept approvers do
+    /// not share one. The TypeScript SDK's counterpart is
+    /// `SignerSchemeMismatchError` (`signer_scheme_mismatch`).
+    #[error(
+        "signer update would change the signature scheme of {}; an approver's key verifies \
+         only under its own scheme",
+        crate::signers::SignerSchemeChange::list(.changes)
+    )]
+    SignerSchemeMismatch {
+        changes: Vec<crate::signers::SignerSchemeChange>,
+    },
+
+    /// The account stores this client's key under another signature scheme
+    /// than the key's own, or under none it supports. Its approvals would not
+    /// verify on chain, and GUARDIAN refuses them, so it neither proposes nor
+    /// signs.
+    #[error(
+        "this client's {key} key {commitment} is stored on the account under {}; its approvals \
+         cannot verify",
+        .stored.map_or_else(|| "no supported scheme".to_string(), |scheme| format!("'{scheme}'"))
+    )]
+    KeySchemeMismatch {
+        commitment: String,
+        key: guardian_shared::SignatureScheme,
+        stored: Option<guardian_shared::SignatureScheme>,
+    },
+
     /// User is not a cosigner for this account.
     #[error("not a cosigner for this account")]
     NotCosigner,

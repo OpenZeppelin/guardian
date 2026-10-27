@@ -1403,6 +1403,59 @@ println!("Threshold: {}", account.threshold()?);
 println!("Signers: {:?}", account.cosigner_commitments_hex());
 ```
 
+`create_account` puts every signer and the GUARDIAN under your key's scheme.
+
+#### Mixed Falcon and ECDSA approvers
+
+The account stores a scheme for each approver and one for GUARDIAN, so a Falcon
+key held by your app can share an account with an ECDSA wallet or hardware
+signer:
+
+```rust
+use miden_multisig_client::{SignatureScheme, SignerSpec};
+
+let account = client.create_account_with_signers(
+    2,
+    vec![
+        SignerSpec::new(client.user_commitment(), SignatureScheme::Falcon),
+        SignerSpec::new(wallet_commitment, SignatureScheme::Ecdsa),
+    ],
+    SignatureScheme::Falcon, // GUARDIAN's scheme: which of its keys acknowledges
+    Vec::new(),              // per-procedure threshold overrides
+).await?;
+client.push_account().await?;
+
+let approvers = account.cosigners()?; // Vec<SignerSpec>, in storage order
+let guardian_scheme = account.guardian_scheme()?;
+```
+
+- `push_account` registers the schemes the account stores: the single-scheme
+  auth when every approver uses the GUARDIAN's scheme, the per-signer `Miden`
+  auth otherwise. A GUARDIAN up to 0.18.3 refuses the per-signer auth (see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)).
+- Signer updates keep every approver's stored scheme. `add_cosigner` gives the
+  new signer your scheme and `add_cosigner_with_scheme` sets it. A proposal
+  carries `signer_schemes` unless every target signer uses the proposer's scheme
+  and the scheme of the approvers it keeps, and every cosigner rebuilds it from
+  them.
+- A proposal that would write a kept approver under another scheme is refused:
+  its listing shows a failed verification, and signing and executing refuse it
+  before an approval or a delta reaches GUARDIAN. The error is
+  `MultisigError::SignerSchemeMismatch` when the proposal names another scheme
+  for a kept approver, or names none while the kept approvers do not share one.
+  SDKs before this one named none and wrote their own scheme for every
+  approver; such a proposal over kept approvers that share another scheme fails
+  as a summary mismatch instead.
+- An approval made under another scheme than the account stores for its signer
+  is not counted toward the threshold, as on chain and in GUARDIAN's push gate,
+  and a client whose key the account stores under another scheme refuses to
+  propose or sign (`MultisigError::KeySchemeMismatch`).
+- A GUARDIAN switch keeps the account's GUARDIAN scheme. The new endpoint is
+  asked for its key of that scheme, whatever your key's scheme is.
+- The TypeScript SDK does not build per-signer updates yet. It ignores
+  `signer_schemes`, so it may not reproduce such a proposal, and then refuses to
+  sign it.
+
 ### Loading Existing Accounts
 
 ```rust
@@ -1690,8 +1743,11 @@ let tx = TransactionType::transfer_p2ide(
 // Consume Notes
 let tx = TransactionType::consume_notes(vec![note_id1, note_id2]);
 
-// Add Cosigner
+// Add Cosigner (takes your key's scheme)
 let tx = TransactionType::add_cosigner(new_commitment);
+
+// Add Cosigner under another scheme (an ECDSA wallet on a Falcon account)
+let tx = TransactionType::add_cosigner_with_scheme(wallet_commitment, SignatureScheme::Ecdsa);
 
 // Remove Cosigner
 let tx = TransactionType::remove_cosigner(commitment_to_remove);
@@ -1893,6 +1949,7 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 |--------|-------------|
 | `builder()` | Create builder for configuration |
 | `create_account(threshold, commitments)` | Create new multisig |
+| `create_account_with_signers(threshold, signers, guardian_scheme, overrides)` | Create a multisig whose approvers each carry a scheme (`SignerSpec`) |
 | `pull_account(id)` | Join existing multisig |
 | `push_account()` | Register account with GUARDIAN |
 | `sync()` | Sync with Miden network |
@@ -1940,7 +1997,9 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 | `cosigner_commitments()` | List of commitments (Word) |
 | `cosigner_commitments_hex()` | List as hex strings |
 | `is_cosigner(commitment)` | Check if commitment is signer |
+| `cosigners()` | Approvers with their stored schemes (`Vec<SignerSpec>`) |
 | `guardian_commitment()` | GUARDIAN server commitment |
+| `guardian_scheme()` | Scheme the account verifies GUARDIAN under |
 
 #### TransactionType
 
@@ -1948,7 +2007,7 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 |---------|-------------|
 | `P2ID { recipient, faucet_id, amount, note_type, heights }` | Transfer funds (`note_type` selects note visibility; `heights: P2ideHeights` with either constraint set creates a P2IDE note — use `transfer_p2ide()`; `transfer()` defaults to a public plain-P2ID note) |
 | `ConsumeNotes { note_ids }` | Consume notes |
-| `AddCosigner { new_commitment }` | Add signer |
+| `AddCosigner { new_commitment, scheme }` | Add signer (`scheme: None` takes the proposer's) |
 | `RemoveCosigner { commitment }` | Remove signer |
 | `UpdateSigners { new_threshold, signer_commitments }` | Update config |
 | `SwitchGuardian { new_endpoint, new_commitment }` | Switch GUARDIAN |
@@ -2110,6 +2169,10 @@ console.log('Notes consumed, funds now in vault');
   }
 }
 ```
+
+A signer update also carries `"signer_schemes": ["falcon", "ecdsa"]`,
+index-aligned with `signer_commitments_hex`, unless every target signer uses the
+proposer's scheme and the scheme of the approvers it keeps.
 
 ## Version Compatibility
 

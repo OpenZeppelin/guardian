@@ -3,8 +3,6 @@
 //! This module handles listing, signing, executing, and creating proposals
 //! via GUARDIAN (online mode).
 
-use std::collections::HashSet;
-
 use guardian_client::DeltaObject;
 use guardian_shared::{ProposalSignature, ToJson};
 use miden_client::transaction::TransactionRequest;
@@ -291,6 +289,7 @@ impl MultisigClient {
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
+        self.ensure_key_scheme_matches(account)?;
 
         let account_id = account.id();
         // Verification re-executes the proposal at the store's sync height, so
@@ -403,6 +402,7 @@ impl MultisigClient {
             .await?;
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
+        let target_signers = proposal.target_signers(&account)?;
 
         let mut signature_inputs: Vec<SignatureInput> = proposal
             .signatures
@@ -423,11 +423,10 @@ impl MultisigClient {
         // Build signature advice from cosigner signatures
         // Important: Use CURRENT account signers for validation, not proposal's new signers.
         // The on-chain MASM verifies signatures against the currently stored public keys.
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let approvers = account.verifiable_cosigners();
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
-            &required_commitments,
+            &approvers,
             tx_summary_commitment,
             Some(&proposal.tx_summary),
         )?;
@@ -479,30 +478,16 @@ impl MultisigClient {
             }
         }
 
-        // For signer-update transactions, we must propagate parse errors for signer commitments
-        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
-        let signer_commitments = if matches!(
-            &proposal.transaction_type,
-            TransactionType::AddCosigner { .. }
-                | TransactionType::RemoveCosigner { .. }
-                | TransactionType::UpdateSigners { .. }
-        ) {
-            Some(proposal.metadata.signer_commitments()?)
-        } else {
-            proposal.metadata.signer_commitments().ok()
-        };
-
         let auth_args = proposal_auth_args(&self.miden_client, &proposal.tx_summary).await?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
-            account.inner(),
+            &account,
             &auth_args,
             signature_advice,
             proposal.metadata.new_threshold,
-            signer_commitments.as_deref(),
-            self.key_manager.scheme(),
+            target_signers.as_deref(),
         )
         .await?;
 
@@ -543,6 +528,7 @@ impl MultisigClient {
         }
 
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         let account_id = account.id();
 
         let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
@@ -669,11 +655,10 @@ impl MultisigClient {
         signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
         signature_inputs.dedup_by(|a, b| a.signer_commitment == b.signer_commitment);
 
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let approvers = account.verifiable_cosigners();
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
-            &required_commitments,
+            &approvers,
             tx_summary_commitment,
             Some(&derived_summary),
         )?;
@@ -729,7 +714,7 @@ impl MultisigClient {
     ///
     /// // Add a new cosigner
     /// let proposal = client.propose_transaction(
-    ///     TransactionType::AddCosigner { new_commitment }
+    ///     TransactionType::add_cosigner(new_commitment)
     /// ).await?;
     ///
     /// // Remove a cosigner
@@ -756,6 +741,7 @@ impl MultisigClient {
         self.sync().await?;
 
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         warn_on_override_dilution(&account, &transaction_type);
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 

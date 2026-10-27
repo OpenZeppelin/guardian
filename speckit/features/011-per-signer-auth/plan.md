@@ -165,6 +165,15 @@ on the branch; section 6 lists the follow-up PRs. Where this plan and `data-mode
   guardian scheme, not the key manager's; `docs/MULTISIG_SDK.md` Rust sections. Rebuild of an
   update-signers proposal by a cosigner must use `signer_schemes` from the proposal metadata when
   present, else the proposer's single scheme (today's behaviour).
+  *As built (#549):* `SignerSpec { commitment, scheme }`; `cosigners()` (strict),
+  `cosigner_scheme()`, `guardian_scheme()`; `create_account_with_signers`;
+  `AddCosigner { new_commitment, scheme: Option }`. Without `signer_schemes` a reader gives every
+  target signer the scheme stored for the first approver the proposal keeps (the first approver
+  when it keeps none), which reproduces the proposer's single scheme whenever no approver was
+  rewritten; the writer omits the field only when every target uses the proposer's scheme and
+  that rule reads the targets back. A target that rewrites a kept approver's stored scheme is
+  refused (`SignerSchemeMismatch`), approvals under a non-stored scheme are not counted, and a
+  key the account stores under another scheme neither proposes nor signs (`KeySchemeMismatch`).
 - **PR C, TS SDK (after #540 merges)**: drop the `SignerSchemeMismatchError` refusals in
   `registerOnGuardian`, add/remove/change-threshold and switch-guardian; `registerOnGuardian`
   selects the variant per D2 using `this.signers` and `this.guardianScheme`; update-signers
