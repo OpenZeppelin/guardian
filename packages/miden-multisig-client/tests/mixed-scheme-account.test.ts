@@ -21,13 +21,21 @@ import {
   buildGuardedMultisigComponentFromLibrary,
   createMultisigAccount,
 } from '../src/account/builder.js';
-import { AccountInspector } from '../src/inspector.js';
 import {
+  resolveTargetSigners,
+  SignerSchemeMismatchError,
+  targetSignerSchemes,
+} from '../src/account/signers.js';
+import { AccountInspector } from '../src/inspector.js';
+import { ProposalMetadataCodec } from '../src/proposal/metadata.js';
+import {
+  buildUpdateGuardianTransactionRequest,
   buildUpdateSignersTransactionRequest,
   executeForSummaryAtTip,
   requestBoundBlockNum,
 } from '../src/transaction.js';
 import type { MultisigConfig, SignatureScheme, SignerSpec } from '../src/types.js';
+import type { UpdateSignersProposalMetadata } from '../src/types/proposal.js';
 import { bytesToHex, hexToBytes } from '../src/utils/encoding.js';
 import {
   buildSignatureAdviceEntry,
@@ -232,6 +240,129 @@ describe('mixed-scheme approver sets', () => {
       }
       const detected = AccountInspector.fromAccount(updated);
       expect(detected.threshold).toBe(1);
+      expect(detected.signers).toEqual(signers.map((s) => ({ ...s, commitment: s.commitment.toLowerCase() })));
+    }, 120_000);
+
+    async function storedSigners(): Promise<SignerSpec[]> {
+      const account = await client.accounts.get(accountId);
+      if (!account) {
+        throw new Error('account not found in the store');
+      }
+      return AccountInspector.fromAccount(account).signers;
+    }
+
+    async function summaryCommitment(request: Parameters<typeof executeForSummaryAtTip>[2]): Promise<string> {
+      return (await executeForSummaryAtTip(client, accountId, request)).toCommitment().toHex();
+    }
+
+    // Issue #576: what a Falcon proposer pushes and an ECDSA cosigner rebuilds
+    // from GUARDIAN's copy of the metadata must be the same transaction.
+    it('rebuilds a mixed signer update from its wire metadata to the summary its proposer signed', async () => {
+      const current = await storedSigners();
+      const added: SignerSpec = {
+        commitment: tryComputeEcdsaCommitmentHex(
+          bytesToHex(secp256k1.getPublicKey(new Uint8Array(32).fill(4), true)),
+        ) as string,
+        scheme: 'ecdsa',
+      };
+      const targets = [...current, added];
+      const names = targetSignerSchemes(targets, 'falcon', current);
+      expect(names).toEqual(['falcon', 'ecdsa', 'ecdsa']);
+
+      const proposerSalt = '0x' + '44'.repeat(32);
+      const proposed = await buildUpdateSignersTransactionRequest(client, 2, targets, {
+        accountId,
+        salt: Word.fromHex(proposerSalt),
+        signatureScheme: 'falcon',
+      });
+      const boundBlockNum = requestBoundBlockNum(proposed.request);
+      const signedCommitment = await summaryCommitment(proposed.request);
+
+      const metadata: UpdateSignersProposalMetadata = {
+        proposalType: 'add_signer',
+        description: '',
+        targetThreshold: 2,
+        targetSignerCommitments: targets.map((target) => target.commitment),
+        targetSignerSchemes: names,
+      };
+      const served = ProposalMetadataCodec.fromGuardian(
+        JSON.parse(JSON.stringify(ProposalMetadataCodec.toGuardian(metadata))),
+      ) as UpdateSignersProposalMetadata;
+
+      const cosignerTargets = resolveTargetSigners(
+        served.targetSignerCommitments,
+        served.targetSignerSchemes,
+        await storedSigners(),
+      );
+      expect(cosignerTargets).toEqual(targets);
+      const rebuilt = await buildUpdateSignersTransactionRequest(client, 2, cosignerTargets, {
+        accountId,
+        salt: Word.fromHex(proposerSalt),
+        boundBlockNum,
+        signatureScheme: 'ecdsa',
+      });
+      expect(await summaryCommitment(rebuilt.request)).toBe(signedCommitment);
+
+      // Without the names the cosigner would have to read every target under one
+      // scheme, as SDKs before #576 did; that is refused, since it rewrites an approver.
+      expect(() =>
+        resolveTargetSigners(served.targetSignerCommitments, undefined, current),
+      ).toThrow(SignerSchemeMismatchError);
+      // And building it that way is another transaction.
+      const stamped = await buildUpdateSignersTransactionRequest(
+        client,
+        2,
+        served.targetSignerCommitments,
+        { accountId, salt: Word.fromHex(proposerSalt), boundBlockNum, signatureScheme: 'falcon' },
+      );
+      expect(await summaryCommitment(stamped.request)).not.toBe(signedCommitment);
+    }, 120_000);
+
+    // Issue #576: a switch keeps the account's GUARDIAN scheme whatever the
+    // proposer's is, so the new GUARDIAN's ECDSA key verifies its acks.
+    it("rotates the GUARDIAN under the account's GUARDIAN scheme", async () => {
+      const newGuardianKey = new Uint8Array(32).fill(5);
+      const newGuardianCommitment = tryComputeEcdsaCommitmentHex(
+        bytesToHex(secp256k1.getPublicKey(newGuardianKey, true)),
+      ) as string;
+      const requestOptions = {
+        accountId,
+        salt: Word.fromHex('0x' + '55'.repeat(32)),
+        signatureScheme: 'ecdsa' as const,
+      };
+      const unsigned = await buildUpdateGuardianTransactionRequest(
+        client,
+        newGuardianCommitment,
+        requestOptions,
+      );
+      const boundBlockNum = requestBoundBlockNum(unsigned.request);
+      const commitmentHex = await summaryCommitment(unsigned.request);
+      const message = () => Word.fromHex(commitmentHex);
+      const advice = new AdviceMap();
+      for (const entry of [
+        buildSignatureAdviceEntry(Word.fromHex(falconCommitment), message(), falconKey.sign(message())),
+        buildSignatureAdviceEntry(Word.fromHex(ecdsaCommitment), message(), ecdsaSignature(ecdsaKey, message())),
+        buildSignatureAdviceEntry(Word.fromHex(guardianCommitment), message(), ecdsaSignature(guardianKey, message())),
+      ]) {
+        advice.insert(entry.key, new FeltArray(entry.values));
+      }
+      const signed = await buildUpdateGuardianTransactionRequest(client, newGuardianCommitment, {
+        ...requestOptions,
+        salt: Word.fromHex('0x' + '55'.repeat(32)),
+        boundBlockNum,
+        signatureAdviceMap: advice,
+      });
+
+      const execution = await client.transactions.executeRequest(accountId, signed.request);
+      await (await (await execution.prove()).submit()).apply();
+
+      const updated = await client.accounts.get(accountId);
+      if (!updated) {
+        throw new Error('updated account not found in the store');
+      }
+      const detected = AccountInspector.fromAccount(updated);
+      expect(detected.guardianCommitment).toBe(newGuardianCommitment.toLowerCase());
+      expect(detected.guardianScheme).toBe('ecdsa');
       expect(detected.signers).toEqual(signers.map((s) => ({ ...s, commitment: s.commitment.toLowerCase() })));
     }, 120_000);
   });

@@ -19,7 +19,7 @@ crates/miden-multisig-client/src/client/offline.rs relay_collected_approvals 1d0
 crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 022cf09014a55624
 crates/miden-multisig-client/src/client/proposals.rs execute_proposal ef33e0a0698400e7
 packages/miden-multisig-client/src/multisig.ts relayCollectedApprovals a04503eb321ced3c
-packages/miden-multisig-client/src/multisig.ts prepareProposalExecution 6b3275104ec3e599
-packages/miden-multisig-client/src/multisig.ts executeProposal 895eebc853f39c06
-packages/miden-multisig-client/src/multisig.ts assembleCustomAdvice 856dc08cfb05b1a8
+packages/miden-multisig-client/src/multisig.ts prepareProposalExecution 244406c248b93c2e
+packages/miden-multisig-client/src/multisig.ts executeProposal 565cf928518f4dba
+packages/miden-multisig-client/src/multisig.ts assembleCustomAdvice 6bca168916212bc1
 packages/miden-multisig-client/src/multisig.ts servedSwitchProposal 1d20c761856c0524

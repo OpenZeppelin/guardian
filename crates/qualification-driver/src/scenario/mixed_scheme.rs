@@ -2,11 +2,11 @@
 //! approver, registered with the per-signer `Miden` auth and driven over gRPC
 //! against the image under test.
 //!
-//! Neither multisig SDK can build such an account yet (the Rust SDK waits on
-//! #549, the TypeScript one on the follow-up to #540), so it is built here
-//! straight from the upstream `AuthGuardedMultisig` component, which carries
-//! one scheme per approver. Its GUARDIAN is the server's ECDSA acknowledgement
-//! identity, read at run time because the stack generates that key per run.
+//! The account is built here straight from the upstream `AuthGuardedMultisig`
+//! component, which carries one scheme per approver, rather than through a
+//! multisig SDK, so the scenario qualifies the server alone. Its GUARDIAN is
+//! the server's ECDSA acknowledgement identity, read at run time because the
+//! stack generates that key per run.
 //!
 //! Both passes of a deterministic run act on the same registered account, so
 //! its keys and seed are fixed. Checks that need an account GUARDIAN has never

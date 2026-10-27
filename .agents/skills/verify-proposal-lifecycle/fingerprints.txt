@@ -23,8 +23,8 @@ crates/miden-multisig-client/src/client/helpers.rs get_guardian_ack_signature c9
 crates/miden-multisig-client/src/client/account.rs sync d1377d59279df94d
 packages/miden-multisig-client/src/multisig.ts resolveProposalNonce 7c25a02c067fe164
 packages/miden-multisig-client/src/multisig.ts assertExecutesOnPinnedBase c7fa8b8f1b53cacb
-packages/miden-multisig-client/src/multisig.ts prepareProposalExecution d0fdbe70c1d6f1e6
-packages/miden-multisig-client/src/multisig.ts executeProposal 895eebc853f39c06
+packages/miden-multisig-client/src/multisig.ts prepareProposalExecution 244406c248b93c2e
+packages/miden-multisig-client/src/multisig.ts executeProposal 565cf928518f4dba
 packages/miden-multisig-client/src/multisig.ts servedSwitchProposal 1d20c761856c0524
 packages/miden-multisig-client/src/multisig.ts syncState 252041231e9081ca
 crates/miden-multisig-client/src/client/proposals.rs get_pinned_proposal b9320f430b90684d

@@ -709,16 +709,35 @@ An approver may use its own signature scheme: pass `{ commitment, scheme }`
 (a `SignerSpec`) instead of a bare commitment, which keeps using
 `signatureScheme` (default `'falcon'`, also the GUARDIAN's scheme). The account
 then stores one scheme per approver in `approver_schemes`, as
-`miden-standards` does. GUARDIAN binds one scheme to each account, so
-`registerOnGuardian()`, the signer-update proposals and the switch-GUARDIAN
-proposals refuse an account whose approvers or guardian (`Multisig.guardianScheme`)
-use a scheme other than the acting signer's, with `SignerSchemeMismatchError`,
-until the server supports per-signer schemes (issue #563). Note that
-`signatureScheme` also sets the guardian's scheme: all-ECDSA `SignerSpec`s with
-it omitted build a Falcon guardian, which the guard then refuses to register
-under ECDSA. `createAddSignerProposal` adds the new signer under the acting
-signer's scheme; a `SignerSpec` naming another scheme is refused the same way.
-The Rust SDK still builds single-scheme accounts (issue #549).
+`miden-standards` does, so an ECDSA wallet or hardware signer and a locally held
+Falcon key can share one account (issue #576):
+
+- `registerOnGuardian()` registers the schemes the account stores: the
+  single-scheme auth when every approver uses the GUARDIAN's scheme
+  (`Multisig.guardianScheme`), the per-signer `Miden` auth otherwise. A GUARDIAN
+  up to 0.18.3 refuses the per-signer auth (`GuardianMixedSchemesUnsupportedError`,
+  see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)). `signatureScheme`
+  also sets the GUARDIAN's scheme: all-ECDSA `SignerSpec`s with it omitted build
+  a Falcon GUARDIAN, which is registered per signer.
+- Signer updates keep every approver's stored scheme. `createAddSignerProposal`
+  adds a bare commitment under your scheme and a `SignerSpec` under its own. A
+  proposal carries `signerSchemes` unless every target signer uses the
+  proposer's scheme and the scheme of the approvers it keeps, and every cosigner
+  rebuilds it from them. The Rust SDK applies the same rule (#549).
+- A proposal that would write a kept approver under another scheme is refused:
+  its listing shows a failed verification, and signing and executing refuse it
+  before an approval or a delta reaches GUARDIAN (`SignerSchemeMismatchError`).
+  SDKs before this one named no schemes and wrote their own for every approver,
+  so their signer updates on a mixed account are refused this way.
+- An approval made under another scheme than the account stores for its signer
+  is left out when the proposal executes, as on chain and in GUARDIAN's push
+  gate, and a client whose key the account stores under another scheme refuses
+  to propose or sign (`KeySchemeMismatchError`).
+- A GUARDIAN switch keeps the account's GUARDIAN scheme. The new endpoint is
+  asked for its key of that scheme, whatever your key's scheme is. Switching a
+  mixed-scheme account to a GUARDIAN up to 0.18.3 executes on chain but fails to
+  register there; switch again with `createSwitchGuardianProposalOffline`, to a
+  GUARDIAN with per-signer schemes.
 
 ### Loading Existing Accounts
 
@@ -1296,7 +1315,7 @@ Authentication).
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `recoverNotes(options?)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
 | `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
-| `createAddSignerProposal(commitmentOrSignerSpec, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold). The new signer takes the acting signer's scheme; a `SignerSpec` with another scheme throws `SignerSchemeMismatchError` |
+| `createAddSignerProposal(commitmentOrSignerSpec, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold). A bare commitment takes your scheme; a `SignerSpec` sets the new signer's scheme |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Change the account-wide threshold (not a per-procedure override) |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
@@ -1452,9 +1471,9 @@ let guardian_scheme = account.guardian_scheme()?;
   propose or sign (`MultisigError::KeySchemeMismatch`).
 - A GUARDIAN switch keeps the account's GUARDIAN scheme. The new endpoint is
   asked for its key of that scheme, whatever your key's scheme is.
-- The TypeScript SDK does not build per-signer updates yet. It ignores
-  `signer_schemes`, so it may not reproduce such a proposal, and then refuses to
-  sign it.
+- The TypeScript SDK writes and reads `signer_schemes` the same way (#576).
+  TypeScript SDKs before it ignore the field, so they may not reproduce such a
+  proposal, and then refuse to sign it.
 
 ### Loading Existing Accounts
 
