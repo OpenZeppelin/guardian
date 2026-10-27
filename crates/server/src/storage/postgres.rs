@@ -1971,6 +1971,7 @@ impl StorageBackend for PostgresService {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         use diesel::OptionalExtension;
@@ -1982,6 +1983,7 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
         let account_id = account_id.to_string();
+        let new_commitment = new_commitment.to_string();
         let now = now.to_string();
 
         // Row-locked read + conditional in-place JSONB update: the intent
@@ -1991,10 +1993,17 @@ impl StorageBackend for PostgresService {
         // discarded delta is left untouched.
         conn.transaction::<AbandonIntent, diesel::result::Error, _>(|conn| {
             async move {
+                lock_account_metadata(conn, &account_id).await?;
+                if let Some(proposal_id) =
+                    execution::candidate_owner(conn, &account_id, nonce).await?
+                {
+                    return Ok(AbandonIntent::OwnedByExecution { proposal_id });
+                }
                 let existing: Option<Option<String>> = deltas::table
                     .filter(deltas::account_id.eq(&account_id))
                     .filter(deltas::nonce.eq(nonce as i64))
                     .filter(deltas::status_kind.eq("candidate"))
+                    .filter(deltas::new_commitment.eq(&new_commitment))
                     .select(diesel::dsl::sql::<
                         diesel::sql_types::Nullable<diesel::sql_types::Text>,
                     >("status->>'abandon_requested_at'"))
@@ -2013,6 +2022,7 @@ impl StorageBackend for PostgresService {
                             .filter(deltas::account_id.eq(&account_id))
                             .filter(deltas::nonce.eq(nonce as i64))
                             .filter(deltas::status_kind.eq("candidate"))
+                            .filter(deltas::new_commitment.eq(&new_commitment))
                             .set(
                                 deltas::status.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
                                     "jsonb_set(status, '{abandon_requested_at}', to_jsonb(",
@@ -4565,7 +4575,16 @@ mod tests {
         // Retained-over-intent refusal: once an abandon intent is
         // recorded, the retained flip must refuse rather than wipe it.
         let intent = service
-            .request_candidate_abandon(&account_id, 11, &now)
+            .request_candidate_abandon(&account_id, 11, "0xother", &now)
+            .await
+            .expect("intent resolves");
+        assert_eq!(
+            intent,
+            AbandonIntent::NotCandidate,
+            "a candidate with another commitment is never marked"
+        );
+        let intent = service
+            .request_candidate_abandon(&account_id, 11, "0x456", &now)
             .await
             .expect("intent resolves");
         assert_eq!(intent, AbandonIntent::Recorded);
@@ -4697,6 +4716,15 @@ mod tests {
             serde_json::json!({"intent": "A"})
         );
         assert!(archived[0].delta.status.is_client_abandoned());
+        assert_eq!(
+            service
+                .pull_superseded_deltas(&account_id, crate::storage::EVERY_ARCHIVED_DELTA)
+                .await
+                .expect("archive read with no cutoff")
+                .len(),
+            1,
+            "the abandon service reads the whole archive"
+        );
         assert!(
             service
                 .list_accounts_with_recoverable_deltas(now_dt + chrono::Duration::days(1))

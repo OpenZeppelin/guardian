@@ -1048,7 +1048,10 @@ async fn test_push_delta_and_abandon_keep_using_the_wallet_while_a_session_is_ac
         .push_delta(&account_id, 1, "0x00", serde_json::json!({}))
         .await
         .unwrap();
-    client.abandon_candidate(&account_id, 1).await.unwrap();
+    client
+        .abandon_candidate(&account_id, 1, "0x00")
+        .await
+        .unwrap();
 
     assert_eq!(
         formats.lock().unwrap().as_slice(),

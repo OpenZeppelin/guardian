@@ -502,6 +502,7 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
         AbandonCandidateParams {
             account_id: setup.account_id.clone(),
             nonce: 1,
+            proposal_id: None,
             credentials: creds,
         },
     )
@@ -542,6 +543,7 @@ async fn abandoned_head_orphans_its_successor_and_the_chain_reconciles() {
         AbandonCandidateParams {
             account_id: setup.account_id.clone(),
             nonce: 1,
+            proposal_id: None,
             credentials: creds,
         },
     )

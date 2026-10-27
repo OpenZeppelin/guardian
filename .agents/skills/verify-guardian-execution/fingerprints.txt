@@ -82,7 +82,7 @@ crates/server/src/network/miden/mod.rs observe_commitment b0fa6eef4adcbfe2
 crates/server/src/network/miden/mod.rs scan_transaction_page 87fbc1732740d079
 crates/server/src/network/miden/mod.rs find_transaction_ending_at a4ced1c6e1772859
 crates/server/src/storage/filesystem.rs pull_recoverable_deltas 6fd4987c4659bedf
-crates/server/src/storage/filesystem.rs execution_owns_candidate 0f641e4e0eaf97ee
+crates/server/src/storage/filesystem.rs execution_owns_candidate 9d097838b863db23
 crates/server/src/storage/filesystem.rs commit_promoted_execution ec5115ab55e054bb
 crates/server/src/storage/filesystem.rs create_execution_reservation 8ea9358313167e8c
 crates/server/src/storage/filesystem.rs admit_execution_candidate 9787018589acef8c

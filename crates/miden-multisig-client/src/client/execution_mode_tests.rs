@@ -1182,30 +1182,56 @@ mod local_execution {
     }
 }
 
-/// An abandon response without the abandoned delta's commitment (a server that predates it)
-/// is refused: `abandon_status` could not tell the abandoned delta from one that took its nonce.
+/// The abandon names the proposal's transaction as well as the nonce, so a GUARDIAN execution
+/// that took the nonce is never mistaken for it.
 #[tokio::test]
-async fn an_abandon_response_without_a_commitment_is_refused() {
+async fn an_abandon_names_the_proposal_it_releases() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, handle, _signers) = proposing_client(
+        dir.path(),
+        ProposalExecutionMode::default(),
+        AccountShape::OneSigner,
+        MockGuardianService::default(),
+    )
+    .await;
+
+    client.abandon_candidate(1, "0xabc").await.unwrap();
+
+    let requests = handle.abandon_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].nonce, 1);
+    assert_eq!(requests[0].proposal_id, "0xabc");
+}
+
+/// Commitments compare ignoring hex case: the abandoned delta stays itself whatever case
+/// GUARDIAN spells its commitment in.
+#[tokio::test]
+async fn abandon_status_compares_commitments_ignoring_case() {
+    use guardian_client::delta_status::Status as ProtoStatus;
     let dir = tempfile::tempdir().unwrap();
     let (mut client, _handle, _signers) = proposing_client(
         dir.path(),
         ProposalExecutionMode::default(),
         AccountShape::OneSigner,
-        MockGuardianService::default().with_abandon_delta_candidate(Ok(
-            guardian_client::AbandonDeltaCandidateResponse {
-                success: true,
-                state: "pending".to_string(),
+        MockGuardianService::default().with_get_delta(Ok(guardian_client::GetDeltaResponse {
+            success: true,
+            message: String::new(),
+            delta: Some(guardian_client::DeltaObject {
                 nonce: 1,
+                new_commitment: "0xABCDEF".to_string(),
+                status: Some(guardian_client::DeltaStatus {
+                    status: Some(ProtoStatus::CanonicalAt("2026-01-01T00:00:00Z".to_string())),
+                    discard_reason: String::new(),
+                    retain_reason: String::new(),
+                }),
                 ..Default::default()
-            },
-        )),
+            }),
+        })),
     )
     .await;
 
-    match client.abandon_candidate(1).await {
-        Err(crate::error::MultisigError::GuardianServer(message)) => {
-            assert!(message.contains("carries no commitment"), "{message}");
-        }
-        other => panic!("expected GuardianServer, got {other:?}"),
-    }
+    assert_eq!(
+        client.abandon_status(1, "0xabcdef").await.unwrap(),
+        super::AbandonStatus::Landed
+    );
 }

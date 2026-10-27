@@ -33,8 +33,13 @@ knows the transaction will never land:
 
 ```rust
 // Records an abandon intent; the guardian's worker confirms over a short
-// quarantine that the tx did not land, then releases the account.
-let response = client.abandon_candidate(&account_id, nonce).await?;
+// quarantine that the tx did not land, then releases the account. The
+// transaction is named by its summary's commitment: a Guardian execution
+// can take the nonce, and the abandon still answers for this transaction.
+let proposal_id = guardian_client::tx_summary_commitment_hex(&tx_summary);
+let response = client
+    .abandon_candidate(&account_id, nonce, &proposal_id)
+    .await?;
 assert_eq!(response.state, "pending");
 
 // Poll the delta for the resolution. Compare its commitment with the one
@@ -53,6 +58,10 @@ match client.get_delta(&account_id, nonce).await?.delta {
     None => {}
 }
 ```
+
+Naming the transaction needs a Guardian server from the same release: an
+older server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
 
 ### Canonical Nonce
 

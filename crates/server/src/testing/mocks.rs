@@ -1477,6 +1477,7 @@ impl StorageBackend for MockStorageBackend {
         &self,
         _account_id: &str,
         _nonce: u64,
+        _new_commitment: &str,
         _now: &str,
     ) -> Result<crate::storage::AbandonIntent, String> {
         self.request_candidate_abandon_responses

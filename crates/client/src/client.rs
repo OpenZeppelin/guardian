@@ -915,18 +915,24 @@ impl GuardianClient {
     /// a minute). Poll `get_delta` for the resolution; the returned
     /// `state` is `"pending"` or, when already resolved, `"abandoned"`.
     ///
-    /// `nonce` pins the exact candidate (learned from the delta feed).
-    /// The server refuses with `GUARDIAN_CANDIDATE_LANDED` when the
-    /// transaction actually landed. Retries are idempotent and preserve
-    /// the original request timestamp.
+    /// `nonce` pins the exact candidate (learned from the delta feed), and
+    /// `proposal_id` names its transaction: the summary's commitment
+    /// ([`tx_summary_commitment_hex`](crate::tx_summary_commitment_hex)),
+    /// which is the proposal id of a multisig proposal. A Guardian
+    /// execution can archive the delta and take its nonce; the abandon then
+    /// still answers for this transaction. The server refuses with
+    /// `GUARDIAN_CANDIDATE_LANDED` when the transaction actually landed.
+    /// Retries are idempotent and preserve the original request timestamp.
     pub async fn abandon_candidate(
         &mut self,
         account_id: &AccountId,
         nonce: u64,
+        proposal_id: &str,
     ) -> ClientResult<AbandonDeltaCandidateResponse> {
         let message = AbandonDeltaCandidateRequest {
             account_id: account_id.to_string(),
             nonce,
+            proposal_id: proposal_id.to_string(),
         };
 
         let inner = self

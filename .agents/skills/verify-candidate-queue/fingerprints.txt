@@ -4,12 +4,12 @@ crates/server/src/storage/mod.rs gate_candidate_submission 99785be2d52ca367
 crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
 crates/server/src/storage/postgres.rs clear_pending_flag_if_none ab1f451ea9f18cad
 crates/server/src/storage/postgres.rs has_pending_candidate 16d06a94b0f6f476
-crates/server/src/storage/postgres.rs request_candidate_abandon f40b52a3152ee052
+crates/server/src/storage/postgres.rs request_candidate_abandon 5ba7c0980cb344fb
 crates/server/src/storage/postgres.rs submit_candidate 78fce4c0773b9421
 crates/server/src/storage/postgres.rs promote_candidate 7723aa1795b4c94a
 crates/server/src/storage/postgres.rs discard_candidate 96eb99645d435499
 crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7
-crates/server/src/storage/filesystem.rs request_candidate_abandon 9dcc768b3bd7451f
+crates/server/src/storage/filesystem.rs request_candidate_abandon 491d0f56858723d7
 crates/server/src/storage/filesystem.rs submit_candidate 83549e868e6f5e25
 crates/server/src/storage/filesystem.rs promote_candidate 328d758106d61638
 crates/server/src/storage/filesystem.rs discard_candidate a3ac04c2ef5caeb3

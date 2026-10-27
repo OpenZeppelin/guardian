@@ -872,8 +872,11 @@ impl MultisigClient {
     /// with the returned commitment for the resolution.
     ///
     /// `nonce` pins the exact candidate to release; it is the nonce the
-    /// proposal was pushed with (committed account nonce + 1). Retries
-    /// are idempotent and preserve the original request timestamp.
+    /// proposal was pushed with (committed account nonce + 1).
+    /// `proposal_id` names the proposal whose transaction is abandoned: a
+    /// GUARDIAN execution can archive its delta and take the nonce, and
+    /// the abandon then still answers for this proposal's transaction.
+    /// Retries are idempotent and preserve the original request timestamp.
     ///
     /// # Errors
     ///
@@ -881,24 +884,21 @@ impl MultisigClient {
     /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will
     /// canonicalize it shortly), if no candidate exists at this nonce,
     /// or if GUARDIAN cannot be reached.
-    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<AbandonRequest> {
+    pub async fn abandon_candidate(
+        &mut self,
+        nonce: u64,
+        proposal_id: &str,
+    ) -> Result<AbandonRequest> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
-            .abandon_candidate(&account_id, nonce)
+            .abandon_candidate(&account_id, nonce, proposal_id)
             .await
             .map_err(|e| {
                 MultisigError::GuardianServer(format!("failed to abandon candidate: {}", e))
             })?;
 
-        if response.commitment.is_empty() {
-            return Err(MultisigError::GuardianServer(
-                "abandon response carries no commitment; abandon_status needs a GUARDIAN \
-                 server that returns it"
-                    .to_string(),
-            ));
-        }
         let state = match response.state.as_str() {
             "abandoned" => AbandonRequestState::Abandoned,
             "retained" => AbandonRequestState::Retained,
@@ -912,7 +912,7 @@ impl MultisigClient {
 
     /// Polls GUARDIAN for the resolution of an abandon request made with
     /// [`Self::abandon_candidate`], identified by its nonce and the
-    /// commitment that request returned.
+    /// commitment that request returned ([`AbandonRequest::commitment`]).
     pub async fn abandon_status(&mut self, nonce: u64, commitment: &str) -> Result<AbandonStatus> {
         let account_id = self.require_account()?.id();
 

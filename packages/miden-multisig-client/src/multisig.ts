@@ -2319,12 +2319,15 @@ export class Multisig {
    * the returned `commitment` for the resolution.
    *
    * `nonce` pins the exact candidate to release; it is the nonce the
-   * proposal was pushed with. Retries are idempotent and preserve the
+   * proposal was pushed with. `proposalId` names the proposal whose
+   * transaction is abandoned: a GUARDIAN execution can archive its delta
+   * and take the nonce, and the abandon then still answers for this
+   * proposal's transaction. Retries are idempotent and preserve the
    * original request timestamp. Refused with `GUARDIAN_CANDIDATE_LANDED`
    * (409) when the transaction actually landed.
    */
-  async abandonCandidate(nonce: number): Promise<AbandonCandidateResponse> {
-    return this.guardian.abandonCandidate(this._accountId, nonce);
+  async abandonCandidate(nonce: number, proposalId: string): Promise<AbandonCandidateResponse> {
+    return this.guardian.abandonCandidate(this._accountId, nonce, proposalId);
   }
 
   /**

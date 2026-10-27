@@ -724,7 +724,27 @@ async fn canonicalization_cannot_discard_an_executing_candidate(h: &Harness) {
             "canonicalization cannot retire an executing candidate"
         );
     }
+    let candidate = h.delta_at(1).await.unwrap();
+    assert_eq!(
+        h.storage
+            .request_candidate_abandon(
+                &h.account_id,
+                1,
+                candidate.new_commitment.as_deref().unwrap(),
+                &now
+            )
+            .await
+            .unwrap(),
+        crate::storage::AbandonIntent::OwnedByExecution {
+            proposal_id: proposal.clone()
+        },
+        "a client abandon never marks an executing candidate"
+    );
     assert!(h.delta_at(1).await.unwrap().status.is_candidate());
+    assert_eq!(
+        h.delta_at(1).await.unwrap().status.abandon_requested_at(),
+        None
+    );
     assert_eq!(
         h.storage
             .update_candidate_status(

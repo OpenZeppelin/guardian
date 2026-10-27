@@ -645,20 +645,28 @@ export class GuardianHttpClient {
    * for the resolution. Refused with `GUARDIAN_CANDIDATE_LANDED` (409)
    * when the transaction actually landed. Retries are idempotent and
    * preserve the original request timestamp.
+   *
+   * `proposalId` names the transaction: its summary's commitment, which
+   * is the proposal id of a multisig proposal. A Guardian execution can
+   * archive the delta and take its nonce; the abandon then still answers
+   * for this transaction.
    */
-  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
-    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
+  async abandonCandidate(
+    accountId: string,
+    nonce: number,
+    proposalId: string,
+  ): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = {
+      account_id: accountId,
+      nonce,
+      proposal_id: proposalId,
+    };
     // Abandoning changes the account's canonical chain: always the wallet.
     const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
     }, accountId, serverRequest);
     const server = (await response.json()) as ServerAbandonCandidateResponse;
-    if (typeof server.commitment !== 'string' || server.commitment.length === 0) {
-      throw new Error(
-        'abandon response carries no commitment; abandonStatus needs a GUARDIAN server that returns it',
-      );
-    }
     return {
       accountId: server.account_id,
       nonce: server.nonce,

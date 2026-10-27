@@ -71,6 +71,9 @@ pub struct LiveSession {
     /// The nonce the custom proposal was pushed with, which is the candidate
     /// the abandon has to pin.
     pub custom_nonce: Option<u64>,
+    /// The custom proposal's id, which names the transaction the abandon
+    /// releases.
+    pub custom_proposal_id: Option<String>,
 }
 
 fn endpoint(network: NetworkName) -> Endpoint {
@@ -237,6 +240,7 @@ async fn create_on(
         balance_seen: false,
         custom_request: None,
         custom_nonce: None,
+        custom_proposal_id: None,
     });
     ActionOutcome::Passed
 }
@@ -1913,6 +1917,7 @@ pub async fn create_custom_proposal(runner: &Runner) -> ActionOutcome {
                 ));
             }
             session.custom_nonce = Some(proposal.nonce);
+            session.custom_proposal_id = Some(proposal.id.clone());
             session.proposal_id = Some(proposal.id);
             session.custom_request = Some(bytes);
             ActionOutcome::Passed
@@ -2158,8 +2163,8 @@ pub async fn abandon_and_assert_hidden(runner: &Runner) -> ActionOutcome {
     let Some(nonce) = session.custom_nonce else {
         return ActionOutcome::failed_setup("no custom proposal was prepared in this scenario");
     };
-    let Some(proposal_id) = session.proposal_id.clone() else {
-        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    let Some(proposal_id) = session.custom_proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no custom proposal was prepared in this scenario");
     };
 
     let client = &mut session.clients[0];
@@ -2183,7 +2188,7 @@ pub async fn abandon_and_assert_hidden(runner: &Runner) -> ActionOutcome {
         }
     }
 
-    let abandoned = match client.abandon_candidate(nonce).await {
+    let abandoned = match client.abandon_candidate(nonce, &proposal_id).await {
         Ok(request) => request,
         Err(error) => {
             return ActionOutcome::failed_product(format!(
@@ -3309,9 +3314,12 @@ pub async fn abandon_stranded_head_and_recover(runner: &Runner) -> ActionOutcome
             "the account was never funded, so it holds nothing to send",
         );
     };
+    let Some(proposal_id) = session.custom_proposal_id.clone() else {
+        return ActionOutcome::failed_setup("no custom proposal was prepared in this scenario");
+    };
     let client = &mut session.clients[0];
 
-    let abandoned = match client.abandon_candidate(head).await {
+    let abandoned = match client.abandon_candidate(head, &proposal_id).await {
         Ok(request) => request,
         Err(error) => {
             return ActionOutcome::failed_product(format!(

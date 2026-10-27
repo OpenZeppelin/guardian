@@ -352,6 +352,11 @@ message AccountRef {
 message AbandonDeltaCandidateRequest {
   string account_id = 1;
   uint64 nonce = 2;
+  // The transaction to abandon: its summary's commitment, which is the proposal id of a
+  // multisig proposal. A Guardian execution can archive the delta and take its nonce, and the
+  // abandon then answers for the archived delta. Empty from a client up to 0.18.3, which names
+  // only the nonce.
+  string proposal_id = 3;
 }
 
 message AbandonDeltaCandidateResponse {

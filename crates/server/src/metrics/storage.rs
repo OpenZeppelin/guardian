@@ -344,11 +344,13 @@ impl StorageBackend for InstrumentedStorage {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         timed(
             "request_candidate_abandon",
-            self.inner.request_candidate_abandon(account_id, nonce, now),
+            self.inner
+                .request_candidate_abandon(account_id, nonce, new_commitment, now),
         )
         .await
     }

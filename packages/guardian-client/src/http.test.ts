@@ -881,7 +881,7 @@ describe('GuardianHttpClient', () => {
         }),
       });
 
-      const result = await client.abandonCandidate('0x' + 'a'.repeat(30), 7);
+      const result = await client.abandonCandidate('0x' + 'a'.repeat(30), 7, '0x' + 'b'.repeat(64));
 
       expect(result).toEqual({
         accountId: '0x' + 'a'.repeat(30),
@@ -899,26 +899,9 @@ describe('GuardianHttpClient', () => {
           body: JSON.stringify({
             account_id: '0x' + 'a'.repeat(30),
             nonce: 7,
+            proposal_id: '0x' + 'b'.repeat(64),
           }),
         })
-      );
-    });
-
-    it('refuses a response without the abandoned commitment', async () => {
-      client.setSigner(mockSigner);
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          account_id: '0x' + 'a'.repeat(30),
-          nonce: 7,
-          state: 'pending',
-          abandon_requested_at: '2026-07-14T12:00:00Z',
-        }),
-      });
-
-      await expect(client.abandonCandidate('0x' + 'a'.repeat(30), 7)).rejects.toThrow(
-        'abandon response carries no commitment',
       );
     });
 
@@ -939,7 +922,7 @@ describe('GuardianHttpClient', () => {
       });
 
       const error = await client
-        .abandonCandidate('0x' + 'a'.repeat(30), 7)
+        .abandonCandidate('0x' + 'a'.repeat(30), 7, '0x' + 'b'.repeat(64))
         .catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(409);
@@ -964,7 +947,7 @@ describe('GuardianHttpClient', () => {
       });
 
       const error = await client
-        .abandonCandidate('0x' + 'a'.repeat(30), 7)
+        .abandonCandidate('0x' + 'a'.repeat(30), 7, '0x' + 'b'.repeat(64))
         .catch((e) => e);
       expect(error).toBeInstanceOf(GuardianHttpError);
       expect(error.status).toBe(404);
@@ -999,6 +982,18 @@ describe('GuardianHttpClient', () => {
         ok: true,
         json: async () =>
           serverDelta({ status: 'canonical', timestamp: '2026-07-14T12:00:00Z' }),
+      });
+      expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('landed');
+    });
+
+    it('compares commitments ignoring hex case', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...serverDelta({ status: 'canonical', timestamp: '2026-07-14T12:00:00Z' }),
+          new_commitment: abandoned.toUpperCase().replace('0X', '0x'),
+        }),
       });
       expect(await client.abandonStatus('0x' + 'a'.repeat(30), 7, abandoned)).toBe('landed');
     });
@@ -2247,7 +2242,7 @@ describe('GuardianHttpClient sessions', () => {
         commitment: '0x' + 'd'.repeat(64),
       }),
     });
-    await client.abandonCandidate('0xabc', 1);
+    await client.abandonCandidate('0xabc', 1, '0x' + 'b'.repeat(64));
     expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
     expect(lastHeaders()['x-auth-format']).toBeUndefined();
     expect(session.signRequest).not.toHaveBeenCalled();

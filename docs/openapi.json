@@ -1930,6 +1930,16 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed proposal_id (invalid_commitment)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication failed or replay rejected",
             "content": {
@@ -1941,7 +1951,7 @@
             }
           },
           "404": {
-            "description": "No candidate delta at this nonce",
+            "description": "No delta at this nonce carrying the named transaction, live or archived",
             "content": {
               "application/json": {
                 "schema": {
@@ -1951,7 +1961,7 @@
             }
           },
           "409": {
-            "description": "Candidate already landed on-chain, or account paused/released",
+            "description": "Candidate already landed on-chain, account paused/released, or the candidate belongs to an active Guardian execution (GUARDIAN_EXECUTION_CONFLICT)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4352,6 +4362,10 @@
             "format": "int64",
             "description": "Nonce of the candidate delta to abandon. Requiring the explicit\ntarget prevents a stale request from releasing a newer candidate.",
             "minimum": 0
+          },
+          "proposal_id": {
+            "type": "string",
+            "description": "The transaction to abandon: its summary's commitment, which is the\nproposal id of a multisig proposal. A Guardian execution can archive\nthe delta and take its nonce, and the abandon then answers for the\narchived delta. Absent from a client up to 0.18.3, which names only\nthe nonce."
           }
         }
       },

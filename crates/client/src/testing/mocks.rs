@@ -39,6 +39,8 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// Every `abandon_delta_candidate` request body, in arrival order.
+    abandon_requests: Arc<StdMutex<Vec<AbandonDeltaCandidateRequest>>>,
     /// Every `execute_delta_proposal` request with the auth metadata it carried, in arrival
     /// order.
     execute_requests: Arc<StdMutex<Vec<SignedExecuteRequest>>>,
@@ -60,6 +62,11 @@ impl MockGuardianHandle {
     /// Every `push_delta_proposal` request received so far.
     pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
         self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// Every `abandon_delta_candidate` request received so far.
+    pub fn abandon_requests(&self) -> Vec<AbandonDeltaCandidateRequest> {
+        self.abandon_requests.lock().unwrap().clone()
     }
 
     /// Every `execute_delta_proposal` request received so far.
@@ -571,6 +578,11 @@ impl Guardian for MockGuardianService {
             metadata_str(&request, "x-auth-format"),
         ));
         let data = request.into_inner();
+        self.handle
+            .abandon_requests
+            .lock()
+            .unwrap()
+            .push(data.clone());
         let response = self
             .abandon_delta_candidate_response
             .lock()

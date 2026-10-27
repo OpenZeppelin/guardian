@@ -389,12 +389,15 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
 - `MultisigClient::request_imported_guardian_execution(&exported, request)` is new: it relays
   an exported document's approvals to Guardian before requesting execution, which
   `request_guardian_execution` alone cannot do for approvals collected off channel.
-- `MultisigClient::abandon_candidate` returns `AbandonRequest { state, commitment }` instead of
-  `AbandonRequestState`, and `abandon_status` takes `(nonce, commitment)`. A Guardian execution
-  can archive an abandoned delta and take its nonce, so the commitment identifies the abandoned
-  delta; once another delta at the nonce is canonical, the status is `Abandoned`. An abandon
-  response without a commitment (a Guardian server from 0.18.3 or earlier) is refused, so this
-  SDK needs a server from the same release.
+- `MultisigClient::abandon_candidate` takes `(nonce, proposal_id)` and returns
+  `AbandonRequest { state, commitment }` instead of `AbandonRequestState`, and `abandon_status`
+  takes `(nonce, commitment)`. A Guardian execution can archive an abandoned delta and take its
+  nonce, so the proposal id names the abandoned transaction and the commitment identifies its
+  delta; once another delta at the nonce is canonical, the status is `Abandoned`.
+  `GuardianClient::abandon_candidate` takes `(account_id, nonce, proposal_id)`, the transaction
+  summary's commitment (`tx_summary_commitment_hex`). The abandon needs a Guardian server from
+  the same release: a server from 0.18.3 or earlier does not know `proposal_id`, so it refuses
+  the signed request as unauthenticated, before recording anything.
 
 Source-level changes in the TypeScript packages:
 
@@ -423,16 +426,29 @@ Source-level changes in the TypeScript packages:
 - `requestGuardianExecution` relays the held proposal's approvals to Guardian before the
   request, so an imported, offline-signed proposal can be executed by Guardian. A Guardian
   refusal while relaying throws `GuardianExecutionRefusedError`, as one of the request does.
+- `abandonCandidate` takes the proposal id: `abandonCandidate(nonce, proposalId)` on
+  `Multisig`, `abandonCandidate(accountId, nonce, proposalId)` on `GuardianHttpClient`.
 - `AbandonCandidateResponse` carries `commitment`, and `abandonStatus` takes it:
   `abandonStatus(nonce, commitment)` on `Multisig`, `abandonStatus(accountId, nonce,
   commitment)` on `GuardianHttpClient`. Once another delta at the nonce is canonical, the status
-  is `'abandoned'`. `abandonCandidate` throws on a response without a commitment (a Guardian
-  server from 0.18.3 or earlier).
+  is `'abandoned'`. As in Rust, the abandon needs a Guardian server from the same release; a
+  server from 0.18.3 or earlier refuses it as unauthenticated, before recording anything.
 
 Server behavior that changes for every client:
 
 - The abandon response (`AbandonDeltaCandidateResponse`, HTTP `POST /delta/candidate/abandon`)
   carries the abandoned delta's `commitment`.
+- The abandon request (`AbandonDeltaCandidateRequest`, HTTP `POST /delta/candidate/abandon`)
+  takes `proposal_id`, the transaction summary's commitment. The abandon answers for the delta
+  carrying that transaction, at the nonce or archived after a Guardian execution took the
+  nonce, and records an intent only while the candidate at the nonce is still that one. A
+  delta at the nonce carrying another transaction is answered as not found.
+- Without `proposal_id` (an SDK from 0.18.3 or earlier), the abandon names whatever delta is at
+  the nonce, as before.
+- With or without `proposal_id`, an abandon never records an intent on an active Guardian
+  execution's candidate, checked inside the storage write: that is refused with
+  `GUARDIAN_EXECUTION_CONFLICT`. Naming the proposal Guardian is executing gets the same
+  refusal.
 
 - Pushing a proposal that already exists answers with the proposal as stored, not an echo of
   the push, and is refused as an invalid delta when its `transaction_request` differs from the

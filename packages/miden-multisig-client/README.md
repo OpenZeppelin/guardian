@@ -580,7 +580,9 @@ can never land. Record an abandon intent
 and poll for the resolution:
 
 ```typescript
-const accepted = await multisig.abandonCandidate(nonce);
+// The nonce the proposal was pushed with, and the proposal whose
+// transaction is abandoned.
+const accepted = await multisig.abandonCandidate(nonce, proposalId);
 console.log(accepted.state); // 'pending'
 
 // The guardian's worker confirms over a short quarantine (typically well
@@ -589,6 +591,10 @@ console.log(accepted.state); // 'pending'
 const status = await multisig.abandonStatus(nonce, accepted.commitment);
 // 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
+
+Naming the proposal needs a Guardian server from the same release: an older
+server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
 
 ### Delta History
 

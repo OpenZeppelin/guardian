@@ -124,6 +124,8 @@ export interface LiveSession {
    * the time the abandon is asserted.
    */
   customNonce?: number;
+  /** The custom proposal's id, which names the transaction the abandon releases. */
+  customProposalId?: string;
   /**
    * The producer's own serialized request. Preparing execution re-executes it
    * against the signed commitment, so the same bytes have to survive the

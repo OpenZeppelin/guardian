@@ -390,6 +390,18 @@ pub(super) async fn execution_owns_candidate(
     Ok(owning_reservation(conn, account_id, nonce).await?.is_some())
 }
 
+/// The proposal whose active, boundary-crossed execution owns the candidate
+/// at `nonce`. Callers must hold the account lock.
+pub(super) async fn candidate_owner(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+    nonce: u64,
+) -> TxResult<Option<String>> {
+    Ok(owning_reservation(conn, account_id, nonce)
+        .await?
+        .map(|reservation| reservation.proposal_id))
+}
+
 async fn owning_reservation(
     conn: &mut AsyncPgConnection,
     account_id: &str,

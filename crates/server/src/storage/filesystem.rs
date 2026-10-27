@@ -1135,6 +1135,7 @@ impl StorageBackend for FilesystemService {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         let path = self.get_delta_path(account_id, nonce);
@@ -1144,6 +1145,9 @@ impl StorageBackend for FilesystemService {
         // the intent annotation can neither clobber a concurrent status
         // transition nor lose worker-owned counters.
         let _guard = self.delta_write_lock.lock().await;
+        if let Some(proposal_id) = self.candidate_owner(account_id, nonce).await? {
+            return Ok(AbandonIntent::OwnedByExecution { proposal_id });
+        }
 
         let content = match fs::read_to_string(&path).await {
             Ok(content) => content,
@@ -1155,7 +1159,7 @@ impl StorageBackend for FilesystemService {
         let mut delta: DeltaObject = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
 
-        if !delta.status.is_candidate() {
+        if !delta.status.is_candidate() || delta.new_commitment.as_deref() != Some(new_commitment) {
             return Ok(AbandonIntent::NotCandidate);
         }
         if let Some(requested_at) = delta.status.abandon_requested_at() {
@@ -2364,11 +2368,22 @@ impl FilesystemService {
     /// Whether `delta` is the candidate of an unresolved boundary-crossed
     /// execution. Callers must hold `delta_write_lock`.
     async fn execution_owns_candidate(&self, account_id: &str, nonce: u64) -> Result<bool, String> {
+        Ok(self.candidate_owner(account_id, nonce).await?.is_some())
+    }
+
+    /// The proposal whose active, boundary-crossed execution owns the
+    /// candidate at `nonce`. Callers must hold `delta_write_lock`.
+    async fn candidate_owner(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<Option<String>, String> {
         Ok(self
             .read_executions(account_id)
             .await?
-            .iter()
-            .any(|record| record.owns_candidate(nonce)))
+            .into_iter()
+            .find(|record| record.owns_candidate(nonce))
+            .map(|record| record.reservation.proposal_id))
     }
 
     /// Persist `committed` and release the reservation whose candidate was
@@ -3531,7 +3546,7 @@ mod tests {
         storage.submit_delta(&delta).await.expect("submit works");
 
         let intent = storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("intent recording works");
         assert_eq!(intent, AbandonIntent::Recorded);
@@ -3542,6 +3557,29 @@ mod tests {
             stored.status.abandon_requested_at(),
             Some("2024-11-14T12:05:00Z")
         );
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_leaves_another_candidate_at_the_nonce() {
+        // A candidate that took the nonce meanwhile (a Guardian execution's)
+        // is never marked.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let intent = storage
+            .request_candidate_abandon(account_id, 1, "0xother", "2024-11-14T12:05:00Z")
+            .await
+            .expect("call works");
+        assert_eq!(intent, AbandonIntent::NotCandidate);
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert_eq!(stored.status.abandon_requested_at(), None);
     }
 
     #[tokio::test]
@@ -3557,11 +3595,11 @@ mod tests {
         storage.submit_delta(&delta).await.expect("submit works");
 
         storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("first request works");
         let retry = storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:09:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:09:00Z")
             .await
             .expect("retry works");
         assert_eq!(
@@ -3586,7 +3624,7 @@ mod tests {
         storage.submit_delta(&delta).await.expect("submit works");
 
         let intent = storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("call works");
         assert_eq!(intent, AbandonIntent::NotCandidate);
@@ -3615,7 +3653,7 @@ mod tests {
 
         // Client records the intent.
         storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("intent recording works");
 
@@ -3669,7 +3707,7 @@ mod tests {
             .expect("Failed to create storage");
 
         let intent = storage
-            .request_candidate_abandon("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1, "now")
+            .request_candidate_abandon("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1, "0x456", "now")
             .await
             .expect("call works");
         assert_eq!(intent, AbandonIntent::NotCandidate);

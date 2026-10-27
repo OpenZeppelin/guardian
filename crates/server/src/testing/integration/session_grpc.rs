@@ -199,6 +199,7 @@ async fn assert_wallet_only_rpcs(
             AbandonDeltaCandidateRequest {
                 account_id: account_id_hex.to_string(),
                 nonce: 1,
+                proposal_id: String::new(),
             },
             account_id_hex,
             key,
@@ -571,6 +572,7 @@ async fn test_grpc_wallet_only_rpcs_answer_before_the_grant_checks() {
                 AbandonDeltaCandidateRequest {
                     account_id: account_id_hex.clone(),
                     nonce: 1,
+                    proposal_id: String::new(),
                 },
                 &account_id_hex,
                 key,

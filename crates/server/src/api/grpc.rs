@@ -396,6 +396,7 @@ impl Guardian for GuardianService {
         let params = services::AbandonCandidateParams {
             account_id: data.account_id.clone(),
             nonce: data.nonce,
+            proposal_id: Some(data.proposal_id).filter(|proposal_id| !proposal_id.is_empty()),
             credentials,
         };
 
@@ -1113,6 +1114,7 @@ mod tests {
             AbandonDeltaCandidateRequest {
                 account_id: account_id.clone(),
                 nonce: 1,
+                proposal_id: String::new(),
             },
             &signer,
             &account_id,
@@ -1147,6 +1149,7 @@ mod tests {
             AbandonDeltaCandidateRequest {
                 account_id: account_id.clone(),
                 nonce: 1,
+                proposal_id: String::new(),
             },
             &signer,
             &account_id,

@@ -242,6 +242,9 @@ pub enum AbandonIntent {
     AlreadyRequested { requested_at: String },
     /// The delta is absent or no longer a candidate; nothing written.
     NotCandidate,
+    /// The candidate belongs to the active Guardian execution of
+    /// `proposal_id`, which resolves it itself; nothing written.
+    OwnedByExecution { proposal_id: String },
 }
 
 /// Outcome of a fenced candidate promotion. Promotion overwrites the
@@ -555,6 +558,11 @@ pub struct SupersededDelta {
     pub delta: DeltaObject,
     pub superseded_at: DateTime<Utc>,
 }
+
+/// A `since` for [`StorageBackend::pull_superseded_deltas`] that every
+/// archived row passes. Postgres rejects timestamps outside its range, so
+/// this is a real date, not `DateTime::MIN_UTC`.
+pub const EVERY_ARCHIVED_DELTA: DateTime<Utc> = DateTime::UNIX_EPOCH;
 
 /// How a candidate submission treats the account's queue and a parked
 /// (retained or client-abandoned) row it supersedes at its nonce.
@@ -1061,7 +1069,8 @@ pub trait StorageBackend: Send + Sync {
     /// Atomically record a client's abandon request (issue #319) on the
     /// candidate at `nonce`: sets `abandon_requested_at` while preserving
     /// every worker-owned counter, only while the delta is still a
-    /// candidate. Unfenced by design — the write is a non-destructive
+    /// candidate with `new_commitment` that no Guardian execution owns, so
+    /// a candidate that took the nonce meanwhile is never marked. Unfenced by design: the write is a non-destructive
     /// annotation; the lease-holding worker resolves the intent. An
     /// existing request timestamp is kept so retries cannot restart the
     /// abandon quarantine.
@@ -1069,6 +1078,7 @@ pub trait StorageBackend: Send + Sync {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String>;
     async fn update_delta_status(

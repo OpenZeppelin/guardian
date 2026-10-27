@@ -389,8 +389,9 @@ one), and any candidate queued behind it can never land. Record an abandon inten
 ```rust
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};
 
-// The nonce the proposal was pushed with (committed account nonce + 1).
-let request = client.abandon_candidate(nonce).await?;
+// The nonce the proposal was pushed with (committed account nonce + 1), and
+// the proposal whose transaction is abandoned.
+let request = client.abandon_candidate(nonce, &proposal_id).await?;
 assert_eq!(request.state, AbandonRequestState::Pending);
 
 // The guardian's worker confirms over a short quarantine (typically well
@@ -408,6 +409,10 @@ loop {
     }
 }
 ```
+
+Naming the proposal needs a Guardian server from the same release: an older
+server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
 
 ### Guardian Execution
 

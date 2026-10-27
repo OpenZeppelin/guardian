@@ -174,6 +174,7 @@ export interface ServerProposalsResponse {
 export interface ServerAbandonCandidateRequest {
   account_id: string;
   nonce: number;
+  proposal_id: string;
 }
 
 export interface ServerAbandonCandidateResponse {

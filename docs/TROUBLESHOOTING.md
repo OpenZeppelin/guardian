@@ -42,8 +42,8 @@ the stuck candidate's plus one, which a proposal built on the canonical state
 do) never carries; a TypeScript SDK proposal from 0.18.0 or earlier carries
 a timestamp label and is refused there too (see
 [`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
-before proposing again, with `abandon_candidate(nonce)` /
-`abandonCandidate(nonce)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
+before proposing again, with `abandon_candidate(nonce, proposal_id)` /
+`abandonCandidate(nonce, proposalId)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
 for the submission grace period to expire.
 
 ### "the amount of the asset in the vault is less than the amount to remove" when proposing or executing
@@ -827,7 +827,7 @@ Synchronous refusals of `POST /delta/proposal/execution` and the proposal-creati
 | `GUARDIAN_PROPOSAL_NOT_READY` | 409 (gRPC `FailedPrecondition`) | Fewer valid cosigner signatures than the effective threshold. |
 | `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 (gRPC `FailedPrecondition`) | The proposal was created by a self-executed client; create it again from a Guardian-executable one. |
 | `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 (gRPC `FailedPrecondition`) | Read `meta.reason`. `switch_guardian`: GUARDIAN never executes a guardian switch, even when the request sets `allow_private_note`, because only the client can finish the handoff (register the account at the new GUARDIAN and switch its endpoint); a GUARDIAN-executed switch would leave the account stuck. `private_note`: the transaction the cosigners signed creates a private output note and the request did not set `allow_private_note`; only the executing party learns a private note's details, so GUARDIAN executes one only on that opt-in, which is part of the signed request. `meta.proposal_type` names the proposal's type either way. Nothing was reserved and the proposal stays pending: execute it locally from the wallet, or, for `private_note`, request execution again with `allow_private_note` set. |
-| `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active. |
+| `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active, and to an abandon of the execution's own candidate (Guardian resolves its candidate itself). Over gRPC the abandon reports it in-band, as the response's `error_code`, without `blocking_proposal_id`. |
 | `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the same account and has not reserved it yet, the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions (default 64), a safety bound on memory, or the process is shutting down (its drain refuses every new execution). Nothing was reserved. Retryable; retry shortly. If `guardian_execution_capacity_refusals_total` keeps rising, give the task more memory before raising the bound. |
 | `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone and no execution record is left, which is also how a finished execution reads once `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` deleted its records. |
 | `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 (gRPC `InvalidArgument`) | Stored request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`. |

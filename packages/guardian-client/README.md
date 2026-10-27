@@ -161,7 +161,9 @@ behind it can never land. Record an
 abandon intent and poll for the resolution:
 
 ```typescript
-const accepted = await client.abandonCandidate(accountId, nonce);
+// `proposalId` names the transaction: its summary's commitment (the
+// proposal id of a multisig proposal).
+const accepted = await client.abandonCandidate(accountId, nonce, proposalId);
 console.log(accepted.state); // 'pending'
 
 // The guardian's worker confirms over a short quarantine that the tx did
@@ -174,6 +176,12 @@ Pass the `commitment` the abandon returned: a Guardian execution can archive
 the abandoned delta and take its nonce, so the nonce alone does not identify
 it. Once that other delta is canonical the status is `'abandoned'`, since the
 abandoned transaction can no longer land.
+
+`proposalId` is the transaction summary's commitment, the id the server gave
+the proposal when it was pushed (the `commitment` of the
+`pushDeltaProposal` response). Naming it needs a Guardian server from the
+same release: an older server does not know `proposal_id` and refuses the
+signed request as unauthenticated, before recording anything.
 
 `'retained'` means the guardian stopped actively verifying the candidate
 and released the account slot, but the on-chain outcome is still

@@ -224,6 +224,8 @@ ClientFsFlag(c) ==
     /\ UNCHANGED <<chain, stored, rows, archive, cnonce, created, zombie, cd, csup, wvars>>
 
 (* request_candidate_abandon (POST /delta/candidate/abandon), row-locked. *)
+(* The write marks only the candidate with the named new_commitment that  *)
+(* no Guardian execution owns; any candidate here over-approximates that.  *)
 Abandon ==
     /\ lock = "none"
     /\ \E r \in Candidates :

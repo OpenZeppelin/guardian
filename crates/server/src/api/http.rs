@@ -119,6 +119,14 @@ pub struct AbandonCandidateRequest {
     /// Nonce of the candidate delta to abandon. Requiring the explicit
     /// target prevents a stale request from releasing a newer candidate.
     pub nonce: u64,
+    /// The transaction to abandon: its summary's commitment, which is the
+    /// proposal id of a multisig proposal. A Guardian execution can archive
+    /// the delta and take its nonce, and the abandon then answers for the
+    /// archived delta. Absent from a client up to 0.18.3, which names only
+    /// the nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub proposal_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -789,8 +797,9 @@ pub async fn push_delta_proposal(
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Malformed proposal_id (invalid_commitment)", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "No delta at this nonce carrying the named transaction, live or archived", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Candidate already landed on-chain, account paused/released, or the candidate belongs to an active Guardian execution (GUARDIAN_EXECUTION_CONFLICT)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn abandon_candidate(
@@ -804,6 +813,9 @@ pub async fn abandon_candidate(
     let params = AbandonCandidateParams {
         account_id: payload.account_id,
         nonce: payload.nonce,
+        proposal_id: payload
+            .proposal_id
+            .filter(|proposal_id| !proposal_id.is_empty()),
         credentials: request_payload.apply_to(credentials),
     };
 
@@ -1415,6 +1427,7 @@ mod tests {
         let request = AbandonCandidateRequest {
             account_id: account_id.clone(),
             nonce: 1,
+            proposal_id: None,
         };
         let credentials = signed_credentials(&signer, &account_id, &request);
         let (status, Json(response)) =
@@ -1444,6 +1457,7 @@ mod tests {
         let request = AbandonCandidateRequest {
             account_id: account_id.clone(),
             nonce: 1,
+            proposal_id: None,
         };
         let credentials = signed_credentials(&signer, &account_id, &request);
         let err = abandon_candidate(State(state), AuthHeader(credentials), Json(request))

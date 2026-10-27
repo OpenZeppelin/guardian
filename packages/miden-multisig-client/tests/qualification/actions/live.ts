@@ -2127,6 +2127,7 @@ export async function createCustomProposal(
 
     session.proposalId = proposal.id;
     session.customNonce = Number(proposal.nonce);
+    session.customProposalId = proposal.id;
     session.customRequest = bytes;
     return { kind: 'passed' };
   } catch (error) {
@@ -2338,11 +2339,11 @@ export async function abandonAndAssertHidden(
   if (session.customNonce === undefined) {
     return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
   }
-  if (!session.proposalId) {
-    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  if (!session.customProposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
   }
   const nonce = session.customNonce;
-  const proposalId = session.proposalId;
+  const proposalId = session.customProposalId;
 
   // Established before abandoning, or the check afterwards means nothing: a
   // proposal already gone from the pending set would satisfy it without the
@@ -2366,7 +2367,7 @@ export async function abandonAndAssertHidden(
 
   let abandoned: string;
   try {
-    abandoned = (await session.multisig.abandonCandidate(nonce)).commitment;
+    abandoned = (await session.multisig.abandonCandidate(nonce, proposalId)).commitment;
   } catch (error) {
     return {
       kind: 'failed',
@@ -2997,11 +2998,14 @@ export async function abandonStrandedHeadAndRecover(
   if (!session.faucetId || !session.treasuryId) {
     return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
   }
+  if (!session.customProposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
+  }
   const head = session.customNonce;
 
   let abandoned: string;
   try {
-    abandoned = (await session.multisig.abandonCandidate(head)).commitment;
+    abandoned = (await session.multisig.abandonCandidate(head, session.customProposalId)).commitment;
   } catch (error) {
     return {
       kind: 'failed',
