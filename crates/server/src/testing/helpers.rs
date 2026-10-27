@@ -309,11 +309,8 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.validate_multisig_auth(state_json)
     }
 
-    fn approval_rules(
-        &self,
-        state_json: &serde_json::Value,
-    ) -> Result<crate::network::ApprovalRules, String> {
-        self.miden_client.approval_rules(state_json)
+    fn validate_first_state(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_first_state(state_json)
     }
 
     async fn should_update_auth(

@@ -683,6 +683,20 @@ impl NetworkClient for MidenNetworkClient {
         }
     }
 
+    fn validate_first_state(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        let account = Account::from_json(state_json)?;
+        if account.nonce() != miden_protocol::Felt::ZERO {
+            return Err(format!(
+                "nonce is {}, not 0",
+                account.nonce().as_canonical_u64()
+            ));
+        }
+        if !account.vault().is_empty() {
+            return Err("a new account's vault must be empty".to_string());
+        }
+        Ok(())
+    }
+
     fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String> {
         let account = Account::from_json(state_json)?;
         let inspector = MidenAccountInspector::new(&account);
@@ -860,18 +874,6 @@ impl NetworkClient for MidenNetworkClient {
     ) -> Result<Option<crate::network::AuthBinding>, String> {
         let account = Account::from_json(state_json)?;
         Ok(Some(MidenAccountInspector::new(&account).auth_binding()))
-    }
-
-    fn approval_rules(
-        &self,
-        state_json: &serde_json::Value,
-    ) -> Result<crate::network::ApprovalRules, String> {
-        let account = Account::from_json(state_json)?;
-        let inspector = MidenAccountInspector::new(&account);
-        Ok(crate::network::ApprovalRules {
-            binding: inspector.auth_binding(),
-            thresholds: inspector.approval_thresholds(),
-        })
     }
 
     async fn should_update_auth(
@@ -1851,23 +1853,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn approval_rules_change_with_the_signers_or_the_threshold() {
-        use crate::testing::helpers::build_guarded_multisig_account;
+    async fn validate_first_state_accepts_only_a_new_account() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
-        let signer = |value: u32| (Word::from([value, 1, 2, 3]), SignatureScheme::Falcon);
-        let guardian = (Word::from([29u32, 1, 2, 3]), SignatureScheme::Falcon);
-        let rules = |threshold: u32, signers: &[(Word, SignatureScheme)]| {
-            let account = build_guarded_multisig_account([6u8; 32], threshold, signers, guardian);
-            client.approval_rules(&account.to_json()).unwrap()
-        };
-        let two_of_three = [signer(21), signer(22), signer(23)];
+        let (new_account, _, _, _) = mixed_account_json();
+        assert_eq!(client.validate_first_state(&new_account), Ok(()));
 
-        assert_eq!(rules(2, &two_of_three), rules(2, &two_of_three));
-        assert_ne!(rules(2, &two_of_three), rules(1, &two_of_three));
-        assert_ne!(
-            rules(2, &two_of_three),
-            rules(2, &[signer(21), signer(22), signer(24)])
-        );
+        let mut existing = Account::from_json(&new_account).unwrap();
+        existing.increment_nonce(Felt::ONE).unwrap();
+        assert!(client.validate_first_state(&existing.to_json()).is_err());
     }
 
     #[tokio::test]

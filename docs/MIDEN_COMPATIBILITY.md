@@ -448,21 +448,21 @@ wallet-only. The new SDKs sign a push with the session whenever one is active.
 
 - **`/configure` registers only guarded multisig accounts.** A state without
   the multisig threshold slot is refused with `invalid_input`.
-- **Reconfiguring from the chain's state.** A reconfiguration of a released
-  account, one signed by a key the stored auth does not list, and one whose
-  state changes the stored signers, their schemes, the thresholds, the
-  GUARDIAN key or the code, must submit the account's current on-chain state.
-  Until the chain holds it the request fails with the new retryable code
-  `state_not_on_chain` (409, gRPC `FailedPrecondition`); a state the chain
-  has moved past fails with `commitment_mismatch`. A stored cosigner of an
-  active account re-registering under the stored rules reconfigures as
-  before, with no chain read.
-- **Breaking for older SDKs: switching back.** The new SDKs retry
+- **Registering from the chain's state.** `/configure` stores a state only
+  when it is the account's current on-chain state, with two exceptions: a new
+  account's first state at nonce 0, and a stored cosigner re-registering the
+  state already stored. So an account that already transacted registers here
+  for the first time (for example after switching to this GUARDIAN), and any
+  reconfiguration that changes the stored state, must submit the on-chain
+  state. Until the chain holds it the request fails with the new retryable
+  code `state_not_on_chain` (409, gRPC `FailedPrecondition`); a state the
+  chain has moved past fails with `commitment_mismatch`.
+- **Breaking for older SDKs: switching GUARDIAN.** The new SDKs retry
   `state_not_on_chain` for about 45 seconds. SDKs from 0.18.3 and earlier
-  register right after submitting a guardian switch, do not retry, and fail
-  the switch back to a GUARDIAN that released the account until the user
-  registers again once the transaction lands. Upgrade the SDKs before, or with,
-  the servers.
+  register on the new GUARDIAN right after submitting the switch, do not
+  retry, and so fail every switch to a GUARDIAN on this release until the user
+  registers again once the transaction lands. Upgrade the SDKs before, or
+  with, the servers.
 - **Stored single-key accounts can no longer re-register.** An account stored
   before `/configure` required a multisig keeps being served, but any
   `/configure` for it is refused with `invalid_input`.

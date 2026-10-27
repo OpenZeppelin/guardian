@@ -301,20 +301,19 @@ SweepWriteFails ==
 (* submit_state upsert this replaced).                                     *)
 (*                                                                         *)
 (* v: the chain vouched for the state (ensure_on_chain_state found it at   *)
-(* the head). A released account, a key the stored auth does not list and *)
-(* a change of approval rules require it. Otherwise (a stored cosigner     *)
-(* keeping the stored rules of an account not released at the first read) *)
-(* no chain read runs, and a release written since is undone only once     *)
-(* the state proves to be the head (CfgRecheck). The model does not track  *)
-(* signer sets, so either kind may submit any state that binds the account *)
-(* to this server.                                                         *)
+(* the head). Every configuration needs it except a stored cosigner        *)
+(* re-registering the stored state of an account not released at the      *)
+(* first read, which skips the chain read; a release written since is      *)
+(* undone only once the state proves to be the head (CfgRecheck). First    *)
+(* configurations are out of scope: the model starts with a stored state.  *)
 (***************************************************************************)
 CfgRead(c) ==
     /\ cfg[c].pc = "idle"
     /\ \E i \in 1..Len(chain), v \in BOOLEAN :
          /\ Key(chain[i]) = Own
          /\ v => chain[i] = ChainHead
-         /\ ~v => ~released /\ Mutation \notin {"m2", "m3"}
+         /\ ~v => ~released /\ (chain[i] = stored \/ Mutation = "m9")
+                 /\ Mutation \notin {"m2", "m3"}
          /\ cfg' = [cfg EXCEPT ![c] = [pc |-> "read", s |-> chain[i], saw |-> released,
                                         base |-> stored, v |-> v]]
     /\ UNCHANGED <<relBase, retained, st, chain, stored, promoted, released, paused, cand, acks,

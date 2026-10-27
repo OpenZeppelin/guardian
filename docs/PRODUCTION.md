@@ -416,9 +416,10 @@ behavior:
 - **The release after 0.18.3** gates multisig pushes on stored approvals,
   lets sessions sign delta pushes, registers only guarded multisig accounts,
   and adds the retryable `409 state_not_on_chain` for reconfigurations that
-  must use the chain's state (a released account, a key the stored auth does
-  not list, or a change of signers or thresholds); the new SDKs retry it,
-  older SDKs fail a switch back until the user registers again. Multisig pushes want the SDKs released first,
+  must use the chain's state (a first registration of an account that already
+  transacted, a released account, a key the stored auth does not list, or a
+  state other than the stored one); the new SDKs retry it, older SDKs fail a
+  switch to a GUARDIAN on this release until the user registers again. Multisig pushes want the SDKs released first,
   session-signed pushes want the server first; see
   [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-after-0183)
   for which clients that affects.

@@ -575,13 +575,10 @@ mod tests {
         ) -> std::result::Result<(), String> {
             unimplemented!()
         }
-        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+        fn validate_first_state(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
             unimplemented!()
         }
-        fn approval_rules(
-            &self,
-            _: &serde_json::Value,
-        ) -> std::result::Result<crate::network::ApprovalRules, String> {
+        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
             unimplemented!()
         }
         fn validate_guardian_commitment(

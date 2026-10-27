@@ -985,11 +985,11 @@ export class Multisig {
    * The initial state must be the serialized Account bytes (base64-encoded).
    * If not provided, the account's serialize() method is used.
    *
-   * GUARDIAN reconfigures an account it already holds from the on-chain
-   * state when it cannot vouch for the submitted one: the account was
-   * released, or the state changes its signers or thresholds. A state whose
-   * transaction has not landed yet is refused as `state_not_on_chain`, so the
-   * registration is retried with backoff, about 45 seconds in all.
+   * GUARDIAN stores a state only when the chain holds it, unless it is a new
+   * account's nonce-0 state or the state GUARDIAN already stores. A state
+   * whose transaction has not landed yet, such as one right after a guardian
+   * switch, is refused as `state_not_on_chain`, so the registration is retried
+   * with backoff, about 45 seconds in all.
    *
    * @param initialStateBase64 - Optional base64-encoded serialized Account.¡
    */

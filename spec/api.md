@@ -35,25 +35,25 @@
 - `POST /configure` registers only guarded multisig accounts: an
   `initial_state` without the multisig threshold slot is refused with
   `invalid_input`.
-- A reconfiguration of an existing account is accepted only when
-  `initial_state` is the account's current on-chain state if any of these
-  holds: the account was released; the request is signed by a key its stored
-  auth does not list; or `initial_state` changes the stored state's approval
-  rules (its signers, their schemes, its default or per-procedure thresholds,
-  its GUARDIAN key or its code). Until the chain holds the submitted state the
+- `initial_state` must be the account's current on-chain state, with two
+  exceptions: a first configuration at nonce 0, which the account seed binds
+  to its account id (decoding checks it) and whose vault must be empty
+  (`invalid_input` otherwise), whoever claimed the account id before; and a
+  stored cosigner of an active
+  account re-registering the state already stored. Every other configuration
+  needs the chain: a first configuration past nonce 0 (an account that already
+  transacted, for example one switching to this GUARDIAN), a released
+  account, a key the stored auth does not list, and any state other than the
+  stored one. Until the chain holds the submitted state the
   request fails with `state_not_on_chain` (HTTP 409 / gRPC
   `FailedPrecondition`, `meta.retryable: true`), for example right after the
   transaction is submitted; retry once it lands. Both SDKs retry it for about
   45 seconds. A state the chain has already moved past fails with
   `commitment_mismatch` (`expected` is the on-chain commitment), since waiting
-  does not help. `rpc_unavailable` when the chain cannot be read. A stored
-  cosigner of an active account that keeps the stored approval rules
-  reconfigures without a chain read, from a state ahead of the chain
-  included. Such a reconfiguration fails with `commitment_mismatch` when a
-  delta was promoted after the stored rules were compared, and with
-  `state_not_on_chain` when the account was released while it ran; the
-  retry of the latter is held to the chain. A nonce-0 state is bound to its account id by the account
-  seed, which decoding checks.
+  does not help. `rpc_unavailable` when the chain cannot be read. A
+  configuration that skipped the chain read fails with `state_not_on_chain`
+  when the account was released while it ran and its state is not the chain
+  head; the retry of it is held to the chain.
 - A first configuration that fails after its claim (a storage error before the
   state write) leaves metadata with no stored state. Such an account is not
   listed by `GET /state/lookup` and is skipped by the release sweep. A retry of

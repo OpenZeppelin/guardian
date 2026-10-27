@@ -124,7 +124,7 @@
             }
           },
           "409": {
-            "description": "A reconfiguration that must submit the account's on-chain state (released account, key the stored auth does not list, or changed signers or thresholds) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)",
+            "description": "A reconfiguration that must submit the account's on-chain state (first registration past nonce 0, released account, key the stored auth does not list, or a state other than the stored one) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)",
             "content": {
               "application/json": {
                 "schema": {

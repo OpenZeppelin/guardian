@@ -1,7 +1,7 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
 use crate::metadata::auth::{Auth, Credentials};
-use crate::network::{AppliedState, ApprovalRules, NetworkClient, StateVerification};
+use crate::network::{AppliedState, NetworkClient, StateVerification};
 use crate::state_object::{StateHead, StateObject};
 use crate::storage::StorageBackend;
 use async_trait::async_trait;
@@ -39,9 +39,6 @@ pub struct MockNetworkClient {
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_guardian_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_multisig_auth_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
-    /// Answers for `approval_rules`, consumed last first. Once none is
-    /// queued every state reads as the same default rules.
-    pub approval_rules_responses: Arc<StdMutex<Vec<StdResult<ApprovalRules, String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
@@ -94,11 +91,6 @@ impl MockNetworkClient {
             .lock()
             .unwrap()
             .push(response);
-        self
-    }
-
-    pub fn with_approval_rules(self, response: StdResult<ApprovalRules, String>) -> Self {
-        self.approval_rules_responses.lock().unwrap().push(response);
         self
     }
 
@@ -343,20 +335,16 @@ impl NetworkClient for MockNetworkClient {
             .unwrap_or(Ok(()))
     }
 
+    fn validate_first_state(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
+        Ok(())
+    }
+
     fn validate_multisig_auth(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
         self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
-    }
-
-    fn approval_rules(&self, _state_json: &serde_json::Value) -> StdResult<ApprovalRules, String> {
-        self.approval_rules_responses
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap_or_else(|| Ok(ApprovalRules::default()))
     }
 
     fn extract_guardian_commitment(

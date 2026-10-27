@@ -145,25 +145,6 @@ impl<'a> MidenAccountInspector<'a> {
         }
     }
 
-    /// What decides how many approvals a transaction needs: the default
-    /// threshold, the per-procedure overrides (by map root) and the account
-    /// code whose procedures the overrides name. A slot the state lacks
-    /// reads as empty.
-    pub fn approval_thresholds(&self) -> Vec<String> {
-        let storage = self.account.storage();
-        let slot_value = |name: &StorageSlotName| {
-            storage
-                .get(name)
-                .map(|slot| slot.value().to_hex())
-                .unwrap_or_default()
-        };
-        vec![
-            slot_value(AuthGuardedMultisig::threshold_config_slot()),
-            slot_value(AuthGuardedMultisig::procedure_thresholds_slot()),
-            self.account.code().commitment().to_hex(),
-        ]
-    }
-
     /// Check if a public key exists in the multisig signer map.
     pub fn pubkey_exists(&self, target_pubkey: &str) -> bool {
         self.extract_pubkeys().iter().any(|pk| pk == target_pubkey)

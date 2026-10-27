@@ -172,7 +172,7 @@ pub struct ConfigureResponse {
         (status = 400, description = "Invalid request", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "New account uses a signature scheme excluded by GUARDIAN_ALLOWED_ACCOUNT_SCHEMES (`signature_scheme_not_allowed`; meta.scheme and meta.allowed_schemes)", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "A reconfiguration that must submit the account's on-chain state (released account, key the stored auth does not list, or changed signers or thresholds) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "A reconfiguration that must submit the account's on-chain state (first registration past nonce 0, released account, key the stored auth does not list, or a state other than the stored one) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)", body = crate::openapi::ApiErrorResponse),
         (status = 502, description = "The chain could not be read to check whether the stored state landed (re-onboarding with an older state) or whether a reconfiguration's state is on chain (`rpc_unavailable`)", body = crate::openapi::ApiErrorResponse),
     )
 )]

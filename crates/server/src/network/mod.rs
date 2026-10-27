@@ -273,16 +273,6 @@ pub struct AuthBinding {
     pub guardian_scheme: Option<SignatureScheme>,
 }
 
-/// The approval rules an account state stores: its [`AuthBinding`] and
-/// the thresholds the signers are held to, in the network's own encoding,
-/// which is compared and never read. Two states of one account compare
-/// equal when they let the same signers approve under the same thresholds.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ApprovalRules {
-    pub binding: AuthBinding,
-    pub thresholds: Vec<String>,
-}
-
 #[async_trait]
 pub trait NetworkClient: Send + Sync {
     /// Commitment (hex) and nonce of the account encoded in `state_json`,
@@ -378,12 +368,11 @@ pub trait NetworkClient: Send + Sync {
     /// stores none.
     fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String>;
 
-    /// Who may approve the account's transactions and how many approvals
-    /// each needs, as the state in `state_json` stores them (see
-    /// [`ApprovalRules`]). `/configure` compares the submitted state's rules
-    /// with the stored state's before it trusts a stored cosigner's state
-    /// without reading the chain.
-    fn approval_rules(&self, state_json: &serde_json::Value) -> Result<ApprovalRules, String>;
+    /// Validate that `state_json` is a state a new account can have: a
+    /// first state at nonce 0 starts with an empty vault. `/configure`
+    /// stores such a state with no chain read, since its seed binds the rest
+    /// of it to its account id.
+    fn validate_first_state(&self, state_json: &serde_json::Value) -> Result<(), String>;
 
     /// Extract the guardian public key commitment stored in the account
     /// state, or `Ok(None)` when the state carries no guardian binding

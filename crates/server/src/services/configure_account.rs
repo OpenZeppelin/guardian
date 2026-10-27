@@ -290,27 +290,6 @@ pub async fn configure_account(
     )
     .await?;
 
-    // A reconfiguration takes its approval rules from the chain, so the
-    // submitted state must be the account's on-chain state, whenever the
-    // stored account cannot vouch for them: it was released, and its stored
-    // signers may have changed since; the requesting key is not one of its
-    // stored signers; or the submitted state changes who may approve or how
-    // many approvals a transaction needs. A stored cosigner re-registering
-    // under the stored rules needs no chain read.
-    let vouch = match &existing {
-        None => Vouch::NoStoredState,
-        Some(existing)
-            if existing.released_at.is_some()
-                || existing.auth.signer_scheme(&signer_commitment).is_none() =>
-        {
-            Vouch::Chain
-        }
-        Some(_) => vouch_by_stored_rules(state, &params.account_id, &params.initial_state).await?,
-    };
-    if let Vouch::Chain = vouch {
-        ensure_on_chain_state(state, &params.account_id, &head.commitment).await?;
-    }
-
     // The stored state this re-onboarding replaces, read only once the
     // request is authenticated and fresh. The write below refuses to
     // overwrite a state promoted after this read.
@@ -319,31 +298,47 @@ pub async fn configure_account(
         None => None,
     };
 
-    // The stored rules vouch only for the state they were read from: one
-    // promoted since, such as a landed removal of the requesting signer, has
-    // rules of its own, and the write below must not replace it.
-    if let Vouch::StoredRules { commitment } = &vouch
-        && stored_base.as_ref().map(|stored| &stored.commitment) != Some(commitment)
-    {
-        let current = stored_base
-            .as_ref()
-            .map_or_else(String::new, |stored| stored.commitment.clone());
-        tracing::warn!(
-            account_id = %params.account_id,
-            compared = %commitment,
-            current = %current,
-            "The stored state moved after its approval rules were compared; refusing to overwrite it"
-        );
-        return Err(GuardianError::CommitmentMismatch {
-            expected: current,
-            actual: head.commitment.clone(),
-        });
+    // Guardian stores a state only once something vouches for it. A first
+    // state at nonce 0 vouches for itself: its seed binds its code and
+    // storage, signers and thresholds included, to its account id, and its
+    // vault is empty. Its own signers register it whoever claimed the
+    // account id first. Any other state needs the chain whenever the stored
+    // account cannot vouch for it: it was released, and its stored signers
+    // may have changed since; the requesting key is not one of its stored
+    // signers; or the submitted state is not the stored one.
+    let vouch = match (&existing, &stored_base) {
+        (_, None) if head.nonce == Some(0) => Vouch::FirstState,
+        (Some(existing), _)
+            if existing.released_at.is_some()
+                || existing.auth.signer_scheme(&signer_commitment).is_none() =>
+        {
+            Vouch::Chain
+        }
+        (Some(_), Some(stored)) if stored.commitment == head.commitment => Vouch::StoredState,
+        _ => Vouch::Chain,
+    };
+    match vouch {
+        Vouch::Chain => ensure_on_chain_state(state, &params.account_id, &head.commitment).await?,
+        Vouch::FirstState => state
+            .network_client
+            .validate_first_state(&params.initial_state)
+            .map_err(|e| {
+                tracing::warn!(
+                    account_id = %params.account_id,
+                    error = %e,
+                    "initial_state is not a valid first account state in configure_account"
+                );
+                GuardianError::InvalidInput(format!("Invalid first state in initial_state: {e}"))
+            })?,
+        Vouch::StoredState => {}
     }
 
     // A state older than the stored one may replace it only while the stored
     // state never landed (an optimistic-mode state ahead of the chain): once
     // the chain reached it, the older state is a stale wallet's, and storing
-    // it would roll back a promoted delta, a guardian switch included.
+    // it would roll back a promoted delta, a guardian switch included. The
+    // vouch above already refuses such a state against an exact chain read;
+    // this check guards against a node lagging behind the stored state.
     if let Some(stored) = &stored_base
         && let (Some(stored_nonce), Some(submitted_nonce)) = (stored.nonce, head.nonce)
         && submitted_nonce < stored_nonce
@@ -453,15 +448,15 @@ pub async fn configure_account(
     // runs after `submit_state`, conditional on the stored state, atomically,
     // so whichever state is stored last decides: a release proved against an
     // older state is undone here, and a switch delta that replaced this state
-    // after `submit_state` keeps its release. A state the stored rules
-    // vouched for was checked against an account that was not released; a
+    // after `submit_state` keeps its release. A state the chain did not
+    // vouch for was checked against an account that was not released; a
     // release written since (the release sweep proving a switch against the
     // previous state) is undone only once the submitted state proves to be
     // the account's on-chain state, and stands otherwise.
     let chain_vouched = match vouch {
         Vouch::Chain => true,
-        Vouch::StoredRules { .. } | Vouch::NoStoredState if created => false,
-        Vouch::StoredRules { .. } | Vouch::NoStoredState => {
+        Vouch::StoredState | Vouch::FirstState if created => false,
+        Vouch::StoredState | Vouch::FirstState => {
             let current = state.metadata.get(&params.account_id).await.map_err(|e| {
                 GuardianError::StorageError(format!("Failed to re-read account metadata: {e}"))
             })?;
@@ -605,62 +600,15 @@ async fn stored_head(state: &AppState, account_id: &str) -> Result<Option<StateH
     }))
 }
 
-/// What vouches for a configuration's approval rules.
+/// What vouches for the state a configuration stores.
 enum Vouch {
     /// The chain: the submitted state must be the account's on-chain state.
     Chain,
-    /// The stored state with `commitment`, whose approval rules the
-    /// submitted state keeps.
-    StoredRules { commitment: String },
-    /// Nothing needs to: a new account, or one with no stored state yet
-    /// (an unfinished first configuration).
-    NoStoredState,
-}
-
-/// Vouches for `submitted_state` by the stored state when it keeps the
-/// stored state's approval rules, and by the chain otherwise. A stored
-/// state whose rules cannot be read keeps none.
-async fn vouch_by_stored_rules(
-    state: &AppState,
-    account_id: &str,
-    submitted_state: &serde_json::Value,
-) -> Result<Vouch> {
-    let stored = match state.storage.pull_state(account_id).await {
-        Ok(stored) => stored,
-        Err(e) if crate::storage::is_storage_not_found(&e) => return Ok(Vouch::NoStoredState),
-        Err(e) => {
-            tracing::error!(
-                account_id = %account_id,
-                error = %e,
-                "Failed to read the stored state in configure_account"
-            );
-            return Err(GuardianError::StorageError(format!(
-                "Failed to read the stored state: {e}"
-            )));
-        }
-    };
-    let submitted = state
-        .network_client
-        .approval_rules(submitted_state)
-        .map_err(|e| {
-            GuardianError::InvalidInput(format!(
-                "Could not read the approval rules of initial_state: {e}"
-            ))
-        })?;
-    match state.network_client.approval_rules(&stored.state_json) {
-        Ok(rules) if rules == submitted => Ok(Vouch::StoredRules {
-            commitment: stored.commitment,
-        }),
-        Ok(_) => Ok(Vouch::Chain),
-        Err(e) => {
-            tracing::warn!(
-                account_id = %account_id,
-                error = %e,
-                "Stored state's approval rules do not decode; reconfiguration requires the on-chain state"
-            );
-            Ok(Vouch::Chain)
-        }
-    }
+    /// The stored state: the submitted state is the one already stored.
+    StoredState,
+    /// Itself: a first state at nonce 0, whose seed binds its code and
+    /// storage to its account id and whose vault is empty.
+    FirstState,
 }
 
 /// Requires `commitment` to be the account's current on-chain state. An
@@ -754,7 +702,6 @@ async fn stored_state_landed(state: &AppState, account_id: &str, commitment: &st
 mod tests {
     use super::*;
     use crate::ack::AckRegistry;
-    use crate::network::{ApprovalRules, AuthBinding};
     use crate::state_object::StateHead;
     use crate::storage::StorageBackend;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
@@ -797,6 +744,116 @@ mod tests {
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         }
+    }
+
+    /// A first configuration of an account at `nonce`, which the chain
+    /// answers `chain` for. With `squatted`, another key already claimed the
+    /// account id with a configuration that never stored a state.
+    async fn first_configuration_at(
+        nonce: u64,
+        chain: StateVerification,
+        squatted: bool,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockNetworkClient,
+        MockStorageBackend,
+        MockMetadataStore,
+    ) {
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
+            generate_falcon_signature(account_id_hex);
+        let network_client = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_get_state_head(Ok(head("0x5678", nonce)))
+            .with_verify_commitment(Ok(chain));
+        let storage_backend = MockStorageBackend::new().with_submit_state(Ok(()));
+        let claimed = squatted.then(|| {
+            configured(
+                account_id_hex,
+                Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![format!("0x{}", "ab".repeat(32))],
+                },
+            )
+        });
+        let metadata_store = MockMetadataStore::new()
+            .with_get(Ok(claimed))
+            .with_set(Ok(()));
+        let state = create_test_app_state(
+            network_client.clone(),
+            storage_backend.clone(),
+            metadata_store.clone(),
+        )
+        .await;
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id_hex.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment_hex],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state: serde_json::from_str(include_str!(
+                    "../testing/fixtures/account.json"
+                ))
+                .unwrap(),
+                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
+            },
+        )
+        .await;
+        (result, network_client, storage_backend, metadata_store)
+    }
+
+    /// A state past nonce 0 carries no seed binding it to its account id, so
+    /// a first configuration with one stores it only once the chain holds it:
+    /// anyone could otherwise claim an account id its owner has not
+    /// registered yet.
+    #[tokio::test]
+    async fn first_configuration_past_nonce_zero_requires_the_on_chain_state() {
+        let (result, _, storage, _) =
+            first_configuration_at(1, StateVerification::Absent, false).await;
+        assert!(
+            matches!(&result, Err(error @ GuardianError::StateNotOnChain { .. }) if error.retryable()),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
+
+        let (result, network, storage, _) =
+            first_configuration_at(1, StateVerification::Match, false).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(network.get_verify_commitment_calls().len(), 1);
+        assert_eq!(storage.get_submit_state_calls().len(), 1);
+    }
+
+    /// A nonce-0 state is bound to its account id by its seed, so a new
+    /// account registers before it is deployed, with no chain read.
+    #[tokio::test]
+    async fn first_configuration_at_nonce_zero_needs_no_chain_read() {
+        let (result, network, storage, _) =
+            first_configuration_at(0, StateVerification::Absent, false).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(network.get_verify_commitment_calls().is_empty());
+        assert_eq!(storage.get_submit_state_calls().len(), 1);
+    }
+
+    /// A claim another key left behind, refused before it stored a state,
+    /// does not block the account's own signers: their nonce-0 state is
+    /// bound to the account id, so it registers, and its declared signers
+    /// replace the claim's.
+    #[tokio::test]
+    async fn first_configuration_at_nonce_zero_registers_over_a_squatted_claim() {
+        let (result, network, storage, metadata) =
+            first_configuration_at(0, StateVerification::Absent, true).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(network.get_verify_commitment_calls().is_empty());
+        assert_eq!(storage.get_submit_state_calls().len(), 1);
+        let set_calls = metadata.get_set_calls();
+        assert_eq!(set_calls.len(), 1);
+        assert_ne!(
+            set_calls[0].auth.cosigner_commitments(),
+            vec![format!("0x{}", "ab".repeat(32))]
+        );
     }
 
     #[tokio::test]
@@ -1542,8 +1599,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum Reconfigurer {
         StoredCosigner,
-        StoredCosignerChangingTheRules,
-        StoredCosignerRacingAPromotion,
+        StoredCosignerChangingTheState,
         ReleasedStoredCosigner,
         NewSigner,
     }
@@ -1565,35 +1621,27 @@ mod tests {
         let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
             generate_falcon_signature(account_id_hex);
         let (stored_cosigner, released_at) = match reconfigurer {
-            Reconfigurer::StoredCosigner
-            | Reconfigurer::StoredCosignerChangingTheRules
-            | Reconfigurer::StoredCosignerRacingAPromotion => (commitment_hex.clone(), None),
+            Reconfigurer::StoredCosigner | Reconfigurer::StoredCosignerChangingTheState => {
+                (commitment_hex.clone(), None)
+            }
             Reconfigurer::ReleasedStoredCosigner => {
                 (commitment_hex.clone(), Some(chrono::Utc::now()))
             }
             Reconfigurer::NewSigner => (TestSigner::new().commitment_hex, None),
         };
-        let mut network_client = MockNetworkClient::new()
+        let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_get_state_head(Ok(head("0x5678", 3)))
             .with_verify_commitment(Ok(chain));
-        if let Reconfigurer::StoredCosignerChangingTheRules = reconfigurer {
-            network_client = network_client
-                .with_approval_rules(Ok(ApprovalRules {
-                    binding: AuthBinding::default(),
-                    thresholds: vec!["2".to_string()],
-                }))
-                .with_approval_rules(Ok(ApprovalRules {
-                    binding: AuthBinding::default(),
-                    thresholds: vec!["1".to_string()],
-                }));
-        }
-        let mut storage_backend = MockStorageBackend::new()
+        let stored_commitment = match reconfigurer {
+            Reconfigurer::StoredCosigner => "0x5678",
+            Reconfigurer::StoredCosignerChangingTheState
+            | Reconfigurer::ReleasedStoredCosigner
+            | Reconfigurer::NewSigner => "0x1234",
+        };
+        let storage_backend = MockStorageBackend::new()
             .with_submit_state(Ok(()))
-            .with_pull_state(Ok(stored_state(account_id_hex, "0x1234")));
-        if let Reconfigurer::StoredCosignerRacingAPromotion = reconfigurer {
-            storage_backend = storage_backend.with_pull_state_head(head("0x9999", 2));
-        }
+            .with_pull_state(Ok(stored_state(account_id_hex, stored_commitment)));
         let metadata_store = MockMetadataStore::new()
             .with_get(Ok(Some(AccountMetadata {
                 account_id: account_id_hex.to_string(),
@@ -1697,13 +1745,13 @@ mod tests {
         assert_eq!(network.get_verify_commitment_calls().len(), 1);
     }
 
-    /// A stored cosigner may not change who approves or how many approvals
-    /// a transaction needs with a state the chain does not hold: a single
-    /// cosigner could otherwise register a signer set of only itself.
+    /// A stored cosigner may not store a state other than the stored one
+    /// unless the chain holds it: a single cosigner could otherwise register a
+    /// signer set of only itself, or contents the account never had.
     #[tokio::test]
-    async fn configure_by_a_stored_cosigner_changing_the_rules_requires_the_on_chain_state() {
+    async fn configure_by_a_stored_cosigner_changing_the_state_requires_the_on_chain_state() {
         let (result, _, storage, _) = reconfigure_by(
-            Reconfigurer::StoredCosignerChangingTheRules,
+            Reconfigurer::StoredCosignerChangingTheState,
             StateVerification::Mismatch {
                 on_chain: "0x1234".to_string(),
             },
@@ -1717,35 +1765,12 @@ mod tests {
         assert!(storage.get_replace_state_calls().is_empty());
 
         let (result, network, _, _) = reconfigure_by(
-            Reconfigurer::StoredCosignerChangingTheRules,
+            Reconfigurer::StoredCosignerChangingTheState,
             StateVerification::Match,
         )
         .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(network.get_verify_commitment_calls().len(), 1);
-    }
-
-    /// The stored rules vouch only for the state they were read from. A state
-    /// promoted between that read and the write, such as a landed removal of
-    /// the requesting cosigner, is not replaced under the older rules.
-    #[tokio::test]
-    async fn configure_refuses_to_replace_a_state_promoted_after_the_rules_were_compared() {
-        let (result, network, storage, _) = reconfigure_by(
-            Reconfigurer::StoredCosignerRacingAPromotion,
-            StateVerification::Match,
-        )
-        .await;
-        assert!(
-            matches!(
-                &result,
-                Err(GuardianError::CommitmentMismatch { expected, actual })
-                    if expected == "0x9999" && actual == "0x5678"
-            ),
-            "{result:?}"
-        );
-        assert!(network.get_verify_commitment_calls().is_empty());
-        assert!(storage.get_submit_state_calls().is_empty());
-        assert!(storage.get_replace_state_calls().is_empty());
     }
 
     /// A state the chain has already moved past is refused as a mismatch,
@@ -1829,11 +1854,9 @@ mod tests {
         .await
     }
 
-    /// A stored cosigner re-onboards under the stored approval rules as
-    /// before, from a state ahead of the chain included, without a chain
-    /// read.
+    /// A stored cosigner re-registering the stored state needs no chain read.
     #[tokio::test]
-    async fn configure_lets_a_stored_cosigner_reconfigure_without_a_chain_read() {
+    async fn configure_lets_a_stored_cosigner_re_register_the_stored_state_without_a_chain_read() {
         let (result, network, _, _) = reconfigure_by(
             Reconfigurer::StoredCosigner,
             StateVerification::Mismatch {
@@ -2202,19 +2225,16 @@ mod tests {
         assert_eq!(set_calls.len(), 1);
         assert_eq!(set_calls[0].paused_at, Some(paused_at));
         assert_eq!(set_calls[0].paused_reason.as_deref(), Some("compliance"));
-        assert!(
-            metadata_store
-                .clear_released_calls
-                .lock()
-                .unwrap()
-                .is_empty(),
-            "only a state the chain vouched for clears a release"
+        assert_eq!(
+            metadata_store.clear_released_calls.lock().unwrap().clone(),
+            vec![(account_id_hex.to_string(), "0x5678".to_string())],
+            "a state the chain vouched for clears a release, conditional on the state it wrote"
         );
     }
 
     /// The release sweep released the account between this request's first
     /// metadata read, which saw it active, and its state write. A stored
-    /// cosigner's state was vouched for by the stored rules, not the chain,
+    /// cosigner re-registering the stored state skipped the chain read,
     /// so the release is undone only when the submitted state proves to be
     /// the account's on-chain state; otherwise it stands and the request is
     /// refused.
