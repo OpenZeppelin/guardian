@@ -665,7 +665,9 @@ async fn vouch_by_stored_rules(
 
 /// Requires `commitment` to be the account's current on-chain state. An
 /// earlier on-chain state does not qualify: its signer set may have changed
-/// since, and since the chain has moved past it, waiting does not help.
+/// since, and since the chain has moved past it, waiting does not help. A
+/// history hit is checked against the head once more, since the transaction
+/// that ends at `commitment` may have landed after the first head read.
 async fn ensure_on_chain_state(state: &AppState, account_id: &str, commitment: &str) -> Result<()> {
     let unavailable = |e: String| {
         GuardianError::RpcUnavailable(format!(
@@ -691,6 +693,14 @@ async fn ensure_on_chain_state(state: &AppState, account_id: &str, commitment: &
             .found_in_block
             .is_some()
     {
+        if let StateVerification::Match = state
+            .network_client
+            .verify_commitment(account_id, commitment, RpcReadMode::Configured)
+            .await
+            .map_err(unavailable)?
+        {
+            return Ok(());
+        }
         tracing::warn!(
             account_id = %account_id,
             submitted = %commitment,
@@ -1742,6 +1752,35 @@ mod tests {
     /// not as a state still on its way: waiting does not help.
     #[tokio::test]
     async fn configure_refuses_a_state_behind_the_chain_as_a_mismatch() {
+        let result = reconfigure_with_a_history_hit(StateVerification::Mismatch {
+            on_chain: "0x9999".to_string(),
+        })
+        .await;
+        assert!(
+            matches!(
+                &result,
+                Err(GuardianError::CommitmentMismatch { expected, actual })
+                    if expected == "0x9999" && actual == "0x5678"
+            ),
+            "{result:?}"
+        );
+    }
+
+    /// The transaction ending at the submitted state can land between the
+    /// head read and the history search, which then finds it: the state is
+    /// the head by then, so the reconfiguration is accepted.
+    #[tokio::test]
+    async fn configure_accepts_a_state_that_landed_during_the_history_search() {
+        let result = reconfigure_with_a_history_hit(StateVerification::Match).await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// A key the stored auth does not list reconfigures with a state the
+    /// first head read does not find but the history search does; the
+    /// second head read answers `second_read`.
+    async fn reconfigure_with_a_history_hit(
+        second_read: StateVerification,
+    ) -> Result<ConfigureAccountResult> {
         use crate::testing::helpers::{TestSigner, generate_falcon_signature};
 
         let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
@@ -1750,6 +1789,7 @@ mod tests {
         let network_client = MockNetworkClient::new()
             .with_validate_credential(Ok(()))
             .with_get_state_head(Ok(head("0x5678", 3)))
+            .with_verify_commitment(Ok(second_read))
             .with_verify_commitment(Ok(StateVerification::Mismatch {
                 on_chain: "0x9999".to_string(),
             }))
@@ -1765,9 +1805,13 @@ mod tests {
                 },
             ))))
             .with_set(Ok(()));
-        let state =
-            create_test_app_state(network_client, MockStorageBackend::new(), metadata_store).await;
-        let result = configure_account(
+        let state = create_test_app_state(
+            network_client,
+            MockStorageBackend::new().with_submit_state(Ok(())),
+            metadata_store,
+        )
+        .await;
+        configure_account(
             &state,
             ConfigureAccountParams {
                 account_id: account_id_hex.to_string(),
@@ -1782,15 +1826,7 @@ mod tests {
                 credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
             },
         )
-        .await;
-        assert!(
-            matches!(
-                &result,
-                Err(GuardianError::CommitmentMismatch { expected, actual })
-                    if expected == "0x9999" && actual == "0x5678"
-            ),
-            "{result:?}"
-        );
+        .await
     }
 
     /// A stored cosigner re-onboards under the stored approval rules as
