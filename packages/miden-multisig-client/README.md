@@ -322,22 +322,43 @@ accept the same `string | SignerSpec` entries, and
 `signers` (and the guardian's in `guardianScheme`) next to the unchanged
 `signerCommitments`. `Multisig.signers` holds the same list.
 
-GUARDIAN currently binds one scheme to each account, so a mixed-scheme account
-cannot yet be registered or operated through it:
-`Multisig.registerOnGuardian()`, the add-signer, remove-signer and
-change-threshold proposals, and the switch-GUARDIAN proposals throw
-`SignerSchemeMismatchError` (`code: 'signer_scheme_mismatch'`) whenever an
-approver's registered scheme, or the guardian's (`Multisig.guardianScheme`),
-differs from the acting signer's, instead of rewriting the other schemes. The
-guardian check matters even for a single-scheme approver set: all-ECDSA
-`SignerSpec`s with `signatureScheme` omitted get a Falcon guardian, and
-registering that account under ECDSA would have GUARDIAN sign acknowledgements
-the account verifies as Falcon.
+Such an account is registered and operated through GUARDIAN like any other
+(issue #576; it needs a GUARDIAN with per-signer schemes, the release after
+0.18.3):
 
-`createAddSignerProposal` adds the new signer under the acting signer's
-scheme. Pass a `SignerSpec` to state the new signer's scheme: one that differs
-from the acting signer's throws `SignerSchemeMismatchError` before the
-proposal is built.
+- `registerOnGuardian()` registers the schemes the account stores: the
+  single-scheme auth when every approver uses the GUARDIAN's scheme
+  (`Multisig.guardianScheme`), the per-signer `Miden` auth otherwise. A GUARDIAN
+  up to 0.18.3 refuses the per-signer auth, reported as
+  `GuardianMixedSchemesUnsupportedError` (`code: 'mixed_schemes_unsupported'`).
+  Note that `signatureScheme` sets the GUARDIAN's scheme: all-ECDSA `SignerSpec`s
+  with it omitted get a Falcon GUARDIAN, registered per signer.
+- Signer updates keep every approver's stored scheme. `createAddSignerProposal`
+  adds a bare commitment under your scheme, and a `SignerSpec` under its own.
+  The proposal carries `signerSchemes` (`targetSignerSchemes` on
+  `UpdateSignersProposalMetadata`) unless every target signer uses the
+  proposer's scheme and the scheme of the approvers it keeps, and every cosigner
+  rebuilds it from them. The Rust SDK applies the same rule (#549).
+- A proposal that would write a kept approver under another scheme, such as
+  one from an SDK before per-signer schemes on a mixed account (it wrote its
+  own scheme for every approver), fails verification with
+  `SignerSchemeMismatchError` (`code: 'signer_scheme_mismatch'`, `changes`), and
+  signing and executing refuse it before an approval or a delta reaches
+  GUARDIAN.
+- An approval made under another scheme than the account stores for its signer
+  is left out when the proposal executes, as on chain and in GUARDIAN's push
+  gate (GUARDIAN refuses to store one), and a client whose key the account
+  stores under another scheme refuses to propose or sign
+  (`KeySchemeMismatchError`, `code: 'key_scheme_mismatch'`).
+- A GUARDIAN switch keeps the account's GUARDIAN scheme: the new endpoint is
+  asked for its key of that scheme, whatever your key's scheme is.
+
+A GUARDIAN up to 0.18.3 verifies an account under one scheme. A single-scheme
+account on it can still add a signer of the other scheme on chain, but the new
+signer cannot authenticate to that GUARDIAN; and switching a mixed-scheme
+account to it executes on chain but fails to register there (the error's
+`cause` is a `GuardianMixedSchemesUnsupportedError`), so switch again with
+`createSwitchGuardianProposalOffline`, to a GUARDIAN with per-signer schemes.
 
 ### Register on GUARDIAN
 

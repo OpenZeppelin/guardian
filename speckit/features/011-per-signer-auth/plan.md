@@ -165,11 +165,31 @@ on the branch; section 6 lists the follow-up PRs. Where this plan and `data-mode
   guardian scheme, not the key manager's; `docs/MULTISIG_SDK.md` Rust sections. Rebuild of an
   update-signers proposal by a cosigner must use `signer_schemes` from the proposal metadata when
   present, else the proposer's single scheme (today's behaviour).
+  *As built (#549):* `SignerSpec { commitment, scheme }`; `cosigners()` (strict),
+  `cosigner_scheme()`, `guardian_scheme()`; `create_account_with_signers`;
+  `AddCosigner { new_commitment, scheme: Option }`. Without `signer_schemes` a reader gives every
+  target signer the scheme stored for the first approver the proposal keeps (the first approver
+  when it keeps none), which reproduces the proposer's single scheme whenever no approver was
+  rewritten; the writer omits the field only when every target uses the proposer's scheme and
+  that rule reads the targets back. A target that rewrites a kept approver's stored scheme is
+  refused (`SignerSchemeMismatch`), approvals under a non-stored scheme are not counted, and a
+  key the account stores under another scheme neither proposes nor signs (`KeySchemeMismatch`).
 - **PR C, TS SDK (after #540 merges)**: drop the `SignerSchemeMismatchError` refusals in
   `registerOnGuardian`, add/remove/change-threshold and switch-guardian; `registerOnGuardian`
   selects the variant per D2 using `this.signers` and `this.guardianScheme`; update-signers
   metadata carries `targetSigners: SignerSpec[]` → payload `signer_schemes`; rebuilding a proposal
   uses them; switch-guardian fetches `/pubkey?scheme=<guardianScheme>`; docs + README.
+  *As built (#576):* `guardianAuthConfig(signers, guardianScheme)` picks the variant;
+  `targetSignerSchemes` / `resolveTargetSigners` apply the Rust SDK's wire rule (names omitted only
+  when every target uses the proposer's scheme and the kept approvers' scheme reads them back;
+  names parsed case-insensitively at rebuild), exposed as `UpdateSignersProposalMetadata
+  .targetSignerSchemes`. `SignerSchemeMismatchError` now means a rewrite of a kept approver's
+  scheme (Rust `SignerSchemeMismatch`), `KeySchemeMismatchError` a key the account stores under
+  another scheme (Rust `KeySchemeMismatch`, checked before proposing or signing), and
+  `GuardianMixedSchemesUnsupportedError` a server up to 0.18.3 refusing the `Miden` auth (axum's
+  plain-text "unknown variant Miden" rejection). Execution skips approvals under a non-stored
+  scheme and resolves a signer update's targets before relaying approvals or pushing; a switch
+  keeps the GUARDIAN scheme (endpoint `/pubkey`, build, rebuild, ack fallback).
 - File a server issue (title: "Guardian server: per-signer signature schemes (mixed Falcon +
   ECDSA) — follow-up to #539") so PR A has an issue to close, since #540 closes #539.
 

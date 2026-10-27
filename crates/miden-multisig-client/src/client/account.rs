@@ -6,10 +6,7 @@
 use std::collections::HashSet;
 
 use base64::Engine;
-use guardian_client::{
-    AuthConfig, GuardianClient, MidenEcdsaAuth, MidenFalconRpoAuth, TryIntoTxSummary,
-    auth_config::AuthType,
-};
+use guardian_client::{GuardianClient, TryIntoTxSummary};
 use guardian_shared::SignatureScheme;
 use guardian_shared::retry::retry_delay;
 use miden_client::account::Account;
@@ -28,6 +25,7 @@ use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::keystore::word_from_hex;
 use crate::procedures::ProcedureThreshold;
+use crate::signers::SignerSpec;
 use crate::transaction::word_to_hex;
 
 impl MultisigClient {
@@ -45,6 +43,25 @@ impl MultisigClient {
         }
 
         Ok(())
+    }
+
+    /// Refuses to list this client's own key under a scheme other than its
+    /// own: a key's commitment verifies only under the scheme that derived
+    /// it, so the creator would be locked out of the account it creates.
+    fn ensure_own_key_scheme(&self, signers: &[SignerSpec]) -> Result<()> {
+        let own = self.key_manager.commitment();
+        let own_scheme = self.key_manager.scheme();
+        match signers
+            .iter()
+            .find(|signer| signer.commitment == own && signer.scheme != own_scheme)
+        {
+            Some(signer) => Err(MultisigError::InvalidConfig(format!(
+                "signer {} is this client's {own_scheme} key and cannot be listed under {}",
+                word_to_hex(&own),
+                signer.scheme
+            ))),
+            None => Ok(()),
+        }
     }
 
     /// Creates a new multisig account.
@@ -100,13 +117,56 @@ impl MultisigClient {
         signer_commitments: Vec<Word>,
         proc_threshold_overrides: Vec<ProcedureThreshold>,
     ) -> Result<&MultisigAccount> {
+        let scheme = self.key_manager.scheme();
+        let signers = signer_commitments
+            .into_iter()
+            .map(|commitment| SignerSpec::new(commitment, scheme))
+            .collect();
+        self.create_account_with_signers(threshold, signers, scheme, proc_threshold_overrides)
+            .await
+    }
+
+    /// Creates a new multisig account whose approvers each carry their own
+    /// signature scheme, for example an ECDSA wallet or hardware signer next to
+    /// a locally held Falcon key.
+    ///
+    /// `guardian_scheme` selects the GUARDIAN key the account verifies
+    /// acknowledgements with, independently of the approvers' schemes.
+    /// [`Self::create_account_with_proc_thresholds`] is this with every
+    /// approver and the GUARDIAN under the key manager's scheme. Registering an
+    /// account whose approvers do not all use `guardian_scheme` needs a GUARDIAN
+    /// with per-signer schemes (after 0.18.3).
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use miden_multisig_client::{SignatureScheme, SignerSpec};
+    ///
+    /// let account = client.create_account_with_signers(
+    ///     2,
+    ///     vec![
+    ///         SignerSpec::new(client.user_commitment(), SignatureScheme::Falcon),
+    ///         SignerSpec::new(wallet_commitment, SignatureScheme::Ecdsa),
+    ///     ],
+    ///     SignatureScheme::Falcon,
+    ///     Vec::new(),
+    /// ).await?;
+    /// ```
+    pub async fn create_account_with_signers(
+        &mut self,
+        threshold: u32,
+        signers: Vec<SignerSpec>,
+        guardian_scheme: SignatureScheme,
+        proc_threshold_overrides: Vec<ProcedureThreshold>,
+    ) -> Result<&MultisigAccount> {
+        let signer_commitments = SignerSpec::commitments(&signers);
         Self::ensure_unique_signer_commitments(&signer_commitments)?;
-        let signature_scheme = self.key_manager.scheme();
+        self.ensure_own_key_scheme(&signers)?;
 
         // Get GUARDIAN server's public key commitment
         let mut guardian_client = self.create_guardian_client().await?;
         let (guardian_commitment_hex, _raw_pubkey) = guardian_client
-            .get_pubkey(Some(&signature_scheme.to_string()))
+            .get_pubkey(Some(guardian_scheme.as_str()))
             .await
             .map_err(|e| {
                 MultisigError::GuardianServer(format!("failed to get GUARDIAN pubkey: {}", e))
@@ -124,7 +184,8 @@ impl MultisigClient {
         // Create the multisig account config
         let guardian_config =
             MultisigGuardianConfig::new(threshold, signer_commitments, guardian_commitment)
-                .with_signature_scheme(signature_scheme)
+                .with_signer_schemes(signers.iter().map(|signer| signer.scheme).collect())
+                .with_guardian_scheme(guardian_scheme)
                 .with_proc_threshold_overrides(overrides);
 
         // Generate a random seed for account ID
@@ -196,6 +257,11 @@ impl MultisigClient {
 
     /// Pushes the current account to GUARDIAN for initial registration.
     ///
+    /// The account is registered with the approver and GUARDIAN schemes it
+    /// stores: under its single-scheme auth when every approver uses the
+    /// GUARDIAN's scheme, and under the per-signer auth otherwise, which needs
+    /// a GUARDIAN with per-signer schemes (after 0.18.3).
+    ///
     /// GUARDIAN stores a state only when the chain holds it, unless it is a
     /// new account's nonce-0 state or the state GUARDIAN already stores. A
     /// state whose transaction has not landed yet, such as one right after a
@@ -206,6 +272,8 @@ impl MultisigClient {
             .account
             .as_ref()
             .ok_or_else(|| MultisigError::MissingConfig("no account loaded".to_string()))?;
+        let auth_config =
+            SignerSpec::guardian_auth_config(&account.cosigners()?, account.guardian_scheme()?);
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
@@ -216,18 +284,6 @@ impl MultisigClient {
             "data": account_base64,
             "account_id": account.id().to_string(),
         });
-
-        let cosigner_commitments = account.cosigner_commitments_hex();
-        let auth_config = AuthConfig {
-            auth_type: Some(match self.key_manager.scheme() {
-                SignatureScheme::Falcon => AuthType::MidenFalconRpo(MidenFalconRpoAuth {
-                    cosigner_commitments,
-                }),
-                SignatureScheme::Ecdsa => AuthType::MidenEcdsa(MidenEcdsaAuth {
-                    cosigner_commitments,
-                }),
-            }),
-        };
 
         let account_id = account.id();
 

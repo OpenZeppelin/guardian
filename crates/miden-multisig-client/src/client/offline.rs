@@ -7,8 +7,6 @@
 //! check that reproduces the transaction. Every other type needs a synced store
 //! to verify, and an acknowledgement from GUARDIAN to execute.
 
-use std::collections::HashSet;
-
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
@@ -49,9 +47,11 @@ impl MultisigClient {
         self.sync_network_only().await?;
 
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         let account_id = account.id();
         let signatures_required =
             account.effective_threshold_for_transaction(&transaction_type)? as usize;
+        let guardian_scheme = account.guardian_scheme()?;
 
         let salt = crate::transaction::generate_salt();
         let (new_endpoint, new_commitment) = match &transaction_type {
@@ -59,12 +59,7 @@ impl MultisigClient {
                 new_endpoint,
                 new_commitment,
             } => {
-                verify_endpoint_commitment(
-                    new_endpoint,
-                    *new_commitment,
-                    self.key_manager.scheme(),
-                )
-                .await?;
+                verify_endpoint_commitment(new_endpoint, *new_commitment, guardian_scheme).await?;
                 (new_endpoint.clone(), *new_commitment)
             }
             _ => {
@@ -77,7 +72,7 @@ impl MultisigClient {
         let auth_args = self.multisig_auth_args(salt, None, None).await?;
         let tx_request = crate::transaction::build_update_guardian_transaction_request(
             new_commitment,
-            self.key_manager.scheme(),
+            guardian_scheme,
             &auth_args,
             std::iter::empty(),
         )?;
@@ -167,6 +162,7 @@ impl MultisigClient {
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
+        self.ensure_key_scheme_matches(account)?;
 
         Self::ensure_proposal_account_id(&proposal.account_id, &account_id)?;
 
@@ -266,6 +262,7 @@ impl MultisigClient {
         }
 
         self.verify_proposal_summary_binding(&mut proposal).await?;
+        let target_signers = proposal.target_signers(&account)?;
         let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();
 
@@ -283,11 +280,10 @@ impl MultisigClient {
             .collect();
 
         // Build signature advice from cosigner signatures
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let approvers = account.verifiable_cosigners();
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
-            &required_commitments,
+            &approvers,
             tx_summary_commitment,
             Some(&tx_summary),
         )?;
@@ -330,12 +326,11 @@ impl MultisigClient {
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
-            account.inner(),
+            &account,
             &auth_args,
             signature_advice,
-            None,
-            None,
-            self.key_manager.scheme(),
+            proposal.metadata.new_threshold,
+            target_signers.as_deref(),
         )
         .await?;
 
