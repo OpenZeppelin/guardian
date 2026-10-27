@@ -129,6 +129,27 @@ impl MultisigClient {
         )))
     }
 
+    /// Refuses to propose or sign for an account that stores this client's
+    /// key under another scheme than the key's own, or under none it
+    /// supports: the approval could not verify on chain, GUARDIAN refuses
+    /// it, and execution would not count it. A client that is not a cosigner
+    /// is left to the checks that refuse it.
+    pub(crate) fn ensure_key_scheme_matches(&self, account: &MultisigAccount) -> Result<()> {
+        let own = self.key_manager.commitment();
+        if !account.is_cosigner(&own) {
+            return Ok(());
+        }
+        let key = self.key_manager.scheme();
+        match account.cosigner_scheme(&own) {
+            Some(stored) if stored == key => Ok(()),
+            stored => Err(MultisigError::KeySchemeMismatch {
+                commitment: word_to_hex(&own),
+                key,
+                stored,
+            }),
+        }
+    }
+
     /// Gets the GUARDIAN acknowledgment signature for a transaction.
     ///
     /// This pushes the delta to GUARDIAN and retrieves the server's signature.
@@ -310,7 +331,7 @@ impl MultisigClient {
                 proposal.id
             )));
         }
-        let signer_commitments = proposal.metadata.signer_commitments()?;
+        let target_signers = proposal.target_signers(&account)?;
         // The rebuild reads the chain's fee faucet from the synced protocol
         // configuration and executes at the tip, so the store has to have
         // synced to the block the summary binds; a cosigner that has only
@@ -357,12 +378,11 @@ impl MultisigClient {
         let tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
-            account.inner(),
+            &account,
             &auth_args,
             Vec::new(),
             proposal.metadata.new_threshold,
-            Some(signer_commitments.as_slice()),
-            self.key_manager.scheme(),
+            target_signers.as_deref(),
             crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
@@ -451,8 +471,8 @@ impl MultisigClient {
             new_commitment,
         } = transaction_type
         {
-            verify_endpoint_commitment(new_endpoint, *new_commitment, self.key_manager.scheme())
-                .await?;
+            let guardian_scheme = self.require_account()?.guardian_scheme()?;
+            verify_endpoint_commitment(new_endpoint, *new_commitment, guardian_scheme).await?;
         }
 
         let new_guardian_endpoint =

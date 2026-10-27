@@ -333,6 +333,39 @@ itself gated by whatever threshold governs `update_signers`.
 The TypeScript SDK exposes the same three as `createAddSignerProposal`,
 `createRemoveSignerProposal` and `createChangeThresholdProposal`.
 
+### Mixed Falcon and ECDSA approvers
+
+The account stores a scheme for each approver and one for GUARDIAN, so a Falcon
+key and an ECDSA wallet or hardware signer can share one account:
+
+```rust
+use miden_multisig_client::{SignatureScheme, SignerSpec, TransactionType};
+
+let account = client.create_account_with_signers(
+    2,
+    vec![
+        SignerSpec::new(client.user_commitment(), SignatureScheme::Falcon),
+        SignerSpec::new(wallet_commitment, SignatureScheme::Ecdsa),
+    ],
+    SignatureScheme::Falcon, // GUARDIAN's scheme
+    Vec::new(),
+).await?;
+client.push_account().await?;
+
+let tx = TransactionType::add_cosigner_with_scheme(other_wallet, SignatureScheme::Ecdsa);
+```
+
+`push_account` registers the schemes the account stores (`MultisigAccount::cosigners`,
+`MultisigAccount::guardian_scheme`), which for a mixed account needs a GUARDIAN
+after 0.18.3. Signer updates keep each approver's stored scheme, `add_cosigner`
+gives the new signer your scheme, and a GUARDIAN switch keeps the GUARDIAN's
+scheme. A proposal that would write a kept approver under another scheme,
+including one from an older SDK that wrote its own scheme for every approver,
+is refused before anything is signed or pushed (`MultisigError::SignerSchemeMismatch`,
+or a summary mismatch for an older SDK's proposal that cannot be reproduced).
+`build_update_signers_transaction_request` takes the approvers as `SignerSpec`s
+for the same reason.
+
 ### Proposal verification status
 
 `list_proposals` checks every proposal's metadata against its signed

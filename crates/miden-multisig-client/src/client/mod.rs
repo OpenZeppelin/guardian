@@ -29,6 +29,8 @@ mod execution_mode_tests;
 mod guardian_execution;
 mod helpers;
 mod io;
+#[cfg(test)]
+mod mixed_scheme_tests;
 mod note_recovery;
 mod notes;
 mod offline;

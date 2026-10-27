@@ -222,6 +222,9 @@ export {
   StorageLayoutBuilder,
   resolveSignerSpecs,
   SignerSchemeMismatchError,
+  KeySchemeMismatchError,
+  GuardianMixedSchemesUnsupportedError,
+  type SignerSchemeChange,
   type SignerSchemeErrorCode,
 } from './account/index.js';
 

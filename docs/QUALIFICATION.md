@@ -764,17 +764,17 @@ move. No scenario covers this, deliberately, because asserting the current
 behaviour would enshrine an answer that is a product decision rather than a
 test one.
 
-**Mixed-scheme accounts through the SDKs.** Both multisig SDKs assign one
-configured scheme to every signer, so neither can construct a mixed-scheme
-account yet (#549, and the TypeScript follow-up to #540). The server half (issue
-#563) is qualified anyway: `det-mixed-scheme-account` and `det-mixed-scheme-gate`
-build a Falcon + ECDSA account in the Rust driver, straight from the upstream
-component, and drive registration, per-scheme authentication and approvals, the
-`mixed` label and the scheme gate against the image under test. What stays
-uncovered is every flow an SDK owns: creating, proposing, executing and updating
-signers on such an account, which the live profile will cover once the SDKs can.
-The manifest refuses `scheme = "mixed"` anywhere but the deterministic Rust leg
-for that reason.
+**Mixed-scheme accounts through the SDKs.** Both multisig SDKs create and
+operate mixed-scheme accounts (#549, #576), but no scenario drives them through
+an SDK yet. The server half (issue #563) is qualified:
+`det-mixed-scheme-account` and `det-mixed-scheme-gate` build a Falcon + ECDSA
+account in the Rust driver, straight from the upstream component, and drive
+registration, per-scheme authentication and approvals, the `mixed` label and the
+scheme gate against the image under test. What stays uncovered is every flow an
+SDK owns: creating, proposing, executing and updating signers on such an
+account, until the live profile gains a mixed-scheme scenario. The manifest
+refuses `scheme = "mixed"` anywhere but the deterministic Rust leg for that
+reason.
 
 **Whether accounts created under an earlier contract pin are still drivable.** A
 deployed Miden account is immutable and its procedure roots fix at creation, so a

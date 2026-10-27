@@ -37,6 +37,7 @@ use super::MultisigClient;
 use crate::keystore::{GuardianKeyStore, KeyManager};
 use crate::prover::ProverConfig;
 use crate::rpc::RpcConfig;
+use crate::signers::SignerSpec;
 use crate::transaction::word_to_hex;
 
 const BASE64: base64::engine::general_purpose::GeneralPurpose =
@@ -238,6 +239,14 @@ pub(crate) fn multisig_account_with_scheme(
         .with_seed([seed; 32])
         .build()
         .expect("multisig account builds")
+}
+
+/// `signers`, every one under `scheme`.
+pub(crate) fn signer_specs(signers: &[Word], scheme: SignatureScheme) -> Vec<SignerSpec> {
+    signers
+        .iter()
+        .map(|commitment| SignerSpec::new(*commitment, scheme))
+        .collect()
 }
 
 /// The canned `get_state` a mock GUARDIAN serves for `account`: the same

@@ -17,5 +17,8 @@ export {
 export {
   resolveSignerSpecs,
   SignerSchemeMismatchError,
+  KeySchemeMismatchError,
+  GuardianMixedSchemesUnsupportedError,
+  type SignerSchemeChange,
   type SignerSchemeErrorCode,
 } from './signers.js';

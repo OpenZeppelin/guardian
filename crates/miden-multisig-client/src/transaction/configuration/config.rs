@@ -2,7 +2,6 @@
 
 use std::num::NonZeroU16;
 
-use guardian_shared::SignatureScheme;
 use miden_client::assembly::CodeBuilder;
 use miden_client::transaction::{TransactionRequest, TransactionRequestBuilder, TransactionScript};
 use miden_protocol::assembly::Package;
@@ -12,6 +11,7 @@ use miden_standards::account::auth::MultisigAuthArgs;
 
 use crate::error::{MultisigError, Result};
 use crate::procedures::ProcedureName;
+use crate::signers::SignerSpec;
 use crate::transaction::{TransactionRequestBuilderExt, expiration_instructions};
 
 /// Builds the multisig configuration advice map entry.
@@ -19,18 +19,13 @@ use crate::transaction::{TransactionRequestBuilderExt, expiration_instructions};
 /// Layout matches the upstream `update_signers_and_threshold` reader: a config
 /// header word `[threshold, num_approvers, 0, 0]` followed by each approver as an
 /// interleaved `[PUB_KEY(4), SCHEME_ID(4)]` pair, iterated in reverse index order.
-/// Every approver carries the account's single signature scheme.
+/// Each approver carries its own scheme.
 ///
 /// Returns (config_hash, config_values) tuple.
-pub fn build_multisig_config_advice(
-    threshold: u64,
-    signer_commitments: &[Word],
-    scheme: SignatureScheme,
-) -> (Word, Vec<Felt>) {
-    let num_approvers = signer_commitments.len() as u64;
-    let scheme_id = Felt::new_unchecked(scheme.auth_scheme_id());
+pub fn build_multisig_config_advice(threshold: u64, signers: &[SignerSpec]) -> (Word, Vec<Felt>) {
+    let num_approvers = signers.len() as u64;
 
-    let mut payload = Vec::with_capacity(4 + signer_commitments.len() * 8);
+    let mut payload = Vec::with_capacity(4 + signers.len() * 8);
     payload.extend_from_slice(&[
         Felt::new_unchecked(threshold),
         Felt::new_unchecked(num_approvers),
@@ -38,10 +33,10 @@ pub fn build_multisig_config_advice(
         Felt::new_unchecked(0),
     ]);
 
-    for commitment in signer_commitments.iter().rev() {
-        payload.extend_from_slice(commitment.as_elements());
+    for signer in signers.iter().rev() {
+        payload.extend_from_slice(signer.commitment.as_elements());
         payload.extend_from_slice(&[
-            scheme_id,
+            Felt::new_unchecked(signer.scheme.auth_scheme_id()),
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
             Felt::new_unchecked(0),
@@ -86,20 +81,23 @@ pub fn build_update_signers_script(
 
 /// Builds an update_signers transaction request whose script applies `expiration_delta`.
 ///
+/// `signers` is the new approver set in storage order, each approver with the
+/// scheme the account will verify it under. Read the schemes of approvers the
+/// update keeps from the account ([`crate::MultisigAccount::cosigners`]):
+/// writing one under another scheme locks that approver out.
+///
 /// Returns (TransactionRequest, config_hash) tuple.
 pub fn build_update_signers_transaction_request<I>(
     threshold: u64,
-    signer_commitments: &[Word],
+    signers: &[SignerSpec],
     auth_args: &MultisigAuthArgs,
     extra_advice: I,
-    scheme: SignatureScheme,
     expiration_delta: Option<NonZeroU16>,
 ) -> Result<(TransactionRequest, Word)>
 where
     I: IntoIterator<Item = (Word, Vec<Felt>)>,
 {
-    let (config_hash, config_values) =
-        build_multisig_config_advice(threshold, signer_commitments, scheme);
+    let (config_hash, config_values) = build_multisig_config_advice(threshold, signers);
     let script = build_update_signers_script(expiration_delta)?;
 
     let request = TransactionRequestBuilder::new()
@@ -172,4 +170,50 @@ where
         .build()?;
 
     Ok(request)
+}
+
+#[cfg(test)]
+mod tests {
+    use guardian_shared::SignatureScheme;
+
+    use super::*;
+
+    /// Each approver's pair carries its own scheme id, in reverse index order
+    /// after the config header, so a mixed set keeps every approver's scheme.
+    #[test]
+    fn config_advice_writes_each_approver_under_its_own_scheme() {
+        let falcon = Word::from([1u32, 2, 3, 4]);
+        let ecdsa = Word::from([5u32, 6, 7, 8]);
+        let signers = [
+            SignerSpec::new(falcon, SignatureScheme::Falcon),
+            SignerSpec::new(ecdsa, SignatureScheme::Ecdsa),
+        ];
+
+        let (config_hash, payload) = build_multisig_config_advice(2, &signers);
+
+        let scheme_word = |scheme: SignatureScheme| {
+            [
+                Felt::new_unchecked(scheme.auth_scheme_id()),
+                Felt::new_unchecked(0),
+                Felt::new_unchecked(0),
+                Felt::new_unchecked(0),
+            ]
+        };
+        let mut expected = vec![
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(2),
+            Felt::new_unchecked(0),
+            Felt::new_unchecked(0),
+        ];
+        expected.extend_from_slice(ecdsa.as_elements());
+        expected.extend_from_slice(&scheme_word(SignatureScheme::Ecdsa));
+        expected.extend_from_slice(falcon.as_elements());
+        expected.extend_from_slice(&scheme_word(SignatureScheme::Falcon));
+        assert_eq!(payload, expected);
+        assert_eq!(config_hash, Hasher::hash_elements(&expected));
+        assert_ne!(
+            SignatureScheme::Falcon.auth_scheme_id(),
+            SignatureScheme::Ecdsa.auth_scheme_id()
+        );
+    }
 }

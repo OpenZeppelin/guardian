@@ -19,6 +19,7 @@ use miden_protocol::transaction::RawOutputNote;
 use super::test_support::{
     chain_with_notes, multisig_account, offline_client_parts_with_keystore,
     offline_client_with_node_parts, p2id_note_for, pending_proto_delta, registered_state,
+    signer_specs,
 };
 use crate::account::MultisigAccount;
 use crate::execution::build_final_transaction_request;
@@ -78,12 +79,11 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        proposer.key_manager.scheme(),
         None,
     )
     .await
@@ -170,12 +170,11 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     let tip_request = build_final_transaction_request(
         &cosigner.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        cosigner.key_manager.scheme(),
         None,
     )
     .await
@@ -257,12 +256,11 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        proposer.key_manager.scheme(),
         None,
     )
     .await
@@ -459,10 +457,9 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        client.key_manager.scheme(),
         None,
     )
     .unwrap();
@@ -567,10 +564,9 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        client.key_manager.scheme(),
         None,
     )
     .unwrap();
@@ -705,12 +701,11 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         None,
-        proposer.key_manager.scheme(),
         None,
     )
     .await
@@ -1009,10 +1004,9 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        client.key_manager.scheme(),
         None,
     )
     .unwrap();
@@ -1145,10 +1139,9 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
     let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, proposer.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        proposer.key_manager.scheme(),
         None,
     )
     .unwrap();
@@ -1235,10 +1228,9 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
     let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, proposer.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        proposer.key_manager.scheme(),
         None,
     )
     .unwrap();
@@ -1326,12 +1318,11 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
     let tx_request = build_final_transaction_request(
         &client.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         None,
-        client.key_manager.scheme(),
         None,
     )
     .await
@@ -1611,9 +1602,7 @@ async fn built_in_proposals_write_the_bound_block_num() {
     // One proposal per builder in `transaction/builder.rs` (seven sites). A
     // P2ID transfer spends from the vault, so it runs on a funded account.
     for tx_type in [
-        TransactionType::AddCosigner {
-            new_commitment: Word::from([3u32, 3, 3, 3]),
-        },
+        TransactionType::add_cosigner(Word::from([3u32, 3, 3, 3])),
         TransactionType::RemoveCosigner {
             commitment: second_signer,
         },

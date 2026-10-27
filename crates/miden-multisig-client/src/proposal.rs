@@ -22,10 +22,12 @@ use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::keystore::{ensure_hex_prefix, word_from_hex};
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
+use crate::signers::SignerSpec;
 
 /// Max serialized v2 `consume_notes` metadata, enforced at creation. Spec FR-011.
 pub const MAX_CONSUME_NOTES_METADATA_BYTES: usize = 256 * 1024;
@@ -136,6 +138,9 @@ pub enum TransactionType {
     },
     AddCosigner {
         new_commitment: Word,
+        /// The scheme the account will verify the new signer under. `None`
+        /// gives it the proposer's scheme.
+        scheme: Option<SignatureScheme>,
     },
     RemoveCosigner {
         commitment: Word,
@@ -221,9 +226,22 @@ impl TransactionType {
         }
     }
 
-    /// Creates an AddCosigner transaction.
+    /// Creates an AddCosigner transaction for a signer of the proposer's scheme.
     pub fn add_cosigner(new_commitment: Word) -> Self {
-        Self::AddCosigner { new_commitment }
+        Self::AddCosigner {
+            new_commitment,
+            scheme: None,
+        }
+    }
+
+    /// Creates an AddCosigner transaction for a signer the account verifies
+    /// under `scheme`, which may differ from the proposer's and the other
+    /// approvers' (a mixed Falcon and ECDSA approver set).
+    pub fn add_cosigner_with_scheme(new_commitment: Word, scheme: SignatureScheme) -> Self {
+        Self::AddCosigner {
+            new_commitment,
+            scheme: Some(scheme),
+        }
     }
 
     /// Returns the signer-set size this transaction produces, given the
@@ -365,6 +383,11 @@ pub struct ProposalMetadata {
     pub proposal_type: Option<String>,
     pub new_threshold: Option<u64>,
     pub signer_commitments_hex: Vec<String>,
+    /// Target signer schemes of an update-signers proposal as sent
+    /// (`"falcon"` / `"ecdsa"`), index-aligned with `signer_commitments_hex`;
+    /// empty when the proposal names none (see
+    /// [`ProposalMetadata::target_signers`]).
+    pub signer_scheme_names: Vec<String>,
     pub salt_hex: Option<String>,
 
     pub recipient_hex: Option<String>,
@@ -445,6 +468,32 @@ impl ProposalMetadata {
         }
 
         Ok(commitments)
+    }
+
+    /// The approver set this update-signers proposal writes, each approver
+    /// with its scheme, given the account's `current` approvers. A proposal
+    /// that names no schemes gives every target signer the scheme the account
+    /// stores for the approvers it keeps. A target signer the account stores
+    /// under another scheme is refused with
+    /// [`MultisigError::SignerSchemeMismatch`].
+    pub fn target_signers(&self, current: &[SignerSpec]) -> Result<Vec<SignerSpec>> {
+        SignerSpec::resolve_targets(
+            &self.signer_commitments()?,
+            &self.signer_schemes()?,
+            current,
+        )
+    }
+
+    /// Parses `signer_scheme_names`.
+    pub fn signer_schemes(&self) -> Result<Vec<SignatureScheme>> {
+        self.signer_scheme_names
+            .iter()
+            .map(|scheme| {
+                SignatureScheme::from(scheme).map_err(|e| {
+                    MultisigError::InvalidConfig(format!("proposal metadata.signer_schemes: {e}"))
+                })
+            })
+            .collect()
     }
 
     /// Parses `note_type` for a P2ID proposal. Absent => public (the only
@@ -771,6 +820,7 @@ impl Proposal {
 
         let new_threshold = metadata_payload.target_threshold;
         let signer_commitments_hex = metadata_payload.signer_commitments;
+        let signer_schemes = metadata_payload.signer_schemes;
         let salt_hex = metadata_payload.salt;
         let recipient_hex = metadata_payload.recipient_id;
         let faucet_id_hex = metadata_payload.faucet_id;
@@ -806,6 +856,7 @@ impl Proposal {
             proposal_type: Some(proposal_type.clone()),
             new_threshold,
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: signer_schemes,
             salt_hex,
             recipient_hex: recipient_hex.clone(),
             faucet_id_hex: faucet_id_hex.clone(),
@@ -920,6 +971,24 @@ impl Proposal {
         };
         proposal.refresh_status();
         proposal
+    }
+
+    /// The approver set this proposal writes when it updates the signers,
+    /// resolved against `account`'s current approvers (see
+    /// [`ProposalMetadata::target_signers`]); `None` for every other type.
+    pub(crate) fn target_signers(
+        &self,
+        account: &MultisigAccount,
+    ) -> Result<Option<Vec<SignerSpec>>> {
+        match self.transaction_type {
+            TransactionType::AddCosigner { .. }
+            | TransactionType::RemoveCosigner { .. }
+            | TransactionType::UpdateSigners { .. } => self
+                .metadata
+                .target_signers(&account.cosigners()?)
+                .map(Some),
+            _ => Ok(None),
+        }
     }
 
     /// True when the summary-binding check reproduced this proposal's signed
@@ -1157,7 +1226,15 @@ mod tests {
         assert_eq!(
             tx,
             TransactionType::AddCosigner {
-                new_commitment: commitment
+                new_commitment: commitment,
+                scheme: None,
+            }
+        );
+        assert_eq!(
+            TransactionType::add_cosigner_with_scheme(commitment, SignatureScheme::Ecdsa),
+            TransactionType::AddCosigner {
+                new_commitment: commitment,
+                scheme: Some(SignatureScheme::Ecdsa),
             }
         );
     }

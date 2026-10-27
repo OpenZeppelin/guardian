@@ -58,6 +58,7 @@ mod procedures;
 mod proposal;
 mod prover;
 mod rpc;
+mod signers;
 mod transaction;
 mod utils;
 
@@ -81,6 +82,7 @@ pub use procedures::{ProcedureName, ProcedureThreshold};
 // Account types
 pub use account::MultisigAccount;
 pub use address::{parse_account_address, parse_account_id};
+pub use signers::{SignerSchemeChange, SignerSpec};
 
 // Key management and hex utilities
 pub use keystore::{

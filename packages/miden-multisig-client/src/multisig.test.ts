@@ -10,7 +10,11 @@ import {
   LocalExecutionRequiredError,
   ProposalNotHeldLocallyError,
 } from './multisig/guardianExecution.js';
-import { SignerSchemeMismatchError } from './account/signers.js';
+import {
+  GuardianMixedSchemesUnsupportedError,
+  KeySchemeMismatchError,
+  SignerSchemeMismatchError,
+} from './account/signers.js';
 import {
   GuardianHttpClient,
   GuardianHttpError,
@@ -365,6 +369,9 @@ function storeHoldsConfig(config: {
     ...(config.guardianScheme ? { guardianScheme: config.guardianScheme } : {}),
   });
 }
+
+const falconSpec = (commitment: string) => ({ commitment, scheme: 'falcon' as const });
+const ecdsaSpec = (commitment: string) => ({ commitment, scheme: 'ecdsa' as const });
 
 function mockedAccount(commitmentHex: string, nonce = 0): any {
   return {
@@ -4213,153 +4220,61 @@ describe('Multisig', () => {
     });
   });
 
-  describe('per-approver signature schemes', () => {
+  describe('per-signer signature schemes (issue #576)', () => {
+    const A = '0x' + 'a'.repeat(64);
+    const B = '0x' + 'b'.repeat(64);
+    const E = '0x' + 'e'.repeat(64);
+    const GUARDIAN = '0x' + 'c'.repeat(64);
+    const PROPOSAL_ID = '0x' + 'c'.repeat(64);
+
+    // A Falcon approver, an ECDSA approver, and the Falcon GUARDIAN the builder
+    // writes when `signatureScheme` is omitted.
     const mixedConfig = {
       threshold: 1,
-      signerCommitments: [
-        '0x' + 'a'.repeat(64),
-        { commitment: '0x' + 'b'.repeat(64), scheme: 'ecdsa' as const },
-      ],
-      guardianCommitment: '0x' + 'c'.repeat(64),
+      signerCommitments: [A, { commitment: B, scheme: 'ecdsa' as const }],
+      guardianCommitment: GUARDIAN,
     };
-
-    it('exposes each approver with its scheme next to the bare commitments', () => {
-      const multisig = createTestMultisig(mixedConfig);
-
-      expect(multisig.signerCommitments).toEqual(['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)]);
-      expect(multisig.signers).toEqual([
-        { commitment: '0x' + 'a'.repeat(64), scheme: 'falcon' },
-        { commitment: '0x' + 'b'.repeat(64), scheme: 'ecdsa' },
-      ]);
-    });
-
-    it('exposes the guardian scheme, defaulting to Falcon like the account builder', () => {
-      expect(createTestMultisig(mixedConfig).guardianScheme).toBe('falcon');
-      expect(
-        createTestMultisig({ ...mixedConfig, signatureScheme: 'ecdsa' as const }).guardianScheme,
-      ).toBe('ecdsa');
-    });
-
-    // All approvers ECDSA, `signatureScheme` omitted: the account builder wrote
-    // a Falcon guardian. An ECDSA signer matches every approver, so only the
-    // guardian can stop a registration that would make GUARDIAN sign ECDSA acks
-    // the account verifies as Falcon.
+    // All approvers ECDSA, `signatureScheme` omitted: a Falcon GUARDIAN.
     const falconGuardianConfig = {
       threshold: 1,
       signerCommitments: [
-        { commitment: '0x' + 'a'.repeat(64), scheme: 'ecdsa' as const },
-        { commitment: '0x' + 'b'.repeat(64), scheme: 'ecdsa' as const },
+        { commitment: A, scheme: 'ecdsa' as const },
+        { commitment: B, scheme: 'ecdsa' as const },
       ],
-      guardianCommitment: '0x' + 'c'.repeat(64),
-    };
-    const ecdsaSigner: Signer = { ...mockSigner, publicKey: '0x' + '2'.repeat(66), scheme: 'ecdsa' };
-
-    it('refuses to register on GUARDIAN when the guardian scheme differs from the signer scheme', async () => {
-      guardian.setSigner(ecdsaSigner);
-      const multisig = createTestMultisig(falconGuardianConfig, ecdsaSigner);
-
-      const error = await multisig.registerOnGuardian().catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(SignerSchemeMismatchError);
-      expect(error).toMatchObject({
-        code: 'signer_scheme_mismatch',
-        signerScheme: 'ecdsa',
-        mismatched: [],
-        guardian: { commitment: '0x' + 'c'.repeat(64), scheme: 'falcon' },
-      });
-      expect((error as Error).message).toMatch(/guardian/);
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('refuses a switch-guardian proposal when the guardian scheme differs from the signer scheme', async () => {
-      guardian.setSigner(ecdsaSigner);
-      const multisig = createTestMultisig(falconGuardianConfig, ecdsaSigner);
-
-      await expect(
-        multisig.createSwitchGuardianProposal('http://new-guardian:3000', '0x' + 'd'.repeat(64)),
-      ).rejects.toBeInstanceOf(SignerSchemeMismatchError);
-      await expect(
-        multisig.createSwitchGuardianProposalOffline('http://new-guardian:3000', '0x' + 'd'.repeat(64)),
-      ).rejects.toBeInstanceOf(SignerSchemeMismatchError);
-      expect(buildUpdateGuardianTransactionRequest).not.toHaveBeenCalled();
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('checks an offline switch-guardian proposal against the config the node sync refreshed', async () => {
-      // The cached config is uniform Falcon, but the account the sync reads
-      // back has an ECDSA guardian (rotated by another client): the check has
-      // to see the refreshed guardian, not the stale one.
-      const multisig = createTestMultisig({
-        threshold: 1,
-        signerCommitments: [mockSigner.commitment],
-        guardianCommitment: '0x' + 'c'.repeat(64),
-      });
-      mockDetectConfig.mockReturnValue({
-        threshold: 1,
-        numSigners: 1,
-        signerCommitments: [mockSigner.commitment],
-        signers: [{ commitment: mockSigner.commitment, scheme: 'falcon' }],
-        guardianCommitment: '0x' + 'e'.repeat(64),
-        guardianScheme: 'ecdsa',
-        vaultBalances: [],
-        procedureThresholds: new Map(),
-      });
-      mockWebClient.accounts.get.mockResolvedValue({
-        ...mockAccount,
-        ...mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1),
-      });
-
-      const error = await multisig
-        .createSwitchGuardianProposalOffline('http://new-guardian:3000', '0x' + 'd'.repeat(64))
-        .catch((e: unknown) => e);
-
-      expect(mockWebClient.syncChain).toHaveBeenCalled();
-      expect(error).toBeInstanceOf(SignerSchemeMismatchError);
-      expect(error).toMatchObject({
-        signerScheme: 'falcon',
-        mismatched: [],
-        guardian: { commitment: '0x' + 'e'.repeat(64), scheme: 'ecdsa' },
-      });
-      expect(buildUpdateGuardianTransactionRequest).not.toHaveBeenCalled();
-    });
-
-    // The cache can trail the store: an execution applied a post-state, or a
-    // chain sync brought in another device's guardian rotation. The scheme
-    // checks have to read what the store holds, as the rest of the proposal
-    // does since #562.
-    const uniformFalcon = {
-      threshold: 2,
-      // `mockSigner.commitment`, which is only assigned in beforeEach.
-      signerCommitments: ['0x' + '1'.repeat(64), '0x' + 'b'.repeat(64)],
-      guardianCommitment: '0x' + 'c'.repeat(64),
+      guardianCommitment: GUARDIAN,
     };
 
-    it('checks a new proposal against the schemes the store holds, not the cached ones', async () => {
-      const multisig = createTestMultisig(uniformFalcon);
-      mockWebClient.accounts.get.mockResolvedValue(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1));
-      storeHoldsConfig({ ...uniformFalcon, guardianScheme: 'ecdsa' });
-
-      const error = await multisig.createChangeThresholdProposal(1).catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(SignerSchemeMismatchError);
-      expect(error).toMatchObject({
-        signerScheme: 'falcon',
-        mismatched: [],
-        guardian: { commitment: '0x' + 'c'.repeat(64), scheme: 'ecdsa' },
-      });
-      expect(multisig.guardianScheme).toBe('ecdsa');
-      expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
-      expect(mockFetch).not.toHaveBeenCalled();
+    // Built per test: `mockSigner` is only assigned in beforeEach.
+    const ecdsaSigner = (): Signer => ({
+      ...mockSigner,
+      publicKey: '0x' + '2'.repeat(66),
+      scheme: 'ecdsa',
     });
 
-    it('lets a proposal through once the store clears a mismatch only the cache held', async () => {
-      // Cached as ECDSA throughout, which a Falcon signer is refused on; the
-      // store's account is Falcon throughout.
-      const multisig = createTestMultisig({ ...uniformFalcon, signatureScheme: 'ecdsa' as const });
-      expect(multisig.guardianScheme).toBe('ecdsa');
-      mockWebClient.accounts.get.mockResolvedValue(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1));
-      storeHoldsConfig(uniformFalcon);
-      mockFetch.mockResolvedValueOnce({
+    function configureOk(): any {
+      return {
+        ok: true,
+        json: async () => ({ success: true, message: 'Account configured' }),
+      };
+    }
+
+    function configuredAuth(): unknown {
+      const [body] = pushesTo('/configure');
+      return body.auth;
+    }
+
+    /** The proposal creations (`POST /delta/proposal`) the client made. */
+    function proposalCreations(): any[] {
+      return mockFetch.mock.calls
+        .filter(
+          ([url, init]) =>
+            String(url).endsWith('/delta/proposal') && (init as RequestInit)?.method === 'POST',
+        )
+        .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+    }
+
+    function proposalPushResponse(proposalType: string): any {
+      return {
         ok: true,
         json: async () => ({
           delta: {
@@ -4369,7 +4284,7 @@ describe('Multisig', () => {
             delta_payload: {
               tx_summary: { data: 'AQID' },
               signatures: [],
-              metadata: { proposal_type: 'change_threshold', description: '' },
+              metadata: { proposal_type: proposalType, description: '' },
             },
             status: {
               status: 'pending',
@@ -4378,133 +4293,914 @@ describe('Multisig', () => {
               cosigner_sigs: [],
             },
           },
-          commitment: '0x' + 'c'.repeat(64),
+          commitment: PROPOSAL_ID,
         }),
-      });
+      };
+    }
 
-      await multisig.createChangeThresholdProposal(1, { nonce: 1 });
-
-      expect(multisig.signers.map((signer) => signer.scheme)).toEqual(['falcon', 'falcon']);
-      expect(multisig.guardianScheme).toBe('falcon');
-      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
-        mockWebClient,
-        1,
-        uniformFalcon.signerCommitments,
-        { accountId: expect.any(String), signatureScheme: 'falcon' },
-      );
-    });
-
-    it('checks a registration against the schemes the store holds', async () => {
-      const multisig = createTestMultisig(uniformFalcon);
-      mockWebClient.accounts.get.mockResolvedValue(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1));
-      storeHoldsConfig({ ...uniformFalcon, guardianScheme: 'ecdsa' });
-
-      await expect(multisig.registerOnGuardian()).rejects.toBeInstanceOf(SignerSchemeMismatchError);
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('refuses to sign a signer update once the refreshed store shows another guardian scheme', async () => {
-      const multisig = createTestMultisig(uniformFalcon);
-      mockFetch.mockResolvedValueOnce({
+    /** A pending signer update GUARDIAN lists, with `metadata` on the wire. */
+    function listedSignerUpdate(metadata: Record<string, unknown>): any {
+      return {
         ok: true,
         json: async () => ({
-          delta: {
-            account_id: '0x' + 'a'.repeat(30),
+          proposals: [
+            {
+              account_id: '0x' + 'a'.repeat(30),
+              nonce: 1,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              delta_payload: {
+                tx_summary: { data: 'AQID' },
+                signatures: [],
+                metadata: {
+                  proposal_type: 'add_signer',
+                  bound_block_num: MOCK_BOUND_BLOCK_NUM,
+                  salt: MOCK_SALT_HEX,
+                  description: '',
+                  target_threshold: 1,
+                  ...metadata,
+                },
+              },
+              status: {
+                status: 'pending',
+                timestamp: '2024-01-01T00:00:00Z',
+                proposer_id: '0x' + 'c'.repeat(64),
+                cosigner_sigs: [],
+              },
+            },
+          ],
+        }),
+      };
+    }
+
+    function lastUpdateSignersTargets(): unknown {
+      const calls = vi.mocked(buildUpdateSignersTransactionRequest).mock.calls;
+      return calls[calls.length - 1][2];
+    }
+
+    it('exposes each approver with its scheme next to the bare commitments', () => {
+      const multisig = createTestMultisig(mixedConfig);
+
+      expect(multisig.signerCommitments).toEqual([A, B]);
+      expect(multisig.signers).toEqual([falconSpec(A), ecdsaSpec(B)]);
+    });
+
+    it('exposes the GUARDIAN scheme, defaulting to Falcon like the account builder', () => {
+      expect(createTestMultisig(mixedConfig).guardianScheme).toBe('falcon');
+      expect(
+        createTestMultisig({ ...mixedConfig, signatureScheme: 'ecdsa' as const }).guardianScheme,
+      ).toBe('ecdsa');
+    });
+
+    describe('registerOnGuardian', () => {
+      it('registers a mixed-scheme account with the per-signer Miden auth', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(configureOk());
+
+        await multisig.registerOnGuardian();
+
+        expect(configuredAuth()).toEqual({
+          Miden: {
+            cosigners: [falconSpec(A), ecdsaSpec(B)],
+            guardian_scheme: 'falcon',
+          },
+        });
+      });
+
+      it("registers approvers that share a scheme other than the GUARDIAN's with the Miden auth", async () => {
+        // The single-scheme variants name one scheme for the approvers and the
+        // GUARDIAN alike, so MidenEcdsa would have GUARDIAN acknowledge under
+        // ECDSA an account that verifies its GUARDIAN as Falcon.
+        const signer = ecdsaSigner();
+        guardian.setSigner(signer);
+        const multisig = createTestMultisig(falconGuardianConfig, signer);
+        mockFetch.mockResolvedValueOnce(configureOk());
+
+        await multisig.registerOnGuardian();
+
+        expect(configuredAuth()).toEqual({
+          Miden: { cosigners: [ecdsaSpec(A), ecdsaSpec(B)], guardian_scheme: 'falcon' },
+        });
+      });
+
+      it("picks the single-scheme variant from the account's schemes, not the signer's", async () => {
+        // A Falcon signer registering an all-ECDSA account keeps the wire shape
+        // servers up to 0.18.3 accept.
+        const multisig = createTestMultisig({
+          ...falconGuardianConfig,
+          signatureScheme: 'ecdsa' as const,
+        });
+        mockFetch.mockResolvedValueOnce(configureOk());
+
+        await multisig.registerOnGuardian();
+
+        expect(configuredAuth()).toEqual({ MidenEcdsa: { cosigner_commitments: [A, B] } });
+      });
+
+      it('registers the schemes the store holds, not the cached ones', async () => {
+        const multisig = createTestMultisig({ ...mixedConfig, signerCommitments: [A, B] });
+        mockWebClient.accounts.get.mockResolvedValue({
+          ...mockAccount,
+          ...mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1),
+        });
+        storeHoldsConfig({
+          threshold: 1,
+          signerCommitments: [A, B],
+          guardianCommitment: GUARDIAN,
+          signers: [falconSpec(A), ecdsaSpec(B)],
+          guardianScheme: 'ecdsa',
+        });
+        mockFetch.mockResolvedValueOnce(configureOk());
+
+        await multisig.registerOnGuardian();
+
+        expect(configuredAuth()).toEqual({
+          Miden: { cosigners: [falconSpec(A), ecdsaSpec(B)], guardian_scheme: 'ecdsa' },
+        });
+      });
+
+      // What the published v0.18.3 image answers, verbatim: axum's JSON
+      // rejection, plain text.
+      const oldServerRejection = (): any => ({
+        ok: false,
+        status: 422,
+        statusText: 'Unprocessable Entity',
+        headers: new Headers(),
+        text: async () =>
+          'Failed to deserialize the JSON body into the target type: auth: unknown variant ' +
+          '`Miden`, expected one of `MidenFalconRpo`, `MidenEcdsa`, `EvmEcdsa` at line 1 column 38',
+      });
+
+      it('names a GUARDIAN that predates per-signer schemes', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(oldServerRejection());
+
+        const error = await multisig.registerOnGuardian().catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(GuardianMixedSchemesUnsupportedError);
+        expect(error).toMatchObject({ code: 'mixed_schemes_unsupported' });
+        expect((error as Error).message).toMatch(/servers up to 0\.18\.3/);
+        expect((error as Error).cause).toBeInstanceOf(GuardianHttpError);
+        expect((error as Error).cause).toMatchObject({ status: 422 });
+      });
+
+      it('passes every other refusal through unchanged', async () => {
+        // A per-signer registration GUARDIAN refuses on its merits.
+        const mixed = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(guardianRefusal(403, 'authorization_failed'));
+        const refused = await mixed.registerOnGuardian().catch((e: unknown) => e);
+        expect(refused).toBeInstanceOf(GuardianHttpError);
+        expect(refused).toMatchObject({ code: 'authorization_failed' });
+
+        // A single-scheme registration is never reported as a per-signer one.
+        const uniform = createTestMultisig({ ...mixedConfig, signerCommitments: [A, B] });
+        mockFetch.mockResolvedValueOnce(oldServerRejection());
+        const rejected = await uniform.registerOnGuardian().catch((e: unknown) => e);
+        expect(rejected).toBeInstanceOf(GuardianHttpError);
+        expect(rejected).not.toBeInstanceOf(GuardianMixedSchemesUnsupportedError);
+
+        // Nor is a per-signer registration a body parser refuses for another reason.
+        mockFetch.mockResolvedValueOnce({
+          ...oldServerRejection(),
+          text: async () =>
+            'Failed to deserialize the JSON body into the target type: missing field `initial_state`',
+        });
+        const malformed = await mixed.registerOnGuardian().catch((e: unknown) => e);
+        expect(malformed).toBeInstanceOf(GuardianHttpError);
+        expect(malformed).not.toBeInstanceOf(GuardianMixedSchemesUnsupportedError);
+      });
+    });
+
+    describe('signer updates', () => {
+      it("add: keeps each approver's stored scheme and names every scheme on a mixed account", async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('add_signer'));
+
+        const proposal = await multisig.createAddSignerProposal(E, { nonce: 1 });
+
+        expect(buildUpdateSignersTransactionRequest).toHaveBeenNthCalledWith(
+          1,
+          mockWebClient,
+          1,
+          [falconSpec(A), ecdsaSpec(B), falconSpec(E)],
+          { accountId: expect.any(String), signatureScheme: 'falcon' },
+        );
+        const [created] = proposalCreations();
+        expect(created.delta_payload.metadata).toMatchObject({
+          signer_commitments: [A, B, E],
+          signer_schemes: ['falcon', 'ecdsa', 'falcon'],
+        });
+        // The proposer's own verification rebuilds the same targets.
+        expect(lastUpdateSignersTargets()).toEqual([falconSpec(A), ecdsaSpec(B), falconSpec(E)]);
+        expect(proposal.verification).toEqual({ status: 'verified' });
+      });
+
+      it('add: gives a SignerSpec its own scheme', async () => {
+        const multisig = createTestMultisig({ ...mixedConfig, signerCommitments: [A, B] });
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('add_signer'));
+
+        await multisig.createAddSignerProposal({ commitment: E, scheme: 'ecdsa' }, { nonce: 1 });
+
+        expect(vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0][2]).toEqual([
+          falconSpec(A),
+          falconSpec(B),
+          ecdsaSpec(E),
+        ]);
+        expect(proposalCreations()[0].delta_payload.metadata.signer_schemes).toEqual([
+          'falcon',
+          'falcon',
+          'ecdsa',
+        ]);
+      });
+
+      it('keeps the single-scheme wire shape when every target uses the proposer scheme', async () => {
+        const multisig = createTestMultisig({ ...mixedConfig, signerCommitments: [A, B] });
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('add_signer'));
+
+        const proposal = await multisig.createAddSignerProposal(E, { nonce: 1 });
+
+        expect(proposalCreations()[0].delta_payload.metadata).not.toHaveProperty('signer_schemes');
+        expect(proposal.metadata).not.toHaveProperty('targetSignerSchemes');
+      });
+
+      it('remove: names the schemes unless the kept approvers read them back', async () => {
+        const multisig = createTestMultisig({ ...mixedConfig, threshold: 1 });
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('remove_signer'));
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('remove_signer'));
+
+        // Only the Falcon approver is kept, which is the proposer's scheme.
+        await multisig.createRemoveSignerProposal(B, { nonce: 1 });
+        // Only the ECDSA approver is kept: a reader without names would give it
+        // the proposer's Falcon, so the scheme is named.
+        await multisig.createRemoveSignerProposal(A, { nonce: 1 });
+
+        const [keptFalcon, keptEcdsa] = proposalCreations().map(
+          (created) => created.delta_payload.metadata,
+        );
+        expect(keptFalcon.signer_commitments).toEqual([A]);
+        expect(keptFalcon).not.toHaveProperty('signer_schemes');
+        expect(keptEcdsa.signer_commitments).toEqual([B]);
+        expect(keptEcdsa.signer_schemes).toEqual(['ecdsa']);
+        expect(vi.mocked(buildUpdateSignersTransactionRequest).mock.calls.map((call) => call[2])).toEqual([
+          [falconSpec(A)],
+          [falconSpec(A)],
+          [ecdsaSpec(B)],
+          [ecdsaSpec(B)],
+        ]);
+      });
+
+      it('remove: finds the signer whatever its hex case or prefix', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('remove_signer'));
+
+        await multisig.createRemoveSignerProposal('B'.repeat(64), { nonce: 1 });
+
+        expect(vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0][2]).toEqual([
+          falconSpec(A),
+        ]);
+      });
+
+      it('change threshold: keeps both schemes of a mixed account', async () => {
+        const multisig = createTestMultisig({ ...mixedConfig, threshold: 2 });
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('change_threshold'));
+
+        await multisig.createChangeThresholdProposal(1, { nonce: 1 });
+
+        expect(vi.mocked(buildUpdateSignersTransactionRequest).mock.calls[0][2]).toEqual([
+          falconSpec(A),
+          ecdsaSpec(B),
+        ]);
+        expect(proposalCreations()[0].delta_payload.metadata.signer_schemes).toEqual([
+          'falcon',
+          'ecdsa',
+        ]);
+      });
+    });
+
+    describe('rebuilding a signer update', () => {
+      it('rebuilds a listed signer update from its signer_schemes', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(
+          listedSignerUpdate({
+            signer_commitments: [A, B, E],
+            signer_schemes: ['falcon', 'ecdsa', 'ecdsa'],
+          }),
+        );
+
+        const [listed] = await multisig.syncProposals();
+
+        expect(listed.verification).toEqual({ status: 'verified' });
+        expect(lastUpdateSignersTargets()).toEqual([falconSpec(A), ecdsaSpec(B), ecdsaSpec(E)]);
+        expect(listed.metadata).toMatchObject({ targetSignerSchemes: ['falcon', 'ecdsa', 'ecdsa'] });
+      });
+
+      it("rebuilds an unnamed signer update under the schemes the account stores, not the reader's", async () => {
+        // A Falcon reader of an all-ECDSA account: the proposal predates
+        // per-signer schemes, and its ECDSA proposer wrote ECDSA for every signer.
+        const multisig = createTestMultisig({
+          ...falconGuardianConfig,
+          signatureScheme: 'ecdsa' as const,
+        });
+        mockFetch.mockResolvedValueOnce(listedSignerUpdate({ signer_commitments: [A, B, E] }));
+
+        const [listed] = await multisig.syncProposals();
+
+        expect(listed.verification).toEqual({ status: 'verified' });
+        expect(lastUpdateSignersTargets()).toEqual([ecdsaSpec(A), ecdsaSpec(B), ecdsaSpec(E)]);
+      });
+
+      it('refuses an unnamed signer update that would rewrite a kept approver', async () => {
+        // What an SDK before per-signer schemes proposes on a mixed account: its
+        // own scheme for every approver, so the ECDSA approver would become Falcon.
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(listedSignerUpdate({ signer_commitments: [A, B, E] }));
+
+        const [listed] = await multisig.syncProposals();
+
+        expect(listed.verification).toMatchObject({
+          status: 'failed',
+          retryable: false,
+          message: expect.stringContaining(`${B} (stored 'ecdsa', proposed 'falcon')`),
+        });
+        expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
+
+        const signing = await multisig.signProposal(PROPOSAL_ID).catch((e: unknown) => e);
+        expect(signing).toBeInstanceOf(SignerSchemeMismatchError);
+        expect(signing).toMatchObject({
+          code: 'signer_scheme_mismatch',
+          changes: [{ commitment: B, stored: 'ecdsa', proposed: 'falcon' }],
+        });
+        expect(mockSigner.signCommitment).not.toHaveBeenCalled();
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      });
+
+      it('refuses a named signer update that would rewrite a kept approver', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(
+          listedSignerUpdate({ signer_commitments: [A, B], signer_schemes: ['falcon', 'falcon'] }),
+        );
+
+        const [listed] = await multisig.syncProposals();
+
+        expect(listed.verification).toMatchObject({
+          status: 'failed',
+          message: expect.stringContaining(`${B} (stored 'ecdsa', proposed 'falcon')`),
+        });
+      });
+
+      it.each([
+        [['falcon'], /names 1 signerSchemes for 3 signer commitments/],
+        [['falcon', 'ecdsa', 'rsa'], /unsupported signature scheme 'rsa'/],
+        ['falcon', /must be an array of scheme names/],
+      ])('fails verification for signer_schemes %j', async (signerSchemes, message) => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(
+          listedSignerUpdate({ signer_commitments: [A, B, E], signer_schemes: signerSchemes }),
+        );
+
+        const [listed] = await multisig.syncProposals();
+
+        expect(listed.verification).toMatchObject({
+          status: 'failed',
+          retryable: false,
+          message: expect.stringMatching(message),
+        });
+        expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
+      });
+
+      it('reads scheme names in any case, as the Rust SDK does', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(
+          listedSignerUpdate({
+            signer_commitments: [A, B, E],
+            signer_schemes: ['FALCON', 'Ecdsa', 'ecdsa'],
+          }),
+        );
+
+        const [listed] = await multisig.syncProposals();
+
+        expect(listed.verification).toEqual({ status: 'verified' });
+        expect(lastUpdateSignersTargets()).toEqual([falconSpec(A), ecdsaSpec(B), ecdsaSpec(E)]);
+      });
+    });
+
+    describe('execution', () => {
+      const ackPubkey = '0x' + '4'.repeat(66);
+      const ackSignature = '0x' + '6'.repeat(130);
+      const falconApproval = '0x' + 'e'.repeat(128);
+      const ecdsaApproval = '0x' + '5'.repeat(130);
+      const ecdsaApprovalKey = '0x' + '3'.repeat(66);
+
+      function cacheReadyProposal(multisig: Multisig, proposal: Record<string, unknown>): void {
+        (multisig as any).proposals.set(PROPOSAL_ID, {
+          id: PROPOSAL_ID,
+          accountId: multisig.accountId,
+          nonce: 1,
+          status: 'ready',
+          txSummary: 'AQID',
+          ...proposal,
+        });
+      }
+
+      it('counts only approvals made under the scheme the account stores for their signer', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+        const config = { threshold: 1, signerCommitments: [A], guardianCommitment: GUARDIAN };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({ ...config, signers: [falconSpec(A)], guardianScheme: 'falcon' });
+        cacheReadyProposal(multisig, {
+          signatures: [
+            {
+              signerId: A,
+              signature: { scheme: 'ecdsa', signature: ecdsaApproval, publicKey: ecdsaApprovalKey },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'p2id',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            recipientId: '0x' + '7'.repeat(30),
+            faucetId: '0x' + '8'.repeat(30),
+            amount: '10',
+            description: '',
+          },
+        });
+
+        await expect(multisig.executeProposal(PROPOSAL_ID)).rejects.toThrow('not ready for execution');
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining(`skipping the approval of ${A}`));
+        expect(mockFetch).not.toHaveBeenCalled();
+        warn.mockRestore();
+      });
+
+      it('executes a mixed-scheme signer update, each approval under its own scheme', async () => {
+        const { buildSignatureAdviceEntry, signatureHexToBytes } = await import('./utils/signature.js');
+        vi.mocked(signatureHexToBytes).mockClear();
+        vi.mocked(buildSignatureAdviceEntry).mockClear();
+        // An ECDSA GUARDIAN and a Falcon executor: the ack falls back to the
+        // GUARDIAN's scheme when GUARDIAN does not name one.
+        const config = {
+          threshold: 2,
+          signerCommitments: [falconSpec(A), ecdsaSpec(B)],
+          guardianCommitment: GUARDIAN,
+          guardianPublicKey: '0x' + '1'.repeat(66),
+          signatureScheme: 'ecdsa' as const,
+        };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({
+          threshold: 2,
+          signerCommitments: [A, B],
+          guardianCommitment: GUARDIAN,
+          signers: [falconSpec(A), ecdsaSpec(B)],
+          guardianScheme: 'ecdsa',
+        });
+        const approvals = [
+          {
+            signerId: A,
+            signature: { scheme: 'falcon' as const, signature: falconApproval },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+          {
+            signerId: B,
+            signature: {
+              scheme: 'ecdsa' as const,
+              signature: ecdsaApproval,
+              publicKey: ecdsaApprovalKey,
+            },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ];
+        cacheReadyProposal(multisig, {
+          signatures: approvals,
+          metadata: {
+            proposalType: 'change_threshold',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            targetThreshold: 1,
+            targetSignerCommitments: [A, B],
+            targetSignerSchemes: ['falcon', 'ecdsa'],
+            description: '',
+          },
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            account_id: multisig.accountId,
             nonce: 1,
-            prev_commitment: '0x' + 'b'.repeat(64),
+            prev_commitment: LOCAL_ACCOUNT_COMMITMENT,
             delta_payload: { tx_summary: { data: 'AQID' }, signatures: [] },
             status: {
               status: 'pending',
               timestamp: '2024-01-01T00:00:00Z',
-              proposer_id: '0x' + 'c'.repeat(64),
-              cosigner_sigs: [],
+              proposer_id: A,
+              cosigner_sigs: [
+                {
+                  signer_id: A,
+                  timestamp: '2024-01-01T00:00:00Z',
+                  signature: { scheme: 'falcon', signature: falconApproval },
+                },
+                {
+                  signer_id: B,
+                  timestamp: '2024-01-01T00:00:00Z',
+                  signature: { scheme: 'ecdsa', signature: ecdsaApproval, public_key: ecdsaApprovalKey },
+                },
+              ],
             },
+          }),
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            account_id: multisig.accountId,
+            nonce: 1,
+            ack_sig: ackSignature,
+            ack_pubkey: ackPubkey,
+          }),
+        });
+
+        await expect(multisig.executeProposal(PROPOSAL_ID)).resolves.toBeUndefined();
+
+        expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+        expect(lastUpdateSignersTargets()).toEqual([falconSpec(A), ecdsaSpec(B)]);
+        expect(vi.mocked(signatureHexToBytes).mock.calls).toEqual([
+          [falconApproval, 'falcon'],
+          [ecdsaApproval, 'ecdsa'],
+          [ackSignature, 'ecdsa'],
+        ]);
+        expect(
+          vi.mocked(buildSignatureAdviceEntry).mock.calls.map(([commitment]) => commitment.toHex()),
+        ).toEqual([A, B, GUARDIAN]);
+      });
+
+      it("refuses a signer update the store's schemes reject before relaying or pushing", async () => {
+        // Cached as uniform Falcon, against which the proposal verifies; the
+        // store holds the ECDSA approver the unnamed proposal would rewrite.
+        const config = { threshold: 1, signerCommitments: [A, B], guardianCommitment: GUARDIAN };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({ ...config, signers: [falconSpec(A), ecdsaSpec(B)], guardianScheme: 'falcon' });
+        cacheReadyProposal(multisig, {
+          signatures: [
+            {
+              signerId: A,
+              signature: { scheme: 'falcon', signature: falconApproval },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'change_threshold',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            targetThreshold: 1,
+            targetSignerCommitments: [A, B],
+            description: '',
           },
-          commitment: '0x' + 'c'.repeat(64),
-        }),
+        });
+        // What the execution would reach without the early refusal.
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ account_id: multisig.accountId, nonce: 1, ack_sig: ackSignature }),
+        });
+
+        const error = await multisig.executeProposal(PROPOSAL_ID).catch((e: unknown) => e);
+
+        expect(error).toBeInstanceOf(SignerSchemeMismatchError);
+        expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledTimes(1);
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(mockWebClient.executeTransaction).not.toHaveBeenCalled();
       });
-      // Built and verified against the cached, uniform Falcon config.
-      await multisig.createProposal(1, 'AQID', {
-        proposalType: 'change_threshold',
-        boundBlockNum: MOCK_BOUND_BLOCK_NUM,
-        saltHex: MOCK_SALT_HEX,
-        targetThreshold: 1,
-        targetSignerCommitments: uniformFalcon.signerCommitments,
-        description: '',
+    });
+
+    describe('switching GUARDIAN', () => {
+      const NEW_GUARDIAN = 'http://new-guardian.com';
+      const newGuardianPubkey = '0x' + '9'.repeat(64);
+
+      it("asks the new GUARDIAN for its key of the account's GUARDIAN scheme and keeps it", async () => {
+        // An ECDSA signer on an account whose GUARDIAN is Falcon.
+        const signer = ecdsaSigner();
+        guardian.setSigner(signer);
+        const multisig = createTestMultisig(falconGuardianConfig, signer);
+        mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ commitment: newGuardianPubkey }) });
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('switch_guardian'));
+
+        await multisig.createSwitchGuardianProposal(NEW_GUARDIAN, newGuardianPubkey, { nonce: 1 });
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          `${NEW_GUARDIAN}/pubkey?scheme=falcon`,
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(buildUpdateGuardianTransactionRequest).toHaveBeenCalledWith(
+          mockWebClient,
+          newGuardianPubkey,
+          { accountId: expect.any(String), signatureScheme: 'falcon' },
+        );
       });
-      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledTimes(1);
 
-      // Before this cosigner signs, a sync brings in a guardian rotated to ECDSA.
-      mockWebClient.accounts.get.mockResolvedValue(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1));
-      storeHoldsConfig({ ...uniformFalcon, guardianScheme: 'ecdsa' });
-
-      await expect(multisig.signProposal('0x' + 'c'.repeat(64))).rejects.toBeInstanceOf(
-        SignerSchemeMismatchError,
-      );
-      // Refused at the rebuild, before a signature exists or reaches GUARDIAN.
-      expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledTimes(1);
-      expect(mockSigner.signCommitment).not.toHaveBeenCalled();
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    it('refuses signer updates when the guardian scheme differs from the signer scheme', async () => {
-      guardian.setSigner(ecdsaSigner);
-      const multisig = createTestMultisig({ ...falconGuardianConfig, threshold: 2 }, ecdsaSigner);
-
-      await expect(multisig.createChangeThresholdProposal(1)).rejects.toBeInstanceOf(
-        SignerSchemeMismatchError,
-      );
-      expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
-    });
-
-    it('refuses to register a mixed-scheme account on GUARDIAN', async () => {
-      const multisig = createTestMultisig(mixedConfig);
-
-      const error = await multisig.registerOnGuardian().catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(SignerSchemeMismatchError);
-      expect(error).toMatchObject({
-        code: 'signer_scheme_mismatch',
-        signerScheme: 'falcon',
-        mismatched: [{ commitment: '0x' + 'b'.repeat(64), scheme: 'ecdsa' }],
-      });
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('refuses to rewrite a mixed-scheme approver set under the proposer scheme', async () => {
-      const multisig = createTestMultisig({ ...mixedConfig, threshold: 2 });
-
-      await expect(multisig.createChangeThresholdProposal(1)).rejects.toBeInstanceOf(
-        SignerSchemeMismatchError,
-      );
-      await expect(
-        multisig.createAddSignerProposal('0x' + 'd'.repeat(64)),
-      ).rejects.toBeInstanceOf(SignerSchemeMismatchError);
-      await expect(
-        multisig.createRemoveSignerProposal('0x' + 'b'.repeat(64)),
-      ).rejects.toBeInstanceOf(SignerSchemeMismatchError);
-      expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
-    });
-
-    it('refuses an acting signer whose scheme differs from its registered scheme', async () => {
-      const multisig = createTestMultisig(
-        {
+      it('builds an offline switch under the GUARDIAN scheme the node sync refreshed', async () => {
+        // Cached with a Falcon GUARDIAN; the account the sync reads back has an
+        // ECDSA one, rotated by another client. The offline proposer signs, so
+        // it is an approver.
+        const multisig = createTestMultisig({
           threshold: 1,
-          signerCommitments: ['0x' + 'a'.repeat(64), '0x' + 'b'.repeat(64)],
-          guardianCommitment: '0x' + 'c'.repeat(64),
-          signatureScheme: 'ecdsa' as const,
-        },
-        mockSigner,
-      );
+          signerCommitments: [mockSigner.commitment],
+          guardianCommitment: GUARDIAN,
+        });
+        mockWebClient.accounts.get.mockResolvedValue({
+          ...mockAccount,
+          ...mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1),
+        });
+        storeHoldsConfig({
+          threshold: 1,
+          signerCommitments: [mockSigner.commitment],
+          guardianCommitment: '0x' + 'f'.repeat(64),
+          signers: [falconSpec(mockSigner.commitment)],
+          guardianScheme: 'ecdsa',
+        });
+        mockFetch.mockImplementation(async (url: string) => {
+          if (new URL(url).origin !== NEW_GUARDIAN) {
+            throw new Error(`current GUARDIAN unreachable: ${url}`);
+          }
+          return { ok: true, json: async () => ({ commitment: newGuardianPubkey }) };
+        });
 
-      await expect(multisig.createChangeThresholdProposal(2)).rejects.toThrow(
-        /signer scheme 'falcon' does not match the scheme/,
-      );
+        await multisig.createSwitchGuardianProposalOffline(NEW_GUARDIAN, newGuardianPubkey);
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          `${NEW_GUARDIAN}/pubkey?scheme=ecdsa`,
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(buildUpdateGuardianTransactionRequest).toHaveBeenCalledWith(
+          mockWebClient,
+          newGuardianPubkey,
+          expect.objectContaining({ signatureScheme: 'ecdsa' }),
+        );
+      });
+
+      it("executes a switch under the account's GUARDIAN scheme and registers it on the new GUARDIAN", async () => {
+        // A Falcon executor on an all-ECDSA account.
+        const config = {
+          threshold: 1,
+          signerCommitments: [A],
+          guardianCommitment: GUARDIAN,
+          signatureScheme: 'ecdsa' as const,
+        };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({ ...config, signers: [ecdsaSpec(A)], guardianScheme: 'ecdsa' });
+        (multisig as any).proposals.set(PROPOSAL_ID, {
+          id: PROPOSAL_ID,
+          accountId: multisig.accountId,
+          nonce: 1,
+          status: 'ready',
+          txSummary: 'AQID',
+          signatures: [
+            {
+              signerId: A,
+              signature: { scheme: 'ecdsa', signature: '0x' + '5'.repeat(130), publicKey: '0x' + '3'.repeat(66) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'switch_guardian',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            newGuardianPubkey,
+            newGuardianEndpoint: NEW_GUARDIAN,
+            description: '',
+          },
+        });
+        // Pinned base, new endpoint key, relay, push back, then the
+        // registration on the new GUARDIAN.
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ commitment: newGuardianPubkey }) });
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ account_id: multisig.accountId, nonce: 1, ack_sig: '0x' + '6'.repeat(130) }),
+        });
+        mockFetch.mockResolvedValueOnce(configureOk());
+        vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+        mockImportNotesFromProposals.mockReset();
+        mockImportNotesFromProposals.mockResolvedValue([]);
+        mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+        mockWebClient.accounts.get.mockResolvedValueOnce({ serialize: () => new Uint8Array([1, 2, 3]) });
+
+        await expect(multisig.executeProposal(PROPOSAL_ID)).resolves.toBeUndefined();
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          `${NEW_GUARDIAN}/pubkey?scheme=ecdsa`,
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(buildUpdateGuardianTransactionRequest).toHaveBeenLastCalledWith(
+          mockWebClient,
+          newGuardianPubkey,
+          expect.objectContaining({ signatureScheme: 'ecdsa' }),
+        );
+        expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+        const [registration] = mockFetch.mock.calls
+          .filter(([url]) => String(url) === `${NEW_GUARDIAN}/configure`)
+          .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(registration.auth).toEqual({ MidenEcdsa: { cosigner_commitments: [A] } });
+      });
+      it('keeps a new GUARDIAN refusing a mixed-scheme account reachable as the cause', async () => {
+        const config = {
+          threshold: 1,
+          signerCommitments: [A, ecdsaSpec(B)],
+          guardianCommitment: GUARDIAN,
+        };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({
+          threshold: 1,
+          signerCommitments: [A, B],
+          guardianCommitment: GUARDIAN,
+          signers: [falconSpec(A), ecdsaSpec(B)],
+          guardianScheme: 'falcon',
+        });
+        (multisig as any).proposals.set(PROPOSAL_ID, {
+          id: PROPOSAL_ID,
+          accountId: multisig.accountId,
+          nonce: 1,
+          status: 'ready',
+          txSummary: 'AQID',
+          signatures: [
+            {
+              signerId: A,
+              signature: { scheme: 'falcon', signature: '0x' + 'e'.repeat(128) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'switch_guardian',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            newGuardianPubkey,
+            newGuardianEndpoint: NEW_GUARDIAN,
+            description: '',
+          },
+        });
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ commitment: newGuardianPubkey }) });
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ account_id: multisig.accountId, nonce: 1, ack_sig: '0x' + '6'.repeat(130) }),
+        });
+        mockFetch.mockResolvedValueOnce({
+          ok: false,
+          status: 422,
+          statusText: 'Unprocessable Entity',
+          headers: new Headers(),
+          text: async () =>
+            'Failed to deserialize the JSON body into the target type: auth: unknown variant `Miden`',
+        });
+        vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+        mockImportNotesFromProposals.mockReset();
+        mockImportNotesFromProposals.mockResolvedValue([]);
+        mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+        mockWebClient.accounts.get.mockResolvedValueOnce({ serialize: () => new Uint8Array([1, 2, 3]) });
+
+        const error = await multisig.executeProposal(PROPOSAL_ID).catch((e: unknown) => e);
+
+        expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+        expect((error as Error).message).toMatch(/failed to register on new GUARDIAN/);
+        expect((error as Error).cause).toBeInstanceOf(GuardianMixedSchemesUnsupportedError);
+      });
+    });
+
+    describe("this signer's own scheme", () => {
+      // The account stores this Falcon signer's commitment as an ECDSA approver.
+      const misregistered = () => ({
+        threshold: 1,
+        signerCommitments: [
+          { commitment: mockSigner.commitment, scheme: 'ecdsa' as const },
+          { commitment: B, scheme: 'ecdsa' as const },
+        ],
+        guardianCommitment: GUARDIAN,
+        signatureScheme: 'ecdsa' as const,
+      });
+
+      it('refuses to propose when the account stores this key under another scheme', async () => {
+        const multisig = createTestMultisig(misregistered());
+        const attempts: Array<[string, () => Promise<unknown>]> = [
+          ['change threshold', () => multisig.createChangeThresholdProposal(2)],
+          ['add signer', () => multisig.createAddSignerProposal(E)],
+          ['remove signer', () => multisig.createRemoveSignerProposal(B)],
+          ['procedure threshold', () => multisig.createUpdateProcedureThresholdProposal('send_asset', 1)],
+          ['p2id', () => multisig.createP2idProposal('0x' + '7'.repeat(30), '0x' + '8'.repeat(30), 1n)],
+          ['custom', () => multisig.createCustomProposal(new Uint8Array([1]), 'my_type')],
+          ['switch', () => multisig.createSwitchGuardianProposal('http://new-guardian.com', E)],
+          ['offline switch', () => multisig.createSwitchGuardianProposalOffline('http://new-guardian.com', E)],
+          [
+            'raw proposal',
+            () =>
+              multisig.createProposal(1, 'AQID', {
+                proposalType: 'p2id',
+                recipientId: '0x' + '7'.repeat(30),
+                faucetId: '0x' + '8'.repeat(30),
+                amount: '1',
+                description: '',
+              }),
+          ],
+        ];
+
+        for (const [name, attempt] of attempts) {
+          const error = await attempt().catch((e: unknown) => e);
+          expect(error, name).toBeInstanceOf(KeySchemeMismatchError);
+          expect(error, name).toMatchObject({
+            code: 'key_scheme_mismatch',
+            commitment: mockSigner.commitment,
+            keyScheme: 'falcon',
+            storedScheme: 'ecdsa',
+          });
+        }
+        expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
+        expect(buildUpdateGuardianTransactionRequest).not.toHaveBeenCalled();
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('refuses to sign when the account stores this key under another scheme', async () => {
+        const multisig = createTestMultisig(misregistered());
+        const exported = {
+          accountId: multisig.accountId,
+          nonce: 1,
+          commitment: PROPOSAL_ID,
+          txSummaryBase64: 'AQID',
+          signatures: [],
+          metadata: {
+            proposalType: 'p2id' as const,
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            recipientId: '0x' + '7'.repeat(30),
+            faucetId: '0x' + '8'.repeat(30),
+            amount: '1',
+            description: '',
+          },
+        };
+        await multisig.importProposal(JSON.stringify(exported));
+
+        await expect(multisig.signProposal(PROPOSAL_ID)).rejects.toBeInstanceOf(KeySchemeMismatchError);
+        await expect(multisig.signProposalOffline(PROPOSAL_ID)).rejects.toBeInstanceOf(
+          KeySchemeMismatchError,
+        );
+        expect(mockSigner.signCommitment).not.toHaveBeenCalled();
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('checks the scheme the store holds for this key, not the cached one', async () => {
+        const stored = (scheme: 'falcon' | 'ecdsa') =>
+          storeHoldsConfig({
+            threshold: 1,
+            signerCommitments: [mockSigner.commitment, B],
+            guardianCommitment: GUARDIAN,
+            signers: [{ commitment: mockSigner.commitment, scheme }, falconSpec(B)],
+            guardianScheme: 'falcon',
+          });
+        mockWebClient.accounts.get.mockResolvedValue(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1));
+
+        // Cached as this key's own scheme, stored under the other one.
+        const matching = createTestMultisig({
+          threshold: 1,
+          signerCommitments: [mockSigner.commitment, B],
+          guardianCommitment: GUARDIAN,
+        });
+        stored('ecdsa');
+        await expect(matching.createChangeThresholdProposal(2)).rejects.toBeInstanceOf(
+          KeySchemeMismatchError,
+        );
+
+        // Cached under the other scheme, stored under this key's own.
+        const mismatched = createTestMultisig(misregistered());
+        stored('falcon');
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('change_threshold'));
+        await expect(mismatched.createChangeThresholdProposal(2, { nonce: 1 })).resolves.toBeDefined();
+      });
+
+      it('matches this key whatever the hex case the account stores it in', async () => {
+        const signer: Signer = { ...mockSigner, commitment: '0x' + 'ab'.repeat(32) };
+        guardian.setSigner(signer);
+        const multisig = createTestMultisig(
+          {
+            threshold: 1,
+            signerCommitments: [{ commitment: '0x' + 'AB'.repeat(32), scheme: 'ecdsa' as const }, ecdsaSpec(B)],
+            guardianCommitment: GUARDIAN,
+            signatureScheme: 'ecdsa' as const,
+          },
+          signer,
+        );
+
+        await expect(multisig.createChangeThresholdProposal(2)).rejects.toBeInstanceOf(
+          KeySchemeMismatchError,
+        );
+      });
+
+      it('leaves a signer that is not an approver to the checks that refuse it', async () => {
+        const multisig = createTestMultisig(mixedConfig);
+        mockFetch.mockResolvedValueOnce(proposalPushResponse('change_threshold'));
+
+        await expect(multisig.createChangeThresholdProposal(2, { nonce: 1 })).resolves.toBeDefined();
+      });
     });
   });
 
   describe('createChangeThresholdProposal', () => {
-    it('passes the signer scheme to update-signers requests', async () => {
+    it('builds update-signers requests from the approvers and their stored schemes', async () => {
       const ecdsaSigner: Signer = {
         ...mockSigner,
         publicKey: '0x' + '2'.repeat(66),
@@ -4556,7 +5252,7 @@ describe('Multisig', () => {
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         2,
-        config.signerCommitments,
+        config.signerCommitments.map(ecdsaSpec),
         { accountId: expect.any(String), signatureScheme: 'ecdsa' },
       );
     });
@@ -4604,7 +5300,7 @@ describe('Multisig', () => {
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         3,
-        [...config.signerCommitments, newCommitment],
+        [...config.signerCommitments, newCommitment].map(falconSpec),
         { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
@@ -4622,28 +5318,9 @@ describe('Multisig', () => {
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         3,
-        [...config.signerCommitments, newCommitment],
+        [...config.signerCommitments, newCommitment].map(falconSpec),
         { accountId: expect.any(String), signatureScheme: 'falcon' },
       );
-    });
-
-    it("add: refuses a SignerSpec whose scheme differs from the acting signer's before building", async () => {
-      const newCommitment = '0x' + 'e'.repeat(64);
-      const multisig = createTestMultisig(config);
-
-      const error = await multisig
-        .createAddSignerProposal({ commitment: newCommitment, scheme: 'ecdsa' }, { nonce: 1 })
-        .catch((e: unknown) => e);
-
-      expect(error).toBeInstanceOf(SignerSchemeMismatchError);
-      expect(error).toMatchObject({
-        code: 'signer_scheme_mismatch',
-        signerScheme: 'falcon',
-        mismatched: [{ commitment: newCommitment, scheme: 'ecdsa' }],
-        guardian: undefined,
-      });
-      expect(buildUpdateSignersTransactionRequest).not.toHaveBeenCalled();
-      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('add: targets the signer set the store holds, not a cached one', async () => {
@@ -4665,7 +5342,7 @@ describe('Multisig', () => {
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         config.threshold,
-        [...config.signerCommitments, addedSince, newCommitment],
+        [...config.signerCommitments, addedSince, newCommitment].map(falconSpec),
         { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
@@ -4686,7 +5363,7 @@ describe('Multisig', () => {
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         config.threshold,
-        [...config.signerCommitments.filter((c) => c !== removed), addedSince],
+        [...config.signerCommitments.filter((c) => c !== removed), addedSince].map(falconSpec),
         { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
@@ -4739,7 +5416,7 @@ describe('Multisig', () => {
       expect(buildUpdateSignersTransactionRequest).toHaveBeenCalledWith(
         mockWebClient,
         1,
-        [config.signerCommitments[0], config.signerCommitments[1]],
+        [config.signerCommitments[0], config.signerCommitments[1]].map(falconSpec),
         { accountId: expect.any(String), signatureScheme: mockSigner.scheme },
       );
     });
@@ -6388,6 +7065,13 @@ describe('Multisig', () => {
         publicKey: '0x' + '2'.repeat(66),
       };
 
+      // The store holds the ECDSA account the cached config describes, so the
+      // ECDSA approval counts and the expiry is what refuses the request.
+      storeHoldsConfig({
+        ...config,
+        signers: config.signerCommitments.map(ecdsaSpec),
+        guardianScheme: 'ecdsa',
+      });
       const multisig = createTestMultisig(config, ecdsaSigner);
       const cachedProposalId = '0x' + 'c'.repeat(64);
       const requestedProposalId = '0x' + 'C'.repeat(64);
@@ -8806,6 +9490,71 @@ describe('Multisig', () => {
       await expect(
         multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
       ).rejects.toThrow('have 1 of 2 required signatures');
+    });
+
+    it('leaves out an approval made under another scheme than the account stores', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      storeHoldsConfig({ ...config, signers: [falconSpec('0x' + 'a'.repeat(64))], guardianScheme: 'falcon' });
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () =>
+          customDelta('b2agg', [
+            {
+              signer_id: '0x' + 'a'.repeat(64),
+              signature: { scheme: 'ecdsa', signature: '0x' + '5'.repeat(130), public_key: '0x' + '3'.repeat(66) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ]),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).rejects.toThrow('have 0 of 1 required signatures');
+      expect(executionPushes()).toEqual([]);
+      warn.mockRestore();
+    });
+
+    it("reads an acknowledgement GUARDIAN names no scheme for under the account's GUARDIAN scheme", async () => {
+      const { signatureHexToBytes } = await import('./utils/signature.js');
+      vi.mocked(signatureHexToBytes).mockClear();
+      // A Falcon signer on an account whose GUARDIAN is ECDSA.
+      const config = {
+        threshold: 1,
+        signerCommitments: [falconSpec('0x' + 'a'.repeat(64))],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        signatureScheme: 'ecdsa' as const,
+      };
+      const multisig = createTestMultisig(config);
+      storeHoldsConfig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+        signers: [falconSpec('0x' + 'a'.repeat(64))],
+        guardianScheme: 'ecdsa',
+      });
+      const ready = customDelta('b2agg', [falconSig('0x' + 'a'.repeat(64))]);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ready });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ...ready,
+          ack_sig: '0x' + '6'.repeat(130),
+          ack_pubkey: '0x' + '4'.repeat(66),
+        }),
+      });
+
+      await expect(
+        multisig.prepareCustomExecution('0x' + 'c'.repeat(64), requestBytes),
+      ).resolves.toBeDefined();
+
+      expect(vi.mocked(signatureHexToBytes).mock.calls.at(-1)).toEqual(['0x' + '6'.repeat(130), 'ecdsa']);
     });
 
     it('rejects a proposal that is below its signature threshold', async () => {

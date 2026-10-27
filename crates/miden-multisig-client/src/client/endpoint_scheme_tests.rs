@@ -147,12 +147,11 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
     let tx_request = build_final_transaction_request(
         &client.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        scheme,
         None,
     )
     .await

@@ -307,6 +307,7 @@ async fn every_family_a_one_signer_account_can_propose_carries_both_bounds_and_r
             "add_signer",
             TransactionType::AddCosigner {
                 new_commitment: GuardianKeyStore::generate().commitment(),
+                scheme: None,
             },
         ),
     ];
@@ -1016,6 +1017,7 @@ mod local_execution {
         assert_eq!(
             LocalExecutionReason::of(&TransactionType::AddCosigner {
                 new_commitment: Word::from([1u32, 1, 1, 1]),
+                scheme: None,
             }),
             None
         );

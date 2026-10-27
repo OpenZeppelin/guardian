@@ -22,6 +22,7 @@ use crate::local_execution::LocalExecutionReason;
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{P2ideHeights, Proposal, ProposalMetadata, TransactionType};
+use crate::signers::SignerSpec;
 use crate::utils::hex_body_eq;
 
 use super::{
@@ -38,7 +39,7 @@ use super::{
 /// ```ignore
 /// use miden_multisig_client::TransactionType;
 ///
-/// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment })
+/// let proposal = ProposalBuilder::new(TransactionType::add_cosigner(new_commitment))
 ///     .build(&mut miden_client, &node_rpc, &mut guardian_client, &account, key_manager)
 ///     .await?;
 /// ```
@@ -179,12 +180,17 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         match self.transaction_type {
-            TransactionType::AddCosigner { new_commitment } => {
+            TransactionType::AddCosigner {
+                new_commitment,
+                scheme,
+            } => {
+                let new_signer =
+                    SignerSpec::new(new_commitment, scheme.unwrap_or(key_manager.scheme()));
                 self.build_add_cosigner(
                     miden_client,
                     guardian_client,
                     account,
-                    new_commitment,
+                    new_signer,
                     key_manager,
                 )
                 .await
@@ -305,18 +311,22 @@ impl ProposalBuilder {
         miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
-        new_commitment: Word,
+        new_signer: SignerSpec,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
-        let mut current_signers = account.cosigner_commitments();
+        let approvers = account.cosigners()?;
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         // Add the new signer
-        current_signers.push(new_commitment);
+        let mut target_signers = approvers.clone();
+        target_signers.push(new_signer);
+        let current_signers = SignerSpec::commitments(&target_signers);
         ensure_admissible_signer_set(&current_signers, account.guardian_commitment()?)?;
+        let signer_schemes =
+            SignerSpec::wire_schemes(&target_signers, key_manager.scheme(), &approvers);
 
         // Keep same threshold
         let new_threshold = current_threshold as u64;
@@ -327,10 +337,9 @@ impl ProposalBuilder {
         // Build the transaction request (without signatures - we just want the summary)
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
-            &current_signers,
+            &target_signers,
             &auth_args,
             std::iter::empty(),
-            key_manager.scheme(),
             self.execution_mode.transaction_expiration_delta(),
         )?;
 
@@ -349,6 +358,7 @@ impl ProposalBuilder {
             proposal_type: None,
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: SignerSpec::names(&signer_schemes),
             salt_hex: Some(word_to_hex(&salt)),
             recipient_hex: None,
             faucet_id_hex: None,
@@ -376,6 +386,7 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
+            .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
@@ -389,7 +400,10 @@ impl ProposalBuilder {
         let proposal = Proposal::new(
             tx_summary,
             nonce,
-            TransactionType::AddCosigner { new_commitment },
+            TransactionType::AddCosigner {
+                new_commitment: new_signer.commitment,
+                scheme: Some(new_signer.scheme),
+            },
             metadata,
         );
         Self::ensure_response_commitment(&proposal, &response.commitment)?;
@@ -416,7 +430,8 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
-        let current_signers = account.cosigner_commitments();
+        let target_signers = account.cosigners()?;
+        let current_signers = SignerSpec::commitments(&target_signers);
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
@@ -426,6 +441,8 @@ impl ProposalBuilder {
             requested_signers,
             new_threshold,
         )?;
+        let signer_schemes =
+            SignerSpec::wire_schemes(&target_signers, key_manager.scheme(), &target_signers);
 
         let new_threshold = new_threshold as u64;
         let auth_args = self.fresh_auth_args(miden_client).await?;
@@ -433,10 +450,9 @@ impl ProposalBuilder {
 
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
-            &current_signers,
+            &target_signers,
             &auth_args,
             std::iter::empty(),
-            key_manager.scheme(),
             self.execution_mode.transaction_expiration_delta(),
         )?;
 
@@ -455,6 +471,7 @@ impl ProposalBuilder {
             proposal_type: Some("change_threshold".to_string()),
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: SignerSpec::names(&signer_schemes),
             salt_hex: Some(word_to_hex(&salt)),
             recipient_hex: None,
             faucet_id_hex: None,
@@ -481,6 +498,7 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
+            .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
@@ -513,16 +531,19 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
-        let current_signers = account.cosigner_commitments();
+        let current_signers = account.cosigners()?;
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         // Remove the signer
-        let new_signers: Vec<Word> = current_signers
+        let target_signers: Vec<SignerSpec> = current_signers
             .iter()
-            .filter(|&c| c != &commitment_to_remove)
+            .filter(|signer| signer.commitment != commitment_to_remove)
             .copied()
             .collect();
+        let new_signers = SignerSpec::commitments(&target_signers);
+        let signer_schemes =
+            SignerSpec::wire_schemes(&target_signers, key_manager.scheme(), &current_signers);
 
         if new_signers.len() == current_signers.len() {
             return Err(MultisigError::InvalidConfig(
@@ -545,10 +566,9 @@ impl ProposalBuilder {
         // Build the transaction request
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
-            &new_signers,
+            &target_signers,
             &auth_args,
             std::iter::empty(),
-            key_manager.scheme(),
             self.execution_mode.transaction_expiration_delta(),
         )?;
 
@@ -567,6 +587,7 @@ impl ProposalBuilder {
             proposal_type: None,
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: SignerSpec::names(&signer_schemes),
             salt_hex: Some(word_to_hex(&salt)),
             recipient_hex: None,
             faucet_id_hex: None,
@@ -594,6 +615,7 @@ impl ProposalBuilder {
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
+            .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
@@ -863,13 +885,10 @@ impl ProposalBuilder {
         let required_signatures =
             account.effective_threshold_for(ThresholdedTransaction::UpdateGuardian)? as usize;
         ensure_admissible_signer_set(&account.cosigner_commitments(), new_guardian_pubkey)?;
+        let guardian_scheme = account.guardian_scheme()?;
 
-        verify_endpoint_commitment(
-            &new_guardian_endpoint,
-            new_guardian_pubkey,
-            key_manager.scheme(),
-        )
-        .await?;
+        verify_endpoint_commitment(&new_guardian_endpoint, new_guardian_pubkey, guardian_scheme)
+            .await?;
 
         let auth_args = self.fresh_auth_args(miden_client).await?;
         let salt = auth_args.salt();
@@ -877,7 +896,7 @@ impl ProposalBuilder {
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
-            key_manager.scheme(),
+            guardian_scheme,
             &auth_args,
             std::iter::empty(),
             self.execution_mode.transaction_expiration_delta(),
@@ -1186,10 +1205,12 @@ mod tests {
         fn signer_update_request_carries_the_auth_args() {
             let (request, _) = build_update_signers_transaction_request(
                 1,
-                &[Word::from([5u32, 6, 7, 8])],
+                &[SignerSpec::new(
+                    Word::from([5u32, 6, 7, 8]),
+                    SignatureScheme::Falcon,
+                )],
                 &auth_args(),
                 std::iter::empty(),
-                SignatureScheme::Falcon,
                 None,
             )
             .expect("the signer-update request builds");
