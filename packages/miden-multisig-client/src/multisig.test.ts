@@ -10448,6 +10448,32 @@ describe('Multisig', () => {
       expect(sign.mock.invocationCallOrder[0]).toBeLessThan(execute.mock.invocationCallOrder[0]);
     });
 
+    it('relays only approvals under the scheme the account stores for their signer', async () => {
+      // The account stores this signer under Falcon: an ECDSA approval from it counts toward
+      // no threshold, so it is not relayed, as executeProposal does not relay it.
+      const { multisig, execute } = holding(publicP2id);
+      (multisig as any).proposals.get(proposalId).signatures = [
+        {
+          signerId: '0x' + 'a'.repeat(64),
+          signature: {
+            scheme: 'ecdsa' as const,
+            signature: '0x' + 'f'.repeat(130),
+            publicKey: '0x' + '2'.repeat(66),
+          },
+          timestamp: '2024-01-01T00:00:00Z',
+        },
+      ];
+      const stored = vi.spyOn(guardian, 'getDeltaProposal');
+      const sign = vi.spyOn(guardian, 'signDeltaProposal');
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
+      expect(stored).not.toHaveBeenCalled();
+      expect(sign).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
     it('maps a refusal while relaying the approvals to GuardianExecutionRefusedError', async () => {
       const { multisig, execute } = holding(publicP2id);
       (multisig as any).proposals.get(proposalId).signatures = [

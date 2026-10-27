@@ -371,17 +371,21 @@ impl MultisigClient {
     /// The caller's own approval goes first: a server that credits every
     /// approval to the request signer (before 0.18.1) then refuses the rest
     /// as already signed. A response that stores a relayed approval under
-    /// another signer stops the relay.
+    /// another signer stops the relay. Only the approvals the account can
+    /// verify are relayed ([`approvals_under_stored_schemes`]).
     pub(super) async fn relay_collected_approvals(
         &mut self,
         proposal_id: &str,
         signatures: &[ExportedSignature],
     ) -> Result<()> {
-        let account_id = self.require_account()?.id();
+        let account = self.require_account()?;
+        let account_id = account.id();
+        let signatures =
+            approvals_under_stored_schemes(signatures, &account.verifiable_cosigners());
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let caller = self.key_manager.commitment_hex();
         let (own, others): (Vec<_>, Vec<_>) = signatures
-            .iter()
+            .into_iter()
             .partition(|collected| collected.signer_commitment.eq_ignore_ascii_case(&caller));
         for collected in own.into_iter().chain(others) {
             let signature = match collected.scheme {
@@ -432,6 +436,28 @@ impl MultisigClient {
 /// Refuses a relay whose response stores the relayed approval under another
 /// signer. A server before 0.18.1 credits every approval to the request
 /// signer, and other devices that load such an entry would execute with it.
+/// The document's approvals the account can verify: from one of its approvers, under the scheme
+/// the account stores for that approver, one per approver. The rest are skipped as
+/// [`collect_signature_advice`] skips them, so they count toward no threshold and never reach
+/// GUARDIAN.
+pub(super) fn approvals_under_stored_schemes<'a>(
+    signatures: &'a [ExportedSignature],
+    approvers: &[crate::signers::SignerSpec],
+) -> Vec<&'a ExportedSignature> {
+    let mut seen = std::collections::HashSet::new();
+    signatures
+        .iter()
+        .filter(|collected| {
+            approvers.iter().any(|approver| {
+                approver.scheme == collected.scheme
+                    && crate::transaction::word_to_hex(&approver.commitment)
+                        .eq_ignore_ascii_case(&collected.signer_commitment)
+            })
+        })
+        .filter(|collected| seen.insert(collected.signer_commitment.to_lowercase()))
+        .collect()
+}
+
 fn assert_approval_credited_to_its_signer(
     stored: Option<&guardian_client::DeltaObject>,
     relayed: &ExportedSignature,
@@ -469,12 +495,45 @@ mod tests {
         CosignerSignature, DeltaObject, DeltaStatus, PendingStatus, ProposalSignature, delta_status,
     };
     use guardian_shared::SignatureScheme;
+    use miden_protocol::Word;
 
     use super::*;
     use crate::export::ExportedSignature;
 
     const CALLER: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
     const OTHER: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn only_approvals_the_account_can_verify_are_kept() {
+        let falcon = Word::from([1u32, 0, 0, 0]);
+        let ecdsa = Word::from([2u32, 0, 0, 0]);
+        let approvers = [
+            crate::signers::SignerSpec::new(falcon, SignatureScheme::Falcon),
+            crate::signers::SignerSpec::new(ecdsa, SignatureScheme::Ecdsa),
+        ];
+        let approval = |signer: &Word, scheme| ExportedSignature {
+            signer_commitment: crate::transaction::word_to_hex(signer)
+                .to_uppercase()
+                .replace("0X", "0x"),
+            scheme,
+            ..relayed()
+        };
+        let documented = [
+            approval(&falcon, SignatureScheme::Falcon),
+            approval(&ecdsa, SignatureScheme::Falcon),
+            approval(&Word::from([3u32, 0, 0, 0]), SignatureScheme::Falcon),
+            approval(&falcon, SignatureScheme::Falcon),
+        ];
+
+        let kept = approvals_under_stored_schemes(&documented, &approvers);
+
+        assert_eq!(
+            kept.len(),
+            1,
+            "an approval under another scheme, from a non-approver, or repeated is dropped"
+        );
+        assert_eq!(kept[0].scheme, SignatureScheme::Falcon);
+    }
 
     fn relayed() -> ExportedSignature {
         ExportedSignature {

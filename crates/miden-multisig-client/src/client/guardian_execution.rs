@@ -294,21 +294,24 @@ impl MultisigClient {
     ///
     /// The proposal must have been imported, and the same refusals apply as for
     /// [`request_guardian_execution`](Self::request_guardian_execution), checked before any
-    /// approval is relayed.
+    /// approval is relayed. Readiness counts the approvals the account can verify, as
+    /// [`execute_imported_proposal`](Self::execute_imported_proposal) does: one per approver,
+    /// under the scheme the account stores for it.
     pub async fn request_imported_guardian_execution(
         &mut self,
         exported: &ExportedProposal,
         request: GuardianExecutionRequest,
     ) -> Result<ProposalExecution> {
-        let account_id = self.require_account()?.id();
+        let account = self.require_account()?;
+        let account_id = account.id();
         exported.validate(Some(account_id))?;
-        if !exported.is_ready() {
-            return Err(MultisigError::ProposalNotReady {
-                collected: exported.signatures_collected(),
-                required: exported.signatures_required,
-            });
-        }
-        let proposal_id = exported.to_proposal()?.id;
+        let proposal = exported.to_proposal()?;
+        let approvals = super::offline::approvals_under_stored_schemes(
+            &exported.signatures,
+            &account.verifiable_cosigners(),
+        );
+        account.ensure_threshold_met(&proposal.transaction_type, approvals.len())?;
+        let proposal_id = proposal.id;
         self.known_proposals
             .admit(account_id, &proposal_id, request)?;
         self.relay_collected_approvals(&proposal_id, &exported.signatures)

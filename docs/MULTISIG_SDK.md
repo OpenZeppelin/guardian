@@ -596,7 +596,10 @@ approvals collected off channel are relayed to it before the request, as local e
 them before Guardian's acknowledgement. TypeScript's `requestGuardianExecution` relays the
 approvals of the proposal it holds, an imported one included. In Rust, pass the signed document
 to `request_imported_guardian_execution(&exported, request)`, the counterpart of
-`execute_imported_proposal`; `request_guardian_execution` sends only the proposal id.
+`execute_imported_proposal`; `request_guardian_execution` sends only the proposal id. Both
+SDKs count and relay only the approvals the account can verify: one per approver, under the
+scheme the account stores for that approver. A document short of a threshold of those is
+refused locally (`ProposalNotReady`) before Guardian is contacted.
 
 #### Proposals a Guardian-executable client still executes locally
 
