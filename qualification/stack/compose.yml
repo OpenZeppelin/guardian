@@ -180,8 +180,10 @@ services:
       - POSTGRES_USER=guardian
       - POSTGRES_PASSWORD=${QUAL_POSTGRES_PASSWORD:?set QUAL_POSTGRES_PASSWORD}
       - POSTGRES_DB=guardian
+    # Over TCP: the image's init-time server listens only on the socket, so a
+    # socket check passes before the servers can connect.
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U guardian -d guardian"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U guardian -d guardian"]
       interval: 3s
       timeout: 3s
       retries: 20
