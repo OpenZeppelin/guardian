@@ -613,61 +613,32 @@ enum Vouch {
 
 /// Requires `commitment` to be the account's current on-chain state. An
 /// earlier on-chain state does not qualify: its signer set may have changed
-/// since, and since the chain has moved past it, waiting does not help. A
-/// history hit is checked against the head once more, since the transaction
-/// that ends at `commitment` may have landed after the first head read.
+/// since. One head read decides; telling a state the chain moved past from
+/// one still on its way would take a search of the account's history, which
+/// any caller could make the server run with a made-up state.
 async fn ensure_on_chain_state(state: &AppState, account_id: &str, commitment: &str) -> Result<()> {
-    let unavailable = |e: String| {
-        GuardianError::RpcUnavailable(format!(
-            "Could not check the submitted state against the chain: {e}"
-        ))
-    };
     let verification = state
         .network_client
         .verify_commitment(account_id, commitment, RpcReadMode::Configured)
         .await
-        .map_err(unavailable)?;
-    let on_chain = match verification {
-        StateVerification::Match => return Ok(()),
-        StateVerification::Absent => None,
-        StateVerification::Mismatch { on_chain } => Some(on_chain),
-    };
-    if let Some(on_chain) = on_chain
-        && state
-            .network_client
-            .find_transaction_ending_at(account_id, commitment, 0, RpcReadMode::Configured)
-            .await
-            .map_err(unavailable)?
-            .found_in_block
-            .is_some()
-    {
-        if let StateVerification::Match = state
-            .network_client
-            .verify_commitment(account_id, commitment, RpcReadMode::Configured)
-            .await
-            .map_err(unavailable)?
-        {
-            return Ok(());
+        .map_err(|e| {
+            GuardianError::RpcUnavailable(format!(
+                "Could not check the submitted state against the chain: {e}"
+            ))
+        })?;
+    match verification {
+        StateVerification::Match => Ok(()),
+        StateVerification::Absent | StateVerification::Mismatch { .. } => {
+            tracing::warn!(
+                account_id = %account_id,
+                submitted = %commitment,
+                "Configuration state is not the account's on-chain state"
+            );
+            Err(GuardianError::StateNotOnChain {
+                submitted: commitment.to_string(),
+            })
         }
-        tracing::warn!(
-            account_id = %account_id,
-            submitted = %commitment,
-            on_chain = %on_chain,
-            "Reconfiguration state is behind the account's on-chain state"
-        );
-        return Err(GuardianError::CommitmentMismatch {
-            expected: on_chain,
-            actual: commitment.to_string(),
-        });
     }
-    tracing::warn!(
-        account_id = %account_id,
-        submitted = %commitment,
-        "Reconfiguration state is not the account's on-chain state"
-    );
-    Err(GuardianError::StateNotOnChain {
-        submitted: commitment.to_string(),
-    })
 }
 
 /// Whether the account's chain reached `commitment`: the chain sits at it,
@@ -1773,85 +1744,31 @@ mod tests {
         assert_eq!(network.get_verify_commitment_calls().len(), 1);
     }
 
-    /// A state the chain has already moved past is refused as a mismatch,
-    /// not as a state still on its way: waiting does not help.
+    /// A state the chain has already moved past is refused as not on chain,
+    /// from one head read: no caller can make the server search the
+    /// account's transaction history.
     #[tokio::test]
-    async fn configure_refuses_a_state_behind_the_chain_as_a_mismatch() {
-        let result = reconfigure_with_a_history_hit(StateVerification::Mismatch {
-            on_chain: "0x9999".to_string(),
-        })
-        .await;
-        assert!(
-            matches!(
-                &result,
-                Err(GuardianError::CommitmentMismatch { expected, actual })
-                    if expected == "0x9999" && actual == "0x5678"
-            ),
-            "{result:?}"
-        );
-    }
-
-    /// The transaction ending at the submitted state can land between the
-    /// head read and the history search, which then finds it: the state is
-    /// the head by then, so the reconfiguration is accepted.
-    #[tokio::test]
-    async fn configure_accepts_a_state_that_landed_during_the_history_search() {
-        let result = reconfigure_with_a_history_hit(StateVerification::Match).await;
-        assert!(result.is_ok(), "{result:?}");
-    }
-
-    /// A key the stored auth does not list reconfigures with a state the
-    /// first head read does not find but the history search does; the
-    /// second head read answers `second_read`.
-    async fn reconfigure_with_a_history_hit(
-        second_read: StateVerification,
-    ) -> Result<ConfigureAccountResult> {
-        use crate::testing::helpers::{TestSigner, generate_falcon_signature};
-
-        let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
-        let (pubkey_hex, commitment_hex, signature_hex, timestamp) =
-            generate_falcon_signature(account_id_hex);
-        let network_client = MockNetworkClient::new()
-            .with_validate_credential(Ok(()))
-            .with_get_state_head(Ok(head("0x5678", 3)))
-            .with_verify_commitment(Ok(second_read))
-            .with_verify_commitment(Ok(StateVerification::Mismatch {
+    async fn configure_refuses_a_state_behind_the_chain_with_one_head_read() {
+        let (result, network, storage, _) = reconfigure_by(
+            Reconfigurer::NewSigner,
+            StateVerification::Mismatch {
                 on_chain: "0x9999".to_string(),
-            }))
-            .with_find_transaction_ending_at(Ok(crate::network::TransactionSearch {
-                found_in_block: Some(12),
-                resume_from_block: 13,
-            }));
-        let metadata_store = MockMetadataStore::new()
-            .with_get(Ok(Some(configured(
-                account_id_hex,
-                Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![TestSigner::new().commitment_hex],
-                },
-            ))))
-            .with_set(Ok(()));
-        let state = create_test_app_state(
-            network_client,
-            MockStorageBackend::new().with_submit_state(Ok(())),
-            metadata_store,
-        )
-        .await;
-        configure_account(
-            &state,
-            ConfigureAccountParams {
-                account_id: account_id_hex.to_string(),
-                auth: Auth::MidenFalconRpo {
-                    cosigner_commitments: vec![commitment_hex],
-                },
-                network_config: crate::metadata::NetworkConfig::miden_default(),
-                initial_state: serde_json::from_str(include_str!(
-                    "../testing/fixtures/account.json"
-                ))
-                .unwrap(),
-                credential: Credentials::signature(pubkey_hex, signature_hex, timestamp),
             },
         )
-        .await
+        .await;
+        assert!(
+            matches!(&result, Err(GuardianError::StateNotOnChain { submitted }) if submitted == "0x5678"),
+            "{result:?}"
+        );
+        assert_eq!(network.get_verify_commitment_calls().len(), 1);
+        assert!(
+            network
+                .find_transaction_ending_at_calls
+                .lock()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
     }
 
     /// A stored cosigner re-registering the stored state needs no chain read.

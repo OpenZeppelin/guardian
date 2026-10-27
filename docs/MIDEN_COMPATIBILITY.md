@@ -455,8 +455,8 @@ wallet-only. The new SDKs sign a push with the session whenever one is active.
   for the first time (for example after switching to this GUARDIAN), and any
   reconfiguration that changes the stored state, must submit the on-chain
   state. Until the chain holds it the request fails with the new retryable
-  code `state_not_on_chain` (409, gRPC `FailedPrecondition`); a state the
-  chain has moved past fails with `commitment_mismatch`.
+  code `state_not_on_chain` (409, gRPC `FailedPrecondition`), and so does a
+  state the chain has moved past.
 - **Breaking for older SDKs: switching GUARDIAN.** The new SDKs retry
   `state_not_on_chain` for about 45 seconds. SDKs from 0.18.3 and earlier
   register on the new GUARDIAN right after submitting the switch, do not

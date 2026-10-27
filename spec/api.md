@@ -48,9 +48,10 @@
   request fails with `state_not_on_chain` (HTTP 409 / gRPC
   `FailedPrecondition`, `meta.retryable: true`), for example right after the
   transaction is submitted; retry once it lands. Both SDKs retry it for about
-  45 seconds. A state the chain has already moved past fails with
-  `commitment_mismatch` (`expected` is the on-chain commitment), since waiting
-  does not help. `rpc_unavailable` when the chain cannot be read. A
+  45 seconds. One head read decides, so a state the chain has already moved
+  past fails the same way, and its retries keep failing until the client
+  submits the account's current state. `rpc_unavailable` when the chain
+  cannot be read. A
   configuration that skipped the chain read fails with `state_not_on_chain`
   when the account was released while it ran and its state is not the chain
   head; the retry of it is held to the chain.
@@ -680,7 +681,7 @@ Stable error codes include:
 - `conflict_pending_proposal`
 - `pending_proposals_limit`
 - `commitment_mismatch`
-- `state_not_on_chain` (a reconfiguration that must submit the account's on-chain state submitted one the chain does not hold yet; HTTP 409 / gRPC `FailedPrecondition`, retryable; a state the chain has moved past is `commitment_mismatch` instead)
+- `state_not_on_chain` (a reconfiguration that must submit the account's on-chain state submitted one the chain does not hold yet; HTTP 409 / gRPC `FailedPrecondition`, retryable, as is a state the chain has moved past)
 - `invalid_commitment`
 - `authentication_failed`
 - `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
