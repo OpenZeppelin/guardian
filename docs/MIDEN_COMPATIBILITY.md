@@ -481,8 +481,9 @@ wallet-only. The new SDKs sign a push with the session whenever one is active.
   caller, who registers again once the transaction lands. SDKs from 0.18.3 and earlier
   register on the new GUARDIAN right after submitting the switch, do not
   retry, and so fail every switch to a GUARDIAN on this release until the user
-  registers again once the transaction lands. Upgrade the SDKs before, or
-  with, the servers.
+  registers again once the transaction lands
+  ([recovery](./TROUBLESHOOTING.md#transaction-executed-successfully-but-failed-to-register-on-new-guardian)).
+  Upgrade the SDKs before, or with, the servers.
 - **Stored single-key accounts can no longer re-register.** An account stored
   before `/configure` required a multisig keeps being served, but any
   `/configure` for it is refused with `invalid_input`.

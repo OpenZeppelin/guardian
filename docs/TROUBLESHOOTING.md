@@ -559,6 +559,34 @@ if any, stands:
 is older and the chain cannot be read to decide, the request fails with
 `rpc_unavailable` (retryable) rather than risk the overwrite.
 
+### "Transaction executed successfully but failed to register on new GUARDIAN"
+
+The `SwitchGuardian` transaction was submitted and the client already
+points at the new Guardian, but registering there failed. With SDKs
+0.18.3 and earlier against a Guardian released after 0.18.3, the cause is
+almost always `state_not_on_chain`: those SDKs register right after
+submitting the switch, before the transaction lands, and do not retry.
+The newer SDKs wait for the chain before registering, so they rarely hit
+this.
+
+The switch itself is not lost. Wait for the transaction to land, then
+register again from the same client:
+
+- Rust: `client.register_on_guardian().await?`
+- TypeScript: `await multisig.registerOnGuardian()`
+
+Both send the post-switch state the client already holds, and the account
+cannot transact until it is registered on the new Guardian, so the chain
+stays at that state in the meantime. If the retry still gets
+`state_not_on_chain`, check that the transaction landed on chain. If it
+gets `commitment_mismatch`, sync the account and register again (see
+above). If it gets `rpc_unavailable`, the new Guardian could not read the
+chain to check the state; register again once its Miden node is
+reachable. The newer SDKs can also fail here with "has not reached the
+chain" when the transaction takes longer than their wait; register again
+the same way. Any other code is unrelated to the switch timing; look it
+up in the [error code reference](#error-code-reference).
+
 ### Stale state served by Guardian
 
 Symptoms: client reads look "behind reality" relative to Miden. Causes:

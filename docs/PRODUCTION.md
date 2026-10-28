@@ -418,11 +418,13 @@ behavior:
   and adds the retryable `409 state_not_on_chain` for reconfigurations that
   must use the chain's state (a first registration of an account that already
   transacted, a released account, a key the stored auth does not list, or a
-  state other than the stored one); the new SDKs retry it, older SDKs fail a
-  switch to a GUARDIAN on this release until the user registers again. Multisig pushes want the SDKs released first,
-  session-signed pushes want the server first; see
-  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-after-0183)
-  for which clients that affects.
+  state other than the stored one). After a GUARDIAN switch the new SDKs wait
+  for the chain to hold the switched state before they register, and register
+  once; older SDKs fail a switch to a GUARDIAN on this release until the user
+  registers again. Release the SDKs first: multisig pushes need them, and on an
+  older server the new SDKs sign a refused session push again with the wallet;
+  see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-after-0183).
 
 ## Upgrading to Miden 0.16
 
