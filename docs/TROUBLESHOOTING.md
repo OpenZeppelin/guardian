@@ -559,6 +559,34 @@ if any, stands:
 is older and the chain cannot be read to decide, the request fails with
 `rpc_unavailable` (retryable) rather than risk the overwrite.
 
+### "Transaction executed successfully but failed to register on new GUARDIAN"
+
+The `SwitchGuardian` transaction was submitted and the client already
+points at the new Guardian, but registering there failed. With SDKs
+0.18.3 and earlier against a Guardian released after 0.18.3, the cause is
+almost always `state_not_on_chain`: those SDKs register right after
+submitting the switch, before the transaction lands, and do not retry.
+The newer SDKs wait for the chain before registering, so they rarely hit
+this.
+
+The switch itself is not lost. Wait for the transaction to land, then
+register again from the same client:
+
+- Rust: `client.register_on_guardian().await?`
+- TypeScript: `await multisig.registerOnGuardian()`
+
+Both send the post-switch state the client already holds, and the account
+cannot transact until it is registered on the new Guardian, so the chain
+stays at that state in the meantime. If the retry still gets
+`state_not_on_chain`, check that the transaction landed on chain. If it
+gets `commitment_mismatch`, sync the account and register again (see
+above). If it gets `rpc_unavailable`, the new Guardian could not read the
+chain to check the state; register again once its Miden node is
+reachable. The newer SDKs can also fail here with "has not reached the
+chain" when the transaction takes longer than their wait; register again
+the same way. Any other code is unrelated to the switch timing; look it
+up in the [error code reference](#error-code-reference).
+
 ### Stale state served by Guardian
 
 Symptoms: client reads look "behind reality" relative to Miden. Causes:
@@ -683,7 +711,7 @@ come from
 | `authentication_replay` | 401 | Correctly signed but the timestamp lost the per-signer replay CAS. `retryable: true`; SDK clients retry it automatically with a fresh timestamp and signature. See [the auth-layer section](#signed-requests-are-rejected-at-the-auth-layer). |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
-| `wallet_signature_required` | 403 | A wallet-only route (delta push, candidate abandon, configure, lookup, revoke-all) was called with session (delegated-signer) credentials. Sign it with the wallet. |
+| `wallet_signature_required` | 403 | A wallet-only route (candidate abandon, configure, lookup, revoke-all, or a delta push onto an account without the multisig auth) was called with session (delegated-signer) credentials. Sign it with the wallet. Both SDKs do so for a delta push: an older server, or an account without the multisig auth, gets the push signed again by the wallet. |
 | `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
 | `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
 | `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account, or a reconfiguration adding a scheme the account does not use yet, used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. Every scheme the account uses counts: each cosigner's and the GUARDIAN's, so a mixed Falcon + ECDSA account needs both allowed. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Re-configuring an account under the schemes it already uses is never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
@@ -720,6 +748,7 @@ come from
 | `invalid_delta` | 400 | Delta payload failed schema or commitment validation. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
 | `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
+| `state_not_on_chain` | 409 | `ConfigureAccount` that must submit the account's on-chain state (a first registration past nonce 0, a released account, a key the stored auth does not list, or a state other than the stored one) submitted a state the chain does not hold yet (typically right after submitting a guardian switch back or a signer change). Retryable: register again once the transaction lands. After a guardian switch both SDKs wait for the chain to hold the switched state (about 45 seconds at most, with no wallet signature) before they register, and do not retry the registration; if it persists, check that the transaction landed, or that the client is not submitting a state the chain has already moved past (sync and register again). |
 | `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload, its signer is not a cosigner of the account, or it is made under another scheme than the account registers that cosigner with (an ECDSA approval for a key the account stores as Falcon, which the chain would refuse). |
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |

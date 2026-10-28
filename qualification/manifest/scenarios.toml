@@ -307,6 +307,20 @@ required = true
 core = true
 
 [[scenario]]
+id = "live-session-execute-2of3-ecdsa"
+title = "2-of-3 ECDSA proposal executes with every cosigner on a Guardian session"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "session-start", "proposal-create", "proposal-sign", "proposal-execute", "session-assert", "commitment-verify"]
+step_budget = "120s"
+required = true
+core = false
+
+[[scenario]]
 id = "live-execute-3of3-falcon"
 title = "3-of-3 Falcon proposal reaches threshold and executes"
 profile = "live"
@@ -434,6 +448,28 @@ shape = "2-of-3"
 mode = "online"
 actions = ["account-create", "account-register", "asset-transfer", "note-consume", "guardian-switch-online", "proposal-sign", "proposal-execute", "guardian-switch-assert"]
 step_budget = "600s"
+required = true
+core = false
+
+# The way back from the online rotation. The rotation leaves the main GUARDIAN
+# holding the account as released, and GUARDIAN takes a released account's
+# state from the chain only, so the registration that follows the switch-back
+# transaction is refused as not on chain until that transaction lands. The SDK
+# has to retry it; without the retry the switch back fails. The rotation is
+# proposed and signed on the second GUARDIAN, which every cosigner moves to
+# first, and the assertion loads the account from the main GUARDIAN, which
+# refuses a released account.
+[[scenario]]
+id = "live-guardian-switch-back-2of3-falcon"
+title = "GUARDIAN rotated away and back, re-registering on the GUARDIAN that released the account"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "guardian-switch-online", "proposal-sign", "proposal-execute", "guardian-switch-assert", "guardian-switch-back", "proposal-sign", "proposal-execute", "guardian-switch-back-assert"]
+step_budget = "900s"
 required = true
 core = false
 

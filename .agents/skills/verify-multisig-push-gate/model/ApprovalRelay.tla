@@ -38,13 +38,18 @@ CONSTANTS
     LateSigners,    \* cosigners who sign through Guardian while the executor runs
     Stored,         \* FALSE: Guardian never stored the proposal (a switch created offline)
     ServerGate,     \* TRUE: this branch's server; FALSE: a 0.18.2 server
-    ClientRelays    \* TRUE: this branch's SDKs; FALSE: 0.18.2 SDKs
+    ClientRelays,   \* TRUE: this branch's SDKs; FALSE: 0.18.2 SDKs
+    SessionPushes,  \* TRUE: the server takes a session-signed push onto a multisig
+                    \* tail (this branch); FALSE: it takes the push only from the wallet
+    ClientSession   \* TRUE: the executor holds a session and signs the push with it
 
 ASSUME /\ Executor \in Cosigners
        /\ Collected \subseteq Cosigners /\ Cardinality(Collected) >= Required
        /\ StoredAtStart \subseteq Collected
        /\ LateSigners \subseteq Cosigners \ Collected
        /\ Stored \/ (StoredAtStart = {} /\ LateSigners = {})
+       /\ SessionPushes => ServerGate
+       /\ ClientSession => ClientRelays
 
 VARIABLES
     stored,     \* approvals in the stored proposal's cosigner_sigs
@@ -55,9 +60,10 @@ VARIABLES
     relaySnap,  \* what that request read
     late,       \* late signer -> "idle" | "read" | "done"
     lateSnap,   \* late signer -> what its request read
-    pushResult  \* "none", "acked", "refused" (insufficient_signatures), "aborted" (no push)
+    pushResult, \* "none", "acked", "refused" (insufficient_signatures), "aborted" (no push)
+    pushAuth    \* who signs the push request: "session" or "wallet"
 
-vars == <<stored, acked, pc, toRelay, relaying, relaySnap, late, lateSnap, pushResult>>
+vars == <<stored, acked, pc, toRelay, relaying, relaySnap, late, lateSnap, pushResult, pushAuth>>
 
 Init ==
     /\ stored = StoredAtStart
@@ -72,6 +78,7 @@ Init ==
     /\ late = [s \in LateSigners |-> "idle"]
     /\ lateSnap = [s \in LateSigners |-> {}]
     /\ pushResult = "none"
+    /\ pushAuth = IF ClientSession THEN "session" ELSE "wallet"
 
 \* sign_delta_proposal's answer, from what it read, to `caller` sending
 \* `approval`. Only "ok" writes.
@@ -113,7 +120,7 @@ RelayRead ==
               /\ UNCHANGED toRelay
          ELSE /\ toRelay' = toRelay \ {a}
               /\ UNCHANGED <<relaying, relaySnap>>
-    /\ UNCHANGED <<stored, acked, pc, late, lateSnap, pushResult>>
+    /\ UNCHANGED <<stored, acked, pc, late, lateSnap, pushResult, pushAuth>>
 
 \* The write of the row read above plus the approval. A refused
 \* conditional write reads the row again (the failed write and the re-read
@@ -124,7 +131,7 @@ RelayRetry ==
     /\ Response(relaySnap, Executor, relaying) = "ok"
     /\ ~Commits(relaySnap)
     /\ relaySnap' = stored
-    /\ UNCHANGED <<stored, acked, pc, toRelay, relaying, late, lateSnap, pushResult>>
+    /\ UNCHANGED <<stored, acked, pc, toRelay, relaying, late, lateSnap, pushResult, pushAuth>>
 
 RelayWrite ==
     /\ relaying # "none"
@@ -141,23 +148,29 @@ RelayWrite ==
     /\ toRelay' = toRelay \ {relaying}
     /\ relaying' = "none"
     /\ relaySnap' = {}
-    /\ UNCHANGED <<late, lateSnap>>
+    /\ UNCHANGED <<late, lateSnap, pushAuth>>
 
 RelayDone ==
     /\ pc = "relay" /\ relaying = "none" /\ toRelay = {}
     /\ pc' = "push"
-    /\ UNCHANGED <<stored, acked, toRelay, relaying, relaySnap, late, lateSnap, pushResult>>
+    /\ UNCHANGED <<stored, acked, toRelay, relaying, relaySnap, late, lateSnap, pushResult, pushAuth>>
 
 \* push_delta: lookup_matching_proposal reads the stored proposal once and
 \* MultisigAccount::authorize counts its verified approvers. A 0.18.2 server
-\* acknowledges without counting.
+\* acknowledges without counting. A server that takes the push only from the
+\* wallet answers a session-signed one wallet_signature_required, and the
+\* SDK signs the push again with the wallet (Rust GuardianClient::push_delta,
+\* TS GuardianHttpClient.pushDelta).
 Push ==
     /\ pc = "push"
-    /\ pushResult' =
-         IF ~ServerGate THEN "acked"
-         ELSE IF Stored /\ Cardinality(stored \cap Cosigners) >= Required THEN "acked"
-         ELSE "refused"
-    /\ pc' = "done"
+    /\ IF pushAuth = "session" /\ ~SessionPushes
+       THEN /\ pushAuth' = "wallet" /\ UNCHANGED <<pc, pushResult>>
+       ELSE /\ pushResult' =
+                 IF ~ServerGate THEN "acked"
+                 ELSE IF Stored /\ Cardinality(stored \cap Cosigners) >= Required THEN "acked"
+                 ELSE "refused"
+            /\ pc' = "done"
+            /\ UNCHANGED pushAuth
     /\ UNCHANGED <<stored, acked, toRelay, relaying, relaySnap, late, lateSnap>>
 
 \* A cosigner signing through Guardian (its own approval), same two steps.
@@ -165,14 +178,14 @@ LateRead(s) ==
     /\ late[s] = "idle"
     /\ late' = [late EXCEPT ![s] = "read"]
     /\ lateSnap' = [lateSnap EXCEPT ![s] = stored]
-    /\ UNCHANGED <<stored, acked, pc, toRelay, relaying, relaySnap, pushResult>>
+    /\ UNCHANGED <<stored, acked, pc, toRelay, relaying, relaySnap, pushResult, pushAuth>>
 
 LateRetry(s) ==
     /\ late[s] = "read"
     /\ Response(lateSnap[s], s, s) = "ok"
     /\ ~Commits(lateSnap[s])
     /\ lateSnap' = [lateSnap EXCEPT ![s] = stored]
-    /\ UNCHANGED <<stored, acked, pc, toRelay, relaying, relaySnap, late, pushResult>>
+    /\ UNCHANGED <<stored, acked, pc, toRelay, relaying, relaySnap, late, pushResult, pushAuth>>
 
 LateWrite(s) ==
     /\ late[s] = "read"
@@ -182,7 +195,7 @@ LateWrite(s) ==
             /\ acked' = acked \cup {s}
        ELSE UNCHANGED <<stored, acked>>
     /\ late' = [late EXCEPT ![s] = "done"]
-    /\ UNCHANGED <<pc, toRelay, relaying, relaySnap, lateSnap, pushResult>>
+    /\ UNCHANGED <<pc, toRelay, relaying, relaySnap, lateSnap, pushResult, pushAuth>>
 
 Done ==
     /\ pc = "done" /\ \A s \in LateSigners : late[s] = "done"

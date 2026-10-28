@@ -54,6 +54,7 @@ legacy-consume-notes = []
 [dev-dependencies]
 guardian-client = { version = "=0.18.3", path = "../client", features = ["testing"] }
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["test-util"] }
 miden-confidential-contracts = { version = "=0.18.3", path = "../contracts", features = ["testing"] }
 miden-client = { workspace = true, features = ["tonic", "testing"] }
 miden-rpc-client = { path = "../miden-rpc-client", features = ["scripted-node"] }

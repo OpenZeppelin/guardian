@@ -2491,6 +2491,12 @@ mod tests {
             unreachable!()
         }
 
+        fn validate_first_state(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unreachable!()
+        }
         fn validate_guardian_commitment(
             &self,
             _state_json: &serde_json::Value,

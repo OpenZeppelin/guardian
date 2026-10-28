@@ -10,6 +10,7 @@ import { AccountId, FeltArray, Poseidon2, TransactionSummary, Word } from '@mide
 import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
 import { ProposalMetadataCodec } from '../../../src/proposal/metadata.js';
 import { buildP2idTransactionRequest } from '../../../src/transaction.js';
+import type { Signer } from '../../../src/types.js';
 import {
   base64ToUint8Array,
   bytesToHex,
@@ -430,6 +431,99 @@ export async function createProposal(context: ActionContext, scenarioId: string)
       reason: `creating the consume-notes proposal failed: ${String(error)}`,
     };
   }
+}
+
+/** Lifetime of the sessions a scenario starts: well past any step budget. */
+const SESSION_TTL_SECONDS = 3600;
+
+/**
+ * Guardian requests the cosigners' wallets signed since `session-start`, per
+ * scenario. With a session active the wallets sign only transaction
+ * approvals, so any count here is a request the session did not sign.
+ */
+const walletRequestsSinceSession = new Map<string, { count: number }>();
+
+/** Counts the wallet's request signatures from now on into `counter`. */
+function countWalletRequests(signer: Signer, counter: { count: number }): void {
+  const signAccountIdWithTimestamp = signer.signAccountIdWithTimestamp.bind(signer);
+  signer.signAccountIdWithTimestamp = (accountId, timestamp) => {
+    counter.count += 1;
+    return signAccountIdWithTimestamp(accountId, timestamp);
+  };
+  const signRequest = signer.signRequest?.bind(signer);
+  if (signRequest) {
+    signer.signRequest = (accountId, timestamp, requestPayload) => {
+      counter.count += 1;
+      return signRequest(accountId, timestamp, requestPayload);
+    };
+  }
+}
+
+/**
+ * Starts a Guardian session on every cosigner: each wallet signs one grant,
+ * then a delegated signer signs that cosigner's later Guardian requests, its
+ * delta pushes included. The raw wallets used here show only a hash, so the
+ * grant is confirmed for them.
+ */
+export async function startSessions(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  for (const [index, cosigner] of session.cosigners.entries()) {
+    try {
+      await cosigner.multisigClient.startSession(cosigner.signer, {
+        ttlSeconds: SESSION_TTL_SECONDS,
+        confirm: () => true,
+      });
+    } catch (error) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `cosigner ${index} could not start a Guardian session: ${String(error)}`,
+      };
+    }
+  }
+  const counter = { count: 0 };
+  for (const cosigner of session.cosigners) countWalletRequests(cosigner.signer, counter);
+  walletRequestsSinceSession.set(scenarioId, counter);
+  return { kind: 'passed' };
+}
+
+/**
+ * Confirms the cosigners' Guardian requests since `session-start`, delta
+ * pushes included, were signed by their sessions: every cosigner still holds
+ * its session, and no wallet signed a request.
+ */
+export async function assertSessionsActive(
+  _context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  for (const [index, cosigner] of session.cosigners.entries()) {
+    if (!cosigner.multisigClient.guardianClient.getSession()) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `cosigner ${index} lost its Guardian session; its requests fell back to the wallet`,
+      };
+    }
+  }
+  const counter = walletRequestsSinceSession.get(scenarioId);
+  if (!counter) {
+    return { kind: 'failed', classification: 'setup', reason: 'no session was started in this scenario' };
+  }
+  if (counter.count > 0) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the wallets signed ${counter.count} Guardian request(s) while a session was active`,
+    };
+  }
+  return { kind: 'passed' };
 }
 
 export async function signProposal(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
@@ -1110,6 +1204,116 @@ export async function assertGuardianSwitched(
       kind: 'failed',
       classification: 'product',
       reason: `the account's GUARDIAN binding could not be read after the rotation: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Rotates the account back from the second GUARDIAN to the main one.
+ *
+ * The online rotation leaves the main GUARDIAN holding the account as released.
+ * Switching back registers the account there again, and GUARDIAN takes a
+ * released account's state from the chain only: the registration that follows
+ * the switch transaction is refused as `state_not_on_chain` until that
+ * transaction lands, and the SDK has to wait it out. Every cosigner moves to
+ * the second GUARDIAN first, since the switch back is proposed and signed there.
+ */
+export async function switchGuardianBack(
+  context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  const missing = requireLive(context);
+  if (missing) return missing;
+
+  const current = context.live!.migrationEndpoint;
+  if (!current) {
+    return { kind: 'failed', classification: 'setup', reason: 'no rotation target is configured' };
+  }
+  if (!session.migrating) {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'switching back needs a rotation to the second GUARDIAN first',
+    };
+  }
+  const home = session.guardianEndpoint;
+
+  try {
+    const pubkey = await new GuardianHttpClient(home).getPubkey(session.scheme);
+    const commitment = typeof pubkey === 'string' ? pubkey : pubkey.commitment;
+
+    for (const cosigner of session.cosigners.slice(1)) {
+      cosigner.multisigClient.setGuardianEndpoint(current);
+    }
+
+    const proposal = await session.multisig.createSwitchGuardianProposal(home, commitment);
+    const pending = await session.multisig.syncProposals();
+    if (!pending.some((entry) => entry.id === proposal.id)) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the switch-back proposal ${proposal.id} is not in the pending set at ${current}`,
+      };
+    }
+
+    session.proposalId = proposal.id;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing the switch back to ${home} through ${current} failed: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Confirms the account is bound to the main GUARDIAN again, and that the main
+ * GUARDIAN serves it: a cosigner that loads the account from it receives the
+ * state that binds it. A GUARDIAN that still held the account as released
+ * would refuse the load.
+ */
+export async function assertGuardianSwitchedBack(
+  context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  const missing = requireLive(context);
+  if (missing) return missing;
+
+  const home = session.guardianEndpoint;
+  const cosigner = session.cosigners[1];
+  if (!cosigner) {
+    return { kind: 'failed', classification: 'setup', reason: 'switching back needs a second cosigner' };
+  }
+
+  try {
+    const pubkey = await new GuardianHttpClient(home).getPubkey(session.scheme);
+    const expected = typeof pubkey === 'string' ? pubkey : pubkey.commitment;
+
+    cosigner.multisigClient.setGuardianEndpoint(home);
+    const reloaded = await cosigner.multisigClient.load(session.accountId, cosigner.signer);
+    const bound = await reloaded.getGuardianPublicKeyCommitment();
+    if (bound !== expected) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the main GUARDIAN at ${home} serves a state that binds ${bound}, not its own ${expected}`,
+      };
+    }
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the main GUARDIAN at ${home} does not serve the account after the switch back: ${String(error)}`,
     };
   }
 }

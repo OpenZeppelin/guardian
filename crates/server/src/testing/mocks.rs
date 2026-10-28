@@ -38,7 +38,8 @@ pub struct MockNetworkClient {
     pub get_state_head_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_guardian_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
-    pub validate_approver_schemes_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_multisig_auth_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_first_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
@@ -86,8 +87,16 @@ impl MockNetworkClient {
         self
     }
 
-    pub fn with_validate_approver_schemes(self, response: StdResult<(), String>) -> Self {
-        self.validate_approver_schemes_responses
+    pub fn with_validate_first_state(self, response: StdResult<(), String>) -> Self {
+        self.validate_first_state_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_validate_multisig_auth(self, response: StdResult<(), String>) -> Self {
+        self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .push(response);
@@ -335,8 +344,16 @@ impl NetworkClient for MockNetworkClient {
             .unwrap_or(Ok(()))
     }
 
-    fn validate_approver_schemes(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
-        self.validate_approver_schemes_responses
+    fn validate_first_state(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
+        self.validate_first_state_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
+    }
+
+    fn validate_multisig_auth(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
+        self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .pop()
@@ -999,7 +1016,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No state found".to_string()));
+            .unwrap_or_else(|| Err("State not found".to_string()));
         if let Ok(state) = &response {
             *self.last_pulled_state.lock().unwrap() = Some(state.clone());
         }

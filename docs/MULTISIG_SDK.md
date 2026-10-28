@@ -1241,10 +1241,10 @@ one implicitly.
 Every Guardian request is otherwise signed by the wallet, which means a prompt
 per request on a hardware wallet. When the Guardian advertises `sessions` on
 `GET /status`, the wallet can sign one session grant; a non-extractable
-WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing
-and proposal create/sign until the session ends. Transaction approvals,
-account registration, delta pushes, candidate abandons and account lookup
-still use the wallet.
+WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing,
+proposal create/sign and delta pushes until the session ends. Transaction
+approvals, account registration, candidate abandons and account lookup still
+use the wallet.
 
 ```typescript
 import { IndexedDbSessionKeyStore, describeSessionGrant } from '@openzeppelin/miden-multisig-client';

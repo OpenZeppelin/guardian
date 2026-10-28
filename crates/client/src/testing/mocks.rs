@@ -121,7 +121,7 @@ pub struct MockGuardianService {
     /// Each RevokeAllSessions call.
     revoke_all_sessions_calls: Arc<StdMutex<Vec<RevokeAllSessionsCall>>>,
     /// x-auth-format of each PushDelta and AbandonDeltaCandidate call.
-    wallet_route_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
+    push_and_abandon_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     /// x-auth-format and x-pubkey of each GetState call.
     get_state_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     /// x-auth-format of each Configure call.
@@ -144,8 +144,8 @@ impl MockGuardianService {
     }
 
     /// `(rpc, x-auth-format)` of each PushDelta and AbandonDeltaCandidate call.
-    pub fn wallet_route_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
-        self.wallet_route_auth_formats.clone()
+    pub fn push_and_abandon_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
+        self.push_and_abandon_auth_formats.clone()
     }
 
     pub fn get_state_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
@@ -468,7 +468,7 @@ impl Guardian for MockGuardianService {
         &self,
         request: Request<AbandonDeltaCandidateRequest>,
     ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
-        self.wallet_route_auth_formats.lock().unwrap().push((
+        self.push_and_abandon_auth_formats.lock().unwrap().push((
             "abandon_delta_candidate".to_string(),
             metadata_str(&request, "x-auth-format"),
         ));
@@ -498,7 +498,7 @@ impl Guardian for MockGuardianService {
         request: Request<PushDeltaRequest>,
     ) -> Result<Response<PushDeltaResponse>, Status> {
         self.record_call("push_delta");
-        self.wallet_route_auth_formats.lock().unwrap().push((
+        self.push_and_abandon_auth_formats.lock().unwrap().push((
             "push_delta".to_string(),
             metadata_str(&request, "x-auth-format"),
         ));

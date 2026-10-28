@@ -31,3 +31,5 @@ packages/miden-multisig-client/src/multisig.ts prepareProposalExecution
 packages/miden-multisig-client/src/multisig.ts executeProposal
 packages/miden-multisig-client/src/multisig.ts assembleCustomAdvice
 packages/miden-multisig-client/src/multisig.ts servedSwitchProposal
+crates/client/src/client.rs push_delta
+packages/guardian-client/src/http.ts pushDelta

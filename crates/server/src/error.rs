@@ -65,6 +65,11 @@ pub enum GuardianError {
     SignerNotAuthorized(String),
     /// Delegated-signer (session) credentials on a wallet-only route (#219).
     WalletSignatureRequired,
+    /// The submitted state must be the account's current on-chain state, and
+    /// the chain does not hold it yet: retry once its transaction lands.
+    StateNotOnChain {
+        submitted: String,
+    },
     /// The delegated signer's session reached its `expires_at`.
     SessionExpired,
     /// The delegated signer's session was revoked by logout or revoke-all.
@@ -193,6 +198,7 @@ impl GuardianError {
             GuardianError::RpcValidationFailed(_) => StatusCode::BAD_GATEWAY,
             GuardianError::SignerNotAuthorized(_) => StatusCode::FORBIDDEN,
             GuardianError::WalletSignatureRequired => StatusCode::FORBIDDEN,
+            GuardianError::StateNotOnChain { .. } => StatusCode::CONFLICT,
             GuardianError::SessionExpired => StatusCode::UNAUTHORIZED,
             GuardianError::SessionRevoked => StatusCode::UNAUTHORIZED,
             GuardianError::InvalidEvmProposal(_) => StatusCode::BAD_REQUEST,
@@ -243,6 +249,7 @@ impl GuardianError {
             GuardianError::RpcValidationFailed(_) => tonic::Code::Unavailable,
             GuardianError::SignerNotAuthorized(_) => tonic::Code::PermissionDenied,
             GuardianError::WalletSignatureRequired => tonic::Code::PermissionDenied,
+            GuardianError::StateNotOnChain { .. } => tonic::Code::FailedPrecondition,
             GuardianError::SessionExpired => tonic::Code::Unauthenticated,
             GuardianError::SessionRevoked => tonic::Code::Unauthenticated,
             GuardianError::InvalidEvmProposal(_) => tonic::Code::InvalidArgument,
@@ -300,6 +307,7 @@ impl GuardianError {
             GuardianError::RpcValidationFailed(_) => "rpc_validation_failed",
             GuardianError::SignerNotAuthorized(_) => "signer_not_authorized",
             GuardianError::WalletSignatureRequired => "wallet_signature_required",
+            GuardianError::StateNotOnChain { .. } => "state_not_on_chain",
             GuardianError::SessionExpired => "session_expired",
             GuardianError::SessionRevoked => "session_revoked",
             GuardianError::InvalidEvmProposal(_) => "invalid_evm_proposal",
@@ -379,6 +387,9 @@ impl GuardianError {
             GuardianError::WalletSignatureRequired => {
                 "This action needs your wallet's signature, not the session's. Please sign with your wallet."
             }
+            GuardianError::StateNotOnChain { .. } => {
+                "The account's latest transaction hasn't reached the chain yet. Please try again shortly."
+            }
             GuardianError::SessionExpired => {
                 "Your Guardian session has expired. Please start a new session."
             }
@@ -445,6 +456,7 @@ impl GuardianError {
                 | GuardianError::SigningError(_)
                 | GuardianError::RpcUnavailable(_)
                 | GuardianError::RpcValidationFailed(_)
+                | GuardianError::StateNotOnChain { .. }
                 | GuardianError::RateLimitExceeded { .. }
                 | GuardianError::DataUnavailable(_)
         )
@@ -528,6 +540,10 @@ impl fmt::Display for GuardianError {
             GuardianError::WalletSignatureRequired => write!(
                 f,
                 "Wallet signature required: delegated-signer credentials are not accepted on this route"
+            ),
+            GuardianError::StateNotOnChain { submitted } => write!(
+                f,
+                "State {submitted} is not the account's on-chain state yet; retry once its transaction lands"
             ),
             GuardianError::SessionExpired => write!(f, "Session expired"),
             GuardianError::SessionRevoked => write!(f, "Session revoked"),
@@ -1549,6 +1565,9 @@ mod tests {
             GuardianError::RpcValidationFailed("https://rpc.internal".into()),
             GuardianError::SignerNotAuthorized("0xSIGNER".into()),
             GuardianError::WalletSignatureRequired,
+            GuardianError::StateNotOnChain {
+                submitted: "0xSTATE".into(),
+            },
             GuardianError::SessionExpired,
             GuardianError::SessionRevoked,
             GuardianError::InvalidEvmProposal("0xCALLDATA".into()),

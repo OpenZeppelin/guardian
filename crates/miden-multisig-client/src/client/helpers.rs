@@ -583,6 +583,14 @@ impl MultisigClient {
             self.account = Some(MultisigAccount::new(updated_account.clone()));
 
             if switching_endpoint {
+                self.wait_for_on_chain_state(account_id, updated_account.to_commitment())
+                    .await
+                    .map_err(|e| {
+                        MultisigError::GuardianServer(format!(
+                            "transaction executed successfully but failed to register on new GUARDIAN: {}",
+                            e
+                        ))
+                    })?;
                 self.register_on_guardian().await.map_err(|e| {
                     MultisigError::GuardianServer(format!(
                         "transaction executed successfully but failed to register on new GUARDIAN: {}",

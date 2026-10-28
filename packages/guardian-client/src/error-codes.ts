@@ -50,6 +50,7 @@ export const GUARDIAN_ERROR_CODES = [
   'signer_not_authorized',
   'signing_error',
   'state_not_found',
+  'state_not_on_chain',
   'storage_error',
   'unsupported_evm_chain',
   'unsupported_for_network',

@@ -1686,6 +1686,57 @@ describe('Multisig', () => {
       await expect(multisig.registerOnGuardian('base64initialstate')).resolves.toBeUndefined();
     });
 
+    it('does not retry a registration GUARDIAN refuses as not on chain', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockFetch.mockResolvedValueOnce(guardianRefusal(409, 'state_not_on_chain'));
+
+      await expect(multisig.registerOnGuardian()).rejects.toMatchObject({
+        code: 'state_not_on_chain',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('gives up waiting for a switched state that never reaches the chain, without registering', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockRpcGetAccountDetails.mockResolvedValue({
+        commitment: () => ({ toHex: () => '0x' + '9'.repeat(64) }),
+      });
+
+      vi.useFakeTimers();
+      try {
+        const wait = (multisig as any).waitForOnChainState(LOCAL_ACCOUNT_COMMITMENT);
+        const refused = expect(wait).rejects.toThrow(/has not reached the chain/);
+        await vi.runAllTimersAsync();
+        await refused;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockRpcGetAccountDetails).toHaveBeenCalledTimes(10);
+    });
+
+    it('does not retry any other registration refusal', async () => {
+      const multisig = createTestMultisig({
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      });
+      mockFetch.mockResolvedValueOnce(guardianRefusal(409, 'commitment_mismatch'));
+
+      await expect(multisig.registerOnGuardian()).rejects.toMatchObject({
+        code: 'commitment_mismatch',
+      });
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
     it('should throw on GUARDIAN registration failure', async () => {
       const config = {
         threshold: 1,
@@ -4838,7 +4889,10 @@ describe('Multisig', () => {
         mockImportNotesFromProposals.mockReset();
         mockImportNotesFromProposals.mockResolvedValue([]);
         mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
-        mockWebClient.accounts.get.mockResolvedValueOnce({ serialize: () => new Uint8Array([1, 2, 3]) });
+        mockWebClient.accounts.get.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
+        });
 
         await expect(multisig.executeProposal(PROPOSAL_ID)).resolves.toBeUndefined();
 
@@ -4912,7 +4966,10 @@ describe('Multisig', () => {
         mockImportNotesFromProposals.mockReset();
         mockImportNotesFromProposals.mockResolvedValue([]);
         mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
-        mockWebClient.accounts.get.mockResolvedValueOnce({ serialize: () => new Uint8Array([1, 2, 3]) });
+        mockWebClient.accounts.get.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
+        });
 
         const error = await multisig.executeProposal(PROPOSAL_ID).catch((e: unknown) => e);
 
@@ -5861,6 +5918,7 @@ describe('Multisig', () => {
         mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
         mockWebClient.accounts.get.mockResolvedValueOnce({
           serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
         });
         await expect(proposerClient.executeProposal(readyProposal.id)).resolves.toBeUndefined();
 
@@ -8088,6 +8146,7 @@ describe('Multisig', () => {
       mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
+        to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
       });
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -8099,6 +8158,98 @@ describe('Multisig', () => {
       expect(mockWebClient.submitProvenTransaction).toHaveBeenCalledTimes(1);
       expect(mockWebClient.applyTransaction).toHaveBeenCalledTimes(1);
     });
+
+    it('repoints to the new GUARDIAN before waiting for a switch that never reaches the chain', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+
+      const multisig = createTestMultisig(config);
+      const proposalId = '0x' + 'c'.repeat(64);
+      const newGuardianPubkey = '0x' + '1'.repeat(64);
+
+      (multisig as any).proposals.set(proposalId, {
+        id: proposalId,
+        accountId: multisig.accountId,
+        nonce: 1,
+        status: 'ready',
+        txSummary: 'AQID',
+        signatures: [
+          {
+            signerId: '0x' + 'a'.repeat(64),
+            signature: { scheme: 'falcon', signature: '0x' + 'b'.repeat(128) },
+            timestamp: '2024-01-01T00:00:00Z',
+          },
+        ],
+        metadata: {
+          proposalType: 'switch_guardian',
+          boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+          saltHex: MOCK_SALT_HEX,
+          newGuardianPubkey,
+          newGuardianEndpoint: 'http://new-guardian.com',
+          description: '',
+        },
+      });
+
+      // The pre-switch GUARDIAN serves the proposal (read first, for the
+      // pinned-base check), then the new endpoint's commitment, then the
+      // post-switch push back.
+      mockFetch.mockResolvedValueOnce(servedProposal());
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ commitment: newGuardianPubkey }),
+      });
+      // The approval the served proposal lacks is relayed before the push.
+      mockFetch.mockResolvedValueOnce(servedProposal());
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          account_id: multisig.accountId,
+          nonce: 1,
+          ack_sig: '0x' + '6'.repeat(130),
+          ack_pubkey: '0x' + 'f'.repeat(64),
+          ack_scheme: 'falcon',
+        }),
+      });
+      // #417 pre-switch note import: the old-GUARDIAN proposal listing (no
+      // pending proposals here) runs off the fetch queue via the spy.
+      vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+      mockImportNotesFromProposals.mockReset();
+      mockImportNotesFromProposals.mockResolvedValue([]);
+      // The pinned-base check reads the store account first (it holds the
+      // state the served proposal is pinned to); the post-switch refresh
+      // reads it again.
+      mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+      mockWebClient.accounts.get.mockResolvedValueOnce({
+        serialize: () => new Uint8Array([1, 2, 3]),
+        to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
+      });
+      mockRpcGetAccountDetails.mockResolvedValue({
+        commitment: () => ({ toHex: () => '0x' + '9'.repeat(64) }),
+      });
+
+      vi.useFakeTimers();
+      try {
+        const execution = multisig.executeProposal(proposalId);
+        const refused = expect(execution).rejects.toThrow(/has not reached the chain/);
+        await vi.runAllTimersAsync();
+        await refused;
+      } finally {
+        vi.useRealTimers();
+      }
+      const configureCalls = mockFetch.mock.calls.filter(([url]) => String(url).endsWith('/configure'));
+      expect(configureCalls).toHaveLength(0);
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true, message: 'ok', ack_pubkey: '0x' + 'f'.repeat(64) }),
+      });
+      await multisig.registerOnGuardian();
+      expect(String(mockFetch.mock.calls.at(-1)![0])).toBe('http://new-guardian.com/configure');
+    });
+
 
     it('refuses a switch_guardian proposal the pre-switch GUARDIAN pinned to another state', async () => {
       const config = {
@@ -8199,6 +8350,7 @@ describe('Multisig', () => {
       mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
+        to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
       });
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -8300,6 +8452,7 @@ describe('Multisig', () => {
         mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
         mockWebClient.accounts.get.mockResolvedValueOnce({
           serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
         });
         mockFetch.mockResolvedValueOnce({
           ok: true,
@@ -8361,6 +8514,7 @@ describe('Multisig', () => {
       mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
+        to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
       });
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -8408,6 +8562,7 @@ describe('Multisig', () => {
       mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
+        to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
       });
       mockFetch.mockResolvedValueOnce({
         ok: true,
@@ -8463,6 +8618,7 @@ describe('Multisig', () => {
         mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
         mockWebClient.accounts.get.mockResolvedValueOnce({
           serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
         });
         mockFetch.mockResolvedValueOnce({
           ok: true,
@@ -8616,6 +8772,7 @@ describe('Multisig', () => {
       mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
       mockWebClient.accounts.get.mockResolvedValueOnce({
         serialize: () => new Uint8Array([1, 2, 3]),
+        to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
       });
       // The switch transaction submit — the import must precede it, because
       // summary-binding re-verification only reproduces before the account
@@ -8725,6 +8882,7 @@ describe('Multisig', () => {
         mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
         mockWebClient.accounts.get.mockResolvedValueOnce({
           serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
         });
         mockFetch.mockResolvedValueOnce({
           ok: true,

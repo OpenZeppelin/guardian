@@ -87,6 +87,10 @@ async function runLiveAction(
       return live.createProposal(context, scenario.id);
     case 'proposal-sign':
       return live.signProposal(context, scenario.id);
+    case 'session-start':
+      return live.startSessions(context, scenario.id);
+    case 'session-assert':
+      return live.assertSessionsActive(context, scenario.id);
     case 'proposal-execute':
       return live.executeProposal(context, scenario.id);
     case 'proposal-reject-below-threshold':
@@ -127,6 +131,10 @@ async function runLiveAction(
       return live.switchGuardianOnline(context, scenario.id);
     case 'guardian-switch-assert':
       return live.assertGuardianSwitched(context, scenario.id);
+    case 'guardian-switch-back':
+      return live.switchGuardianBack(context, scenario.id);
+    case 'guardian-switch-back-assert':
+      return live.assertGuardianSwitchedBack(context, scenario.id);
     case 'guardian-migrate':
       return live.assertGuardianMigration(context, scenario.id);
     case 'handoff-ts-to-rust':
