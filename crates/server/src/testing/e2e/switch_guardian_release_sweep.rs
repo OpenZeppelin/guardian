@@ -1259,6 +1259,7 @@ async fn test_release_sweep_ignores_a_storage_read_older_than_the_stored_state()
     let mut newer = fixture.advanced_still_bound_account();
     newer.increment_nonce(Felt::ONE).expect("nonce increments");
     assert!(newer.nonce() > fixture.executed_account.nonce());
+    fixture.install_chain(&newer, false);
     let creds = fixture.credentials();
     configure_account(
         &fixture.state,

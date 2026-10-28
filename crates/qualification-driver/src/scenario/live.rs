@@ -1,6 +1,9 @@
 use anyhow::anyhow;
 use miden_client::rpc::Endpoint;
-use miden_multisig_client::{AbandonStatus, MultisigClient, ProposalStatus};
+use miden_multisig_client::{
+    AbandonStatus, EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager, MultisigClient,
+    ProposalStatus, SignatureScheme, StartSessionOptions,
+};
 use miden_multisig_client::{ExecutionState, GuardianExecutionRequest, ProposalExecutionMode};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -26,6 +29,56 @@ pub struct LiveContext {
     /// only by the candidate-queue scenarios. The main one keeps the default
     /// of one in-flight candidate per account.
     pub queue_endpoint: Option<String>,
+}
+
+/// Every word the cosigners' key managers signed, in order. With a Guardian
+/// session active they sign only transaction approvals, so a request a key
+/// manager signed instead of the session shows up here as another word.
+#[derive(Clone, Default)]
+pub struct WalletSignatures(std::sync::Arc<std::sync::Mutex<Vec<Word>>>);
+
+impl WalletSignatures {
+    fn record(&self, message: Word) {
+        self.0.lock().expect("wallet signatures lock").push(message);
+    }
+
+    fn len(&self) -> usize {
+        self.0.lock().expect("wallet signatures lock").len()
+    }
+
+    fn since(&self, mark: usize) -> Vec<Word> {
+        self.0.lock().expect("wallet signatures lock")[mark..].to_vec()
+    }
+}
+
+/// A cosigner's key manager that records what it signs into
+/// [`WalletSignatures`].
+struct RecordingKeyManager {
+    inner: Box<dyn KeyManager>,
+    signed: WalletSignatures,
+}
+
+impl KeyManager for RecordingKeyManager {
+    fn scheme(&self) -> SignatureScheme {
+        self.inner.scheme()
+    }
+
+    fn commitment(&self) -> Word {
+        self.inner.commitment()
+    }
+
+    fn commitment_hex(&self) -> String {
+        self.inner.commitment_hex()
+    }
+
+    fn public_key_hex(&self) -> String {
+        self.inner.public_key_hex()
+    }
+
+    fn sign_word_hex(&self, message: Word) -> String {
+        self.signed.record(message);
+        self.inner.sign_word_hex(message)
+    }
 }
 
 /// The account a scenario is working on, shared by its actions.
@@ -74,6 +127,10 @@ pub struct LiveSession {
     /// The custom proposal's id, which names the transaction the abandon
     /// releases.
     pub custom_proposal_id: Option<String>,
+    /// Every word the cosigners' key managers signed.
+    pub wallet_signatures: WalletSignatures,
+    /// How many words they had signed when `session-start` finished.
+    pub sessions_started_at: Option<usize>,
 }
 
 fn endpoint(network: NetworkName) -> Endpoint {
@@ -89,6 +146,7 @@ async fn build_cosigners(
     signers: &RunSigners,
     run_tag: &str,
     mode: ProposalExecutionMode,
+    wallet_signatures: &WalletSignatures,
 ) -> anyhow::Result<Vec<MultisigClient>> {
     let mut clients = Vec::with_capacity(signers.signers.len());
     for (index, signer) in signers.signers.iter().enumerate() {
@@ -104,10 +162,14 @@ async fn build_cosigners(
             .account_dir(&dir)
             .execution_mode(mode);
 
-        let builder = match signer {
-            RunSigner::Falcon(key) => builder.with_secret_key(key.clone()),
-            RunSigner::Ecdsa(key) => builder.with_ecdsa_secret_key(key.clone()),
+        let inner: Box<dyn KeyManager> = match signer {
+            RunSigner::Falcon(key) => Box::new(GuardianKeyStore::new(key.clone())),
+            RunSigner::Ecdsa(key) => Box::new(EcdsaGuardianKeyStore::new(key.clone())),
         };
+        let builder = builder.key_manager(Box::new(RecordingKeyManager {
+            inner,
+            signed: wallet_signatures.clone(),
+        }));
 
         let mut client = builder
             .build()
@@ -194,11 +256,20 @@ async fn create_on(
         ));
     };
 
-    let mut clients =
-        match build_cosigners(context, &guardian_endpoint, &signers, run_tag, mode).await {
-            Ok(clients) => clients,
-            Err(error) => return ActionOutcome::failed_setup(error.to_string()),
-        };
+    let wallet_signatures = WalletSignatures::default();
+    let mut clients = match build_cosigners(
+        context,
+        &guardian_endpoint,
+        &signers,
+        run_tag,
+        mode,
+        &wallet_signatures,
+    )
+    .await
+    {
+        Ok(clients) => clients,
+        Err(error) => return ActionOutcome::failed_setup(error.to_string()),
+    };
 
     let signer_commitments = commitments(&clients);
     if let Err(error) = clients[0]
@@ -241,6 +312,8 @@ async fn create_on(
         custom_request: None,
         custom_nonce: None,
         custom_proposal_id: None,
+        wallet_signatures,
+        sessions_started_at: None,
     });
     ActionOutcome::Passed
 }
@@ -401,6 +474,106 @@ pub async fn create_proposal(runner: &Runner) -> ActionOutcome {
             ActionOutcome::failed_product(format!("creating the consume proposal failed: {error}"))
         }
     }
+}
+
+/// Lifetime of the sessions a scenario starts: well past any step budget, and
+/// within the Guardian's default maximum of eight hours.
+const SESSION_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The network label the Guardian reports on `GET /status`, which a session
+/// grant must name.
+async fn guardian_environment(runner: &Runner) -> Result<String, ActionOutcome> {
+    let url = format!("{}/status", runner.endpoints.http);
+    let response = runner
+        .http
+        .get(&url)
+        .send()
+        .await
+        .map_err(|error| ActionOutcome::failed_setup(format!("cannot reach {url}: {error}")))?;
+    let status: serde_json::Value = response.json().await.map_err(|error| {
+        ActionOutcome::failed_product(format!("GET /status did not return JSON: {error}"))
+    })?;
+    status["environment"]
+        .as_str()
+        .filter(|environment| !environment.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            ActionOutcome::failed_product("GET /status reported no environment".to_string())
+        })
+}
+
+/// Starts a Guardian session on every cosigner: each key manager signs one
+/// grant, then a delegated signer signs that cosigner's later Guardian
+/// requests, its delta pushes included.
+pub async fn start_sessions(runner: &Runner) -> ActionOutcome {
+    let network = match guardian_environment(runner).await {
+        Ok(network) => network,
+        Err(outcome) => return outcome,
+    };
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    for (index, client) in session.clients.iter_mut().enumerate() {
+        if let Err(error) = client
+            .start_session(StartSessionOptions {
+                network: network.clone(),
+                ttl: SESSION_TTL,
+            })
+            .await
+        {
+            return ActionOutcome::failed_product(format!(
+                "cosigner {index} could not start a Guardian session: {error}"
+            ));
+        }
+    }
+    session.sessions_started_at = Some(session.wallet_signatures.len());
+    ActionOutcome::Passed
+}
+
+/// Confirms the cosigners' Guardian requests since `session-start`, delta
+/// pushes included, were signed by their sessions: every cosigner still holds
+/// its session, and their key managers signed nothing but the proposal's
+/// transaction summary. A request signed by a key manager would have signed
+/// its own message instead.
+pub async fn assert_sessions_active(runner: &Runner) -> ActionOutcome {
+    let guard = runner.session.lock().await;
+    let Some(session) = guard.as_ref() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(mark) = session.sessions_started_at else {
+        return ActionOutcome::failed_setup("no session was started in this scenario");
+    };
+    let Some(proposal_id) = session.proposal_id.as_deref() else {
+        return ActionOutcome::failed_setup("no proposal has been created in this scenario");
+    };
+    let summary = match Word::try_from(proposal_id) {
+        Ok(summary) => summary,
+        Err(error) => {
+            return ActionOutcome::failed_setup(format!(
+                "proposal id {proposal_id} is not a word: {error}"
+            ));
+        }
+    };
+    for (index, client) in session.clients.iter().enumerate() {
+        if client.session().is_none() {
+            return ActionOutcome::failed_product(format!(
+                "cosigner {index} lost its Guardian session; its requests fell back to the key manager"
+            ));
+        }
+    }
+    let requests = session
+        .wallet_signatures
+        .since(mark)
+        .into_iter()
+        .filter(|message| *message != summary)
+        .count();
+    if requests > 0 {
+        return ActionOutcome::failed_product(format!(
+            "the key managers signed {requests} Guardian request(s) while a session was active"
+        ));
+    }
+    ActionOutcome::Passed
 }
 
 /// Collects signatures from the other cosigners until the threshold is met.
@@ -1749,6 +1922,136 @@ pub async fn assert_guardian_switched(runner: &Runner) -> ActionOutcome {
     }
 }
 
+/// Rotates the account back from the second GUARDIAN to the main one.
+///
+/// The online rotation leaves the main GUARDIAN holding the account as
+/// released. Switching back registers the account there again, and GUARDIAN
+/// takes a released account's state from the chain only: the registration
+/// that follows the switch transaction is refused as not on chain until that
+/// transaction lands, and the SDK has to wait it out. Every cosigner moves to
+/// the second GUARDIAN first, since the switch back is proposed and signed
+/// there.
+pub async fn switch_guardian_back(runner: &Runner) -> ActionOutcome {
+    let Some(context) = runner.live.as_ref() else {
+        return ActionOutcome::failed_setup("the live context is not configured");
+    };
+    let Some(current) = context.migration_endpoint.clone() else {
+        return ActionOutcome::failed_setup("no rotation target is configured");
+    };
+
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    if !session.migrating {
+        return ActionOutcome::failed_setup(
+            "switching back needs a rotation to the second GUARDIAN first",
+        );
+    }
+    let home = session.guardian_endpoint.clone();
+
+    let commitment = match migration_target_commitment(&home, session.scheme).await {
+        Ok(commitment) => commitment,
+        Err(error) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("the main GUARDIAN at {home} is unreachable: {error}"),
+            };
+        }
+    };
+
+    for (index, client) in session.clients.iter_mut().enumerate().skip(1) {
+        if let Err(error) = client.set_guardian_endpoint(&current, false).await {
+            return ActionOutcome::failed_product(format!(
+                "cosigner {index} could not move to {current}: {error}"
+            ));
+        }
+    }
+
+    let client = &mut session.clients[0];
+    let proposal = match client
+        .propose_transaction(miden_multisig_client::TransactionType::SwitchGuardian {
+            new_endpoint: home.clone(),
+            new_commitment: commitment,
+        })
+        .await
+    {
+        Ok(proposal) => proposal,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "proposing the switch back to {home} through {current} failed: {error}"
+            ));
+        }
+    };
+
+    match client.list_proposals().await {
+        Ok(proposals) if proposals.iter().any(|pending| pending.id == proposal.id) => {}
+        Ok(_) => {
+            return ActionOutcome::failed_product(format!(
+                "the switch-back proposal {} is not in the pending set at {current}",
+                proposal.id
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing proposals after proposing the switch back failed: {error}"
+            ));
+        }
+    }
+
+    session.proposal_id = Some(proposal.id);
+    ActionOutcome::Passed
+}
+
+/// Confirms the account is bound to the main GUARDIAN again, and that the main
+/// GUARDIAN serves it: a cosigner that loads the account from it receives the
+/// state that binds it. A GUARDIAN that still held the account as released
+/// would refuse the load.
+pub async fn assert_guardian_switched_back(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let home = session.guardian_endpoint.clone();
+    let account_id = session.account_id;
+
+    let expected = match migration_target_commitment(&home, session.scheme).await {
+        Ok(commitment) => commitment,
+        Err(error) => {
+            return ActionOutcome::EnvironmentBlocked {
+                reason: format!("the main GUARDIAN at {home} is unreachable: {error}"),
+            };
+        }
+    };
+
+    let Some(cosigner) = session.clients.get_mut(1) else {
+        return ActionOutcome::failed_setup("switching back needs a second cosigner");
+    };
+    if let Err(error) = cosigner.set_guardian_endpoint(&home, false).await {
+        return ActionOutcome::failed_product(format!(
+            "a cosigner could not move back to {home}: {error}"
+        ));
+    }
+    if let Err(error) = cosigner.pull_account(account_id).await {
+        return ActionOutcome::failed_product(format!(
+            "the main GUARDIAN at {home} does not serve the account after the switch back: {error}"
+        ));
+    }
+    let Some(account) = cosigner.account() else {
+        return ActionOutcome::failed_setup("the cosigner holds no account to read".to_string());
+    };
+    match account.guardian_commitment() {
+        Ok(bound) if bound == expected => ActionOutcome::Passed,
+        Ok(bound) => ActionOutcome::failed_product(format!(
+            "the main GUARDIAN at {home} serves a state that binds {}, not its own {}",
+            bound.to_hex(),
+            expected.to_hex()
+        )),
+        Err(error) => ActionOutcome::failed_product(format!(
+            "the GUARDIAN binding of the state the main GUARDIAN serves could not be read: {error}"
+        )),
+    }
+}
+
 /// A paused account is refused on a live network, and works again once
 /// unpaused.
 ///
@@ -2434,6 +2737,7 @@ pub async fn add_signer(runner: &Runner, run_tag: &str) -> ActionOutcome {
         &incoming_signers,
         &format!("{run_tag}-incoming"),
         session.clients[0].execution_mode(),
+        &session.wallet_signatures,
     )
     .await
     {

@@ -38,6 +38,8 @@ mod proposal_note_import;
 mod proposals;
 mod public_note_backfill;
 mod recovery;
+#[cfg(test)]
+mod registration_tests;
 mod session;
 #[cfg(test)]
 mod session_tests;

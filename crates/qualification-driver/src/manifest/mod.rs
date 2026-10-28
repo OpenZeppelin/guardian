@@ -162,6 +162,8 @@ pub enum Action {
     GuardianMigrate,
     GuardianSwitchOnline,
     GuardianSwitchAssert,
+    GuardianSwitchBack,
+    GuardianSwitchBackAssert,
     HandoffRustToTs,
     HandoffTsToRust,
     StatusIdentity,
@@ -200,6 +202,8 @@ pub enum Action {
     MixedSchemeReported,
     MixedSchemeApprovals,
     MixedSchemeGate,
+    SessionStart,
+    SessionAssert,
     Unknown(String),
 }
 
@@ -235,6 +239,8 @@ impl From<String> for Action {
             "guardian-migrate" => Self::GuardianMigrate,
             "guardian-switch-online" => Self::GuardianSwitchOnline,
             "guardian-switch-assert" => Self::GuardianSwitchAssert,
+            "guardian-switch-back" => Self::GuardianSwitchBack,
+            "guardian-switch-back-assert" => Self::GuardianSwitchBackAssert,
             "handoff-rust-to-ts" => Self::HandoffRustToTs,
             "handoff-ts-to-rust" => Self::HandoffTsToRust,
             "status-identity" => Self::StatusIdentity,
@@ -273,6 +279,8 @@ impl From<String> for Action {
             "mixed-scheme-reported" => Self::MixedSchemeReported,
             "mixed-scheme-approvals" => Self::MixedSchemeApprovals,
             "mixed-scheme-gate" => Self::MixedSchemeGate,
+            "session-start" => Self::SessionStart,
+            "session-assert" => Self::SessionAssert,
             other => Self::Unknown(other.to_string()),
         }
     }

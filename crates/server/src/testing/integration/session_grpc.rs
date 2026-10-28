@@ -140,7 +140,6 @@ async fn assert_wallet_only_rpcs(
     guardian_code: &str,
 ) {
     let (_account_id, _, initial_state) = load_fixture_account();
-    let delta = load_fixture_delta(1);
 
     let status = service
         .configure(session_request(
@@ -158,21 +157,6 @@ async fn assert_wallet_only_rpcs(
         .await
         .expect_err("configure is wallet-only");
     assert_error(&status, code, guardian_code, "Configure");
-
-    let status = service
-        .push_delta(session_request(
-            PushDeltaRequest {
-                account_id: account_id_hex.to_string(),
-                nonce: 1,
-                prev_commitment: delta["prev_commitment"].as_str().unwrap().to_string(),
-                delta_payload: delta["delta_payload"].to_string(),
-            },
-            account_id_hex,
-            key,
-        ))
-        .await
-        .expect_err("push_delta is wallet-only");
-    assert_error(&status, code, guardian_code, "PushDelta");
 
     let execute = crate::api::grpc::guardian::ExecuteDeltaProposalRequest {
         account_id: account_id_hex.to_string(),
@@ -279,6 +263,48 @@ async fn test_grpc_session_lifecycle() {
         Code::Unauthenticated,
         "session_revoked",
         "after logout",
+    );
+}
+
+/// FR-009: PushDelta accepts the session on a multisig account, whose push
+/// gate then refuses a delta without enough verified approvals; a forged
+/// delegated signature still fails authentication.
+#[tokio::test]
+async fn test_grpc_session_push_reaches_the_multisig_gate() {
+    let (service, state, signer, account_id_hex) = configured_account().await;
+    let key = falcon_session(&service, &state, &signer).await;
+    let delta = load_fixture_delta(1);
+    let push = |key: &SessionKey| {
+        service.push_delta(session_request(
+            PushDeltaRequest {
+                account_id: account_id_hex.clone(),
+                nonce: 1,
+                prev_commitment: delta["prev_commitment"].as_str().unwrap().to_string(),
+                delta_payload: delta["delta_payload"].to_string(),
+            },
+            &account_id_hex,
+            key,
+        ))
+    };
+
+    let status = push(&key)
+        .await
+        .expect_err("a push without approvals is refused");
+    assert_error(
+        &status,
+        Code::FailedPrecondition,
+        "insufficient_signatures",
+        "PushDelta",
+    );
+
+    let status = push(&SessionKey::generate())
+        .await
+        .expect_err("a forged session is refused");
+    assert_error(
+        &status,
+        Code::Unauthenticated,
+        "authentication_failed",
+        "PushDelta",
     );
 }
 
@@ -541,32 +567,11 @@ async fn test_grpc_wallet_only_rpcs_answer_before_the_grant_checks() {
         )
         .await
         .unwrap();
-    let delta = load_fixture_delta(1);
 
     for (name, key) in [
         ("signer does not cosign the account", &not_a_cosigner),
         ("grant names a rotated Guardian key", &rotated_key),
     ] {
-        let status = service
-            .push_delta(session_request(
-                PushDeltaRequest {
-                    account_id: account_id_hex.clone(),
-                    nonce: 1,
-                    prev_commitment: delta["prev_commitment"].as_str().unwrap().to_string(),
-                    delta_payload: delta["delta_payload"].to_string(),
-                },
-                &account_id_hex,
-                key,
-            ))
-            .await
-            .expect_err("push_delta is wallet-only");
-        assert_error(
-            &status,
-            Code::PermissionDenied,
-            "wallet_signature_required",
-            &format!("PushDelta: {name}"),
-        );
-
         let response = service
             .abandon_delta_candidate(session_request(
                 AbandonDeltaCandidateRequest {
@@ -585,6 +590,68 @@ async fn test_grpc_wallet_only_rpcs_answer_before_the_grant_checks() {
             "AbandonDeltaCandidate: {name}"
         );
     }
+}
+
+/// A session PushDelta runs the grant checks of every session-eligible RPC: a
+/// signer that does not cosign the account is `authorization_failed`, a grant
+/// naming a rotated Guardian key `authentication_failed`.
+#[tokio::test]
+async fn test_grpc_session_push_runs_the_grant_checks() {
+    let (service, state, signer, account_id_hex) = configured_account().await;
+    let outsider = TestSigner::new();
+    seed_cosigner(&state, &outsider.commitment_hex, SignatureScheme::Falcon).await;
+    let not_a_cosigner = falcon_session(&service, &state, &outsider).await;
+    let rotated_key = SessionKey::generate();
+    let now = state.clock.now();
+    let secs = now.timestamp() as u64;
+    state
+        .miden_sessions
+        .register(
+            &rotated_key.public_key(),
+            MidenSession {
+                signer_commitment: signer.commitment_hex.clone(),
+                origin: String::new(),
+                guardian_commitment: format!("0x{}", "11".repeat(32)),
+                network: state.dashboard.environment().to_string(),
+            },
+            secs,
+            secs + 600,
+            now,
+        )
+        .await
+        .unwrap();
+    let delta = load_fixture_delta(1);
+    let push = |key: &SessionKey| {
+        service.push_delta(session_request(
+            PushDeltaRequest {
+                account_id: account_id_hex.clone(),
+                nonce: 1,
+                prev_commitment: delta["prev_commitment"].as_str().unwrap().to_string(),
+                delta_payload: delta["delta_payload"].to_string(),
+            },
+            &account_id_hex,
+            key,
+        ))
+    };
+
+    let status = push(&not_a_cosigner)
+        .await
+        .expect_err("a non-cosigner's session is refused");
+    assert_error(
+        &status,
+        Code::PermissionDenied,
+        "authorization_failed",
+        "PushDelta: signer does not cosign the account",
+    );
+    let status = push(&rotated_key)
+        .await
+        .expect_err("a grant naming a rotated Guardian key is refused");
+    assert_error(
+        &status,
+        Code::Unauthenticated,
+        "authentication_failed",
+        "PushDelta: grant names a rotated Guardian key",
+    );
 }
 
 /// SC-003 on gRPC: an origin over 256 bytes is refused.

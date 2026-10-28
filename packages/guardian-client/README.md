@@ -69,11 +69,11 @@ await client.revokeAllSessions(); // wallet-signed: ends every session of the si
 The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getDelta`,
 `getDeltaSince`, `getDeltaHistory`), proposal reads and proposal create/sign
 (`getDeltaProposals`, `getDeltaProposal`, `pushDeltaProposal`,
-`signDeltaProposal`) and execution status reads (`getDeltaProposalExecution`,
-`getCurrentExecution`). Every other route uses the wallet signer, including
-`configure`, `pushDelta`, `abandonCandidate`, account lookup and
-`revokeAllSessions`; the server rejects session credentials there with
-`wallet_signature_required`.
+`signDeltaProposal`), execution status reads (`getDeltaProposalExecution`,
+`getCurrentExecution`) and delta pushes (`pushDelta`). Every other route uses
+the wallet signer, including `configure`, `abandonCandidate`, account lookup
+and `revokeAllSessions`; the server rejects session credentials there with
+`wallet_signature_required`, as an older Guardian does for `pushDelta`.
 
 A session is used only while the wallet that granted it
 (`session.signerCommitment`) is the client's signer. It is dropped 30 seconds

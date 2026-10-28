@@ -227,6 +227,16 @@ fn with_real_network_client(state: &mut AppState) {
     state.network_client = Arc::new(MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal));
 }
 
+/// The real Miden network client over a chain that holds `account`'s state:
+/// an account past nonce 0 registers only from its on-chain state.
+fn with_chain_holding(state: &mut AppState, account: &Account) {
+    let mut chain = IntegrationMockNetworkClient::new(MidenNetworkClient::lazy_for_test(
+        NetworkType::MidenLocal,
+    ));
+    chain.register_account(account.id().to_hex(), account_commitment_hex(account));
+    state.network_client = Arc::new(chain);
+}
+
 async fn configure(
     state: &AppState,
     account: &Account,
@@ -387,6 +397,7 @@ async fn mixed_scheme_account_registers_and_each_cosigner_authenticates_under_it
 
     // The per-signer declaration registers, signed by the Falcon cosigner,
     // and is acknowledged with the GUARDIAN's ECDSA key.
+    with_chain_holding(&mut state, &account);
     let configured = configure(
         &state,
         &account,
@@ -504,6 +515,7 @@ async fn adding_a_falcon_signer_on_chain_promotes_an_ecdsa_account() {
         SignatureScheme::Ecdsa,
     );
     let account_id_hex = account.id().to_hex();
+    with_chain_holding(&mut state, &account);
 
     configure(
         &state,

@@ -23,3 +23,9 @@ relay-new-new-unstored ReadyExecutionAcked FAIL:ReadyExecutionAcked (documented:
 relay-new-new-unstored AckedApprovalKept PASS
 relay-old-new-unstored ReadyExecutionAcked PASS
 relay-old-new-unstored AckedApprovalKept PASS
+relay-new-new-session ReadyExecutionAcked PASS
+relay-new-new-session AckedApprovalKept PASS
+relay-gate-new-session ReadyExecutionAcked PASS
+relay-gate-new-session AckedApprovalKept PASS
+relay-old-new-session ReadyExecutionAcked PASS
+relay-old-new-session AckedApprovalKept PASS

@@ -598,7 +598,6 @@ async fn test_wallet_only_routes_reject_the_session() {
 
     // Account routes: the delegated signature verifies, then the route refuses it.
     let posts = [
-        ("/delta", load_fixture_delta(1)),
         (
             "/delta/proposal/execution",
             json!({
@@ -724,13 +723,10 @@ async fn test_wallet_only_routes_answer_before_the_grant_checks() {
         )
         .await
         .unwrap();
-    let posts = [
-        ("/delta", load_fixture_delta(1)),
-        (
-            "/delta/candidate/abandon",
-            json!({ "account_id": account_id_hex, "nonce": 1 }),
-        ),
-    ];
+    let posts = [(
+        "/delta/candidate/abandon",
+        json!({ "account_id": account_id_hex, "nonce": 1 }),
+    )];
     for (name, session_key) in [
         ("signer does not cosign the account", &not_a_cosigner),
         ("grant names a rotated Guardian key", &rotated_key),
@@ -750,13 +746,118 @@ async fn test_wallet_only_routes_answer_before_the_grant_checks() {
     let ended = falcon_session(&app, &state, &signer).await;
     let (status, body) = logout(&app, &ended).await;
     assert_eq!(status, StatusCode::OK, "logout: {body}");
-    let response =
-        session_send_json(&app, &ended, "POST", "/delta", &account_id_hex, &posts[0].1).await;
+    let response = session_send_json(
+        &app,
+        &ended,
+        "POST",
+        posts[0].0,
+        &account_id_hex,
+        &posts[0].1,
+    )
+    .await;
     assert_error(
         &response,
         StatusCode::UNAUTHORIZED,
         "session_revoked",
         "ended session on a wallet-only route",
+    );
+}
+
+/// FR-009: `POST /delta` accepts the session on a multisig account, whose
+/// push gate then refuses a delta without enough verified approvals; a
+/// forged delegated signature still fails authentication.
+#[tokio::test]
+async fn test_session_push_reaches_the_multisig_gate() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+    let delta = load_fixture_delta(1);
+
+    let response = session_send_json(
+        &app,
+        &session_key,
+        "POST",
+        "/delta",
+        &account_id_hex,
+        &delta,
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::BAD_REQUEST,
+        "insufficient_signatures",
+        "session push without approvals",
+    );
+
+    let forged = SessionKey::generate();
+    let response =
+        session_send_json(&app, &forged, "POST", "/delta", &account_id_hex, &delta).await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "forged session push",
+    );
+}
+
+/// A session push runs the grant checks of every session-eligible route: a
+/// signer that does not cosign the account is `authorization_failed`, a grant
+/// naming a rotated Guardian key `authentication_failed`.
+#[tokio::test]
+async fn test_session_push_runs_the_grant_checks() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let now = state.clock.now();
+    let secs = now.timestamp() as u64;
+    let outsider = TestSigner::new();
+    seed_cosigner(&state, &outsider.commitment_hex, SignatureScheme::Falcon).await;
+    let not_a_cosigner = falcon_session(&app, &state, &outsider).await;
+    let rotated_key = SessionKey::generate();
+    state
+        .miden_sessions
+        .register(
+            &rotated_key.public_key(),
+            MidenSession {
+                signer_commitment: signer.commitment_hex.clone(),
+                origin: String::new(),
+                guardian_commitment: format!("0x{}", "11".repeat(32)),
+                network: state.dashboard.environment().to_string(),
+            },
+            secs,
+            secs + 600,
+            now,
+        )
+        .await
+        .unwrap();
+    let delta = load_fixture_delta(1);
+
+    let response = session_send_json(
+        &app,
+        &not_a_cosigner,
+        "POST",
+        "/delta",
+        &account_id_hex,
+        &delta,
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::FORBIDDEN,
+        "authorization_failed",
+        "signer does not cosign the account",
+    );
+    let response = session_send_json(
+        &app,
+        &rotated_key,
+        "POST",
+        "/delta",
+        &account_id_hex,
+        &delta,
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "grant names a rotated Guardian key",
     );
 }
 
@@ -831,7 +932,6 @@ async fn test_forged_session_credentials_on_wallet_only_routes_fail_authenticati
     let forged = SessionKey::generate();
     let (_account_id, _, initial_state) = load_fixture_account();
     let posts = [
-        ("/delta", load_fixture_delta(1)),
         (
             "/delta/candidate/abandon",
             json!({ "account_id": account_id_hex, "nonce": 1 }),

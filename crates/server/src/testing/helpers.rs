@@ -320,8 +320,12 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.account_auth_binding(state_json)
     }
 
-    fn validate_approver_schemes(&self, state_json: &serde_json::Value) -> Result<(), String> {
-        self.miden_client.validate_approver_schemes(state_json)
+    fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_multisig_auth(state_json)
+    }
+
+    fn validate_first_state(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_first_state(state_json)
     }
 
     async fn should_update_auth(
@@ -519,6 +523,30 @@ pub fn build_guarded_multisig_account(
         .into();
     AccountBuilder::new(seed)
         .with_component(component)
+        .with_component(BasicWallet)
+        .build()
+        .expect("account builds")
+}
+
+/// A single-key account built from the upstream `AuthSingleSig` component
+/// (plus a `BasicWallet`): an account without the multisig auth.
+pub fn build_single_key_account(
+    seed: [u8; 32],
+    signer: (Word, guardian_shared::SignatureScheme),
+) -> miden_protocol::account::Account {
+    use miden_protocol::account::AccountBuilder;
+    use miden_protocol::account::auth::PublicKeyCommitment;
+    use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::account::wallets::BasicWallet;
+
+    let (commitment, scheme) = signer;
+    AccountBuilder::new(seed)
+        .with_component(miden_protocol::account::AccountComponent::from(
+            AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(commitment),
+                scheme.auth_scheme(),
+            )),
+        ))
         .with_component(BasicWallet)
         .build()
         .expect("account builds")

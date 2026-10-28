@@ -50,7 +50,6 @@ dashboard sessions and the EVM cookie sessions are unchanged.
 - Registering Ledger display metadata (ERC-7730), which would let devices
   label and format grant fields without "Verbose EIP-712" enabled.
 - Idle timeouts; sessions have an absolute expiry only.
-- Session-signed `POST /delta`; it follows once #524 lands (see FR-009).
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -127,11 +126,11 @@ calls signed by the wallet succeed.
 
 **Acceptance Scenarios**:
 
-1. **Given** a registered grant, **When** `POST /delta`,
-   `POST /delta/proposal/execution` (#254), `POST /delta/candidate/abandon`,
-   `POST /configure`, `GET /state/lookup` or `POST /session/revoke-all` is
-   called with valid delegated-signer credentials, **Then** Guardian rejects
-   it with `wallet_signature_required`.
+1. **Given** a registered grant, **When** `POST /delta/proposal/execution`
+   (#254), `POST /delta/candidate/abandon`, `POST /configure`,
+   `GET /state/lookup` or `POST /session/revoke-all` is called with valid
+   delegated-signer credentials,
+   **Then** Guardian rejects it with `wallet_signature_required`.
 2. **Given** a delegated signature that does not verify, **When** it is sent
    to any wallet-only route, **Then** Guardian rejects it with
    `authentication_failed`, revealing nothing about the route's policy.
@@ -347,6 +346,10 @@ confirm the SDK raises a dedicated error.
   - execution status, when #254 adds them: `GET /delta/execution/current` and
     `GET /delta/proposal/execution`;
   - proposal create and sign: `POST /delta/proposal`, `PUT /delta/proposal`;
+  - delta push, `POST /delta`, when the tail of the account's candidate queue
+    is a multisig: the push gate (#524, fixed in #536) refuses a delta unless
+    its proposal carries enough verified cosigner approvals, as for a
+    wallet-signed push;
   - the gRPC twins of these routes, plus `GetCurrentExecution` and
     `GetDeltaProposalExecution` when #254 adds them.
 
@@ -359,12 +362,12 @@ confirm the SDK raises a dedicated error.
   state change and only after the delegated signature verifies and the
   session resolves (FR-007 order); an unverifiable delegated signature is
   `authentication_failed`. This includes
-  `POST /delta`, `POST /delta/proposal/execution` (#254),
-  `POST /delta/candidate/abandon`, `POST /configure`, `GET /state/lookup` and
-  `POST /session/revoke-all`. HTTP and gRPC MUST apply the same rule.
-  `POST /delta` becomes session-eligible once #524 lands, because until then
-  `push_delta` admits a candidate without checking cosigner signatures or
-  threshold, so a stolen session could stall the candidate queue.
+  `POST /delta/proposal/execution` (#254), `POST /delta/candidate/abandon`,
+  `POST /configure`, `GET /state/lookup`, `POST /session/revoke-all`, and
+  `POST /delta` onto a tail without the multisig auth. HTTP and gRPC MUST apply
+  the same rule. `/configure` registers only guarded multisig accounts, but an
+  account registered before it did is acknowledged without cosigner
+  approvals, so a stolen session could fill its candidate queue.
   Candidate abandon stays wallet-only: it is rare, and after quarantine the
   on-chain outcome can still be uncertain.
 - **FR-010 — Approvals stay with the wallet**: Proposal approval signatures
@@ -517,8 +520,11 @@ confirm the SDK raises a dedicated error.
 - **Compromised page**: injected script can use the delegated signer until the
   session ends. It cannot approve transactions or call wallet-only routes.
   Accepted risks until revoke-all or expiry: it can fill
-  `max_pending_proposals` for the signer's accounts, and, once `POST /delta`
-  is session-eligible after #524, repeatedly stall the candidate queue. Page
+  `max_pending_proposals` for the signer's accounts; push a multisig
+  transaction the cosigners already approved before its intended executor
+  does; and stall the candidate queue with an approved transaction that
+  meets the account's lowest threshold but not that of the procedures it
+  calls, until canonicalization drops it. Page
   logout does not help, because the script holds the same key; revoke-all
   from the wallet does.
 - **Phishing page (no audience)**: a page that obtains a grant can, until it
@@ -594,8 +600,8 @@ confirm the SDK raises a dedicated error.
 - #526, proposal signature verification (FR-011): merged as `c892795a`.
 - Existing `auth_sessions` store, sweep and coordination handles.
 - Existing replay CAS and request clock-skew window.
-- #524 (cosigner signature and threshold checks on `POST /delta`): gates
-  making `POST /delta` session-eligible.
+- #524 (cosigner signature and threshold checks on `POST /delta`), fixed in
+  #536: gates making `POST /delta` session-eligible on multisig accounts.
 - #254 (execution routes): adds the execution routes named in FR-008 and
   FR-009.
 
@@ -615,6 +621,7 @@ confirm the SDK raises a dedicated error.
 - Q: How does the grant identify the Guardian? → A: ACK-key commitment plus network, re-checked on every request. No display name. An operator on/off switch is optional (FR-015).
 - Q: Readable expiry? → A: Yes: one extra signed field, the canonical UTC string derived from `expires_at`, which stays authoritative; anything else fails.
 - Q: `POST /delta` and abandon on sessions? → A: Not in v1. `POST /delta` becomes session-eligible after #524 lands; abandon stays wallet-only.
+- Q: Once #524 landed (#536), which pushes may a delegated signer make? → A: Onto a multisig tail, which the push gate covers. A tail without the multisig auth (an account registered before `/configure` required it) stays wallet-only (`wallet_signature_required`).
 - Q: How is revoke-all protected against replay? → A: It revokes only sessions issued at or before its signed timestamp, with no stored floor, and never touches a replay floor.
 - Q: Can a stolen session lock the wallet out through the shared replay floor? → A: Session requests use their own floor per (account, delegated key); wallet requests keep theirs per (account, signer). This replaces the earlier "one floor per signer across wallet and session requests".
 - Q: Distinct codes for ended sessions? → A: `session_expired` and `session_revoked`, both 401.

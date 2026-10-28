@@ -412,8 +412,8 @@ Without registered display metadata, Ledger devices need "Verbose EIP-712"
 enabled. Raw (Falcon, raw ECDSA) wallets show only a hash, so `startSession`
 requires `confirm` for them; that shows the fields on an honest page but is
 no protection against a phishing page, which shows what it wants.
-Transaction approvals, account registration, delta pushes, candidate abandons
-and account lookup still use the wallet; the server rejects session
+Delta pushes are signed by the session too. Transaction approvals, account
+registration, candidate abandons and account lookup still use the wallet; the server rejects session
 credentials there with `wallet_signature_required`.
 
 The session ends when it expires, when it is logged out or revoked, or when

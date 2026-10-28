@@ -590,6 +590,12 @@ mod tests {
         ) -> std::result::Result<(), String> {
             unimplemented!()
         }
+        fn validate_first_state(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unimplemented!()
+        }
+        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unimplemented!()
+        }
         fn validate_guardian_commitment(
             &self,
             _: &serde_json::Value,

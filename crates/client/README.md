@@ -259,7 +259,7 @@ When the Guardian accepts sessions (it advertises `sessions` on HTTP
 `GET /status`; an older Guardian answers `CreateSession` as unimplemented),
 the wallet can sign one session grant and let a delegated P-256 key sign the
 session-eligible requests (state and delta reads, proposal
-list/get/create/sign):
+list/get/create/sign, delta pushes):
 
 ```rust
 use std::time::Duration;
@@ -273,14 +273,15 @@ let info = client
     })
     .await?;
 
-// ...get_state, get_delta_since, push_delta_proposal: signed by the session key.
+// ...get_state, get_delta_since, push_delta_proposal, push_delta: signed by the session key.
 
 client.revoke_session().await?; // this session only, signed by the session key
 client.revoke_all_sessions().await?; // every session of the wallet, wallet-signed
 ```
 
-Every other route, including `configure`, `push_delta`, `abandon` and account
-lookup, keeps using the wallet signer. The session is used only while the
+Every other route, including `configure`, `abandon` and account lookup, keeps
+using the wallet signer. A session-signed `push_delta` needs a Guardian that
+accepts it; an older one answers `wallet_signature_required`. The session is used only while the
 wallet that granted it is the client's signer. When Guardian answers a
 session-signed request with `session_expired`, `session_revoked` or
 `authentication_failed`, the client drops the session and the next request is

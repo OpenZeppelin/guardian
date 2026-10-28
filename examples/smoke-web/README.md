@@ -81,7 +81,7 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `signProposalOffline({ proposalId, json })`
 - `importProposal({ json })`
 - `recoverByKey()`
-- `startGuardianSession({ ttlSeconds? })`: the signer signs one session grant; later reads and proposal requests are signed by a session key
+- `startGuardianSession({ ttlSeconds? })`: the signer signs one session grant; later reads, proposal requests and delta pushes are signed by a session key
 - `endGuardianSession()`
 - `revokeAllGuardianSessions()`: wallet-signed; ends every session of the signer on the Guardian
 - `recoverNotes({ transportDrain?, proposalImport?, publicBackfill?, fromBlock?, toBlock?, syncAfter? })`

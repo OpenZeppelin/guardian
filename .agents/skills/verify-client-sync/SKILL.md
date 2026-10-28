@@ -92,10 +92,13 @@ an earlier note from it. The replaced store file stays in the account directory
 and the rollback's warning names it, so a transaction that lands after the
 stale window can still be recovered from it.
 
-The fix does not cover a switch to a new endpoint: `finalize_transaction`
-registers the switched, not yet landed, state on the new Guardian, whose head
-then equals local, so sync returns before the rollback check. The model leaves
-the switch's rebind and registration out (see Scope).
+A switch to a new endpoint does not need the rollback: `finalize_transaction`
+registers the switched state on the new Guardian, which stores it only once
+the chain holds it (`state_not_on_chain` until the switch lands; the switch
+reads the chain until it does before it registers), so the new Guardian's head
+is never a state the chain dropped. A switch that does not land within that
+wait fails before registering, and the new Guardian stores nothing. The model
+leaves the switch's rebind and registration out (see Scope).
 
 **C2 (fixed): the TypeScript signer config cache went stale.** `threshold`
 and `signerCommitments` were refreshed only from `syncState` and
@@ -223,7 +226,8 @@ paths under `packages/miden-multisig-client/src/`.
   can also update the tracked account; not modeled.
 - A switch that changes the Guardian endpoint is not modeled: after it the
   device talks to the new Guardian, which `finalize_transaction` registers
-  with the switched state. C1's rollback does not reach that case.
+  with the switched state once the chain holds it, so C1's rollback is not
+  needed there.
 - Signing, approval thresholds and the summary binding are folded into
   `Execute` (a proposal executes only from the state it was built on);
   offline export and import, the guardian switch's rebind and

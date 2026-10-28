@@ -230,14 +230,10 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
             .commitment
     };
 
-    let registered_commitment = if landed {
-        expected_commitment_hex.clone()
-    } else {
-        initial_commitment.clone()
-    };
     let mut integration_client = IntegrationMockNetworkClient::new(miden_client);
-    integration_client.register_account(account_id_hex.clone(), registered_commitment);
-    state.network_client = Arc::new(integration_client);
+    integration_client.register_account(account_id_hex.clone(), initial_commitment.clone());
+    let chain = Arc::new(integration_client);
+    state.network_client = chain.clone();
 
     let api_pubkey_hex = cosigner_pubkeys[0].clone().into_hex();
     // /configure validates the declared cosigner set against the state's
@@ -254,7 +250,7 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
         cosigner_keys: cosigner_keys.clone(),
         api_pubkey_hex,
         delta_payload: delta_payload.clone(),
-        expected_commitment_hex,
+        expected_commitment_hex: expected_commitment_hex.clone(),
         next_timestamp: chrono::Utc::now().timestamp_millis(),
     };
 
@@ -273,6 +269,9 @@ async fn stranded_candidate_setup(landed: bool) -> StrandedCandidateSetup {
     )
     .await
     .expect("configure_account succeeds");
+    if landed {
+        chain.set_on_chain_commitment(&account_id_hex, &expected_commitment_hex);
+    }
 
     // Push the approved delta: it becomes the pending candidate whose
     // transaction (in the `landed = false` case) will never land. The

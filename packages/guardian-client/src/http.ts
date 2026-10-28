@@ -353,8 +353,8 @@ export class GuardianHttpClient {
 
   /**
    * Sign session-eligible requests (reads, proposal list/get, proposal
-   * create/sign) with a registered delegated signer instead of the wallet.
-   * Every other route, including `configure`, `pushDelta`,
+   * create/sign, `pushDelta`) with a registered delegated signer instead of
+   * the wallet. Every other route, including `configure`,
    * `abandonCandidate`, account lookup and `revokeAllSessions`, uses the
    * wallet signer. Pass `null` to stop using the session.
    */
@@ -743,13 +743,30 @@ export class GuardianHttpClient {
     return fromServerDeltaObject(server);
   }
 
+  /**
+   * Push a delta for Guardian's acknowledgement. Signed by the session while
+   * one is set: Guardian acknowledges a multisig delta only once its
+   * proposal carries enough verified cosigner approvals, which the wallet
+   * signs. A Guardian that takes this route only from the wallet (an older
+   * release, or an account without a multisig state) answers
+   * `wallet_signature_required`, and the wallet signs the push again; the
+   * session stays in use for every other route.
+   */
   async pushDelta(delta: ExecutionDelta): Promise<PushDeltaResponse> {
     const serverDelta = toServerExecutionDelta(delta);
-    // Guardian's ACK commits the account to this transition: always the wallet.
-    const response = await this.fetchAuthenticated('/delta', {
-      method: 'POST',
-      body: JSON.stringify(serverDelta),
-    }, delta.accountId, serverDelta);
+    const init = { method: 'POST', body: JSON.stringify(serverDelta) };
+    const response = await this.fetchAuthenticated(
+      '/delta',
+      init,
+      delta.accountId,
+      serverDelta,
+      'session'
+    ).catch((err: unknown) => {
+      if (err instanceof GuardianHttpError && err.code === 'wallet_signature_required') {
+        return this.fetchAuthenticated('/delta', init, delta.accountId, serverDelta, 'wallet');
+      }
+      throw err;
+    });
     const server = (await response.json()) as ServerPushDeltaResponse;
     return {
       accountId: server.account_id,

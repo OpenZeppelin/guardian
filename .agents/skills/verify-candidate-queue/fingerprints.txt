@@ -41,7 +41,7 @@ crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_pat
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path 29ec5c6d03466450
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_account 7bcb69472529ff03
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance a9652aaef66374ce
-crates/server/src/services/push_delta.rs push_delta 75e6f3524c4234bf
+crates/server/src/services/push_delta.rs push_delta b0170443193b6575
 crates/server/src/jobs/canonicalization/processor.rs process_full_pass d5bf1e79a30da8da
 crates/server/src/jobs/canonicalization/processor.rs process_recent_pass 596742f4f9ea8593
 crates/server/src/storage/postgres.rs lease_fence_is_current 951aa94931bd4c54

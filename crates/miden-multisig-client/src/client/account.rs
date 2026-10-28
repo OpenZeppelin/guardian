@@ -8,6 +8,7 @@ use std::collections::HashSet;
 use base64::Engine;
 use guardian_client::{GuardianClient, TryIntoTxSummary};
 use guardian_shared::SignatureScheme;
+use guardian_shared::retry::retry_delay;
 use miden_client::account::Account;
 use miden_client::note::{NoteFile, NoteSyncHint};
 use miden_client::store::{InputNoteState, NoteFilter, TransactionFilter};
@@ -260,6 +261,13 @@ impl MultisigClient {
     /// stores: under its single-scheme auth when every approver uses the
     /// GUARDIAN's scheme, and under the per-signer auth otherwise, which needs
     /// a GUARDIAN with per-signer schemes (after 0.18.3).
+    ///
+    /// GUARDIAN stores a state only when the chain holds it, unless it is a
+    /// new account's nonce-0 state or the state GUARDIAN already stores. A
+    /// state whose transaction has not landed yet, such as one right after a
+    /// guardian switch, is refused as not on chain; register again once the
+    /// transaction lands. A guardian switch waits for that itself before it
+    /// registers on the new GUARDIAN.
     pub async fn push_account(&mut self) -> Result<()> {
         let account = self
             .account
@@ -289,6 +297,29 @@ impl MultisigClient {
             })?;
 
         Ok(())
+    }
+
+    /// Polls the chain until it holds `commitment` for the account, about 45
+    /// seconds in all. GUARDIAN registers a state past nonce 0 only once the
+    /// chain holds it, and a read of the chain needs no wallet signature, so a
+    /// guardian switch waits here and registers on the new GUARDIAN once.
+    pub(crate) async fn wait_for_on_chain_state(
+        &self,
+        account_id: AccountId,
+        commitment: Word,
+    ) -> Result<()> {
+        for poll in 0..LANDING_POLLS {
+            if self.try_get_on_chain_account_commitment(account_id).await? == Some(commitment) {
+                return Ok(());
+            }
+            if poll + 1 < LANDING_POLLS {
+                tokio::time::sleep(retry_delay(poll, rand::random())).await;
+            }
+        }
+        Err(MultisigError::GuardianServer(format!(
+            "account {account_id} state {} has not reached the chain; register again once its transaction lands",
+            word_to_hex(&commitment)
+        )))
     }
 
     /// Syncs state with the Miden network.
@@ -850,6 +881,11 @@ impl MultisigClient {
         Ok(())
     }
 }
+
+/// Chain reads while waiting for a state to land. With [`retry_delay`]'s
+/// backoff the last one runs about 45 seconds after the first, past the time
+/// a transaction takes to land.
+const LANDING_POLLS: u32 = 10;
 
 /// The nonce and commitment GUARDIAN reports for its canonical state
 /// (`get_canonical_nonce`), parsed at the transport boundary.

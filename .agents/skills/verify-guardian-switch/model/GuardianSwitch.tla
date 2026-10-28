@@ -38,7 +38,7 @@ VARIABLES
     req,       \* per push_delta request: [pc, s]
     hook,      \* a promoted state whose release hook has not run yet, or 0
     sweep,     \* the release sweep holder: [pc, e] (e: the stored state it proved against)
-    cfg,       \* per /configure: [pc, s, saw, base]
+    cfg,       \* per /configure: [pc, s, saw, base, v]
     pauses,    \* operator pauses so far
     badAcks,   \* acks returned while the account was paused or released: [s, why]
     relBase    \* ghost: the stored state a release was proved against, or a re-onboarded one
@@ -67,7 +67,7 @@ Init ==
     /\ req = [q \in Requests |-> [pc |-> "idle", s |-> 0]]
     /\ hook = 0
     /\ sweep = [pc |-> "idle", e |-> 0]
-    /\ cfg = [c \in Configures |-> [pc |-> "idle", s |-> 0, saw |-> FALSE, base |-> 0]]
+    /\ cfg = [c \in Configures |-> [pc |-> "idle", s |-> 0, saw |-> FALSE, base |-> 0, v |-> TRUE]]
     /\ pauses = 0
     /\ badAcks = {}
     /\ relBase = 1
@@ -302,13 +302,23 @@ SweepWriteFails ==
 (* clears only when the first read saw a release; m3 clears unconditionally*)
 (* before the state write; m6 writes the state unconditionally (the        *)
 (* submit_state upsert this replaced).                                     *)
+(*                                                                         *)
+(* v: the chain vouched for the state (ensure_on_chain_state found it at   *)
+(* the head). Every configuration needs it except a stored cosigner        *)
+(* re-registering the stored state of an account not released at the      *)
+(* first read, which skips the chain read; a release written since is      *)
+(* undone only once the state proves to be the head (CfgRecheck). First    *)
+(* configurations are out of scope: the model starts with a stored state.  *)
 (***************************************************************************)
 CfgRead(c) ==
     /\ cfg[c].pc = "idle"
-    /\ \E i \in 1..Len(chain) :
+    /\ \E i \in 1..Len(chain), v \in BOOLEAN :
          /\ Key(chain[i]) = Own
+         /\ v => chain[i] = ChainHead
+         /\ ~v => ~released /\ (chain[i] = stored \/ Mutation = "m9")
+                 /\ Mutation \notin {"m2", "m3"}
          /\ cfg' = [cfg EXCEPT ![c] = [pc |-> "read", s |-> chain[i], saw |-> released,
-                                        base |-> stored]]
+                                        base |-> stored, v |-> v]]
     /\ UNCHANGED <<relBase, retained, st, chain, stored, promoted, released, paused, cand, acks,
                    known, req, hook, sweep, pauses, badAcks>>
 
@@ -345,6 +355,7 @@ CfgRefused(c) ==
                    acks, known, req, hook, sweep, pauses, badAcks>>
 
 CfgClear(c) ==
+    /\ cfg[c].v
     /\ \/ cfg[c].pc = "stored" /\ Mutation # "m3"
        \/ cfg[c].pc = "read" /\ Mutation = "m3"
     /\ released' =
@@ -352,6 +363,22 @@ CfgClear(c) ==
            [] Mutation = "m2" -> released /\ ~(cfg[c].saw /\ stored = cfg[c].s)
            [] OTHER -> released /\ stored # cfg[c].s
     /\ cfg' = [cfg EXCEPT ![c].pc = IF Mutation = "m3" THEN "cleared" ELSE "done"]
+    /\ UNCHANGED <<relBase, retained, st, chain, stored, promoted, paused, cand, acks, known, req,
+                   hook, sweep, pauses, badAcks>>
+
+(* A configure that skipped the chain read re-reads released_at after the  *)
+(* write. Not released: nothing to clear. Released since the first read:   *)
+(* ensure_on_chain_state, then clear_released_if_state when the state is   *)
+(* the head; otherwise the release stands and the request fails           *)
+(* (state_not_on_chain or commitment_mismatch).                            *)
+CfgRecheck(c) ==
+    /\ cfg[c].pc = "stored"
+    /\ ~cfg[c].v
+    /\ IF released /\ cfg[c].s # ChainHead
+       THEN /\ cfg' = [cfg EXCEPT ![c].pc = "refused"]
+            /\ UNCHANGED released
+       ELSE /\ cfg' = [cfg EXCEPT ![c].pc = "done"]
+            /\ released' = (released /\ stored # cfg[c].s)
     /\ UNCHANGED <<relBase, retained, st, chain, stored, promoted, paused, cand, acks, known, req,
                    hook, sweep, pauses, badAcks>>
 
@@ -380,7 +407,7 @@ Next ==
     \/ \E q \in Requests : PushRead(q) \/ PushCommit(q)
     \/ Promote \/ Retire \/ ReconcilePromote \/ HookRelease \/ HookSkip
     \/ SweepRead \/ SweepWrite \/ SweepWriteFails
-    \/ \E c \in Configures : CfgRead(c) \/ CfgSubmit(c) \/ CfgRefused(c) \/ CfgClear(c)
+    \/ \E c \in Configures : CfgRead(c) \/ CfgSubmit(c) \/ CfgRefused(c) \/ CfgClear(c) \/ CfgRecheck(c)
     \/ Pause \/ Unpause
 
 Spec == Init /\ [][Next]_vars
@@ -411,8 +438,11 @@ SwitchedSince(s) ==
 (* Every release is true of the state the server holds: a re-onboarded     *)
 (* account never ends up released by evidence about an older state. A      *)
 (* /configure between submit_state and its clear is exempt: the clear       *)
-(* follows, and requests meanwhile are refused, not wrongly served.         *)
-Reonboarding(s) == \E c \in Configures : cfg[c].pc = "stored" /\ cfg[c].s = s
+(* follows, and requests meanwhile are refused, not wrongly served. So is   *)
+(* one refused after its write because the account was released while it  *)
+(* ran and its state is not the chain head: the client is told, and the    *)
+(* account stays released until a re-onboarding the chain vouches for.     *)
+Reonboarding(s) == \E c \in Configures : cfg[c].pc \in {"stored", "refused"} /\ cfg[c].s = s
 
 ReleasedIsTrue == (released /\ ~Reonboarding(stored)) => SwitchedSince(relBase)
 

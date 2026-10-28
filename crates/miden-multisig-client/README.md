@@ -138,8 +138,8 @@ holds the local state.
 
 The key manager signs every Guardian request unless a session is active.
 `start_session` has it sign one session grant instead; a delegated P-256 key
-then signs the state and delta reads and the proposal list, get, create and
-sign requests of every later operation:
+then signs the state and delta reads, the proposal list, get, create and
+sign requests and the delta pushes of every later operation:
 
 ```rust
 use std::time::Duration;
@@ -158,8 +158,8 @@ client.end_session().await?; // log this session out
 client.revoke_all_sessions().await?; // every session of this key, signed by the key manager
 ```
 
-Account registration, delta pushes, candidate abandons, account lookup and
-transaction approvals keep using the key manager. A session Guardian ends or
+Account registration, candidate abandons, account lookup and transaction
+approvals keep using the key manager. A session Guardian ends or
 no longer accepts is dropped by the operation that learns of it, after which
 `session()` returns `None` and the key manager signs again. Starting a session
 logs out the one it replaces, and `set_guardian_endpoint` drops the session.

@@ -170,8 +170,8 @@ export class MultisigClient {
   /**
    * Start a Guardian session: `signer` signs one grant, then a non-extractable
    * browser key (the delegated signer) signs this client's session-eligible
-   * Guardian requests (state and delta reads, proposal list/get/create/sign)
-   * until the session ends. Account configuration, lookup, delta pushes,
+   * Guardian requests (state and delta reads, proposal list/get/create/sign,
+   * delta pushes) until the session ends. Account configuration, lookup,
    * candidate abandons and transaction approvals keep using `signer`. Pass
    * `options.store` to survive page reloads via `resumeSession`, and
    * `options.onEnded` to learn when requests fall back to the wallet.

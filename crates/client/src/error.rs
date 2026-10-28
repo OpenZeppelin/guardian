@@ -13,6 +13,8 @@ pub const AUTHENTICATION_REPLAY_CODE: &str = "authentication_replay";
 pub const SESSION_EXPIRED_CODE: &str = "session_expired";
 /// The delegated signer's session was ended by logout or revoke-all.
 pub const SESSION_REVOKED_CODE: &str = "session_revoked";
+/// Guardian takes the request only signed by the wallet, not by a session.
+pub const WALLET_SIGNATURE_REQUIRED_CODE: &str = "wallet_signature_required";
 const AUTHENTICATION_FAILED_CODE: &str = "authentication_failed";
 
 /// Errors that can occur when using the GUARDIAN client.
@@ -107,6 +109,12 @@ impl ClientError {
     /// other authentication failure is terminal and must not be retried.
     pub fn is_replay_rejection(&self) -> bool {
         self.guardian_code().as_deref() == Some(AUTHENTICATION_REPLAY_CODE)
+    }
+
+    /// Whether Guardian refused a session-signed request because it takes
+    /// that route only from the wallet ([`WALLET_SIGNATURE_REQUIRED_CODE`]).
+    pub fn is_wallet_signature_required(&self) -> bool {
+        self.guardian_code().as_deref() == Some(WALLET_SIGNATURE_REQUIRED_CODE)
     }
 
     /// Whether Guardian reported the delegated signer's session as expired

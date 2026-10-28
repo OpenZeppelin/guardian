@@ -570,13 +570,60 @@ fails with `insufficient_signatures` (400). It is a breaking change for released
   before that best-effort push. A switch the old GUARDIAN never stored (one
   created offline) is refused there and released by its release sweep, as
   [`CONCEPTS.md`](./CONCEPTS.md) describes.
-- **Single-key accounts are unchanged.**
+- **Accounts without the multisig auth.** `/configure` now registers only
+  guarded multisig accounts and refuses any other state with `invalid_input`.
+  An account registered before this change without the multisig is still
+  acknowledged as before, but only for wallet-signed pushes.
 - **P2ID transfers need the higher of the `send_asset` and `create_note`
   thresholds.** A transfer calls both procedures, and the chain counts each.
   Both SDKs now know `create_note` as a procedure name and take the higher of
   the two, so a lower `send_asset` override alone no longer lowers what a
   P2ID proposal asks for. Earlier SDKs asked for the `send_asset` override
   alone, and the chain refused such a transfer.
+
+### Session-signed delta pushes (after 0.18.3)
+
+The release after 0.18.3 lets a Guardian session sign delta pushes
+(`POST /delta`, `PushDelta`), which a 0.18.1, 0.18.2 or 0.18.3 server keeps
+wallet-only. The new SDKs sign a push with the session whenever one is active.
+
+- **New SDKs fall back to the wallet on an older server.** An older server
+  answers a session-signed push with `wallet_signature_required` (403); both
+  SDKs then sign the same push again with the wallet, and keep the session for
+  every other route. Against an older server the wallet signs the push, as it
+  did before sessions could, so the order above holds for session users too:
+  upgrade the SDKs first.
+- **A push onto an account without the multisig auth stays wallet-only**
+  (`wallet_signature_required`); see the previous section.
+
+### Registration and reconfiguration (after 0.18.3)
+
+- **`/configure` registers only guarded multisig accounts.** A state without
+  the multisig threshold slot is refused with `invalid_input`.
+- **Registering from the chain's state.** `/configure` stores a state only
+  when it is the account's current on-chain state, with two exceptions: a new
+  account's first state at nonce 0, and a stored cosigner re-registering the
+  state already stored. So an account that already transacted registers here
+  for the first time (for example after switching to this GUARDIAN), and any
+  reconfiguration that changes the stored state, must submit the on-chain
+  state. Until the chain holds it the request fails with the new retryable
+  code `state_not_on_chain` (409, gRPC `FailedPrecondition`), and so does a
+  state the chain has moved past. A stored cosigner's state older than the
+  stored one, while the chain sits at the stored state, is refused with
+  `commitment_mismatch`, which is not retryable.
+- **Breaking for older SDKs: switching GUARDIAN.** The new SDKs wait for the
+  switch transaction to reach the chain (about 45 seconds at most, reading the
+  chain without a wallet signature) before they register on the new GUARDIAN.
+  A registration that still gets `state_not_on_chain` is returned to the
+  caller, who registers again once the transaction lands. SDKs from 0.18.3 and earlier
+  register on the new GUARDIAN right after submitting the switch, do not
+  retry, and so fail every switch to a GUARDIAN on this release until the user
+  registers again once the transaction lands
+  ([recovery](./TROUBLESHOOTING.md#transaction-executed-successfully-but-failed-to-register-on-new-guardian)).
+  Upgrade the SDKs before, or with, the servers.
+- **Stored single-key accounts can no longer re-register.** An account stored
+  before `/configure` required a multisig keeps being served, but any
+  `/configure` for it is refused with `invalid_input`.
 
 ### Open upstream items
 

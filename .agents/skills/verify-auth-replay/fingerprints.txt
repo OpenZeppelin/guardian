@@ -6,7 +6,7 @@ crates/server/src/services/mod.rs resolve_account_with 6eae431d0ba4e218
 crates/server/src/services/mod.rs verify_session_request 5d081e3ba4556d85
 crates/server/src/services/mod.rs validate_request_timestamp a424be9d59fdcd65
 crates/server/src/services/mod.rs consume_auth_timestamp 64a0dbe983375da7
-crates/server/src/services/configure_account.rs configure_account 0dee990a616aac4c
+crates/server/src/services/configure_account.rs configure_account 5c4fab922c06281b
 crates/server/src/session.rs stale_floor_cutoff_ms a13c376d529da7fa
 crates/server/src/session.rs replay_floor_key e6371be262401f43
 crates/server/src/session.rs find 34aa53044b39192d

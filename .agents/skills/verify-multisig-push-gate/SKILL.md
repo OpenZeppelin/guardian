@@ -47,7 +47,8 @@ The threshold cells (`cells.txt`) cover a standard account (BasicWallet
 plus the guarded multisig, read-only getters included) and one with an
 extra component. The relay cells pick a server version, an SDK version,
 where the approvals are (stored, off channel, or the proposal never
-stored) and whether a cosigner signs concurrently.
+stored), whether a cosigner signs concurrently, and whether the executor
+signs the push with a session and the server takes a session-signed push.
 
 ## Does my change touch this?
 
@@ -163,7 +164,7 @@ ApprovalRelay:
 | `RelayWrite` / `LateWrite` | the committed write of `with_approval`'s row |
 | `RelayRetry` / `LateRetry` | a refused conditional write, then `load_pending_proposal` again (`MAX_SIGN_ATTEMPTS` bounds it in the code; each refusal means another write committed) |
 | `RelayRead` when `~Stored` | `proposal_not_found`; TS `executeProposal` switch path catches it and still pushes |
-| `Push` | `push_delta` → `lookup_matching_proposal` → `MultisigAccount::authorize` against `Required` (the floor), counting each approver of `extract_chain_cosigners()` once under its stored scheme (one with no supported stored scheme is not counted when the state has the approver scheme map); 0.18.2 acknowledges without counting |
+| `Push` | `push_delta` → `lookup_matching_proposal` → `MultisigAccount::authorize` against `Required` (the floor), counting each approver of `extract_chain_cosigners()` once under its stored scheme (one with no supported stored scheme is not counted when the state has the approver scheme map); 0.18.2 acknowledges without counting. `SessionPushes`: this branch's `push_delta` takes a session-signed push onto a multisig tail, an earlier server answers `wallet_signature_required`; `pushAuth` then turns to `"wallet"`, as Rust `GuardianClient::push_delta` and TS `GuardianHttpClient.pushDelta` sign the push again with the wallet |
 
 ## Scope and assumptions
 
@@ -185,8 +186,9 @@ ApprovalRelay:
   low override (for example `receive_asset` at 1) that takes only that
   many cosigners. `spec/processes.md` states this.
 - Relay model: one executor, at most one concurrent signer, one proposal,
-  a floor of 3 on a 4-cosigner account. Proposal deletion by
-  canonicalization, push retries, auth, rate limits and the candidate
+  a floor of 3 on a 4-cosigner account. Which key signs the push
+  (session or wallet) is modeled; proposal deletion by
+  canonicalization, other push retries, the rest of auth, rate limits and the candidate
   queue are out of scope (see `verify-proposal-lifecycle` and
   `verify-candidate-queue` where those exist on your branch).
 - Neither model checks the Rust SDK's online `execute_proposal`. It
