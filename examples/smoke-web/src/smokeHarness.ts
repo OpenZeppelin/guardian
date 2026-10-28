@@ -177,6 +177,7 @@ export interface SmokeApi {
   }>;
   getP2idNoteId(input: { proposalId: string }): Promise<{ noteId: string }>;
   exportNote(input: { noteId: string }): Promise<{ noteId: string; noteFileBase64: string }>;
+  exportP2idNote(input: { proposalId: string }): Promise<{ noteId: string; noteFileBase64: string }>;
   importNote(input: { noteFileBase64: string }): Promise<{
     noteId: string;
     status: BrowserSessionSnapshot;
@@ -526,6 +527,12 @@ export function useSmokeHarness(): {
   const [detectedConfig, detectedConfigRef, setDetectedConfig] =
     useStateRef<DetectedMultisigConfig | null>(null);
   const [proposals, proposalsRef, setProposals] = useStateRef<Proposal[]>([]);
+  const heldProposalsRef = useRef(new Map<string, Proposal>());
+  useEffect(() => {
+    for (const proposal of proposals) {
+      heldProposalsRef.current.set(proposal.id.toLowerCase().replace(/^0x/, ''), proposal);
+    }
+  }, [proposals]);
   const [consumableNotes, consumableNotesRef, setConsumableNotes] =
     useStateRef<ConsumableNote[]>([]);
   const [busyAction, busyActionRef, setBusyAction] = useStateRef<string | null>(null);
@@ -630,6 +637,7 @@ export function useSmokeHarness(): {
 
   const clearLoadedAccountState = useCallback(() => {
     customRecipesRef.current.clear();
+    heldProposalsRef.current.clear();
     setMultisig(null);
     setGuardianState(null);
     setDetectedConfig(null);
@@ -990,6 +998,7 @@ export function useSmokeHarness(): {
 
         setMultisig(nextMultisig);
         setLocalSigners(nextSigners);
+        heldProposalsRef.current.clear();
         setGuardianState(null);
         setDetectedConfig(null);
         setProposals([]);
@@ -1520,6 +1529,32 @@ export function useSmokeHarness(): {
     [multisigRef, withCommand],
   );
 
+  const exportP2idNote = useCallback(
+    async ({ proposalId }: { proposalId: string }): Promise<{ noteId: string; noteFileBase64: string }> =>
+      withCommand('exportP2idNote', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const normalized = proposalId.trim().toLowerCase().replace(/^0x/, '');
+        const proposal =
+          proposalsRef.current.find((candidate) => candidate.id.toLowerCase().replace(/^0x/, '') === normalized) ??
+          heldProposalsRef.current.get(normalized);
+        if (!proposal) {
+          throw new Error(`Proposal not held by this session: ${proposalId}`);
+        }
+
+        const noteFileBytes = await currentMultisig.exportP2idNoteToBytes(proposal);
+        return {
+          noteId: await currentMultisig.getP2idNoteId(proposal),
+          noteFileBase64: bytesToBase64(noteFileBytes),
+        };
+      }),
+    [multisigRef, proposalsRef, withCommand],
+  );
+
   const importNote = useCallback(
     async ({
       noteFileBase64,
@@ -1751,6 +1786,7 @@ export function useSmokeHarness(): {
     guardianExecutionStatus,
     getP2idNoteId,
     exportNote,
+    exportP2idNote,
     importNote,
     exportProposal,
     signProposalOffline,

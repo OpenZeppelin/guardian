@@ -454,10 +454,10 @@ proposal's transaction request with it, so once the proposal has enough signatur
 can ask Guardian to prove, submit and commit it:
 
 ```rust
-use miden_multisig_client::{ExecutionState, ExecutionWaitOptions, GuardianExecutionRequest};
+use miden_multisig_client::{ExecutionState, ExecutionWaitOptions};
 
 client
-    .request_guardian_execution(&proposal.id, GuardianExecutionRequest::default())
+    .request_guardian_execution(&proposal.id)
     .await?;
 let execution = client
     .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
@@ -476,19 +476,20 @@ the last execution it read. A refusal surfaces as `MultisigError::GuardianExecut
 code, message, retryable, retry_after, blocking_proposal_id }`, where `code` is the wire string
 (for example `GUARDIAN_EXECUTION_CONFLICT`).
 
-A Guardian-executable client still executes two proposal types itself, and
-`request_guardian_execution` refuses them before contacting Guardian with
-`MultisigError::LocalExecutionRequired { proposal_id, reason }`: a `SwitchGuardian` always
-(`LocalExecutionReason::SwitchGuardian`, the executing client finishes the switch), and a P2ID
-with a private note (`LocalExecutionReason::PrivateNote`, only the executor can export the note)
-unless the request opts in with `GuardianExecutionRequest { allow_private_note: true }` because
-the caller delivers the note itself. Execute those with `execute_proposal`. The check uses the
+A Guardian-executable client still executes a `SwitchGuardian` itself, and
+`request_guardian_execution` refuses one before contacting Guardian with
+`MultisigError::LocalExecutionRequired { proposal_id, reason }`
+(`LocalExecutionReason::SwitchGuardian`, the executing client finishes the switch). Execute it
+with `execute_proposal`. A P2ID that creates a private note is sent like any other; deliver the
+note with `export_p2id_note_to_file(&proposal, path)`, which rebuilds it from the proposal
+whoever executed it. Keep the `Proposal` from before execution: GUARDIAN deletes it once its
+transaction is canonical. The check uses the
 proposal this client already holds (listed, fetched, signed, created or imported); any other proposal
 fails closed with `MultisigError::ProposalNotHeldLocally { proposal_id }`. Call
 `LocalExecutionReason::of(&proposal.transaction_type)` to route a proposal up front.
 
 For a proposal signed off channel, call
-`request_imported_guardian_execution(&exported, GuardianExecutionRequest::default())` with the
+`request_imported_guardian_execution(&exported)` with the
 signed document: it relays the document's approvals to Guardian before requesting execution, as
 `execute_imported_proposal` does before the acknowledgement. Guardian executes a proposal only once
 its stored copy carries a threshold of approvals, so `request_guardian_execution` alone answers

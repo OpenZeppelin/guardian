@@ -23,8 +23,13 @@ export class AuthDigest {
     return AuthDigest.fromAccountIdTimestampAndPayloadWord(
       accountId,
       timestamp,
-      AuthDigest.payloadWordFromBytes(requestPayload.toBytes()),
+      AuthDigest.payloadWord(requestPayload),
     );
+  }
+
+  /** The word a request payload contributes to its auth digest, as the Rust `AuthRequestPayload` computes it. */
+  static payloadWord(requestPayload: RequestAuthPayload): Word {
+    return AuthDigest.payloadWordFromBytes(requestPayload.toBytes());
   }
 
   private static fromAccountIdTimestampAndPayloadWord(

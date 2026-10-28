@@ -1,9 +1,5 @@
 export { GuardianHttpClient, GuardianHttpError } from './http.js';
-export type {
-  ExecuteDeltaProposalOptions,
-  GuardianErrorMeta,
-  LocalExecutionReason,
-} from './http.js';
+export type { GuardianErrorMeta, LocalExecutionReason } from './http.js';
 export {
   GUARDIAN_ERROR_CODES,
   isGuardianErrorCode,
@@ -11,6 +7,7 @@ export {
 } from './error-codes.js';
 export type { GuardianErrorCode } from './error-codes.js';
 export { RequestAuthPayload } from './auth-request.js';
+export type { SignedOperation } from './auth-request.js';
 export {
   ENVELOPE_FORMAT_VERSION,
   PROTOCOL_LINE,

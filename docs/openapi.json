@@ -4490,7 +4490,7 @@
               "string",
               "null"
             ],
-            "description": "Why the request was refused, for the code that names one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`)."
+            "description": "Why the request was refused, for the code that names one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`)."
           },
           "released_at": {
             "type": [
@@ -6758,19 +6758,14 @@
       },
       "ExecuteProposalRequest": {
         "type": "object",
-        "description": "The body of an execution request. Every field is part of the signed payload, so the\npayload never equals a signed read of the same proposal.",
+        "description": "The body of an execution request. It is signed as `guardian.ExecuteDeltaProposal`, so its\nsignature never authenticates a signed read of the same proposal, whose fields are the same.",
         "required": [
           "account_id",
-          "proposal_id",
-          "allow_private_note"
+          "proposal_id"
         ],
         "properties": {
           "account_id": {
             "type": "string"
-          },
-          "allow_private_note": {
-            "type": "boolean",
-            "description": "Let Guardian execute a transaction that creates a private output note. Without it the\nrequest is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`\n`private_note`). Required, and signed as sent: a body that omits it is refused before\nits signature is checked, rather than failing a signature over a field it never carried."
           },
           "proposal_id": {
             "type": "string"

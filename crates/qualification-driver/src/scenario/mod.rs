@@ -362,6 +362,8 @@ impl Runner {
                 }
                 Action::AssetSend => Some(live::send_asset(self).await),
                 Action::AssetSendAssert => Some(live::assert_asset_sent(self).await),
+                Action::PrivateP2idSend => Some(live::send_private_p2id(self).await),
+                Action::PrivateNoteDeliver => Some(live::deliver_private_note(self).await),
                 Action::ProcedureThresholdSet => Some(live::set_procedure_threshold(self).await),
                 Action::ProcedureThresholdLower => {
                     Some(live::lower_procedure_threshold(self).await)

@@ -9,7 +9,7 @@ use miden_protocol::account::AccountId;
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::export::ExportedProposal;
-use crate::local_execution::{GuardianExecutionRequest, LocalExecutionReason};
+use crate::local_execution::LocalExecutionReason;
 
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_secs(10);
@@ -263,22 +263,22 @@ impl MultisigClient {
     /// [`ProposalNotHeldLocally`](MultisigError::ProposalNotHeldLocally) before GUARDIAN is
     /// contacted. A proposal whose execution does client-side work fails with
     /// [`LocalExecutionRequired`](MultisigError::LocalExecutionRequired) and must be executed with
-    /// [`execute_proposal`](Self::execute_proposal): a GUARDIAN switch always, and a P2ID that
-    /// creates a private note unless `request.allow_private_note` is set. See
-    /// [`LocalExecutionReason`](crate::LocalExecutionReason). The opt-in is sent with the
-    /// request, and GUARDIAN applies the same rule: its refusal surfaces as the same
+    /// [`execute_proposal`](Self::execute_proposal): a GUARDIAN switch. See
+    /// [`LocalExecutionReason`](crate::LocalExecutionReason). GUARDIAN applies the same rule:
+    /// its refusal surfaces as the same
     /// [`LocalExecutionRequired`](MultisigError::LocalExecutionRequired).
+    ///
+    /// A P2ID that creates a private note is executed like any other; deliver the note to its
+    /// recipient with [`export_p2id_note_to_file`](Self::export_p2id_note_to_file).
     pub async fn request_guardian_execution(
         &mut self,
         proposal_id: &str,
-        request: GuardianExecutionRequest,
     ) -> Result<ProposalExecution> {
         let account_id = self.require_account()?.id();
-        self.known_proposals
-            .admit(account_id, proposal_id, request)?;
+        self.known_proposals.admit(account_id, proposal_id)?;
         let mut guardian = self.create_authenticated_guardian_client().await?;
         guardian
-            .execute_delta_proposal(&account_id, proposal_id, request.allow_private_note)
+            .execute_delta_proposal(&account_id, proposal_id)
             .await
             .map_err(|error| execution_refusal(error, proposal_id))
     }
@@ -300,7 +300,6 @@ impl MultisigClient {
     pub async fn request_imported_guardian_execution(
         &mut self,
         exported: &ExportedProposal,
-        request: GuardianExecutionRequest,
     ) -> Result<ProposalExecution> {
         let account = self.require_account()?;
         let account_id = account.id();
@@ -312,11 +311,10 @@ impl MultisigClient {
         );
         account.ensure_threshold_met(&proposal.transaction_type, approvals.len())?;
         let proposal_id = proposal.id;
-        self.known_proposals
-            .admit(account_id, &proposal_id, request)?;
+        self.known_proposals.admit(account_id, &proposal_id)?;
         self.relay_collected_approvals(&proposal_id, &exported.signatures)
             .await?;
-        self.request_guardian_execution(&proposal_id, request).await
+        self.request_guardian_execution(&proposal_id).await
     }
 
     /// The latest Guardian execution of a proposal.
@@ -433,31 +431,26 @@ mod tests {
 
     #[test]
     fn a_local_execution_refusal_names_the_proposal_and_the_reason() {
-        for (wire, expected) in [
-            ("switch_guardian", LocalExecutionReason::SwitchGuardian),
-            ("private_note", LocalExecutionReason::PrivateNote),
-        ] {
-            let error = execution_refusal(
-                guardian_status(
-                    tonic::Code::FailedPrecondition,
-                    serde_json::json!({
-                        "code": "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
-                        "message": "execute it from your wallet",
-                        "meta": { "retryable": false, "reason": wire }
-                    }),
-                ),
-                "0xabc",
-            );
-            let MultisigError::LocalExecutionRequired {
-                proposal_id,
-                reason,
-            } = error
-            else {
-                panic!("expected LocalExecutionRequired, got {error:?}");
-            };
-            assert_eq!(proposal_id, "0xabc");
-            assert_eq!(reason, expected);
-        }
+        let error = execution_refusal(
+            guardian_status(
+                tonic::Code::FailedPrecondition,
+                serde_json::json!({
+                    "code": "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
+                    "message": "execute it from your wallet",
+                    "meta": { "retryable": false, "reason": "switch_guardian" }
+                }),
+            ),
+            "0xabc",
+        );
+        let MultisigError::LocalExecutionRequired {
+            proposal_id,
+            reason,
+        } = error
+        else {
+            panic!("expected LocalExecutionRequired, got {error:?}");
+        };
+        assert_eq!(proposal_id, "0xabc");
+        assert_eq!(reason, LocalExecutionReason::SwitchGuardian);
     }
 
     #[test]

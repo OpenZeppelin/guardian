@@ -114,9 +114,8 @@ A Guardian-executable proposal (one whose payload stores a `transaction_request`
 proved, submitted and committed by Guardian once it has enough signatures:
 
 ```rust
-let allow_private_note = false;
 let mut execution = client
-    .execute_delta_proposal(&account_id, &proposal_id, allow_private_note)
+    .execute_delta_proposal(&account_id, &proposal_id)
     .await?;
 while !execution.state.is_terminal() {
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -127,9 +126,9 @@ while !execution.state.is_terminal() {
 let current = client.get_current_execution(&account_id).await?;
 ```
 
-Guardian refuses a transaction that creates a private output note with
-`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `private_note`) unless
-`allow_private_note` is `true`; the flag is part of the signed request.
+Guardian executes a transaction that creates a private output note like any other; deliver the
+note to its recipient with the multisig SDK's `export_p2id_note_to_file`. A guardian switch is
+refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `switch_guardian`).
 
 A refusal is a `ClientError` whose `guardian_code()` is the wire code (for example
 `GUARDIAN_EXECUTION_CONFLICT`), with `is_retryable()`, `retry_after()` and, on a conflict,
@@ -273,7 +272,8 @@ let info = client
     })
     .await?;
 
-// ...get_state, get_delta_since, push_delta_proposal, push_delta: signed by the session key.
+// ...get_state, get_delta_since, push_delta_proposal, push_delta, execute_delta_proposal
+// and the execution status reads: signed by the session key.
 
 client.revoke_session().await?; // this session only, signed by the session key
 client.revoke_all_sessions().await?; // every session of the wallet, wallet-signed

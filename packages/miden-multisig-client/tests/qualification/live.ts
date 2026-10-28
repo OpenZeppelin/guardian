@@ -4,7 +4,7 @@ import { MultisigClient } from '../../src/client.js';
 import type { Multisig } from '../../src/multisig.js';
 import { EcdsaSigner } from '../../src/signers/ecdsa.js';
 import { FalconSigner } from '../../src/signers/falcon.js';
-import type { Signer } from '../../src/types.js';
+import type { Proposal, Signer } from '../../src/types.js';
 import type { ProposalExecutionMode } from '../../src/transaction/expiration.js';
 
 export type Scheme = 'falcon' | 'ecdsa';
@@ -133,6 +133,11 @@ export interface LiveSession {
    */
   customRequest?: Uint8Array;
   balanceSeen: boolean;
+  /**
+   * The private P2ID proposal, kept whole: its note is exported from it after execution, when
+   * GUARDIAN no longer lists it.
+   */
+  privateSend?: Proposal;
 }
 
 export function shapeOf(shape: string): { threshold: number; total: number } | null {

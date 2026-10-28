@@ -8,10 +8,11 @@ use super::session_helpers::{
 use crate::api::grpc::guardian::guardian_server::Guardian;
 use crate::api::grpc::guardian::{
     AbandonDeltaCandidateRequest, ConfigureRequest, CreateSessionRequest,
-    GetAccountByKeyCommitmentRequest, GetCanonicalNonceRequest, GetCurrentExecutionRequest,
-    GetDeltaHistoryRequest, GetDeltaProposalExecutionRequest, GetDeltaProposalRequest,
-    GetDeltaProposalsRequest, GetDeltaRequest, GetDeltaSinceRequest, GetStateRequest,
-    PushDeltaRequest, RevokeAllSessionsRequest, RevokeSessionRequest, SessionGrantFields,
+    ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest, GetCanonicalNonceRequest,
+    GetCurrentExecutionRequest, GetDeltaHistoryRequest, GetDeltaProposalExecutionRequest,
+    GetDeltaProposalRequest, GetDeltaProposalsRequest, GetDeltaRequest, GetDeltaSinceRequest,
+    GetStateRequest, PushDeltaRequest, RevokeAllSessionsRequest, RevokeSessionRequest,
+    SessionGrantFields,
 };
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
@@ -58,6 +59,23 @@ fn session_request<T: Message>(message: T, account_id_hex: &str, key: &SessionKe
         .unwrap()
         .to_word();
     signed_by_session(message, key, word, timestamp)
+}
+
+/// `ExecuteDeltaProposal` signed by `key` over its operation payload.
+fn session_execute(account_id_hex: &str, key: &SessionKey) -> Request<ExecuteDeltaProposalRequest> {
+    let execute = ExecuteDeltaProposalRequest {
+        account_id: account_id_hex.to_string(),
+        proposal_id: format!("0x{}", "e".repeat(64)),
+    };
+    let timestamp = now_ms();
+    let payload = AuthRequestPayload::for_operation(
+        guardian_shared::auth_request_payload::SignedOperation::ExecuteDeltaProposal,
+        &prost::Message::encode_to_vec(&execute),
+    );
+    let word = AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, payload)
+        .unwrap()
+        .to_word();
+    signed_by_session(execute, key, word, timestamp)
 }
 
 fn assert_error(status: &Status, code: Code, guardian_code: &str, context: &str) {
@@ -157,25 +175,6 @@ async fn assert_wallet_only_rpcs(
         .await
         .expect_err("configure is wallet-only");
     assert_error(&status, code, guardian_code, "Configure");
-
-    let execute = crate::api::grpc::guardian::ExecuteDeltaProposalRequest {
-        account_id: account_id_hex.to_string(),
-        proposal_id: format!("0x{}", "e".repeat(64)),
-        allow_private_note: false,
-    };
-    let timestamp = now_ms();
-    let payload = AuthRequestPayload::for_operation(
-        guardian_shared::auth_request_payload::SignedOperation::ExecuteDeltaProposal,
-        &prost::Message::encode_to_vec(&execute),
-    );
-    let word = AuthRequestMessage::from_account_id_hex(account_id_hex, timestamp, payload)
-        .unwrap()
-        .to_word();
-    let status = service
-        .execute_delta_proposal(signed_by_session(execute, key, word, timestamp))
-        .await
-        .expect_err("execute_delta_proposal is wallet-only");
-    assert_error(&status, code, guardian_code, "ExecuteDeltaProposal");
 
     // AbandonDeltaCandidate reports errors in its response body.
     let response = service
@@ -305,6 +304,25 @@ async fn test_grpc_session_push_reaches_the_multisig_gate() {
         Code::Unauthenticated,
         "authentication_failed",
         "PushDelta",
+    );
+}
+
+/// A session may request Guardian execution: the request reaches the execution
+/// checks past authentication.
+#[tokio::test]
+async fn test_grpc_a_session_requests_execution() {
+    let (service, state, signer, account_id_hex) = configured_account().await;
+    let key = falcon_session(&service, &state, &signer).await;
+
+    let status = service
+        .execute_delta_proposal(session_execute(&account_id_hex, &key))
+        .await
+        .expect_err("this server offers no execution");
+    assert_error(
+        &status,
+        Code::FailedPrecondition,
+        "GUARDIAN_PROVING_UNAVAILABLE",
+        "ExecuteDeltaProposal",
     );
 }
 

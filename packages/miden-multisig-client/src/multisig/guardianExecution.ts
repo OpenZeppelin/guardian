@@ -5,22 +5,13 @@ import type { Proposal } from '../types/proposal.js';
  * Why a proposal must be executed by a client rather than by GUARDIAN, even on a
  * `guardian_executable` client: local execution does work GUARDIAN skips. A `switch_guardian`
  * proposal is finished by the executing client, which verifies the new GUARDIAN, registers the
- * account there and repoints itself; a P2ID proposal with a private note leaves the note with the
- * executor, the only one that can export it to the recipient. Mirrors the Rust SDK's
- * `LocalExecutionReason`.
+ * account there and repoints itself. Mirrors the Rust SDK's `LocalExecutionReason`.
  */
-export type LocalExecutionReason = 'switch_guardian' | 'private_note';
+export type LocalExecutionReason = 'switch_guardian';
 
 /** Why `proposal` must be executed locally, or `null` when GUARDIAN can execute it. */
 export function localExecutionReason(proposal: Pick<Proposal, 'metadata'>): LocalExecutionReason | null {
-  const metadata = proposal.metadata;
-  if (metadata.proposalType === 'switch_guardian') {
-    return 'switch_guardian';
-  }
-  if (metadata.proposalType === 'p2id' && metadata.noteType === 'private') {
-    return 'private_note';
-  }
-  return null;
+  return proposal.metadata.proposalType === 'switch_guardian' ? 'switch_guardian' : null;
 }
 
 /** A human-readable explanation of a {@link LocalExecutionReason}. */
@@ -28,8 +19,6 @@ export function describeLocalExecutionReason(reason: LocalExecutionReason): stri
   switch (reason) {
     case 'switch_guardian':
       return 'a GUARDIAN switch is finished by the client that executes it';
-    case 'private_note':
-      return 'a private note can only be exported by the client that executed it';
     default: {
       const unreachable: never = reason;
       throw new Error(`Unknown local execution reason: ${JSON.stringify(unreachable)}`);
@@ -39,8 +28,7 @@ export function describeLocalExecutionReason(reason: LocalExecutionReason): stri
 
 /**
  * The SDK refused to ask GUARDIAN to execute a proposal that must be executed locally: a
- * `switch_guardian` proposal always, a private-note P2ID proposal unless the request passed
- * `allowPrivateNote`. Execute it with `executeProposal` instead. Mirrors the Rust SDK's
+ * `switch_guardian` proposal. Execute it with `executeProposal` instead. Mirrors the Rust SDK's
  * `MultisigError::LocalExecutionRequired`.
  */
 export class LocalExecutionRequiredError extends Error {
@@ -76,25 +64,14 @@ export class ProposalNotHeldLocallyError extends Error {
 }
 
 /**
- * Options for one `requestGuardianExecution` call. `allowPrivateNote` sends a private-note P2ID
- * proposal to GUARDIAN anyway: the caller takes on delivering the note to its recipient itself.
- * It never lets a `switch_guardian` proposal through.
- */
-export interface GuardianExecutionRequestOptions {
-  allowPrivateNote?: boolean;
-}
-
-/**
  * Throws unless GUARDIAN may execute the proposal this client holds under `proposalId`: a
  * proposal the client does not hold, or holds without having verified it against its signed
- * summary, fails closed as the Rust SDK's `ProposalNotHeldLocally` does; a `switch_guardian`
- * proposal always needs local execution, and a private-note P2ID proposal needs it unless the
- * request allows it.
+ * summary, fails closed as the Rust SDK's `ProposalNotHeldLocally` does, and a `switch_guardian`
+ * proposal always needs local execution.
  */
 export function assertGuardianMayExecute<P extends Pick<Proposal, 'metadata' | 'verification'>>(
   proposalId: string,
   proposal: P | undefined,
-  options: GuardianExecutionRequestOptions,
 ): asserts proposal is P {
   if (proposal === undefined || proposal.verification.status !== 'verified') {
     throw new ProposalNotHeldLocallyError(proposalId);
@@ -104,11 +81,6 @@ export function assertGuardianMayExecute<P extends Pick<Proposal, 'metadata' | '
     case null:
       return;
     case 'switch_guardian':
-      throw new LocalExecutionRequiredError({ proposalId, reason });
-    case 'private_note':
-      if (options.allowPrivateNote === true) {
-        return;
-      }
       throw new LocalExecutionRequiredError({ proposalId, reason });
     default: {
       const unreachable: never = reason;

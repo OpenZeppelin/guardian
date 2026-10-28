@@ -846,6 +846,24 @@ step_budget = "600s"
 required = true
 core = false
 
+# GUARDIAN executes a private P2ID the account sends to itself. Syncing never reveals a private
+# note, so the account consumes it only after a cosigner other than the proposer exports the
+# note from the proposal and the account imports the file: the delivery path for a
+# GUARDIAN-executed private transfer, whose executor leaves no note record with any client.
+[[scenario]]
+id = "live-guardian-execute-private-p2id-2of3-falcon"
+title = "GUARDIAN executes a private P2ID and the account consumes the note a cosigner exported from the proposal"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "falcon"
+shape = "2-of-3"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "private-p2id-send", "proposal-sign", "guardian-execute", "private-note-deliver", "note-consume", "commitment-verify"]
+step_budget = "900s"
+required = true
+core = false
+
 [[scenario]]
 id = "live-guardian-execute-2of3-ecdsa"
 title = "GUARDIAN proves, submits and commits a threshold-met 2-of-3 ECDSA proposal"

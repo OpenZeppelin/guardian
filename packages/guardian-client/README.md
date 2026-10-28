@@ -69,10 +69,11 @@ await client.revokeAllSessions(); // wallet-signed: ends every session of the si
 The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getDelta`,
 `getDeltaSince`, `getDeltaHistory`), proposal reads and proposal create/sign
 (`getDeltaProposals`, `getDeltaProposal`, `pushDeltaProposal`,
-`signDeltaProposal`), execution status reads (`getDeltaProposalExecution`,
-`getCurrentExecution`) and delta pushes (`pushDelta`). Every other route uses
-the wallet signer, including `configure`, `abandonCandidate`, account lookup
-and `revokeAllSessions`; the server rejects session credentials there with
+`signDeltaProposal`), execution requests and status reads
+(`executeDeltaProposal`, `getDeltaProposalExecution`, `getCurrentExecution`)
+and delta pushes (`pushDelta`). Every other route uses the wallet signer,
+including `configure`, `abandonCandidate`, account lookup and
+`revokeAllSessions`; the server rejects session credentials there with
 `wallet_signature_required`, as an older Guardian does for `pushDelta`.
 
 A session is used only while the wallet that granted it
@@ -287,9 +288,7 @@ stored request in `deltaPayload.transactionRequest`.
 ```typescript
 import { isTerminalExecutionState } from '@openzeppelin/guardian-client';
 
-let execution = await client.executeDeltaProposal(accountId, proposalId, {
-  allowPrivateNote: false,
-});
+let execution = await client.executeDeltaProposal(accountId, proposalId);
 while (!isTerminalExecutionState(execution.state)) {
   await new Promise((resolve) => setTimeout(resolve, 2000));
   execution = await client.getDeltaProposalExecution(accountId, proposalId);
@@ -299,9 +298,8 @@ while (!isTerminalExecutionState(execution.state)) {
 const current = await client.getCurrentExecution(accountId);
 ```
 
-Guardian refuses a transaction that creates a private output note with
-`proposal_executes_locally` (`meta.reason` `private_note`) unless `allowPrivateNote` is set;
-the flag is always sent and signed.
+Guardian refuses a guardian switch with `proposal_executes_locally` (`meta.reason`
+`switch_guardian`): the client that executes a switch registers the account at the new Guardian.
 
 A refusal throws a `GuardianHttpError` whose `rawCode` is the wire code (for example
 `GUARDIAN_EXECUTION_CONFLICT`, with `meta.blockingProposalId`). `getStatus()` reports in

@@ -27,7 +27,6 @@ import {
   refusingWith,
   startWaitRuntime,
   type ExecutionWaitOptions,
-  type GuardianExecutionRequestOptions,
 } from './multisig/guardianExecution.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
@@ -38,7 +37,9 @@ import {
   Endpoint,
   type Felt,
   FeltArray,
+  InputNote,
   Note,
+  NoteDetails,
   NoteExportFormat,
   NoteFile,
   NoteType,
@@ -1398,25 +1399,22 @@ export class Multisig {
    * by a `guardian_executable` client and be held by this one: a proposal it does not hold
    * throws `ProposalNotHeldLocallyError` without contacting Guardian, as does one whose
    * metadata failed verification against its signed summary; an unchecked one is verified
-   * first. A proposal that must be executed locally throws `LocalExecutionRequiredError`: a
-   * `switch_guardian` proposal always, a private-note P2ID proposal unless
-   * `options.allowPrivateNote` says this caller delivers the note itself. The flag is sent with the request, and GUARDIAN refusing a proposal for local
-   * execution throws the same `LocalExecutionRequiredError`.
+   * first. A `switch_guardian` proposal must be executed locally and throws
+   * `LocalExecutionRequiredError`; GUARDIAN refusing a proposal for local execution throws the
+   * same error. A private-note P2ID executed by GUARDIAN reaches its recipient through
+   * {@link exportP2idNoteToBytes}, as one executed by this client does.
    *
    * GUARDIAN executes a proposal only once its stored copy carries a threshold of approvals.
    * Approvals collected off channel (an imported, offline-signed proposal) exist only in this
    * client, so the held proposal's verified approvals are relayed to GUARDIAN first, as
    * {@link executeProposal} relays them before its acknowledgement.
    */
-  async requestGuardianExecution(
-    proposalId: string,
-    options: GuardianExecutionRequestOptions = {},
-  ): Promise<ProposalExecution> {
+  async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
     const proposal = this.getLocalProposal(proposalId);
     if (proposal?.verification.status === 'unchecked') {
       await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
     }
-    assertGuardianMayExecute(proposalId, proposal, options);
+    assertGuardianMayExecute(proposalId, proposal);
     const normalizedProposalId = normalizeHexWord(proposalId);
     const approvals = this.approvalsUnderStoredSchemes(
       new ProposalSignatures(
@@ -1429,7 +1427,6 @@ export class Multisig {
       proposalId,
       normalizedProposalId,
       approvals,
-      options,
     ));
   }
 
@@ -1437,15 +1434,12 @@ export class Multisig {
     proposalId: string,
     normalizedProposalId: string,
     approvals: ProposalSignatureEntry[],
-    options: GuardianExecutionRequestOptions,
   ): Promise<ProposalExecution> {
     if (approvals.length > 0) {
       const stored = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
       await this.relayCollectedApprovals(normalizedProposalId, approvals, stored);
     }
-    return this.guardian.executeDeltaProposal(this._accountId, proposalId, {
-      allowPrivateNote: options.allowPrivateNote === true,
-    });
+    return this.guardian.executeDeltaProposal(this._accountId, proposalId);
   }
 
   /** The latest Guardian execution of a proposal. */
@@ -2012,7 +2006,8 @@ export class Multisig {
    * bytes produced here, which they load with {@link importNoteFromBytes}.
    *
    * The note must be an output note of this client (created by a transaction
-   * this client executed). When the note's on-chain inclusion proof is
+   * this client executed); a P2ID proposal's note is exported with
+   * {@link exportP2idNoteToBytes} whoever executed it. When the note's on-chain inclusion proof is
    * already known (after a post-commit sync) the full note with proof is
    * exported; otherwise the note details are exported and the importer's
    * client tracks the note until it commits on chain.
@@ -2337,13 +2332,92 @@ export class Multisig {
    * Compute the ID of the note a P2ID proposal will create when executed.
    *
    * The P2ID note is rebuilt deterministically from the proposal salt, so the
-   * ID is known ahead of execution. For a private P2ID this is the ID to pass
-   * to {@link exportNoteToBytes} after executing, so the note file can be delivered
-   * to the recipient out-of-band.
-   *
-   * The note ID remains deterministic from the proposal metadata and salt.
+   * ID is known ahead of execution. To deliver a private P2ID to its recipient,
+   * export it with {@link exportP2idNoteToBytes}, which works whoever executed
+   * the proposal.
    */
   async getP2idNoteId(proposal: Proposal): Promise<string> {
+    return this.rebuildP2idNote(proposal, 'getP2idNoteId').id().toString();
+  }
+
+  /**
+   * Export the note a P2ID proposal creates as note-file bytes for out-of-band
+   * delivery to its recipient, who loads them with {@link importNoteFromBytes}.
+   *
+   * This is how a private P2ID reaches its recipient. The note is rebuilt from
+   * the proposal, so it works whoever executed the proposal: this client, or
+   * GUARDIAN, after which no client holds the note in its store. The rebuilt
+   * note must be one the summary the proposal id commits to creates. Once the
+   * node has the note's inclusion proof the file carries the note with that
+   * proof; before then it carries the note's details and tag, and the
+   * importer's client tracks the note from the block the summary binds until
+   * it commits on chain.
+   *
+   * GUARDIAN deletes a proposal once its transaction is canonical, so keep the
+   * proposal, or its offline export, from before it is executed.
+   *
+   * @param proposal - A P2ID proposal held by this client
+   * @returns Serialized note file bytes
+   */
+  async exportP2idNoteToBytes(proposal: Proposal): Promise<Uint8Array> {
+    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
+    const summaryCommitment = normalizeHexWord(summary.toCommitment().toHex());
+    if (summaryCommitment !== normalizeHexWord(proposal.id)) {
+      throw new Error(`Proposal ${proposal.id} carries a summary committing to ${summaryCommitment}`);
+    }
+    const note = this.rebuildP2idNote(proposal, 'exportP2idNoteToBytes');
+    const noteId = note.id().toString();
+    const created = summary
+      .outputNotes()
+      .notes()
+      .some((outputNote) => outputNote.id().toString() === noteId);
+    if (!created) {
+      throw new Error(
+        `Proposal ${proposal.id} metadata rebuilds note ${noteId}, which its signed transaction does not create`,
+      );
+    }
+
+    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
+    const [fetched] = await retryRpcRead(() => rpcClient.getNotesById([note.id()]), this.rpcConfig);
+    const noteFile = fetched
+      ? NoteFile.fromInputNote(InputNote.authenticated(note, fetched.inclusionProof))
+      : NoteFile.fromExpectedNote(
+          new NoteDetails(note.assets(), note.recipient()),
+          note.metadata().tag(),
+          summaryBoundBlockNum(summary),
+        );
+    return noteFile.serialize();
+  }
+
+  /**
+   * Export the note a P2ID proposal creates as a note file downloaded by the
+   * browser. Browser-only convenience over {@link exportP2idNoteToBytes}; use
+   * that method directly in non-DOM environments.
+   *
+   * @param proposal - A P2ID proposal held by this client
+   * @param filename - Download name, `note_<noteId>.mno` by default
+   */
+  async exportP2idNoteToFile(proposal: Proposal, filename?: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      throw new Error('exportP2idNoteToFile requires a browser environment; use exportP2idNoteToBytes instead');
+    }
+
+    const noteBytes = await this.exportP2idNoteToBytes(proposal);
+    const noteId = await this.getP2idNoteId(proposal);
+
+    const blob = new Blob([noteBytes as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename ?? `note_${noteId}.mno`;
+      anchor.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  private rebuildP2idNote(proposal: Proposal, caller: string): Note {
     const metadata = proposal.metadata;
     if (
       metadata.proposalType !== 'p2id' ||
@@ -2352,7 +2426,7 @@ export class Multisig {
       !metadata.amount ||
       !metadata.saltHex
     ) {
-      throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
+      throw new Error(`${caller} requires a P2ID proposal with recipient, faucet, amount, and salt metadata`);
     }
 
     // Validate before deriving. Unlike the rebuild paths there is no commitment check
@@ -2361,7 +2435,7 @@ export class Multisig {
     // not exist, with nothing to catch it.
     this.requireProposalSaltHex(proposal.id, metadata);
 
-    const note = buildP2idNoteFromMetadata(
+    return buildP2idNoteFromMetadata(
       this._accountId,
       metadata.recipientId,
       metadata.faucetId,
@@ -2370,7 +2444,6 @@ export class Multisig {
       metadata.saltHex,
       { reclaimHeight: metadata.reclaimHeight, timelockHeight: metadata.timelockHeight },
     );
-    return note.id().toString();
   }
 
   /**

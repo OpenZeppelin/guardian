@@ -149,7 +149,8 @@ pub struct MockGuardianService {
     revoke_session_auth: Arc<StdMutex<Vec<(String, String, i64)>>>,
     /// Each RevokeAllSessions call.
     revoke_all_sessions_calls: Arc<StdMutex<Vec<RevokeAllSessionsCall>>>,
-    /// x-auth-format of each PushDelta and AbandonDeltaCandidate call.
+    /// x-auth-format of each PushDelta, AbandonDeltaCandidate and
+    /// ExecuteDeltaProposal call.
     push_and_abandon_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     /// x-auth-format and x-pubkey of each GetState call.
     get_state_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
@@ -172,7 +173,8 @@ impl MockGuardianService {
         self.revoke_all_sessions_calls.clone()
     }
 
-    /// `(rpc, x-auth-format)` of each PushDelta and AbandonDeltaCandidate call.
+    /// `(rpc, x-auth-format)` of each PushDelta, AbandonDeltaCandidate and
+    /// ExecuteDeltaProposal call.
     pub fn push_and_abandon_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
         self.push_and_abandon_auth_formats.clone()
     }
@@ -536,6 +538,10 @@ impl Guardian for MockGuardianService {
             request: request.get_ref().clone(),
         };
         self.handle.execute_requests.lock().unwrap().push(signed);
+        self.push_and_abandon_auth_formats.lock().unwrap().push((
+            "execute_delta_proposal".to_string(),
+            metadata("x-auth-format"),
+        ));
         self.next_execution("execute_delta_proposal")
             .map(|envelope| {
                 Response::new(ExecuteDeltaProposalResponse {

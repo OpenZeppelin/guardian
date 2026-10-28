@@ -123,7 +123,7 @@ pub use transaction::{
 pub use export::{EXPORT_VERSION, ExportedMetadata, ExportedProposal, ExportedSignature};
 
 // Local execution
-pub use local_execution::{GuardianExecutionRequest, LocalExecutionReason};
+pub use local_execution::LocalExecutionReason;
 
 // Errors
 pub use error::{MultisigError, Result};

@@ -252,6 +252,13 @@ Eight scenarios cover Guardian executing a proposal instead of a cosigner:
 - `live-guardian-execute-add-signer-2of3-falcon` (live, both SDKs, required on testnet): Guardian executes an
   add-signer proposal. `signer-set-assert` reads the new set on chain and through the newly
   admitted signer, so it fails unless promotion moved GUARDIAN's own authorization list.
+- `live-guardian-execute-private-p2id-2of3-falcon` (live, both SDKs, required on testnet):
+  Guardian executes a private P2ID the account sends to itself. `private-note-deliver` first
+  shows the note is not consumable, since syncing never reveals a private note; a cosigner other
+  than the proposer then exports it from its own copy of the proposal, listed from GUARDIAN
+  before execution (`export_p2id_note_to_bytes` / `exportP2idNoteToBytes`), the account imports
+  the file and waits until that note is consumable, and `note-consume` spends it. It fails unless a GUARDIAN-executed private note
+  reaches its recipient with no client holding a record of the execution.
 - `live-guardian-execute-p2id-late-2of3-ecdsa` (live, TypeScript, required on testnet): a P2ID send is signed to
   threshold, then `chain-advance-past-bound` waits until the tip is 60 blocks past the block the
   summary binds, beyond devnet's window of historical account state, before Guardian executes

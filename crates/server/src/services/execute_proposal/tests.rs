@@ -507,20 +507,12 @@ impl Fixture {
     }
 
     pub(crate) async fn request(&self) -> Result<ExecutionEnvelope> {
-        self.request_allowing_private_note(false).await
-    }
-
-    pub(crate) async fn request_allowing_private_note(
-        &self,
-        allow_private_note: bool,
-    ) -> Result<ExecutionEnvelope> {
         request_execution(
             &self.state,
             RequestExecutionParams {
                 account_id: ACCOUNT.to_string(),
                 proposal_id: PROPOSAL.to_string(),
                 credentials: self.credentials(),
-                allow_private_note,
             },
         )
         .await
@@ -727,7 +719,6 @@ async fn a_non_cosigner_is_refused_on_authentication() {
             account_id: ACCOUNT.to_string(),
             proposal_id: PROPOSAL.to_string(),
             credentials: Credentials::signature(pubkey, signature, timestamp),
-            allow_private_note: false,
         },
     )
     .await;
@@ -880,59 +871,16 @@ async fn assert_nothing_reserved(f: &Fixture) {
 }
 
 #[tokio::test]
-async fn a_private_note_executes_locally_unless_the_request_allows_it() {
-    let f = Fixture::new(Script::default()).await;
-    f.store_proposal_with_summary(
-        "p2id",
-        true,
-        summary_with_output_note(miden_protocol::note::NoteType::Private),
-    )
-    .await;
-    let refused = f.request().await;
-    assert!(
-        matches!(
-            &refused,
-            Err(GuardianError::ProposalExecutesLocally {
-                proposal_type,
-                reason: LocalExecutionReason::PrivateNote,
-            }) if proposal_type == "p2id"
-        ),
-        "{refused:?}"
-    );
-    assert_nothing_reserved(&f).await;
-
-    let accepted = f.request_allowing_private_note(true).await.unwrap();
-    assert!(accepted.newly_accepted);
-}
-
-#[tokio::test]
-async fn a_private_note_is_read_from_the_signed_summary_not_the_label() {
-    let f = Fixture::new(Script::default()).await;
-    f.store_proposal_with_summary(
-        "consume_notes",
-        true,
-        summary_with_output_note(miden_protocol::note::NoteType::Private),
-    )
-    .await;
-    assert!(matches!(
-        f.request().await,
-        Err(GuardianError::ProposalExecutesLocally {
-            reason: LocalExecutionReason::PrivateNote,
-            ..
-        })
-    ));
-}
-
-#[tokio::test]
-async fn a_public_note_needs_no_opt_in() {
-    let f = Fixture::new(Script::default()).await;
-    f.store_proposal_with_summary(
-        "p2id",
-        true,
-        summary_with_output_note(miden_protocol::note::NoteType::Public),
-    )
-    .await;
-    assert!(f.request().await.unwrap().newly_accepted);
+async fn a_private_note_executes_like_a_public_one() {
+    for note_type in [
+        miden_protocol::note::NoteType::Private,
+        miden_protocol::note::NoteType::Public,
+    ] {
+        let f = Fixture::new(Script::default()).await;
+        f.store_proposal_with_summary("p2id", true, summary_with_output_note(note_type))
+            .await;
+        assert!(f.request().await.unwrap().newly_accepted, "{note_type:?}");
+    }
 }
 
 #[tokio::test]
@@ -949,7 +897,7 @@ async fn a_guardian_change_executes_locally_whatever_the_label_says() {
         let f = Fixture::new(Script::default()).await;
         f.store_proposal_with_summary(label, true, summary_changing_guardian())
             .await;
-        let result = f.request_allowing_private_note(true).await;
+        let result = f.request().await;
         assert!(
             matches!(
                 &result,
@@ -965,10 +913,10 @@ async fn a_guardian_change_executes_locally_whatever_the_label_says() {
 }
 
 #[tokio::test]
-async fn a_switch_guardian_proposal_is_refused_even_when_private_notes_are_allowed() {
+async fn a_switch_guardian_proposal_is_refused() {
     let f = Fixture::new(Script::default()).await;
     f.store_typed_proposal("switch_guardian", true).await;
-    let result = f.request_allowing_private_note(true).await;
+    let result = f.request().await;
     assert!(
         matches!(
             &result,
@@ -1018,7 +966,6 @@ async fn a_server_without_an_executor_refuses_execution() {
             account_id: ACCOUNT.to_string(),
             proposal_id: PROPOSAL.to_string(),
             credentials: f.credentials(),
-            allow_private_note: false,
         },
     )
     .await;

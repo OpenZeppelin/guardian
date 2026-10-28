@@ -754,23 +754,27 @@ string, for example `GUARDIAN_EXECUTION_CONFLICT`), `userMessage`, `retryable`,
 active. See
 [`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
-Two proposals still execute locally on a `guardian_executable` client, because local execution
-does work Guardian skips. A `switch_guardian` proposal always does: the executing client verifies
-the new Guardian, registers the account there and repoints itself. It is therefore created exactly
-as on a `self_executed` client, with no stored request and no default expiration bounds. A P2ID proposal with a private
-note does too, because only the client that executes it holds the note to export to the
-recipient, unless the caller opts in for that one request and delivers the note itself:
+One proposal still executes locally on a `guardian_executable` client, because local execution
+does work Guardian skips: a `switch_guardian` proposal, whose executing client verifies the new
+Guardian, registers the account there and repoints itself. It is therefore created exactly as on
+a `self_executed` client, with no stored request and no default expiration bounds.
+
+A P2ID proposal with a private note can be executed by Guardian like any other. Whoever executed
+it, a cosigner hands the note to its recipient with `exportP2idNoteToBytes(proposal)`, which
+rebuilds the note from the proposal. Keep the `Proposal` from before execution: GUARDIAN deletes
+it once its transaction is canonical.
 
 ```typescript
-await multisig.requestGuardianExecution(proposal.id, { allowPrivateNote: true });
+await multisig.requestGuardianExecution(proposal.id);
+await multisig.waitForGuardianExecution(proposal.id);
+const noteFileBytes = await multisig.exportP2idNoteToBytes(proposal);
 ```
 
 `requestGuardianExecution` checks the proposal this client holds before contacting Guardian. It
-throws a `LocalExecutionRequiredError` whose `reason` is `'switch_guardian'` or `'private_note'`
-for these two (execute them with `executeProposal`), and a `ProposalNotHeldLocallyError` for a
-proposal the client does not hold (sync proposals first). It sends `allowPrivateNote` with the
-request, and Guardian enforces the same rule: it refuses a switch, and a private-note execution
-without the flag, with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, which the SDK throws as the same
+throws a `LocalExecutionRequiredError` whose `reason` is `'switch_guardian'` for a switch (execute
+it with `executeProposal`), and a `ProposalNotHeldLocallyError` for a proposal the client does not
+hold (sync proposals first). Guardian enforces the same rule: it refuses a switch with
+`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, which the SDK throws as the same
 `LocalExecutionRequiredError`. `localExecutionReason(proposal)` returns the same
 `LocalExecutionReason`, or `null` when Guardian can execute the proposal, and
 `describeLocalExecutionReason(reason)` explains it, so an app can route a proposal before asking.
@@ -781,7 +785,7 @@ therefore be sent to Guardian like any other.
 
 `client.guardianClient` is the raw base client and skips the SDK's check: its
 `executeDeltaProposal` sends any proposal id and rejects with a plain `GuardianHttpError`. Guardian
-still refuses a switch and an unflagged private-note execution there, so prefer
+still refuses a switch there, so prefer
 `requestGuardianExecution`.
 
 ### Export Proposal for Offline Signing

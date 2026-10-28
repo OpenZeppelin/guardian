@@ -12,8 +12,6 @@ use guardian_shared::execution::refusal_codes;
 pub enum LocalExecutionReason {
     /// Only the client that finishes the GUARDIAN handoff can execute a guardian switch.
     SwitchGuardian,
-    /// The transaction creates a private output note and the request did not opt in.
-    PrivateNote,
 }
 
 impl LocalExecutionReason {
@@ -21,7 +19,6 @@ impl LocalExecutionReason {
     pub fn as_str(&self) -> &'static str {
         match self {
             LocalExecutionReason::SwitchGuardian => "switch_guardian",
-            LocalExecutionReason::PrivateNote => "private_note",
         }
     }
 }
@@ -177,7 +174,7 @@ pub enum GuardianError {
     },
     /// This server does not offer Guardian execution: no prover is
     /// configured, the capability is disabled, or canonicalization is off. Stable code `GUARDIAN_PROVING_UNAVAILABLE`,
-    /// HTTP 503, gRPC `UNAVAILABLE`.
+    /// HTTP 409, gRPC `FAILED_PRECONDITION`.
     ProvingUnavailable,
     /// The proposal was created without a stored transaction request, so
     /// only a transaction-capable party can execute it. Stable code
@@ -186,8 +183,7 @@ pub enum GuardianError {
     ProposalMissingTransactionRequest,
     /// Guardian leaves the proposal to local execution, for the reason `meta.reason` names: a
     /// `switch_guardian` proposal, which only the client can finish (register the account at
-    /// the new GUARDIAN and switch its endpoint), or a transaction that creates a private
-    /// output note while the request did not set `allow_private_note`. Stable code
+    /// the new GUARDIAN and switch its endpoint). Stable code
     /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, HTTP 409, gRPC `FAILED_PRECONDITION`.
     ProposalExecutesLocally {
         proposal_type: String,
@@ -544,12 +540,6 @@ impl GuardianError {
             } => {
                 "A guardian switch is executed by the wallet that finishes the handoff. Execute it from your wallet instead."
             }
-            GuardianError::ProposalExecutesLocally {
-                reason: LocalExecutionReason::PrivateNote,
-                ..
-            } => {
-                "This transaction creates a private note. Execute it from your wallet, or allow Guardian to execute private notes."
-            }
             GuardianError::ProposalNotReady { .. } => {
                 "This transaction still needs more signatures."
             }
@@ -759,14 +749,6 @@ impl fmt::Display for GuardianError {
                 "A {proposal_type} proposal is executed by the client that finishes the GUARDIAN \
                  handoff; execute it locally"
             ),
-            GuardianError::ProposalExecutesLocally {
-                proposal_type,
-                reason: LocalExecutionReason::PrivateNote,
-            } => write!(
-                f,
-                "A {proposal_type} proposal creates a private output note and the request did not \
-                 set allow_private_note; execute it locally"
-            ),
             GuardianError::ProposalNotReady { required, valid } => write!(
                 f,
                 "Proposal is not ready: {valid} valid cosigner signatures, {required} required"
@@ -871,7 +853,7 @@ struct ErrorMeta {
     /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`.
     #[serde(skip_serializing_if = "Option::is_none")]
     proposal_type: Option<String>,
-    /// Why the request was refused: `switch_guardian` or `private_note` for
+    /// Why the request was refused: `switch_guardian` for
     /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. Absent for every other error.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'static str>,

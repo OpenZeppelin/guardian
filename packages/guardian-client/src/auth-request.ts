@@ -6,13 +6,40 @@ type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
+/**
+ * An operation whose signed payload is domain-separated from every other request's, so a
+ * signature over one never authenticates another request with the same body. Mirrors the Rust
+ * `SignedOperation`.
+ */
+export type SignedOperation = 'ExecuteDeltaProposal';
+
+function operationTag(operation: SignedOperation): string {
+  switch (operation) {
+    case 'ExecuteDeltaProposal':
+      return 'guardian.ExecuteDeltaProposal\0';
+    default: {
+      const unreachable: never = operation;
+      throw new Error(`Unknown signed operation: ${JSON.stringify(unreachable)}`);
+    }
+  }
+}
+
 export class RequestAuthPayload {
-  private constructor(private readonly canonicalJson: string) {}
+  private constructor(
+    private readonly canonicalJson: string,
+    private readonly tag: string,
+  ) {}
 
   static fromRequest(requestPayload: unknown): RequestAuthPayload {
-    const normalized = RequestAuthPayload.normalizeJson(requestPayload);
-    const canonical = RequestAuthPayload.canonicalizeJson(normalized);
-    return new RequestAuthPayload(JSON.stringify(canonical));
+    return new RequestAuthPayload(RequestAuthPayload.canonicalJsonOf(requestPayload), '');
+  }
+
+  /**
+   * The payload of `requestPayload` signed as `operation`: the bytes are the operation's tag
+   * followed by the canonical JSON, as the Rust `AuthRequestPayload::for_operation` builds them.
+   */
+  static forOperation(operation: SignedOperation, requestPayload: unknown): RequestAuthPayload {
+    return new RequestAuthPayload(RequestAuthPayload.canonicalJsonOf(requestPayload), operationTag(operation));
   }
 
   toCanonicalJson(): string {
@@ -20,7 +47,12 @@ export class RequestAuthPayload {
   }
 
   toBytes(): Uint8Array {
-    return new TextEncoder().encode(this.canonicalJson);
+    return new TextEncoder().encode(this.tag + this.canonicalJson);
+  }
+
+  private static canonicalJsonOf(requestPayload: unknown): string {
+    const normalized = RequestAuthPayload.normalizeJson(requestPayload);
+    return JSON.stringify(RequestAuthPayload.canonicalizeJson(normalized));
   }
 
   private static normalizeJson(value: unknown): JsonValue {

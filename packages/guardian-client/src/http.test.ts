@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GuardianHttpClient, GuardianHttpError } from './http.js';
+import { RequestAuthPayload } from './auth-request.js';
 import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse, SessionRequestSigner } from './types.js';
 
 // Mock fetch globally
@@ -800,29 +801,27 @@ describe('GuardianHttpClient', () => {
           body: JSON.stringify({
             account_id: account,
             proposal_id: '0xproposal',
-            allow_private_note: false,
           }),
         })
       );
     });
 
-    it('sends and signs allow_private_note when the caller opts in', async () => {
+    it('signs the execution request tagged as ExecuteDeltaProposal, and its status read untagged', async () => {
       client.setSigner(mockSigner);
       const signRequest = vi.mocked(mockSigner.signRequest!);
       signRequest.mockClear();
-      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => serverExecution })
+        .mockResolvedValueOnce({ ok: true, json: async () => serverExecution });
 
-      await client.executeDeltaProposal(account, '0xproposal', { allowPrivateNote: true });
+      await client.executeDeltaProposal(account, '0xproposal');
+      await client.getDeltaProposalExecution(account, '0xproposal');
 
-      const body = { account_id: account, proposal_id: '0xproposal', allow_private_note: true };
-      expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:3000/delta/proposal/execution',
-        expect.objectContaining({ method: 'POST', body: JSON.stringify(body) })
-      );
-      const signed = signRequest.mock.calls[0][2];
-      expect(signed.toCanonicalJson()).toBe(
-        '{"account_id":"' + account + '","allow_private_note":true,"proposal_id":"0xproposal"}'
-      );
+      const body = { account_id: account, proposal_id: '0xproposal' };
+      const [execute, read] = signRequest.mock.calls.map((call) => call[2].toBytes());
+      expect(execute).toEqual(RequestAuthPayload.forOperation('ExecuteDeltaProposal', body).toBytes());
+      expect(read).toEqual(RequestAuthPayload.fromRequest(body).toBytes());
+      expect(execute).not.toEqual(read);
     });
 
     it('reads an execution and the in-flight one by query', async () => {
@@ -1748,30 +1747,6 @@ describe('GuardianHttpError', () => {
       expect(e.meta?.reason).toBe('switch_guardian');
     });
 
-    it('surfaces a refused private-note execution with meta.reason private_note', async () => {
-      client.setSigner(mockSigner);
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        headers: new Headers(),
-        status: 409,
-        statusText: 'Conflict',
-        text: async () =>
-          JSON.stringify({
-            code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
-            message: 'This transaction creates a private note.',
-            meta: { retryable: false, proposal_type: 'p2id', reason: 'private_note' },
-          }),
-      });
-
-      const e = (await client
-        .executeDeltaProposal('0x' + 'a'.repeat(30), '0x' + 'c'.repeat(64))
-        .catch((error) => error)) as GuardianHttpError;
-
-      expect(e.code).toBe('proposal_executes_locally');
-      expect(e.meta?.proposalType).toBe('p2id');
-      expect(e.meta?.reason).toBe('private_note');
-    });
-
     it('drops a meta.reason outside the known vocabulary', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
@@ -1783,7 +1758,7 @@ describe('GuardianHttpError', () => {
           JSON.stringify({
             code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
             message: 'Execute it from your wallet instead.',
-            meta: { retryable: false, proposal_type: 'p2id', reason: 'something_else' },
+            meta: { retryable: false, proposal_type: 'p2id', reason: 'private_note' },
           }),
       });
 
@@ -2203,7 +2178,7 @@ describe('GuardianHttpClient sessions', () => {
     expect(session.signRequest).not.toHaveBeenCalled();
   });
 
-  it('keeps the execution request on the wallet while its status reads use the session', async () => {
+  it('signs the execution request and its status reads with the session', async () => {
     client.setSession(session);
     const execution = {
       account_id: '0xabc',
@@ -2220,16 +2195,21 @@ describe('GuardianHttpClient sessions', () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ execution }) });
 
     await client.executeDeltaProposal('0xabc', '0xproposal');
-    expect(lastHeaders()['x-pubkey']).toBe(mockSigner.publicKey);
-    expect(lastHeaders()['x-auth-format']).toBeUndefined();
+    expect(lastHeaders()['x-auth-format']).toBe('session');
+    expect(vi.mocked(session.signRequest).mock.calls[0][2].toBytes()).toEqual(
+      RequestAuthPayload.forOperation('ExecuteDeltaProposal', {
+        account_id: '0xabc',
+        proposal_id: '0xproposal',
+      }).toBytes(),
+    );
 
     await client.getDeltaProposalExecution('0xabc', '0xproposal');
     expect(lastHeaders()['x-auth-format']).toBe('session');
     await client.getCurrentExecution('0xabc');
     expect(lastHeaders()['x-auth-format']).toBe('session');
 
-    expect(mockSigner.signRequest).toHaveBeenCalledOnce();
-    expect(session.signRequest).toHaveBeenCalledTimes(2);
+    expect(mockSigner.signRequest).not.toHaveBeenCalled();
+    expect(session.signRequest).toHaveBeenCalledTimes(3);
   });
 
   it('signs pushDelta with the session and keeps abandonCandidate on the wallet', async () => {

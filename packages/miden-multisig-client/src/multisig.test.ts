@@ -124,7 +124,25 @@ vi.mock('@miden-sdk/miden-sdk', () => ({
   },
   NoteFile: {
     deserialize: mockNoteFileDeserialize,
+    fromInputNote: vi.fn((inputNote: unknown) => ({
+      kind: 'full',
+      inputNote,
+      serialize: () => new Uint8Array([1]),
+    })),
+    fromExpectedNote: vi.fn((details: unknown, tag: unknown, afterBlockNum: number) => ({
+      kind: 'expected',
+      details,
+      tag,
+      afterBlockNum,
+      serialize: () => new Uint8Array([2]),
+    })),
   },
+  InputNote: {
+    authenticated: vi.fn((note: unknown, proof: unknown) => ({ note, proof })),
+  },
+  NoteDetails: vi.fn().mockImplementation(function (assets: unknown, recipient: unknown) {
+    return { assets, recipient };
+  }),
   Note: {
     deserialize: mockNoteDeserialize,
   },
@@ -4268,6 +4286,113 @@ describe('Multisig', () => {
       await expect(multisig.getP2idNoteId(proposal)).rejects.toThrow(
         /requires a P2ID proposal/,
       );
+    });
+  });
+
+  describe('exportP2idNoteToBytes', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + '1'.repeat(64)],
+      guardianCommitment: '0x' + '3'.repeat(64),
+    };
+    const NOTE_ID = '0x' + 'ab'.repeat(32);
+    const note = {
+      id: () => ({ toString: () => NOTE_ID }),
+      assets: () => 'assets',
+      recipient: () => 'recipient',
+      metadata: () => ({ tag: () => 'tag' }),
+    };
+    const p2idProposal = {
+      id: '0x' + 'c'.repeat(64),
+      txSummary: 'AQID',
+      metadata: {
+        proposalType: 'p2id',
+        boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+        recipientId: '0x' + 'b'.repeat(30),
+        faucetId: '0x' + 'c'.repeat(30),
+        amount: '100',
+        saltHex: '0x' + 'd'.repeat(64),
+        noteType: 'private',
+      },
+    } as any;
+
+    async function exporting(
+      createdIds: string[],
+      fetched: unknown[] | null,
+      committedTo: string = p2idProposal.id,
+    ) {
+      const { TransactionSummary, RpcClient, NoteFile, InputNote } = await import('@miden-sdk/miden-sdk');
+      const { buildP2idNoteFromMetadata } = await import('./transaction.js');
+      vi.mocked(buildP2idNoteFromMetadata).mockReturnValue(note as any);
+      const summary = {
+        toCommitment: () => ({ toHex: () => committedTo }),
+        outputNotes: () => ({
+          notes: () => createdIds.map((id) => ({ id: () => ({ toString: () => id }) })),
+        }),
+      } as any;
+      vi.mocked(TransactionSummary.deserialize).mockReturnValueOnce(summary);
+      const getNotesById = vi.fn().mockResolvedValue(fetched);
+      if (fetched !== null) {
+        vi.mocked(RpcClient).mockImplementationOnce(function () {
+          return { getNotesById } as any;
+        });
+      }
+      return { NoteFile, InputNote, getNotesById };
+    }
+
+    it('exports the note with its inclusion proof once the node has it', async () => {
+      const proof = { label: 'proof' };
+      const { NoteFile, InputNote, getNotesById } = await exporting([NOTE_ID], [{ inclusionProof: proof }]);
+
+      const bytes = await createTestMultisig(config).exportP2idNoteToBytes(p2idProposal);
+
+      expect(bytes).toEqual(new Uint8Array([1]));
+      expect(getNotesById).toHaveBeenCalledTimes(1);
+      expect(InputNote.authenticated).toHaveBeenCalledWith(note, proof);
+      expect(NoteFile.fromInputNote).toHaveBeenCalledTimes(1);
+      expect(NoteFile.fromExpectedNote).not.toHaveBeenCalled();
+    });
+
+    it('exports the note details and tag while the note is not on chain yet', async () => {
+      const { NoteFile } = await exporting([NOTE_ID], []);
+
+      const bytes = await createTestMultisig(config).exportP2idNoteToBytes(p2idProposal);
+
+      expect(bytes).toEqual(new Uint8Array([2]));
+      expect(NoteFile.fromExpectedNote).toHaveBeenCalledWith(
+        { assets: 'assets', recipient: 'recipient' },
+        'tag',
+        MOCK_BOUND_BLOCK_NUM,
+      );
+      expect(NoteFile.fromInputNote).not.toHaveBeenCalled();
+    });
+
+    it('refuses a rebuilt note the signed transaction does not create, without reading the node', async () => {
+      const { getNotesById } = await exporting(['0x' + 'ef'.repeat(32)], null);
+
+      await expect(createTestMultisig(config).exportP2idNoteToBytes(p2idProposal)).rejects.toThrow(
+        /does not create/,
+      );
+      expect(getNotesById).not.toHaveBeenCalled();
+    });
+
+    it('refuses a summary the proposal id does not commit to, without reading the node', async () => {
+      const { getNotesById } = await exporting([NOTE_ID], null, '0x' + '9'.repeat(64));
+
+      await expect(createTestMultisig(config).exportP2idNoteToBytes(p2idProposal)).rejects.toThrow(
+        /carries a summary committing to/,
+      );
+      expect(getNotesById).not.toHaveBeenCalled();
+    });
+
+    it('rejects a proposal that is not a P2ID', async () => {
+      await exporting([NOTE_ID], null);
+      await expect(
+        createTestMultisig(config).exportP2idNoteToBytes({
+          ...p2idProposal,
+          metadata: { proposalType: 'consume_notes' },
+        } as any),
+      ).rejects.toThrow(/exportP2idNoteToBytes requires a P2ID proposal/);
     });
   });
 
@@ -10695,35 +10820,28 @@ describe('Multisig', () => {
       noteType: 'private',
     };
 
-    it('refuses a switch_guardian proposal even with allowPrivateNote, without calling GUARDIAN', async () => {
+    it('refuses a switch_guardian proposal without calling GUARDIAN', async () => {
       const { multisig, execute } = holding({
         proposalType: 'switch_guardian',
         description: '',
         newGuardianPubkey: '0xpk',
       });
-      const error = await multisig
-        .requestGuardianExecution(proposalId, { allowPrivateNote: true })
-        .catch((e: unknown) => e);
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(LocalExecutionRequiredError);
       expect((error as LocalExecutionRequiredError).reason).toBe('switch_guardian');
       expect(execute).not.toHaveBeenCalled();
     });
 
-    it('refuses a private-note p2id without the opt-in and sends it with the opt-in', async () => {
+    it('sends a private-note p2id', async () => {
       const { multisig, execute } = holding(privateP2id);
-      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
-      expect(error).toBeInstanceOf(LocalExecutionRequiredError);
-      expect((error as LocalExecutionRequiredError).reason).toBe('private_note');
-      expect(execute).not.toHaveBeenCalled();
-
-      await expect(multisig.requestGuardianExecution(proposalId, { allowPrivateNote: true })).resolves.toBe(accepted);
+      await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
       expect(execute).toHaveBeenCalledTimes(1);
-      expect(execute).toHaveBeenCalledWith(multisig.accountId, proposalId, { allowPrivateNote: true });
+      expect(execute).toHaveBeenCalledWith(multisig.accountId, proposalId);
     });
 
     it('maps a GUARDIAN local-execution refusal to LocalExecutionRequiredError', async () => {
       const { multisig, execute } = holding({ ...privateP2id, noteType: 'public' });
-      for (const reason of ['switch_guardian', 'private_note'] as const) {
+      for (const reason of ['switch_guardian'] as const) {
         execute.mockRejectedValueOnce(
           new GuardianHttpError(
             409,
@@ -10751,7 +10869,7 @@ describe('Multisig', () => {
           JSON.stringify({
             code: 'GUARDIAN_PROPOSAL_EXECUTES_LOCALLY',
             message: 'execute it from your wallet',
-            meta: { retryable: false, reason: 'something_new' },
+            meta: { retryable: false, reason: 'private_note' },
           }),
         ),
       );
@@ -10763,7 +10881,7 @@ describe('Multisig', () => {
     it('sends a public-note p2id and other proposal types', async () => {
       const { multisig, execute } = holding({ ...privateP2id, noteType: 'public' });
       await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
-      expect(execute).toHaveBeenLastCalledWith(multisig.accountId, proposalId, { allowPrivateNote: false });
+      expect(execute).toHaveBeenLastCalledWith(multisig.accountId, proposalId);
       (multisig as any).proposals.set(proposalId, {
         ...(multisig as any).proposals.get(proposalId),
         metadata: {
@@ -10779,9 +10897,7 @@ describe('Multisig', () => {
 
     it('fails closed on a proposal it does not hold, without calling GUARDIAN', async () => {
       const { multisig, execute } = holding(null);
-      const error = await multisig
-        .requestGuardianExecution(proposalId, { allowPrivateNote: true })
-        .catch((e: unknown) => e);
+      const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
       expect(execute).not.toHaveBeenCalled();
     });

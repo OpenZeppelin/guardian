@@ -6,7 +6,7 @@ import { GuardianHttpClient, type ProposalExecution } from '@openzeppelin/guardi
 import type { ProposalExecutionMode } from '../../../src/transaction/expiration.js';
 
 import { AccountInspector } from '../../../src/inspector.js';
-import { AccountId, FeltArray, Poseidon2, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
+import { AccountId, FeltArray, NoteType, Poseidon2, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
 
 import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
 import { ProposalMetadataCodec } from '../../../src/proposal/metadata.js';
@@ -2027,6 +2027,154 @@ const OVERRIDE_PROCEDURE = 'send_asset';
 async function heldBalance(session: LiveSession): Promise<bigint> {
   const account = await session.multisig!.getStoreAccount();
   return account.vault().getBalance(AccountId.fromHex(session.faucetId!));
+}
+
+/**
+ * Proposes a private P2ID from the account to itself, and has the cosigner that exports the note
+ * list and keep its own copy of the proposal: GUARDIAN deletes the proposal once its transaction is
+ * canonical. Mirrors `send_private_p2id` in the Rust driver: the account is its own recipient, so it
+ * learns the note only from the note file a cosigner exports.
+ */
+export async function sendPrivateP2id(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+    const proposal = await proposeWhenSettled(() =>
+      session.multisig!.createP2idProposal(session.accountId!, session.faucetId!, P2ID_AMOUNT, {
+        noteType: NoteType.Private,
+      }),
+    );
+    session.proposalId = proposal.id;
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing the private transfer failed: ${String(error)}`,
+    };
+  }
+  if (session.cosigners.length < 2) {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'delivery needs a cosigner other than the proposer to export the note',
+    };
+  }
+  try {
+    const exporter = session.cosigners[1];
+    const loaded = await exporter.multisigClient.load(session.accountId, exporter.signer);
+    await exporter.midenClient.sync();
+    await loaded.syncState();
+    const listed = await loaded.syncProposals();
+    const ownCopy = listed.find((candidate) => normalizeHex(candidate.id) === normalizeHex(session.proposalId!));
+    if (!ownCopy) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the exporting cosigner does not see the pending proposal ${session.proposalId}`,
+      };
+    }
+    session.privateSend = ownCopy;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the exporting cosigner could not list proposals: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Delivers the executed private P2ID note the way a recipient receives it. Mirrors
+ * `deliver_private_note` in the Rust driver: the note is first shown not to be consumable, a
+ * cosigner other than the proposer exports it from its own copy of the proposal, listed before
+ * GUARDIAN executed it, and the account imports the file and waits for that note to become
+ * consumable, which `note-consume` then spends.
+ */
+export async function deliverPrivateNote(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  const proposal = session.privateSend;
+  if (!proposal) {
+    return { kind: 'failed', classification: 'setup', reason: 'no private transfer was proposed in this scenario' };
+  }
+  let noteId: string;
+  try {
+    noteId = normalizeHex(await session.multisig.getP2idNoteId(proposal));
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `rebuilding the private note id failed: ${String(error)}` };
+  }
+  const consumable = (ids: string[]) => ids.some((id) => normalizeHex(id) === noteId);
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+    await session.multisig.syncState();
+    const before = await session.multisig.getConsumableNotes();
+    if (consumable(before.map((note) => note.id))) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `private note ${noteId} was consumable before its file was imported, so the import proves nothing`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `listing consumable notes failed: ${String(error)}` };
+  }
+
+  let bytes: Uint8Array;
+  try {
+    const exporter = session.cosigners[1];
+    const loaded = await exporter.multisigClient.load(session.accountId, exporter.signer);
+    bytes = await loaded.exportP2idNoteToBytes(proposal);
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a cosigner could not export the private note from the proposal: ${String(error)}`,
+    };
+  }
+  try {
+    const imported = await session.multisig.importNoteFromBytes(bytes);
+    if (normalizeHex(imported) !== noteId) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the exported file imported note ${imported}, not ${noteId}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `importing the exported note file failed: ${String(error)}` };
+  }
+
+  const deadline = Date.now() + NOTE_ARRIVAL_DEADLINE_MS;
+  let wait = POLL_START_MS;
+  let lastError: string | undefined;
+  while (Date.now() < deadline) {
+    try {
+      await session.cosigners[0].midenClient.sync();
+      await session.multisig.syncState();
+      const notes = await session.multisig.getConsumableNotes();
+      if (consumable(notes.map((note) => note.id))) return { kind: 'passed' };
+    } catch (error) {
+      lastError = String(error);
+    }
+    wait = await backoff(wait);
+  }
+  return {
+    kind: 'environment_blocked',
+    reason: `the imported private note ${noteId} did not become consumable within ${NOTE_ARRIVAL_DEADLINE_MS / 1000}s${
+      lastError ? `; last error: ${lastError}` : ''
+    }`,
+  };
 }
 
 /**

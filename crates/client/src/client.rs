@@ -288,26 +288,6 @@ impl GuardianClient {
             .await
     }
 
-    /// [`Self::send_with_replay_retry`] for a request signed over `payload` rather than its
-    /// plain encoding.
-    async fn send_signed_with_replay_retry<Req, Resp, F>(
-        &mut self,
-        account_id: &AccountId,
-        message: Req,
-        payload: AuthRequestPayload,
-        send: F,
-    ) -> ClientResult<Resp>
-    where
-        Req: prost::Message + Clone + std::fmt::Debug,
-        F: AsyncFnMut(
-            &mut GuardianGrpcClient<Channel>,
-            tonic::Request<Req>,
-        ) -> Result<tonic::Response<Resp>, tonic::Status>,
-    {
-        self.send_with_replay_retry_as(account_id, message, payload, AuthMode::Wallet, send)
-            .await
-    }
-
     /// [`Self::send_with_replay_retry`] for a session-eligible route: signed
     /// by the delegated signer while a session is active.
     async fn send_allowing_session<Req, Resp, F>(
@@ -969,28 +949,29 @@ impl GuardianClient {
     /// accepted; poll [`Self::get_delta_proposal_execution`] for the outcome. Repeating the
     /// request while the execution runs returns it with `newly_accepted: false`.
     ///
-    /// Guardian refuses a transaction that creates a private output note with
-    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `private_note`) unless
-    /// `allow_private_note` is set. The flag is part of the signed request.
+    /// Signed by the session while one is active, as `guardian.ExecuteDeltaProposal`, so the
+    /// signature never authenticates a status read of the same proposal.
     pub async fn execute_delta_proposal(
         &mut self,
         account_id: &AccountId,
         proposal_id: &str,
-        allow_private_note: bool,
     ) -> ClientResult<ProposalExecution> {
         let message = ExecuteDeltaProposalRequest {
             account_id: account_id.to_string(),
             proposal_id: proposal_id.to_string(),
-            allow_private_note,
         };
         let payload = AuthRequestPayload::for_operation(
             SignedOperation::ExecuteDeltaProposal,
             &prost::Message::encode_to_vec(&message),
         );
         let response = self
-            .send_signed_with_replay_retry(account_id, message, payload, async |client, request| {
-                client.execute_delta_proposal(request).await
-            })
+            .send_with_replay_retry_as(
+                account_id,
+                message,
+                payload,
+                AuthMode::Session,
+                async |client, request| client.execute_delta_proposal(request).await,
+            )
             .await?;
         crate::execution::required(response.execution)
     }

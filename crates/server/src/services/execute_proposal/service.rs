@@ -14,7 +14,7 @@ use crate::error::{GuardianError, LocalExecutionReason, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::execution_status::ExecutionEnvelope;
-use crate::services::resolve_account;
+use crate::services::resolve_account_allowing_session;
 use crate::state::AppState;
 use crate::storage::{ExecutionRecord, LeaseFence, NewExecutionReservation, ReservationWrite};
 
@@ -108,14 +108,14 @@ pub struct RequestExecutionParams {
     pub account_id: String,
     pub proposal_id: String,
     pub credentials: Credentials,
-    /// Whether the caller lets Guardian execute a transaction that creates a private output
-    /// note, which is otherwise left to local execution.
-    pub allow_private_note: bool,
 }
 
 /// Requests Guardian execution of a threshold-met proposal. Refusals that can be decided now
 /// return synchronously and create nothing; everything else runs in the background under a
 /// durable reservation.
+///
+/// A session may sign the request: the authority to spend is the cosigners' approvals, which
+/// the readiness check counts whoever signs the request.
 #[tracing::instrument(
     level = "info",
     skip(state, params),
@@ -129,9 +129,8 @@ pub async fn request_execution(
         account_id,
         proposal_id,
         credentials,
-        allow_private_note,
     } = params;
-    let resolved = resolve_account(state, &account_id, &credentials).await?;
+    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
     let executor = state
         .execution
@@ -169,12 +168,6 @@ pub async fn request_execution(
     }
     if proposal.delta_payload.get("transaction_request").is_none() {
         return Err(GuardianError::ProposalMissingTransactionRequest);
-    }
-    if !allow_private_note && creates_private_note(&summary) {
-        return Err(GuardianError::ProposalExecutesLocally {
-            proposal_type,
-            reason: LocalExecutionReason::PrivateNote,
-        });
     }
     if let Some(active) = state
         .storage
@@ -360,16 +353,6 @@ fn changes_guardian(summary: &TransactionSummary) -> bool {
             | StorageSlotPatch::Value(_),
         ) => true,
     }
-}
-
-/// Whether the transaction the cosigners signed creates a private output note, read from the
-/// signed summary rather than the proposal's metadata label. Execution reproduces exactly this
-/// summary, so the stored request cannot create a note the summary does not show.
-fn creates_private_note(summary: &TransactionSummary) -> bool {
-    summary
-        .output_notes()
-        .iter()
-        .any(|note| note.metadata().is_private())
 }
 
 /// The answer for a request that lost the race for the account's lease: the winner's execution

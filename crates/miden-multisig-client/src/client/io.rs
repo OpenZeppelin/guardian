@@ -7,7 +7,7 @@
 
 use guardian_client::delta_status::Status;
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
-use miden_client::note::NoteFile;
+use miden_client::note::{NoteFile, NoteSyncHint};
 use miden_client::store::{NoteExportType, NoteFilter, OutputNoteRecord};
 use miden_protocol::note::NoteId;
 use miden_protocol::utils::serde::Serializable;
@@ -15,6 +15,7 @@ use miden_protocol::utils::serde::Serializable;
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::export::{ExportedProposal, ExportedSignature};
+use crate::proposal::Proposal;
 
 impl MultisigClient {
     /// Exports a proposal to a file for offline sharing.
@@ -161,6 +162,83 @@ impl MultisigClient {
             .record(exported.account_id()?, &proposal);
 
         Ok(exported)
+    }
+
+    /// Exports the note a P2ID proposal creates to a file for out-of-band
+    /// delivery, whoever executed the proposal: this client or GUARDIAN.
+    ///
+    /// A private note publishes only its commitment on chain, so this file is
+    /// how its recipient learns it; they load it with
+    /// [`Self::import_note_from_file`]. See
+    /// [`Self::export_p2id_note_to_bytes`].
+    pub async fn export_p2id_note_to_file(
+        &self,
+        proposal: &Proposal,
+        path: &std::path::Path,
+    ) -> Result<()> {
+        let bytes = self.export_p2id_note_to_bytes(proposal).await?;
+        tokio::fs::write(path, bytes)
+            .await
+            .map_err(|e| MultisigError::InvalidConfig(format!("failed to write file: {}", e)))?;
+        Ok(())
+    }
+
+    /// Exports the note a P2ID proposal creates as serialized `NoteFile`
+    /// bytes, whoever executed the proposal: this client or GUARDIAN.
+    ///
+    /// The note is rebuilt from the proposal and must be one the summary the
+    /// proposal id commits to creates. When the node holds it, the file carries
+    /// the note with its inclusion proof; before the transaction commits it
+    /// carries the note details, and the importer's client tracks the note
+    /// from the block the summary binds until it commits.
+    ///
+    /// GUARDIAN deletes a proposal once its transaction is canonical, so keep
+    /// the proposal, or its offline export, from before it is executed.
+    pub async fn export_p2id_note_to_bytes(&self, proposal: &Proposal) -> Result<Vec<u8>> {
+        let summary_commitment =
+            crate::transaction::word_to_hex(&proposal.tx_summary.to_commitment());
+        if !summary_commitment
+            .trim_start_matches("0x")
+            .eq_ignore_ascii_case(proposal.id.trim_start_matches("0x"))
+        {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal {} carries a summary committing to {summary_commitment}",
+                proposal.id
+            )));
+        }
+        let note = self.p2id_note(proposal)?;
+        if !proposal
+            .tx_summary
+            .output_notes()
+            .iter()
+            .any(|created| created.id() == note.id())
+        {
+            return Err(MultisigError::InvalidConfig(format!(
+                "proposal {} does not create note {}: its metadata does not reproduce its signed \
+                 transaction",
+                proposal.id,
+                note.id().to_hex()
+            )));
+        }
+        let fetched = self
+            .node_rpc_client()
+            .get_notes_by_id(&[note.id()])
+            .await
+            .map_err(|e| MultisigError::miden_rpc_with_context("failed to fetch the note", e))?;
+        let note_file = match fetched.first() {
+            Some(fetched) => NoteFile::Committed {
+                proof: fetched.inclusion_proof().clone(),
+                note,
+            },
+            None => NoteFile::ExpectedNote {
+                sync_hint: NoteSyncHint::new(
+                    proposal.tx_summary.block_number(),
+                    note.metadata().tag(),
+                ),
+                details: note.into(),
+            },
+        };
+        Ok(note_file.to_bytes())
     }
 
     /// Exports a note created by this account to a file for out-of-band
@@ -331,6 +409,223 @@ mod tests {
             .build()
             .unwrap()
             .into()
+    }
+
+    mod p2id_export {
+        use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
+        use miden_protocol::account::{AccountCodePatch, AccountStoragePatch};
+        use miden_protocol::transaction::{
+            InputNotes, RawOutputNote, RawOutputNotes, TransactionSummary,
+            TransactionSummaryUserParams,
+        };
+        use miden_protocol::{Felt, Word};
+
+        use crate::account::MultisigAccount;
+        use crate::client::test_support::{
+            chain_with_notes, multisig_account, offline_client_with_node,
+        };
+        use crate::proposal::{P2ideHeights, ProposalMetadata, TransactionType};
+
+        use super::*;
+
+        async fn client(dir: &std::path::Path) -> MultisigClient {
+            let mut client = offline_client_with_node(dir, chain_with_notes(vec![])).await;
+            client.account = Some(MultisigAccount::new(multisig_account(
+                Word::from([1u32, 2, 3, 4]),
+                Word::from([9u32, 9, 9, 9]),
+                61,
+            )));
+            client
+        }
+
+        fn summary_creating(account_id: AccountId, notes: Vec<Note>) -> TransactionSummary {
+            TransactionSummary::new(
+                AccountDelta::new(
+                    account_id,
+                    AccountStoragePatch::default(),
+                    AccountVaultDelta::default(),
+                    AccountCodePatch::default(),
+                    Felt::ZERO,
+                )
+                .unwrap(),
+                InputNotes::new(Vec::new()).unwrap(),
+                RawOutputNotes::new(notes.into_iter().map(RawOutputNote::Full).collect()).unwrap(),
+                BlockNumber::from(1u32),
+                Word::default(),
+                0,
+                TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+            )
+        }
+
+        /// A private P2ID proposal of `client`'s account, with a summary creating its note
+        /// when `creates_its_note`.
+        fn p2id_proposal(client: &MultisigClient, creates_its_note: bool) -> (Proposal, Note) {
+            let account_id = client.account.as_ref().unwrap().id();
+            let target = AccountId::from_hex("0x1b1b1b1a1b1b1b011b1b1b1b1b1b1b").unwrap();
+            let faucet = AccountId::from_hex("0x3f3f3f3e3f3f3f013f3f3f3f3f3f3f").unwrap();
+            let build = |summary: TransactionSummary| {
+                Proposal::new(
+                    summary,
+                    1,
+                    TransactionType::P2ID {
+                        recipient: target,
+                        faucet_id: faucet,
+                        amount: 5,
+                        note_type: NoteType::Private,
+                        heights: P2ideHeights::default(),
+                    },
+                    ProposalMetadata {
+                        salt_hex: Some(crate::transaction::word_to_hex(&Word::from([
+                            7u32, 7, 7, 7,
+                        ]))),
+                        ..Default::default()
+                    },
+                )
+            };
+            let without_note = build(summary_creating(account_id, vec![]));
+            let note = client.p2id_note(&without_note).unwrap();
+            if creates_its_note {
+                (
+                    build(summary_creating(account_id, vec![note.clone()])),
+                    note,
+                )
+            } else {
+                (without_note, note)
+            }
+        }
+
+        #[tokio::test]
+        async fn a_note_the_chain_holds_is_exported_with_its_proof() {
+            let dir = tempfile::tempdir().unwrap();
+            let mut client = client(dir.path()).await;
+            let (proposal, note) = p2id_proposal(&client, true);
+            client.set_node_rpc_client(chain_with_notes(vec![RawOutputNote::Full(note.clone())]));
+
+            let bytes = client.export_p2id_note_to_bytes(&proposal).await.unwrap();
+            match NoteFile::try_from_bytes(&bytes).unwrap() {
+                NoteFile::Committed { note: exported, .. } => assert_eq!(exported, note),
+                other => panic!("expected a committed note, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_note_not_yet_on_chain_is_exported_as_its_details() {
+            let dir = tempfile::tempdir().unwrap();
+            let client = client(dir.path()).await;
+            let (proposal, note) = p2id_proposal(&client, true);
+
+            let bytes = client.export_p2id_note_to_bytes(&proposal).await.unwrap();
+            match NoteFile::try_from_bytes(&bytes).unwrap() {
+                NoteFile::ExpectedNote { details, sync_hint } => {
+                    assert_eq!(details.commitment(), note.details_commitment());
+                    assert_eq!(sync_hint.tag(), note.metadata().tag());
+                    assert_eq!(sync_hint.after_block_num(), BlockNumber::from(1u32));
+                }
+                other => panic!("expected the note's details, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn a_note_the_signed_transaction_does_not_create_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let client = client(dir.path()).await;
+            let (proposal, note) = p2id_proposal(&client, false);
+
+            let error = client
+                .export_p2id_note_to_bytes(&proposal)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&note.id().to_hex()), "{error}");
+        }
+
+        #[derive(serde::Deserialize, serde::Serialize)]
+        struct NoteFileVector {
+            sender: String,
+            recipient: String,
+            faucet: String,
+            amount: u64,
+            note_type: String,
+            salt: String,
+            after_block: u32,
+            note_id: String,
+            note_file_hex: String,
+        }
+
+        fn note_file_vector_path() -> std::path::PathBuf {
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/miden-multisig-client/p2id-note-file-vectors.json")
+        }
+
+        /// The note file a private P2ID exports before its transaction commits, pinned for the
+        /// TypeScript SDK's `exportP2idNoteToBytes` (`tests/p2id-note-file-vectors.test.ts`).
+        #[tokio::test]
+        async fn a_note_file_matches_the_shared_vector() {
+            let dir = tempfile::tempdir().unwrap();
+            let client = client(dir.path()).await;
+            let (proposal, note) = p2id_proposal(&client, true);
+            let bytes = client.export_p2id_note_to_bytes(&proposal).await.unwrap();
+            let TransactionType::P2ID {
+                recipient,
+                faucet_id,
+                amount,
+                ..
+            } = proposal.transaction_type
+            else {
+                unreachable!("p2id_proposal builds a P2ID proposal");
+            };
+            let actual = NoteFileVector {
+                sender: client.account.as_ref().unwrap().id().to_hex(),
+                recipient: recipient.to_hex(),
+                faucet: faucet_id.to_hex(),
+                amount,
+                note_type: "private".to_string(),
+                salt: proposal.metadata.salt_hex.clone().unwrap(),
+                after_block: 1,
+                note_id: note.id().to_hex(),
+                note_file_hex: hex::encode(bytes),
+            };
+            if std::env::var_os("WRITE_NOTE_FILE_VECTOR").is_some() {
+                std::fs::write(
+                    note_file_vector_path(),
+                    serde_json::to_string_pretty(&vec![actual]).unwrap() + "\n",
+                )
+                .unwrap();
+                return;
+            }
+            let pinned: Vec<NoteFileVector> =
+                serde_json::from_str(&std::fs::read_to_string(note_file_vector_path()).unwrap())
+                    .unwrap();
+            assert_eq!(
+                serde_json::to_value(&pinned[0]).unwrap(),
+                serde_json::to_value(&actual).unwrap()
+            );
+        }
+
+        #[tokio::test]
+        async fn a_summary_the_proposal_id_does_not_commit_to_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let client = client(dir.path()).await;
+            let (mut proposal, _) = p2id_proposal(&client, true);
+            proposal.id = crate::transaction::word_to_hex(&Word::from([3u32, 3, 3, 3]));
+
+            let error = client
+                .export_p2id_note_to_bytes(&proposal)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("carries a summary committing to"), "{error}");
+        }
+
+        #[tokio::test]
+        async fn a_proposal_other_than_a_p2id_is_refused() {
+            let dir = tempfile::tempdir().unwrap();
+            let client = client(dir.path()).await;
+            let (mut proposal, _) = p2id_proposal(&client, true);
+            proposal.transaction_type = TransactionType::Custom;
+
+            assert!(client.export_p2id_note_to_bytes(&proposal).await.is_err());
+        }
     }
 
     #[test]

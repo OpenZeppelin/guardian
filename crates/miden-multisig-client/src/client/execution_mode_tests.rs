@@ -716,11 +716,7 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
     assert!(
         cosigner
             .known_proposals
-            .admit(
-                proposed.account.id(),
-                &proposals[0].id,
-                crate::local_execution::GuardianExecutionRequest::default(),
-            )
+            .admit(proposed.account.id(), &proposals[0].id,)
             .is_ok(),
         "a listed proposal is held for a GUARDIAN execution request"
     );
@@ -740,11 +736,9 @@ async fn a_default_cosigner_lists_verifies_signs_and_exports_a_guardian_executab
 
     cosigner.known_proposals = crate::local_execution::KnownProposals::default();
     let admit = |cosigner: &MultisigClient| {
-        cosigner.known_proposals.admit(
-            proposed.account.id(),
-            &proposals[0].id,
-            crate::local_execution::GuardianExecutionRequest::default(),
-        )
+        cosigner
+            .known_proposals
+            .admit(proposed.account.id(), &proposals[0].id)
     };
     assert!(
         matches!(
@@ -810,10 +804,7 @@ async fn an_imported_proposal_relays_its_approvals_before_requesting_execution()
     let before = handle.calls().len();
 
     cosigner
-        .request_imported_guardian_execution(
-            &exported,
-            crate::local_execution::GuardianExecutionRequest::default(),
-        )
+        .request_imported_guardian_execution(&exported)
         .await
         .expect("an imported, threshold-met proposal is sent to GUARDIAN");
 
@@ -856,12 +847,7 @@ async fn a_listed_proposal_that_fails_verification_is_not_held() {
         proposals[0].verification
     );
 
-    let requested = cosigner
-        .request_guardian_execution(
-            &proposals[0].id,
-            crate::local_execution::GuardianExecutionRequest::default(),
-        )
-        .await;
+    let requested = cosigner.request_guardian_execution(&proposals[0].id).await;
     assert!(
         matches!(
             requested,
@@ -878,7 +864,7 @@ mod local_execution {
 
     use super::*;
     use crate::error::MultisigError;
-    use crate::local_execution::{GuardianExecutionRequest, LocalExecutionReason};
+    use crate::local_execution::LocalExecutionReason;
     use crate::proposal::P2ideHeights;
 
     const PROPOSAL_ID: &str = "0xabc123";
@@ -946,13 +932,8 @@ mod local_execution {
             self
         }
 
-        async fn request(
-            &mut self,
-            request: GuardianExecutionRequest,
-        ) -> crate::error::Result<guardian_client::ProposalExecution> {
-            self.client
-                .request_guardian_execution(PROPOSAL_ID, request)
-                .await
+        async fn request(&mut self) -> crate::error::Result<guardian_client::ProposalExecution> {
+            self.client.request_guardian_execution(PROPOSAL_ID).await
         }
 
         fn guardian_was_asked(&self) -> bool {
@@ -981,12 +962,6 @@ mod local_execution {
         }
     }
 
-    fn opted_in() -> GuardianExecutionRequest {
-        GuardianExecutionRequest {
-            allow_private_note: true,
-        }
-    }
-
     fn assert_local(
         outcome: crate::error::Result<guardian_client::ProposalExecution>,
         expected: LocalExecutionReason,
@@ -1004,15 +979,12 @@ mod local_execution {
     }
 
     #[test]
-    fn the_reasons_cover_exactly_a_switch_and_a_private_p2id() {
+    fn the_only_reason_is_a_switch() {
         assert_eq!(
             LocalExecutionReason::of(&switch_guardian()),
             Some(LocalExecutionReason::SwitchGuardian)
         );
-        assert_eq!(
-            LocalExecutionReason::of(&p2id(NoteType::Private)),
-            Some(LocalExecutionReason::PrivateNote)
-        );
+        assert_eq!(LocalExecutionReason::of(&p2id(NoteType::Private)), None);
         assert_eq!(LocalExecutionReason::of(&p2id(NoteType::Public)), None);
         assert_eq!(
             LocalExecutionReason::of(&TransactionType::AddCosigner {
@@ -1026,48 +998,30 @@ mod local_execution {
             LocalExecutionReason::SwitchGuardian.as_str(),
             "switch_guardian"
         );
-        assert_eq!(LocalExecutionReason::PrivateNote.as_str(), "private_note");
-        assert_eq!(
-            GuardianExecutionRequest {
-                allow_private_note: true,
-            }
-            .local_execution_reason(&switch_guardian()),
-            Some(LocalExecutionReason::SwitchGuardian)
-        );
-        assert_eq!(
-            GuardianExecutionRequest {
-                allow_private_note: true,
-            }
-            .local_execution_reason(&p2id(NoteType::Private)),
-            None
-        );
+        assert_eq!(LocalExecutionReason::parse("private_note"), None);
     }
 
     #[test]
     fn the_error_says_to_execute_locally_and_names_the_reason() {
         let message = MultisigError::LocalExecutionRequired {
             proposal_id: PROPOSAL_ID.to_string(),
-            reason: LocalExecutionReason::PrivateNote,
+            reason: LocalExecutionReason::SwitchGuardian,
         }
         .to_string();
         assert_eq!(
             message,
             format!(
                 "proposal {PROPOSAL_ID} must be executed locally, not by GUARDIAN: {}",
-                LocalExecutionReason::PrivateNote.description()
+                LocalExecutionReason::SwitchGuardian.description()
             )
         );
     }
 
     #[tokio::test]
-    async fn a_switch_is_refused_even_with_the_private_note_opt_in() {
+    async fn a_switch_is_refused() {
         let mut requester = Requester::start().await.holding(switch_guardian());
         assert_local(
-            requester.request(GuardianExecutionRequest::default()).await,
-            LocalExecutionReason::SwitchGuardian,
-        );
-        assert_local(
-            requester.request(opted_in()).await,
+            requester.request().await,
             LocalExecutionReason::SwitchGuardian,
         );
         assert!(!requester.guardian_was_asked());
@@ -1095,26 +1049,16 @@ mod local_execution {
         .await
         .holding(switch_guardian());
         assert_local(
-            requester.request(GuardianExecutionRequest::default()).await,
+            requester.request().await,
             LocalExecutionReason::SwitchGuardian,
         );
         assert!(!requester.guardian_was_asked());
     }
 
     #[tokio::test]
-    async fn a_private_p2id_is_refused_without_the_opt_in() {
+    async fn a_private_p2id_is_sent() {
         let mut requester = Requester::start().await.holding(p2id(NoteType::Private));
-        assert_local(
-            requester.request(GuardianExecutionRequest::default()).await,
-            LocalExecutionReason::PrivateNote,
-        );
-        assert!(!requester.guardian_was_asked());
-    }
-
-    #[tokio::test]
-    async fn a_private_p2id_is_sent_with_the_opt_in() {
-        let mut requester = Requester::start().await.holding(p2id(NoteType::Private));
-        let execution = requester.request(opted_in()).await.unwrap();
+        let execution = requester.request().await.unwrap();
         assert!(execution.newly_accepted);
         assert!(requester.guardian_was_asked());
     }
@@ -1122,10 +1066,7 @@ mod local_execution {
     #[tokio::test]
     async fn a_public_p2id_is_sent() {
         let mut requester = Requester::start().await.holding(p2id(NoteType::Public));
-        requester
-            .request(GuardianExecutionRequest::default())
-            .await
-            .unwrap();
+        requester.request().await.unwrap();
         assert!(requester.guardian_was_asked());
     }
 
@@ -1138,10 +1079,7 @@ mod local_execution {
                     procedure: ProcedureName::ReceiveAsset,
                     new_threshold: 1,
                 });
-        requester
-            .request(GuardianExecutionRequest::default())
-            .await
-            .unwrap();
+        requester.request().await.unwrap();
         assert!(requester.guardian_was_asked());
     }
 
@@ -1150,7 +1088,7 @@ mod local_execution {
         let mut requester = Requester::start().await.holding(p2id(NoteType::Public));
         requester
             .client
-            .request_guardian_execution("ABC123", GuardianExecutionRequest::default())
+            .request_guardian_execution("ABC123")
             .await
             .unwrap();
         assert!(requester.guardian_was_asked());
@@ -1159,7 +1097,7 @@ mod local_execution {
     #[tokio::test]
     async fn a_proposal_this_client_does_not_hold_fails_closed_without_asking_guardian() {
         let mut requester = Requester::start().await;
-        match requester.request(opted_in()).await {
+        match requester.request().await {
             Err(MultisigError::ProposalNotHeldLocally { proposal_id }) => {
                 assert_eq!(proposal_id, PROPOSAL_ID)
             }
@@ -1177,7 +1115,7 @@ mod local_execution {
             .known_proposals
             .insert(other, PROPOSAL_ID, &p2id(NoteType::Public));
         assert!(matches!(
-            requester.request(GuardianExecutionRequest::default()).await,
+            requester.request().await,
             Err(MultisigError::ProposalNotHeldLocally { .. })
         ));
         assert!(!requester.guardian_was_asked());

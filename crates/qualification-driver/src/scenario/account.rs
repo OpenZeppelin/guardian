@@ -656,10 +656,7 @@ pub async fn assert_execution_unavailable(runner: &Runner) -> ActionOutcome {
         Err(outcome) => return outcome,
     };
 
-    match client
-        .execute_delta_proposal(&id, &proposal_id, false)
-        .await
-    {
+    match client.execute_delta_proposal(&id, &proposal_id).await {
         Err(error) if error.guardian_code().as_deref() == Some("GUARDIAN_PROVING_UNAVAILABLE") => {}
         Err(error) => {
             return ActionOutcome::failed_product(format!(
@@ -787,16 +784,14 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
             ))),
         };
     if let Some(outcome) = refused(
-        client.execute_delta_proposal(&id, &second_id, false).await,
+        client.execute_delta_proposal(&id, &second_id).await,
         "GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST",
         "a proposal created without a stored request",
     ) {
         return outcome;
     }
     if let Some(outcome) = refused(
-        client
-            .execute_delta_proposal(&id, &proposal_id, false)
-            .await,
+        client.execute_delta_proposal(&id, &proposal_id).await,
         "GUARDIAN_PROPOSAL_NOT_READY",
         "a proposal with no cosigner signatures",
     ) {
@@ -878,7 +873,7 @@ async fn execute_until_pre_boundary_failure(
     use guardian_client::ExecutionState;
     use guardian_client::execution::ExecutionFailureCode;
 
-    match client.execute_delta_proposal(id, proposal_id, false).await {
+    match client.execute_delta_proposal(id, proposal_id).await {
         Ok(execution) if execution.newly_accepted => {}
         Ok(execution) => {
             return Err(ActionOutcome::failed_product(format!(

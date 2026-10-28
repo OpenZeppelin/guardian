@@ -44,7 +44,6 @@ async fn two_replicas_sharing_storage_prove_and_submit_once() {
         account_id: ACCOUNT.to_string(),
         proposal_id: PROPOSAL.to_string(),
         credentials: f.credentials(),
-        allow_private_note: false,
     };
     let (first, second) = tokio::join!(
         request_execution(&f.state, params()),
@@ -161,7 +160,6 @@ async fn a_switch_during_another_execution_is_told_to_execute_locally() {
             account_id: ACCOUNT.to_string(),
             proposal_id: switch_id,
             credentials: f.credentials(),
-            allow_private_note: false,
         },
     )
     .await;

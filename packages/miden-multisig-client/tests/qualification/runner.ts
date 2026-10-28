@@ -185,6 +185,10 @@ async function runLiveAction(
       return live.sendAsset(context, scenario.id);
     case 'asset-send-assert':
       return live.assertAssetSent(context, scenario.id);
+    case 'private-p2id-send':
+      return live.sendPrivateP2id(context, scenario.id);
+    case 'private-note-deliver':
+      return live.deliverPrivateNote(context, scenario.id);
     case 'procedure-threshold-set':
       return live.setProcedureThreshold(context, scenario.id);
     case 'procedure-threshold-lower':

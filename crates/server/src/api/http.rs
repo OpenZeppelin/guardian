@@ -842,17 +842,12 @@ pub struct ExecutionQuery {
     pub proposal_id: String,
 }
 
-/// The body of an execution request. Every field is part of the signed payload, so the
-/// payload never equals a signed read of the same proposal.
+/// The body of an execution request. It is signed as `guardian.ExecuteDeltaProposal`, so its
+/// signature never authenticates a signed read of the same proposal, whose fields are the same.
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct ExecuteProposalRequest {
     pub account_id: String,
     pub proposal_id: String,
-    /// Let Guardian execute a transaction that creates a private output note. Without it the
-    /// request is refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`
-    /// `private_note`). Required, and signed as sent: a body that omits it is refused before
-    /// its signature is checked, rather than failing a signature over a field it never carried.
-    pub allow_private_note: bool,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
@@ -897,13 +892,15 @@ pub async fn execute_delta_proposal(
     ),
     GuardianError,
 > {
-    let request_payload =
-        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
+    let request_payload = request_payload_for_operation(
+        &payload,
+        guardian_shared::auth_request_payload::SignedOperation::ExecuteDeltaProposal,
+    )
+    .map_err(GuardianError::InvalidInput)?;
     let params = crate::services::execute_proposal::RequestExecutionParams {
         account_id: payload.account_id,
         proposal_id: payload.proposal_id,
         credentials: request_payload.apply_to(credentials),
-        allow_private_note: payload.allow_private_note,
     };
     let envelope = crate::services::execute_proposal::request_execution(&state, params).await?;
     let status = if envelope.newly_accepted {
@@ -1094,6 +1091,19 @@ fn request_payload_from_serializable<T: Serialize>(
     let json = serde_json::to_value(value)
         .map_err(|e| format!("Failed to convert payload to JSON value: {e}"))?;
     request_payload_from_value(&json)
+}
+
+/// [`request_payload_from_serializable`] for a request signed as `operation`, whose signed
+/// payload is domain-separated from every other request with the same body.
+fn request_payload_for_operation<T: Serialize>(
+    value: &T,
+    operation: guardian_shared::auth_request_payload::SignedOperation,
+) -> Result<RequestPayloadParts, String> {
+    let parts = request_payload_from_serializable(value)?;
+    Ok(RequestPayloadParts {
+        payload: AuthRequestPayload::for_operation(operation, &parts.bytes),
+        bytes: parts.bytes,
+    })
 }
 
 fn request_payload_from_value(value: &serde_json::Value) -> Result<RequestPayloadParts, String> {

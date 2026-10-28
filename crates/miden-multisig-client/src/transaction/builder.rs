@@ -159,7 +159,7 @@ impl ProposalBuilder {
     pub fn with_execution_mode(mut self, mode: ProposalExecutionMode) -> Self {
         self.execution_mode = match LocalExecutionReason::of(&self.transaction_type) {
             Some(LocalExecutionReason::SwitchGuardian) => ProposalExecutionMode::SelfExecuted,
-            Some(LocalExecutionReason::PrivateNote) | None => mode,
+            None => mode,
         };
         self
     }

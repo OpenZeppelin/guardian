@@ -5,7 +5,8 @@ use serde_json::Value;
 
 /// A request whose signed payload is domain-separated from every other request's, so a
 /// signature over one operation never authenticates another with the same body. A Protocol
-/// Buffers message never begins with the tag, because its first byte is not a valid field key.
+/// Buffers message never begins with the tag, because its first byte is not a valid field key,
+/// and canonical JSON begins with `{`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignedOperation {
     ExecuteDeltaProposal,
@@ -70,6 +71,17 @@ impl AuthRequestPayload {
         Ok(Self::from_bytes(&bytes))
     }
 
+    /// The payload of the canonical JSON of `value` signed as `operation`.
+    pub fn for_operation_json_value(
+        operation: SignedOperation,
+        value: &Value,
+    ) -> Result<Self, String> {
+        let canonical = canonicalize_json(value);
+        let bytes =
+            serde_json::to_vec(&canonical).map_err(|e| format!("Failed to serialize JSON: {e}"))?;
+        Ok(Self::for_operation(operation, &bytes))
+    }
+
     pub fn from_json_serializable<T: Serialize>(value: &T) -> Result<Self, String> {
         let json = serde_json::to_value(value)
             .map_err(|e| format!("Failed to convert payload to JSON value: {e}"))?;
@@ -120,6 +132,32 @@ mod tests {
         assert_ne!(
             AuthRequestPayload::for_operation(SignedOperation::ExecuteDeltaProposal, bytes),
             AuthRequestPayload::from_bytes(bytes)
+        );
+    }
+
+    #[test]
+    fn a_tagged_json_payload_matches_the_typescript_client() {
+        let body = serde_json::json!({ "proposal_id": "0xproposal", "account_id": "0xabc" });
+        let payload = AuthRequestPayload::for_operation_json_value(
+            SignedOperation::ExecuteDeltaProposal,
+            &body,
+        )
+        .unwrap();
+        assert_eq!(
+            payload,
+            AuthRequestPayload::for_operation(
+                SignedOperation::ExecuteDeltaProposal,
+                br#"{"account_id":"0xabc","proposal_id":"0xproposal"}"#
+            )
+        );
+        assert_eq!(
+            payload.as_elements().map(|felt| felt.as_canonical_u64()),
+            [
+                8769230917640929323,
+                9267576103040187092,
+                9755682680803901249,
+                2629457888911836854
+            ]
         );
     }
 

@@ -547,7 +547,7 @@ does not offer it.
 
 ```rust
 use miden_multisig_client::{
-    ExecutionState, ExecutionWaitOptions, GuardianExecutionRequest, MultisigClient,
+    ExecutionState, ExecutionWaitOptions, MultisigClient,
     ProposalExecutionMode, TransactionType,
 };
 
@@ -559,7 +559,7 @@ let mut client = MultisigClient::builder()
 let proposal = client.propose_transaction(TransactionType::consume_notes(note_ids)).await?;
 // ...cosigners sign to threshold...
 client
-    .request_guardian_execution(&proposal.id, GuardianExecutionRequest::default())
+    .request_guardian_execution(&proposal.id)
     .await?;
 let execution = client
     .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
@@ -603,17 +603,21 @@ refused locally (`ProposalNotReady`) before Guardian is contacted.
 
 #### Proposals a Guardian-executable client still executes locally
 
-Two proposal types do client-side work when executed that Guardian execution skips, so both
-SDKs refuse to send them to Guardian, identically:
+One proposal type does client-side work when executed that Guardian execution skips, so both
+SDKs refuse to send it to Guardian, identically:
 
 | Reason (`LocalExecutionReason`) | Proposal | Refused |
 |---|---|---|
-| `switch_guardian` | `switch_guardian` | Always; no opt-in. The executing client verifies the new endpoint, registers the account there and repoints itself. |
-| `private_note` | `p2id` with a private note | Unless this request opts in. Only the executing client holds the output note it must export to the recipient. |
+| `switch_guardian` | `switch_guardian` | Always. The executing client verifies the new endpoint, registers the account there and repoints itself. |
 
-Every other proposal type, a public P2ID included, is sent. A caller that delivers the private
-note itself opts in per request: `GuardianExecutionRequest { allow_private_note: true }` in Rust,
-`{ allowPrivateNote: true }` in TypeScript. The opt-in never waives a switch.
+Every other proposal type is sent, a P2ID that creates a private note included. Its recipient
+learns the note only from a note file, which any cosigner exports from the proposal whoever
+executed it: `export_p2id_note_to_file(&proposal, path)` / `export_p2id_note_to_bytes(&proposal)`
+in Rust, `exportP2idNoteToFile(proposal, filename?)` / `exportP2idNoteToBytes(proposal)` in
+TypeScript. The export rebuilds the note from the proposal, checks that the summary the proposal
+id commits to creates it, and includes its inclusion proof once the transaction has committed.
+GUARDIAN deletes a proposal once its transaction is canonical, so the exporting cosigner keeps
+the proposal it listed, signed or created (or its offline export) from before it is executed.
 
 The check runs on the proposal the client already holds, before Guardian is contacted: one it
 synced, signed, created or imported (`syncProposals`, `signProposal`, the `create*Proposal`
@@ -624,11 +628,9 @@ it. Only a proposal that passed verification is held: one a listing reports as `
 closed until a later listing verifies it. A TypeScript proposal still `unchecked` (imported, or
 parsed without a check) is verified once before the request, and fails closed if that fails.
 
-Guardian applies the same rule on its side. The opt-in travels with the request
-(`allow_private_note` on the wire), and Guardian refuses a switch always, and a private-note
-P2ID without the opt-in, with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason`
-`switch_guardian` or `private_note`). Guardian reads both from the signed summary, not the
-label: a proposal whose transaction changes the guardian key is a switch whatever it is called. Both SDKs surface that refusal as the same
+Guardian applies the same rule on its side: it refuses a switch with
+`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `switch_guardian`). Guardian reads it from
+the signed summary, not the label: a proposal whose transaction changes the guardian key is a switch whatever it is called. Both SDKs surface that refusal as the same
 `LocalExecutionRequired` error as the local check.
 
 | Outcome | Rust | TypeScript |
@@ -643,7 +645,7 @@ requesting, call the exported rule: `LocalExecutionReason::of(&proposal.transact
 `localExecutionReason(proposal)` and `describeLocalExecutionReason(reason)` in TypeScript.
 
 ```rust
-use miden_multisig_client::{GuardianExecutionRequest, LocalExecutionReason};
+use miden_multisig_client::{LocalExecutionReason};
 
 match LocalExecutionReason::of(&proposal.transaction_type) {
     Some(reason) => {
@@ -652,7 +654,7 @@ match LocalExecutionReason::of(&proposal.transaction_type) {
     }
     None => {
         client
-            .request_guardian_execution(&proposal.id, GuardianExecutionRequest::default())
+            .request_guardian_execution(&proposal.id)
             .await?;
     }
 }
@@ -746,11 +748,8 @@ KMS. The base clients have no wait helper, so a thin client polls itself (and ha
 retryable read errors as it sees fit).
 
 The base clients skip the SDKs' local check: they send whatever proposal they are given, and
-Guardian's own rule is the only guard. Guardian refuses a switch always, and a P2ID that creates
-a private note unless the request sets `allow_private_note` (`{ allowPrivateNote: true }` in
-TypeScript), with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. Set the flag only when the caller
-delivers the private note to its recipient itself, since Guardian's execution leaves no note
-record with any client. The same holds for `MultisigClient.guardianClient` in TypeScript: it
+Guardian's own rule is the only guard: it refuses a switch with
+`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. The same holds for `MultisigClient.guardianClient` in TypeScript: it
 exposes the base client, without the local check. Prefer the SDKs'
 `request_guardian_execution` / `requestGuardianExecution`, which check the proposal locally
 first.
@@ -760,9 +759,7 @@ import { GuardianHttpClient, isTerminalExecutionState } from '@openzeppelin/guar
 
 const guardian = new GuardianHttpClient(guardianUrl);
 guardian.setSigner(cosignerSigner); // any `Signer` for one of the account's cosigners
-let execution = await guardian.executeDeltaProposal(accountId, proposalId, {
-  allowPrivateNote: false,
-});
+let execution = await guardian.executeDeltaProposal(accountId, proposalId);
 while (!isTerminalExecutionState(execution.state)) {
   await new Promise((resolve) => setTimeout(resolve, 2000));
   execution = await guardian.getDeltaProposalExecution(accountId, proposalId);
@@ -772,10 +769,9 @@ while (!isTerminalExecutionState(execution.state)) {
 ```rust
 use guardian_client::GuardianClient;
 
-let allow_private_note = false;
 let mut guardian = GuardianClient::connect(guardian_endpoint).await?.with_signer(cosigner_signer);
 let mut execution = guardian
-    .execute_delta_proposal(&account_id, &proposal_id, allow_private_note)
+    .execute_delta_proposal(&account_id, &proposal_id)
     .await?;
 while !execution.state.is_terminal() {
     tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1282,18 +1278,18 @@ usually not what you want.
 > **Warning:** a `private` P2ID note publishes only its hash on chain. The
 > recipient cannot discover the note by syncing; the full note details must
 > be shared with them out-of-band before they can consume it. Use
-> `exportNoteToBytes` / `importNoteFromBytes` (or the browser file variants
-> `exportNoteToFile` / `importNoteFromFile`) for that transfer (issue #356):
+> `exportP2idNoteToBytes` / `importNoteFromBytes` (or the browser file variants
+> `exportP2idNoteToFile` / `importNoteFromFile`) for that transfer (issue #356).
+> The export rebuilds the note from the proposal, so it works whoever executed
+> it, this client or GUARDIAN. Keep the `Proposal` from before execution:
+> GUARDIAN deletes it once its transaction is canonical.
 
 ```typescript
-// Sender: resolve the note ID BEFORE executing (it derives from the
-// pre-execution vault state), then export after execution.
-const noteId = await multisig.getP2idNoteId(privateProposal);
-// ...sign + execute the proposal...
-const noteFileBytes = await multisig.exportNoteToBytes(noteId);
+// Sender (any cosigner holding the proposal): export once it is executed.
+const noteFileBytes = await multisig.exportP2idNoteToBytes(privateProposal);
 // Deliver `noteFileBytes` to the recipient out-of-band (file, message, ...).
 // Or, in a browser, trigger a download of the note file directly:
-await multisig.exportNoteToFile(noteId);
+await multisig.exportP2idNoteToFile(privateProposal);
 
 // Recipient: import the bytes (or a File from an <input type="file">), then
 // sync so the note's on-chain commitment is tracked; it then appears in
@@ -1512,10 +1508,10 @@ Every Guardian request is otherwise signed by the wallet, which means a prompt
 per request on a hardware wallet. When the Guardian advertises `sessions` on
 `GET /status`, the wallet can sign one session grant; a non-extractable
 WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing,
-proposal create/sign and delta pushes until the session ends. Transaction
-approvals, account registration, candidate abandons, account lookup and
-Guardian execution requests (`requestGuardianExecution`) still use the wallet;
-execution status reads may use the session.
+proposal create/sign, delta pushes, Guardian execution requests
+(`requestGuardianExecution`) and execution status reads until the session
+ends. Transaction approvals, account registration, candidate abandons and
+account lookup still use the wallet.
 
 ```typescript
 import { IndexedDbSessionKeyStore, describeSessionGrant } from '@openzeppelin/miden-multisig-client';
@@ -1579,8 +1575,10 @@ Authentication).
 | `listProposals()` | Get proposals from the most recent sync plus not-yet-reported local creates/imports |
 | `createP2idProposal(recipient, faucet, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`; presence of `reclaimHeight`/`timelockHeight` creates a P2IDE note, issue #366) |
 | `createConsumeNotesProposal(noteIds, { nonce }?)` | Create note consumption proposal |
-| `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
-| `exportNoteToBytes(noteId)` | Export a created note as note-file bytes for out-of-band delivery |
+| `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates |
+| `exportP2idNoteToBytes(proposal)` | Export the note a P2ID proposal creates as note-file bytes for out-of-band delivery, whoever executed it |
+| `exportP2idNoteToFile(proposal, filename?)` | Browser-only: download that note file |
+| `exportNoteToBytes(noteId)` | Export a note this client's own execution created as note-file bytes |
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
@@ -2150,14 +2148,15 @@ for note in notes {
 
 A private P2ID note publishes only its commitment on chain, so the recipient's
 client can never learn the note contents via sync. The sender must export the
-note and deliver the file out-of-band (issue #356):
+note and deliver the file out-of-band (issue #356). The export rebuilds the note
+from the proposal, so any cosigner can export it, whoever executed the proposal
+(this client or GUARDIAN). Keep the `Proposal` from before execution: GUARDIAN
+deletes it once its transaction is canonical.
 
 ```rust
-// Sender: resolve the note ID BEFORE executing (it derives from the
-// pre-execution vault state), then export after execution.
-let note_id = client.p2id_note_id(&proposal)?;
+// Sender (any cosigner holding the proposal): export once it is executed.
 client.execute_proposal(&proposal.id).await?;
-client.export_note_to_file(&note_id.to_hex(), Path::new("note.mno")).await?;
+client.export_p2id_note_to_file(&proposal, Path::new("note.mno")).await?;
 // Deliver note.mno to the recipient out-of-band (file, message, ...).
 
 // Recipient: import the file, then sync so the note's on-chain commitment
@@ -2167,8 +2166,8 @@ let imported_note_id = client.import_note_from_file(Path::new("note.mno")).await
 client.sync().await?;
 ```
 
-`export_note_to_bytes` / `import_note_from_bytes` are the in-memory variants
-for programmatic delivery.
+`export_p2id_note_to_bytes` / `import_note_from_bytes` are the in-memory
+variants for programmatic delivery.
 
 Every cosigner device that verifies or signs the consume-notes proposal needs
 the note in its local store with the on-chain inclusion proof — deliver the
@@ -2267,9 +2266,11 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 | `import_proposal(path)` | Import from file |
 | `list_consumable_notes()` | List available notes |
 | `list_consumable_notes_filtered(filter)` | Filter notes |
-| `p2id_note_id(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
-| `export_note_to_file(note_id, path)` | Export a created note to a file for out-of-band delivery |
-| `export_note_to_bytes(note_id)` | Export a created note as note-file bytes |
+| `p2id_note_id(proposal)` | Compute the note ID a P2ID proposal creates |
+| `export_p2id_note_to_file(proposal, path)` | Export the note a P2ID proposal creates to a file for out-of-band delivery, whoever executed it |
+| `export_p2id_note_to_bytes(proposal)` | Export that note as note-file bytes |
+| `export_note_to_file(note_id, path)` | Export a note this client's own execution created to a file |
+| `export_note_to_bytes(note_id)` | Export a note this client's own execution created as note-file bytes |
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 | `recover_notes(options)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |

@@ -146,7 +146,6 @@ export {
   describeLocalExecutionReason,
   localExecutionReason,
   type ExecutionWaitOptions,
-  type GuardianExecutionRequestOptions,
   type LocalExecutionReason,
 } from './multisig/guardianExecution.js';
 export type {

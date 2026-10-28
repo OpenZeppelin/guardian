@@ -81,7 +81,7 @@ The app exposes `window.smoke` with JSON-safe methods:
 - `signProposalOffline({ proposalId, json })`
 - `importProposal({ json })`
 - `recoverByKey()`
-- `startGuardianSession({ ttlSeconds? })`: the signer signs one session grant; later reads, proposal requests and delta pushes are signed by a session key
+- `startGuardianSession({ ttlSeconds? })`: the signer signs one session grant; later reads, proposal requests, delta pushes and GUARDIAN execution requests are signed by a session key
 - `endGuardianSession()`
 - `revokeAllGuardianSessions()`: wallet-signed; ends every session of the signer on the Guardian
 - `recoverNotes({ transportDrain?, proposalImport?, publicBackfill?, fromBlock?, toBlock?, syncAfter? })`
@@ -119,7 +119,7 @@ await window.smoke.createProposal({
 
 In `guardian_executable` mode, proposals carry the transaction request GUARDIAN reproduces, and `executeProposal({ proposalId })` asks GUARDIAN to execute and waits until the execution is `committed` or `failed`. A failure throws with the error code, whether the proposal is still stored, and what to do next, which follows the code: execute again (a transient cause, more signatures, or a passed transaction window), fix the cause first, or create and sign a new proposal (a passed approval window, or a transaction that was sent and did not land). A stored proposal is not always worth executing again.
 
-Two kinds of proposal are executed by the browser even in this mode: `switch_guardian`, because the executing client repoints itself and registers the account on the new GUARDIAN, and a private P2ID, because the note file `exportNote` hands to the recipient comes from the record the browser's own execution creates. The harness asks the SDK's `localExecutionReason` before sending a proposal to GUARDIAN, logs the reason, and the UI labels the button **Execute locally** followed by that reason in parentheses. `guardianExecutionStatus({ proposalId })` returns the account's in-flight execution (`current`) and, when a proposal ID is given, that proposal's latest execution (`proposal`).
+One kind of proposal is executed by the browser even in this mode: `switch_guardian`, because the executing client repoints itself and registers the account on the new GUARDIAN. A private P2ID is executed by GUARDIAN like any other; `exportP2idNote({ proposalId })` rebuilds its note from the proposal and returns the note file to hand to the recipient, whoever executed it. GUARDIAN deletes a proposal once its transaction is canonical, so the harness exports from the current proposal list, or, once a proposal has left it, from the copy it keeps of every proposal it listed during the session; a proposal this session never listed cannot be exported (`exportNote({ noteId })` exports only a note the browser's own execution created). The harness asks the SDK's `localExecutionReason` before sending a proposal to GUARDIAN, logs the reason, and the UI labels the button **Execute locally** followed by that reason in parentheses. `guardianExecutionStatus({ proposalId })` returns the account's in-flight execution (`current`) and, when a proposal ID is given, that proposal's latest execution (`proposal`).
 
 To test it:
 

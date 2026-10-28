@@ -62,7 +62,7 @@ pub struct ApiErrorMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_type: Option<String>,
     /// Why the request was refused, for the code that names one:
-    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`).
+    /// `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }

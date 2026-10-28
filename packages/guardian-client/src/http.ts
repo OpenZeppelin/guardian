@@ -102,30 +102,17 @@ export interface GuardianErrorMeta {
   proposalType?: string;
   /**
    * Why GUARDIAN leaves the proposal to local execution. Present only when
-   * `code === 'proposal_executes_locally'`: `switch_guardian` for a guardian switch, and
-   * `private_note` for a transaction that creates a private output note while the request did
-   * not set `allowPrivateNote`.
+   * `code === 'proposal_executes_locally'`: `switch_guardian` for a guardian switch.
    */
   reason?: LocalExecutionReason;
 }
 
 /** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
-export type LocalExecutionReason = 'switch_guardian' | 'private_note';
-
-/** Options of {@link GuardianHttpClient.executeDeltaProposal}. */
-export interface ExecuteDeltaProposalOptions {
-  /**
-   * Let GUARDIAN execute a transaction that creates a private output note. Without it GUARDIAN
-   * refuses one with `proposal_executes_locally` (`meta.reason` `private_note`). The flag is part
-   * of the signed request.
-   */
-  allowPrivateNote?: boolean;
-}
+export type LocalExecutionReason = 'switch_guardian';
 
 function localExecutionReason(value: unknown): LocalExecutionReason | undefined {
   switch (value) {
     case 'switch_guardian':
-    case 'private_note':
       return value;
     default:
       return undefined;
@@ -592,23 +579,19 @@ export class GuardianHttpClient {
    * accepted; poll {@link getDeltaProposalExecution} for the outcome. Repeating the request while
    * the execution runs returns it with `newlyAccepted: false`.
    *
-   * GUARDIAN refuses a transaction that creates a private output note unless
-   * `options.allowPrivateNote` is set; the flag is always sent and signed.
+   * Signed by the session while one is set, over the payload tagged as `ExecuteDeltaProposal`:
+   * the body names the same fields as a status read, and the tag keeps a signed read from
+   * authenticating an execution request.
    */
-  async executeDeltaProposal(
-    accountId: string,
-    proposalId: string,
-    options?: ExecuteDeltaProposalOptions,
-  ): Promise<ProposalExecution> {
+  async executeDeltaProposal(accountId: string, proposalId: string): Promise<ProposalExecution> {
     const serverRequest = {
       account_id: accountId,
       proposal_id: proposalId,
-      allow_private_note: options?.allowPrivateNote ?? false,
     };
-    const response = await this.fetchAuthenticated('/delta/proposal/execution', {
+    const response = await this.fetchSigned('/delta/proposal/execution', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
-    }, accountId, serverRequest);
+    }, accountId, RequestAuthPayload.forOperation('ExecuteDeltaProposal', serverRequest), 'session');
     return fromServerExecution((await response.json()) as ServerProposalExecution);
   }
 
@@ -901,11 +884,20 @@ export class GuardianHttpClient {
     init: RequestInit,
     accountId: string,
     requestPayload: unknown,
-    mode: AuthMode = 'wallet',
+    mode: AuthMode = 'wallet'
+  ): Promise<Response> {
+    return this.fetchSigned(path, init, accountId, RequestAuthPayload.fromRequest(requestPayload), mode);
+  }
+
+  private async fetchSigned(
+    path: string,
+    init: RequestInit,
+    accountId: string,
+    authPayload: RequestAuthPayload,
+    mode: AuthMode,
     retries = 2
   ): Promise<Response> {
     const timestamp = this.nextTimestamp();
-    const authPayload = RequestAuthPayload.fromRequest(requestPayload);
     const session = mode === 'session' ? this.getSession() : null;
     const headers = session
       ? authHeaders(
@@ -947,7 +939,7 @@ export class GuardianHttpClient {
         err.code === 'authentication_replay'
       ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return this.fetchAuthenticated(path, init, accountId, requestPayload, mode, retries - 1);
+        return this.fetchSigned(path, init, accountId, authPayload, mode, retries - 1);
       }
       throw err;
     }

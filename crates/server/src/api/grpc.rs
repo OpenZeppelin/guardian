@@ -434,7 +434,6 @@ impl Guardian for GuardianService {
             account_id: data.account_id,
             proposal_id: data.proposal_id,
             credentials,
-            allow_private_note: data.allow_private_note,
         };
         let envelope =
             crate::services::execute_proposal::request_execution(&self.app_state, params)

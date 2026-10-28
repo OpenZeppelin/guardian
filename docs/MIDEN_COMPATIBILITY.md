@@ -399,15 +399,18 @@ Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators u
     wrong base; sync the account and retry, or create a new proposal.
   <!-- multisig-error-variants:end -->
 - `guardian_client::GuardianClient::execute_delta_proposal` is new:
-  `execute_delta_proposal(account_id, proposal_id, allow_private_note: bool)`. Guardian refuses a transaction that creates a private output note
-  (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `private_note`) unless it is `true`. The
-  flag is signed, and the gRPC execute payload is tagged `guardian.ExecuteDeltaProposal`, so a
-  client that signs the plain request bytes is refused with `authentication_failed`.
+  `execute_delta_proposal(account_id, proposal_id)`, signed by the session while one is
+  active. The execute payload is tagged `guardian.ExecuteDeltaProposal`, so a client that signs
+  the plain request bytes is refused with `authentication_failed`.
 - `guardian_shared::execution::ExecutionFailureCode` includes
   `AcknowledgementFailed` (`GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`): Guardian could not sign
   or record its acknowledgement, a failure on Guardian's side that leaves the proposal
   retryable.
-- `MultisigClient::request_imported_guardian_execution(&exported, request)` is new: it relays
+- `MultisigClient::request_guardian_execution(proposal_id)` and
+  `MultisigClient::export_p2id_note_to_file(&proposal, path)` / `export_p2id_note_to_bytes` are
+  new. A private P2ID is executed by Guardian like any other proposal; the export rebuilds its
+  note from the proposal, whoever executed it, and is how the recipient receives it.
+- `MultisigClient::request_imported_guardian_execution(&exported)` is new: it relays
   an exported document's approvals to Guardian before requesting execution, which
   `request_guardian_execution` alone cannot do for approvals collected off channel.
 - `MultisigClient::abandon_candidate` takes `(nonce, proposal_id)` and returns
@@ -428,10 +431,15 @@ Source-level changes in the TypeScript packages:
   `proposal_executes_locally`, `proposal_missing_transaction_request`, `proposal_not_ready`,
   `proposal_request_too_large` and `proving_unavailable`.
 - `GuardianHttpClient.executeDeltaProposal` is new:
-  `executeDeltaProposal(accountId, proposalId, options?: { allowPrivateNote?: boolean })`.
-  It always sends and signs `allow_private_note` in the body. A direct HTTP caller must sign the body with that field present (`false` when it does not opt
-  in); `GuardianErrorMeta.reason` (`switch_guardian` or `private_note`) says why a
-  `proposal_executes_locally` refusal left the proposal to local execution.
+  `executeDeltaProposal(accountId, proposalId)`, signed by the session while one is set. A
+  direct HTTP caller signs the body `{account_id, proposal_id}` tagged as
+  `guardian.ExecuteDeltaProposal` (`RequestAuthPayload.forOperation`); a plain signature is
+  refused with `authentication_failed`. `GuardianErrorMeta.reason` (`switch_guardian`) says why
+  a `proposal_executes_locally` refusal left the proposal to local execution.
+- `Multisig.requestGuardianExecution(proposalId)` and
+  `Multisig.exportP2idNoteToBytes(proposal)` / `exportP2idNoteToFile(proposal, filename?)` are
+  new. A private P2ID is executed by Guardian like any other proposal; the export rebuilds its
+  note from the proposal, whoever executed it.
 - `StatusResponse.execution` is a new optional field (`{ enabled: true }` or
   `{ enabled: false, reason }`). `getStatus()` leaves it out when the server sends none, as a
   Guardian that predates Guardian execution does, so a client still starts a session against

@@ -311,18 +311,18 @@ describe('localExecutionReason', () => {
     verification: verified,
   };
 
-  it('names the two proposals GUARDIAN must not execute and nothing else', () => {
+  it('names a switch as the one proposal GUARDIAN must not execute', () => {
     expect(localExecutionReason(switchGuardian)).toBe('switch_guardian');
-    expect(localExecutionReason(p2id('private'))).toBe('private_note');
+    expect(localExecutionReason(p2id('private'))).toBeNull();
     expect(localExecutionReason(p2id('public'))).toBeNull();
     expect(localExecutionReason(p2id(undefined))).toBeNull();
     expect(localExecutionReason(addSigner)).toBeNull();
   });
 
-  it('refuses a switch even when the request allows a private note', () => {
+  it('refuses a switch', () => {
     const error = (() => {
       try {
-        assertGuardianMayExecute('0xprop', switchGuardian, { allowPrivateNote: true });
+        assertGuardianMayExecute('0xprop', switchGuardian);
       } catch (e) {
         return e;
       }
@@ -336,21 +336,14 @@ describe('localExecutionReason', () => {
     );
   });
 
-  it('refuses a private note unless the request allows it', () => {
-    expect(() => assertGuardianMayExecute('0xprop', p2id('private'), {})).toThrow(LocalExecutionRequiredError);
-    expect(() => assertGuardianMayExecute('0xprop', p2id('private'), { allowPrivateNote: false })).toThrow(
-      LocalExecutionRequiredError,
-    );
-    expect(() => assertGuardianMayExecute('0xprop', p2id('private'), { allowPrivateNote: true })).not.toThrow();
-  });
-
-  it('lets public notes and other proposals through', () => {
-    expect(() => assertGuardianMayExecute('0xprop', p2id('public'), {})).not.toThrow();
-    expect(() => assertGuardianMayExecute('0xprop', addSigner, {})).not.toThrow();
+  it('lets private and public notes and other proposals through', () => {
+    expect(() => assertGuardianMayExecute('0xprop', p2id('private'))).not.toThrow();
+    expect(() => assertGuardianMayExecute('0xprop', p2id('public'))).not.toThrow();
+    expect(() => assertGuardianMayExecute('0xprop', addSigner)).not.toThrow();
   });
 
   it('fails closed on a proposal the client does not hold', () => {
-    expect(() => assertGuardianMayExecute('0xprop', undefined, { allowPrivateNote: true })).toThrow(
+    expect(() => assertGuardianMayExecute('0xprop', undefined)).toThrow(
       ProposalNotHeldLocallyError,
     );
   });
@@ -361,7 +354,7 @@ describe('localExecutionReason', () => {
       { status: 'failed', retryable: false, message: 'metadata does not rebuild the summary' },
       { status: 'failed', retryable: true, message: 'node unavailable' },
     ] satisfies ProposalVerification[]) {
-      expect(() => assertGuardianMayExecute('0xprop', { ...addSigner, verification }, {})).toThrow(
+      expect(() => assertGuardianMayExecute('0xprop', { ...addSigner, verification })).toThrow(
         ProposalNotHeldLocallyError,
       );
     }

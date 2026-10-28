@@ -47,7 +47,7 @@ async fn an_accepted_request_reports_the_new_execution() {
     accepted.ignored_signatures = 1;
     let mut client = client(MockGuardianService::default().with_execution(Ok(accepted))).await;
     let execution = client
-        .execute_delta_proposal(&account(), PROPOSAL, false)
+        .execute_delta_proposal(&account(), PROPOSAL)
         .await
         .unwrap();
     assert_eq!(execution.state, ExecutionState::Pending);
@@ -142,7 +142,7 @@ async fn a_refusal_arrives_as_a_status_with_its_code() {
     );
     let mut client = client(MockGuardianService::default().with_execution(Err(status))).await;
     let error = client
-        .execute_delta_proposal(&account(), PROPOSAL, false)
+        .execute_delta_proposal(&account(), PROPOSAL)
         .await
         .unwrap_err();
     assert_eq!(
@@ -165,7 +165,7 @@ async fn a_switch_guardian_refusal_names_the_proposal_type() {
     );
     let mut client = client(MockGuardianService::default().with_execution(Err(status))).await;
     let error = client
-        .execute_delta_proposal(&account(), PROPOSAL, false)
+        .execute_delta_proposal(&account(), PROPOSAL)
         .await
         .unwrap_err();
     assert_eq!(
@@ -181,7 +181,7 @@ async fn a_switch_guardian_refusal_names_the_proposal_type() {
 }
 
 #[tokio::test]
-async fn an_execute_request_carries_the_flag_and_signs_the_tagged_payload() {
+async fn an_execute_request_signs_the_tagged_payload() {
     let secret_key = SecretKey::new();
     let public_key = secret_key.public_key();
     let service = MockGuardianService::default()
@@ -195,22 +195,16 @@ async fn an_execute_request_carries_the_flag_and_signs_the_tagged_payload() {
         .with_signer(Arc::new(FalconKeyStore::new(secret_key)));
 
     client
-        .execute_delta_proposal(&account(), PROPOSAL, true)
+        .execute_delta_proposal(&account(), PROPOSAL)
         .await
         .unwrap();
     client
-        .execute_delta_proposal(&account(), PROPOSAL, false)
+        .execute_delta_proposal(&account(), PROPOSAL)
         .await
         .unwrap();
 
     let requests = handle.execute_requests();
-    assert_eq!(
-        requests
-            .iter()
-            .map(|signed| signed.request.allow_private_note)
-            .collect::<Vec<_>>(),
-        vec![true, false]
-    );
+    assert_eq!(requests.len(), 2);
     for signed in requests {
         let bytes = prost::Message::encode_to_vec(&signed.request);
         let signature = Signature::from_hex(&signed.signature_hex).unwrap();

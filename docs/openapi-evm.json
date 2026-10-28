@@ -881,7 +881,7 @@
               "string",
               "null"
             ],
-            "description": "Why the request was refused, for the code that names one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`, `private_note`)."
+            "description": "Why the request was refused, for the code that names one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`)."
           },
           "released_at": {
             "type": [

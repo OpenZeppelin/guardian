@@ -36,6 +36,16 @@ struct GrpcAnswer {
 impl Fixture {
     async fn http(&self, method: &str, path: &str, payload: serde_json::Value) -> HttpAnswer {
         let signed = AuthRequestPayload::from_json_value(&payload).unwrap();
+        self.http_signed(method, path, payload, signed).await
+    }
+
+    async fn http_signed(
+        &self,
+        method: &str,
+        path: &str,
+        payload: serde_json::Value,
+        signed: AuthRequestPayload,
+    ) -> HttpAnswer {
         let (pubkey, signature, timestamp) = self.sign_request(&signed);
         let (uri, body) = match method {
             "GET" => {
@@ -105,18 +115,9 @@ impl Fixture {
     }
 
     async fn grpc_execute(&self, proposal_id: &str) -> GrpcAnswer {
-        self.grpc_execute_allowing(proposal_id, false).await
-    }
-
-    async fn grpc_execute_allowing(
-        &self,
-        proposal_id: &str,
-        allow_private_note: bool,
-    ) -> GrpcAnswer {
         let message = ExecuteDeltaProposalRequest {
             account_id: ACCOUNT.to_string(),
             proposal_id: proposal_id.to_string(),
-            allow_private_note,
         };
         let signed = AuthRequestPayload::for_operation(
             SignedOperation::ExecuteDeltaProposal,
@@ -160,25 +161,18 @@ impl Fixture {
     }
 
     async fn http_execute(&self, proposal_id: &str) -> HttpAnswer {
-        self.http_execute_allowing(proposal_id, false).await
-    }
-
-    async fn http_execute_allowing(
-        &self,
-        proposal_id: &str,
-        allow_private_note: bool,
-    ) -> HttpAnswer {
-        self.http(
-            "POST",
-            "/delta/proposal/execution",
-            serde_json::to_value(ExecuteProposalRequest {
-                account_id: ACCOUNT.to_string(),
-                proposal_id: proposal_id.to_string(),
-                allow_private_note,
-            })
-            .unwrap(),
+        let payload = serde_json::to_value(ExecuteProposalRequest {
+            account_id: ACCOUNT.to_string(),
+            proposal_id: proposal_id.to_string(),
+        })
+        .unwrap();
+        let signed = AuthRequestPayload::for_operation_json_value(
+            SignedOperation::ExecuteDeltaProposal,
+            &payload,
         )
-        .await
+        .unwrap();
+        self.http_signed("POST", "/delta/proposal/execution", payload, signed)
+            .await
     }
 
     async fn http_status(&self, proposal_id: &str) -> HttpAnswer {
@@ -304,29 +298,6 @@ async fn refusals_carry_the_same_code_and_status_pair_on_both_transports() {
     assert_eq!(http.body["meta"]["reason"], "switch_guardian");
     assert_refused_alike(
         "switch_guardian",
-        http,
-        grpc,
-        "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
-        StatusCode::CONFLICT,
-        tonic::Code::FailedPrecondition,
-    );
-
-    let private_note = Fixture::new(Script::default()).await;
-    private_note
-        .store_proposal_with_summary(
-            "p2id",
-            true,
-            summary_with_output_note(miden_protocol::note::NoteType::Private),
-        )
-        .await;
-    let (http, grpc) = (
-        private_note.http_execute(PROPOSAL).await,
-        private_note.grpc_execute(PROPOSAL).await,
-    );
-    assert_eq!(http.body["meta"]["proposal_type"], "p2id");
-    assert_eq!(http.body["meta"]["reason"], "private_note");
-    assert_refused_alike(
-        "private note",
         http,
         grpc,
         "GUARDIAN_PROPOSAL_EXECUTES_LOCALLY",
@@ -550,72 +521,19 @@ async fn status_reports_execution_exactly_when_the_endpoint_offers_it() {
 }
 
 #[tokio::test]
-async fn an_opted_in_private_note_execution_is_accepted_on_both_transports() {
+async fn a_private_note_execution_is_accepted_on_both_transports() {
     let summary = summary_with_output_note(miden_protocol::note::NoteType::Private);
     let http = Fixture::new(Script::default()).await;
     http.store_proposal_with_summary("p2id", true, summary.clone())
         .await;
     assert_eq!(
-        http.http_execute_allowing(PROPOSAL, true).await.status,
+        http.http_execute(PROPOSAL).await.status,
         StatusCode::ACCEPTED
     );
     let grpc = Fixture::new(Script::default()).await;
     grpc.store_proposal_with_summary("p2id", true, summary)
         .await;
-    assert_eq!(
-        grpc.grpc_execute_allowing(PROPOSAL, true).await.code,
-        tonic::Code::Ok
-    );
-}
-
-#[tokio::test]
-async fn an_http_execute_without_allow_private_note_is_refused_before_authentication() {
-    let f = Fixture::new(Script::default()).await;
-    let body = serde_json::json!({ "account_id": ACCOUNT, "proposal_id": PROPOSAL });
-    let signed = AuthRequestPayload::from_json_value(&body).unwrap();
-    let (pubkey, signature, timestamp) = f.sign_request(&signed);
-    let router = build_http_router(
-        f.state.clone(),
-        HttpRouterConfig {
-            cors_layer: None,
-            rate_limit_store: RateLimitStore::new(RateLimitConfig::new(10_000, 10_000)),
-            body_limit_config: Some(BodyLimitConfig {
-                max_bytes: 1024 * 1024,
-            }),
-            metrics_enabled: false,
-        },
-    );
-    let response = router
-        .oneshot(
-            HttpRequest::builder()
-                .method("POST")
-                .uri("/delta/proposal/execution")
-                .header("content-type", "application/json")
-                .header("x-pubkey", pubkey)
-                .header("x-signature", signature)
-                .header("x-timestamp", timestamp.to_string())
-                .body(Body::from(body.to_string()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
-    let text = String::from_utf8(
-        axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap()
-            .to_vec(),
-    )
-    .unwrap();
-    assert!(text.contains("allow_private_note"), "{text}");
-    assert!(
-        f.state
-            .storage
-            .load_latest_execution(ACCOUNT, PROPOSAL)
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(grpc.grpc_execute(PROPOSAL).await.code, tonic::Code::Ok);
 }
 
 #[tokio::test]
@@ -628,7 +546,6 @@ async fn a_signed_status_read_does_not_authenticate_an_execute() {
     let execute = ExecuteDeltaProposalRequest {
         account_id: ACCOUNT.to_string(),
         proposal_id: PROPOSAL.to_string(),
-        allow_private_note: false,
     };
     assert_eq!(
         prost::Message::encode_to_vec(&read),
@@ -671,9 +588,9 @@ async fn a_signed_status_read_does_not_authenticate_an_execute() {
         )
         .await
         .unwrap();
-    // The read query lacks `allow_private_note`, so the execute route refuses it before
-    // authentication; either way a signed read never starts an execution.
-    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    // The read query is the execute body byte for byte, so only the operation tag separates
+    // them: the read's signature does not authenticate the execute.
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     assert!(
         f.state
             .storage

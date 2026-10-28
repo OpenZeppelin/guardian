@@ -471,9 +471,8 @@ message ExecutionEnvelope {
 message ExecuteDeltaProposalRequest {
   string account_id = 1;
   string proposal_id = 2;
-  // Execute a transaction that creates a private output note. GUARDIAN refuses one without it,
-  // because only the executing party learns the note's details.
-  bool allow_private_note = 3;
+  reserved 3;
+  reserved "allow_private_note";
 }
 
 message ExecuteDeltaProposalResponse {

@@ -4,7 +4,7 @@ use miden_multisig_client::{
     AbandonStatus, EcdsaGuardianKeyStore, GuardianKeyStore, KeyManager, MultisigClient,
     ProposalStatus, SignatureScheme, StartSessionOptions,
 };
-use miden_multisig_client::{ExecutionState, GuardianExecutionRequest, ProposalExecutionMode};
+use miden_multisig_client::{ExecutionState, ProposalExecutionMode};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
@@ -131,6 +131,10 @@ pub struct LiveSession {
     pub wallet_signatures: WalletSignatures,
     /// How many words they had signed when `session-start` finished.
     pub sessions_started_at: Option<usize>,
+    /// The exporting cosigner's own copy of the private P2ID proposal, listed
+    /// from GUARDIAN before execution: GUARDIAN deletes the proposal once its
+    /// transaction is canonical, so the note is exported from this copy.
+    pub private_send: Option<miden_multisig_client::Proposal>,
 }
 
 fn endpoint(network: NetworkName) -> Endpoint {
@@ -314,6 +318,7 @@ async fn create_on(
         custom_proposal_id: None,
         wallet_signatures,
         sessions_started_at: None,
+        private_send: None,
     });
     ActionOutcome::Passed
 }
@@ -1086,10 +1091,7 @@ pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
         Err(reason) => return unbindable(reason),
     };
 
-    match client
-        .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
-        .await
-    {
+    match client.request_guardian_execution(&proposal_id).await {
         Ok(execution) if execution.newly_accepted => {}
         Ok(execution) => {
             return ActionOutcome::failed_product(format!(
@@ -1102,11 +1104,7 @@ pub async fn guardian_execute(runner: &Runner) -> ActionOutcome {
             ));
         }
     }
-    let repeat = RepeatAnswer::from_sdk(
-        client
-            .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
-            .await,
-    );
+    let repeat = RepeatAnswer::from_sdk(client.request_guardian_execution(&proposal_id).await);
     if let Some(outcome) = repeat.verdict(&proposal_id) {
         return outcome;
     }
@@ -1214,10 +1212,7 @@ pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
         }
     };
     let account_id = session.account_id;
-    match base
-        .execute_delta_proposal(&account_id, &proposal_id, false)
-        .await
-    {
+    match base.execute_delta_proposal(&account_id, &proposal_id).await {
         Ok(execution) if execution.newly_accepted => {}
         Ok(execution) => {
             return ActionOutcome::failed_product(format!(
@@ -1230,10 +1225,8 @@ pub async fn guardian_execute_base_client(runner: &Runner) -> ActionOutcome {
             ));
         }
     }
-    let repeat = RepeatAnswer::from_base(
-        base.execute_delta_proposal(&account_id, &proposal_id, false)
-            .await,
-    );
+    let repeat =
+        RepeatAnswer::from_base(base.execute_delta_proposal(&account_id, &proposal_id).await);
     if let Some(outcome) = repeat.verdict(&proposal_id) {
         return outcome;
     }
@@ -3076,6 +3069,174 @@ pub async fn assert_asset_sent(runner: &Runner) -> ActionOutcome {
         ));
     }
     ActionOutcome::Passed
+}
+
+/// Proposes a private P2ID from the account to itself, and has the cosigner
+/// that exports the note list and keep its own copy of the proposal.
+///
+/// The account is its own recipient so both SDK legs can consume the note
+/// without a second wallet. A private note publishes only its commitment, so
+/// the account learns it only from the note file a cosigner exports.
+pub async fn send_private_p2id(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(faucet) = session.faucet else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+    let account_id = session.account_id;
+
+    if let Err(error) = session.clients[0].sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing before the transfer failed: {error}"
+        ));
+    }
+    match propose_when_settled(
+        &mut session.clients[0],
+        miden_multisig_client::TransactionType::transfer_with_note_type(
+            account_id,
+            faucet,
+            P2ID_AMOUNT,
+            miden_protocol::note::NoteType::Private,
+        ),
+    )
+    .await
+    {
+        Ok(proposal) => session.proposal_id = Some(proposal.id),
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "proposing the private transfer failed: {error}"
+            ));
+        }
+    }
+    let Some(proposal_id) = session.proposal_id.clone() else {
+        return ActionOutcome::failed_setup("the private transfer has no proposal id");
+    };
+    if session.clients.len() < 2 {
+        return ActionOutcome::failed_setup(
+            "delivery needs a cosigner other than the proposer to export the note",
+        );
+    }
+    match session.clients[1].list_proposals().await {
+        Ok(listed) => match listed.into_iter().find(|listed| listed.id == proposal_id) {
+            Some(own_copy) => {
+                session.private_send = Some(own_copy);
+                ActionOutcome::Passed
+            }
+            None => ActionOutcome::failed_product(format!(
+                "the exporting cosigner does not see the pending proposal {proposal_id}"
+            )),
+        },
+        Err(error) => ActionOutcome::failed_product(format!(
+            "the exporting cosigner could not list proposals: {error}"
+        )),
+    }
+}
+
+/// Delivers the executed private P2ID note the way a recipient receives it.
+///
+/// The account cannot learn the note by syncing, so it is first shown not to
+/// be consumable. A cosigner other than the proposer then exports it from its
+/// own copy of the proposal, listed before GUARDIAN executed it, and the
+/// account imports the file and waits for that note to become consumable,
+/// which `note-consume` then spends.
+pub async fn deliver_private_note(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let Some(proposal) = session.private_send.clone() else {
+        return ActionOutcome::failed_setup("no private transfer was proposed in this scenario");
+    };
+    let note_id = match session.clients[0].p2id_note_id(&proposal) {
+        Ok(id) => id,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "rebuilding the private note id failed: {error}"
+            ));
+        }
+    };
+
+    let consumable = |notes: &[miden_multisig_client::ConsumableNote]| {
+        notes.iter().any(|note| note.id == note_id)
+    };
+    if let Err(error) = session.clients[0].sync().await {
+        return ActionOutcome::failed_product(format!(
+            "syncing after the execution failed: {error}"
+        ));
+    }
+    match session.clients[0].list_consumable_notes().await {
+        Ok(notes) if consumable(&notes) => {
+            return ActionOutcome::failed_product(format!(
+                "private note {} was consumable before its file was imported, so the import \
+                 proves nothing",
+                note_id.to_hex()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "listing consumable notes failed: {error}"
+            ));
+        }
+    }
+
+    let bytes = match session.clients[1]
+        .export_p2id_note_to_bytes(&proposal)
+        .await
+    {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "a cosigner could not export the private note from the proposal: {error}"
+            ));
+        }
+    };
+    match session.clients[0].import_note_from_bytes(&bytes).await {
+        Ok(imported)
+            if imported.trim_start_matches("0x") == note_id.to_hex().trim_start_matches("0x") => {}
+        Ok(imported) => {
+            return ActionOutcome::failed_product(format!(
+                "the exported file imported note {imported}, not {}",
+                note_id.to_hex()
+            ));
+        }
+        Err(error) => {
+            return ActionOutcome::failed_product(format!(
+                "importing the exported note file failed: {error}"
+            ));
+        }
+    }
+
+    let started = std::time::Instant::now();
+    let mut wait = std::time::Duration::from_secs(1);
+    let mut last_error = None;
+    while started.elapsed() < NOTE_ARRIVAL_DEADLINE {
+        if let Err(error) = session.clients[0].sync().await {
+            last_error = Some(error.to_string());
+        } else {
+            match session.clients[0].list_consumable_notes().await {
+                Ok(notes) if consumable(&notes) => return ActionOutcome::Passed,
+                Ok(_) => {}
+                Err(error) => last_error = Some(error.to_string()),
+            }
+        }
+        tokio::time::sleep(wait).await;
+        wait = (wait * 2).min(std::time::Duration::from_secs(5));
+    }
+    ActionOutcome::EnvironmentBlocked {
+        reason: format!(
+            "the imported private note {} did not become consumable within {}s{}",
+            note_id.to_hex(),
+            NOTE_ARRIVAL_DEADLINE.as_secs(),
+            last_error
+                .map(|error| format!("; last error: {error}"))
+                .unwrap_or_default()
+        ),
+    }
 }
 
 /// Proposes lowering the send override to one signature while the account

@@ -9,9 +9,9 @@ use miden_client::Serializable;
 use miden_multisig_client::{
     build_p2id_transaction_request, build_transfer_asset, ensure_hex_prefix, generate_salt,
     word_from_hex, Asset, ExecutionFailureCode, ExecutionState, ExecutionWaitOptions,
-    ExpirationBound, ExportedProposal, ForeignAccountUnavailableReason, GuardianExecutionRequest,
-    LocalExecutionReason, MultisigError, NoteId, P2ideHeights, ProcedureName, Proposal,
-    ProposalExecution, ProposalVerification, TransactionType,
+    ExpirationBound, ExportedProposal, ForeignAccountUnavailableReason, LocalExecutionReason,
+    MultisigError, NoteId, P2ideHeights, ProcedureName, Proposal, ProposalExecution,
+    ProposalVerification, TransactionType,
 };
 use miden_protocol::account::AccountId;
 use miden_protocol::address::NetworkId;
@@ -516,29 +516,24 @@ async fn action_execute_proposal(
     let proposal_id = proposal.id.clone();
 
     // A private P2ID note must be handed to the recipient out-of-band (issue
-    // #356). Its ID is deterministic from the proposal salt but derives from
-    // the pre-execution vault state, so compute it before executing.
-    let private_note_id = match &proposal.transaction_type {
+    // #356), whoever executes the proposal.
+    let creates_private_note = matches!(
+        &proposal.transaction_type,
         TransactionType::P2ID {
             note_type: NoteType::Private,
             ..
-        } => match state.get_client()?.p2id_note_id(&proposal) {
-            Ok(id) => Some(id.to_hex()),
-            Err(e) => {
-                print_info(&format!(
-                    "  Note: could not precompute the private note id ({}); \
-                     the note can still be exported later via the SDK.",
-                    e
-                ));
-                None
-            }
-        },
-        _ => None,
-    };
+        }
+    );
 
     if state.guardian_executes() {
         match LocalExecutionReason::of(&proposal.transaction_type) {
-            None => return execute_through_guardian(state, &proposal_id).await,
+            None => {
+                execute_through_guardian(state, &proposal_id).await?;
+                if creates_private_note {
+                    offer_private_note_export(state, editor, &proposal).await;
+                }
+                return Ok(());
+            }
             Some(reason) => print_info(&format!(
                 "Executing this proposal here rather than through GUARDIAN: {}.",
                 reason.description()
@@ -581,8 +576,8 @@ async fn action_execute_proposal(
                 print_success("State synced successfully");
             }
 
-            if let Some(note_id) = private_note_id {
-                offer_private_note_export(state, editor, &note_id).await;
+            if creates_private_note {
+                offer_private_note_export(state, editor, &proposal).await;
             }
 
             Ok(())
@@ -659,7 +654,7 @@ async fn execute_through_guardian(
         Box::pin(async move {
             let client = state.get_client_mut()?;
             client
-                .request_guardian_execution(&proposal_id, GuardianExecutionRequest::default())
+                .request_guardian_execution(&proposal_id)
                 .await
                 .map_err(describe_execution_error)
         })
@@ -808,8 +803,20 @@ fn describe_execution_error(error: MultisigError) -> String {
 async fn offer_private_note_export(
     state: &SessionState,
     editor: &mut DefaultEditor,
-    note_id: &str,
+    proposal: &Proposal,
 ) {
+    let note_id = match state.get_client().and_then(|client| {
+        client
+            .p2id_note_id(proposal)
+            .map(|id| id.to_hex())
+            .map_err(|e| e.to_string())
+    }) {
+        Ok(note_id) => note_id,
+        Err(e) => {
+            print_error(&format!("Could not rebuild the private note: {}", e));
+            return;
+        }
+    };
     print_info("\nThis proposal created a PRIVATE note: only its commitment is on chain,");
     print_info("so the recipient must receive the note file out-of-band to consume it.");
     print_info(&format!("Note ID: {}", note_id));
@@ -822,11 +829,13 @@ async fn offer_private_note_export(
         }
     };
     if !confirm.is_empty() && confirm.to_lowercase() != "y" {
-        print_info("Skipped. The note can be exported later with the SDK's export_note_to_file.");
+        print_info(
+            "Skipped. The note can be exported later with the SDK's export_p2id_note_to_file.",
+        );
         return;
     }
 
-    let default_path = format!("note_{}.mno", shorten_hex(note_id).replace("...", "_"));
+    let default_path = format!("note_{}.mno", shorten_hex(&note_id).replace("...", "_"));
     let path = match prompt_input(editor, &format!("File path [{}]: ", default_path)) {
         Ok(input) if input.is_empty() => default_path,
         Ok(input) => input,
@@ -837,7 +846,11 @@ async fn offer_private_note_export(
     };
 
     let export_result = match state.get_client() {
-        Ok(client) => client.export_note_to_file(note_id, Path::new(&path)).await,
+        Ok(client) => {
+            client
+                .export_p2id_note_to_file(proposal, Path::new(&path))
+                .await
+        }
         Err(e) => {
             print_error(&e);
             return;

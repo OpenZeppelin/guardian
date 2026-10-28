@@ -50,11 +50,11 @@ describe('package entry point', () => {
   });
 
   it('exports the local-execution rule, its reasons and its errors', () => {
-    const reasons: api.LocalExecutionReason[] = ['switch_guardian', 'private_note'];
-    expect(reasons.map(api.describeLocalExecutionReason)).toHaveLength(2);
+    const reasons: api.LocalExecutionReason[] = ['switch_guardian'];
+    expect(reasons.map(api.describeLocalExecutionReason)).toHaveLength(1);
     expect(typeof api.localExecutionReason).toBe('function');
-    expect(new api.LocalExecutionRequiredError({ proposalId: '0xaaaa', reason: 'private_note' }).reason).toBe(
-      'private_note',
+    expect(new api.LocalExecutionRequiredError({ proposalId: '0xaaaa', reason: 'switch_guardian' }).reason).toBe(
+      'switch_guardian',
     );
     expect(new api.ProposalNotHeldLocallyError('0xaaaa').proposalId).toBe('0xaaaa');
   });
