@@ -388,7 +388,7 @@ Full configuration and a dev walkthrough are in
 > account data. EVM accounts are unaffected.** Stored 0.16 Miden states, deltas,
 > proposals, and metadata can no longer be deserialized or recomputed, and cannot
 > be migrated. For what changed on the Miden side and why none of it survives, see
-> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
+> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017).
 > Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
 > Miden 0.16. Upgrade only once the network you serve runs a stable Miden 0.17 node (0.17.0 or later): which
 > public networks do, and the upstream items still open, are tracked in
@@ -420,7 +420,7 @@ plus:
   account's vault, including on the transaction that deploys the account, so an
   unfunded account cannot transact. Fund each account before its first
   proposal (on devnet, through the node's `RegisterAccount` RPC; see
-  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 - **Review the defaults that are new in 0.18.x**: `GUARDIAN_ENV=prod` now
   applies the production runtime defaults inside the server, the release sweep
   runs by default, and `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` is available. The
@@ -437,7 +437,7 @@ plus:
 Patch releases on the Miden 0.17 line keep stored data, the `auth_tx` procedure
 root, and existing accounts; no reset runs. Each one still has operator-visible
 changes. The SDK and Miden-side ones are in
-[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017),
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017),
 and each release's notes on GitHub carry the full list, including server
 behavior:
 
@@ -470,7 +470,7 @@ behavior:
   restarting a container from an older image keeps the old trust store. No
   data reset, and no SDK upgrade is needed
   ([release notes](https://github.com/OpenZeppelin/guardian/releases/tag/v0.18.3)).
-- **The release after 0.18.3** gates multisig pushes on stored approvals,
+- **0.19.0** gates multisig pushes on stored approvals,
   lets sessions sign delta pushes, registers only guarded multisig accounts,
   and adds the retryable `409 state_not_on_chain` for reconfigurations that
   must use the chain's state (a first registration of an account that already
@@ -481,7 +481,7 @@ behavior:
   registers again. Release the SDKs first: multisig pushes need them, and on an
   older server the new SDKs sign a refused session push again with the wallet;
   see
-  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-after-0183).
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-0190).
 
 ## Upgrading to Miden 0.16
 

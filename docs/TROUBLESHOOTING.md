@@ -28,7 +28,7 @@ guarded-multisig auth procedure always creates the fee note, so this means the
 account was deployed by a build pinned to an earlier Miden 0.17 release
 candidate, whose auth procedure never paid the fee. Funding that account does
 not help, because its code cannot change: recreate it with the current build
-(see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+(see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 
 The execute path requests the GUARDIAN acknowledgement before it submits, so a
 rejected submission leaves the delta pending on GUARDIAN as a candidate. The
@@ -563,7 +563,7 @@ is older and the chain cannot be read to decide, the request fails with
 
 The `SwitchGuardian` transaction was submitted and the client already
 points at the new Guardian, but registering there failed. With SDKs
-0.18.3 and earlier against a Guardian released after 0.18.3, the cause is
+0.18.3 and earlier against a Guardian 0.19.0 or later, the cause is
 almost always `state_not_on_chain`: those SDKs register right after
 submitting the switch, before the transaction lands, and do not retry.
 The newer SDKs wait for the chain before registering, so they rarely hit

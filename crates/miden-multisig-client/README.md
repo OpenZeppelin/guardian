@@ -22,7 +22,8 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.18.x | 0.17.x (pre-release) |
+| 0.19.x (pre-release) | 0.17.x |
+| 0.18.x | 0.17.x |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -357,7 +358,7 @@ let tx = TransactionType::add_cosigner_with_scheme(other_wallet, SignatureScheme
 
 `push_account` registers the schemes the account stores (`MultisigAccount::cosigners`,
 `MultisigAccount::guardian_scheme`), which for a mixed account needs a GUARDIAN
-after 0.18.3. Signer updates keep each approver's stored scheme, `add_cosigner`
+0.19.0 or later. Signer updates keep each approver's stored scheme, `add_cosigner`
 gives the new signer your scheme, and a GUARDIAN switch keeps the GUARDIAN's
 scheme. A proposal that would write a kept approver under another scheme,
 including one from an older SDK that wrote its own scheme for every approver,
