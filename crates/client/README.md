@@ -33,15 +33,35 @@ knows the transaction will never land:
 
 ```rust
 // Records an abandon intent; the guardian's worker confirms over a short
-// quarantine that the tx did not land, then releases the account.
-let response = client.abandon_candidate(&account_id, nonce).await?;
+// quarantine that the tx did not land, then releases the account. The
+// transaction is named by its summary's commitment: a Guardian execution
+// can take the nonce, and the abandon still answers for this transaction.
+let proposal_id = guardian_client::tx_summary_commitment_hex(&tx_summary);
+let response = client
+    .abandon_candidate(&account_id, nonce, &proposal_id)
+    .await?;
 assert_eq!(response.state, "pending");
 
-// Poll the delta for the resolution: still `candidate` -> waiting,
-// `canonical` -> the tx landed after all, `discarded` with reason
-// `client_abandoned` -> the account is released.
-let delta = client.get_delta(&account_id, nonce).await?;
+// Poll the delta for the resolution. Compare its commitment with the one
+// the abandon returned first: a Guardian execution can take the nonce
+// with a delta of its own, which says nothing about the abandoned tx.
+match client.get_delta(&account_id, nonce).await?.delta {
+    Some(delta) if delta.new_commitment.eq_ignore_ascii_case(&response.commitment) => {
+        // `candidate` -> waiting, `canonical` -> the tx landed after all,
+        // `discarded` with reason `client_abandoned` -> the account is
+        // released.
+    }
+    Some(_) => {
+        // Another delta holds the nonce: `canonical` -> the abandoned tx
+        // can no longer land, `candidate` -> waiting on that delta.
+    }
+    None => {}
+}
 ```
+
+Naming the transaction needs a Guardian server from the same release: an
+older server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
 
 ### Canonical Nonce
 
@@ -87,6 +107,34 @@ loop {
     }
 }
 ```
+
+### Guardian Execution
+
+A Guardian-executable proposal (one whose payload stores a `transaction_request`) can be
+proved, submitted and committed by Guardian once it has enough signatures:
+
+```rust
+let mut execution = client
+    .execute_delta_proposal(&account_id, &proposal_id)
+    .await?;
+while !execution.state.is_terminal() {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    execution = client.get_delta_proposal_execution(&account_id, &proposal_id).await?;
+}
+
+// The account's in-flight execution, if any
+let current = client.get_current_execution(&account_id).await?;
+```
+
+Guardian executes a transaction that creates a private output note like any other; deliver the
+note to its recipient with the multisig SDK's `export_p2id_note_to_file`. A guardian switch is
+refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `switch_guardian`).
+
+A refusal is a `ClientError` whose `guardian_code()` is the wire code (for example
+`GUARDIAN_EXECUTION_CONFLICT`), with `is_retryable()`, `retry_after()` and, on a conflict,
+`guardian_meta()["blocking_proposal_id"]`. The multisig SDK adds
+`wait_for_guardian_execution` with backoff, retries and a deadline; see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
 
 ### Rate Limits and Retries
 
@@ -224,7 +272,8 @@ let info = client
     })
     .await?;
 
-// ...get_state, get_delta_since, push_delta_proposal, push_delta: signed by the session key.
+// ...get_state, get_delta_since, push_delta_proposal, push_delta, execute_delta_proposal
+// and the execution status reads: signed by the session key.
 
 client.revoke_session().await?; // this session only, signed by the session key
 client.revoke_all_sessions().await?; // every session of the wallet, wallet-signed

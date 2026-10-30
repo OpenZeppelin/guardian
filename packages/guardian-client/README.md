@@ -69,9 +69,11 @@ await client.revokeAllSessions(); // wallet-signed: ends every session of the si
 The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getDelta`,
 `getDeltaSince`, `getDeltaHistory`), proposal reads and proposal create/sign
 (`getDeltaProposals`, `getDeltaProposal`, `pushDeltaProposal`,
-`signDeltaProposal`), and delta pushes (`pushDelta`). Every other route uses
-the wallet signer, including `configure`, `abandonCandidate`, account lookup
-and `revokeAllSessions`; the server rejects session credentials there with
+`signDeltaProposal`), execution requests and status reads
+(`executeDeltaProposal`, `getDeltaProposalExecution`, `getCurrentExecution`)
+and delta pushes (`pushDelta`). Every other route uses the wallet signer,
+including `configure`, `abandonCandidate`, account lookup and
+`revokeAllSessions`; the server rejects session credentials there with
 `wallet_signature_required`, as an older Guardian does for `pushDelta`.
 
 A session is used only while the wallet that granted it
@@ -160,14 +162,27 @@ behind it can never land. Record an
 abandon intent and poll for the resolution:
 
 ```typescript
-const accepted = await client.abandonCandidate(accountId, nonce);
+// `proposalId` names the transaction: its summary's commitment (the
+// proposal id of a multisig proposal).
+const accepted = await client.abandonCandidate(accountId, nonce, proposalId);
 console.log(accepted.state); // 'pending'
 
 // The guardian's worker confirms over a short quarantine that the tx did
 // not land, then releases the account.
-const status = await client.abandonStatus(accountId, nonce);
+const status = await client.abandonStatus(accountId, nonce, accepted.commitment);
 // 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
+
+Pass the `commitment` the abandon returned: a Guardian execution can archive
+the abandoned delta and take its nonce, so the nonce alone does not identify
+it. Once that other delta is canonical the status is `'abandoned'`, since the
+abandoned transaction can no longer land.
+
+`proposalId` is the transaction summary's commitment, the id the server gave
+the proposal when it was pushed (the `commitment` of the
+`pushDeltaProposal` response). Naming it needs a Guardian server from the
+same release: an older server does not know `proposal_id` and refuses the
+signed request as unauthenticated, before recording anything.
 
 `'retained'` means the guardian stopped actively verifying the candidate
 and released the account slot, but the on-chain outcome is still
@@ -263,6 +278,35 @@ const result = await client.pushDelta({
   status: { status: 'pending', timestamp: '...', proposer_id: '0x...', cosigner_sigs: [] },
 });
 ```
+
+### Execute a Proposal Through Guardian
+
+A proposal pushed with a `transactionRequest` (a Guardian-executable proposal) can be proved,
+submitted and committed by Guardian once it has enough signatures. Fetched proposals keep the
+stored request in `deltaPayload.transactionRequest`.
+
+```typescript
+import { isTerminalExecutionState } from '@openzeppelin/guardian-client';
+
+let execution = await client.executeDeltaProposal(accountId, proposalId);
+while (!isTerminalExecutionState(execution.state)) {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  execution = await client.getDeltaProposalExecution(accountId, proposalId);
+}
+
+// The account's in-flight execution, or null
+const current = await client.getCurrentExecution(accountId);
+```
+
+Guardian refuses a guardian switch with `proposal_executes_locally` (`meta.reason`
+`switch_guardian`): the client that executes a switch registers the account at the new Guardian.
+
+A refusal throws a `GuardianHttpError` whose `rawCode` is the wire code (for example
+`GUARDIAN_EXECUTION_CONFLICT`, with `meta.blockingProposalId`). `getStatus()` reports in
+`execution` whether the server offers Guardian execution at all; a Guardian that predates
+Guardian execution sends none, and `execution` is then absent: it does not offer it. The multisig SDK adds a
+`waitForGuardianExecution` helper with backoff, retries and a deadline; see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
 
 ### Get Deltas
 

@@ -1,4 +1,7 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+
 import type { RequestAuthPayload } from './auth-request.js';
+import type { ServerExecutionCapability } from './execution.js';
 
 export interface Signer {
   readonly commitment: string;
@@ -272,6 +275,8 @@ export interface DeltaObject {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Absent on a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
   ackSig?: string;
   ackPubkey?: string;
@@ -338,6 +343,11 @@ export interface StatusResponse {
   environment: string;
   startedAt: string;
   uptimeSeconds: number;
+  /**
+   * Whether the server accepts Guardian execution requests. Absent on a Guardian that predates
+   * Guardian execution: it does not offer it.
+   */
+  execution?: ServerExecutionCapability;
   /** Present on every Guardian that accepts session grants; absent on older servers. */
   sessions?: SessionsStatus;
 }
@@ -349,6 +359,8 @@ export interface DeltaProposalRequest {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Omit for a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
 }
 
@@ -385,13 +397,22 @@ export interface AbandonCandidateResponse {
    * return the original timestamp; absent once resolved.
    */
   abandonRequestedAt?: string;
+  /**
+   * The abandoned delta's `new_commitment`. Another delta can later take
+   * the same nonce (a Guardian execution archives the abandoned one), so
+   * pass this to `abandonStatus` to poll for this delta.
+   */
+  commitment: string;
 }
 
 /**
  * Resolution of an abandon request, as observed via the delta feed.
  * `'retained'` means the account slot is released but the on-chain
  * outcome is still uncertain — "unlocked but unresolved", never to be
- * read as "the transaction did not land".
+ * read as "the transaction did not land". When another delta has taken
+ * the nonce, `'abandoned'` means it is canonical (the abandoned
+ * transaction can no longer land) and `'waiting'` that it is still a
+ * candidate.
  */
 export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected';
 

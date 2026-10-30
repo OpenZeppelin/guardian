@@ -90,6 +90,7 @@ async fn pre_switch_import_preserves_pending_proposal_notes_across_the_repoint()
         Vec::new(),
         None,
         Some(&[]),
+        None,
     )
     .await
     .unwrap();

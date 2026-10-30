@@ -4,6 +4,8 @@ import { NoteType } from '@miden-sdk/miden-sdk';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
 import {
   AccountInspector,
+  describeLocalExecutionReason,
+  localExecutionReason,
   type AccountState,
   type ConsumableNote,
   type DetectedMultisigConfig,
@@ -13,6 +15,8 @@ import {
   type ProcedureName,
   type ProcedureThreshold,
   type Proposal,
+  type ProposalExecution,
+  type ProposalExecutionMode,
   type RecoveredAccount,
   type RecoverNotesOptions,
   type SignatureScheme,
@@ -32,7 +36,10 @@ import {
   createSwitchGuardianProposal,
   createUpdateProcedureThresholdProposal,
   createMidenClient,
+  describeFailedExecution,
   executeProposal as executeOnlineProposal,
+  executeThroughGuardian,
+  guardianExecutionStatus as readGuardianExecutionStatus,
   exportProposalToJson,
   fetchAccountState,
   filterVisibleProposals,
@@ -85,6 +92,8 @@ export interface SessionConfig {
   midenRpcEndpoint: string;
   signerSource: WalletSource;
   signatureScheme: SignatureScheme;
+  /** Who proves and submits the proposals this session creates: the browser, or GUARDIAN. */
+  executionMode: ProposalExecutionMode;
   browserLabel: string;
 }
 
@@ -93,6 +102,7 @@ export interface InitSessionInput {
   midenRpcEndpoint?: string;
   signerSource?: WalletSource;
   signatureScheme?: SignatureScheme;
+  executionMode?: ProposalExecutionMode;
   browserLabel?: string;
 }
 
@@ -161,8 +171,13 @@ export interface SmokeApi {
   executeCustomProposal(input: ExecuteCustomProposalInput): Promise<BrowserSessionSnapshot>;
   signProposal(input: { proposalId: string }): Promise<Array<ReturnType<typeof serializeProposal>>>;
   executeProposal(input: { proposalId: string }): Promise<BrowserSessionSnapshot>;
+  guardianExecutionStatus(input?: { proposalId?: string }): Promise<{
+    current: ProposalExecution | null;
+    proposal: ProposalExecution | null;
+  }>;
   getP2idNoteId(input: { proposalId: string }): Promise<{ noteId: string }>;
   exportNote(input: { noteId: string }): Promise<{ noteId: string; noteFileBase64: string }>;
+  exportP2idNote(input: { proposalId: string }): Promise<{ noteId: string; noteFileBase64: string }>;
   importNote(input: { noteFileBase64: string }): Promise<{
     noteId: string;
     status: BrowserSessionSnapshot;
@@ -265,6 +280,7 @@ const defaultSessionConfig: SessionConfig = {
   midenRpcEndpoint: DEFAULT_MIDEN_RPC_URL,
   signerSource: 'local',
   signatureScheme: 'falcon',
+  executionMode: 'self_executed',
   browserLabel: DEFAULT_BROWSER_LABEL,
 };
 
@@ -389,6 +405,7 @@ function buildSnapshot(state: SnapshotState): BrowserSessionSnapshot {
     midenRpcEndpoint: state.sessionConfig.midenRpcEndpoint,
     signerSource: state.sessionConfig.signerSource,
     signatureScheme: state.sessionConfig.signatureScheme,
+    executionMode: state.sessionConfig.executionMode,
     guardianPubkey: state.guardianPubkey,
     localSigners: state.localSigners ? serializeSignerInfo(state.localSigners) : null,
     midenWallet: serializeExternalWalletState(state.midenWalletSession),
@@ -439,6 +456,7 @@ function normalizeSessionInput(input: InitSessionInput): SessionConfig {
     midenRpcEndpoint: resolveMidenRpcUrl(input.midenRpcEndpoint?.trim() || DEFAULT_MIDEN_RPC_URL),
     signerSource: requireWalletSource(input.signerSource),
     signatureScheme: input.signatureScheme ?? 'falcon',
+    executionMode: input.executionMode ?? 'self_executed',
     browserLabel: input.browserLabel?.trim() ?? DEFAULT_BROWSER_LABEL,
   };
 }
@@ -509,6 +527,12 @@ export function useSmokeHarness(): {
   const [detectedConfig, detectedConfigRef, setDetectedConfig] =
     useStateRef<DetectedMultisigConfig | null>(null);
   const [proposals, proposalsRef, setProposals] = useStateRef<Proposal[]>([]);
+  const heldProposalsRef = useRef(new Map<string, Proposal>());
+  useEffect(() => {
+    for (const proposal of proposals) {
+      heldProposalsRef.current.set(proposal.id.toLowerCase().replace(/^0x/, ''), proposal);
+    }
+  }, [proposals]);
   const [consumableNotes, consumableNotesRef, setConsumableNotes] =
     useStateRef<ConsumableNote[]>([]);
   const [busyAction, busyActionRef, setBusyAction] = useStateRef<string | null>(null);
@@ -613,6 +637,7 @@ export function useSmokeHarness(): {
 
   const clearLoadedAccountState = useCallback(() => {
     customRecipesRef.current.clear();
+    heldProposalsRef.current.clear();
     setMultisig(null);
     setGuardianState(null);
     setDetectedConfig(null);
@@ -815,6 +840,7 @@ export function useSmokeHarness(): {
                   retry: { maxAttempts: DEFAULT_PROVER_MAX_ATTEMPTS },
                 },
                 { retry: { maxAttempts: DEFAULT_RPC_MAX_ATTEMPTS } },
+                nextConfig.executionMode,
               );
               const nextSigners = applySignatureScheme(
                 await initializeLocalSigners(),
@@ -972,6 +998,7 @@ export function useSmokeHarness(): {
 
         setMultisig(nextMultisig);
         setLocalSigners(nextSigners);
+        heldProposalsRef.current.clear();
         setGuardianState(null);
         setDetectedConfig(null);
         setProposals([]);
@@ -1367,7 +1394,23 @@ export function useSmokeHarness(): {
           throw new Error('No multisig account is loaded');
         }
 
-        await executeOnlineProposal(currentMultisig, proposalId);
+        const proposal = currentMultisig.listProposals().find(({ id }) => id === proposalId);
+        const localReason = proposal === undefined ? null : localExecutionReason(proposal);
+        const guardianExecutes =
+          currentMultisig.executionMode === 'guardian_executable' && localReason === null;
+        if (localReason !== null && currentMultisig.executionMode === 'guardian_executable') {
+          console.info(
+            `Executing proposal ${proposalId} locally: ${describeLocalExecutionReason(localReason)}`,
+          );
+        }
+        if (guardianExecutes) {
+          const execution = await executeThroughGuardian(currentMultisig, proposalId);
+          if (execution.state === 'failed') {
+            throw new Error(describeFailedExecution(execution));
+          }
+        } else {
+          await executeOnlineProposal(currentMultisig, proposalId);
+        }
 
         // The transaction is submitted at this point; a refresh failure below
         // must not surface as an execution failure. Retry through GUARDIAN's
@@ -1450,6 +1493,22 @@ export function useSmokeHarness(): {
     [multisigRef, proposalsRef, withCommand],
   );
 
+  const guardianExecutionStatus = useCallback(
+    async ({ proposalId }: { proposalId?: string } = {}): Promise<{
+      current: ProposalExecution | null;
+      proposal: ProposalExecution | null;
+    }> =>
+      withCommand('guardianExecutionStatus', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+        return readGuardianExecutionStatus(currentMultisig, proposalId?.trim() || undefined);
+      }),
+    [multisigRef, withCommand],
+  );
+
   const exportNote = useCallback(
     async ({
       noteId,
@@ -1468,6 +1527,32 @@ export function useSmokeHarness(): {
         return { noteId: trimmedNoteId, noteFileBase64: bytesToBase64(noteFileBytes) };
       }),
     [multisigRef, withCommand],
+  );
+
+  const exportP2idNote = useCallback(
+    async ({ proposalId }: { proposalId: string }): Promise<{ noteId: string; noteFileBase64: string }> =>
+      withCommand('exportP2idNote', async () => {
+        requireSessionReady();
+        const currentMultisig = multisigRef.current;
+        if (!currentMultisig) {
+          throw new Error('No multisig account is loaded');
+        }
+
+        const normalized = proposalId.trim().toLowerCase().replace(/^0x/, '');
+        const proposal =
+          proposalsRef.current.find((candidate) => candidate.id.toLowerCase().replace(/^0x/, '') === normalized) ??
+          heldProposalsRef.current.get(normalized);
+        if (!proposal) {
+          throw new Error(`Proposal not held by this session: ${proposalId}`);
+        }
+
+        const noteFileBytes = await currentMultisig.exportP2idNoteToBytes(proposal);
+        return {
+          noteId: await currentMultisig.getP2idNoteId(proposal),
+          noteFileBase64: bytesToBase64(noteFileBytes),
+        };
+      }),
+    [multisigRef, proposalsRef, withCommand],
   );
 
   const importNote = useCallback(
@@ -1698,8 +1783,10 @@ export function useSmokeHarness(): {
     executeCustomProposal,
     signProposal,
     executeProposal,
+    guardianExecutionStatus,
     getP2idNoteId,
     exportNote,
+    exportP2idNote,
     importNote,
     exportProposal,
     signProposalOffline,

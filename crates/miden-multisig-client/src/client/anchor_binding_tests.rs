@@ -84,6 +84,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
         Vec::new(),
         None,
         Some(&[]),
+        None,
     )
     .await
     .unwrap();
@@ -174,6 +175,7 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
         Vec::new(),
         None,
         Some(&[]),
+        None,
     )
     .await
     .unwrap();
@@ -259,6 +261,7 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
         Vec::new(),
         None,
         Some(&[]),
+        None,
     )
     .await
     .unwrap();
@@ -457,6 +460,7 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
         &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
+        None,
     )
     .unwrap();
     let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
@@ -563,6 +567,7 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
         &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
+        None,
     )
     .unwrap();
     let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
@@ -699,6 +704,7 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
         &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
+        None,
         None,
         None,
     )
@@ -1001,6 +1007,7 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
         &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
+        None,
     )
     .unwrap();
     let chain_anchor = client
@@ -1135,6 +1142,7 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
         &signer_specs(&signers, proposer.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
+        None,
     )
     .unwrap();
     let tx_summary =
@@ -1223,6 +1231,7 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
         &signer_specs(&signers, proposer.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
+        None,
     )
     .unwrap();
     let tx_summary =
@@ -1312,6 +1321,7 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
         &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
+        None,
         None,
         None,
     )

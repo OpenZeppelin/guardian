@@ -527,6 +527,21 @@ mod tests {
                 block_num: 7,
             })
         }
+        async fn observe_commitment(
+            &self,
+            account_id: &str,
+            expected_commitment: &str,
+            read_mode: crate::network::RpcReadMode,
+        ) -> std::result::Result<crate::network::ObservedState, String> {
+            let verification = self
+                .verify_commitment(account_id, expected_commitment, read_mode)
+                .await?;
+            Ok(crate::network::ObservedState {
+                verification,
+                block: 0,
+            })
+        }
+
         fn verify_delta(
             &self,
             _: &str,

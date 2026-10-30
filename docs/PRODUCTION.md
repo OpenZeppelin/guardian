@@ -9,7 +9,11 @@ configuration, and runbook docs.
 Every production Guardian, wherever it runs, has the same shape:
 
 - The **Postgres** storage backend: `GUARDIAN_SERVER_FEATURES=postgres`, plus
-  `evm` when EVM proposal support is required. Filesystem mode is a local
+  `evm` when EVM proposal support is required. Guardian execution is always built in and
+  stays off until a prover is configured. The prover sees every executed transaction's full
+  inputs (private account state, cosigner signatures, Guardian's acknowledgement), so it must
+  be one you trust or host yourself
+  ([prover trust](./CONFIGURATION.md#runtime--guardian-execution)). Filesystem mode is a local
   development backend only: it has no durable admin audit table, no schema
   migrations, and cannot safely back more than one replica. The prod stage
   refuses it at startup.
@@ -255,6 +259,52 @@ database's guarantees:
   `rds_multi_az = true` if the deployment needs automatic failover to a
   standby replica; this is an availability trade-off (roughly double the
   instance cost), not a backup mechanism.
+- **Guardian execution across a planned stop.** On SIGTERM (what ECS and
+  Docker send) the server refuses new executions with
+  `GUARDIAN_EXECUTION_BUSY`, fails its attempts that have not reached the
+  boundary commit with `GUARDIAN_EXECUTION_ABANDONED` (retryable, the
+  proposal is kept), and waits up to 8 seconds for attempts past it to send,
+  then exits. A deploy or scale-in therefore releases most of those accounts
+  at once instead of after the 120-second lease. Three cases still leave an
+  account to the lease and reconciliation: a kill that skips SIGTERM (OOM,
+  `SIGKILL`); an attempt whose local transaction execution is already running
+  on the CPU when the signal lands, which stops only at its next await, after
+  the grace; and a send still waiting on the node when the 8 seconds run out.
+  A send may wait up to 60 seconds (the slowest accepted devnet send took
+  about 9), so a slow node at deploy time leaves its accounts held until
+  reconciliation settles them from the chain. Nothing is sent twice either
+  way.
+- **Guardian execution across a crash (accepted risk).** If the process dies
+  after an execution's boundary commit (state `submitted`) and before the
+  send has a definite outcome, the transaction may never have been sent.
+  Reconciliation only observes the chain and never resends, so the account
+  stays reserved (new executions get `GUARDIAN_EXECUTION_CONFLICT`, client
+  deltas are refused) until the chain passes the transaction's expiration
+  (at most 256 blocks after the reference block for built-in proposals; 20
+  for a fee-paying transaction on devnet, whose fee faucet caps it). It then
+  settles as `GUARDIAN_EXECUTION_EXPIRED`, the proposal is deleted, and the
+  cosigners must propose and sign again. The signal is
+  `guardian_execution_oldest_reservation_age_seconds` climbing; the AWS
+  reservation-age alarm (default 1800 s) is set above this window, so it
+  fires only if the reservation outlives it. See
+  [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution-fails-or-never-starts).
+- **Guardian execution record retention.** Every execution attempt leaves a
+  reservation, possibly submission evidence, and an outcome. Once a day,
+  starting a few minutes after startup, each replica deletes the finished
+  attempts resolved more than `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`
+  (default 30) ago whose proposal is gone or that a newer attempt of the same
+  proposal supersedes, in batches of 1,000 until a batch comes back short.
+  Active attempts and the newest attempt of a proposal that still exists are
+  never deleted, so attempt numbering continues and a client waiting on a
+  live proposal still reads its outcome; a status read for a proposal whose
+  records were deleted gets `proposal_not_found`, because only a deleted
+  proposal loses its last record. The sweep is
+  idempotent, so replicas need no coordination; each logs a summary at
+  `info` and adds what it deleted to `guardian_execution_records_pruned_total`.
+  Sizing: retained rows grow with executions per day times the retention
+  (three small rows per attempt in Postgres, a few hundred bytes each), plus
+  the newest attempt of every proposal still stored. `0` keeps records
+  forever, the earlier behavior; budget storage for it accordingly.
 
 What is deliberately **not** provided: cross-region replicas, automated
 disaster-recovery drills, or backup-failure alarms (see
@@ -297,6 +347,13 @@ none and behavior is unchanged.
   read access still sees which accounts exist, their nonce/commitment lineage,
   and proposal status. Use disk/database-level encryption if the index metadata
   itself is sensitive in your threat model.
+- Guardian execution records are plaintext too. In Postgres that is every column of
+  `execution_reservations`, `execution_submissions` and `execution_outcomes` (proposal ids,
+  transaction ids, expected and base commitments, reference and expiration blocks, ignored
+  signature counts, `error_code`, `error_message`, `error_meta`) and
+  `delta_proposals.request_bytes`; on the filesystem backend, each account's `executions.json`
+  and `proposal_request_bytes.json`. The stored transaction request itself sits inside the
+  proposal `delta_payload` and is encrypted with it.
 
 - Production key source: the key document
   `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`, held either in

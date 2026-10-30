@@ -9,8 +9,8 @@ use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite, ProposalRecord,
-    StateReplace, StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite,
+    ProposalAdmission, ProposalRecord, ProposalWrite, StateReplace, StorageType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Timelike, Utc};
@@ -33,6 +33,9 @@ use rustls::{
 use std::sync::{Arc, Once};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
+
+#[path = "postgres_execution.rs"]
+mod execution;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -676,6 +679,7 @@ struct NewProposal<'a> {
     status: serde_json::Value,
     status_kind: &'a str,
     status_timestamp: chrono::DateTime<chrono::Utc>,
+    request_bytes: i64,
 }
 
 /// Decompose a [`DeltaStatus`] into the typed `(status_kind,
@@ -983,7 +987,7 @@ async fn clear_pending_flag_if_none(
 /// `superseded_deltas`, stamped `superseded_at`, inside the caller's
 /// transaction. The payload moves as stored, so an encrypted payload stays
 /// encrypted. Returns how many rows were archived (0 or 1).
-async fn archive_parked_delta(
+pub(super) async fn archive_parked_delta(
     conn: &mut AsyncPgConnection,
     account_id: &str,
     nonce: u64,
@@ -1680,6 +1684,7 @@ impl StorageBackend for PostgresService {
             status: status_json,
             status_kind,
             status_timestamp,
+            request_bytes: 0,
         };
 
         diesel::insert_into(delta_proposals::table)
@@ -1691,6 +1696,93 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to submit delta proposal: {e}"))?;
 
         Ok(())
+    }
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: ProposalAdmission,
+    ) -> Result<ProposalWrite, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let status_json = serde_json::to_value(&admission.proposal.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&admission.proposal.status)?;
+        let request_bytes = i64::try_from(admission.request_bytes)
+            .map_err(|_| "request size does not fit the column".to_string())?;
+
+        conn.transaction::<ProposalWrite, diesel::result::Error, _>(|conn| {
+            async move {
+                let proposal = &admission.proposal;
+                lock_account_metadata(conn, &proposal.account_id).await?;
+
+                let exists: bool = diesel::select(diesel::dsl::exists(
+                    delta_proposals::table
+                        .filter(delta_proposals::account_id.eq(&proposal.account_id))
+                        .filter(delta_proposals::commitment.eq(&admission.commitment)),
+                ))
+                .get_result(conn)
+                .await?;
+                if exists {
+                    return Ok(ProposalWrite::AlreadyStored);
+                }
+
+                let doomed_at_or_below = admission
+                    .queue_tail_nonce
+                    .map_or(i64::MIN, |tail| tail as i64);
+                let viable = delta_proposals::table
+                    .filter(delta_proposals::account_id.eq(&proposal.account_id))
+                    .filter(delta_proposals::prev_commitment.eq(&proposal.prev_commitment))
+                    .filter(delta_proposals::nonce.gt(doomed_at_or_below))
+                    .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                        "status->>'status' = 'pending'",
+                    ));
+                let viable_count: i64 = viable.clone().count().get_result(conn).await?;
+                if viable_count as usize >= admission.max_viable_proposals {
+                    return Ok(ProposalWrite::PendingLimit {
+                        limit: admission.max_viable_proposals,
+                    });
+                }
+                let used: i64 = viable
+                    .select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                        "COALESCE(SUM(request_bytes), 0)::BIGINT",
+                    ))
+                    .first(conn)
+                    .await?;
+                let used = u64::try_from(used).unwrap_or(0);
+                if used.saturating_add(admission.request_bytes)
+                    > admission.max_account_request_bytes
+                {
+                    return Ok(ProposalWrite::AccountRequestBytesLimit {
+                        limit: admission.max_account_request_bytes,
+                        used,
+                    });
+                }
+
+                diesel::insert_into(delta_proposals::table)
+                    .values(&NewProposal {
+                        account_id: &proposal.account_id,
+                        commitment: &admission.commitment,
+                        nonce: proposal.nonce as i64,
+                        prev_commitment: &proposal.prev_commitment,
+                        new_commitment: proposal.new_commitment.as_deref(),
+                        delta_payload: &proposal.delta_payload,
+                        ack_sig: Some(proposal.ack_sig.as_str()),
+                        status: status_json,
+                        status_kind,
+                        status_timestamp,
+                        request_bytes,
+                    })
+                    .execute(conn)
+                    .await?;
+                Ok(ProposalWrite::Stored)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to admit delta proposal: {e}"))
     }
 
     async fn pull_delta_proposal(
@@ -1879,6 +1971,7 @@ impl StorageBackend for PostgresService {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         use diesel::OptionalExtension;
@@ -1890,6 +1983,7 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
         let account_id = account_id.to_string();
+        let new_commitment = new_commitment.to_string();
         let now = now.to_string();
 
         // Row-locked read + conditional in-place JSONB update: the intent
@@ -1899,10 +1993,17 @@ impl StorageBackend for PostgresService {
         // discarded delta is left untouched.
         conn.transaction::<AbandonIntent, diesel::result::Error, _>(|conn| {
             async move {
+                lock_account_metadata(conn, &account_id).await?;
+                if let Some(proposal_id) =
+                    execution::candidate_owner(conn, &account_id, nonce).await?
+                {
+                    return Ok(AbandonIntent::OwnedByExecution { proposal_id });
+                }
                 let existing: Option<Option<String>> = deltas::table
                     .filter(deltas::account_id.eq(&account_id))
                     .filter(deltas::nonce.eq(nonce as i64))
                     .filter(deltas::status_kind.eq("candidate"))
+                    .filter(deltas::new_commitment.eq(&new_commitment))
                     .select(diesel::dsl::sql::<
                         diesel::sql_types::Nullable<diesel::sql_types::Text>,
                     >("status->>'abandon_requested_at'"))
@@ -1921,6 +2022,7 @@ impl StorageBackend for PostgresService {
                             .filter(deltas::account_id.eq(&account_id))
                             .filter(deltas::nonce.eq(nonce as i64))
                             .filter(deltas::status_kind.eq("candidate"))
+                            .filter(deltas::new_commitment.eq(&new_commitment))
                             .set(
                                 deltas::status.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
                                     "jsonb_set(status, '{abandon_requested_at}', to_jsonb(",
@@ -2025,6 +2127,12 @@ impl StorageBackend for PostgresService {
                     .select(states::commitment)
                     .first::<String>(conn)
                     .await?;
+
+                if let Some(proposal_id) =
+                    execution::reserving_proposal(conn, &delta.account_id).await?
+                {
+                    return Ok(CandidateSubmission::ExecutionReserved { proposal_id });
+                }
 
                 // Race-proof twin of the service-layer admission gate:
                 // two submissions that both passed the pre-commit scan
@@ -2255,13 +2363,22 @@ impl StorageBackend for PostgresService {
                     // The base gate lives in the UPDATE predicate itself, not
                     // a prior read: `submit_state` writers take no account
                     // lock, so only the row-level write lock makes the
-                    // comparison race-proof. Zero rows means the state moved
-                    // (or vanished) since this pass read it — the delta flip
-                    // above must not survive that, hence the explicit
-                    // rollback mapped to `StaleBase` below.
+                    // comparison race-proof. A state already at this
+                    // promotion's target (a `/configure` re-onboarding to the
+                    // chain's state before promotion) is a resumed promotion,
+                    // as on the filesystem backend: refusing it would leave a
+                    // candidate no pass can ever promote, and an execution
+                    // owning it reserved for good. Zero rows means the state
+                    // moved elsewhere (or vanished) since this pass read it,
+                    // and the delta flip above must not survive that, hence
+                    // the explicit rollback mapped to `StaleBase` below.
                     let advanced = diesel::update(states::table)
                         .filter(states::account_id.eq(&state.account_id))
-                        .filter(states::commitment.eq(&delta.prev_commitment))
+                        .filter(
+                            states::commitment
+                                .eq(&delta.prev_commitment)
+                                .or(states::commitment.eq(&state.commitment)),
+                        )
                         .set((
                             states::state_json.eq(&state.state_json),
                             states::commitment.eq(&state.commitment),
@@ -2285,9 +2402,17 @@ impl StorageBackend for PostgresService {
                             .await?;
                     }
 
+                    let settled_execution = execution::commit_promoted_execution(
+                        conn,
+                        &state.account_id,
+                        delta.nonce,
+                        &state.commitment,
+                        metadata_updated_at,
+                    )
+                    .await?;
                     clear_pending_flag_if_none(conn, &state.account_id, metadata_updated_at)
                         .await?;
-                    Ok(PromoteWrite::Applied)
+                    Ok(PromoteWrite::Applied { settled_execution })
                 }
                 .scope_boxed()
             })
@@ -2328,6 +2453,11 @@ impl StorageBackend for PostgresService {
                 lock_account_metadata(conn, &account_id).await?;
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
+                }
+                if kind == DeltaStatusKind::Candidate
+                    && execution::execution_owns_candidate(conn, &account_id, nonce).await?
+                {
+                    return Ok(CanonicalWrite::ProtectedByExecution);
                 }
 
                 let deleted = diesel::delete(deltas::table)
@@ -2375,6 +2505,11 @@ impl StorageBackend for PostgresService {
                 lock_account_metadata(conn, &account_id).await?;
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
+                }
+                if status_kind != "candidate"
+                    && execution::execution_owns_candidate(conn, &account_id, nonce).await?
+                {
+                    return Ok(CanonicalWrite::ProtectedByExecution);
                 }
 
                 // Row-locked read of the stored abandon request: the new
@@ -2438,6 +2573,95 @@ impl StorageBackend for PostgresService {
         })
         .await
         .map_err(|e| format!("Failed to update candidate status: {e}"))
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        self.create_execution_reservation_tx(reservation).await
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        self.renew_execution_reservation_tx(account_id, fence, lease_expires_at, phase)
+            .await
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        self.claim_execution_reservation_tx(account_id, expected, claimant, lease_expires_at)
+            .await
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_active_execution_tx(account_id).await
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_latest_execution_tx(account_id, proposal_id).await
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        _metadata: &dyn MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        self.admit_execution_candidate_tx(admission).await
+    }
+
+    async fn resolve_execution(
+        &self,
+        _metadata: &dyn MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.resolve_execution_tx(resolution, true).await
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.resolve_execution_tx(resolution, false).await
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        self.settle_promoted_execution_tx(account_id, fence, now)
+            .await
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        self.list_active_executions_tx().await
+    }
+
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.prune_execution_records_tx(cutoff, limit).await
     }
 
     // ----------------------------------------------------------------------
@@ -3771,7 +3995,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert_eq!(
             service.pull_state_head(&account_id).await.unwrap(),
             head("0xpromoted", Some(4))
@@ -3935,10 +4164,14 @@ mod tests {
             .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), None, 1)
             .await
             .expect("first recent page");
+        assert_eq!(first_page.len(), 1, "the limit is applied in the store");
+        // The feed spans every account in the shared test database, so the
+        // cursor is anchored at this account's first candidate rather than
+        // at whichever row the global first page returned.
         let cursor = crate::storage::RecentCandidateCursor {
             last_status_timestamp: now_at,
             last_account_id: account_id.clone(),
-            last_nonce: first_page[0].nonce,
+            last_nonce: 2,
         };
         let second_page = service
             .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), Some(&cursor), 1)
@@ -4245,7 +4478,12 @@ mod tests {
             )
             .await
             .expect("retained-source promotion resolves");
-        assert_eq!(promoted, PromoteWrite::Applied);
+        assert_eq!(
+            promoted,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             service
                 .pull_delta(&account_id, 10)
@@ -4337,7 +4575,16 @@ mod tests {
         // Retained-over-intent refusal: once an abandon intent is
         // recorded, the retained flip must refuse rather than wipe it.
         let intent = service
-            .request_candidate_abandon(&account_id, 11, &now)
+            .request_candidate_abandon(&account_id, 11, "0xother", &now)
+            .await
+            .expect("intent resolves");
+        assert_eq!(
+            intent,
+            AbandonIntent::NotCandidate,
+            "a candidate with another commitment is never marked"
+        );
+        let intent = service
+            .request_candidate_abandon(&account_id, 11, "0x456", &now)
             .await
             .expect("intent resolves");
         assert_eq!(intent, AbandonIntent::Recorded);
@@ -4469,6 +4716,15 @@ mod tests {
             serde_json::json!({"intent": "A"})
         );
         assert!(archived[0].delta.status.is_client_abandoned());
+        assert_eq!(
+            service
+                .pull_superseded_deltas(&account_id, crate::storage::EVERY_ARCHIVED_DELTA)
+                .await
+                .expect("archive read with no cutoff")
+                .len(),
+            1,
+            "the abandon service reads the whole archive"
+        );
         assert!(
             service
                 .list_accounts_with_recoverable_deltas(now_dt + chrono::Duration::days(1))
@@ -4543,7 +4799,9 @@ mod tests {
                 .promote_candidate(&metadata_store, restore())
                 .await
                 .expect("restore resolves"),
-            PromoteWrite::Applied
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
         );
         let row = service
             .pull_delta(&account_id, 1)
@@ -5169,7 +5427,12 @@ mod tests {
             .promote_candidate(&metadata_store, promotion.clone())
             .await
             .expect("current owner promotes");
-        assert_eq!(promoted, PromoteWrite::Applied);
+        assert_eq!(
+            promoted,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             service
                 .pull_delta(&account_id, 1)

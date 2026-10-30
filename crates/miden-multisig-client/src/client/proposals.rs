@@ -26,15 +26,29 @@ pub enum AbandonRequestState {
     Retained,
 }
 
+/// An abandon request as GUARDIAN recorded it: its immediate state and the
+/// delta it abandoned, which [`MultisigClient::abandon_status`] polls for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbandonRequest {
+    pub state: AbandonRequestState,
+    /// The abandoned delta's `new_commitment`. Another delta can later take
+    /// the same nonce (a GUARDIAN execution archives the abandoned one), so
+    /// the nonce alone does not identify it.
+    pub commitment: String,
+}
+
 /// Resolution of an abandon request, as observed via the delta feed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbandonStatus {
-    /// The delta is still a candidate; the quarantine is running.
+    /// The delta is still a candidate; the quarantine is running. Also
+    /// reported while another delta holds the nonce as a candidate.
     Waiting,
     /// The transaction landed after all; the delta canonicalized.
     Landed,
     /// The abandon completed; the delta is discarded as client-abandoned
-    /// and the account is released.
+    /// and the account is released. Also reported once another delta at
+    /// the same nonce is canonical: the abandoned transaction can no
+    /// longer land.
     Abandoned,
     /// GUARDIAN stopped verifying and released the account slot, but the
     /// on-chain outcome is still uncertain — "unlocked but unresolved",
@@ -81,6 +95,7 @@ impl MultisigClient {
             .await?;
         let mut proposal = Proposal::from(&raw_proposal)?;
         self.verify_proposal_summary_binding(&mut proposal).await?;
+        self.known_proposals.record(*account_id, &proposal);
         Ok((proposal, pinned_base))
     }
 
@@ -154,7 +169,10 @@ impl MultisigClient {
     /// hide the others (issue #462). `Failed { retryable: true }`
     /// means a transient node error, worth listing again; `retryable: false`
     /// means the proposal cannot be reproduced and must be re-proposed.
-    /// Signing and executing re-verify and refuse a failed proposal.
+    /// Signing and executing re-verify and refuse a failed proposal. Only a
+    /// verified proposal is held for
+    /// [`request_guardian_execution`](Self::request_guardian_execution); a
+    /// failed one is refused there as not held until a listing verifies it.
     ///
     /// # Errors
     ///
@@ -188,9 +206,13 @@ impl MultisigClient {
 
         self.sync_chain_before_verifying(&proposals).await;
         for proposal in &mut proposals {
-            // The outcome lands on the proposal either way; a failure is
-            // reported there rather than failing the listing.
-            let _ = self.verify_listed_proposal_summary_binding(proposal).await;
+            if self
+                .verify_listed_proposal_summary_binding(proposal)
+                .await
+                .is_ok()
+            {
+                self.known_proposals.record(account_id, proposal);
+            }
         }
 
         Ok(proposals)
@@ -274,6 +296,7 @@ impl MultisigClient {
                 ));
                 continue;
             }
+            self.known_proposals.record(account_id, &proposal);
             proposals.push(proposal);
         }
 
@@ -332,6 +355,7 @@ impl MultisigClient {
         // actionable once the threshold is met) rather than `Unchecked`.
         let mut updated = Proposal::from(updated_raw)?;
         self.verify_proposal_summary_binding(&mut updated).await?;
+        self.known_proposals.record(account_id, &updated);
         Ok(updated)
     }
 
@@ -488,6 +512,7 @@ impl MultisigClient {
             signature_advice,
             proposal.metadata.new_threshold,
             target_signers.as_deref(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 
@@ -547,6 +572,10 @@ impl MultisigClient {
         };
 
         let payload = crate::payload::ProposalPayload::new(&tx_summary)
+            .with_transaction_request(
+                self.execution_mode
+                    .attachment_of_bytes(transaction_request_bytes),
+            )
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures);
@@ -556,9 +585,7 @@ impl MultisigClient {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
 
@@ -573,6 +600,7 @@ impl MultisigClient {
             )));
         }
 
+        self.known_proposals.record(account_id, &proposal);
         Ok(proposal)
     }
 
@@ -746,8 +774,9 @@ impl MultisigClient {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         let node_rpc = self.node_rpc_client();
-        ProposalBuilder::new(transaction_type)
+        let proposal = ProposalBuilder::new(transaction_type)
             .with_options(options)
+            .with_execution_mode(self.execution_mode)
             .build(
                 &mut self.miden_client,
                 &node_rpc,
@@ -755,7 +784,9 @@ impl MultisigClient {
                 &account,
                 self.key_manager.as_ref(),
             )
-            .await
+            .await?;
+        self.known_proposals.record(account.id(), &proposal);
+        Ok(proposal)
     }
 
     /// Proposes a transaction with automatic fallback to offline mode.
@@ -800,7 +831,9 @@ impl MultisigClient {
         match self.propose_transaction(transaction_type.clone()).await {
             Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
             Err(
-                error @ (MultisigError::GuardianConnection(_) | MultisigError::GuardianServer(_)),
+                error @ (MultisigError::GuardianConnection(_)
+                | MultisigError::GuardianServer(_)
+                | MultisigError::GuardianProposalRefused { .. }),
             ) => {
                 if transaction_type.supports_offline_execution() {
                     let exported = self.create_proposal_offline(transaction_type).await?;
@@ -822,11 +855,14 @@ impl MultisigClient {
     /// guardian's canonicalization worker confirms over a short
     /// quarantine (typically well under a minute) that the transaction
     /// did not land, then releases the account. Poll [`Self::abandon_status`]
-    /// for the resolution.
+    /// with the returned commitment for the resolution.
     ///
     /// `nonce` pins the exact candidate to release; it is the nonce the
-    /// proposal was pushed with (committed account nonce + 1). Retries
-    /// are idempotent and preserve the original request timestamp.
+    /// proposal was pushed with (committed account nonce + 1).
+    /// `proposal_id` names the proposal whose transaction is abandoned: a
+    /// GUARDIAN execution can archive its delta and take the nonce, and
+    /// the abandon then still answers for this proposal's transaction.
+    /// Retries are idempotent and preserve the original request timestamp.
     ///
     /// # Errors
     ///
@@ -834,27 +870,36 @@ impl MultisigClient {
     /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will
     /// canonicalize it shortly), if no candidate exists at this nonce,
     /// or if GUARDIAN cannot be reached.
-    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<AbandonRequestState> {
+    pub async fn abandon_candidate(
+        &mut self,
+        nonce: u64,
+        proposal_id: &str,
+    ) -> Result<AbandonRequest> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
-            .abandon_candidate(&account_id, nonce)
+            .abandon_candidate(&account_id, nonce, proposal_id)
             .await
             .map_err(|e| {
                 MultisigError::GuardianServer(format!("failed to abandon candidate: {}", e))
             })?;
 
-        Ok(match response.state.as_str() {
+        let state = match response.state.as_str() {
             "abandoned" => AbandonRequestState::Abandoned,
             "retained" => AbandonRequestState::Retained,
             _ => AbandonRequestState::Pending,
+        };
+        Ok(AbandonRequest {
+            state,
+            commitment: response.commitment,
         })
     }
 
     /// Polls GUARDIAN for the resolution of an abandon request made with
-    /// [`Self::abandon_candidate`].
-    pub async fn abandon_status(&mut self, nonce: u64) -> Result<AbandonStatus> {
+    /// [`Self::abandon_candidate`], identified by its nonce and the
+    /// commitment that request returned ([`AbandonRequest::commitment`]).
+    pub async fn abandon_status(&mut self, nonce: u64, commitment: &str) -> Result<AbandonStatus> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
@@ -876,11 +921,14 @@ impl MultisigClient {
         let Some(delta) = response.delta else {
             return Ok(AbandonStatus::Unexpected);
         };
-        let Some(status) = delta.status else {
+        let Some(status) = &delta.status else {
             return Ok(AbandonStatus::Unexpected);
         };
+        if !delta.new_commitment.eq_ignore_ascii_case(commitment) {
+            return Ok(classify_successor_status(status));
+        }
 
-        Ok(classify_abandon_status(&status))
+        Ok(classify_abandon_status(status))
     }
 }
 
@@ -898,6 +946,18 @@ fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStat
         // `Abandoned`, which would wrongly imply the transaction
         // definitively did not land.
         Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Retained,
+        _ => AbandonStatus::Unexpected,
+    }
+}
+
+/// Maps the status of another delta that took the abandoned delta's nonce.
+/// Once it is canonical the abandoned transaction can no longer land; while
+/// it is a candidate the nonce is still contested.
+fn classify_successor_status(status: &guardian_client::DeltaStatus) -> AbandonStatus {
+    use guardian_client::delta_status::Status as ProtoStatus;
+    match status.status {
+        Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Abandoned,
+        Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
         _ => AbandonStatus::Unexpected,
     }
 }
@@ -944,7 +1004,7 @@ mod tests {
     };
     use miden_protocol::{Felt, Word, ZERO};
 
-    use super::{AbandonStatus, classify_abandon_status};
+    use super::{AbandonStatus, classify_abandon_status, classify_successor_status};
     use crate::error::{MultisigError, Result};
     use crate::proposal::Proposal;
 
@@ -1103,6 +1163,36 @@ mod tests {
         );
         assert_eq!(
             classify_abandon_status(&status(None, "")),
+            AbandonStatus::Unexpected
+        );
+    }
+
+    #[test]
+    fn abandon_status_classifies_a_successor_at_the_nonce() {
+        use guardian_client::DeltaStatus;
+        use guardian_client::delta_status::Status as ProtoStatus;
+
+        let status = |status: Option<ProtoStatus>| DeltaStatus {
+            status,
+            discard_reason: String::new(),
+            retain_reason: String::new(),
+        };
+
+        let ts = "2026-07-28T00:00:00Z".to_string();
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::CanonicalAt(ts.clone())))),
+            AbandonStatus::Abandoned
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::CandidateAt(ts.clone())))),
+            AbandonStatus::Waiting
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::RetainedAt(ts.clone())))),
+            AbandonStatus::Unexpected
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::DiscardedAt(ts)))),
             AbandonStatus::Unexpected
         );
     }

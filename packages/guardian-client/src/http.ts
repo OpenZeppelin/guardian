@@ -28,6 +28,12 @@ import type {
   CanonicalNonce,
 } from './types.js';
 import { RequestAuthPayload } from './auth-request.js';
+import { fromServerExecution, fromServerExecutionCapability } from './execution.js';
+import type {
+  ProposalExecution,
+  ServerCurrentExecution,
+  ServerProposalExecution,
+} from './execution.js';
 import type {
   ServerAbandonCandidateRequest,
   ServerAbandonCandidateResponse,
@@ -84,6 +90,33 @@ export interface GuardianErrorMeta {
    * `code === 'signature_scheme_not_allowed'`.
    */
   allowedSchemes?: string[];
+  /**
+   * The proposal whose execution holds the account. Present only when
+   * `code === 'execution_conflict'`.
+   */
+  blockingProposalId?: string;
+  /**
+   * The proposal type GUARDIAN refuses to execute because the client that finishes its
+   * follow-up work must execute it. Present only when `code === 'proposal_executes_locally'`.
+   */
+  proposalType?: string;
+  /**
+   * Why GUARDIAN leaves the proposal to local execution. Present only when
+   * `code === 'proposal_executes_locally'`: `switch_guardian` for a guardian switch.
+   */
+  reason?: LocalExecutionReason;
+}
+
+/** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
+export type LocalExecutionReason = 'switch_guardian';
+
+function localExecutionReason(value: unknown): LocalExecutionReason | undefined {
+  switch (value) {
+    case 'switch_guardian':
+      return value;
+    default:
+      return undefined;
+  }
 }
 
 interface ParsedGuardianError {
@@ -142,6 +175,12 @@ function parseGuardianErrorBody(body: string): ParsedGuardianError | undefined {
   ) {
     meta.allowedSchemes = rawMeta.allowed_schemes;
   }
+  if (typeof rawMeta.blocking_proposal_id === 'string') {
+    meta.blockingProposalId = rawMeta.blocking_proposal_id;
+  }
+  if (typeof rawMeta.proposal_type === 'string') meta.proposalType = rawMeta.proposal_type;
+  const reason = localExecutionReason(rawMeta.reason);
+  if (reason !== undefined) meta.reason = reason;
   if (typeof rawMeta.paused_reason === 'string' || rawMeta.paused_reason === null) {
     meta.pausedReason = rawMeta.paused_reason as string | null;
   }
@@ -434,6 +473,9 @@ export class GuardianHttpClient {
       environment: data.environment,
       startedAt: data.started_at,
       uptimeSeconds: data.uptime_seconds,
+      ...(data.execution === undefined || data.execution === null
+        ? {}
+        : { execution: fromServerExecutionCapability(data.execution) }),
       ...(data.sessions
         ? {
             sessions: {
@@ -533,6 +575,48 @@ export class GuardianHttpClient {
   }
 
   /**
+   * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
+   * accepted; poll {@link getDeltaProposalExecution} for the outcome. Repeating the request while
+   * the execution runs returns it with `newlyAccepted: false`.
+   *
+   * Signed by the session while one is set, over the payload tagged as `ExecuteDeltaProposal`:
+   * the body names the same fields as a status read, and the tag keeps a signed read from
+   * authenticating an execution request.
+   */
+  async executeDeltaProposal(accountId: string, proposalId: string): Promise<ProposalExecution> {
+    const serverRequest = {
+      account_id: accountId,
+      proposal_id: proposalId,
+    };
+    const response = await this.fetchSigned('/delta/proposal/execution', {
+      method: 'POST',
+      body: JSON.stringify(serverRequest),
+    }, accountId, RequestAuthPayload.forOperation('ExecuteDeltaProposal', serverRequest), 'session');
+    return fromServerExecution((await response.json()) as ServerProposalExecution);
+  }
+
+  /** The latest execution attempt of a proposal. */
+  async getDeltaProposalExecution(accountId: string, proposalId: string): Promise<ProposalExecution> {
+    const requestQuery = { account_id: accountId, proposal_id: proposalId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/delta/proposal/execution?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery, 'session');
+    return fromServerExecution((await response.json()) as ServerProposalExecution);
+  }
+
+  /** The account's in-flight execution, or `null`. A finished execution is not in flight. */
+  async getCurrentExecution(accountId: string): Promise<ProposalExecution | null> {
+    const requestQuery = { account_id: accountId };
+    const params = new URLSearchParams(requestQuery);
+    const response = await this.fetchAuthenticated(`/delta/execution/current?${params}`, {
+      method: 'GET',
+    }, accountId, requestQuery, 'session');
+    const server = (await response.json()) as ServerCurrentExecution;
+    return server.execution === null ? null : fromServerExecution(server.execution);
+  }
+
+  /**
    * Request abandonment of a pending canonicalization candidate whose
    * transaction will never land on-chain (issue #319).
    *
@@ -544,9 +628,22 @@ export class GuardianHttpClient {
    * for the resolution. Refused with `GUARDIAN_CANDIDATE_LANDED` (409)
    * when the transaction actually landed. Retries are idempotent and
    * preserve the original request timestamp.
+   *
+   * `proposalId` names the transaction: its summary's commitment, which
+   * is the proposal id of a multisig proposal. A Guardian execution can
+   * archive the delta and take its nonce; the abandon then still answers
+   * for this transaction.
    */
-  async abandonCandidate(accountId: string, nonce: number): Promise<AbandonCandidateResponse> {
-    const serverRequest: ServerAbandonCandidateRequest = { account_id: accountId, nonce };
+  async abandonCandidate(
+    accountId: string,
+    nonce: number,
+    proposalId: string,
+  ): Promise<AbandonCandidateResponse> {
+    const serverRequest: ServerAbandonCandidateRequest = {
+      account_id: accountId,
+      nonce,
+      proposal_id: proposalId,
+    };
     // Abandoning changes the account's canonical chain: always the wallet.
     const response = await this.fetchAuthenticated('/delta/candidate/abandon', {
       method: 'POST',
@@ -558,6 +655,7 @@ export class GuardianHttpClient {
       nonce: server.nonce,
       state: server.state,
       abandonRequestedAt: server.abandon_requested_at,
+      commitment: server.commitment,
     };
   }
 
@@ -572,8 +670,14 @@ export class GuardianHttpClient {
    * delta until its retention TTL expires — sync and check chain before
    * replacing it), `'unexpected'` for any state no abandon flow
    * produces (including a missing delta).
+   *
+   * `commitment` is the one {@link abandonCandidate} returned. Another
+   * delta can take the nonce (a Guardian execution archives the abandoned
+   * one): once it is canonical the abandoned transaction can no longer
+   * land (`'abandoned'`), and while it is a candidate the nonce is still
+   * contested (`'waiting'`).
    */
-  async abandonStatus(accountId: string, nonce: number): Promise<AbandonStatus> {
+  async abandonStatus(accountId: string, nonce: number, commitment: string): Promise<AbandonStatus> {
     let delta: DeltaObject;
     try {
       delta = await this.getDelta(accountId, nonce);
@@ -582,6 +686,16 @@ export class GuardianHttpClient {
         return 'unexpected';
       }
       throw e;
+    }
+    if (delta.newCommitment?.toLowerCase() !== commitment.toLowerCase()) {
+      switch (delta.status.status) {
+        case 'canonical':
+          return 'abandoned';
+        case 'candidate':
+          return 'waiting';
+        default:
+          return 'unexpected';
+      }
     }
     switch (delta.status.status) {
       case 'candidate':
@@ -770,11 +884,20 @@ export class GuardianHttpClient {
     init: RequestInit,
     accountId: string,
     requestPayload: unknown,
-    mode: AuthMode = 'wallet',
+    mode: AuthMode = 'wallet'
+  ): Promise<Response> {
+    return this.fetchSigned(path, init, accountId, RequestAuthPayload.fromRequest(requestPayload), mode);
+  }
+
+  private async fetchSigned(
+    path: string,
+    init: RequestInit,
+    accountId: string,
+    authPayload: RequestAuthPayload,
+    mode: AuthMode,
     retries = 2
   ): Promise<Response> {
     const timestamp = this.nextTimestamp();
-    const authPayload = RequestAuthPayload.fromRequest(requestPayload);
     const session = mode === 'session' ? this.getSession() : null;
     const headers = session
       ? authHeaders(
@@ -816,7 +939,7 @@ export class GuardianHttpClient {
         err.code === 'authentication_replay'
       ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return this.fetchAuthenticated(path, init, accountId, requestPayload, mode, retries - 1);
+        return this.fetchSigned(path, init, accountId, authPayload, mode, retries - 1);
       }
       throw err;
     }

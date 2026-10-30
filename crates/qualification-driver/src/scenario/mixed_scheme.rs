@@ -44,8 +44,8 @@ use miden_standards::account::wallets::BasicWallet;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 
-use super::account::{operator_login, same_commitment, scheme_gated_endpoint};
-use super::{ActionOutcome, Runner};
+use super::account::{operator_login, same_commitment};
+use super::{ActionOutcome, Runner, StackServer};
 
 /// Seeds the registered account's keys and its account seed. Fixed, so the
 /// post-restart pass and an upgrade's target phase build the account the first
@@ -780,7 +780,7 @@ pub async fn assert_per_scheme_approvals(runner: &Runner) -> ActionOutcome {
 /// same account registers on the main GUARDIAN, so the gate is the only reason
 /// it was refused.
 pub async fn assert_mixed_scheme_gate(runner: &Runner) -> ActionOutcome {
-    let endpoint = match scheme_gated_endpoint() {
+    let endpoint = match StackServer::SchemeGated.grpc_endpoint() {
         Ok(endpoint) => endpoint,
         Err(outcome) => return outcome,
     };

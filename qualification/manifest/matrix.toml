@@ -31,6 +31,7 @@ sdk = "rust"
 availability = "available"
 excluded_scenarios = [
   "live-transfer-consume-1of1-ecdsa",
+  "live-guardian-execute-private-p2id-2of3-falcon",
   "live-offline-export-import-2of3-falcon",
   "live-offline-export-import-2of3-ecdsa",
   "live-guardian-migrate-offline-1of1-ecdsa",
@@ -50,6 +51,10 @@ excluded_scenarios = [
   "live-p2ide-timelock-1of1-ecdsa",
   "live-change-threshold-2of3-falcon",
   "live-procedure-threshold-2of3-ecdsa",
+  "live-guardian-execute-add-signer-2of3-falcon",
+  "live-guardian-execute-2of3-falcon",
+  "live-guardian-execute-2of3-ecdsa",
+  "live-guardian-execute-base-client-2of3-ecdsa",
   "live-candidate-queue-chained-1of1-ecdsa",
   "live-candidate-queue-stranded-head-1of1-ecdsa",
   "live-send-override-p2id-2of3-falcon",
@@ -61,6 +66,7 @@ sdk = "typescript"
 availability = "available"
 excluded_scenarios = [
   "live-transfer-consume-1of1-ecdsa",
+  "live-guardian-execute-private-p2id-2of3-falcon",
   "live-offline-export-import-2of3-falcon",
   "live-offline-export-import-2of3-ecdsa",
   "live-guardian-migrate-offline-1of1-ecdsa",
@@ -80,6 +86,12 @@ excluded_scenarios = [
   "live-p2ide-timelock-1of1-ecdsa",
   "live-change-threshold-2of3-falcon",
   "live-procedure-threshold-2of3-ecdsa",
+  "live-guardian-execute-p2id-late-2of3-ecdsa",
+  "live-guardian-execute-consume-late-2of3-falcon",
+  "live-guardian-execute-add-signer-2of3-falcon",
+  "live-guardian-execute-2of3-falcon",
+  "live-guardian-execute-2of3-ecdsa",
+  "live-guardian-execute-base-client-2of3-ecdsa",
   "live-candidate-queue-chained-1of1-ecdsa",
   "live-candidate-queue-stranded-head-1of1-ecdsa",
   "live-send-override-p2id-2of3-falcon",

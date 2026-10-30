@@ -466,6 +466,10 @@ mod tests {
         let update_calls = storage.get_update_delta_proposal_calls();
         assert_eq!(update_calls.len(), 1);
         assert_eq!(update_calls[0].0, commitment);
+        assert!(
+            storage.reserved_nothing(),
+            "collecting signatures never reserves the account for execution"
+        );
     }
 
     #[tokio::test]
@@ -610,7 +614,7 @@ mod tests {
             }],
         );
 
-        let _storage = storage
+        let storage = storage
             .with_pull_delta_proposal(Ok(pending_proposal.clone()))
             .with_update_delta_proposal_if_status(Ok(true));
 
@@ -638,6 +642,10 @@ mod tests {
             }
             _ => panic!("Expected Pending status"),
         }
+        assert!(
+            storage.reserved_nothing(),
+            "collecting signatures never reserves the account for execution"
+        );
     }
 
     /// Signs the pending test proposal as `signer`; `proposer` is the other cosigner.

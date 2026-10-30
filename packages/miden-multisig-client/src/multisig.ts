@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, GuardianHttpError, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, GuardianHttpError, type ProposalExecution, type TransactionRequestEnvelope, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -20,6 +20,14 @@ import type {
   SignerSpec,
 } from './types.js';
 import { BoundBlockMismatchError, ProposalSaltMalformedError } from './multisig/authArgErrors.js';
+import {
+  assertGuardianMayExecute,
+  ExecutionWait,
+  refusingExecutionWith,
+  refusingWith,
+  startWaitRuntime,
+  type ExecutionWaitOptions,
+} from './multisig/guardianExecution.js';
 import type { ProcedureName } from './procedures.js';
 import type { MidenClient, OutputNoteRecord } from '@miden-sdk/miden-sdk';
 import {
@@ -29,7 +37,9 @@ import {
   Endpoint,
   type Felt,
   FeltArray,
+  InputNote,
   Note,
+  NoteDetails,
   NoteExportFormat,
   NoteFile,
   NoteType,
@@ -57,7 +67,16 @@ import {
   p2idNoteTypeToMetadata,
   type P2ideHeightOptions,
 } from './transaction.js';
-import { buildConsumeNotesTransactionRequestFromNotes } from './transaction/consumeNotes.js';
+import {
+  buildConsumeNotesTransactionRequestFromNotes,
+  buildPinnedConsumeNotesTransactionRequest,
+} from './transaction/consumeNotes.js';
+import {
+  approvalExpirationDeltaFor,
+  attachmentFor,
+  transactionExpirationDeltaFor,
+  type ProposalExecutionMode,
+} from './transaction/expiration.js';
 import type { MultisigRequestOptions } from './transaction/options.js';
 import { validateMultisigConfig } from './account/builder.js';
 import {
@@ -258,13 +277,15 @@ function assertProposalOptionsBag(
 
 /**
  * What a rebuild of a proposal's request pins so the signed summary
- * reproduces: the salt, the block its summary binds, and the approval
- * expiration the summary binds, as the delta the builders take.
+ * reproduces: the salt, the block its summary binds, the approval
+ * expiration the summary binds, as the delta the builders take, and the
+ * transaction expiration it binds.
  */
 interface ProposalRequestBinding {
   saltHex: string;
   boundBlockNum: number;
   approvalExpirationDelta: number | undefined;
+  transactionExpirationDelta: number | undefined;
 }
 
 function proposalRequestBinding(
@@ -279,6 +300,7 @@ function proposalRequestBinding(
       summaryApprovalExpirationBlockNum(summary),
       boundBlockNum,
     ),
+    transactionExpirationDelta: summary.expirationDelta() || undefined,
   };
 }
 
@@ -451,6 +473,9 @@ export class Multisig {
   /** Pending sync shared by overlapping {@link syncProposals} callers. */
   private syncProposalsInFlight?: Promise<Proposal[]>;
 
+  /** Whether proposals this client creates can be executed by Guardian. */
+  readonly executionMode: ProposalExecutionMode;
+
   constructor(
     account: Account,
     config: MultisigConfig,
@@ -461,7 +486,9 @@ export class Multisig {
     midenRpcEndpoint: string,
     proverConfig?: ResolvedProverConfig,
     rpcConfig?: ResolvedRpcConfig,
+    executionMode: ProposalExecutionMode = 'self_executed',
   ) {
+    this.executionMode = executionMode;
     this.account = account;
     this.threshold = config.threshold;
     this.signers = resolveSignerSpecs(config);
@@ -684,11 +711,25 @@ export class Multisig {
    */
   private proposalRequestOptions(options: {
     approvalExpirationDelta?: number;
-  }): Pick<MultisigRequestOptions, 'accountId' | 'approvalExpirationDelta' | 'signatureScheme'> {
+  }): Pick<
+    MultisigRequestOptions,
+    'accountId' | 'approvalExpirationDelta' | 'signatureScheme' | 'transactionExpirationDelta'
+  > {
     return {
       accountId: this._accountId,
-      approvalExpirationDelta: options.approvalExpirationDelta,
       signatureScheme: this.signer.scheme,
+      ...this.proposalBounds(this.executionMode, options.approvalExpirationDelta),
+    };
+  }
+
+  /** The two expiration bounds a new proposal applies under `mode`. */
+  private proposalBounds(
+    mode: ProposalExecutionMode,
+    approvalExpirationDelta: number | undefined,
+  ): Pick<MultisigRequestOptions, 'approvalExpirationDelta' | 'transactionExpirationDelta'> {
+    return {
+      approvalExpirationDelta: approvalExpirationDeltaFor(mode, approvalExpirationDelta),
+      transactionExpirationDelta: transactionExpirationDeltaFor(mode),
     };
   }
 
@@ -1310,9 +1351,15 @@ export class Multisig {
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */
   async createProposal(nonce: number, txSummaryBase64: string, metadata: ProposalMetadata): Promise<Proposal> {
+    if (this.executionMode === 'guardian_executable') {
+      throw new Error(
+        'createProposal takes a summary without its request, which Guardian cannot execute; ' +
+          'use a typed create*Proposal method or createCustomProposal on a guardian_executable client',
+      );
+    }
     await this.refreshConfigFromStore();
     this.assertKeySchemeMatches();
-    return this.pushProposal(nonce, txSummaryBase64, metadata);
+    return this.pushProposal(nonce, txSummaryBase64, metadata, undefined);
   }
 
   /**
@@ -1323,6 +1370,7 @@ export class Multisig {
     nonce: number,
     txSummaryBase64: string,
     metadata: ProposalMetadata,
+    transactionRequest: TransactionRequestEnvelope | undefined,
   ): Promise<Proposal> {
     const guardianMetadata = ProposalMetadataCodec.toGuardian(metadata);
 
@@ -1333,6 +1381,7 @@ export class Multisig {
         txSummary: { data: txSummaryBase64 },
         signatures: [],
         metadata: guardianMetadata,
+        ...(transactionRequest ? { transactionRequest } : {}),
       },
     });
 
@@ -1342,6 +1391,78 @@ export class Multisig {
     this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
+  }
+
+  /**
+   * Ask Guardian to prove and submit a threshold-met proposal. Resolves once the request is
+   * accepted; {@link executionStatus} reports the outcome. The proposal must have been created
+   * by a `guardian_executable` client and be held by this one: a proposal it does not hold
+   * throws `ProposalNotHeldLocallyError` without contacting Guardian, as does one whose
+   * metadata failed verification against its signed summary; an unchecked one is verified
+   * first. A `switch_guardian` proposal must be executed locally and throws
+   * `LocalExecutionRequiredError`; GUARDIAN refusing a proposal for local execution throws the
+   * same error. A private-note P2ID executed by GUARDIAN reaches its recipient through
+   * {@link exportP2idNoteToBytes}, as one executed by this client does.
+   *
+   * GUARDIAN executes a proposal only once its stored copy carries a threshold of approvals.
+   * Approvals collected off channel (an imported, offline-signed proposal) exist only in this
+   * client, so the held proposal's verified approvals are relayed to GUARDIAN first, as
+   * {@link executeProposal} relays them before its acknowledgement.
+   */
+  async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
+    const proposal = this.getLocalProposal(proposalId);
+    if (proposal?.verification.status === 'unchecked') {
+      await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
+    }
+    assertGuardianMayExecute(proposalId, proposal);
+    const normalizedProposalId = normalizeHexWord(proposalId);
+    const approvals = this.approvalsUnderStoredSchemes(
+      new ProposalSignatures(
+        proposal.signatures,
+        this.signerCommitments,
+        `Invalid proposal signatures for ${proposalId}`,
+      ).entries(),
+    );
+    return refusingExecutionWith(proposalId, this.relayThenRequestExecution(
+      proposalId,
+      normalizedProposalId,
+      approvals,
+    ));
+  }
+
+  private async relayThenRequestExecution(
+    proposalId: string,
+    normalizedProposalId: string,
+    approvals: ProposalSignatureEntry[],
+  ): Promise<ProposalExecution> {
+    if (approvals.length > 0) {
+      const stored = await this.guardian.getDeltaProposal(this._accountId, normalizedProposalId);
+      await this.relayCollectedApprovals(normalizedProposalId, approvals, stored);
+    }
+    return this.guardian.executeDeltaProposal(this._accountId, proposalId);
+  }
+
+  /** The latest Guardian execution of a proposal. */
+  async executionStatus(proposalId: string): Promise<ProposalExecution> {
+    return refusingWith(this.guardian.getDeltaProposalExecution(this._accountId, proposalId));
+  }
+
+  /** The account's in-flight Guardian execution, or `null`. */
+  async currentExecution(): Promise<ProposalExecution | null> {
+    return refusingWith(this.guardian.getCurrentExecution(this._accountId));
+  }
+
+  /**
+   * Wait for a requested Guardian execution to finish and resolve with it once `committed` or
+   * `failed`. Status reads that fail with a retryable or transport error are retried; any other
+   * error is thrown. Past `options.deadlineMs` it throws `GuardianExecutionWaitTimeoutError`.
+   * It never requests execution, so call {@link requestGuardianExecution} first.
+   */
+  async waitForGuardianExecution(proposalId: string, options: ExecutionWaitOptions = {}): Promise<ProposalExecution> {
+    return new ExecutionWait(proposalId, options).run(
+      () => this.guardian.getDeltaProposalExecution(this._accountId, proposalId),
+      startWaitRuntime(),
+    );
   }
 
   /**
@@ -1387,6 +1508,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createAddSignerProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
@@ -1399,7 +1521,7 @@ export class Multisig {
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1445,6 +1567,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createRemoveSignerProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
@@ -1457,7 +1580,7 @@ export class Multisig {
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1491,6 +1614,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createChangeThresholdProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
@@ -1503,7 +1627,7 @@ export class Multisig {
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   async createUpdateProcedureThresholdProposal(
@@ -1539,6 +1663,7 @@ export class Multisig {
     );
 
     const proposalNonce = await this.resolveProposalNonce('createUpdateProcedureThresholdProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
     const action = targetThreshold === 0
       ? `Clear threshold override for ${targetProcedure}`
@@ -1554,12 +1679,16 @@ export class Multisig {
       description: action,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
    * Create a "switch GUARDIAN" proposal to change the GUARDIAN provider.
-   * 
+   *
+   * A switch is always executed locally, so it is built with `self_executed` bounds in every
+   * execution mode: no default approval window, no transaction expiration and no stored
+   * transaction request. An explicit `approvalExpirationDelta` still applies.
+   *
    * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
    * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
    * @param options - Optional settings: `nonce`
@@ -1582,20 +1711,23 @@ export class Multisig {
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
     const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, undefined);
   }
 
   /**
    * Shared build step for both switch-GUARDIAN creation paths: verify the new
    * endpoint's `/pubkey` commitment, then execute the update-guardian request
-   * for its summary and metadata. Kept in one place so the online and offline
-   * proposals for the same operation can never drift apart.
+   * for its summary and metadata with `self_executed` bounds. Kept in one place so the online
+   * and offline proposals for the same operation can never drift apart.
    */
   private async buildSwitchGuardianSummary(
     newGuardianEndpoint: string,
     newGuardianPubkey: string,
     approvalExpirationDelta: number | undefined,
-  ): Promise<{ summaryBase64: string; metadata: ProposalMetadata }> {
+  ): Promise<{
+    summaryBase64: string;
+    metadata: ProposalMetadata;
+  }> {
     // What `auth_tx_guarded_multisig` asserts after a guardian rotation, checked
     // before any signature is collected.
     validateMultisigConfig({
@@ -1612,8 +1744,8 @@ export class Multisig {
       newGuardianPubkey,
       {
         accountId: this._accountId,
-        approvalExpirationDelta,
         signatureScheme: this.guardianScheme,
+        ...this.proposalBounds('self_executed', approvalExpirationDelta),
       },
     );
 
@@ -1652,6 +1784,10 @@ export class Multisig {
    * proposal the current GUARDIAN never received, so even if that GUARDIAN is
    * back up at execution time it keeps serving the account until background
    * reconciliation (issue #305) — same outcome as executing while it is down.
+   *
+   * The proposal is always self-executed, whatever this client's execution
+   * mode: it never reaches GUARDIAN, so it carries no stored request and
+   * neither Guardian-executable bound.
    *
    * @param newGuardianEndpoint - The new GUARDIAN server endpoint URL
    * @param newGuardianPubkey - The new GUARDIAN server's public key commitment (hex)
@@ -1735,12 +1871,20 @@ export class Multisig {
     const proposalNonce = await this.resolveProposalNonce('createConsumeNotesProposal', options);
     const embeddedNotes = fetchedNotes.map((n) => noteToBase64(n));
 
-    const { request, salt } = await buildConsumeNotesTransactionRequestFromNotes(
-      this.midenClient,
-      fetchedNotes,
-      this.proposalRequestOptions(options),
-    );
+    const { request, salt } =
+      this.executionMode === 'guardian_executable'
+        ? await buildPinnedConsumeNotesTransactionRequest(
+            this.midenClient,
+            fetchedNotes,
+            this.proposalRequestOptions(options),
+          )
+        : await buildConsumeNotesTransactionRequestFromNotes(
+            this.midenClient,
+            fetchedNotes,
+            this.proposalRequestOptions(options),
+          );
 
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
@@ -1764,7 +1908,7 @@ export class Multisig {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1800,10 +1944,11 @@ export class Multisig {
       recipientId,
       faucetId,
       amount,
-      noteOptions,
+      { ...noteOptions, ...this.proposalBounds(this.executionMode, noteOptions.approvalExpirationDelta) },
     );
 
     const proposalNonce = await this.resolveProposalNonce('createP2idProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => request.serialize());
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
@@ -1822,7 +1967,7 @@ export class Multisig {
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -1861,7 +2006,8 @@ export class Multisig {
    * bytes produced here, which they load with {@link importNoteFromBytes}.
    *
    * The note must be an output note of this client (created by a transaction
-   * this client executed). When the note's on-chain inclusion proof is
+   * this client executed); a P2ID proposal's note is exported with
+   * {@link exportP2idNoteToBytes} whoever executed it. When the note's on-chain inclusion proof is
    * already known (after a post-commit sync) the full note with proof is
    * exported; otherwise the note details are exported and the importer's
    * client tracks the note until it commits on chain.
@@ -2186,13 +2332,92 @@ export class Multisig {
    * Compute the ID of the note a P2ID proposal will create when executed.
    *
    * The P2ID note is rebuilt deterministically from the proposal salt, so the
-   * ID is known ahead of execution. For a private P2ID this is the ID to pass
-   * to {@link exportNoteToBytes} after executing, so the note file can be delivered
-   * to the recipient out-of-band.
-   *
-   * The note ID remains deterministic from the proposal metadata and salt.
+   * ID is known ahead of execution. To deliver a private P2ID to its recipient,
+   * export it with {@link exportP2idNoteToBytes}, which works whoever executed
+   * the proposal.
    */
   async getP2idNoteId(proposal: Proposal): Promise<string> {
+    return this.rebuildP2idNote(proposal, 'getP2idNoteId').id().toString();
+  }
+
+  /**
+   * Export the note a P2ID proposal creates as note-file bytes for out-of-band
+   * delivery to its recipient, who loads them with {@link importNoteFromBytes}.
+   *
+   * This is how a private P2ID reaches its recipient. The note is rebuilt from
+   * the proposal, so it works whoever executed the proposal: this client, or
+   * GUARDIAN, after which no client holds the note in its store. The rebuilt
+   * note must be one the summary the proposal id commits to creates. Once the
+   * node has the note's inclusion proof the file carries the note with that
+   * proof; before then it carries the note's details and tag, and the
+   * importer's client tracks the note from the block the summary binds until
+   * it commits on chain.
+   *
+   * GUARDIAN deletes a proposal once its transaction is canonical, so keep the
+   * proposal, or its offline export, from before it is executed.
+   *
+   * @param proposal - A P2ID proposal held by this client
+   * @returns Serialized note file bytes
+   */
+  async exportP2idNoteToBytes(proposal: Proposal): Promise<Uint8Array> {
+    const summary = TransactionSummary.deserialize(base64ToUint8Array(proposal.txSummary));
+    const summaryCommitment = normalizeHexWord(summary.toCommitment().toHex());
+    if (summaryCommitment !== normalizeHexWord(proposal.id)) {
+      throw new Error(`Proposal ${proposal.id} carries a summary committing to ${summaryCommitment}`);
+    }
+    const note = this.rebuildP2idNote(proposal, 'exportP2idNoteToBytes');
+    const noteId = note.id().toString();
+    const created = summary
+      .outputNotes()
+      .notes()
+      .some((outputNote) => outputNote.id().toString() === noteId);
+    if (!created) {
+      throw new Error(
+        `Proposal ${proposal.id} metadata rebuilds note ${noteId}, which its signed transaction does not create`,
+      );
+    }
+
+    const rpcClient = new RpcClient(new Endpoint(this.getMidenRpcEndpoint()));
+    const [fetched] = await retryRpcRead(() => rpcClient.getNotesById([note.id()]), this.rpcConfig);
+    const noteFile = fetched
+      ? NoteFile.fromInputNote(InputNote.authenticated(note, fetched.inclusionProof))
+      : NoteFile.fromExpectedNote(
+          new NoteDetails(note.assets(), note.recipient()),
+          note.metadata().tag(),
+          summaryBoundBlockNum(summary),
+        );
+    return noteFile.serialize();
+  }
+
+  /**
+   * Export the note a P2ID proposal creates as a note file downloaded by the
+   * browser. Browser-only convenience over {@link exportP2idNoteToBytes}; use
+   * that method directly in non-DOM environments.
+   *
+   * @param proposal - A P2ID proposal held by this client
+   * @param filename - Download name, `note_<noteId>.mno` by default
+   */
+  async exportP2idNoteToFile(proposal: Proposal, filename?: string): Promise<void> {
+    if (typeof document === 'undefined') {
+      throw new Error('exportP2idNoteToFile requires a browser environment; use exportP2idNoteToBytes instead');
+    }
+
+    const noteBytes = await this.exportP2idNoteToBytes(proposal);
+    const noteId = await this.getP2idNoteId(proposal);
+
+    const blob = new Blob([noteBytes as BlobPart], { type: 'application/octet-stream' });
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = filename ?? `note_${noteId}.mno`;
+      anchor.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  private rebuildP2idNote(proposal: Proposal, caller: string): Note {
     const metadata = proposal.metadata;
     if (
       metadata.proposalType !== 'p2id' ||
@@ -2201,7 +2426,7 @@ export class Multisig {
       !metadata.amount ||
       !metadata.saltHex
     ) {
-      throw new Error('getP2idNoteId requires a P2ID proposal with recipient, faucet, amount, and salt metadata');
+      throw new Error(`${caller} requires a P2ID proposal with recipient, faucet, amount, and salt metadata`);
     }
 
     // Validate before deriving. Unlike the rebuild paths there is no commitment check
@@ -2210,7 +2435,7 @@ export class Multisig {
     // not exist, with nothing to catch it.
     this.requireProposalSaltHex(proposal.id, metadata);
 
-    const note = buildP2idNoteFromMetadata(
+    return buildP2idNoteFromMetadata(
       this._accountId,
       metadata.recipientId,
       metadata.faucetId,
@@ -2219,7 +2444,6 @@ export class Multisig {
       metadata.saltHex,
       { reclaimHeight: metadata.reclaimHeight, timelockHeight: metadata.timelockHeight },
     );
-    return note.id().toString();
   }
 
   /**
@@ -2239,16 +2463,19 @@ export class Multisig {
    * Records an abandon *intent* on GUARDIAN: the account stays locked
    * until the guardian's canonicalization worker confirms over a short
    * quarantine (typically well under a minute) that the transaction did
-   * not land, then releases the account. Poll {@link abandonStatus} for
-   * the resolution.
+   * not land, then releases the account. Poll {@link abandonStatus} with
+   * the returned `commitment` for the resolution.
    *
    * `nonce` pins the exact candidate to release; it is the nonce the
-   * proposal was pushed with. Retries are idempotent and preserve the
+   * proposal was pushed with. `proposalId` names the proposal whose
+   * transaction is abandoned: a GUARDIAN execution can archive its delta
+   * and take the nonce, and the abandon then still answers for this
+   * proposal's transaction. Retries are idempotent and preserve the
    * original request timestamp. Refused with `GUARDIAN_CANDIDATE_LANDED`
    * (409) when the transaction actually landed.
    */
-  async abandonCandidate(nonce: number): Promise<AbandonCandidateResponse> {
-    return this.guardian.abandonCandidate(this._accountId, nonce);
+  async abandonCandidate(nonce: number, proposalId: string): Promise<AbandonCandidateResponse> {
+    return this.guardian.abandonCandidate(this._accountId, nonce, proposalId);
   }
 
   /**
@@ -2256,10 +2483,12 @@ export class Multisig {
    * {@link abandonCandidate}: `'waiting'` while the quarantine runs,
    * `'landed'` if the transaction landed after all, `'abandoned'` once
    * the account is released, `'unexpected'` for any state no abandon
-   * flow produces.
+   * flow produces. `commitment` is the one {@link abandonCandidate}
+   * returned: once another delta canonicalizes at the nonce the abandoned
+   * transaction can no longer land, which reports `'abandoned'`.
    */
-  async abandonStatus(nonce: number): Promise<AbandonStatus> {
-    return this.guardian.abandonStatus(this._accountId, nonce);
+  async abandonStatus(nonce: number, commitment: string): Promise<AbandonStatus> {
+    return this.guardian.abandonStatus(this._accountId, nonce, commitment);
   }
 
   /**
@@ -2531,6 +2760,7 @@ export class Multisig {
 
     const request = deserializeTransactionRequest(transactionRequestBytes);
     const proposalNonce = await this.resolveProposalNonce('createCustomProposal', options);
+    const transactionRequest = await attachmentFor(this.executionMode, () => transactionRequestBytes);
     const { summaryBase64, boundBlockNum } = await this.deriveProposalSummary(request);
 
     const metadata: ProposalMetadata = {
@@ -2541,7 +2771,7 @@ export class Multisig {
       requiredSignatures: this.getEffectiveThreshold('custom'),
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
   }
 
   /**
@@ -3486,6 +3716,7 @@ export class Multisig {
         accountId: this._accountId,
         boundBlockNum: binding.boundBlockNum,
         approvalExpirationDelta: binding.approvalExpirationDelta,
+        transactionExpirationDelta: binding.transactionExpirationDelta,
         salt,
         signatureAdviceMap,
         signatureScheme: this.signer.scheme,

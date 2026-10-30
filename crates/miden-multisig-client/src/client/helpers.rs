@@ -383,6 +383,7 @@ impl MultisigClient {
             Vec::new(),
             proposal.metadata.new_threshold,
             target_signers.as_deref(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 

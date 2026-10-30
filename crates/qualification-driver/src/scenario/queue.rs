@@ -20,7 +20,7 @@ use guardian_client::delta_status::Status;
 use guardian_client::{AuthConfig, GuardianClient, MidenFalconRpoAuth, auth_config::AuthType};
 use miden_protocol::account::AccountId;
 
-use super::{ActionOutcome, Runner};
+use super::{ActionOutcome, Runner, StackServer};
 use crate::fixtures::{ChainedDelta, Fixtures};
 
 /// The depth the stack runs the queue server at in this profile. Three chained
@@ -38,13 +38,7 @@ struct QueueServer {
 /// Connects to the queue server with the fixture signer and makes sure the
 /// fixture account is registered there.
 async fn queue_server(fixtures: &Fixtures) -> Result<QueueServer, ActionOutcome> {
-    let Ok(endpoint) = std::env::var("QUAL_GUARDIAN_QUEUE_GRPC") else {
-        return Err(ActionOutcome::EnvironmentBlocked {
-            reason: "QUAL_GUARDIAN_QUEUE_GRPC is unset, so no queue-enabled GUARDIAN is running \
-                     to exercise the candidate queue against"
-                .to_string(),
-        });
-    };
+    let endpoint = StackServer::Queue.grpc_endpoint()?;
     let depth = std::env::var("QUAL_QUEUE_DEPTH")
         .ok()
         .and_then(|value| value.trim().parse::<usize>().ok())

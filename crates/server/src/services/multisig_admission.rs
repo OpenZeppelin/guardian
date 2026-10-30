@@ -9,9 +9,8 @@
 
 use std::collections::BTreeSet;
 
-use miden_protocol::account::{Account, StorageMapKey, StorageSlotContent};
+use miden_protocol::account::Account;
 use miden_protocol::transaction::TransactionSummary;
-use miden_standards::account::auth::AuthGuardedMultisig;
 use serde_json::Value;
 
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
@@ -20,6 +19,7 @@ use crate::metadata::auth::ChainCosigner;
 use crate::network::miden::account_inspector::MidenAccountInspector;
 use crate::services::proposal_signature::{proposal_tx_summary, verify_proposal_signature};
 use guardian_shared::FromJson;
+use guardian_shared::multisig_threshold::{default_threshold, procedure_override};
 
 /// A parsed multisig account, present only when the tail state carries
 /// the multisig threshold slot. Single-key states do not.
@@ -87,38 +87,24 @@ impl MultisigAccount {
     /// chain enforces it. An override of zero is no override, on chain as
     /// here.
     fn signature_floor(&self) -> Result<usize> {
-        let storage = self.account.storage();
-        let default = storage
-            .get_item(AuthGuardedMultisig::threshold_config_slot())
-            .map_err(|_| {
-                GuardianError::InvalidDelta("Multisig account is missing its threshold".to_string())
-            })?[0]
-            .as_canonical_u64() as usize;
-        let lowest_override = match storage
-            .get(AuthGuardedMultisig::procedure_thresholds_slot())
-            .map(|slot| slot.content())
-        {
-            Some(StorageSlotContent::Map(overrides)) => self
-                .account
-                .code()
-                .procedures()
-                .iter()
-                .skip(1)
-                .map(|procedure| {
-                    overrides.get(&StorageMapKey::new(*procedure.mast_root()))[0].as_canonical_u64()
-                        as usize
-                })
-                .filter(|threshold| *threshold != 0)
-                .min(),
-            Some(StorageSlotContent::Value(_)) | None => None,
-        };
+        let default = default_threshold(&self.account).ok_or_else(|| {
+            GuardianError::InvalidDelta("Multisig account is missing its threshold".to_string())
+        })?;
+        let lowest_override = self
+            .account
+            .code()
+            .procedures()
+            .iter()
+            .skip(1)
+            .filter_map(|procedure| procedure_override(&self.account, *procedure.mast_root()))
+            .min();
         let floor = lowest_override.map_or(default, |lowest| lowest.min(default));
         if floor == 0 {
             return Err(GuardianError::InvalidDelta(
                 "Multisig account threshold must be at least 1".to_string(),
             ));
         }
-        Ok(floor)
+        Ok(floor as usize)
     }
 
     fn reject(&self, required: usize, got: usize) -> Result<()> {

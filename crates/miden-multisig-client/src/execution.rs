@@ -1,6 +1,7 @@
 //! Shared execution logic for proposal finalization.
 
 use std::collections::HashSet;
+use std::num::NonZeroU16;
 
 use guardian_shared::{EcdsaMessageFormat, SignatureScheme};
 use miden_client::transaction::TransactionRequest;
@@ -174,12 +175,17 @@ pub fn build_transfer_asset(faucet_id: AccountId, amount: u64) -> Result<Fungibl
         .map_err(|e| MultisigError::InvalidConfig(format!("failed to create asset: {}", e)))
 }
 
-/// Builds the final transaction request based on transaction type.
+/// Builds the final transaction request based on transaction type. `expiration_delta` is the
+/// one the signed summary binds, which the request must apply again to reproduce it.
 ///
 /// A signer update writes `target_signers`, the approver set its proposal
 /// resolves to (see [`crate::Proposal::target_signers`]). A GUARDIAN switch
 /// keeps the account's GUARDIAN scheme: the proposal does not carry one, so
 /// every cosigner rebuilds it under the scheme the account stores.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "execution needs the transaction metadata and the signed expiration to stay explicit"
+)]
 pub async fn build_final_transaction_request(
     client: &MidenSdkClient,
     transaction_type: &TransactionType,
@@ -188,6 +194,7 @@ pub async fn build_final_transaction_request(
     signature_advice: Vec<SignatureAdvice>,
     metadata_threshold: Option<u64>,
     target_signers: Option<&[SignerSpec]>,
+    expiration_delta: Option<NonZeroU16>,
 ) -> Result<TransactionRequest> {
     match transaction_type {
         TransactionType::P2ID {
@@ -199,7 +206,7 @@ pub async fn build_final_transaction_request(
         } => {
             let asset = build_transfer_asset(*faucet_id, *amount)?;
 
-            crate::transaction::build_p2id_transaction_request(
+            crate::transaction::build_p2id_transaction_request_with_expiration(
                 account.inner(),
                 *recipient,
                 vec![asset.into()],
@@ -207,6 +214,7 @@ pub async fn build_final_transaction_request(
                 *heights,
                 auth_args,
                 signature_advice,
+                expiration_delta,
             )
         }
         TransactionType::ConsumeNotes {
@@ -243,22 +251,24 @@ pub async fn build_final_transaction_request(
                         decoded,
                         auth_args,
                         signature_advice,
+                        expiration_delta,
                     )
                 }
                 None | Some(1) => {
                     #[cfg(feature = "legacy-consume-notes")]
                     {
-                        crate::transaction::build_consume_notes_transaction_request(
-                            client,
-                            note_ids.clone(),
+                        let notes =
+                            crate::transaction::fetch_notes_from_store(client, note_ids).await?;
+                        crate::transaction::build_consume_notes_transaction_request_from_notes(
+                            notes,
                             auth_args,
                             signature_advice,
+                            expiration_delta,
                         )
-                        .await
                     }
                     #[cfg(not(feature = "legacy-consume-notes"))]
                     {
-                        let _ = (client, auth_args, signature_advice);
+                        let _ = (client, auth_args, signature_advice, expiration_delta);
                         // Preserve `Some(1)` vs `None` so the error tells the
                         // operator which legacy shape was rejected.
                         Err(MultisigError::UnsupportedMetadataVersion {
@@ -277,6 +287,7 @@ pub async fn build_final_transaction_request(
                 account.guardian_scheme()?,
                 auth_args,
                 signature_advice,
+                expiration_delta,
             )
         }
         TransactionType::UpdateProcedureThreshold {
@@ -289,6 +300,7 @@ pub async fn build_final_transaction_request(
                     *new_threshold,
                     auth_args,
                     signature_advice,
+                    expiration_delta,
                 )?;
 
             Ok(tx_request)
@@ -308,6 +320,7 @@ pub async fn build_final_transaction_request(
                 target_signers,
                 auth_args,
                 signature_advice,
+                expiration_delta,
             )?;
 
             Ok(tx_request)

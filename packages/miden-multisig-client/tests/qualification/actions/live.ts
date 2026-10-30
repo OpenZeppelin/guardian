@@ -2,10 +2,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-import { GuardianHttpClient } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, type ProposalExecution } from '@openzeppelin/guardian-client';
+import type { ProposalExecutionMode } from '../../../src/transaction/expiration.js';
 
 import { AccountInspector } from '../../../src/inspector.js';
-import { AccountId, FeltArray, Poseidon2, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
+import { AccountId, FeltArray, NoteType, Poseidon2, TransactionSummary, Word } from '@miden-sdk/miden-sdk';
 
 import { computeCommitmentFromTxSummary } from '../../../src/multisig/helpers.js';
 import { ProposalMetadataCodec } from '../../../src/proposal/metadata.js';
@@ -60,6 +61,7 @@ export async function createAccount(
   scenarioId: string,
   shape: string,
   scheme: Scheme,
+  executionMode: ProposalExecutionMode,
 ): Promise<ActionOutcome> {
   const missing = requireLive(context);
   if (missing) return missing;
@@ -70,7 +72,13 @@ export async function createAccount(
   }
 
   try {
-    const cosigners = await buildCosigners(context.live!, parsed.total, scheme, `${scenarioId}-${Date.now()}`);
+    const cosigners = await buildCosigners(
+      context.live!,
+      parsed.total,
+      scheme,
+      `${scenarioId}-${Date.now()}`,
+      executionMode,
+    );
     const commitment = await guardianCommitment(cosigners[0], scheme);
 
     const multisig = await cosigners[0].multisigClient.create(
@@ -605,6 +613,244 @@ export async function executeProposal(_context: ActionContext, scenarioId: strin
   }
 
   return { kind: 'environment_blocked', reason: `the executed proposal was ${completion.reason}` };
+}
+
+/**
+ * How far past the block a proposal's summary binds the chain must move before a late execution:
+ * beyond the fifty or so blocks devnet serves historical account state for. Mirrors
+ * `LATE_EXECUTION_BLOCKS` in the Rust driver.
+ */
+const LATE_EXECUTION_BLOCKS = 60;
+const LATE_EXECUTION_DEADLINE_MS = 600_000;
+
+/**
+ * Waits until the chain tip is `LATE_EXECUTION_BLOCKS` past the block the scenario's proposal
+ * binds, read from the proposal's `boundBlockNum`, which the SDK has already checked against the
+ * summary when it listed the proposal. Mirrors `advance_past_bound` in the Rust driver.
+ */
+export async function advancePastBound(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  const proposal = session.multisig.listProposals().find((entry) => entry.id === session.proposalId);
+  if (proposal?.metadata.boundBlockNum === undefined) {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: `proposal ${session.proposalId} is not listed with a bound block`,
+    };
+  }
+  const target = proposal.metadata.boundBlockNum + LATE_EXECUTION_BLOCKS;
+  const started = Date.now();
+  for (;;) {
+    try {
+      const summary = await session.cosigners[0].midenClient.sync();
+      if (summary.blockNum() >= target) return { kind: 'passed' };
+    } catch {
+      // A failed sync is retried until the deadline, like a block that has not arrived.
+    }
+    if (Date.now() - started > LATE_EXECUTION_DEADLINE_MS) {
+      return {
+        kind: 'environment_blocked',
+        reason: `the chain did not reach block ${target} within ${LATE_EXECUTION_DEADLINE_MS} ms`,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+}
+
+const GUARDIAN_EXECUTION_DEADLINE_MS = 600_000;
+
+/**
+ * Refusals a repeated request may meet once the accepted execution has moved past the point
+ * where GUARDIAN answers with it: the lease changing hands as it finishes, the proposal turned
+ * into a candidate, or the proposal removed once the candidate settled. None starts anything.
+ * Mirrors `REPEAT_AFTER_PROGRESS` in the Rust driver.
+ */
+const REPEAT_AFTER_PROGRESS: readonly string[] = [
+  'GUARDIAN_EXECUTION_BUSY',
+  'conflict_pending_delta',
+  'proposal_not_found',
+];
+
+/**
+ * Exactly once: a second request for the proposal GUARDIAN has just accepted, sent at once, is
+ * answered with the same execution and starts nothing, or is refused only because that execution
+ * already moved on. A repeat GUARDIAN newly accepted means a second attempt, which is also how a
+ * first attempt that already failed reads. Mirrors `RepeatAnswer::verdict` in the Rust driver.
+ */
+async function assertRepeatStartsNothing(
+  proposalId: string,
+  repeat: () => Promise<ProposalExecution>,
+): Promise<ActionOutcome | null> {
+  try {
+    const again = await repeat();
+    if (!again.newlyAccepted && again.proposalId.toLowerCase() === proposalId.toLowerCase()) return null;
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a repeated request for the execution in flight started another or answered for another proposal: ${JSON.stringify(again)}`,
+    };
+  } catch (error) {
+    const failure = error as { rawCode?: string | null; code?: string | null };
+    const code = failure.rawCode ?? failure.code ?? null;
+    if (code !== null && REPEAT_AFTER_PROGRESS.includes(code)) return null;
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a repeated request for the execution in flight was refused: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Hands the threshold-met proposal to GUARDIAN and waits for GUARDIAN to report it committed,
+ * then for the chain and GUARDIAN's history to agree, exactly as a self-execution is judged.
+ * No cosigner proves or submits anything. Mirrors `guardian_execute` in the Rust driver.
+ */
+export async function guardianExecute(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  if (session.multisig.executionMode !== 'guardian_executable') {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'the proposal was created by a self-executed client, so GUARDIAN holds no request',
+    };
+  }
+  const proposalLandsAt = await bindExecution(session, session.proposalId);
+  if ('failure' in proposalLandsAt) return proposalLandsAt.failure;
+
+  try {
+    const accepted = await session.multisig.requestGuardianExecution(session.proposalId);
+    if (!accepted.newlyAccepted) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN reported an execution it did not start: ${JSON.stringify(accepted)}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `GUARDIAN refused to execute the proposal: ${String(error)}` };
+  }
+  const multisig = session.multisig;
+  const proposalId = session.proposalId;
+  const repeated = await assertRepeatStartsNothing(proposalId, () => multisig.requestGuardianExecution(proposalId));
+  if (repeated) return repeated;
+
+  const started = Date.now();
+  const observed: string[] = [];
+  for (;;) {
+    let execution;
+    try {
+      execution = await session.multisig.executionStatus(session.proposalId);
+    } catch (error) {
+      return { kind: 'failed', classification: 'product', reason: `reading the execution failed after ${observed.join(' > ')}: ${String(error)}` };
+    }
+    if (observed[observed.length - 1] !== execution.state) observed.push(execution.state);
+    if (execution.state === 'committed') break;
+    if (execution.state === 'failed') {
+      const cause = execution.error ? `${execution.error.code}: ${execution.error.message}` : 'no cause';
+      return { kind: 'execution_failed', reason: `GUARDIAN execution failed after ${observed.join(' > ')}: ${cause}` };
+    }
+    if (Date.now() - started > GUARDIAN_EXECUTION_DEADLINE_MS) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN execution did not commit in time; states seen ${observed.join(' > ')}`,
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+
+  return confirmGuardianCommit(session, session.proposalId, proposalLandsAt);
+}
+
+/**
+ * Once GUARDIAN reports `committed`, the chain and GUARDIAN's history must agree, exactly as a
+ * self-execution is judged.
+ */
+async function confirmGuardianCommit(
+  session: LiveSession,
+  proposalId: string,
+  proposalLandsAt: Parameters<typeof waitForExecution>[2],
+): Promise<ActionOutcome> {
+  try {
+    await session.cosigners[0].midenClient.sync();
+    await session.multisig!.syncState();
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `syncing after execution failed: ${String(error)}` };
+  }
+  const completion = await waitForExecution(session, proposalId, proposalLandsAt);
+  if (completion.kind === 'confirmed') return { kind: 'passed' };
+  return {
+    kind: 'failed',
+    classification: 'product',
+    reason: `GUARDIAN reported committed but the account did not agree: ${completion.reason}`,
+  };
+}
+
+/**
+ * Takes the threshold-met proposal to its outcome with the base client alone: authenticated
+ * GUARDIAN requests signed as one cosigner, with no multisig SDK and no node involved in the
+ * request or the polling. The multisig client only reads the chain afterwards, to judge the
+ * outcome. Mirrors `guardian_execute_base_client` in the Rust driver.
+ */
+export async function guardianExecuteBaseClient(context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.proposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  }
+  if (session.multisig.executionMode !== 'guardian_executable') {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'the proposal was created by a self-executed client, so GUARDIAN holds no request',
+    };
+  }
+  const proposalLandsAt = await bindExecution(session, session.proposalId);
+  if ('failure' in proposalLandsAt) return proposalLandsAt.failure;
+
+  const base = new GuardianHttpClient(context.httpEndpoint);
+  base.setSigner(session.cosigners[0].signer);
+  const accountId = session.multisig.accountId;
+  try {
+    const accepted = await base.executeDeltaProposal(accountId, session.proposalId);
+    if (!accepted.newlyAccepted) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `GUARDIAN reported an execution it did not start: ${JSON.stringify(accepted)}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `GUARDIAN refused the base client's execution request: ${String(error)}` };
+  }
+  const proposalId = session.proposalId;
+  const repeated = await assertRepeatStartsNothing(proposalId, () => base.executeDeltaProposal(accountId, proposalId));
+  if (repeated) return repeated;
+  const started = Date.now();
+  for (;;) {
+    let execution;
+    try {
+      execution = await base.getDeltaProposalExecution(accountId, session.proposalId);
+    } catch (error) {
+      return { kind: 'failed', classification: 'product', reason: `the base client could not read the execution: ${String(error)}` };
+    }
+    if (execution.state === 'committed') break;
+    if (execution.state === 'failed') {
+      const cause = execution.error ? `${execution.error.code}: ${execution.error.message}` : 'no cause';
+      return { kind: 'execution_failed', reason: `the base client saw the execution fail: ${cause}` };
+    }
+    if (Date.now() - started > GUARDIAN_EXECUTION_DEADLINE_MS) {
+      return { kind: 'failed', classification: 'product', reason: 'GUARDIAN execution did not commit in time' };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+  }
+  return confirmGuardianCommit(session, session.proposalId, proposalLandsAt);
 }
 
 /**
@@ -1594,6 +1840,7 @@ export async function addSigner(context: ActionContext, scenarioId: string): Pro
       1,
       session.scheme,
       `${scenarioId}-incoming-${Date.now()}`,
+      session.cosigners[0].executionMode,
     );
     const before = await currentSignerSet(session);
     const commitment = incoming.signer.commitment.toLowerCase();
@@ -1780,6 +2027,154 @@ const OVERRIDE_PROCEDURE = 'send_asset';
 async function heldBalance(session: LiveSession): Promise<bigint> {
   const account = await session.multisig!.getStoreAccount();
   return account.vault().getBalance(AccountId.fromHex(session.faucetId!));
+}
+
+/**
+ * Proposes a private P2ID from the account to itself, and has the cosigner that exports the note
+ * list and keep its own copy of the proposal: GUARDIAN deletes the proposal once its transaction is
+ * canonical. Mirrors `send_private_p2id` in the Rust driver: the account is its own recipient, so it
+ * learns the note only from the note file a cosigner exports.
+ */
+export async function sendPrivateP2id(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+    const proposal = await proposeWhenSettled(() =>
+      session.multisig!.createP2idProposal(session.accountId!, session.faucetId!, P2ID_AMOUNT, {
+        noteType: NoteType.Private,
+      }),
+    );
+    session.proposalId = proposal.id;
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `proposing the private transfer failed: ${String(error)}`,
+    };
+  }
+  if (session.cosigners.length < 2) {
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'delivery needs a cosigner other than the proposer to export the note',
+    };
+  }
+  try {
+    const exporter = session.cosigners[1];
+    const loaded = await exporter.multisigClient.load(session.accountId, exporter.signer);
+    await exporter.midenClient.sync();
+    await loaded.syncState();
+    const listed = await loaded.syncProposals();
+    const ownCopy = listed.find((candidate) => normalizeHex(candidate.id) === normalizeHex(session.proposalId!));
+    if (!ownCopy) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the exporting cosigner does not see the pending proposal ${session.proposalId}`,
+      };
+    }
+    session.privateSend = ownCopy;
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the exporting cosigner could not list proposals: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Delivers the executed private P2ID note the way a recipient receives it. Mirrors
+ * `deliver_private_note` in the Rust driver: the note is first shown not to be consumable, a
+ * cosigner other than the proposer exports it from its own copy of the proposal, listed before
+ * GUARDIAN executed it, and the account imports the file and waits for that note to become
+ * consumable, which `note-consume` then spends.
+ */
+export async function deliverPrivateNote(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  const proposal = session.privateSend;
+  if (!proposal) {
+    return { kind: 'failed', classification: 'setup', reason: 'no private transfer was proposed in this scenario' };
+  }
+  let noteId: string;
+  try {
+    noteId = normalizeHex(await session.multisig.getP2idNoteId(proposal));
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `rebuilding the private note id failed: ${String(error)}` };
+  }
+  const consumable = (ids: string[]) => ids.some((id) => normalizeHex(id) === noteId);
+
+  try {
+    await session.cosigners[0].midenClient.sync();
+    await session.multisig.syncState();
+    const before = await session.multisig.getConsumableNotes();
+    if (consumable(before.map((note) => note.id))) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `private note ${noteId} was consumable before its file was imported, so the import proves nothing`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `listing consumable notes failed: ${String(error)}` };
+  }
+
+  let bytes: Uint8Array;
+  try {
+    const exporter = session.cosigners[1];
+    const loaded = await exporter.multisigClient.load(session.accountId, exporter.signer);
+    bytes = await loaded.exportP2idNoteToBytes(proposal);
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `a cosigner could not export the private note from the proposal: ${String(error)}`,
+    };
+  }
+  try {
+    const imported = await session.multisig.importNoteFromBytes(bytes);
+    if (normalizeHex(imported) !== noteId) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the exported file imported note ${imported}, not ${noteId}`,
+      };
+    }
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `importing the exported note file failed: ${String(error)}` };
+  }
+
+  const deadline = Date.now() + NOTE_ARRIVAL_DEADLINE_MS;
+  let wait = POLL_START_MS;
+  let lastError: string | undefined;
+  while (Date.now() < deadline) {
+    try {
+      await session.cosigners[0].midenClient.sync();
+      await session.multisig.syncState();
+      const notes = await session.multisig.getConsumableNotes();
+      if (consumable(notes.map((note) => note.id))) return { kind: 'passed' };
+    } catch (error) {
+      lastError = String(error);
+    }
+    wait = await backoff(wait);
+  }
+  return {
+    kind: 'environment_blocked',
+    reason: `the imported private note ${noteId} did not become consumable within ${NOTE_ARRIVAL_DEADLINE_MS / 1000}s${
+      lastError ? `; last error: ${lastError}` : ''
+    }`,
+  };
 }
 
 /**
@@ -2084,6 +2479,7 @@ export async function createCustomProposal(
 
     session.proposalId = proposal.id;
     session.customNonce = Number(proposal.nonce);
+    session.customProposalId = proposal.id;
     session.customRequest = bytes;
     return { kind: 'passed' };
   } catch (error) {
@@ -2295,11 +2691,11 @@ export async function abandonAndAssertHidden(
   if (session.customNonce === undefined) {
     return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
   }
-  if (!session.proposalId) {
-    return { kind: 'failed', classification: 'setup', reason: 'no proposal has been created in this scenario' };
+  if (!session.customProposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
   }
   const nonce = session.customNonce;
-  const proposalId = session.proposalId;
+  const proposalId = session.customProposalId;
 
   // Established before abandoning, or the check afterwards means nothing: a
   // proposal already gone from the pending set would satisfy it without the
@@ -2321,8 +2717,9 @@ export async function abandonAndAssertHidden(
     };
   }
 
+  let abandoned: string;
   try {
-    await session.multisig.abandonCandidate(nonce);
+    abandoned = (await session.multisig.abandonCandidate(nonce, proposalId)).commitment;
   } catch (error) {
     return {
       kind: 'failed',
@@ -2336,7 +2733,7 @@ export async function abandonAndAssertHidden(
   let state = 'never answered';
   for (;;) {
     try {
-      const status = await session.multisig.abandonStatus(nonce);
+      const status = await session.multisig.abandonStatus(nonce, abandoned);
       if (status === 'abandoned') break;
       if (status === 'landed') {
         return {
@@ -2577,6 +2974,7 @@ export async function createQueuedAccount(
   scenarioId: string,
   shape: string,
   scheme: Scheme,
+  executionMode: ProposalExecutionMode,
 ): Promise<ActionOutcome> {
   const missing = requireLive(context);
   if (missing) return missing;
@@ -2593,6 +2991,7 @@ export async function createQueuedAccount(
     scenarioId,
     shape,
     scheme,
+    executionMode,
   );
 }
 
@@ -2839,12 +3238,11 @@ export async function assertStrandedHeadBlocksProposal(
   const head = session.customNonce;
 
   try {
-    const status = await session.multisig.abandonStatus(head);
-    if (status !== 'waiting') {
+    if ((await candidateAdmittedAt(session, head)) === undefined) {
       return {
         kind: 'failed',
         classification: 'setup',
-        reason: `the prepared head at nonce ${head} is ${status}, not a queued candidate`,
+        reason: `the prepared head at nonce ${head} is not a queued candidate`,
       };
     }
   } catch (error) {
@@ -2952,10 +3350,14 @@ export async function abandonStrandedHeadAndRecover(
   if (!session.faucetId || !session.treasuryId) {
     return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
   }
+  if (!session.customProposalId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no custom proposal was prepared in this scenario' };
+  }
   const head = session.customNonce;
 
+  let abandoned: string;
   try {
-    await session.multisig.abandonCandidate(head);
+    abandoned = (await session.multisig.abandonCandidate(head, session.customProposalId)).commitment;
   } catch (error) {
     return {
       kind: 'failed',
@@ -2968,7 +3370,7 @@ export async function abandonStrandedHeadAndRecover(
   let state = 'never answered';
   for (;;) {
     try {
-      const status = await session.multisig.abandonStatus(head);
+      const status = await session.multisig.abandonStatus(head, abandoned);
       if (status === 'abandoned') break;
       if (status === 'landed') {
         return {

@@ -107,6 +107,16 @@ struct StrandedCandidateSetup {
 }
 
 impl StrandedCandidateSetup {
+    /// The candidate's transaction, as the abandon names it.
+    fn proposal_id(&self) -> String {
+        use guardian_shared::FromJson;
+        use guardian_shared::hex::IntoHex;
+        miden_protocol::transaction::TransactionSummary::from_json(&self.delta_payload)
+            .expect("the candidate payload is a transaction summary")
+            .to_commitment()
+            .into_hex()
+    }
+
     fn credentials(&mut self) -> Credentials {
         self.next_timestamp += 1;
         falcon_credentials(
@@ -354,6 +364,7 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         AbandonCandidateParams {
             account_id: setup.account_id_hex.clone(),
             nonce: setup.candidate_nonce,
+            proposal_id: Some(setup.proposal_id()),
             credentials: creds,
         },
     )
@@ -442,6 +453,7 @@ async fn test_abandon_refused_when_candidate_transaction_landed() {
         AbandonCandidateParams {
             account_id: setup.account_id_hex.clone(),
             nonce: setup.candidate_nonce,
+            proposal_id: Some(setup.proposal_id()),
             credentials: creds,
         },
     )
@@ -493,6 +505,7 @@ async fn abandon_and_resubmit(
         AbandonCandidateParams {
             account_id: setup.account_id_hex.clone(),
             nonce: setup.candidate_nonce,
+            proposal_id: Some(setup.proposal_id()),
             credentials: creds,
         },
     )

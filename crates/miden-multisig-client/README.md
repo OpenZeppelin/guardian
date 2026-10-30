@@ -422,22 +422,79 @@ one), and any candidate queued behind it can never land. Record an abandon inten
 ```rust
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};
 
-// The nonce the proposal was pushed with (committed account nonce + 1).
-let state = client.abandon_candidate(nonce).await?;
-assert_eq!(state, AbandonRequestState::Pending);
+// The nonce the proposal was pushed with (committed account nonce + 1), and
+// the proposal whose transaction is abandoned.
+let request = client.abandon_candidate(nonce, &proposal_id).await?;
+assert_eq!(request.state, AbandonRequestState::Pending);
 
 // The guardian's worker confirms over a short quarantine (typically well
 // under a minute) that the transaction did not land, then releases the
 // account.
 loop {
-    match client.abandon_status(nonce).await? {
+    // The commitment identifies the abandoned delta: a Guardian execution can
+    // archive it and take its nonce.
+    match client.abandon_status(nonce, &request.commitment).await? {
         AbandonStatus::Waiting => tokio::time::sleep(Duration::from_secs(5)).await,
         AbandonStatus::Abandoned => break,           // account released
         AbandonStatus::Landed => break,              // tx landed after all
+        AbandonStatus::Retained => break,            // released, outcome still uncertain
         AbandonStatus::Unexpected => anyhow::bail!("unexpected candidate state"),
     }
 }
 ```
+
+Naming the proposal needs a Guardian server from the same release: an older
+server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
+
+### Guardian Execution
+
+A client built with `.execution_mode(ProposalExecutionMode::GuardianExecutable)` stores each
+proposal's transaction request with it, so once the proposal has enough signatures any cosigner
+can ask Guardian to prove, submit and commit it:
+
+```rust
+use miden_multisig_client::{ExecutionState, ExecutionWaitOptions};
+
+client
+    .request_guardian_execution(&proposal.id)
+    .await?;
+let execution = client
+    .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
+    .await?;
+if execution.state == ExecutionState::Failed {
+    anyhow::bail!("Guardian execution failed: {:?}", execution.error);
+}
+```
+
+`execution_status(&proposal_id)` reads the latest execution once and `current_execution()` the
+account's in-flight one. `wait_for_guardian_execution` only reads: it polls until the execution
+is `committed` or `failed`, backing off from 1 s to 10 s, retries reads that fail with a
+retryable or transport error (honouring the server's retry-after hint), returns any other error,
+and gives up after 15 minutes with `MultisigError::GuardianExecutionWaitTimedOut`, which carries
+the last execution it read. A refusal surfaces as `MultisigError::GuardianExecutionRefused {
+code, message, retryable, retry_after, blocking_proposal_id }`, where `code` is the wire string
+(for example `GUARDIAN_EXECUTION_CONFLICT`).
+
+A Guardian-executable client still executes a `SwitchGuardian` itself, and
+`request_guardian_execution` refuses one before contacting Guardian with
+`MultisigError::LocalExecutionRequired { proposal_id, reason }`
+(`LocalExecutionReason::SwitchGuardian`, the executing client finishes the switch). Execute it
+with `execute_proposal`. A P2ID that creates a private note is sent like any other; deliver the
+note with `export_p2id_note_to_file(&proposal, path)`, which rebuilds it from the proposal
+whoever executed it. Keep the `Proposal` from before execution: GUARDIAN deletes it once its
+transaction is canonical. The check uses the
+proposal this client already holds (listed, fetched, signed, created or imported); any other proposal
+fails closed with `MultisigError::ProposalNotHeldLocally { proposal_id }`. Call
+`LocalExecutionReason::of(&proposal.transaction_type)` to route a proposal up front.
+
+For a proposal signed off channel, call
+`request_imported_guardian_execution(&exported)` with the
+signed document: it relays the document's approvals to Guardian before requesting execution, as
+`execute_imported_proposal` does before the acknowledgement. Guardian executes a proposal only once
+its stored copy carries a threshold of approvals, so `request_guardian_execution` alone answers
+`GUARDIAN_PROPOSAL_NOT_READY` for one whose approvals exist only in the document. See
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
 ### Fallback to Offline (if GUARDIAN unavailable)
 

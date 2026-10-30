@@ -152,6 +152,7 @@ async fn finalization_queries(scheme: SignatureScheme, seed: u8) -> Vec<Option<S
         Vec::new(),
         None,
         Some(&[]),
+        None,
     )
     .await
     .expect("switch request builds");

@@ -119,6 +119,14 @@ pub struct AbandonCandidateRequest {
     /// Nonce of the candidate delta to abandon. Requiring the explicit
     /// target prevents a stale request from releasing a newer candidate.
     pub nonce: u64,
+    /// The transaction to abandon: its summary's commitment, which is the
+    /// proposal id of a multisig proposal. A Guardian execution can archive
+    /// the delta and take its nonce, and the abandon then answers for the
+    /// archived delta. Absent from a client up to 0.18.3, which names only
+    /// the nonce.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(nullable = false)]
+    pub proposal_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -137,6 +145,10 @@ pub struct AbandonCandidateResponse {
     /// return the original timestamp; absent once resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub abandon_requested_at: Option<String>,
+    /// The `new_commitment` of the delta this request abandoned. Another
+    /// delta can later take the same nonce (a Guardian execution archives
+    /// the abandoned one), so a poll of the nonce compares against this.
+    pub commitment: String,
 }
 
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
@@ -213,7 +225,7 @@ pub async fn configure(
         (status = 400, description = "Invalid delta payload, or a multisig push below the cosigner threshold", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Signed by a delegated signer onto an account without the multisig auth (`wallet_signature_required`)", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Conflicting pending delta/proposal", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting pending delta/proposal, or a Guardian execution holds the account (GUARDIAN_EXECUTION_CONFLICT)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn push_delta(
@@ -651,7 +663,8 @@ pub struct PubkeyQuery {
 }
 
 /// Public, unauthenticated liveness + identity probe. Returns the
-/// server's version, git commit, environment, start time, and uptime.
+/// server's version, git commit, environment, start time, uptime, and
+/// whether it accepts Guardian execution requests.
 /// Consumed by wallet clients (pre-auth health check) and the status
 /// homepage. Exposes no account, operator, or auth data.
 #[utoipa::path(
@@ -659,7 +672,7 @@ pub struct PubkeyQuery {
     path = "/status",
     tag = "client",
     responses(
-        (status = 200, description = "Server liveness, version, and environment", body = crate::services::StatusResponse),
+        (status = 200, description = "Server liveness, version, environment, and execution capability", body = crate::services::StatusResponse),
     )
 )]
 pub async fn status(State(state): State<AppState>) -> Json<crate::services::StatusResponse> {
@@ -667,6 +680,12 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
         state.dashboard.environment(),
         state.dashboard.started_at(),
         state.clock.now(),
+        crate::services::ExecutionStatus::of(
+            state
+                .execution
+                .availability(state.canonicalization.is_some())
+                .map(|_| ()),
+        ),
         crate::services::SessionsStatus {
             max_ttl_seconds: state.miden_sessions.config().max_ttl_seconds(),
         },
@@ -681,7 +700,7 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
     path = "/",
     tag = "client",
     responses(
-        (status = 200, description = "Alias of `GET /status`: server liveness, version, and environment", body = crate::services::StatusResponse),
+        (status = 200, description = "Alias of `GET /status`: server liveness, version, environment, and execution capability", body = crate::services::StatusResponse),
     )
 )]
 pub async fn status_root(state: State<AppState>) -> Json<crate::services::StatusResponse> {
@@ -728,7 +747,8 @@ pub async fn get_pubkey(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
         (status = 400, description = "Invalid proposal payload", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Conflicting / too many pending proposals", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Conflicting / too many pending proposals, or the account's stored requests would exceed their capacity (GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED)", body = crate::openapi::ApiErrorResponse),
+        (status = 413, description = "The stored transaction request exceeds the per-request limit (GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn push_delta_proposal(
@@ -780,8 +800,9 @@ pub async fn push_delta_proposal(
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "No candidate delta at this nonce", body = crate::openapi::ApiErrorResponse),
-        (status = 409, description = "Candidate already landed on-chain, or account paused/released", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Malformed proposal_id (invalid_commitment)", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "No delta at this nonce carrying the named transaction, live or archived", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Candidate already landed on-chain, account paused/released, or the candidate belongs to an active Guardian execution (GUARDIAN_EXECUTION_CONFLICT)", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn abandon_candidate(
@@ -795,6 +816,9 @@ pub async fn abandon_candidate(
     let params = AbandonCandidateParams {
         account_id: payload.account_id,
         nonce: payload.nonce,
+        proposal_id: payload
+            .proposal_id
+            .filter(|proposal_id| !proposal_id.is_empty()),
         credentials: request_payload.apply_to(credentials),
     };
 
@@ -806,8 +830,145 @@ pub async fn abandon_candidate(
             nonce: response.nonce,
             state: response.state.as_str().to_string(),
             abandon_requested_at: response.abandon_requested_at,
+            commitment: response.commitment,
         }),
     ))
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct ExecutionQuery {
+    pub account_id: String,
+    pub proposal_id: String,
+}
+
+/// The body of an execution request. It is signed as `guardian.ExecuteDeltaProposal`, so its
+/// signature never authenticates a signed read of the same proposal, whose fields are the same.
+#[derive(Deserialize, Serialize, utoipa::ToSchema)]
+pub struct ExecuteProposalRequest {
+    pub account_id: String,
+    pub proposal_id: String,
+}
+
+#[derive(Deserialize, Serialize, utoipa::ToSchema, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub struct CurrentExecutionQuery {
+    pub account_id: String,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CurrentExecutionResponse {
+    #[schema(required = true)]
+    pub execution: Option<crate::services::execution_status::ExecutionEnvelope>,
+}
+
+/// Ask Guardian to prove and submit a threshold-met proposal.
+///
+/// Returns `202 Accepted` when this call created the execution and `200 OK` when an execution
+/// of the same proposal is already active; `newly_accepted` carries the same distinction.
+#[utoipa::path(
+    post,
+    path = "/delta/proposal/execution",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    request_body = ExecuteProposalRequest,
+    responses(
+        (status = 202, description = "Execution accepted", body = crate::services::execution_status::ExecutionEnvelope),
+        (status = 200, description = "Execution already active", body = crate::services::execution_status::ExecutionEnvelope),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "Not ready, not Guardian-executable, left to local execution, the account is busy, or this server does not offer Guardian execution", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn execute_delta_proposal(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Json(payload): Json<ExecuteProposalRequest>,
+) -> Result<
+    (
+        StatusCode,
+        Json<crate::services::execution_status::ExecutionEnvelope>,
+    ),
+    GuardianError,
+> {
+    let request_payload = request_payload_for_operation(
+        &payload,
+        guardian_shared::auth_request_payload::SignedOperation::ExecuteDeltaProposal,
+    )
+    .map_err(GuardianError::InvalidInput)?;
+    let params = crate::services::execute_proposal::RequestExecutionParams {
+        account_id: payload.account_id,
+        proposal_id: payload.proposal_id,
+        credentials: request_payload.apply_to(credentials),
+    };
+    let envelope = crate::services::execute_proposal::request_execution(&state, params).await?;
+    let status = if envelope.newly_accepted {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(envelope)))
+}
+
+/// Report the latest execution of a proposal.
+#[utoipa::path(
+    get,
+    path = "/delta/proposal/execution",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(ExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    responses(
+        (status = 200, description = "Execution state", body = crate::services::execution_status::ExecutionEnvelope),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Proposal absent, or never executed", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_delta_proposal_execution(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<ExecutionQuery>,
+) -> Result<Json<crate::services::execution_status::ExecutionEnvelope>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+    let credentials = request_payload.apply_to(credentials);
+    crate::services::execution_status::get_execution(
+        &state,
+        &query.account_id,
+        &query.proposal_id,
+        &credentials,
+    )
+    .await
+    .map(Json)
+}
+
+/// Report the account's in-flight execution, if any.
+#[utoipa::path(
+    get,
+    path = "/delta/execution/current",
+    tag = "client",
+    security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
+    params(CurrentExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    responses(
+        (status = 200, description = "The in-flight execution, or null", body = CurrentExecutionResponse),
+        (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
+    )
+)]
+pub async fn get_current_execution(
+    State(state): State<AppState>,
+    AuthHeader(credentials): AuthHeader,
+    Query(query): Query<CurrentExecutionQuery>,
+) -> Result<Json<CurrentExecutionResponse>, GuardianError> {
+    let request_payload =
+        request_payload_from_serializable(&query).map_err(GuardianError::InvalidInput)?;
+    let credentials = request_payload.apply_to(credentials);
+    let execution = crate::services::execution_status::current_execution(
+        &state,
+        &query.account_id,
+        &credentials,
+    )
+    .await?;
+    Ok(Json(CurrentExecutionResponse { execution }))
 }
 
 /// List all in-flight multisig proposals for an account.
@@ -818,7 +979,7 @@ pub async fn abandon_candidate(
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
     params(ProposalQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
     responses(
-        (status = 200, description = "Pending proposals", body = ProposalsResponse),
+        (status = 200, description = "Pending proposals, each without its stored `transaction_request` (the single-proposal read returns it)", body = ProposalsResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
     )
 )]
@@ -932,6 +1093,19 @@ fn request_payload_from_serializable<T: Serialize>(
     request_payload_from_value(&json)
 }
 
+/// [`request_payload_from_serializable`] for a request signed as `operation`, whose signed
+/// payload is domain-separated from every other request with the same body.
+fn request_payload_for_operation<T: Serialize>(
+    value: &T,
+    operation: guardian_shared::auth_request_payload::SignedOperation,
+) -> Result<RequestPayloadParts, String> {
+    let parts = request_payload_from_serializable(value)?;
+    Ok(RequestPayloadParts {
+        payload: AuthRequestPayload::for_operation(operation, &parts.bytes),
+        bytes: parts.bytes,
+    })
+}
+
 fn request_payload_from_value(value: &serde_json::Value) -> Result<RequestPayloadParts, String> {
     let canonical = canonicalize_json(value);
     let bytes =
@@ -1028,6 +1202,8 @@ mod tests {
         assert!(json["environment"].is_string());
         assert!(json["started_at"].is_string());
         assert!(json["uptime_seconds"].is_number());
+        assert_eq!(json["execution"]["enabled"], false);
+        assert!(json["execution"]["reason"].is_string());
         // Must not leak any dashboard/inventory fields.
         assert!(json.get("total_account_count").is_none());
         assert!(json.get("accounts_by_auth_method").is_none());
@@ -1264,6 +1440,7 @@ mod tests {
         let request = AbandonCandidateRequest {
             account_id: account_id.clone(),
             nonce: 1,
+            proposal_id: None,
         };
         let credentials = signed_credentials(&signer, &account_id, &request);
         let (status, Json(response)) =
@@ -1293,6 +1470,7 @@ mod tests {
         let request = AbandonCandidateRequest {
             account_id: account_id.clone(),
             nonce: 1,
+            proposal_id: None,
         };
         let credentials = signed_credentials(&signer, &account_id, &request);
         let err = abandon_candidate(State(state), AuthHeader(credentials), Json(request))

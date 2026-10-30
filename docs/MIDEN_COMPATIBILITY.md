@@ -360,6 +360,151 @@ Nothing stored under Miden 0.16 survives:
   height, timelock height). The script roots moved with the layouts.
 - **Execution proofs come from VM 0.35** (Plonky3 0.8). A 0.16 proof is rejected.
 
+### Guardian execution
+
+Guardian releases after 0.18.3 add server-side execution of Guardian-executable proposals on this line. A
+stored request declaring a protocol line other than `0.17` is refused before it is decoded.
+Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
+release candidates changed it, so the SDK that created a proposal and the server should run the
+same `miden-client`: this build pins client 0.17.3 in the server and the Rust SDK and web SDK
+0.17.3 in the TypeScript SDK. A request from a different client either fails to decode
+(`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
+(`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
+scenarios (`live-guardian-execute-*`) passed by hand on devnet (node 0.17.0) on 2026-10-06 with
+the 0.17.0 pins, on both SDKs; the qualification matrix requires them on testnet and excludes
+them from devnet runs, whose step budget they exceed.
+
+Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators upgrading:
+
+- `ProposalPayload` has a new public field, `transaction_request`, so a struct literal must set
+  it (`None` for a self-executed proposal) or start from `ProposalPayload::new` and
+  `with_transaction_request`.
+- `MultisigError` has new variants, so an exhaustive `match` on the error needs an arm for
+  each:
+  <!-- multisig-error-variants:start -->
+  - `GuardianExecutionRefused { code, message, retryable, retry_after, blocking_proposal_id }`:
+    Guardian refused an execution request with a stable code.
+  - `LocalExecutionRequired { proposal_id, reason }`: the proposal must be executed by a
+    client, not by Guardian; `reason` is a `LocalExecutionReason`.
+  - `ProposalNotHeldLocally { proposal_id }`: execution was requested for a proposal this
+    client has not listed, fetched, signed, created or imported, so it cannot check it first.
+  - `GuardianExecutionWaitTimedOut { proposal_id, deadline, last_observed }`: from
+    `wait_for_guardian_execution`, whose deadline passed while the execution kept running.
+  - `GuardianProposalRefused { code, message, retryable, retry_after }`: Guardian refused a
+    proposal push with a stable code, carried as the wire string (for example
+    `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`); a push failure
+    without a Guardian code stays `GuardianServer`.
+  - `ProposalBaseMismatch { proposal_id, pinned, local }`: GUARDIAN pinned the proposal to an
+    account state other than the one this client holds, so executing it would build on the
+    wrong base; sync the account and retry, or create a new proposal.
+  <!-- multisig-error-variants:end -->
+- `guardian_client::GuardianClient::execute_delta_proposal` is new:
+  `execute_delta_proposal(account_id, proposal_id)`, signed by the session while one is
+  active. The execute payload is tagged `guardian.ExecuteDeltaProposal`, so a client that signs
+  the plain request bytes is refused with `authentication_failed`.
+- `guardian_shared::execution::ExecutionFailureCode` includes
+  `AcknowledgementFailed` (`GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`): Guardian could not sign
+  or record its acknowledgement, a failure on Guardian's side that leaves the proposal
+  retryable.
+- `MultisigClient::request_guardian_execution(proposal_id)` and
+  `MultisigClient::export_p2id_note_to_file(&proposal, path)` / `export_p2id_note_to_bytes` are
+  new. A private P2ID is executed by Guardian like any other proposal; the export rebuilds its
+  note from the proposal, whoever executed it, and is how the recipient receives it.
+- `MultisigClient::request_imported_guardian_execution(&exported)` is new: it relays
+  an exported document's approvals to Guardian before requesting execution, which
+  `request_guardian_execution` alone cannot do for approvals collected off channel.
+- `MultisigClient::abandon_candidate` takes `(nonce, proposal_id)` and returns
+  `AbandonRequest { state, commitment }` instead of `AbandonRequestState`, and `abandon_status`
+  takes `(nonce, commitment)`. A Guardian execution can archive an abandoned delta and take its
+  nonce, so the proposal id names the abandoned transaction and the commitment identifies its
+  delta; once another delta at the nonce is canonical, the status is `Abandoned`.
+  `GuardianClient::abandon_candidate` takes `(account_id, nonce, proposal_id)`, the transaction
+  summary's commitment (`tx_summary_commitment_hex`). The abandon needs a Guardian server from
+  the same release: a server from 0.18.3 or earlier does not know `proposal_id`, so it refuses
+  the signed request as unauthenticated, before recording anything.
+
+Source-level changes in the TypeScript packages:
+
+- `GuardianErrorCode` (`@openzeppelin/guardian-client`) has new members, so an exhaustive
+  `switch` over it stops compiling until it handles them: `account_request_capacity_exceeded`,
+  `execution_busy`, `execution_conflict`, `execution_not_found`,
+  `proposal_executes_locally`, `proposal_missing_transaction_request`, `proposal_not_ready`,
+  `proposal_request_too_large` and `proving_unavailable`.
+- `GuardianHttpClient.executeDeltaProposal` is new:
+  `executeDeltaProposal(accountId, proposalId)`, signed by the session while one is set. A
+  direct HTTP caller signs the body `{account_id, proposal_id}` tagged as
+  `guardian.ExecuteDeltaProposal` (`RequestAuthPayload.forOperation`); a plain signature is
+  refused with `authentication_failed`. `GuardianErrorMeta.reason` (`switch_guardian`) says why
+  a `proposal_executes_locally` refusal left the proposal to local execution.
+- `Multisig.requestGuardianExecution(proposalId)` and
+  `Multisig.exportP2idNoteToBytes(proposal)` / `exportP2idNoteToFile(proposal, filename?)` are
+  new. A private P2ID is executed by Guardian like any other proposal; the export rebuilds its
+  note from the proposal, whoever executed it.
+- `StatusResponse.execution` is a new optional field (`{ enabled: true }` or
+  `{ enabled: false, reason }`). `getStatus()` leaves it out when the server sends none, as a
+  Guardian that predates Guardian execution does, so a client still starts a session against
+  an older server; absent means the server does not offer Guardian execution.
+- `Multisig.createProposal` (`@openzeppelin/miden-multisig-client`) throws on a client created
+  with `executionMode: 'guardian_executable'`, because it takes a summary without the request
+  Guardian would execute. Use a typed `create*Proposal` method or `createCustomProposal` there.
+- The multisig execution methods (`requestGuardianExecution`, `executionStatus`,
+  `currentExecution`) throw `GuardianExecutionRefusedError`, whose `code` is the wire code (for
+  example `GUARDIAN_EXECUTION_CONFLICT`), instead of the base client's `GuardianHttpError`, which
+  stays available as `cause`. `waitForGuardianExecution` throws
+  `GuardianExecutionWaitTimeoutError` when its deadline passes.
+- `requestGuardianExecution` relays the held proposal's approvals to Guardian before the
+  request, so an imported, offline-signed proposal can be executed by Guardian. A Guardian
+  refusal while relaying throws `GuardianExecutionRefusedError`, as one of the request does.
+- `abandonCandidate` takes the proposal id: `abandonCandidate(nonce, proposalId)` on
+  `Multisig`, `abandonCandidate(accountId, nonce, proposalId)` on `GuardianHttpClient`.
+- `AbandonCandidateResponse` carries `commitment`, and `abandonStatus` takes it:
+  `abandonStatus(nonce, commitment)` on `Multisig`, `abandonStatus(accountId, nonce,
+  commitment)` on `GuardianHttpClient`. Once another delta at the nonce is canonical, the status
+  is `'abandoned'`. As in Rust, the abandon needs a Guardian server from the same release; a
+  server from 0.18.3 or earlier refuses it as unauthenticated, before recording anything.
+
+Server behavior that changes for every client:
+
+- The abandon response (`AbandonDeltaCandidateResponse`, HTTP `POST /delta/candidate/abandon`)
+  carries the abandoned delta's `commitment`.
+- The abandon request (`AbandonDeltaCandidateRequest`, HTTP `POST /delta/candidate/abandon`)
+  takes `proposal_id`, the transaction summary's commitment. The abandon answers for the delta
+  carrying that transaction, at the nonce or archived after a Guardian execution took the
+  nonce, and records an intent only while the candidate at the nonce is still that one. A
+  delta at the nonce carrying another transaction is answered as not found.
+- Without `proposal_id` (an SDK from 0.18.3 or earlier), the abandon names whatever delta is at
+  the nonce, as before.
+- With or without `proposal_id`, an abandon never records an intent on an active Guardian
+  execution's candidate, checked inside the storage write: that is refused with
+  `GUARDIAN_EXECUTION_CONFLICT`. Naming the proposal Guardian is executing gets the same
+  refusal.
+
+- Pushing a proposal that already exists answers with the proposal as stored, not an echo of
+  the push, and is refused as an invalid delta when its `transaction_request` differs from the
+  stored one: the stored request is the one Guardian would execute.
+
+#### Upgrading and rolling back
+
+- **Migration.** `2026-10-01-000001_execution_reservations` runs at startup. It is additive,
+  not a data reset: it creates `execution_reservations`, `execution_submissions` and
+  `execution_outcomes`, and adds `delta_proposals.request_bytes` (default `0`). Stored accounts,
+  deltas and proposals are kept.
+- **Enable in two deploys.** A replica from an earlier release still canonicalizes during a
+  rolling update, but it promotes a Guardian-executed candidate without releasing its execution
+  reservation and skips the `ProtectedByExecution` gate that stops a candidate under a live
+  execution from being discarded. Either can leave the account reserved with nothing able to
+  release it, so no further execution starts on that account. Once every replica runs this
+  release, reconciliation settles a reservation an older replica promoted, but nothing undoes a
+  candidate an older replica discarded. Finish rolling out this release with
+  `GUARDIAN_TX_PROVER_URL` unset, then set it in a second deploy once no old replica is
+  running. Proposals stored by old replicas during the overlap have `request_bytes = 0`
+  whatever request they carry, so they do not count toward `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`.
+- **Rolling back.** Set `GUARDIAN_PROVING_ENABLED=false` first and wait until no execution is
+  active: `SELECT count(*) FROM execution_reservations WHERE released_at IS NULL` returns `0`,
+  or `guardian_execution_oldest_reservation_age_seconds` reads `0`. Reconciliation keeps
+  settling in-flight executions while execution is switched off. Only then roll back, for the same
+  reason as above: an older replica cannot release a reservation.
+
 ### Proposals name their bound block (0.18.1)
 
 0.18.1 changes the proposal metadata both SDKs write. It is a
@@ -495,13 +640,15 @@ place that tracks them; other documents point here rather than restating them.
 Last checked 2026-10-20.
 
 - **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
-  on 2026-10-12 it answered requests whose accept header named client 0.17.3
-  (and 0.17.0), and refused 0.18.0 and 0.17.0-rc.5. Testnet runs node 0.17.1:
-  on 2026-10-20 it answered requests whose accept header named client 0.17.3
-  (and 0.17.1), and refused 0.16.0. The OZ stacks serve the 0.18.x line on
-  both: `guardian-testnet` reports 0.18.1 and `guardian-devnet` 0.18.2.
-  The devnet run below was made on the Miden 0.17 release candidates and has not
-  been repeated on 0.17.0. There, this build's protocol
+  live qualification, including the `live-guardian-execute-*` scenarios, passed
+  there on both SDKs on 2026-10-06, and on 2026-10-12 it answered requests whose
+  accept header named client 0.17.3 (and 0.17.0), and refused 0.18.0 and
+  0.17.0-rc.5. Testnet runs node 0.17.1: on 2026-10-20 it answered requests
+  whose accept header named client 0.17.3 (and 0.17.1), and refused 0.16.0. The
+  OZ stacks serve the 0.18.x line on both: `guardian-testnet` reports 0.18.1 and
+  `guardian-devnet` 0.18.2. The manual devnet run described next is a separate,
+  earlier run on the Miden 0.17 release candidates and has not been repeated on
+  0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
   block headers, so the transaction kernels matched. A guarded 2-of-2 multisig
   ran two proposals there end to end, a first consume-notes

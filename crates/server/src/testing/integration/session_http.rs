@@ -24,7 +24,7 @@ use axum::{
 };
 use guardian_shared::auth_request_eip712::session_digest;
 use guardian_shared::auth_request_message::AuthRequestMessage;
-use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::auth_request_payload::{AuthRequestPayload, SignedOperation};
 use guardian_shared::session_key::SessionKey;
 use guardian_shared::{FromJson, SignatureScheme};
 use miden_protocol::Word;
@@ -590,6 +590,45 @@ async fn test_proposals_are_created_and_signed_through_a_session() {
     assert_eq!(status, StatusCode::OK, "wallet approval: {body}");
 }
 
+/// A session may request Guardian execution: the request, signed as
+/// `guardian.ExecuteDeltaProposal`, reaches the execution checks past authentication.
+#[tokio::test]
+async fn test_a_session_requests_execution() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+    let body = json!({
+        "account_id": account_id_hex,
+        "proposal_id": format!("0x{}", "e".repeat(64))
+    });
+    let timestamp = now_ms();
+    let word = AuthRequestMessage::from_account_id_hex(
+        &account_id_hex,
+        timestamp,
+        AuthRequestPayload::for_operation_json_value(SignedOperation::ExecuteDeltaProposal, &body)
+            .unwrap(),
+    )
+    .unwrap()
+    .to_word();
+    let response = send(
+        &app,
+        signed_by_session(
+            "POST",
+            "/delta/proposal/execution",
+            &session_key,
+            word,
+            timestamp,
+            Body::from(body.to_string()),
+        ),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::CONFLICT,
+        "GUARDIAN_PROVING_UNAVAILABLE",
+        "execution",
+    );
+}
+
 #[tokio::test]
 async fn test_wallet_only_routes_reject_the_session() {
     let (app, state, signer, account_id_hex) = configured_account().await;
@@ -876,6 +915,14 @@ async fn test_every_session_eligible_read_accepts_the_session() {
         (
             "/delta/proposal/single",
             json!({ "account_id": account_id_hex, "commitment": commitment }),
+        ),
+        (
+            "/delta/proposal/execution",
+            json!({ "account_id": account_id_hex, "proposal_id": commitment }),
+        ),
+        (
+            "/delta/execution/current",
+            json!({ "account_id": account_id_hex }),
         ),
     ];
     let start = now_ms();

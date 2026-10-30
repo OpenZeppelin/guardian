@@ -58,8 +58,13 @@ enum SwitchSource {
         storage_id: String,
         proposal_id: String,
     },
-    /// A retained or client-abandoned delta.
-    Delta { nonce: u64 },
+    /// A retained, client-abandoned or archived delta. Rows can share a
+    /// nonce (a Guardian execution archives the delta it supersedes), so
+    /// the commitment it was admitted with tells them apart.
+    Delta {
+        nonce: u64,
+        commitment: Option<String>,
+    },
 }
 
 impl SwitchSource {
@@ -67,7 +72,14 @@ impl SwitchSource {
     fn key(&self) -> String {
         match self {
             Self::Proposal { storage_id, .. } => format!("proposal:{storage_id}"),
-            Self::Delta { nonce } => format!("delta:{nonce}"),
+            Self::Delta {
+                nonce,
+                commitment: Some(commitment),
+            } => format!("delta:{nonce}:{commitment}"),
+            Self::Delta {
+                nonce,
+                commitment: None,
+            } => format!("delta:{nonce}"),
         }
     }
 }
@@ -993,8 +1005,9 @@ impl ReleaseSweeper {
     /// Candidates, each with the base to apply it to: every pending
     /// proposal and every unpromoted delta canonicalization retained or
     /// the client abandoned (their proposal is gone, but their payload is
-    /// not) that chains from the stored base, directly or through other
-    /// such deltas (issue #504). A proposal counts whatever its label (the
+    /// not), archived ones included (a Guardian execution archives a parked
+    /// delta it supersedes, which can still land), that chains from the
+    /// stored base, directly or through other such deltas (issue #504). A proposal counts whatever its label (the
     /// post-state's guardian key decides, not the client-written type)
     /// and whatever base it was recorded against: the candidate queue
     /// records a proposal against its tail (issue #17), and with an empty
@@ -1016,7 +1029,7 @@ impl ReleaseSweeper {
             .map_err(|e| {
                 GuardianError::StorageError(format!("Failed to pull pending proposals: {e}"))
             })?;
-        let deltas = self
+        let mut deltas = self
             .state
             .storage
             .pull_recoverable_deltas(account_id, self.abandoned_cutoff())
@@ -1024,6 +1037,15 @@ impl ReleaseSweeper {
             .map_err(|e| {
                 GuardianError::StorageError(format!("Failed to pull recoverable deltas: {e}"))
             })?;
+        let superseded = self
+            .state
+            .storage
+            .pull_superseded_deltas(account_id, self.abandoned_cutoff())
+            .await
+            .map_err(|e| {
+                GuardianError::StorageError(format!("Failed to pull superseded deltas: {e}"))
+            })?;
+        deltas.extend(superseded.into_iter().map(|archived| archived.delta));
         let chained = deltas
             .iter()
             .any(|delta| delta.prev_commitment != stored.commitment);
@@ -1052,12 +1074,17 @@ impl ReleaseSweeper {
         for DeltaObject {
             nonce,
             prev_commitment,
+            new_commitment,
             delta_payload,
             ..
         } in deltas
         {
             if let Some(base) = bases.iter().find(|base| base.commitment == prev_commitment) {
-                candidates.push((SwitchSource::Delta { nonce }, delta_payload, base.clone()));
+                let source = SwitchSource::Delta {
+                    nonce,
+                    commitment: new_commitment,
+                };
+                candidates.push((source, delta_payload, base.clone()));
             }
         }
         Ok(candidates)
@@ -1375,7 +1402,7 @@ impl ReleaseSweeper {
                 switch_commitment: &executed.switch_commitment,
                 switch_block_num: executed.switch_block_num,
             },
-            SwitchSource::Delta { nonce } => ReleaseEvidence::RecoverableDelta {
+            SwitchSource::Delta { nonce, .. } => ReleaseEvidence::RecoverableDelta {
                 delta_nonce: *nonce,
                 on_chain_commitment: on_chain,
                 stored_commitment: &stored.commitment,
@@ -2475,6 +2502,95 @@ mod tests {
         assert_eq!(events[0].payload["delta_nonce"], 4);
         assert_eq!(events[0].payload["stored_commitment"], STORED);
         assert_eq!(events[0].payload["switch_commitment"], ON_CHAIN);
+    }
+
+    #[tokio::test]
+    async fn a_switch_built_on_an_archived_delta_that_landed_is_evidence() {
+        // A Guardian execution archived the parked predecessor, which then
+        // landed anyway. The switch was built on its end state, so the walk
+        // has to reach that state through the archive.
+        const LANDED: &str = "0xlanded_commitment";
+        let predecessor = DeltaObject {
+            new_commitment: Some(LANDED.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let switch = DeltaObject {
+            new_commitment: Some(ON_CHAIN.to_string()),
+            ..retained_delta(ACCOUNT, 4, LANDED)
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_recoverable_deltas(Ok(vec![switch]))
+                .with_pull_superseded_deltas(Ok(vec![crate::storage::SupersededDelta {
+                    delta: predecessor,
+                    superseded_at: chrono::Utc::now(),
+                }])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({"landed": true}), LANDED.into())))
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({"landed": true}), LANDED.into())))
+                .with_extract_guardian_commitment(Ok(None))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        let events = h.auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["detected_by"], "recoverable_delta");
+        assert_eq!(events[0].payload["delta_nonce"], 4);
+        assert_eq!(events[0].payload["switch_commitment"], ON_CHAIN);
+    }
+
+    #[tokio::test]
+    async fn an_archived_switch_sharing_a_nonce_with_a_retained_delta_is_evidence() {
+        // A Guardian execution archived the client's switch delta and took
+        // its nonce with a delta of its own, which was then retained. Both
+        // rows sit at the same nonce on the same base; the archived switch
+        // landed, so it has to be evaluated on its own.
+        const OTHER: &str = "0xguardian_executed_commitment";
+        let retained = DeltaObject {
+            new_commitment: Some(OTHER.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let archived = DeltaObject {
+            new_commitment: Some(ON_CHAIN.to_string()),
+            ..retained_delta(ACCOUNT, 3, STORED)
+        };
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_recoverable_deltas(Ok(vec![retained]))
+                .with_pull_superseded_deltas(Ok(vec![crate::storage::SupersededDelta {
+                    delta: archived,
+                    superseded_at: chrono::Utc::now(),
+                }])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_apply_delta(Ok((serde_json::json!({}), OTHER.into())))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into())))
+                .with_extract_guardian_commitment(Ok(None)),
+            MockMetadataStore::new(),
+            2,
+        );
+
+        h.visit().await;
+        assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        let events = h.auditor.snapshot();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["detected_by"], "recoverable_delta");
+        assert_eq!(events[0].payload["delta_nonce"], 3);
+        assert_eq!(events[0].payload["switch_commitment"], ON_CHAIN);
+        assert!(
+            h.network.apply_delta_responses.lock().unwrap().is_empty(),
+            "each row at the nonce is applied on its own"
+        );
     }
 
     #[tokio::test]

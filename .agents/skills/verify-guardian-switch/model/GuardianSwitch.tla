@@ -170,10 +170,11 @@ PushCommit(q) ==
 (* The canonicalization worker (jobs/canonicalization/processor.rs). It    *)
 (* ignores paused_at. Promote: storage/postgres.rs promote_candidate, the  *)
 (* states row advanced only from the candidate's base (CAS), once the      *)
-(* chain head is the candidate's post-state. The release hook runs after   *)
-(* the promotion commits.                                                  *)
+(* chain head is the candidate's post-state. A stored state already at the *)
+(* candidate (a /configure re-onboarding wrote it first) is a resumed      *)
+(* promotion. The release hook runs after the promotion commits.           *)
 (***************************************************************************)
-CanPromote == cand # 0 /\ ChainHead = cand /\ st[cand].p = stored
+CanPromote == cand # 0 /\ ChainHead = cand /\ (st[cand].p = stored \/ stored = cand)
 
 Promote ==
     /\ CanPromote
@@ -187,10 +188,12 @@ Promote ==
 
 (* A candidate that is not promoted now leaves the queue: the chain moved  *)
 (* past its base or past the candidate itself (handle_diverged_candidate,  *)
-(* Retained), /configure replaced its base (StaleBase), or it never landed *)
+(* Retained), /configure replaced its base with another state (StaleBase),  *)
+(* or it never landed                                                       *)
 (* and used up max_retries after submission_grace_period_seconds. It stays *)
 (* recoverable (within retained_ttl_seconds) for the reconcile pass and    *)
-(* the sweep.                                                              *)
+(* the sweep, also once a resubmission at its nonce archives it to         *)
+(* superseded_deltas.                                                      *)
 Retire ==
     /\ cand # 0
     /\ ~CanPromote

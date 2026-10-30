@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::state_object::{StateHead, StateObject};
 
+pub use execution::{
+    AdmissionWrite, CandidateAdmission, ClaimWrite, ExecutionFailure, ExecutionFailureCode,
+    ExecutionOutcome, ExecutionPhase, ExecutionRecord, ExecutionReservation, ExecutionResolution,
+    ExecutionTerminal, NewExecutionReservation, ReservationUpdate, ReservationWrite, ResolveWrite,
+    SettleWrite, SubmissionEvidence, execution_lease_name,
+};
+
 /// Returns `true` when a backend-formatted error string represents a
 /// "row not present" outcome. Both Postgres (Diesel) and the filesystem
 /// backend surface errors as `String`, so callers that need to branch
@@ -82,6 +89,20 @@ pub(crate) fn is_recoverable(status: &DeltaStatus, abandoned_since: DateTime<Utc
         && DateTime::parse_from_rfc3339(status.timestamp())
             .map(|at| at.with_timezone(&Utc) >= abandoned_since)
             .unwrap_or(false)
+}
+
+/// The oldest client-abandoned discard timestamp still in scope for
+/// reconciliation under a retention TTL of `retained_ttl_seconds`:
+/// abandoned rows are kept as history forever, so the TTL bounds the
+/// scan, not their lifetime. An unrepresentable TTL (e.g. the test
+/// processor's u64::MAX) means "no cutoff": everything since the epoch
+/// is in scope.
+pub(crate) fn abandoned_cutoff(retained_ttl_seconds: u64, now: DateTime<Utc>) -> DateTime<Utc> {
+    i64::try_from(retained_ttl_seconds)
+        .ok()
+        .and_then(chrono::Duration::try_seconds)
+        .and_then(|ttl| now.checked_sub_signed(ttl))
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
 }
 
 /// Cursor parameters for the per-account delta history read. Sort key
@@ -189,7 +210,7 @@ pub struct ProposalRecord {
 /// row at the protected write boundary. A write that already validated its
 /// lease may finish during a leadership transfer; account locks and conditional
 /// mutations keep overlapping work safe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeaseFence {
     pub lease_name: String,
     pub holder_id: String,
@@ -206,6 +227,10 @@ pub enum CanonicalWrite {
     /// The target delta is no longer in candidate status (another owner
     /// already promoted or discarded it); nothing was written.
     NotCandidate,
+    /// The candidate belongs to a Guardian execution that crossed its
+    /// no-retry boundary and has not resolved; only that execution may
+    /// discard it. Nothing was written.
+    ProtectedByExecution,
 }
 
 /// Outcome of recording a client abandon request on a candidate.
@@ -217,6 +242,9 @@ pub enum AbandonIntent {
     AlreadyRequested { requested_at: String },
     /// The delta is absent or no longer a candidate; nothing written.
     NotCandidate,
+    /// The candidate belongs to the active Guardian execution of
+    /// `proposal_id`, which resolves it itself; nothing written.
+    OwnedByExecution { proposal_id: String },
 }
 
 /// Outcome of a fenced candidate promotion. Promotion overwrites the
@@ -225,8 +253,10 @@ pub enum AbandonIntent {
 /// base commitment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PromoteWrite {
-    /// The promotion committed.
-    Applied,
+    /// The promotion committed. `settled_execution` reports whether the
+    /// same commit settled the unresolved Guardian execution that owned the
+    /// candidate.
+    Applied { settled_execution: bool },
     /// The caller's lease is no longer current; nothing was written.
     StaleLease,
     /// The target delta is no longer in candidate status (another owner
@@ -239,6 +269,32 @@ pub enum PromoteWrite {
     /// against the moved base takes the divergence path if the delta
     /// is truly unsatisfiable.
     StaleBase,
+}
+
+/// A new proposal and the capacity it must fit in. Only proposals on `proposal.prev_commitment`,
+/// the account's current base, are viable and count; a proposal on a superseded base can never
+/// become a candidate.
+#[derive(Debug, Clone)]
+pub struct ProposalAdmission {
+    pub commitment: String,
+    pub proposal: DeltaObject,
+    /// Decoded size of the proposal's stored transaction request, zero when it carries none.
+    pub request_bytes: u64,
+    pub max_viable_proposals: usize,
+    /// Nonce of the newest queued candidate. A proposal on the same base at or below it can never
+    /// execute, so it counts towards neither limit; `None` when nothing is queued.
+    pub queue_tail_nonce: Option<u64>,
+    pub max_account_request_bytes: u64,
+}
+
+/// Outcome of [`StorageBackend::admit_delta_proposal`]. The limits are checked and the proposal
+/// inserted as one step under the account lock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProposalWrite {
+    Stored,
+    AlreadyStored,
+    PendingLimit { limit: usize },
+    AccountRequestBytesLimit { limit: u64, used: u64 },
 }
 
 /// Outcome of a candidate submission.
@@ -261,6 +317,9 @@ pub enum CandidateSubmission {
     /// the client is behind the canonical chain). `expected` is the
     /// stored canonical commitment the client can resync to.
     CommitmentMismatch { expected: String },
+    /// A Guardian execution holds the account's reservation; a client
+    /// candidate cannot be admitted until it resolves.
+    ExecutionReserved { proposal_id: String },
     /// The account was paused after the request checked its status;
     /// nothing was written. Read under the same lock the pause takes, so a
     /// pause that returned never sees a later ack.
@@ -500,6 +559,11 @@ pub struct SupersededDelta {
     pub superseded_at: DateTime<Utc>,
 }
 
+/// A `since` for [`StorageBackend::pull_superseded_deltas`] that every
+/// archived row passes. Postgres rejects timestamps outside its range, so
+/// this is a real date, not `DateTime::MIN_UTC`.
+pub const EVERY_ARCHIVED_DELTA: DateTime<Utc> = DateTime::UNIX_EPOCH;
+
 /// How a candidate submission treats the account's queue and a parked
 /// (retained or client-abandoned) row it supersedes at its nonce.
 /// `archive_superseded` moves that row to the superseded-delta archive,
@@ -619,7 +683,9 @@ pub(crate) async fn promote_candidate_sequential(
     metadata
         .clear_pending_candidate_if_none(&promotion.state.account_id, &promotion.now)
         .await?;
-    Ok(PromoteWrite::Applied)
+    Ok(PromoteWrite::Applied {
+        settled_execution: false,
+    })
 }
 
 /// Single-process fallback for [`StorageBackend::replace_state`]: a
@@ -713,6 +779,9 @@ pub(crate) async fn update_candidate_status_sequential(
     Ok(CanonicalWrite::Applied)
 }
 pub(crate) mod encryption;
+pub mod execution;
+#[cfg(test)]
+mod execution_reservation_tests;
 pub mod filesystem;
 #[cfg(feature = "postgres")]
 pub mod postgres;
@@ -953,6 +1022,11 @@ pub trait StorageBackend: Send + Sync {
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String>;
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: ProposalAdmission,
+    ) -> Result<ProposalWrite, String>;
     async fn pull_delta_proposal(
         &self,
         account_id: &str,
@@ -995,7 +1069,8 @@ pub trait StorageBackend: Send + Sync {
     /// Atomically record a client's abandon request (issue #319) on the
     /// candidate at `nonce`: sets `abandon_requested_at` while preserving
     /// every worker-owned counter, only while the delta is still a
-    /// candidate. Unfenced by design — the write is a non-destructive
+    /// candidate with `new_commitment` that no Guardian execution owns, so
+    /// a candidate that took the nonce meanwhile is never marked. Unfenced by design: the write is a non-destructive
     /// annotation; the lease-holding worker resolves the intent. An
     /// existing request timestamp is kept so retries cannot restart the
     /// abandon quarantine.
@@ -1003,6 +1078,7 @@ pub trait StorageBackend: Send + Sync {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String>;
     async fn update_delta_status(
@@ -1084,6 +1160,104 @@ pub trait StorageBackend: Send + Sync {
         status: DeltaStatus,
         fence: Option<&LeaseFence>,
     ) -> Result<CanonicalWrite, String>;
+
+    // ----------------------------------------------------------------------
+    // Guardian execution reservations (issue #254). Required on every
+    // implementation for the same reason as the canonicalization writes:
+    // each one is decided under the account lock together with the candidate
+    // writes above, and a default would silently drop that atomicity or the
+    // fence. Every execution-owned write validates the caller's fence against
+    // the active reservation; a stale caller writes nothing.
+    // ----------------------------------------------------------------------
+
+    /// Open a reservation for one attempt, allocating the attempt number
+    /// under the account lock. Refused while a candidate or another active
+    /// reservation exists.
+    async fn create_execution_reservation(
+        &self,
+        reservation: NewExecutionReservation,
+    ) -> Result<ReservationWrite, String>;
+
+    /// Extend the owner's lease on its active reservation and record its
+    /// current phase.
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: ExecutionPhase,
+    ) -> Result<ReservationUpdate, String>;
+
+    /// Transfer a live reservation to `claimant` by compare-and-set on the
+    /// `expected` holder and fence. Never releases the reservation.
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<ClaimWrite, String>;
+
+    /// The account's active attempt, if any.
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ExecutionRecord>, String>;
+
+    /// The most recent attempt for a proposal, active or resolved.
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<ExecutionRecord>, String>;
+
+    /// The no-retry boundary: admit the owner's candidate and persist its
+    /// submission evidence as one commit.
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: CandidateAdmission,
+    ) -> Result<AdmissionWrite, String>;
+
+    /// Resolve a boundary-crossed attempt as failed: discard its candidate,
+    /// delete its proposal when the cause ends it
+    /// (`ExecutionFailureCode::ends_proposal`), persist the outcome and release
+    /// the reservation as one commit.
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: ExecutionResolution,
+    ) -> Result<ResolveWrite, String>;
+
+    /// Fail an attempt that never crossed the boundary: persist the outcome
+    /// and release the reservation as one commit.
+    async fn fail_execution(&self, resolution: ExecutionResolution)
+    -> Result<ResolveWrite, String>;
+
+    /// Record `committed` and release the reservation once its candidate is canonical and the
+    /// account is at the expected state, under the caller's fence. Promotion settles an execution
+    /// itself; this repairs one a promotion left held, such as an interrupted filesystem
+    /// promotion or one made by a replica that predates execution.
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<SettleWrite, String>;
+
+    /// Every unreleased reservation with its evidence, for reconciliation.
+    async fn list_active_executions(&self) -> Result<Vec<ExecutionRecord>, String>;
+
+    /// Delete up to `limit` finished attempts resolved before `cutoff` whose proposal is gone or
+    /// that a newer attempt of the same proposal supersedes, with their evidence and outcome,
+    /// and report how many attempts were deleted. An active attempt and the newest attempt of a
+    /// proposal storage still holds are never deleted, so the attempt numbering of a live
+    /// proposal and every status read a client can still act on survive.
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String>;
 
     // ----------------------------------------------------------------------
     // Dashboard read APIs — feature `005-operator-dashboard-metrics`,

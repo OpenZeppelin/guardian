@@ -1048,7 +1048,10 @@ async fn test_push_delta_uses_the_session_and_abandon_the_wallet() {
         .push_delta(&account_id, 1, "0x00", serde_json::json!({}))
         .await
         .unwrap();
-    client.abandon_candidate(&account_id, 1).await.unwrap();
+    client
+        .abandon_candidate(&account_id, 1, "0x00")
+        .await
+        .unwrap();
 
     assert_eq!(
         formats.lock().unwrap().as_slice(),
@@ -1088,6 +1091,50 @@ async fn test_a_push_guardian_takes_only_from_the_wallet_is_re_signed_by_the_wal
         ]
     );
     assert!(client.session().is_some());
+}
+
+#[tokio::test]
+async fn test_execute_delta_proposal_uses_the_session() {
+    let envelope = crate::ExecutionEnvelope {
+        account_id: create_test_account_id().to_string(),
+        proposal_id: "0x2222".to_string(),
+        state: "pending".to_string(),
+        error: None,
+        delta_nonce: None,
+        newly_accepted: true,
+        proposal_exists: true,
+        ignored_signatures: 0,
+        updated_at: "2026-09-30T12:00:00Z".to_string(),
+    };
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_execution(Ok(envelope.clone()))
+        .with_execution(Ok(envelope));
+    let formats = service.push_and_abandon_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    let account_id = create_test_account_id();
+    client
+        .execute_delta_proposal(&account_id, "0x2222")
+        .await
+        .unwrap();
+    client
+        .execute_delta_proposal(&account_id, "0x2222")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        formats.lock().unwrap().as_slice(),
+        [
+            ("execute_delta_proposal".to_string(), "session".to_string()),
+            ("execute_delta_proposal".to_string(), "session".to_string()),
+        ]
+    );
 }
 
 #[tokio::test]

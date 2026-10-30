@@ -544,6 +544,7 @@ async fn a_proposal_stamping_one_scheme_on_a_mixed_account_is_refused() {
         &signer_specs(&targets, F),
         &auth_args,
         std::iter::empty(),
+        None,
     )
     .unwrap();
     let summary = execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), request)
@@ -618,9 +619,14 @@ async fn a_proposal_naming_another_scheme_for_a_kept_approver_is_refused() {
     let salt = Word::from([2u32, 3, 4, 5]);
     let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let rewritten = signer_specs(&SignerSpec::commitments(&approvers), F);
-    let (request, _) =
-        build_update_signers_transaction_request(1, &rewritten, &auth_args, std::iter::empty())
-            .unwrap();
+    let (request, _) = build_update_signers_transaction_request(
+        1,
+        &rewritten,
+        &auth_args,
+        std::iter::empty(),
+        None,
+    )
+    .unwrap();
     let summary = execute_for_summary_at_tip(&mut proposer.miden_client, account.id(), request)
         .await
         .unwrap();
@@ -728,6 +734,7 @@ async fn a_switch_keeps_the_stored_guardian_scheme() {
         &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
+        None,
         None,
         None,
     )

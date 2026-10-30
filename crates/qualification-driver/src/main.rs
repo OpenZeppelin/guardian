@@ -162,7 +162,7 @@ enum Command {
         post_restart: bool,
         /// With `--post-restart`: this pass is the first against an image upgraded
         /// in place, so data an earlier pass of this image would have written is
-        /// not there to find.
+        /// not there to find, and a scenario that needs it runs its first pass here.
         #[arg(long, default_value = "false", requires = "post_restart")]
         upgrade_target: bool,
         #[arg(long)]
