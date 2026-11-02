@@ -277,6 +277,34 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Representation of the `block_watch_cursor` table: the last block
+    /// block watch fully processed, per network (issue #585). Written
+    /// forward-only under the `release_sweep` lease.
+    block_watch_cursor (network) {
+        network -> Text,
+        last_block -> Int8,
+        genesis_commitment -> Nullable<Text>,
+        updated_at -> Timestamptz,
+        holder_id -> Text,
+        fence_token -> Int8,
+    }
+}
+
+diesel::table! {
+    /// Representation of the `block_watch_observations` table: guarded
+    /// accounts that moved on chain to a state this server does not hold,
+    /// awaiting a release-detector visit (issue #585).
+    block_watch_observations (account_id, block_num) {
+        account_id -> Text,
+        block_num -> Int8,
+        on_chain_commitment -> Text,
+        observed_at -> Timestamptz,
+        attempts -> Int4,
+        next_attempt_at -> Timestamptz,
+    }
+}
+
+diesel::table! {
     /// Single-row store-level encryption marker. Its presence indicates the
     /// store is encrypted.
     storage_encryption_marker (id) {

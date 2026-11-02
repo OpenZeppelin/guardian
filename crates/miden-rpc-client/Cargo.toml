@@ -18,7 +18,7 @@ tonic-prost = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["net", "rt-multi-thread", "time"] }
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "sync", "time"] }
 hex = { workspace = true }
 
 [features]

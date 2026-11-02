@@ -145,6 +145,9 @@ impl StorageMetadataBuilder {
                 .metadata_path
                 .ok_or_else(|| "GUARDIAN_METADATA_PATH is required".to_string())?;
 
+            // Block watch keeps its cursor next to the metadata, so a
+            // restart resumes the feed where it stopped (issue #585).
+            let block_watch_dir = metadata_path.join("block_watch");
             let storage = FilesystemService::new(storage_path).await?;
             let metadata = FilesystemMetadataStore::new(metadata_path).await?;
             // Filesystem-only deployment: no Postgres for `admin_actions`.
@@ -160,7 +163,10 @@ impl StorageMetadataBuilder {
             // The in-memory stats store never touches disk, so the
             // cipher is not needed on this path.
             let (storage, _cipher) = wrap_with_encryption(storage).await?;
-            let coordination = crate::coordination::CoordinationHandles::in_memory();
+            let coordination =
+                crate::coordination::CoordinationHandles::in_memory_with_block_watch_dir(
+                    block_watch_dir,
+                )?;
 
             Ok((storage, Arc::new(metadata), auditor, coordination))
         }

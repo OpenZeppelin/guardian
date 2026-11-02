@@ -93,6 +93,7 @@ Panels are grouped by subsystem and map 1:1 onto the metric taxonomy in
 | Storage & DB pools | operation rate/latency, per-pool (`storage`/`metadata`) connection saturation |
 | Canonicalization | run rate & duration, candidate outcomes, retries |
 | Release sweep | rotations by outcome, per-account findings (releases, `own_key_mismatch`, `storage_opaque`, …) |
+| Block watch | lag behind the chain tip and observation backlog, reconnects by reason, blocks by transport, account updates by outcome |
 | Delta & proposal lifecycle | submissions, proposal events, deltas-by-status, in-flight |
 | Accounts | total + creation rate by network kind |
 | Auth & rate limiting | operator auth outcomes, sessions, rate-limit rejections, refresh failures |

@@ -9,6 +9,7 @@
 //! backend *kinds* and ports are surfaced — never connection strings,
 //! key identifiers, or credentials.
 
+use crate::block_watch::BlockWatchConfig;
 use crate::build_info;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::network::NetworkType;
@@ -28,6 +29,7 @@ pub(crate) struct StartupInfo {
     account_schemes: String,
     canonicalization: Option<CanonicalizationConfig>,
     release_sweep: Option<ReleaseSweepConfig>,
+    block_watch: Option<BlockWatchConfig>,
     operator_count: usize,
     cursor_secret_configured: bool,
     http_port: Option<u16>,
@@ -65,12 +67,19 @@ impl StartupInfo {
             account_schemes,
             canonicalization,
             release_sweep,
+            block_watch: None,
             operator_count,
             cursor_secret_configured,
             http_port,
             grpc_port,
             metrics_addr,
         }
+    }
+
+    /// The block watch settings, `None` when it is disabled.
+    pub(crate) fn with_block_watch(mut self, block_watch: Option<BlockWatchConfig>) -> Self {
+        self.block_watch = block_watch;
+        self
     }
 
     pub(crate) fn log(&self) {
@@ -150,9 +159,24 @@ impl StartupInfo {
                 confirmations = config.confirmations,
                 "release sweep"
             ),
-            _ => {
-                tracing::info!("release sweep disabled (switch detection relies on the push path)")
-            }
+            _ => tracing::info!("release sweep rotation disabled"),
+        }
+        match &self.block_watch {
+            Some(config) => tracing::info!(
+                transport = config.transport.as_str(),
+                poll_seconds = config.poll_seconds,
+                stall_seconds = config.stall_seconds,
+                max_catchup_blocks = config.max_catchup_blocks,
+                ban_cooldown_seconds = config.ban_cooldown_seconds,
+                stream_retry_seconds = config.stream_retry_seconds,
+                max_attempts = config.max_attempts,
+                "block watch"
+            ),
+            None => tracing::info!("block watch disabled"),
+        }
+        let rotation = self.release_sweep.as_ref().is_some_and(|c| c.enabled);
+        if !rotation && self.block_watch.is_none() {
+            tracing::info!("switch detection relies on the push path alone");
         }
         tracing::info!(
             http = %port_label(self.http_port),

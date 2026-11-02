@@ -176,6 +176,51 @@ impl ReleaseEvidence<'_> {
     }
 }
 
+/// What found the switch a release is written for, recorded on the
+/// `accounts.release` audit row as `source` (and, for block watch, the
+/// block the move was observed in). Orthogonal to [`ReleaseEvidence`]: the
+/// evidence says what proves the switch, the origin says which detector
+/// pass came across it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseOrigin {
+    /// The push-path hook, as a delta committed or canonicalized here.
+    PushPath,
+    /// The release sweep's walk of the fleet, or a confirmation re-check
+    /// of an account it found moved.
+    Rotation,
+    /// Block watch (issue #585): a committed block showed the account at
+    /// a state this server does not hold.
+    BlockWatch { observed_block_num: u32 },
+}
+
+impl ReleaseOrigin {
+    /// The `source` value of the audit row and the release logs.
+    pub fn source(&self) -> &'static str {
+        match self {
+            Self::PushPath => "push_path",
+            Self::Rotation => "rotation",
+            Self::BlockWatch { .. } => "block_watch",
+        }
+    }
+
+    fn observed_block_num(&self) -> Option<u32> {
+        match self {
+            Self::BlockWatch { observed_block_num } => Some(*observed_block_num),
+            Self::PushPath | Self::Rotation => None,
+        }
+    }
+
+    /// Add `source` (and `observed_block_num`) to an audit payload.
+    fn annotate(&self, payload: &mut serde_json::Value) {
+        if let Some(fields) = payload.as_object_mut() {
+            fields.insert("source".to_string(), self.source().into());
+            if let Some(block) = self.observed_block_num() {
+                fields.insert("observed_block_num".to_string(), block.into());
+            }
+        }
+    }
+}
+
 /// Outcome of [`release_switched_account`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseWrite {
@@ -230,6 +275,7 @@ pub async fn release_if_guardian_switched(
             delta_nonce,
             new_commitment,
         },
+        ReleaseOrigin::PushPath,
     )
     .await;
 }
@@ -247,12 +293,14 @@ pub fn own_guardian_commitment(state: &AppState, metadata: &AccountMetadata) -> 
 /// one audit shape. The write happens only while the stored state is
 /// still the one the evidence was proved against, atomically with that
 /// check, so a concurrent `/configure` re-onboarding never ends up
-/// released. Infallible for callers: all failures are logged.
+/// released. `origin` is recorded with the evidence. Infallible for
+/// callers: all failures are logged.
 pub async fn release_switched_account(
     state: &AppState,
     metadata: &AccountMetadata,
     new_guardian_commitment: &str,
     evidence: ReleaseEvidence<'_>,
+    origin: ReleaseOrigin,
 ) -> ReleaseWrite {
     match state
         .metadata
@@ -268,16 +316,20 @@ pub async fn release_switched_account(
             tracing::warn!(
                 account_id = %metadata.account_id,
                 detected_by = evidence.detected_by(),
+                source = origin.source(),
+                observed_block_num = origin.observed_block_num(),
                 evidence = ?evidence,
                 new_guardian_commitment = %new_guardian_commitment,
                 "Account switched to a different guardian; released \
                  (mutations refused until re-onboarded via /configure)"
             );
+            let mut payload = evidence.audit_payload(new_guardian_commitment);
+            origin.annotate(&mut payload);
             state.auditor.record(AuditEvent {
                 operator_identity: SYSTEM_OPERATOR_IDENTITY.to_string(),
                 action_kind: kinds::ACCOUNTS_RELEASE,
                 target_account_id: Some(metadata.account_id.clone()),
-                payload: evidence.audit_payload(new_guardian_commitment),
+                payload,
                 outcome: AuditOutcome::Success,
                 error_code: None,
                 client_ip: None,
@@ -361,6 +413,7 @@ mod tests {
             ack,
             canonicalization: None,
             release_sweep: None,
+            block_watch: None,
             clock: Arc::new(MockClock::default()),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(auditor),
@@ -432,6 +485,11 @@ mod tests {
         assert_eq!(events[0].payload["delta_nonce"], 7);
         assert_eq!(events[0].payload["new_commitment"], "0xnew_commitment");
         assert_eq!(events[0].payload["detected_by"], "delta");
+        assert_eq!(events[0].payload["source"], "push_path");
+        assert!(
+            events[0].payload.get("observed_block_num").is_none(),
+            "only block watch names an observed block"
+        );
         assert_eq!(
             metadata_store
                 .set_released_expected_states
@@ -465,6 +523,7 @@ mod tests {
                 on_chain_commitment: "0xchain",
                 stored_commitment: "0xstored",
             },
+            ReleaseOrigin::Rotation,
         )
         .await;
 
@@ -499,6 +558,7 @@ mod tests {
                 on_chain_commitment: "0xchain",
                 stored_commitment: "0xstored",
             },
+            ReleaseOrigin::Rotation,
         )
         .await;
 
@@ -528,6 +588,9 @@ mod tests {
                 switch_commitment: "0xpost_switch",
                 switch_block_num: Some(406_750),
             },
+            ReleaseOrigin::BlockWatch {
+                observed_block_num: 406_750,
+            },
         )
         .await;
 
@@ -552,6 +615,8 @@ mod tests {
                 "stored_commitment": "0xstored",
                 "switch_commitment": "0xpost_switch",
                 "switch_block_num": 406_750,
+                "source": "block_watch",
+                "observed_block_num": 406_750,
             })
         );
     }
@@ -575,6 +640,7 @@ mod tests {
                 on_chain_commitment: "0xchain",
                 stored_commitment: "0xstored",
             },
+            ReleaseOrigin::Rotation,
         )
         .await;
 
@@ -595,6 +661,7 @@ mod tests {
                 "detected_by": "chain_sweep",
                 "on_chain_commitment": "0xchain",
                 "stored_commitment": "0xstored",
+                "source": "rotation",
             })
         );
     }

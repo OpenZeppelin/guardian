@@ -53,11 +53,16 @@
 //! or custody), so the sweep is its own task, independent of the
 //! canonicalization loop: one paced loop visits one account at a time,
 //! walking the fleet once per `rotation_seconds` and interleaving the few
-//! confirmation re-checks, never faster than `max_rate_per_second` in
-//! total. One replica holds the `release_sweep` lease at a time.
+//! confirmation re-checks and the block watch observations (issue #585,
+//! `jobs::block_watch`: guarded accounts a committed block showed moving
+//! to a state this server does not hold), never faster than
+//! `max_rate_per_second` in total. One replica holds the `release_sweep`
+//! lease at a time, and runs block watch's feed too.
 
 mod sweep;
 mod worker;
 
+#[cfg(all(test, feature = "e2e"))]
+pub(crate) use sweep::{ReleaseSweeper, SweepState, VisitOutcome};
 pub use sweep::{SweepSummary, run_release_sweep_now};
 pub use worker::start_release_sweep_worker;

@@ -6,6 +6,7 @@
 //! - Authentication methods (MidenFalconRpo, EthereumECDSA, etc.)
 //! - API protocols (HTTP, gRPC)
 
+pub mod block_watch;
 pub mod canonicalization;
 pub mod clock;
 pub mod handle;
@@ -16,6 +17,7 @@ pub mod state;
 pub mod storage;
 
 use crate::ack::AckRegistry;
+use crate::block_watch::BlockWatchConfig;
 use crate::builder::handle::ServerHandle;
 use crate::canonicalization::CanonicalizationConfig;
 use crate::clock::SystemClock;
@@ -43,6 +45,7 @@ pub struct ServerBuilder {
     canonicalization: Option<CanonicalizationConfig>,
     execution: crate::config::execution::ExecutionConfig,
     release_sweep: Option<ReleaseSweepConfig>,
+    block_watch: Option<BlockWatchConfig>,
     rpc: Option<crate::network::RpcSettings>,
     dashboard: Option<Arc<DashboardState>>,
     coordination: Option<crate::coordination::CoordinationHandles>,
@@ -69,6 +72,7 @@ impl ServerBuilder {
             canonicalization: Some(CanonicalizationConfig::default()),
             execution: crate::config::execution::ExecutionConfig::default(),
             release_sweep: Some(ReleaseSweepConfig::default()),
+            block_watch: Some(BlockWatchConfig::default()),
             rpc: None,
             dashboard: None,
             coordination: None,
@@ -198,12 +202,22 @@ impl ServerBuilder {
         self
     }
 
-    /// Configure the chain-driven release sweep (issue #434). `None`, or
-    /// a config with `enabled = false`, disables the sweep task entirely;
-    /// the default runs it. A disabled config is stored as `None`, so the
-    /// rest of the server has one way to see "not running".
+    /// Configure the chain-driven release sweep (issue #434). A config
+    /// with `enabled = false` turns the rotation (the walk of the fleet)
+    /// off; its pacing and confirmation settings still govern block
+    /// watch's observation visits. The sweep task runs when the rotation
+    /// or block watch is enabled. The default runs the rotation.
     pub fn with_release_sweep(mut self, config: Option<ReleaseSweepConfig>) -> Self {
-        self.release_sweep = config.filter(|config| config.enabled);
+        self.release_sweep = config;
+        self
+    }
+
+    /// Configure block watch (issue #585), the committed-block feed that
+    /// drives switch detection. `None`, or a config with `enabled =
+    /// false`, disables it; the default runs it. A disabled config is
+    /// stored as `None`.
+    pub fn with_block_watch(mut self, config: Option<BlockWatchConfig>) -> Self {
+        self.block_watch = config.filter(|config| config.enabled);
         self
     }
 
@@ -651,6 +665,36 @@ impl ServerBuilder {
             shutdown: tokio_util::sync::CancellationToken::new(),
         };
 
+        // Block watch reads the same node over sources of its own (a
+        // dedicated streaming channel, a unary client connected on first
+        // use), and keeps its state in the coordination store: shared on
+        // Postgres, in this process on the filesystem backend.
+        if let Some(config) = &self.block_watch {
+            config.validate()?;
+        }
+        let block_watch = self.block_watch.clone().map(|config| {
+            let factory = rpc_settings.block_source_factory(config.poll_interval());
+            let (store, durable_observations) = match coordination.as_ref() {
+                Some(handles) => (
+                    handles.block_watch_store.clone(),
+                    handles.mode == crate::coordination::CoordinationMode::Shared,
+                ),
+                None => (
+                    Arc::new(crate::coordination::InMemoryBlockWatchStore::new())
+                        as Arc<dyn crate::coordination::BlockWatchStore>,
+                    false,
+                ),
+            };
+            crate::jobs::block_watch::BlockWatchHandle {
+                config,
+                network: network_type,
+                store,
+                factory,
+                status: Arc::default(),
+                durable_observations,
+            }
+        });
+
         let startup_info = startup::StartupInfo::new(
             network_type,
             rpc_settings.sanitized_endpoint(),
@@ -667,7 +711,8 @@ impl ServerBuilder {
             self.http_enabled.then_some(self.http_port),
             self.grpc_enabled.then_some(self.grpc_port),
             metrics_config.enabled.then_some(metrics_config.bind_addr),
-        );
+        )
+        .with_block_watch(self.block_watch.clone());
 
         // Prod fail-fast pair for rate-limit partitioning; non-prod keeps the
         // warnings emitted by RateLimitConfig::from_env. (A missing cursor
@@ -714,6 +759,7 @@ impl ServerBuilder {
             ack,
             canonicalization: self.canonicalization,
             release_sweep: self.release_sweep,
+            block_watch,
             clock: Arc::new(SystemClock),
             dashboard,
             auditor,

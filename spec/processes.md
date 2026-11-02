@@ -771,6 +771,121 @@ loses its last attempt, so a status read for a proposal whose records were delet
 `proposal_not_found`, as for any proposal storage no longer holds;
 `GUARDIAN_EXECUTION_NOT_FOUND` is reserved for a proposal that exists and was never executed. The sweep is idempotent and needs no lease.
 
+## Block watch
+
+The part of the release sweep task (issue #585) that learns from the
+chain which guarded accounts moved, instead of probing every account in
+turn. It runs on the `release_sweep` lease holder, consumes the
+configured node's committed blocks, and hands each guarded account that
+moved to a state this server does not hold to the release sweep's
+detectors as an **observation**. A commitment in a block is never
+evidence of a switch by itself: the release still needs the detectors'
+proof.
+
+### Configuration
+- Shipped defaults: `enabled = true`, `transport = auto`,
+  `poll_seconds = 3`, `stall_seconds = 60`, `max_catchup_blocks =
+  10000`, `ban_cooldown_seconds = 600`, `stream_retry_seconds = 600`,
+  `max_attempts = 20`. Every value has a `GUARDIAN_BLOCK_WATCH_*` env
+  override (see `docs/CONFIGURATION.md` for the bounds);
+  `GUARDIAN_BLOCK_WATCH_ENABLED=false` is its kill switch; unset, it
+  follows `GUARDIAN_RELEASE_SWEEP_ENABLED`. Observation
+  visits share the release sweep's `max_rate_per_second`, and
+  `recheck_seconds` is the base of their retry backoff.
+
+### Behavior
+- **Transports.** `BlockSubscription` (the node's server stream: it
+  replays committed blocks from `block_from`, then streams each new one)
+  over a channel of its own with no request deadline and HTTP/2
+  keep-alive; or `GetBlockByNumber` for each block up to the tip, read
+  every `poll_seconds` once caught up. In `auto` mode a stream the node
+  does not serve to this caller (`UNIMPLEMENTED`, `PERMISSION_DENIED`,
+  `UNAUTHENTICATED`) switches to polling for `stream_retry_seconds`; a
+  stream closed for lag or refused for lack of a slot
+  (`RESOURCE_EXHAUSTED`; the node then bans the caller for 10 minutes)
+  switches to polling for `ban_cooldown_seconds`; any other failure
+  reopens the stream after an exponential, jittered backoff (1 s
+  doubling to 60 s), and five such failures in a row without a block
+  switch to polling for `stream_retry_seconds`. `stream` and `poll`
+  modes never switch. A task of its own drains the stream into a local
+  queue of 64 blocks, so a briefly slow consumer never backs the node's
+  per-subscriber buffer up.
+- **Sequence.** Blocks are processed strictly in order from the cursor
+  (`last processed block + 1`). A block out of sequence reopens the
+  source from the cursor; no block is ever skipped or processed twice.
+  No block for `stall_seconds` while the chain tip is past the cursor
+  reopens the source; an idle chain is not a stall. Block signatures,
+  parent linkage and body commitments are not verified: the node is
+  trusted for block contents as it is for `GetAccount` answers.
+- **Per block**, with no chain RPC: the ids of the block's
+  `updated_accounts` (private accounts included) go through one
+  membership query (chunks of 1,000 ids) that sorts them like the
+  rotation's filter: unreleased Miden accounts with no candidate in
+  flight are sweepable; those with a candidate in flight are left to the
+  push path. One batched read compares the sweepable ones with their
+  stored commitments: equal means this server's own transaction landed
+  (nothing to do); no stored state means an unfinished configuration
+  (nothing to do); the post-state of one of the account's own canonical
+  deltas means an old transaction of its own (a block replayed after
+  downtime, or an optimistic commit ahead of the chain; one more batched
+  read, only when something moved); anything else records an
+  observation `(account_id, block_num, on_chain_commitment)`,
+  idempotently, so a replayed block records nothing new. Then the cursor
+  moves to the block. A storage
+  failure retries the same block; the cursor never moves past a block
+  that was not fully processed.
+- **Cursor policy.** With no cursor (the first start) or a cursor more
+  than `max_catchup_blocks` behind the tip, block watch starts at the
+  tip instead of replaying, and requests one walk of the rotation to
+  cover the skipped blocks. So does a block the node no longer serves,
+  and, on the filesystem backend, a restart (its observations were in
+  memory). A requested walk starts no earlier than the request: at once
+  when the rotation is idle, right after the current walk otherwise, and
+  it runs even when the rotation is disabled.
+- **Chain resets.** The cursor records the genesis commitment the node
+  reported. A node reporting another one (at start, or when a source is
+  reopened), a cursor more than 100 blocks past the tip (the node refuses
+  to stream from it, `OUT_OF_RANGE`), or a tip that falls that far below
+  the cursor while polling means the cursor belongs to another chain: it
+  is moved to the new tip (the one write that moves it back, fenced like
+  the others) and one walk is requested. A stream that fails with
+  `INTERNAL` is asked about the next block directly: one at or below the
+  tip the node no longer serves is skipped like an unavailable block.
+- **Observation visits.** The release sweep's paced loop takes turns
+  between due confirmation re-checks, due observations (lowest block
+  first) and the rotation, never faster than `max_rate_per_second` in
+  total. A visit re-reads the metadata row (a released, EVM or busy row
+  is done) and the stored commitment: equal to the observed one means
+  the store caught up (only the stored state's own key is checked; the
+  observation is history, so an open confirmation streak is left
+  alone). Otherwise the observed commitment stands in for the
+  head probe and the detectors run unchanged: the stored state's own
+  key, the candidate match (a post-state equal to the observed
+  commitment executed in the observed block, which is recorded as
+  `switch_block_num`), then the storage read with its confirmations,
+  later ones coming from re-checks as usual. A checked observation is
+  deleted; one whose visit could not check the account (a chain read
+  failed, the store moved between two reads) is retried after
+  `recheck_seconds` doubling per attempt (at most 1 h), and dropped with
+  a warning after `max_attempts`; the rotation remains the backstop.
+- **Cluster state.** The cursor (`block_watch_cursor`, one row per
+  network) and the observations (`block_watch_observations`) are shared
+  Postgres tables. The cursor is written forward-only, in the same
+  transaction as a check of the writer's `release_sweep` lease (the
+  lease row held `FOR SHARE`); a refused write stops the holder, which
+  gives the lease up. A successor resumes from the cursor and visits the
+  observations its predecessor recorded. Guarded-account membership is
+  the shared metadata table, so a `/configure` on any replica counts
+  from the next block. Streaks, caches and the transport state stay in
+  the holder's memory. The filesystem backend keeps the cursor in
+  `<metadata dir>/block_watch/cursor.json` and the observations in
+  memory.
+- **Audit.** A release found from an observation carries `source:
+  "block_watch"` and `observed_block_num` on its `accounts.release` row
+  (also when a re-check of the streak the observation opened confirms
+  it); rotation releases carry `source: "rotation"` and push-path ones
+  `source: "push_path"`. `detected_by` is unchanged.
+
 ## Release sweep
 
 A background task (issue #434), independent of the canonicalization
@@ -787,19 +902,24 @@ so the sweep is deliberately slow and rate-bounded.
 - Shipped defaults: `enabled = true`, `rotation_seconds = 21600` (6 h),
   `max_rate_per_second = 5`, `page_size = 100`, `recheck_seconds = 60`,
   `confirmations = 2`. Every value has a `GUARDIAN_RELEASE_SWEEP_*` env
-  override (see `docs/CONFIGURATION.md` for the bounds);
-  `GUARDIAN_RELEASE_SWEEP_ENABLED=false` is the runtime kill switch.
+  override (see `docs/CONFIGURATION.md` for the bounds).
+  `GUARDIAN_RELEASE_SWEEP_ENABLED=false` turns the rotation off, and
+  block watch with it unless `GUARDIAN_BLOCK_WATCH_ENABLED` is set. The
+  task runs while block watch is enabled (it visits observations and
+  walks the fleet when block watch asks for one walk). With both off,
+  release detection relies on the push path alone.
 - One replica holds the `release_sweep` lease (its own single-owner
   lease, renewed every 10 s with a 30 s TTL). A lost lease stops the
   loop; a panic in it stops the renewal too, so the lease expires and
   another replica takes over.
 
 ### Behavior
-- **One paced loop.** The holder visits one account per turn: the next
-  account of the rotation, or a due confirmation re-check. When both are
-  due they take turns, and two visits are never closer than
-  `1 / max_rate_per_second` whatever their kind, so neither can starve
-  the other and together they never exceed the rate.
+- **One paced loop.** The holder visits one account per turn: a due
+  confirmation re-check, a due block watch observation, or the next
+  account of the rotation. When several are due they take turns in that
+  order, and two visits are never closer than `1 / max_rate_per_second`
+  whatever their kind, so none can starve the others and together they
+  never exceed the rate.
 - **Rotation.** The walk covers every unreleased Miden account with no
   candidate in flight (the store filters both; the push path owns busy
   accounts) in `account_id` order, paced so it spreads over

@@ -230,6 +230,68 @@ impl ReleaseSweepOutcome {
     }
 }
 
+/// What block watch made of one account update in a block
+/// (`guardian_block_watch_account_updates_total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockWatchUpdateOutcome {
+    /// Not an account this server guards (unknown, released, or EVM).
+    NotGuarded,
+    /// Guarded, with a candidate in flight: left to the push path.
+    SkippedPendingCandidate,
+    /// The account moved to the state this server holds (its own
+    /// transaction landed): nothing to do.
+    AtStored,
+    /// The account moved to an earlier state of its own (the post-state of
+    /// one of its canonical deltas): an old transaction of the account's,
+    /// replayed or behind an optimistic commit. Nothing to do.
+    OwnHistory,
+    /// Guarded but no state is stored yet (a first configuration that has
+    /// not finished).
+    UnfinishedConfiguration,
+    /// The account moved to a state this server does not hold: an
+    /// observation was recorded for the release detectors.
+    Observed,
+}
+
+impl BlockWatchUpdateOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotGuarded => "not_guarded",
+            Self::SkippedPendingCandidate => "skipped_pending_candidate",
+            Self::AtStored => "at_stored",
+            Self::OwnHistory => "own_history",
+            Self::UnfinishedConfiguration => "unfinished_configuration",
+            Self::Observed => "observed",
+        }
+    }
+}
+
+/// Outcome of one visit of a block watch observation
+/// (`guardian_block_watch_observation_visits_total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockWatchVisitOutcome {
+    /// The account was checked; the observation is done.
+    Checked,
+    /// A chain read failed; the observation is retried later.
+    Deferred,
+    /// The visit failed (storage error, failed release write); retried.
+    Failed,
+    /// The observation ran out of attempts and was dropped; the rotation
+    /// remains the backstop.
+    Dropped,
+}
+
+impl BlockWatchVisitOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Checked => "checked",
+            Self::Deferred => "deferred",
+            Self::Failed => "failed",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
 /// Account network kind (`guardian_accounts_created_total`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountKind {

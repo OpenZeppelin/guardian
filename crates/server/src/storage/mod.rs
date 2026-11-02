@@ -846,6 +846,74 @@ pub trait StorageBackend: Send + Sync {
             .map(|state| state.commitment)
     }
 
+    /// The stored commitments of `account_ids`, without their payloads:
+    /// block watch (issue #585) compares every guarded account a block
+    /// updated against it, once per block. Accounts with no stored state
+    /// are absent from the map; any other failure is an error, so a
+    /// storage fault is never mistaken for "no state". The default reads
+    /// one commitment per id; backends that can batch override it.
+    async fn pull_state_commitments_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>, String> {
+        let mut out = std::collections::HashMap::with_capacity(account_ids.len());
+        for id in account_ids {
+            match self.pull_state_commitment(id).await {
+                Ok(commitment) => {
+                    out.insert((*id).to_string(), commitment);
+                }
+                Err(e) if is_storage_not_found(&e) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
+    }
+
+    /// Which of `pairs` (`(account_id, commitment)`) are the post-state of
+    /// one of that account's canonical deltas: a state this server held,
+    /// and has moved past when it is not the stored one. Block watch
+    /// (issue #585) uses it to recognise a block that shows an old
+    /// transaction of the account's own (a replay after downtime, or an
+    /// optimistic commit ahead of the chain), which is no observation. The
+    /// default walks each account's canonical deltas; backends that can
+    /// query by commitment override it.
+    async fn filter_canonical_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        const PAGE: u32 = 500;
+        let mut wanted: std::collections::BTreeMap<&str, std::collections::HashSet<&str>> =
+            std::collections::BTreeMap::new();
+        for (account_id, commitment) in pairs {
+            wanted.entry(account_id).or_default().insert(commitment);
+        }
+        let mut found = std::collections::HashSet::new();
+        for (account_id, mut commitments) in wanted {
+            let mut cursor = None;
+            while !commitments.is_empty() {
+                let page = self
+                    .list_canonical_deltas_paged(account_id, PAGE, cursor)
+                    .await?;
+                for delta in &page {
+                    if let Some(commitment) = delta.new_commitment.as_deref()
+                        && commitments.remove(commitment)
+                    {
+                        found.insert((account_id.to_string(), commitment.to_string()));
+                    }
+                }
+                match page.last() {
+                    Some(last) if page.len() == PAGE as usize => {
+                        cursor = Some(AccountDeltaCursor {
+                            last_nonce: i64::try_from(last.nonce).unwrap_or(i64::MAX),
+                        });
+                    }
+                    _ => break,
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// The commitment and nonce of the account's stored state, without
     /// its payload: what the canonical-nonce pre-check (issue #191)
     /// serves. `nonce` is `None` when the row does not know it (see

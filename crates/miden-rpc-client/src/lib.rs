@@ -46,6 +46,21 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// a full page can exceed the default limit and be refused every time.
 pub const MAX_RESPONSE_SIZE_BYTES: usize = 4 * 1024 * 1024 * 115 / 100;
 
+/// Largest committed block the client decodes, from `GetBlockByNumber` or
+/// the `BlockSubscription` stream. A block carries every account patch and
+/// note of up to a full set of batches, so it can be far larger than an
+/// ordinary response. A block over the limit would be refused on every
+/// retry and stop a feed consumer at that block for good, so the limit is
+/// generous rather than tight.
+pub const MAX_BLOCK_MESSAGE_SIZE_BYTES: usize = 64 * 1024 * 1024;
+
+/// HTTP/2 keep-alive of the channel [`MidenRpcClient::connect_streaming`]
+/// opens: a ping every 30 s, and the connection counts as dead when a ping
+/// goes unanswered for 10 s. A long-lived stream has no request deadline,
+/// so the keep-alive is what notices a peer that silently went away.
+pub const STREAM_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(30);
+pub const STREAM_KEEP_ALIVE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Failure surface of [`MidenRpcClient`]. `Call` retains the typed
 /// `tonic::Status` so transient and permanent failures stay distinguishable.
 /// Endpoint values are never echoed in errors.
@@ -274,8 +289,9 @@ impl MidenRpcClient {
         .await
     }
 
-    /// Get the status of the Miden node
-    pub async fn get_status(&mut self) -> Result<rpc::StatusResponse, RpcClientError> {
+    /// Get the status of the Miden node. Takes `&self` like
+    /// [`Self::get_account_commitment`].
+    pub async fn get_status(&self) -> Result<rpc::StatusResponse, RpcClientError> {
         self.retry_read(
             "get_status",
             RpcReadMode::Configured,
@@ -567,6 +583,56 @@ impl MidenRpcClient {
         .await
     }
 
+    /// One committed block by number, without its proof. `None` when the
+    /// node does not serve the block: not produced yet, or no longer
+    /// retained. Takes `&self` like [`Self::get_account_commitment`].
+    pub async fn get_block(
+        &self,
+        block_num: u32,
+        read_mode: RpcReadMode,
+    ) -> Result<Option<blockchain::SignedBlock>, RpcClientError> {
+        let response = self
+            .retry_read("get_block", read_mode, |client| async move {
+                client
+                    .max_decoding_message_size(MAX_BLOCK_MESSAGE_SIZE_BYTES)
+                    .get_block_by_number(Request::new(rpc::GetBlockByNumberRequest {
+                        block_num,
+                        include_proof: Some(false),
+                    }))
+                    .await
+                    .map(tonic::Response::into_inner)
+            })
+            .await?;
+        Ok(response.block)
+    }
+
+    /// Connect a channel of its own for long-lived server streams. Unlike
+    /// [`Self::connect`] it sets **no** per-request deadline (a deadline
+    /// would cut the stream, not a hung call), keeps the connection alive
+    /// with HTTP/2 pings instead, and connects once: a stream consumer owns
+    /// its reconnect policy.
+    pub async fn connect_streaming(
+        endpoint: impl Into<String>,
+    ) -> Result<StreamingClient, RpcClientError> {
+        let channel = Channel::from_shared(endpoint.into())
+            .map_err(|e| RpcClientError::InvalidEndpoint {
+                reason: e.to_string(),
+            })?
+            .connect_timeout(CONNECT_TIMEOUT)
+            .http2_keep_alive_interval(STREAM_KEEP_ALIVE_INTERVAL)
+            .keep_alive_timeout(STREAM_KEEP_ALIVE_TIMEOUT)
+            .keep_alive_while_idle(true)
+            .tls_config(ClientTlsConfig::new().with_native_roots())
+            .map_err(RpcClientError::Tls)?
+            .connect()
+            .await
+            .map_err(RpcClientError::Connect)?;
+        Ok(StreamingClient {
+            client: NodeServiceClient::new(channel)
+                .max_decoding_message_size(MAX_BLOCK_MESSAGE_SIZE_BYTES),
+        })
+    }
+
     /// Fetch full account details including serialized account data
     pub async fn get_account_details(
         &mut self,
@@ -607,6 +673,129 @@ fn proto_account_id(account_id: &AccountId) -> account::AccountId {
             }),
         })),
     }
+}
+
+/// A node client over a channel without a request deadline, for server
+/// streams (see [`MidenRpcClient::connect_streaming`]).
+pub struct StreamingClient {
+    client: NodeServiceClient<Channel>,
+}
+
+impl StreamingClient {
+    /// Subscribe to committed blocks from `block_from` on: the node
+    /// replays the blocks it already committed from there, then streams
+    /// each new one as it commits. The node closes the stream with a
+    /// status when it shuts down (`UNAVAILABLE`), when the subscriber
+    /// falls too far behind (`RESOURCE_EXHAUSTED`, followed by a temporary
+    /// ban of the caller), or on an internal error.
+    pub async fn subscribe_blocks(
+        &mut self,
+        block_from: u32,
+    ) -> Result<tonic::Streaming<rpc::BlockSubscriptionResponse>, RpcClientError> {
+        self.client
+            .block_subscription(Request::new(rpc::BlockSubscriptionRequest { block_from }))
+            .await
+            .map(tonic::Response::into_inner)
+            .map_err(|status| RpcClientError::Call {
+                operation: "block_subscription",
+                status,
+            })
+    }
+}
+
+/// The account ID a node message names: the inverse of the versioned felt
+/// pair this client sends. `None` when the message carries no version, a
+/// felt is missing or not canonical, or the pair is not a valid account ID.
+pub fn account_id_from_proto(id: &account::AccountId) -> Option<AccountId> {
+    let account::account_id::Version::V1(v1) = id.version.as_ref()?;
+    let suffix = miden_protocol::Felt::try_from(v1.suffix?.value).ok()?;
+    let prefix = miden_protocol::Felt::try_from(v1.prefix?.value).ok()?;
+    AccountId::try_from_elements(suffix, prefix).ok()
+}
+
+/// One entry of a committed block's `updated_accounts`, reduced to what a
+/// consumer of the block feed compares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockAccountState {
+    pub account_id: AccountId,
+    /// The commitment the account ended the block at, encoded like
+    /// [`word_to_hex`].
+    pub commitment: String,
+    /// The update carries the account's public patch (a public account).
+    /// A private account publishes its commitment only.
+    pub is_public: bool,
+}
+
+/// What a committed block says about accounts: its number and the final
+/// state of every account it updated, private accounts included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockAccountUpdates {
+    pub block_num: u32,
+    pub updates: Vec<BlockAccountState>,
+}
+
+/// A committed block the node sent without something every block has.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum BlockDecodeError {
+    #[error("block has no header")]
+    MissingHeader,
+    #[error("block header has no block number")]
+    MissingBlockNumber,
+    #[error("block has no body")]
+    MissingBody,
+    #[error("account update {index} names no valid account ID")]
+    InvalidAccountId { index: usize },
+    #[error("account update {index} has no 32-byte final state commitment")]
+    InvalidCommitment { index: usize },
+}
+
+/// Read the account updates of a committed block. Notes, nullifiers,
+/// transactions and signatures are not inspected. A block missing its
+/// header or body, or an update without a valid account ID or commitment,
+/// is an error rather than a partial answer: a feed that skipped an update
+/// would silently miss that account's move.
+pub fn block_account_updates(
+    block: &blockchain::SignedBlock,
+) -> Result<BlockAccountUpdates, BlockDecodeError> {
+    let header = block
+        .header
+        .as_ref()
+        .ok_or(BlockDecodeError::MissingHeader)?;
+    let block_num = header
+        .block_num
+        .ok_or(BlockDecodeError::MissingBlockNumber)?
+        .block_num;
+    let body = block.body.as_ref().ok_or(BlockDecodeError::MissingBody)?;
+    let updates = body
+        .updated_accounts
+        .iter()
+        .enumerate()
+        .map(|(index, update)| {
+            let account_id = update
+                .account_id
+                .as_ref()
+                .and_then(account_id_from_proto)
+                .ok_or(BlockDecodeError::InvalidAccountId { index })?;
+            let commitment = update
+                .final_state_commitment
+                .as_ref()
+                .and_then(word_to_hex)
+                .ok_or(BlockDecodeError::InvalidCommitment { index })?;
+            let is_public = matches!(
+                update
+                    .details
+                    .as_ref()
+                    .and_then(|details| details.update.as_ref()),
+                Some(account::account_update_details::Update::Public(_))
+            );
+            Ok(BlockAccountState {
+                account_id,
+                commitment,
+                is_public,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(BlockAccountUpdates { block_num, updates })
 }
 
 #[cfg(test)]
@@ -882,7 +1071,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_rate_limited_read_recovers_over_a_real_wire() {
-        let (mut client, calls, runtime) = wire_client(
+        let (client, calls, runtime) = wire_client(
             2,
             || tonic::Status::resource_exhausted("Too Many Requests!"),
             3,
@@ -900,7 +1089,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_nodes_rate_limit_text_rendering_retries_over_a_real_wire() {
-        let (mut client, calls, runtime) = wire_client(
+        let (client, calls, runtime) = wire_client(
             u32::MAX,
             || tonic::Status::unknown("Too Many Requests!"),
             2,
@@ -917,7 +1106,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_permanent_status_fails_fast_over_a_real_wire() {
-        let (mut client, calls, runtime) = wire_client(
+        let (client, calls, runtime) = wire_client(
             u32::MAX,
             || tonic::Status::invalid_argument("malformed account id"),
             3,
@@ -934,7 +1123,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_request_deadline_expiry_is_transient_over_a_real_wire() {
-        let (mut client, calls, runtime) = wire_client(
+        let (client, calls, runtime) = wire_client(
             0,
             || unreachable!("the deadline expires before the scripted response"),
             2,
@@ -964,7 +1153,7 @@ mod tests {
         });
 
         let runtime = Arc::new(RecordingRuntime::default());
-        let mut client = MidenRpcClient::connect_with_runtime(
+        let client = MidenRpcClient::connect_with_runtime(
             format!("http://{address}"),
             RpcClientSettings::new(Duration::from_secs(2), RetryPolicy::new(2)),
             runtime.clone(),
@@ -1128,6 +1317,259 @@ mod tests {
         };
         assert_eq!(operation, "sync_transactions");
         assert_eq!(status.code(), tonic::Code::InvalidArgument);
+    }
+
+    fn second_account_id() -> AccountId {
+        AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").expect("valid account id")
+    }
+
+    #[test]
+    fn an_account_id_survives_the_proto_round_trip() {
+        for id in [test_account_id(), second_account_id()] {
+            assert_eq!(account_id_from_proto(&proto_account_id(&id)), Some(id));
+        }
+        // No version, a missing felt, a non-canonical felt, an invalid pair.
+        assert_eq!(
+            account_id_from_proto(&account::AccountId { version: None }),
+            None
+        );
+        let v1 = |suffix: Option<u64>, prefix: Option<u64>| account::AccountId {
+            version: Some(account::account_id::Version::V1(account::AccountIdV1 {
+                suffix: suffix.map(|value| primitives::Felt { value }),
+                prefix: prefix.map(|value| primitives::Felt { value }),
+            })),
+        };
+        let id = test_account_id();
+        let suffix = id.suffix().as_canonical_u64();
+        let prefix = id.prefix().as_felt().as_canonical_u64();
+        assert_eq!(account_id_from_proto(&v1(Some(suffix), None)), None);
+        assert_eq!(
+            account_id_from_proto(&v1(Some(u64::MAX), Some(prefix))),
+            None
+        );
+        assert_eq!(account_id_from_proto(&v1(Some(suffix), Some(0))), None);
+    }
+
+    #[test]
+    fn a_block_reduces_to_its_account_updates_private_ones_included() {
+        let block = test_node::block(
+            574_041,
+            vec![
+                test_node::account_update(test_account_id(), [7; 32], true),
+                test_node::account_update(second_account_id(), [9; 32], false),
+            ],
+        );
+        let decoded = block_account_updates(&block).expect("a well-formed block decodes");
+        assert_eq!(decoded.block_num, 574_041);
+        assert_eq!(
+            decoded.updates,
+            vec![
+                BlockAccountState {
+                    account_id: test_account_id(),
+                    commitment: format!("0x{}", "07".repeat(32)),
+                    is_public: true,
+                },
+                BlockAccountState {
+                    account_id: second_account_id(),
+                    commitment: format!("0x{}", "09".repeat(32)),
+                    is_public: false,
+                },
+            ]
+        );
+        // An empty block has a body with no updates.
+        let empty = block_account_updates(&test_node::block(7, vec![])).expect("empty block");
+        assert!(empty.updates.is_empty());
+        // An update without details is not public (nothing to patch from).
+        let mut bare = test_node::block(
+            8,
+            vec![test_node::account_update(test_account_id(), [1; 32], true)],
+        );
+        bare.body.as_mut().unwrap().updated_accounts[0].details = None;
+        assert!(!block_account_updates(&bare).unwrap().updates[0].is_public);
+    }
+
+    #[test]
+    fn a_block_missing_what_every_block_has_is_an_error_not_a_partial_answer() {
+        let good = || {
+            test_node::block(
+                10,
+                vec![
+                    test_node::account_update(test_account_id(), [7; 32], true),
+                    test_node::account_update(second_account_id(), [9; 32], false),
+                ],
+            )
+        };
+        let mut no_header = good();
+        no_header.header = None;
+        assert_eq!(
+            block_account_updates(&no_header),
+            Err(BlockDecodeError::MissingHeader)
+        );
+        let mut no_number = good();
+        no_number.header.as_mut().unwrap().block_num = None;
+        assert_eq!(
+            block_account_updates(&no_number),
+            Err(BlockDecodeError::MissingBlockNumber)
+        );
+        let mut no_body = good();
+        no_body.body = None;
+        assert_eq!(
+            block_account_updates(&no_body),
+            Err(BlockDecodeError::MissingBody)
+        );
+        let mut no_id = good();
+        no_id.body.as_mut().unwrap().updated_accounts[1].account_id = None;
+        assert_eq!(
+            block_account_updates(&no_id),
+            Err(BlockDecodeError::InvalidAccountId { index: 1 })
+        );
+        let mut short_word = good();
+        short_word.body.as_mut().unwrap().updated_accounts[0].final_state_commitment =
+            Some(primitives::Word {
+                encoded: vec![7; 31],
+            });
+        assert_eq!(
+            block_account_updates(&short_word),
+            Err(BlockDecodeError::InvalidCommitment { index: 0 })
+        );
+        let mut empty_word = good();
+        empty_word.body.as_mut().unwrap().updated_accounts[1].final_state_commitment =
+            Some(primitives::Word::default());
+        assert_eq!(
+            block_account_updates(&empty_word),
+            Err(BlockDecodeError::InvalidCommitment { index: 1 })
+        );
+    }
+
+    async fn block_node(node: test_node::ScriptedNode) -> String {
+        test_node::serve(node).await
+    }
+
+    #[tokio::test]
+    async fn get_block_serves_a_committed_block_and_none_for_one_not_served() {
+        let node = test_node::ScriptedNode::healthy().with_blocks(vec![
+            test_node::block(5, vec![]),
+            test_node::block(
+                6,
+                vec![test_node::account_update(test_account_id(), [3; 32], false)],
+            ),
+        ]);
+        let requests = node.block_requests();
+        let client = MidenRpcClient::connect(block_node(node).await)
+            .await
+            .expect("connect");
+        let block = client
+            .get_block(6, RpcReadMode::SingleAttempt)
+            .await
+            .expect("get_block")
+            .expect("block 6 is committed");
+        assert_eq!(block_account_updates(&block).unwrap().updates.len(), 1);
+        assert_eq!(
+            client
+                .get_block(7, RpcReadMode::SingleAttempt)
+                .await
+                .expect("get_block"),
+            None,
+            "a block the node does not serve is no block, not an error"
+        );
+        assert_eq!(requests.lock().unwrap().clone(), vec![6, 7]);
+        assert_eq!(
+            client
+                .get_chain_tip(RpcReadMode::SingleAttempt)
+                .await
+                .expect("tip"),
+            6
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subscription_replays_committed_blocks_then_streams_live_ones() {
+        let node = test_node::ScriptedNode::healthy()
+            .with_blocks((3..=6).map(|n| test_node::block(n, vec![])).collect())
+            .with_live_blocks(
+                vec![test_node::block(7, vec![]), test_node::block(8, vec![])],
+                Duration::from_millis(50),
+            );
+        let requests = node.subscription_requests();
+        let mut streaming = MidenRpcClient::connect_streaming(block_node(node).await)
+            .await
+            .expect("connect streaming");
+        let mut stream = streaming.subscribe_blocks(5).await.expect("subscribe");
+        let mut numbers = Vec::new();
+        let mut tips = Vec::new();
+        for _ in 0..4 {
+            let item = stream
+                .message()
+                .await
+                .expect("stream item")
+                .expect("stream open");
+            numbers.push(
+                block_account_updates(item.block.as_ref().unwrap())
+                    .unwrap()
+                    .block_num,
+            );
+            tips.push(item.committed_chain_tip);
+        }
+        assert_eq!(
+            numbers,
+            vec![5, 6, 7, 8],
+            "replay from block_from, then live"
+        );
+        assert_eq!(tips, vec![6, 6, 7, 8]);
+        assert_eq!(requests.lock().unwrap().clone(), vec![5]);
+        // An idle chain keeps the stream open: no item, no end.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stream.message())
+                .await
+                .is_err(),
+            "the stream stays open on an idle chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_closing_status_reaches_the_subscriber_after_the_blocks() {
+        let node = test_node::ScriptedNode::healthy()
+            .with_blocks(vec![test_node::block(1, vec![])])
+            .with_stream_terminal(tonic::Code::ResourceExhausted, "subscriber lagging");
+        let mut streaming = MidenRpcClient::connect_streaming(block_node(node).await)
+            .await
+            .expect("connect streaming");
+        let mut stream = streaming.subscribe_blocks(1).await.expect("subscribe");
+        assert!(stream.message().await.expect("first item").is_some());
+        let status = stream.message().await.expect_err("terminal status");
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(status.message(), "subscriber lagging");
+    }
+
+    #[tokio::test]
+    async fn a_node_without_the_stream_refuses_the_subscription_as_unimplemented() {
+        let node = test_node::ScriptedNode::healthy()
+            .with_blocks(vec![test_node::block(1, vec![])])
+            .with_block_subscription_disabled();
+        let mut streaming = MidenRpcClient::connect_streaming(block_node(node).await)
+            .await
+            .expect("connect streaming");
+        let error = streaming
+            .subscribe_blocks(1)
+            .await
+            .expect_err("subscription refused");
+        let RpcClientError::Call { operation, status } = error else {
+            panic!("expected a call error, got {error:?}");
+        };
+        assert_eq!(operation, "block_subscription");
+        assert_eq!(status.code(), tonic::Code::Unimplemented);
+    }
+
+    #[tokio::test]
+    async fn a_streaming_connect_to_a_closed_port_fails_without_retrying() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let error = MidenRpcClient::connect_streaming(format!("http://{address}"))
+            .await
+            .err()
+            .expect("nothing listens there");
+        assert!(matches!(error, RpcClientError::Connect(_)), "{error:?}");
     }
 
     #[test]

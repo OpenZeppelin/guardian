@@ -18,13 +18,35 @@ use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 /// pacing count always matches the walk. The network predicate reads the
 /// JSONB tag serde writes for `NetworkConfig` (`{"kind": "miden", ...}`).
 fn release_sweepable_rows<'a>() -> account_metadata::BoxedQuery<'a, diesel::pg::Pg> {
+    guarded_miden_rows().filter(account_metadata::has_pending_candidate.eq(false))
+}
+
+/// Unreleased Miden accounts, with or without a candidate in flight: the
+/// accounts block watch (issue #585) sorts a block's updates into.
+fn guarded_miden_rows<'a>() -> account_metadata::BoxedQuery<'a, diesel::pg::Pg> {
     account_metadata::table
         .filter(account_metadata::released_at.is_null())
-        .filter(account_metadata::has_pending_candidate.eq(false))
         .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
             "network_config->>'kind' = 'miden'",
         ))
         .into_boxed()
+}
+
+/// Sort `ids` into the membership lists, in their order, from the guarded
+/// rows found (`account_id` → `has_pending_candidate`).
+fn membership_in_order(
+    ids: &[String],
+    pending_by_id: &std::collections::HashMap<String, bool>,
+) -> crate::metadata::ReleaseSweepMembership {
+    let mut membership = crate::metadata::ReleaseSweepMembership::default();
+    for id in ids {
+        match pending_by_id.get(id) {
+            Some(false) => membership.sweepable.push(id.clone()),
+            Some(true) => membership.pending_candidate.push(id.clone()),
+            None => {}
+        }
+    }
+    membership
 }
 
 pub struct PostgresMetadataStore {
@@ -758,6 +780,36 @@ impl MetadataStore for PostgresMetadataStore {
         usize::try_from(count).map_err(|_| format!("negative account count {count}"))
     }
 
+    async fn filter_release_sweep_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<crate::metadata::ReleaseSweepMembership, String> {
+        if ids.is_empty() {
+            return Ok(crate::metadata::ReleaseSweepMembership::default());
+        }
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        // Primary-key lookups, one bounded statement per chunk.
+        let mut pending_by_id = std::collections::HashMap::new();
+        for chunk in ids.chunks(crate::metadata::MEMBERSHIP_CHUNK) {
+            let rows: Vec<(String, bool)> = guarded_miden_rows()
+                .filter(account_metadata::account_id.eq_any(chunk.to_vec()))
+                .select((
+                    account_metadata::account_id,
+                    account_metadata::has_pending_candidate,
+                ))
+                .load(&mut conn)
+                .await
+                .map_err(|e| format!("Failed to filter guarded account ids: {e}"))?;
+            pending_by_id.extend(rows);
+        }
+        Ok(membership_in_order(ids, &pending_by_id))
+    }
+
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
@@ -1193,6 +1245,66 @@ mod tests {
     /// only part of the trait signature.
     fn unused_storage() -> crate::testing::mocks::MockStorageBackend {
         crate::testing::mocks::MockStorageBackend::new()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn filter_release_sweep_ids_sorts_ids_across_chunk_boundaries() {
+        // Block watch (issue #585) on the SQL path: one statement per
+        // chunk of 1,000 ids; released, busy, EVM and unknown rows are
+        // sorted the way the rotation's filter sorts them, whichever chunk
+        // they land in.
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let prefix = format!("0xmember{}", Utc::now().timestamp_micros());
+        let id = |n: usize| format!("{prefix}-{n:05}");
+        // 2,500 ids asked about: three chunks. Known rows sit at both sides
+        // of each boundary.
+        let ids: Vec<String> = (0..2_500).map(id).collect();
+        let sweepable = [0, 999, 1_000, 2_499];
+        for n in sweepable {
+            insert_unreleased_miden_row(&store, &id(n)).await;
+        }
+        let busy = id(1_999);
+        insert_unreleased_miden_row(&store, &busy).await;
+        store
+            .set_has_pending_candidate(&busy, true, &Utc::now().to_rfc3339())
+            .await
+            .expect("flag the busy row");
+        let released = id(2_000);
+        insert_unreleased_miden_row(&store, &released).await;
+        upsert_state_row(&store, &released, "0xbase").await;
+        store
+            .set_released_if_state(&released, Utc::now(), "0xbase", &unused_storage())
+            .await
+            .unwrap();
+        let evm = id(1_001);
+        {
+            let mut conn = store.pool.get().await.expect("conn");
+            diesel::sql_query(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ($1, '{\"EvmEcdsa\":{\"signers\":[\"0xaa\"]}}'::jsonb, \
+                         '{\"kind\":\"evm\",\"chain_id\":1,\"account_address\":\"0xabc\",\"multisig_validator_address\":\"0xdef\"}'::jsonb, \
+                         now(), now(), false)",
+            )
+            .bind::<Text, _>(&evm)
+            .execute(&mut conn)
+            .await
+            .expect("insert evm metadata");
+        }
+
+        let membership = store.filter_release_sweep_ids(&ids).await.unwrap();
+        assert_eq!(
+            membership.sweepable,
+            sweepable.iter().map(|n| id(*n)).collect::<Vec<_>>()
+        );
+        assert_eq!(membership.pending_candidate, vec![busy]);
+        assert_eq!(
+            store.filter_release_sweep_ids(&[]).await.unwrap(),
+            crate::metadata::ReleaseSweepMembership::default()
+        );
     }
 
     #[tokio::test]

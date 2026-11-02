@@ -153,8 +153,13 @@ authenticates and audits it, then dispatches into one of these handlers.
   EVM proposal lifecycle, session auth, on-chain contract interaction.
   Feature-gated.
 - **`jobs/`** ([`crates/server/src/jobs`](../../crates/server/src/jobs)) —
-  background work, currently canonicalization tasks that normalize proposals
-  before commit.
+  background work: canonicalization (candidates verified against the chain
+  before they become canonical), the release sweep (accounts whose guardian
+  switch never reached this server, issue #434), and block watch, the
+  release sweep's committed-block feed (issue #585). Each runs under a
+  single-owner lease; block watch runs on the release sweep's lease holder
+  and keeps its cursor and observations in the coordination store
+  (`block_watch_cursor`, `block_watch_observations` on Postgres).
 - **`audit/`** ([`crates/server/src/audit`](../../crates/server/src/audit))
   — append-only structured event log written alongside mutating operations.
 

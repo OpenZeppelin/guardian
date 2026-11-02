@@ -156,26 +156,37 @@ impl ServerHandle {
             }
         }
 
-        // Issue #434: one lease holder walks the fleet against the chain
-        // and releases accounts whose guardian switch never reached the
-        // push path.
-        match self.app_state.release_sweep.as_ref() {
-            Some(config) if config.enabled => {
-                tracing::info!(
-                    rotation_seconds = config.rotation_seconds,
-                    max_rate_per_second = config.max_rate_per_second,
-                    recheck_seconds = config.recheck_seconds,
-                    "Starting release sweep worker"
-                );
-                crate::jobs::release_sweep::start_release_sweep_worker(
-                    self.app_state.clone(),
-                    config.clone(),
-                    self.release_sweep_leader.clone(),
-                );
-            }
-            _ => {
-                tracing::info!("Release sweep disabled - switch detection relies on the push path")
-            }
+        // Issue #434 / #585: one lease holder finds the accounts whose
+        // guardian switch never reached the push path, from the committed
+        // block feed (block watch) and by walking the fleet (the
+        // rotation), and releases them.
+        let rotation_enabled = self
+            .app_state
+            .release_sweep
+            .as_ref()
+            .is_some_and(|config| config.enabled);
+        let block_watch_enabled = self.app_state.block_watch.is_some();
+        if rotation_enabled || block_watch_enabled {
+            let config = self.app_state.release_sweep.clone().unwrap_or_else(|| {
+                crate::release_sweep::ReleaseSweepConfig::default().with_enabled(false)
+            });
+            tracing::info!(
+                rotation_enabled,
+                block_watch_enabled,
+                rotation_seconds = config.rotation_seconds,
+                max_rate_per_second = config.max_rate_per_second,
+                recheck_seconds = config.recheck_seconds,
+                "Starting release sweep worker"
+            );
+            crate::jobs::release_sweep::start_release_sweep_worker(
+                self.app_state.clone(),
+                config,
+                self.release_sweep_leader.clone(),
+            );
+        } else {
+            tracing::info!(
+                "Release sweep and block watch disabled - switch detection relies on the push path"
+            );
         }
 
         start_session_sweep_worker(self.app_state.clone());

@@ -1645,13 +1645,239 @@
     },
     {
       "type": "row",
-      "title": "Delta & proposal lifecycle",
+      "title": "Block watch",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 100
+      },
+      "panels": [],
+      "id": 56
+    },
+    {
+      "type": "timeseries",
+      "title": "Lag behind the chain tip & observations pending",
+      "description": "Blocks between the node's committed tip and the last block block watch processed (near 0 when healthy; only the release_sweep lease holder runs the feed), and observations (guarded accounts that moved on chain to a state this server does not hold) waiting for a release-detector visit. A growing backlog means the detectors visit more slowly than accounts move: see GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 101
+      },
+      "id": 57,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max(guardian_block_watch_lag_blocks{instance=~\"$instance\"})",
+          "refId": "A",
+          "legendFormat": "lag (blocks)"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max(guardian_block_watch_observations_pending{instance=~\"$instance\"})",
+          "refId": "B",
+          "legendFormat": "observations pending"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconnects by reason",
+      "description": "Block sources block watch had to reopen. status_resource_exhausted means the node cut the stream for lag (it then refuses the caller for 10 minutes and block watch polls meanwhile); status_unimplemented means the node does not serve the stream; stall means no block arrived within GUARDIAN_BLOCK_WATCH_STALL_SECONDS while the chain moved on.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 101
+      },
+      "id": 58,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (reason) (increase(guardian_block_watch_reconnects_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Blocks processed by transport",
+      "description": "Committed blocks processed per second, by the transport that delivered them: stream (the node's BlockSubscription) or poll (GetBlockByNumber, the fallback). About 0.33/s at Miden's 3 s blocks; none means the feed stopped.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 109
+      },
+      "id": 59,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (transport) (rate(guardian_block_watch_blocks_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{transport}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Account updates by outcome",
+      "description": "Account updates in processed blocks, by what block watch made of them: not_guarded (not an account this server guards), skipped_pending_candidate (left to the push path), at_stored (this server's own transaction landed), own_history (an earlier state of the account's own, replayed), unfinished_configuration, or observed (queued for the release detectors).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 109
+      },
+      "id": 60,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (outcome) (rate(guardian_block_watch_account_updates_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "title": "Delta & proposal lifecycle",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 117
       },
       "panels": [],
       "id": 32
@@ -1668,7 +1894,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 101
+        "y": 118
       },
       "id": 33,
       "fieldConfig": {
@@ -1719,7 +1945,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 101
+        "y": 118
       },
       "id": 34,
       "fieldConfig": {
@@ -1770,7 +1996,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 109
+        "y": 126
       },
       "id": 35,
       "fieldConfig": {
@@ -1821,7 +2047,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 109
+        "y": 126
       },
       "id": 36,
       "fieldConfig": {
@@ -1868,7 +2094,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 117
+        "y": 134
       },
       "panels": [],
       "id": 37
@@ -1885,7 +2111,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 118
+        "y": 135
       },
       "id": 38,
       "fieldConfig": {
@@ -1936,7 +2162,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 118
+        "y": 135
       },
       "id": 39,
       "fieldConfig": {
@@ -1983,7 +2209,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 126
+        "y": 143
       },
       "panels": [],
       "id": 40
@@ -2000,7 +2226,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 127
+        "y": 144
       },
       "id": 41,
       "fieldConfig": {
@@ -2069,7 +2295,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 127
+        "y": 144
       },
       "id": 42,
       "fieldConfig": {
@@ -2120,7 +2346,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 135
+        "y": 152
       },
       "id": 43,
       "fieldConfig": {
@@ -2167,7 +2393,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 143
+        "y": 160
       },
       "panels": [],
       "id": 44
@@ -2184,7 +2410,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 144
+        "y": 161
       },
       "id": 45,
       "fieldConfig": {
@@ -2235,7 +2461,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 144
+        "y": 161
       },
       "id": 46,
       "fieldConfig": {
@@ -2286,7 +2512,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 144
+        "y": 161
       },
       "id": 47,
       "fieldConfig": {
@@ -2342,7 +2568,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 152
+        "y": 169
       },
       "panels": [],
       "id": 51
@@ -2358,7 +2584,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 153
+        "y": 170
       },
       "id": 52,
       "fieldConfig": {
@@ -2408,7 +2634,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 153
+        "y": 170
       },
       "id": 53,
       "fieldConfig": {
@@ -2458,7 +2684,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 161
+        "y": 178
       },
       "id": 54,
       "fieldConfig": {
@@ -2508,7 +2734,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 161
+        "y": 178
       },
       "id": 55,
       "fieldConfig": {

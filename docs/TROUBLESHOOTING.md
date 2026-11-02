@@ -477,7 +477,7 @@ Operator checks:
   - `event=release_sweep_confirming` (with `observations` / `confirmations` / `block_num`)
   - `event=release_sweep_own_key_mismatch` (warn, with `guardian_commitment` / `own_guardian_commitment`)
   - `event=release_sweep_unwritten_push_release` (with `delta_nonce`)
-  - `event=release_sweep_released` (with `detected_by=proposal_match|recoverable_delta|chain_sweep|delta`)
+  - `event=release_sweep_released` (with `detected_by=proposal_match|recoverable_delta|chain_sweep|delta`, `source=rotation|block_watch` and, for block watch, `observed_block_num`)
   - `event=release_sweep_proposal_finalized`
   `storage_opaque` at info level is the one to watch: the chain state of
   a **private** account differs from the stored one (usually it moved
@@ -504,6 +504,60 @@ Operator checks:
   base. `release_sweep_unwritten_push_release` means a promoted
   `switch_guardian` delta's own release write had failed; the sweep
   writes it with the same `detected_by=delta` audit row.
+- Block watch (issue #585, run by the `release_sweep` lease holder) emits
+  stable `event=block_watch_*` events:
+  - `block_watch_attached` (info, with `transport`, `from_block`,
+    `chain_tip`): a block source opened.
+  - `block_watch_transport` (with `from`, `to`, `reason`, `code`,
+    `retry_in_seconds`): the feed switched between the stream and
+    polling. `reason=status_resource_exhausted` means the node cut the
+    stream for lag or had no subscription slot (it then refuses this
+    address for 10 minutes); `status_unimplemented` /
+    `status_permission_denied` mean the node does not serve the stream
+    to this caller; `stream_retry_due` is the scheduled retry.
+  - `block_watch_reconnect` (warn, with `reason`, `code`, `backoff_ms`,
+    `from_block`): a source ended and is reopened from the cursor.
+  - `block_watch_stall` (warn, with `last_block`, `chain_tip`,
+    `idle_seconds`): no block within `GUARDIAN_BLOCK_WATCH_STALL_SECONDS`
+    while the chain moved on.
+  - `block_watch_chain_reset` (warn, with `cursor`, `tip`,
+    `reason=genesis_changed|cursor_ahead_of_tip`, or `known_genesis` /
+    `reported_genesis`): the node's chain is not the one the cursor
+    counted (a network reset, or a cursor the node refuses to stream
+    from): the cursor moves to the new tip and one rotation is requested.
+  - `block_watch_cursor_init` (info, with `start_block`) and
+    `block_watch_cursor_jump` (warn, with `cursor`, `tip`, `gap`,
+    `max_catchup_blocks` or `reason=block_unavailable`): the feed starts
+    at the tip instead of replaying and requests one rotation;
+    `block_watch_observations_lost` (filesystem backend) does the same
+    after a restart.
+  - `block_watch_block` (debug, with `block_num`, `updates`, `guarded`,
+    `observed`, `lag_blocks`, `duration_ms`).
+  - `block_watch_observation_recorded` (info, with `account_id`,
+    `block_num`, `on_chain`, `stored`): a guarded account moved to a
+    state this server does not hold; the release detectors visit it.
+  - `block_watch_observation_visited` (debug, with `outcome`,
+    `attempts`) and `block_watch_observation_dropped` (warn): an
+    observation that ran out of `GUARDIAN_BLOCK_WATCH_MAX_ATTEMPTS`.
+  - `block_watch_block_failed` (warn) and `block_watch_start_failed`
+    (warn): a storage or node read failed; the same block (or the start)
+    is retried.
+  - `block_watch_stale_lease` (warn) and `block_watch_consumer_failed`
+    (error): the cursor write was refused because the lease moved, or
+    the consumer stopped; the holder gives the lease up and the next one
+    resumes from the cursor.
+  - `block_watch_cursor_not_forward` (warn): the stored cursor was
+    already past the block; it is never moved back.
+- `guardian_block_watch_lag_blocks` (near 0 when healthy),
+  `guardian_block_watch_last_block`,
+  `guardian_block_watch_blocks_total{transport=stream|poll}`,
+  `guardian_block_watch_transport{transport}` (1 for the active one),
+  `guardian_block_watch_reconnects_total{reason}`,
+  `guardian_block_watch_account_updates_total{outcome=not_guarded|skipped_pending_candidate|at_stored|own_history|unfinished_configuration|observed}`,
+  `guardian_block_watch_observations_pending`,
+  `guardian_block_watch_observation_visits_total{outcome=checked|deferred|failed|dropped}`
+  and `guardian_block_watch_block_processing_seconds` describe the feed.
+  `GET /dashboard/info` reports it under `backend.block_watch`.
 - `guardian_release_sweep_rotations_total{outcome=...}` counts walks of
   the fleet (`completed`, or `partial` when at least one account could
   not be checked and waits for the next rotation) and
@@ -843,7 +897,7 @@ come from
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
-| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep proved the switch from chain: either a pending proposal or an unpromoted switch delta on this server whose post-state the chain reached, at the head or in the account's transaction history (`detected_by: proposal_match` / `recoverable_delta`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). A canonicalized switch delta whose own release write failed is released by the sweep with the same `detected_by: delta` row. The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+| `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep (from a block watch observation or its walk of the fleet; the audit row's `source`) proved the switch from chain: either a pending proposal or an unpromoted switch delta on this server whose post-state the chain reached, at the head or in the account's transaction history (`detected_by: proposal_match` / `recoverable_delta`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). A canonicalized switch delta whose own release write failed is released by the sweep with the same `detected_by: delta` row. The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
 
 ### Guardian execution
 
@@ -970,6 +1024,7 @@ ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecd
 dashboard operators=0 cursor_secret="ephemeral"
 canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 max_pending_candidates_per_account=1 retained_ttl_seconds=86400 reconcile_interval_seconds=60
 release sweep rotation_seconds=21600 max_rate_per_second=5 page_size=100 recheck_seconds=60 confirmations=2
+block watch transport="auto" poll_seconds=3 stall_seconds=60 max_catchup_blocks=10000 ban_cooldown_seconds=600 stream_retry_seconds=600 max_attempts=20
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================
@@ -1036,6 +1091,21 @@ ECS Exec requires the task role's `ssmmessages:*` actions
   server's: it is lagging, which also delays canonicalization. Expected
   in optimistic mode and briefly after a re-onboarding, while the stored
   state has not landed on chain yet.
+- **`guardian_block_watch_lag_blocks` above a few blocks for minutes, or
+  `guardian_block_watch_last_block` not advancing** (alarms
+  `<stack>-block-watch-lag` and `<stack>-block-watch-stalled`) — the
+  feed is behind or stopped, and switch detection falls back to the
+  rotation. Check the `block_watch_transport` / `block_watch_reconnect`
+  events and Miden RPC health. A feed stuck on `transport=poll` with
+  `reason=status_resource_exhausted` repeating means this server keeps
+  falling behind the stream: the store is slow
+  (`guardian_block_watch_block_processing_seconds`) or the public node's
+  subscription slots are taken; a dedicated node avoids the latter.
+- **`guardian_block_watch_observations_pending` growing** — the
+  detectors visit observations more slowly than guarded accounts move
+  (they share `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND` with the
+  rotation), or their chain reads keep failing
+  (`guardian_block_watch_observation_visits_total{outcome="deferred"}`).
 - **`guardian_release_sweep_rotations_total` not advancing** for twice
   `GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS` — no replica holds the
   `release_sweep` lease, or the walk keeps failing (see the rotation

@@ -28,6 +28,7 @@ export type {
   DashboardAccountSummary,
   DashboardAssetStats,
   DashboardAuthMethodSignerCount,
+  DashboardBlockWatchInfo,
   DashboardDeltaAssetSummary,
   DashboardDeltaCategory,
   DashboardDeltaCounterpartySummary,
