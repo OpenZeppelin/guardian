@@ -432,9 +432,9 @@ plus:
   apply the release's Terraform, which adds the alarm notification, release
   sweep, and account-scheme variables, before rolling the image.
 
-## Upgrading within 0.18.x
+## Upgrading within the Miden 0.17 line
 
-Patch releases on the Miden 0.17 line keep stored data, the `auth_tx` procedure
+Releases after 0.18.0 on the Miden 0.17 line (0.18.x patches and 0.19.x) keep stored data, the `auth_tx` procedure
 root, and existing accounts; no reset runs. Each one still has operator-visible
 changes. The SDK and Miden-side ones are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017),
@@ -482,6 +482,29 @@ behavior:
   older server the new SDKs sign a refused session push again with the wallet;
   see
   [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-0190).
+  One exception to SDKs-first: a new SDK's `abandon_candidate` /
+  `abandonCandidate` sends `proposal_id`, which a server up to 0.18.3 refuses
+  as unauthenticated, so abandons fail until the server is upgraded. The
+  release also brings:
+  - **Guardian execution, enabled in two deploys.** An older replica still
+    running during a rolling update can leave an executing account reserved
+    with nothing able to release it. Roll out 0.19.0 with
+    `GUARDIAN_TX_PROVER_URL` unset, then set it in a second deploy once no
+    older replica runs. To roll back, set `GUARDIAN_PROVING_ENABLED=false`
+    first, wait until `guardian_execution_oldest_reservation_age_seconds` reads
+    `0` (no active execution), and only then deploy the older image (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#upgrading-and-rolling-back)).
+    On AWS, the `Deploy AWS` workflow (`aws-deploy.yml`) only swaps the image:
+    turning execution on, and creating its alarms, needs a Terraform apply of
+    this release's `infra/` with `guardian_tx_prover_url` (or
+    `guardian_tx_prover_url_secret_arn`) set.
+  - **Mixed-scheme accounts (Falcon and ECDSA cosigners), with no rollback
+    once one is stored.** Servers up to 0.18.3 cannot read the stored `Miden`
+    auth, so finish the server rollout before clients register mixed
+    accounts, and do not roll back to 0.18.x afterwards: older replicas fail
+    every request for such an account, and a filesystem metadata store fails
+    to load as a whole (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 
 ## Upgrading to Miden 0.16
 

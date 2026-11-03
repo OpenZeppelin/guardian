@@ -563,7 +563,7 @@ is older and the chain cannot be read to decide, the request fails with
 
 The `SwitchGuardian` transaction was submitted and the client already
 points at the new Guardian, but registering there failed. With SDKs
-0.18.3 and earlier against a Guardian 0.19.0 or later, the cause is
+0.18.3 and earlier against a Guardian 0.19.0-rc.1 or later, the cause is
 almost always `state_not_on_chain`: those SDKs register right after
 submitting the switch, before the transaction lands, and do not retry.
 The newer SDKs wait for the chain before registering, so they rarely hit
