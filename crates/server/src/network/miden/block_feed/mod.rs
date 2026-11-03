@@ -56,6 +56,7 @@ pub(crate) fn observed_block(
                 is_public: update.is_public,
             })
             .collect(),
+        undecodable_updates: decoded.undecodable.len(),
     })
 }
 
@@ -103,7 +104,8 @@ impl MidenBlockSourceFactory {
 impl BlockSourceFactory for MidenBlockSourceFactory {
     async fn open_stream(&self, from: u32) -> Result<Box<dyn BlockSource>, BlockSourceError> {
         Ok(Box::new(
-            StreamSource::open(self.endpoint.expose_secret(), from).await?,
+            StreamSource::open(self.endpoint.expose_secret(), from, self.settings.timeout())
+                .await?,
         ))
     }
 
@@ -184,11 +186,19 @@ mod tests {
         // committing) never makes the lag negative.
         assert_eq!(observed_block(&block, 3).unwrap().committed_chain_tip, 9);
 
+        assert_eq!(observed.undecodable_updates, 0);
         let mut broken = block.clone();
         broken.body = None;
         assert!(matches!(
             observed_block(&broken, 9),
             Err(BlockSourceError::Malformed(_))
         ));
+        // An entry that cannot be read is counted; the rest is kept.
+        let mut partly = block.clone();
+        partly.body.as_mut().unwrap().updated_accounts[0].account_id = None;
+        let observed = observed_block(&partly, 9).expect("the rest is read");
+        assert_eq!(observed.updates.len(), 1);
+        assert_eq!(observed.updates[0].account_id, private.to_hex());
+        assert_eq!(observed.undecodable_updates, 1);
     }
 }

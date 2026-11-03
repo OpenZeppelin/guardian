@@ -305,6 +305,20 @@ diesel::table! {
 }
 
 diesel::table! {
+    /// Representation of the `block_watch_walks` table: walks of the
+    /// release sweep rotation block watch owes the fleet, per network
+    /// (issue #585). Owed while `requested_seq` is past `completed_seq`.
+    block_watch_walks (network) {
+        network -> Text,
+        requested_seq -> Int8,
+        completed_seq -> Int8,
+        requested_at -> Timestamptz,
+        holder_id -> Text,
+        fence_token -> Int8,
+    }
+}
+
+diesel::table! {
     /// Single-row store-level encryption marker. Its presence indicates the
     /// store is encrypted.
     storage_encryption_marker (id) {

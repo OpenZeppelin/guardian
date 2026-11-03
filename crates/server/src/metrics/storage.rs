@@ -118,6 +118,17 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        timed(
+            "filter_candidate_post_states",
+            self.inner.filter_candidate_post_states(pairs),
+        )
+        .await
+    }
+
     async fn replace_state(
         &self,
         state: &StateObject,

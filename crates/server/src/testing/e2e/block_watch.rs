@@ -165,7 +165,9 @@ async fn switch_chain(
 }
 
 /// Install the chain view like `install_chain`, keeping the client so the
-/// test can move the chain tip.
+/// test can move the chain tip. The node's reads answer at the block the
+/// switch lands in, as a node that served that block would: block watch
+/// does not take a read from before the block it observed for an answer.
 fn install_chain_kept(
     fixture: &mut UnannouncedSwitch,
     on_chain: &Account,
@@ -178,6 +180,7 @@ fn install_chain_kept(
         client.publish_state(fixture.account_id_hex.clone(), on_chain.to_json());
     }
     let client = Arc::new(client);
+    client.set_chain_tip(SWITCH_BLOCK);
     fixture.state.network_client = client.clone();
     client
 }
@@ -203,8 +206,9 @@ async fn test_block_watch_releases_a_public_switch_seen_in_a_block_once_confirme
         vec![(
             fixture.account_id_hex.clone(),
             SWITCH_BLOCK,
-            VisitOutcome::Checked
-        )]
+            VisitOutcome::Deferred
+        )],
+        "the observation stays while the streak is open"
     );
     assert!(
         fixture.released_at().await.is_none(),
@@ -238,6 +242,17 @@ async fn test_block_watch_releases_a_public_switch_seen_in_a_block_once_confirme
     );
     assert_eq!(payload["on_chain_commitment"], fixture.executed_commitment);
     assert_eq!(payload["stored_commitment"], fixture.pre_switch_commitment);
+    // The kept observation is settled once the account is released.
+    let visits = holder.visit_observations().await;
+    assert_eq!(
+        visits,
+        vec![(
+            fixture.account_id_hex.clone(),
+            SWITCH_BLOCK,
+            VisitOutcome::Checked
+        )]
+    );
+    assert_eq!(store.count_pending_observations().await.unwrap(), 0);
     assert_eq!(store.count_pending_observations().await.unwrap(), 0);
 }
 
@@ -283,9 +298,11 @@ async fn test_block_watch_releases_a_private_switch_at_the_block_its_proposal_ex
 
 #[tokio::test]
 async fn test_block_watch_ignores_own_landings_busy_accounts_and_strangers() {
-    // US1 scenarios 3 to 5: the account's own state landing, an account
-    // with a candidate in flight, and an account this server does not
-    // guard are each one lookup in the block and nothing else.
+    // US1 scenarios 3 to 5: the account's own state landing, its own
+    // candidate landing, and an account this server does not guard are
+    // each one lookup in the block and nothing else. A switch that lands
+    // while the candidate is in flight is observed, and waits for the
+    // push path (PR #586 review, I2).
     let mut fixture = unannounced_switch().await;
     let executed = fixture.executed_account.clone();
     install_chain_kept(&mut fixture, &executed, true);
@@ -320,9 +337,9 @@ async fn test_block_watch_ignores_own_landings_busy_accounts_and_strangers() {
     holder.consume_through(&fixture.state, 10).await;
     assert_eq!(store.count_pending_observations().await.unwrap(), 0);
 
-    // Block 11: the account moves while a candidate of this server's is in
-    // flight: the push path owns it.
-    let (nonce, _post_state) = fixture.push_stuck_candidate().await;
+    // Block 11: the candidate of this server's lands: the push path owns
+    // it.
+    let (nonce, candidate_post_state) = fixture.push_stuck_candidate().await;
     assert!(
         fixture
             .state
@@ -337,21 +354,19 @@ async fn test_block_watch_ignores_own_landings_busy_accounts_and_strangers() {
         11,
         &[(
             fixture.account_id_hex.as_str(),
-            fixture.executed_commitment.as_str(),
+            candidate_post_state.as_str(),
         )],
     ));
     holder.consume_through(&fixture.state, 11).await;
     assert_eq!(
         store.count_pending_observations().await.unwrap(),
         0,
-        "a busy account is left to the push path"
+        "its own candidate landing is left to the push path"
     );
-    assert!(fixture.released_at().await.is_none());
-    assert!(fixture.release_events().is_empty());
 
-    // Once the candidate is parked the account is the sweep's again, and
-    // the next move is observed.
-    fixture.park_diverged_candidate(nonce).await;
+    // Block 12: the switch lands instead, the candidate still in flight.
+    // No candidate explains the move, so it is observed; its visit waits
+    // while the candidate is in flight.
     factory.chain.push(block(
         12,
         &[(
@@ -361,6 +376,36 @@ async fn test_block_watch_ignores_own_landings_busy_accounts_and_strangers() {
     ));
     holder.consume_through(&fixture.state, 12).await;
     assert_eq!(store.count_pending_observations().await.unwrap(), 1);
+    assert_eq!(
+        holder.visit_observations().await,
+        vec![(fixture.account_id_hex.clone(), 12, VisitOutcome::Deferred)]
+    );
+    assert!(fixture.released_at().await.is_none());
+    assert!(fixture.release_events().is_empty());
+    assert_eq!(store.count_pending_observations().await.unwrap(), 1);
+
+    // Once the candidate is parked the account is the sweep's again: the
+    // kept observation runs the detectors.
+    fixture.park_diverged_candidate(nonce).await;
+    let observation = store
+        .next_due_observation(chrono::Utc::now() + chrono::Duration::hours(2))
+        .await
+        .unwrap()
+        .expect("the observation was kept");
+    let outcome = holder
+        .sweeper
+        .visit_observed(
+            &observation.account_id,
+            &observation.on_chain_commitment,
+            observation.block_num,
+        )
+        .await
+        .expect("visit succeeds");
+    assert_eq!(outcome, VisitOutcome::Checked);
+    assert!(
+        fixture.released_at().await.is_some(),
+        "the switch is released from the kept observation"
+    );
 }
 
 #[tokio::test]

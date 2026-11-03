@@ -15,7 +15,7 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use crate::coordination::block_watch_store::{
-    BlockWatchStore, Cursor, CursorWrite, NewObservation, Observation,
+    BlockWatchStore, Cursor, CursorWrite, FencedWrite, NewObservation, Observation, WalkRequests,
 };
 use crate::error::{GuardianError, Result};
 use crate::network::NetworkType;
@@ -67,24 +67,7 @@ impl PgBlockWatchStore {
         let outcome = conn
             .transaction::<_, CursorTxError, _>(|conn| {
                 async move {
-                    // The lease predicate canonicalization writes use, with
-                    // the row held until commit so the lease cannot change
-                    // hands between the check and the write.
-                    let held = diesel::sql_query(
-                        "SELECT 1 AS held FROM worker_leases \
-                         WHERE lease_name = $1 AND holder_id = $2 AND fence_token = $3 \
-                           AND clock_timestamp() < expires_at \
-                         FOR SHARE",
-                    )
-                    .bind::<Text, _>(&fence.lease_name)
-                    .bind::<Text, _>(&fence.holder_id)
-                    .bind::<BigInt, _>(fence.fence_token)
-                    .get_result::<HeldRow>(conn)
-                    .await
-                    .optional()?;
-                    if held.is_none() {
-                        return Err(CursorTxError::Stale);
-                    }
+                    hold_lease_row(conn, &fence).await?;
                     let written = diesel::sql_query(upsert)
                         .bind::<Text, _>(&network)
                         .bind::<BigInt, _>(i64::from(block))
@@ -108,6 +91,83 @@ impl PgBlockWatchStore {
             Err(CursorTxError::Db(e)) => Err(storage_err("write cursor", e)),
         }
     }
+}
+
+/// Check the caller's lease and hold its row until the transaction
+/// commits, so the lease cannot change hands between the check and the
+/// write: the lease predicate canonicalization writes use.
+async fn hold_lease_row(
+    conn: &mut AsyncPgConnection,
+    fence: &LeaseFence,
+) -> std::result::Result<(), CursorTxError> {
+    let held = diesel::sql_query(
+        "SELECT 1 AS held FROM worker_leases \
+         WHERE lease_name = $1 AND holder_id = $2 AND fence_token = $3 \
+           AND clock_timestamp() < expires_at \
+         FOR SHARE",
+    )
+    .bind::<Text, _>(&fence.lease_name)
+    .bind::<Text, _>(&fence.holder_id)
+    .bind::<BigInt, _>(fence.fence_token)
+    .get_result::<HeldRow>(conn)
+    .await
+    .optional()?;
+    match held {
+        Some(_) => Ok(()),
+        None => Err(CursorTxError::Stale),
+    }
+}
+
+impl PgBlockWatchStore {
+    /// Run `statement` (binding the network as `$1`, then `value` as `$2`,
+    /// then holder and fence token as `$3`/`$4` when it uses them) in a
+    /// transaction fenced by `fence`.
+    async fn fenced_walk_write(
+        &self,
+        statement: &'static str,
+        network: NetworkType,
+        value: WalkValue,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        let mut conn = super::checkout(&self.pool, "block watch").await?;
+        let fence = fence.clone();
+        let network = network.to_string();
+        let outcome = conn
+            .transaction::<_, CursorTxError, _>(|conn| {
+                async move {
+                    hold_lease_row(conn, &fence).await?;
+                    let query = diesel::sql_query(statement).bind::<Text, _>(&network);
+                    match value {
+                        WalkValue::RequestedAt(now) => {
+                            query
+                                .bind::<Timestamptz, _>(now)
+                                .bind::<Text, _>(&fence.holder_id)
+                                .bind::<BigInt, _>(fence.fence_token)
+                                .execute(conn)
+                                .await?
+                        }
+                        WalkValue::StartedUnder(seq) => {
+                            query.bind::<BigInt, _>(seq).execute(conn).await?
+                        }
+                    };
+                    Ok(())
+                }
+                .scope_boxed()
+            })
+            .await;
+        match outcome {
+            Ok(()) => Ok(FencedWrite::Written),
+            Err(CursorTxError::Stale) => Ok(FencedWrite::StaleLease),
+            Err(CursorTxError::Db(e)) => Err(storage_err("write walk request", e)),
+        }
+    }
+}
+
+/// The value a fenced walk write binds after the network.
+#[derive(Clone, Copy)]
+enum WalkValue {
+    RequestedAt(DateTime<Utc>),
+    StartedUnder(i64),
 }
 
 /// How a fenced cursor write treats the stored cursor.
@@ -136,6 +196,14 @@ struct CursorRow {
     last_block: i64,
     #[diesel(sql_type = diesel::sql_types::Nullable<Text>)]
     genesis_commitment: Option<String>,
+}
+
+#[derive(diesel::QueryableByName)]
+struct WalkRow {
+    #[diesel(sql_type = BigInt)]
+    requested_seq: i64,
+    #[diesel(sql_type = BigInt)]
+    completed_seq: i64,
 }
 
 #[derive(diesel::QueryableByName)]
@@ -339,6 +407,61 @@ impl BlockWatchStore for PgBlockWatchStore {
             .map_err(|e| storage_err("count observations", e))?;
         Ok(u64::try_from(row.count).unwrap_or(0))
     }
+
+    async fn walk_requests(&self, network: NetworkType) -> Result<Option<WalkRequests>> {
+        let mut conn = super::checkout(&self.pool, "block watch").await?;
+        let row = diesel::sql_query(
+            "SELECT requested_seq, completed_seq FROM block_watch_walks WHERE network = $1",
+        )
+        .bind::<Text, _>(network.to_string())
+        .get_result::<WalkRow>(&mut conn)
+        .await
+        .optional()
+        .map_err(|e| storage_err("read walk requests", e))?;
+        Ok(row.map(|row| WalkRequests {
+            requested_seq: row.requested_seq,
+            completed_seq: row.completed_seq,
+        }))
+    }
+
+    async fn request_walk(
+        &self,
+        network: NetworkType,
+        now: DateTime<Utc>,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        self.fenced_walk_write(
+            "INSERT INTO block_watch_walks \
+             (network, requested_seq, completed_seq, requested_at, holder_id, fence_token) \
+             VALUES ($1, 1, 0, $2, $3, $4) \
+             ON CONFLICT (network) DO UPDATE SET \
+                 requested_seq = block_watch_walks.requested_seq + 1, \
+                 requested_at = EXCLUDED.requested_at, \
+                 holder_id = EXCLUDED.holder_id, \
+                 fence_token = EXCLUDED.fence_token",
+            network,
+            WalkValue::RequestedAt(now),
+            fence,
+        )
+        .await
+    }
+
+    async fn complete_walk(
+        &self,
+        network: NetworkType,
+        started_under: i64,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        self.fenced_walk_write(
+            "UPDATE block_watch_walks \
+             SET completed_seq = GREATEST(completed_seq, $2) \
+             WHERE network = $1",
+            network,
+            WalkValue::StartedUnder(started_under),
+            fence,
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -361,7 +484,11 @@ mod postgres_tests {
 
     async fn reset(pool: &Pool<AsyncPgConnection>) {
         let mut conn = pool.get().await.unwrap();
-        for table in ["block_watch_cursor", "block_watch_observations"] {
+        for table in [
+            "block_watch_cursor",
+            "block_watch_observations",
+            "block_watch_walks",
+        ] {
             diesel::sql_query(format!("DELETE FROM {table}"))
                 .execute(&mut conn)
                 .await
@@ -375,6 +502,82 @@ mod postgres_tests {
             block_num,
             on_chain_commitment: commitment.to_string(),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn owed_walks_are_fenced_counted_and_cleared_only_up_to_a_walks_start() {
+        let url = test_database_url().await;
+        let pool = build_postgres_pool_lazy(&url, 4).unwrap();
+        reset(&pool).await;
+        let store = PgBlockWatchStore::new(pool.clone());
+        let lease_name = format!("block-watch-walks-{}", Utc::now().timestamp_micros());
+        let a = PgLeaseElector::new(pool.clone(), &lease_name, "replica-a");
+        let b = PgLeaseElector::new(pool.clone(), &lease_name, "replica-b");
+        let network = NetworkType::MidenDevnet;
+        let now = Utc::now();
+        let bogus = LeaseFence {
+            lease_name: lease_name.clone(),
+            holder_id: "nobody".into(),
+            fence_token: 0,
+        };
+        assert_eq!(
+            store.request_walk(network, now, &bogus).await.unwrap(),
+            FencedWrite::StaleLease,
+            "a request needs the lease"
+        );
+        assert_eq!(store.walk_requests(network).await.unwrap(), None);
+
+        let lease_a = a
+            .try_acquire(Duration::from_secs(1))
+            .await
+            .unwrap()
+            .expect("A acquires");
+        let fence_a = fence_of(&lease_a);
+        store.request_walk(network, now, &fence_a).await.unwrap();
+        let walks = store.walk_requests(network).await.unwrap().unwrap();
+        assert_eq!((walks.requested_seq, walks.completed_seq), (1, 0));
+        assert!(walks.owed());
+
+        // A starts a walk under 1, a second request lands mid-walk, then A
+        // loses the lease before the walk completes.
+        store.request_walk(network, now, &fence_a).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        let lease_b = b
+            .try_acquire(Duration::from_secs(5))
+            .await
+            .unwrap()
+            .expect("B takes over");
+        let fence_b = fence_of(&lease_b);
+        assert_eq!(
+            store.complete_walk(network, 1, &fence_a).await.unwrap(),
+            FencedWrite::StaleLease,
+            "a superseded holder cannot clear a walk"
+        );
+        let walks = store.walk_requests(network).await.unwrap().unwrap();
+        assert_eq!((walks.requested_seq, walks.completed_seq), (2, 0));
+
+        // B's walk started under 1 (before the second request): it covers
+        // only the first, so one walk is still owed.
+        store.complete_walk(network, 1, &fence_b).await.unwrap();
+        let walks = store.walk_requests(network).await.unwrap().unwrap();
+        assert_eq!((walks.requested_seq, walks.completed_seq), (2, 1));
+        assert!(walks.owed());
+        store.complete_walk(network, 2, &fence_b).await.unwrap();
+        // A late completion of an older walk never moves it back.
+        store.complete_walk(network, 1, &fence_b).await.unwrap();
+        let walks = store.walk_requests(network).await.unwrap().unwrap();
+        assert_eq!((walks.requested_seq, walks.completed_seq), (2, 2));
+        assert!(!walks.owed());
+        assert_eq!(
+            store
+                .walk_requests(NetworkType::MidenTestnet)
+                .await
+                .unwrap(),
+            None,
+            "per network"
+        );
+        b.release(lease_b).await.unwrap();
     }
 
     #[tokio::test]

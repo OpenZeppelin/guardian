@@ -114,6 +114,47 @@ pub struct PostgresService {
 }
 
 impl PostgresService {
+    /// Which of `pairs` (`(account_id, commitment)`) are the post-state of
+    /// one of that account's deltas whose status is `kind`, in one bounded
+    /// statement per chunk: block watch's own-history and candidate-landing
+    /// filters (issue #585).
+    async fn filter_post_states_of_kind(
+        &self,
+        pairs: &[(&str, &str)],
+        kind: &'static str,
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        let mut found = std::collections::HashSet::new();
+        if pairs.is_empty() {
+            return Ok(found);
+        }
+        let wanted: std::collections::HashSet<(&str, &str)> = pairs.iter().copied().collect();
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        for chunk in pairs.chunks(crate::metadata::MEMBERSHIP_CHUNK) {
+            let accounts: Vec<String> = chunk.iter().map(|(id, _)| (*id).to_string()).collect();
+            let commitments: Vec<String> = chunk.iter().map(|(_, c)| (*c).to_string()).collect();
+            let rows: Vec<(String, Option<String>)> = deltas::table
+                .filter(deltas::status_kind.eq(kind))
+                .filter(deltas::account_id.eq_any(&accounts))
+                .filter(deltas::new_commitment.eq_any(&commitments))
+                .select((deltas::account_id, deltas::new_commitment))
+                .load(&mut conn)
+                .await
+                .map_err(|e| format!("Failed to match {kind} post-states: {e}"))?;
+            for (account_id, commitment) in rows {
+                if let Some(commitment) = commitment
+                    && wanted.contains(&(account_id.as_str(), commitment.as_str()))
+                {
+                    found.insert((account_id, commitment));
+                }
+            }
+        }
+        Ok(found)
+    }
+
     pub async fn new(database_url: &str, pool_max_size: usize) -> Result<Self, String> {
         let pool = build_postgres_pool(database_url, pool_max_size).await?;
         Ok(Self { pool })
@@ -1323,36 +1364,14 @@ impl StorageBackend for PostgresService {
         &self,
         pairs: &[(&str, &str)],
     ) -> Result<std::collections::HashSet<(String, String)>, String> {
-        let mut found = std::collections::HashSet::new();
-        if pairs.is_empty() {
-            return Ok(found);
-        }
-        let wanted: std::collections::HashSet<(&str, &str)> = pairs.iter().copied().collect();
-        let mut conn = self
-            .pool
-            .get()
-            .await
-            .map_err(|e| format!("Failed to get connection: {e}"))?;
-        for chunk in pairs.chunks(crate::metadata::MEMBERSHIP_CHUNK) {
-            let accounts: Vec<String> = chunk.iter().map(|(id, _)| (*id).to_string()).collect();
-            let commitments: Vec<String> = chunk.iter().map(|(_, c)| (*c).to_string()).collect();
-            let rows: Vec<(String, Option<String>)> = deltas::table
-                .filter(deltas::status_kind.eq("canonical"))
-                .filter(deltas::account_id.eq_any(&accounts))
-                .filter(deltas::new_commitment.eq_any(&commitments))
-                .select((deltas::account_id, deltas::new_commitment))
-                .load(&mut conn)
-                .await
-                .map_err(|e| format!("Failed to match canonical post-states: {e}"))?;
-            for (account_id, commitment) in rows {
-                if let Some(commitment) = commitment
-                    && wanted.contains(&(account_id.as_str(), commitment.as_str()))
-                {
-                    found.insert((account_id, commitment));
-                }
-            }
-        }
-        Ok(found)
+        self.filter_post_states_of_kind(pairs, "canonical").await
+    }
+
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        self.filter_post_states_of_kind(pairs, "candidate").await
     }
 
     // Two columns per row, looked up by primary key in bounded chunks:
@@ -3874,6 +3893,47 @@ mod tests {
         assert!(
             service
                 .filter_canonical_post_states(&[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn candidate_post_states_are_matched_in_sql_for_candidates_only() {
+        use crate::delta_object::DeltaStatus;
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xcandpost{}", chrono::Utc::now().timestamp_micros());
+        let other = format!("{account_id}-other");
+        let mut canonical = create_test_delta(&account_id, 1);
+        canonical.new_commitment = Some("0xpost1".to_string());
+        service.submit_delta(&canonical).await.expect("canonical");
+        for nonce in 2..=3 {
+            let mut candidate = create_test_delta(&account_id, nonce);
+            candidate.new_commitment = Some(format!("0xpost{nonce}"));
+            candidate.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+            service.submit_delta(&candidate).await.expect("candidate");
+        }
+
+        let found = service
+            .filter_candidate_post_states(&[
+                (account_id.as_str(), "0xpost1"),
+                (account_id.as_str(), "0xpost3"),
+                (account_id.as_str(), "0xunknown"),
+                (other.as_str(), "0xpost2"),
+            ])
+            .await
+            .expect("lookup");
+        assert_eq!(
+            found.into_iter().collect::<Vec<_>>(),
+            vec![(account_id.clone(), "0xpost3".to_string())],
+            "candidates only, of the account asked about"
+        );
+        assert!(
+            service
+                .filter_candidate_post_states(&[])
                 .await
                 .unwrap()
                 .is_empty()

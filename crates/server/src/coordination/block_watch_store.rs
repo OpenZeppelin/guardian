@@ -43,6 +43,31 @@ pub struct Cursor {
     pub genesis: Option<String>,
 }
 
+/// The walks of the release sweep rotation block watch asked for, as
+/// sequence numbers: requests raise `requested_seq`, a completed walk
+/// raises `completed_seq` to the sequence it started under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WalkRequests {
+    pub requested_seq: i64,
+    pub completed_seq: i64,
+}
+
+impl WalkRequests {
+    /// A walk is owed: a request came after the last completed walk
+    /// started.
+    pub fn owed(&self) -> bool {
+        self.requested_seq > self.completed_seq
+    }
+}
+
+/// Outcome of a fenced write that is not a cursor move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FencedWrite {
+    Written,
+    /// The caller's lease is no longer current; nothing was written.
+    StaleLease,
+}
+
 /// One observation to record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewObservation {
@@ -122,6 +147,30 @@ pub trait BlockWatchStore: Send + Sync {
 
     /// Observations awaiting a visit, due or not.
     async fn count_pending_observations(&self) -> Result<u64>;
+
+    /// The walks requested and completed for `network`, if any was ever
+    /// requested.
+    async fn walk_requests(&self, network: NetworkType) -> Result<Option<WalkRequests>>;
+
+    /// Record a request for one walk of the release sweep rotation (block
+    /// watch skipped blocks), at `now`. Fenced like
+    /// [`Self::set_cursor`].
+    async fn request_walk(
+        &self,
+        network: NetworkType,
+        now: DateTime<Utc>,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite>;
+
+    /// A walk that started when `requested_seq` stood at `started_under`
+    /// completed: every request up to it is covered. Never moves
+    /// `completed_seq` back. Fenced like [`Self::set_cursor`].
+    async fn complete_walk(
+        &self,
+        network: NetworkType,
+        started_under: i64,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite>;
 }
 
 #[derive(Debug, Clone)]
@@ -154,8 +203,14 @@ struct CursorEntry {
 pub struct InMemoryBlockWatchStore {
     cursor_file: Option<PathBuf>,
     cursors: Mutex<HashMap<String, Cursor>>,
+    /// Held across a cursor write's check, file write and commit, so two
+    /// writes cannot interleave and move the cursor back.
+    cursor_write: tokio::sync::Mutex<()>,
     /// Keyed `(block_num, account_id)`: iteration order is visit order.
     observations: Mutex<BTreeMap<(u32, String), StoredObservation>>,
+    /// Walk requests, per network. In memory only: a restart of the single
+    /// process requests a walk anyway (its observations are gone too).
+    walks: Mutex<HashMap<String, WalkRequests>>,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -199,7 +254,9 @@ impl InMemoryBlockWatchStore {
         Ok(Self {
             cursor_file: Some(path),
             cursors: Mutex::new(cursors),
+            cursor_write: tokio::sync::Mutex::new(()),
             observations: Mutex::default(),
+            walks: Mutex::default(),
         })
     }
 
@@ -258,9 +315,10 @@ impl BlockWatchStore for InMemoryBlockWatchStore {
         genesis: Option<&str>,
         _fence: &LeaseFence,
     ) -> Result<CursorWrite> {
-        let snapshot = {
-            let mut cursors = locked(&self.cursors);
-            let key = network.to_string();
+        let _writing = self.cursor_write.lock().await;
+        let key = network.to_string();
+        let (cursor, snapshot) = {
+            let cursors = locked(&self.cursors);
             let current = cursors.get(&key);
             if current.is_some_and(|current| current.last_block >= block) {
                 return Ok(CursorWrite::NotForward);
@@ -268,16 +326,19 @@ impl BlockWatchStore for InMemoryBlockWatchStore {
             let genesis = genesis
                 .map(str::to_string)
                 .or_else(|| current.and_then(|current| current.genesis.clone()));
-            cursors.insert(
-                key,
-                Cursor {
-                    last_block: block,
-                    genesis,
-                },
-            );
-            cursors.clone()
+            let cursor = Cursor {
+                last_block: block,
+                genesis,
+            };
+            let mut snapshot = cursors.clone();
+            snapshot.insert(key.clone(), cursor.clone());
+            (cursor, snapshot)
         };
+        // The file first: a failed write leaves the cursor where it was, so
+        // the retried block writes it again instead of finding it already
+        // moved (`NotForward`) and never persisting it.
         self.persist(snapshot).await?;
+        locked(&self.cursors).insert(key, cursor);
         Ok(CursorWrite::Advanced)
     }
 
@@ -288,18 +349,16 @@ impl BlockWatchStore for InMemoryBlockWatchStore {
         genesis: Option<&str>,
         _fence: &LeaseFence,
     ) -> Result<CursorWrite> {
-        let snapshot = {
-            let mut cursors = locked(&self.cursors);
-            cursors.insert(
-                network.to_string(),
-                Cursor {
-                    last_block: block,
-                    genesis: genesis.map(str::to_string),
-                },
-            );
-            cursors.clone()
+        let _writing = self.cursor_write.lock().await;
+        let key = network.to_string();
+        let cursor = Cursor {
+            last_block: block,
+            genesis: genesis.map(str::to_string),
         };
+        let mut snapshot = locked(&self.cursors).clone();
+        snapshot.insert(key.clone(), cursor.clone());
         self.persist(snapshot).await?;
+        locked(&self.cursors).insert(key, cursor);
         Ok(CursorWrite::Advanced)
     }
 
@@ -362,6 +421,37 @@ impl BlockWatchStore for InMemoryBlockWatchStore {
 
     async fn count_pending_observations(&self) -> Result<u64> {
         Ok(locked(&self.observations).len() as u64)
+    }
+
+    async fn walk_requests(&self, network: NetworkType) -> Result<Option<WalkRequests>> {
+        Ok(locked(&self.walks).get(&network.to_string()).copied())
+    }
+
+    async fn request_walk(
+        &self,
+        network: NetworkType,
+        _now: DateTime<Utc>,
+        _fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        let mut walks = locked(&self.walks);
+        let walk = walks.entry(network.to_string()).or_insert(WalkRequests {
+            requested_seq: 0,
+            completed_seq: 0,
+        });
+        walk.requested_seq = walk.requested_seq.saturating_add(1);
+        Ok(FencedWrite::Written)
+    }
+
+    async fn complete_walk(
+        &self,
+        network: NetworkType,
+        started_under: i64,
+        _fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        if let Some(walk) = locked(&self.walks).get_mut(&network.to_string()) {
+            walk.completed_seq = walk.completed_seq.max(started_under);
+        }
+        Ok(FencedWrite::Written)
     }
 }
 
@@ -475,6 +565,47 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
         assert_eq!(leftovers, vec!["cursor.json".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_cursor_write_leaves_the_cursor_unmoved_so_the_retry_writes_it() {
+        // The cursor directory is replaced by a file: the write fails. The
+        // cursor must not have moved, or the retry of the block would find
+        // it `NotForward` and the file would never record the block (PR
+        // #586 review).
+        let dir =
+            std::env::temp_dir().join(format!("guardian_block_watch_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = InMemoryBlockWatchStore::persistent(dir.clone()).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::write(&dir, b"not a directory").unwrap();
+        assert!(
+            store
+                .set_cursor(NetworkType::MidenLocal, 41, Some("0xgenesis"), &fence())
+                .await
+                .is_err()
+        );
+        assert_eq!(store.cursor(NetworkType::MidenLocal).await.unwrap(), None);
+
+        std::fs::remove_file(&dir).unwrap();
+        assert_eq!(
+            store
+                .set_cursor(NetworkType::MidenLocal, 41, Some("0xgenesis"), &fence())
+                .await
+                .unwrap(),
+            CursorWrite::Advanced,
+            "the retry writes the block"
+        );
+        let restarted = InMemoryBlockWatchStore::persistent(dir.clone()).unwrap();
+        assert_eq!(
+            restarted
+                .cursor(NetworkType::MidenLocal)
+                .await
+                .unwrap()
+                .map(|cursor| cursor.last_block),
+            Some(41)
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]

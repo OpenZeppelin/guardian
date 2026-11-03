@@ -210,8 +210,9 @@ pub enum ReleaseSweepOutcome {
     ChainBehindStored,
     /// The commitment probe or the storage read failed, or the
     /// transaction history search failed for an account whose storage is
-    /// private (a public account falls through to the storage read);
-    /// deferred to a later visit.
+    /// private (a public account falls through to the storage read), or,
+    /// on a block watch visit, the storage read came from a block before
+    /// the observed one; deferred to a later visit.
     ProbeFailed,
 }
 
@@ -236,7 +237,10 @@ impl ReleaseSweepOutcome {
 pub enum BlockWatchUpdateOutcome {
     /// Not an account this server guards (unknown, released, or EVM).
     NotGuarded,
-    /// Guarded, with a candidate in flight: left to the push path.
+    /// Guarded, with a candidate in flight, and the account moved to that
+    /// candidate's post-state (its own transaction landed ahead of
+    /// promotion): left to the push path. A move no candidate explains is
+    /// an observation like any other.
     SkippedPendingCandidate,
     /// The account moved to the state this server holds (its own
     /// transaction landed): nothing to do.
@@ -251,6 +255,10 @@ pub enum BlockWatchUpdateOutcome {
     /// The account moved to a state this server does not hold: an
     /// observation was recorded for the release detectors.
     Observed,
+    /// The entry could not be read (an account ID or commitment this
+    /// server does not understand): one walk of the release sweep
+    /// rotation was requested to cover it.
+    Undecodable,
 }
 
 impl BlockWatchUpdateOutcome {
@@ -262,6 +270,7 @@ impl BlockWatchUpdateOutcome {
             Self::OwnHistory => "own_history",
             Self::UnfinishedConfiguration => "unfinished_configuration",
             Self::Observed => "observed",
+            Self::Undecodable => "undecodable",
         }
     }
 }

@@ -621,6 +621,9 @@ pub struct MockStorageBackend {
     /// `(account_id, commitment)` pairs that are canonical delta
     /// post-states, served by `filter_canonical_post_states`.
     pub canonical_post_states: Arc<StdMutex<std::collections::HashSet<(String, String)>>>,
+    /// `(account_id, commitment)` pairs that are candidate delta
+    /// post-states, served by `filter_candidate_post_states`.
+    pub candidate_post_states: Arc<StdMutex<std::collections::HashSet<(String, String)>>>,
 }
 
 impl MockStorageBackend {
@@ -678,6 +681,16 @@ impl MockStorageBackend {
     /// canonical deltas, for `filter_canonical_post_states`.
     pub fn with_canonical_post_state(self, account_id: &str, commitment: &str) -> Self {
         self.canonical_post_states
+            .lock()
+            .unwrap()
+            .insert((account_id.to_string(), commitment.to_string()));
+        self
+    }
+
+    /// Record `commitment` as the post-state of one of `account_id`'s
+    /// candidate deltas, for `filter_candidate_post_states`.
+    pub fn with_candidate_post_state(self, account_id: &str, commitment: &str) -> Self {
+        self.candidate_post_states
             .lock()
             .unwrap()
             .insert((account_id.to_string(), commitment.to_string()));
@@ -1264,6 +1277,18 @@ impl StorageBackend for MockStorageBackend {
         pairs: &[(&str, &str)],
     ) -> StdResult<std::collections::HashSet<(String, String)>, String> {
         let known = self.canonical_post_states.lock().unwrap();
+        Ok(pairs
+            .iter()
+            .map(|(id, c)| ((*id).to_string(), (*c).to_string()))
+            .filter(|pair| known.contains(pair))
+            .collect())
+    }
+
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> StdResult<std::collections::HashSet<(String, String)>, String> {
+        let known = self.candidate_post_states.lock().unwrap();
         Ok(pairs
             .iter()
             .map(|(id, c)| ((*id).to_string(), (*c).to_string()))

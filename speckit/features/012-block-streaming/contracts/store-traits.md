@@ -23,9 +23,17 @@ pub trait BlockWatchStore: Send + Sync {
     /// `attempts += 1`, `next_attempt_at = next_attempt_at`.
     async fn defer_observation(&self, account_id: &str, block_num: u32, next_attempt_at: DateTime<Utc>) -> Result<()>;
     async fn count_pending_observations(&self) -> Result<u64>;
+    /// Owed walks (PR #586 review, I1).
+    async fn walk_requests(&self, network: NetworkType) -> Result<Option<WalkRequests>>;
+    /// `requested_seq += 1`, fenced.
+    async fn request_walk(&self, network: NetworkType, now: DateTime<Utc>, fence: &LeaseFence) -> Result<FencedWrite>;
+    /// `completed_seq = max(completed_seq, started_under)`, fenced.
+    async fn complete_walk(&self, network: NetworkType, started_under: i64, fence: &LeaseFence) -> Result<FencedWrite>;
 }
 
 pub enum CursorWrite { Advanced, NotForward, StaleLease }
+pub enum FencedWrite { Written, StaleLease }
+pub struct WalkRequests { pub requested_seq: i64, pub completed_seq: i64 }
 pub struct NewObservation { pub account_id: String, pub block_num: u32, pub on_chain_commitment: String }
 pub struct Observation { pub account_id: String, pub block_num: u32, pub on_chain_commitment: String, pub attempts: u32 }
 ```

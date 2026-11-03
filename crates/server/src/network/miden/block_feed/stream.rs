@@ -5,6 +5,8 @@
 //! decodes each block and queues it locally; only when the local queue is
 //! full too does the node's buffer start to fill.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -27,13 +29,29 @@ pub struct StreamSource {
 
 impl StreamSource {
     /// Subscribe from `from` over a dedicated channel (no request deadline,
-    /// HTTP/2 keep-alive).
-    pub async fn open(endpoint: &str, from: u32) -> Result<Self, BlockSourceError> {
+    /// HTTP/2 keep-alive). The node answers a subscription (its response
+    /// headers) before it sends the first block; one that has not within
+    /// `answer_timeout` of the connection fails the open. Without the
+    /// bound a node or proxy that accepts the call and never answers it
+    /// would hold the open forever: it answers keep-alive pings, so the
+    /// connection looks healthy.
+    pub async fn open(
+        endpoint: &str,
+        from: u32,
+        answer_timeout: Duration,
+    ) -> Result<Self, BlockSourceError> {
         let started = std::time::Instant::now();
         let subscription = async {
             let mut client = MidenRpcClient::connect_streaming(endpoint).await?;
-            let stream = client.subscribe_blocks(from).await?;
-            Ok::<_, miden_rpc_client::RpcClientError>((client, stream))
+            let stream = tokio::time::timeout(answer_timeout, client.subscribe_blocks(from))
+                .await
+                .map_err(|_| {
+                    BlockSourceError::Timeout(format!(
+                        "the node did not answer the block subscription within {}s",
+                        answer_timeout.as_secs_f64()
+                    ))
+                })??;
+            Ok::<_, BlockSourceError>((client, stream))
         }
         .await;
         crate::network::miden::record_rpc("block_subscription", started, subscription.is_ok());
@@ -114,6 +132,8 @@ mod tests {
     use miden_protocol::account::AccountId;
     use miden_rpc_client::test_node::{self, ScriptedNode};
 
+    const ANSWER: Duration = Duration::from_secs(5);
+
     fn account() -> AccountId {
         AccountId::from_hex("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b").unwrap()
     }
@@ -134,7 +154,9 @@ mod tests {
             );
         let requests = node.subscription_requests();
         let endpoint = test_node::serve(node).await;
-        let mut source = StreamSource::open(&endpoint, 11).await.expect("subscribe");
+        let mut source = StreamSource::open(&endpoint, 11, ANSWER)
+            .await
+            .expect("subscribe");
         assert_eq!(source.transport(), Transport::Stream);
 
         let first = source.next().await.expect("block 11");
@@ -159,7 +181,9 @@ mod tests {
             .with_blocks(vec![test_node::block(1, vec![])])
             .with_stream_terminal(tonic::Code::ResourceExhausted, "lagging");
         let endpoint = test_node::serve(node).await;
-        let mut source = StreamSource::open(&endpoint, 1).await.expect("subscribe");
+        let mut source = StreamSource::open(&endpoint, 1, ANSWER)
+            .await
+            .expect("subscribe");
         source.next().await.expect("block 1");
         let error = source.next().await.expect_err("terminal");
         assert_eq!(error.code(), Some(tonic::Code::ResourceExhausted));
@@ -172,11 +196,36 @@ mod tests {
             .with_blocks(vec![test_node::block(1, vec![])])
             .with_block_subscription_disabled();
         let endpoint = test_node::serve(node).await;
-        let error = StreamSource::open(&endpoint, 1)
+        let error = StreamSource::open(&endpoint, 1, ANSWER)
             .await
             .err()
             .expect("refused");
         assert_eq!(error.code(), Some(tonic::Code::Unimplemented));
+    }
+
+    #[tokio::test]
+    async fn a_subscription_the_node_never_answers_fails_the_open() {
+        // The node takes the call and never sends its response headers;
+        // it keeps answering on the connection, so only the answer
+        // timeout ends the open.
+        let node = ScriptedNode::healthy()
+            .with_blocks(vec![test_node::block(1, vec![])])
+            .with_unanswered_block_subscription();
+        let requests = node.subscription_requests();
+        let endpoint = test_node::serve(node).await;
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(
+            Duration::from_secs(10),
+            StreamSource::open(&endpoint, 1, Duration::from_millis(300)),
+        )
+        .await
+        .expect("the open is bounded")
+        .err()
+        .expect("unanswered");
+        assert!(matches!(error, BlockSourceError::Timeout(_)), "{error:?}");
+        assert_eq!(error.reason(), "timeout");
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert_eq!(requests.lock().unwrap().clone(), vec![1], "the node got it");
     }
 
     #[tokio::test]
@@ -187,7 +236,9 @@ mod tests {
             test_node::block(7, vec![]),
         ]);
         let endpoint = test_node::serve(node).await;
-        let mut source = StreamSource::open(&endpoint, 5).await.expect("subscribe");
+        let mut source = StreamSource::open(&endpoint, 5, ANSWER)
+            .await
+            .expect("subscribe");
         source.next().await.expect("block 5");
         assert_eq!(
             source.next().await.expect_err("gap"),
@@ -204,7 +255,9 @@ mod tests {
         broken.body = None;
         let node = ScriptedNode::healthy().with_blocks(vec![broken]);
         let endpoint = test_node::serve(node).await;
-        let mut source = StreamSource::open(&endpoint, 3).await.expect("subscribe");
+        let mut source = StreamSource::open(&endpoint, 3, ANSWER)
+            .await
+            .expect("subscribe");
         assert!(matches!(
             source.next().await,
             Err(BlockSourceError::Malformed(_))

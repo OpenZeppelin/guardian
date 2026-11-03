@@ -807,12 +807,17 @@ proof.
   reopens the stream after an exponential, jittered backoff (1 s
   doubling to 60 s), and five such failures in a row without a block
   switch to polling for `stream_retry_seconds`. `stream` and `poll`
-  modes never switch. A task of its own drains the stream into a local
-  queue of 64 blocks, so a briefly slow consumer never backs the node's
-  per-subscriber buffer up.
+  modes never switch. The node must answer a subscription within
+  `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` or the open counts as a failure, and
+  losing the lease stops an open still waiting. A task of its own drains
+  the stream into a local queue of 64 blocks, so a briefly slow consumer
+  never backs the node's per-subscriber buffer up.
 - **Sequence.** Blocks are processed strictly in order from the cursor
   (`last processed block + 1`). A block out of sequence reopens the
-  source from the cursor; no block is ever skipped or processed twice.
+  source from the cursor; no block is skipped or processed twice, but
+  for one this server cannot decode: after five decode failures (on
+  both transports in `auto` mode) it is skipped and one walk is
+  requested to cover it.
   No block for `stall_seconds` while the chain tip is past the cursor
   reopens the source; an idle chain is not a stall. Block signatures,
   parent linkage and body commitments are not verified: the node is
@@ -821,17 +826,21 @@ proof.
   `updated_accounts` (private accounts included) go through one
   membership query (chunks of 1,000 ids) that sorts them like the
   rotation's filter: unreleased Miden accounts with no candidate in
-  flight are sweepable; those with a candidate in flight are left to the
-  push path. One batched read compares the sweepable ones with their
-  stored commitments: equal means this server's own transaction landed
-  (nothing to do); no stored state means an unfinished configuration
-  (nothing to do); the post-state of one of the account's own canonical
-  deltas means an old transaction of its own (a block replayed after
-  downtime, or an optimistic commit ahead of the chain; one more batched
-  read, only when something moved); anything else records an
-  observation `(account_id, block_num, on_chain_commitment)`,
-  idempotently, so a replayed block records nothing new. Then the cursor
-  moves to the block. A storage
+  flight are sweepable; those with a candidate in flight are guarded
+  too. One batched read compares them with their stored commitments:
+  equal means this server's own transaction landed (nothing to do); for
+  an account with a candidate in flight, the candidate's post-state
+  means that candidate landed ahead of promotion (left to the push path;
+  one more batched read, only when such an account moved); no stored
+  state means an unfinished configuration (nothing to do); the
+  post-state of one of the account's own canonical deltas means an old
+  transaction of its own (a block replayed after downtime, or an
+  optimistic commit ahead of the chain; one more batched read, only when
+  something moved); anything else records an observation `(account_id,
+  block_num, on_chain_commitment)`, idempotently, so a replayed block
+  records nothing new. An entry the server cannot read (an account id or
+  commitment of a newer protocol) is counted and requests one walk; the
+  rest of the block is processed. Then the cursor moves to the block. A storage
   failure retries the same block; the cursor never moves past a block
   that was not fully processed.
 - **Cursor policy.** With no cursor (the first start) or a cursor more
@@ -841,7 +850,10 @@ proof.
   and, on the filesystem backend, a restart (its observations were in
   memory). A requested walk starts no earlier than the request: at once
   when the rotation is idle, right after the current walk otherwise, and
-  it runs even when the rotation is disabled.
+  it runs even when the rotation is disabled. Requests are recorded
+  (fenced, as a sequence number) until a walk that started after them
+  completes, so a holder that gains the lease, or a restarted process,
+  runs a walk its predecessor owed.
 - **Chain resets.** The cursor records the genesis commitment the node
   reported. A node reporting another one (at start, or when a source is
   reopened), a cursor more than 100 blocks past the tip (the node refuses
@@ -854,8 +866,9 @@ proof.
 - **Observation visits.** The release sweep's paced loop takes turns
   between due confirmation re-checks, due observations (lowest block
   first) and the rotation, never faster than `max_rate_per_second` in
-  total. A visit re-reads the metadata row (a released, EVM or busy row
-  is done) and the stored commitment: equal to the observed one means
+  total. A visit re-reads the metadata row (a released or EVM row is
+  done; one with a candidate in flight waits for the push path) and the
+  stored commitment: equal to the observed one means
   the store caught up (only the stored state's own key is checked; the
   observation is history, so an open confirmation streak is left
   alone). Otherwise the observed commitment stands in for the
@@ -863,9 +876,14 @@ proof.
   key, the candidate match (a post-state equal to the observed
   commitment executed in the observed block, which is recorded as
   `switch_block_num`), then the storage read with its confirmations,
-  later ones coming from re-checks as usual. A checked observation is
+  later ones coming from re-checks as usual. A chain read from before
+  the observed block (a node behind the feed) is no answer, and neither
+  is a transaction history that ends before it. A checked observation is
   deleted; one whose visit could not check the account (a chain read
-  failed, the store moved between two reads) is retried after
+  failed or came from before the observed block, the store moved
+  between two reads, a candidate in flight, or a foreign key awaiting
+  confirmation, whose streak lives in the holder's memory) is retried
+  after
   `recheck_seconds` doubling per attempt (at most 1 h), and dropped with
   a warning after `max_attempts`; the rotation remains the backstop.
 - **Cluster state.** The cursor (`block_watch_cursor`, one row per

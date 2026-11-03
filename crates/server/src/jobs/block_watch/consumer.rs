@@ -7,6 +7,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::time::{Instant, sleep_until, timeout_at};
@@ -15,7 +16,8 @@ use tokio_util::sync::CancellationToken;
 use super::auto::{FailureKind, TransportPolicy, backoff};
 use super::source::{BlockSource, BlockSourceError, BlockSourceFactory, ObservedBlock, Transport};
 use super::{BlockWatchHandle, BlockWatchSignals};
-use crate::coordination::{CursorWrite, NewObservation};
+use crate::block_watch::TransportMode;
+use crate::coordination::{CursorWrite, FencedWrite, NewObservation};
 use crate::metrics::labels::BlockWatchUpdateOutcome;
 use crate::metrics::names;
 use crate::state::AppState;
@@ -41,6 +43,23 @@ pub struct BlockSummary {
     pub observed: usize,
 }
 
+/// Why a walk request was not recorded.
+#[derive(Debug)]
+enum WalkRequestError {
+    /// This replica no longer holds the release sweep lease.
+    LostLease,
+    Store(String),
+}
+
+impl std::fmt::Display for WalkRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LostLease => write!(f, "the release sweep lease moved; walk not requested"),
+            Self::Store(error) => write!(f, "walk request: {error}"),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum ProcessError {
     LostLease,
@@ -51,6 +70,45 @@ enum ProcessError {
 /// past its tip; a cursor that far ahead belongs to another chain (a reset)
 /// or to a node far behind.
 pub const MAX_CURSOR_LEAD_BLOCKS: u32 = 100;
+
+/// Decode failures of one block before it is skipped (see
+/// [`MalformedStreak`]).
+pub const MALFORMED_BLOCK_ATTEMPTS: u32 = 5;
+
+/// Decode failures of the block the feed needs next, per transport. A
+/// block the server cannot read (one a newer protocol writes differently)
+/// would otherwise hold the cursor for good: it never reaches `process`.
+/// After [`MALFORMED_BLOCK_ATTEMPTS`] failures, on both transports when the
+/// mode uses both (a node may serve one of them a good copy), the block is
+/// skipped and one walk covers it.
+#[derive(Debug, Default)]
+struct MalformedStreak {
+    block: u32,
+    stream: u32,
+    poll: u32,
+}
+
+impl MalformedStreak {
+    /// Count one decode failure of `block` over `transport`; whether the
+    /// block should now be skipped.
+    fn record(&mut self, block: u32, transport: Transport, mode: TransportMode) -> bool {
+        if self.block != block {
+            *self = Self {
+                block,
+                ..Self::default()
+            };
+        }
+        match transport {
+            Transport::Stream => self.stream += 1,
+            Transport::Poll => self.poll += 1,
+        }
+        let both = match mode {
+            TransportMode::Auto => self.stream > 0 && self.poll > 0,
+            TransportMode::Stream | TransportMode::Poll => true,
+        };
+        both && self.stream + self.poll >= MALFORMED_BLOCK_ATTEMPTS
+    }
+}
 
 /// What a stall timeout found when it read the tip.
 enum Stall {
@@ -71,7 +129,9 @@ pub struct Consumer {
     /// Whether this consumer should request a rotation even with a cursor
     /// to resume from: the store's observations did not survive the
     /// process (filesystem backend) and this is its first start.
-    request_rotation_on_start: bool,
+    /// Taken on first use: `start` runs again on every re-evaluation of
+    /// the start position, and only the first one follows the restart.
+    request_rotation_on_start: AtomicBool,
     /// The genesis commitment of the chain the cursor counts, as the node
     /// reported it at start.
     genesis: std::sync::Mutex<Option<String>>,
@@ -90,7 +150,7 @@ impl Consumer {
             handle,
             signals,
             fence,
-            request_rotation_on_start,
+            request_rotation_on_start: AtomicBool::new(request_rotation_on_start),
             genesis: std::sync::Mutex::new(None),
         }
     }
@@ -111,9 +171,12 @@ impl Consumer {
         let stopped = self.consume(&cancel).await;
         self.handle.status.clear();
         set_transport_gauge(None);
-        // Only the holder's feed has a lag; a replica that stepped down
-        // must not keep reporting its last one.
+        // Only the holder's feed has a lag or a position; a replica that
+        // stepped down must not keep reporting its last ones (the stall
+        // alarm takes the maximum position over every replica, so a stale
+        // higher one, after a chain reset, would hide the holder's).
         metrics::gauge!(names::BLOCK_WATCH_LAG_BLOCKS).set(0.0);
+        metrics::gauge!(names::BLOCK_WATCH_LAST_BLOCK).set(0.0);
         stopped
     }
 
@@ -130,6 +193,9 @@ impl Consumer {
         let mut open_at = Instant::now();
         let mut previous_transport: Option<Transport> = None;
         let mut first_open = true;
+        let mut malformed = MalformedStreak::default();
+        // Consecutive refusals to stream from the cursor (OUT_OF_RANGE).
+        let mut refused_from_cursor = 0;
 
         loop {
             if source.is_none() {
@@ -145,8 +211,18 @@ impl Consumer {
                     }
                 }
                 let transport = policy.transport(Instant::now());
-                match self.factory().open(transport, next).await {
+                // The open is the one wait here no deadline bounds on
+                // every transport (the stream's is the factory's own), so
+                // the lease's cancel must reach it: `run_worker` waits for
+                // this consumer before it competes for the lease again.
+                let opened = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Stopped::Cancelled,
+                    opened = self.factory().open(transport, next) => opened,
+                };
+                match opened {
                     Ok(opened) => {
+                        refused_from_cursor = 0;
                         self.attached(transport, next, previous_transport);
                         previous_transport = Some(transport);
                         source = Some(opened);
@@ -174,7 +250,10 @@ impl Consumer {
                             Some(from) => next = from,
                             None => return Stopped::Cancelled,
                         }
-                        open_at = Instant::now() + jittered(backoff(1));
+                        // A node that keeps refusing (its tip stays behind
+                        // the cursor) is asked less and less often.
+                        refused_from_cursor += 1;
+                        open_at = Instant::now() + jittered(backoff(refused_from_cursor));
                         continue;
                     }
                     Err(error) => {
@@ -232,6 +311,13 @@ impl Consumer {
                 }
                 Ok(Err(error)) => {
                     source = None;
+                    if matches!(error, BlockSourceError::Malformed(_))
+                        && malformed.record(next, transport, config.transport)
+                    {
+                        next = self.skip_malformed_block(next, &error, cancel).await;
+                        open_at = Instant::now();
+                        continue;
+                    }
                     if self.next_block_is_gone(&error, next).await {
                         next = self.jump_past_unavailable(next, cancel).await;
                         continue;
@@ -300,6 +386,14 @@ impl Consumer {
             .cursor(self.handle.network)
             .await
             .map_err(|e| e.to_string())?;
+        // Exported before the node is asked anything: the stall alarm
+        // watches this gauge, and a feed that cannot reach the node at all
+        // must still show it stands still (0 before any block).
+        metrics::gauge!(names::BLOCK_WATCH_LAST_BLOCK).set(
+            cursor
+                .as_ref()
+                .map_or(0.0, |cursor| f64::from(cursor.last_block)),
+        );
         let tip = self
             .factory()
             .chain_tip()
@@ -334,6 +428,9 @@ impl Consumer {
                 "Block watch's cursor does not belong to the node's chain: starting at the \
                  chain tip and requesting one release sweep rotation"
             );
+            // The walk first: once the cursor moved to the new tip, a retry
+            // of this start would no longer see the reset.
+            self.request_walk().await.map_err(|e| e.to_string())?;
             match self
                 .handle
                 .store
@@ -352,7 +449,7 @@ impl Consumer {
                 CursorWrite::Advanced | CursorWrite::NotForward => {}
             }
             self.handle.status.set_last_block(tip.saturating_sub(1));
-            self.signals.request_rotation();
+            metrics::gauge!(names::BLOCK_WATCH_LAST_BLOCK).set(f64::from(tip.saturating_sub(1)));
             return Ok(tip);
         }
         let cursor = cursor.map(|cursor| cursor.last_block);
@@ -364,7 +461,7 @@ impl Consumer {
                     "Block watch has no cursor yet: starting at the chain tip and \
                      requesting one release sweep rotation"
                 );
-                self.signals.request_rotation();
+                self.request_walk().await.map_err(|e| e.to_string())?;
                 tip
             }
             Some(cursor) if tip.saturating_sub(cursor) > config.max_catchup_blocks => {
@@ -377,23 +474,100 @@ impl Consumer {
                     "Block watch is too far behind to replay: starting at the chain tip and \
                      requesting one release sweep rotation to cover the skipped blocks"
                 );
-                self.signals.request_rotation();
+                self.request_walk().await.map_err(|e| e.to_string())?;
                 tip
             }
             Some(cursor) => {
-                if self.request_rotation_on_start {
+                if self.request_rotation_on_start.swap(false, Ordering::SeqCst) {
                     tracing::info!(
                         event = "block_watch_observations_lost",
                         cursor,
                         "Observations do not survive a restart on this backend; requesting \
                          one release sweep rotation"
                     );
-                    self.signals.request_rotation();
+                    if let Err(error) = self.request_walk().await {
+                        self.request_rotation_on_start.store(true, Ordering::SeqCst);
+                        return Err(error.to_string());
+                    }
                 }
                 cursor.saturating_add(1)
             }
         };
         Ok(from)
+    }
+
+    /// Ask the release sweep for one walk of the fleet covering blocks
+    /// this consumer skipped. Recorded in the store first (fenced), so the
+    /// walk is still owed if the lease moves, or the process restarts,
+    /// before it completes; then the signal starts it here at once. A
+    /// caller that could not record it does not move past what the walk
+    /// covers: it retries.
+    async fn request_walk(&self) -> Result<(), WalkRequestError> {
+        match self
+            .handle
+            .store
+            .request_walk(self.handle.network, self.state.clock.now(), &self.fence)
+            .await
+        {
+            Ok(FencedWrite::Written) => {
+                self.signals.request_rotation();
+                Ok(())
+            }
+            Ok(FencedWrite::StaleLease) => Err(WalkRequestError::LostLease),
+            Err(error) => {
+                tracing::warn!(
+                    event = "block_watch_walk_request_failed",
+                    error = %error,
+                    "Failed to record a walk request; retrying before moving on"
+                );
+                Err(WalkRequestError::Store(error.to_string()))
+            }
+        }
+    }
+
+    /// [`Self::request_walk`], retried until recorded. `false` when
+    /// cancelled first. A lost lease counts as done: the next cursor write
+    /// stops this consumer, and the successor resumes before the skip.
+    async fn request_walk_until_recorded(&self, cancel: &CancellationToken) -> bool {
+        let mut failures = 0;
+        loop {
+            match self.request_walk().await {
+                Ok(()) | Err(WalkRequestError::LostLease) => return true,
+                Err(WalkRequestError::Store(_)) => {
+                    failures += 1;
+                    if !sleep_or_cancel(Instant::now() + backoff(failures), cancel).await {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+
+    /// `block_num` failed to decode on every transport, again and again:
+    /// skip it, and let one walk cover it.
+    async fn skip_malformed_block(
+        &self,
+        block_num: u32,
+        error: &BlockSourceError,
+        cancel: &CancellationToken,
+    ) -> u32 {
+        tracing::warn!(
+            event = "block_watch_block_skipped",
+            block_num,
+            attempts = MALFORMED_BLOCK_ATTEMPTS,
+            error = %error,
+            "A block this server cannot read failed on every transport; skipping it and \
+             requesting one release sweep rotation to cover it"
+        );
+        metrics::counter!(
+            names::BLOCK_WATCH_RECONNECTS_TOTAL,
+            names::LABEL_REASON => "skipped_malformed_block"
+        )
+        .increment(1);
+        if !self.request_walk_until_recorded(cancel).await {
+            return block_num;
+        }
+        block_num.saturating_add(1)
     }
 
     /// The node no longer serves `block_num`: start again at the tip and
@@ -418,7 +592,9 @@ impl Consumer {
                         names::LABEL_REASON => "unavailable_block"
                     )
                     .increment(1);
-                    self.signals.request_rotation();
+                    if !self.request_walk_until_recorded(cancel).await {
+                        return block_num;
+                    }
                     return from;
                 }
                 Err(error) => {
@@ -660,16 +836,49 @@ impl Consumer {
             .iter()
             .map(String::as_str)
             .collect();
-        let stored = if sweepable.is_empty() {
+        let stored = if sweepable.is_empty() && pending.is_empty() {
             std::collections::HashMap::new()
         } else {
-            let refs: Vec<&str> = membership.sweepable.iter().map(String::as_str).collect();
+            let refs: Vec<&str> = membership
+                .sweepable
+                .iter()
+                .chain(&membership.pending_candidate)
+                .map(String::as_str)
+                .collect();
             self.state
                 .storage
                 .pull_state_commitments_batch(&refs)
                 .await
                 .map_err(|e| ProcessError::Store(format!("stored commitments: {e}")))?
         };
+        // An account with a candidate in flight that moved: usually that
+        // candidate landing (this server's own transaction, no
+        // observation), otherwise something else moved it while the push
+        // path waits, which only an observation catches.
+        let pending_moves: Vec<(&str, &str)> = block
+            .updates
+            .iter()
+            .filter(|update| pending.contains(update.account_id.as_str()))
+            .filter(|update| {
+                stored
+                    .get(&update.account_id)
+                    .is_some_and(|commitment| !commitment.eq_ignore_ascii_case(&update.commitment))
+            })
+            .map(|update| (update.account_id.as_str(), update.commitment.as_str()))
+            .collect();
+        let landed = if pending_moves.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            self.state
+                .storage
+                .filter_candidate_post_states(&pending_moves)
+                .await
+                .map_err(|e| ProcessError::Store(format!("candidate post-states: {e}")))?
+        };
+        let candidate_landings: HashSet<(&str, &str)> = landed
+            .iter()
+            .map(|(id, commitment)| (id.as_str(), commitment.as_str()))
+            .collect();
 
         let mut summary = BlockSummary {
             updates: block.updates.len(),
@@ -681,14 +890,20 @@ impl Consumer {
         let mut moved: Vec<(usize, &str)> = Vec::new();
         for update in &block.updates {
             let id = update.account_id.as_str();
-            let outcome = if pending.contains(id) {
-                BlockWatchUpdateOutcome::SkippedPendingCandidate
-            } else if !sweepable.contains(id) {
+            let outcome = if !sweepable.contains(id) && !pending.contains(id) {
                 BlockWatchUpdateOutcome::NotGuarded
             } else {
                 match stored.get(id) {
                     Some(commitment) if commitment.eq_ignore_ascii_case(&update.commitment) => {
                         BlockWatchUpdateOutcome::AtStored
+                    }
+                    Some(_)
+                        if candidate_landings.contains(&(
+                            update.account_id.as_str(),
+                            update.commitment.as_str(),
+                        )) =>
+                    {
+                        BlockWatchUpdateOutcome::SkippedPendingCandidate
                     }
                     Some(commitment) => {
                         moved.push((outcomes.len(), commitment.as_str()));
@@ -747,6 +962,25 @@ impl Consumer {
         }
         summary.observed = observations.len();
 
+        // Entries this server could not read may be guarded accounts that
+        // moved. Covered by one walk, asked for before the cursor moves past
+        // the block so a crash in between asks again on the replay.
+        if block.undecodable_updates > 0 {
+            tracing::warn!(
+                event = "block_watch_undecodable_updates",
+                block_num = block.block_num,
+                undecodable = block.undecodable_updates,
+                "A block carries account updates this server cannot read; requesting \
+                 one release sweep rotation to cover them"
+            );
+            self.request_walk().await.map_err(|error| match error {
+                WalkRequestError::LostLease => ProcessError::LostLease,
+                WalkRequestError::Store(error) => {
+                    ProcessError::Store(format!("walk request: {error}"))
+                }
+            })?;
+        }
+
         if !observations.is_empty() {
             self.handle
                 .store
@@ -783,6 +1017,13 @@ impl Consumer {
                 names::LABEL_OUTCOME => outcome.as_str()
             )
             .increment(1);
+        }
+        if block.undecodable_updates > 0 {
+            metrics::counter!(
+                names::BLOCK_WATCH_ACCOUNT_UPDATES_TOTAL,
+                names::LABEL_OUTCOME => BlockWatchUpdateOutcome::Undecodable.as_str()
+            )
+            .increment(block.undecodable_updates as u64);
         }
         metrics::counter!(
             names::BLOCK_WATCH_BLOCKS_TOTAL,

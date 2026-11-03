@@ -23,12 +23,13 @@ use tokio::time::{Instant, sleep, sleep_until};
 use tokio_util::sync::CancellationToken;
 
 use crate::builder::clock::Clock;
-use crate::coordination::{BlockWatchStore, LeaderElector, Lease, Observation};
+use crate::coordination::{BlockWatchStore, FencedWrite, LeaderElector, Lease, Observation};
 use crate::error::Result;
 use crate::jobs::block_watch::{BlockWatchSignals, Consumer, Stopped};
 use crate::jobs::canonicalization::spawn_lease_renewal;
 use crate::metrics::labels::{BlockWatchVisitOutcome, RunOutcome};
 use crate::metrics::names;
+use crate::network::NetworkType;
 use crate::release_sweep::ReleaseSweepConfig;
 use crate::state::AppState;
 use crate::storage::LeaseFence;
@@ -85,6 +86,7 @@ async fn run_worker(state: AppState, config: ReleaseSweepConfig, leader: Arc<dyn
     let signals = Arc::new(BlockWatchSignals::default());
     let observations = state.block_watch.as_ref().map(|handle| ObservationQueue {
         store: handle.store.clone(),
+        network: handle.network,
         signals: signals.clone(),
         clock: state.clock.clone(),
         recheck: config.recheck(),
@@ -107,6 +109,13 @@ async fn run_worker(state: AppState, config: ReleaseSweepConfig, leader: Arc<dyn
         };
         tracing::info!(holder = %lease.holder_id, "Release sweep lease acquired");
 
+        let fence = fence_of(&lease);
+        // A walk the previous holder (or this process before a restart)
+        // owed the fleet is this holder's now.
+        if let Some(queue) = observations.as_ref() {
+            queue.take_over_owed_walk(&mut rotation).await;
+        }
+
         let cancel = CancellationToken::new();
         let renewal = spawn_lease_renewal(
             leader.clone(),
@@ -123,7 +132,7 @@ async fn run_worker(state: AppState, config: ReleaseSweepConfig, leader: Arc<dyn
                 state.clone(),
                 handle.clone(),
                 signals.clone(),
-                fence_of(&lease),
+                fence.clone(),
                 first_hold && !handle.durable_observations,
             );
             spawn_consumer(consumer, cancel.clone())
@@ -140,6 +149,7 @@ async fn run_worker(state: AppState, config: ReleaseSweepConfig, leader: Arc<dyn
                 &mut rotation,
                 &cancel,
                 observations.as_ref(),
+                &fence,
             )
             .await;
         }
@@ -183,6 +193,7 @@ fn spawn_consumer(consumer: Consumer, cancel: CancellationToken) -> tokio::task:
 /// schedule their retries.
 struct ObservationQueue {
     store: Arc<dyn BlockWatchStore>,
+    network: NetworkType,
     signals: Arc<BlockWatchSignals>,
     clock: Arc<dyn Clock>,
     recheck: Duration,
@@ -320,6 +331,73 @@ impl ObservationQueue {
     }
 }
 
+impl ObservationQueue {
+    /// Request a walk when the store says one is owed that the rotation's
+    /// current walk (if any) does not cover. A store that cannot be read
+    /// requests one too: a walk too many costs a paced pass over the fleet,
+    /// a walk lost leaves skipped blocks unchecked.
+    async fn take_over_owed_walk(&self, rotation: &mut Rotation) {
+        match self.store.walk_requests(self.network).await {
+            Ok(Some(walks)) if walks.owed() && !rotation.covers(walks.requested_seq) => {
+                tracing::info!(
+                    event = "block_watch_walk_owed",
+                    requested_seq = walks.requested_seq,
+                    completed_seq = walks.completed_seq,
+                    "A walk of the fleet block watch asked for has not completed; \
+                     requesting it"
+                );
+                rotation.request(Instant::now());
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to read the owed release sweep walks; requesting one walk"
+                );
+                rotation.request(Instant::now());
+            }
+        }
+    }
+
+    /// The request sequence a walk starting now covers; `None` when the
+    /// store cannot be read (the walk then clears nothing).
+    async fn walk_sequence(&self) -> Option<i64> {
+        match self.store.walk_requests(self.network).await {
+            Ok(walks) => Some(walks.map_or(0, |walks| walks.requested_seq)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to read the owed release sweep walks; this walk clears none"
+                );
+                None
+            }
+        }
+    }
+
+    /// A walk that started under `started_under` completed.
+    async fn complete_walk(&self, started_under: i64, fence: &LeaseFence) {
+        if started_under == 0 {
+            return;
+        }
+        match self
+            .store
+            .complete_walk(self.network, started_under, fence)
+            .await
+        {
+            Ok(FencedWrite::Written) => {}
+            Ok(FencedWrite::StaleLease) => tracing::warn!(
+                holder_id = %fence.holder_id,
+                fence_token = fence.fence_token,
+                "Walk completion refused: the release sweep lease moved; the walk stays owed"
+            ),
+            Err(error) => tracing::warn!(
+                error = %error,
+                "Failed to record a completed walk; the walk stays owed"
+            ),
+        }
+    }
+}
+
 /// Retry delay of an observation after `attempts` unsuccessful visits:
 /// the re-check delay, doubling per attempt, at most an hour.
 fn observation_backoff(recheck: Duration, attempts: u32) -> Duration {
@@ -376,6 +454,7 @@ async fn hold_lease(
     rotation: &mut Rotation,
     cancel: &CancellationToken,
     observations: Option<&ObservationQueue>,
+    fence: &LeaseFence,
 ) {
     let mut last_visit: Option<Instant> = None;
     let mut last_turn = Turn::Rotation;
@@ -441,17 +520,29 @@ async fn hold_lease(
                 // hand out never spins the loop.
                 last_visit = Some(now);
             }
-            Turn::Rotation => match rotation.step(sweeper, config, now).await {
-                Ok(Step::Visited) => last_visit = Some(now),
-                Ok(Step::Idle) => {}
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "Release sweep rotation step failed; backing off"
-                    );
-                    rotation.next_turn = now + config.recheck();
+            Turn::Rotation => {
+                if rotation.starts_at(now)
+                    && let Some(queue) = observations
+                {
+                    rotation.started_under = queue.walk_sequence().await;
                 }
-            },
+                match rotation.step(sweeper, config, now).await {
+                    Ok(Step::Visited) => last_visit = Some(now),
+                    Ok(Step::Idle) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "Release sweep rotation step failed; backing off"
+                        );
+                        rotation.next_turn = now + config.recheck();
+                    }
+                }
+                if let Some(started_under) = rotation.completed_under.take()
+                    && let Some(queue) = observations
+                {
+                    queue.complete_walk(started_under, fence).await;
+                }
+            }
         }
         last_turn = turn;
     }
@@ -492,6 +583,13 @@ struct Rotation {
     /// A walk was requested while one was in progress: another starts as
     /// soon as it completes.
     requested_after_current: bool,
+    /// The walk-request sequence (see `BlockWatchStore::walk_requests`)
+    /// when the current walk started: the requests it covers. `None`
+    /// without block watch, or when the store could not be read.
+    started_under: Option<i64>,
+    /// Set when a walk that started under a known sequence completes, for
+    /// the loop to record.
+    completed_under: Option<i64>,
     /// When the next walk may start.
     next_start: Instant,
     /// When the rotation's next turn is due.
@@ -516,6 +614,8 @@ impl Rotation {
             started_at: None,
             requested: false,
             requested_after_current: false,
+            started_under: None,
+            completed_under: None,
             next_start: first_start,
             next_turn: first_start,
             visited: 0,
@@ -536,6 +636,16 @@ impl Rotation {
                 self.next_turn = now;
             }
         }
+    }
+
+    /// Whether a step at `now` starts a walk.
+    fn starts_at(&self, now: Instant) -> bool {
+        self.started_at.is_none() && now >= self.next_start
+    }
+
+    /// Whether the walk in progress covers walk requests up to `seq`.
+    fn covers(&self, seq: i64) -> bool {
+        self.started_at.is_some() && self.started_under.is_some_and(|under| under >= seq)
     }
 
     /// Pacing gap for a fleet of `fleet_size` accounts.
@@ -620,9 +730,21 @@ impl Rotation {
         );
         self.cursor = None;
         self.buffer.clear();
-        self.requested = std::mem::take(&mut self.requested_after_current);
-        self.next_start = if self.requested {
+        // A walk that could not check every account does not cover what it
+        // was asked to: the request stays owed, and a requested walk runs
+        // again after the re-check delay (a node outage would otherwise
+        // turn the walk the skipped blocks need into one that checked
+        // nothing).
+        let partial = self.unchecked > 0;
+        let started_under = self.started_under.take();
+        self.completed_under = if partial { None } else { started_under };
+        let requested_again = std::mem::take(&mut self.requested_after_current);
+        let retry = partial && self.requested;
+        self.requested = requested_again || retry;
+        self.next_start = if requested_again {
             Instant::now()
+        } else if retry {
+            Instant::now() + config.recheck()
         } else if self.enabled {
             started_at + config.rotation()
         } else {
@@ -642,6 +764,14 @@ mod tests {
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use std::sync::Mutex as StdMutex;
+
+    fn test_fence() -> LeaseFence {
+        LeaseFence {
+            lease_name: crate::coordination::RELEASE_SWEEP_LEASE.to_string(),
+            holder_id: "test-holder".to_string(),
+            fence_token: 1,
+        }
+    }
 
     fn miden_meta(account_id: &str) -> AccountMetadata {
         AccountMetadata {
@@ -1017,7 +1147,15 @@ mod tests {
                 cancel.cancel();
             })
         };
-        hold_lease(&sweeper, &config, &mut rotation, &cancel, None).await;
+        hold_lease(
+            &sweeper,
+            &config,
+            &mut rotation,
+            &cancel,
+            None,
+            &test_fence(),
+        )
+        .await;
         canceller.await.unwrap();
         let probes = network.probes.lock().unwrap().clone();
         probes
@@ -1126,6 +1264,7 @@ mod tests {
     ) -> ObservationQueue {
         ObservationQueue {
             store,
+            network: NetworkType::MidenLocal,
             signals: Arc::new(BlockWatchSignals::default()),
             clock,
             recheck: Duration::from_secs(60),
@@ -1268,7 +1407,15 @@ mod tests {
                 cancel.cancel();
             })
         };
-        hold_lease(&sweeper, &config, &mut rotation, &cancel, Some(&queue)).await;
+        hold_lease(
+            &sweeper,
+            &config,
+            &mut rotation,
+            &cancel,
+            Some(&queue),
+            &test_fence(),
+        )
+        .await;
         canceller.await.unwrap();
         let visits = metadata.get_calls.lock().unwrap().clone();
         (visits, store)
@@ -1331,6 +1478,261 @@ mod tests {
         let (visits, _) =
             run_loop_with_observations(config, &[], false, Duration::from_secs(3_600)).await;
         assert!(visits.is_empty(), "no walk without a request: {visits:?}");
+    }
+
+    // --- Owed walks (PR #586 review, I1) -----------------------------------
+
+    /// A sweeper over the fleet `a`, `b`, `c` with pages for `walks`
+    /// complete walks, and its metadata store (whose `get` calls are the
+    /// visits).
+    fn walk_rig(walks: usize) -> (ReleaseSweeper, Arc<MockMetadataStore>) {
+        let config = owed_walk_config();
+        let mut storage = MockStorageBackend::new();
+        for _ in 0..200 {
+            storage = storage.with_pull_state(Ok(state_row()));
+        }
+        let mut metadata = MockMetadataStore::new();
+        for _ in 0..walks {
+            metadata = metadata
+                .with_count_release_sweep_accounts(Ok(3))
+                .with_count_release_sweep_accounts(Ok(3))
+                .with_list_release_sweep_ids(Ok(vec![]))
+                .with_list_release_sweep_ids(Ok(vec!["a".into(), "b".into(), "c".into()]));
+        }
+        for id in ["a", "b", "c"] {
+            metadata = metadata.with_row(miden_meta(id));
+        }
+        let metadata = Arc::new(metadata);
+        let network = Arc::new(SlowNetwork {
+            probe_delay: Duration::ZERO,
+            probes: StdMutex::new(vec![]),
+        });
+        let state = create_test_app_state_with_mocks(Arc::new(storage), network, metadata.clone());
+        let sweeper =
+            ReleaseSweeper::new(state, 2, config.recheck(), Arc::new(SweepState::default()));
+        (sweeper, metadata)
+    }
+
+    /// The rotation off (walks run only when requested), a walk of the
+    /// three accounts taking 30 s.
+    fn owed_walk_config() -> ReleaseSweepConfig {
+        ReleaseSweepConfig::default()
+            .with_enabled(false)
+            .with_rotation_seconds(30)
+            .with_page_size(10)
+    }
+
+    async fn hold_for(
+        sweeper: &ReleaseSweeper,
+        rotation: &mut Rotation,
+        queue: &ObservationQueue,
+        window: Duration,
+    ) {
+        let cancel = CancellationToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                sleep(window).await;
+                cancel.cancel();
+            })
+        };
+        hold_lease(
+            sweeper,
+            &owed_walk_config(),
+            rotation,
+            &cancel,
+            Some(queue),
+            &test_fence(),
+        )
+        .await;
+        canceller.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_walk_the_previous_holder_owed_runs_on_the_successor() {
+        // The previous holder recorded a walk request and lost the lease
+        // before the walk ran. The successor's rotation would never start
+        // one (the rotation is off): only the recorded request makes it.
+        let store = Arc::new(InMemoryBlockWatchStore::new());
+        store
+            .request_walk(NetworkType::MidenLocal, chrono::Utc::now(), &test_fence())
+            .await
+            .unwrap();
+        let clock: Arc<dyn Clock> = Arc::new(crate::builder::clock::SystemClock);
+
+        let (sweeper, metadata) = walk_rig(1);
+        let queue = observation_queue(store.clone(), clock.clone(), 20);
+        let mut rotation = Rotation::new(&owed_walk_config());
+        hold_for(&sweeper, &mut rotation, &queue, Duration::from_secs(120)).await;
+        assert!(
+            metadata.get_calls.lock().unwrap().is_empty(),
+            "without taking the request over, no walk"
+        );
+
+        let (sweeper, metadata) = walk_rig(1);
+        let mut rotation = Rotation::new(&owed_walk_config());
+        queue.take_over_owed_walk(&mut rotation).await;
+        hold_for(&sweeper, &mut rotation, &queue, Duration::from_secs(120)).await;
+        assert_eq!(
+            metadata.get_calls.lock().unwrap().clone(),
+            vec!["a", "b", "c"]
+        );
+        let walks = store
+            .walk_requests(NetworkType::MidenLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!walks.owed(), "the completed walk clears it: {walks:?}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_request_made_during_a_walk_stays_owed_after_it_completes() {
+        let store = Arc::new(InMemoryBlockWatchStore::new());
+        let clock: Arc<dyn Clock> = Arc::new(crate::builder::clock::SystemClock);
+        store
+            .request_walk(NetworkType::MidenLocal, chrono::Utc::now(), &test_fence())
+            .await
+            .unwrap();
+        let (sweeper, _) = walk_rig(2);
+        let queue = observation_queue(store.clone(), clock.clone(), 20);
+        let mut rotation = Rotation::new(&owed_walk_config());
+        queue.take_over_owed_walk(&mut rotation).await;
+        // Block watch skips blocks again 5 s into the walk.
+        let requester = {
+            let store = store.clone();
+            let signals = queue.signals.clone();
+            tokio::spawn(async move {
+                sleep(Duration::from_secs(5)).await;
+                store
+                    .request_walk(NetworkType::MidenLocal, chrono::Utc::now(), &test_fence())
+                    .await
+                    .unwrap();
+                signals.request_rotation();
+            })
+        };
+        // The first walk completes at ~30 s; the lease is lost while the
+        // second one runs.
+        hold_for(&sweeper, &mut rotation, &queue, Duration::from_secs(45)).await;
+        requester.await.unwrap();
+        let walks = store
+            .walk_requests(NetworkType::MidenLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (walks.requested_seq, walks.completed_seq),
+            (2, 1),
+            "the first walk covers only the request it started under"
+        );
+
+        // A successor that never walked runs the owed one.
+        let (sweeper, metadata) = walk_rig(1);
+        let mut successor = Rotation::new(&owed_walk_config());
+        queue.take_over_owed_walk(&mut successor).await;
+        hold_for(&sweeper, &mut successor, &queue, Duration::from_secs(120)).await;
+        assert_eq!(metadata.get_calls.lock().unwrap().len(), 3);
+        let walks = store
+            .walk_requests(NetworkType::MidenLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((walks.requested_seq, walks.completed_seq), (2, 2));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_walk_that_checked_nothing_leaves_the_request_owed_and_runs_again() {
+        // The first walk's visits all fail (the metadata store is down for
+        // those rows): it covers nothing, so the request stays owed and the
+        // walk runs again after the re-check delay, which checks the fleet
+        // and clears it.
+        let mut storage = MockStorageBackend::new();
+        for _ in 0..200 {
+            storage = storage.with_pull_state(Ok(state_row()));
+        }
+        let mut metadata = MockMetadataStore::new()
+            .with_get(Err("metadata store down".into()))
+            .with_list_release_sweep_ids(Ok(vec![]))
+            .with_list_release_sweep_ids(Ok(vec!["a".into(), "b".into(), "c".into()]))
+            .with_list_release_sweep_ids(Ok(vec![]))
+            .with_list_release_sweep_ids(Ok(vec!["x".into(), "y".into(), "z".into()]));
+        for _ in 0..4 {
+            metadata = metadata.with_count_release_sweep_accounts(Ok(3));
+        }
+        for id in ["a", "b", "c"] {
+            metadata = metadata.with_row(miden_meta(id));
+        }
+        let metadata = Arc::new(metadata);
+        let network = Arc::new(SlowNetwork {
+            probe_delay: Duration::ZERO,
+            probes: StdMutex::new(vec![]),
+        });
+        let state = create_test_app_state_with_mocks(Arc::new(storage), network, metadata.clone());
+        let config = owed_walk_config();
+        let sweeper =
+            ReleaseSweeper::new(state, 2, config.recheck(), Arc::new(SweepState::default()));
+        let store = Arc::new(InMemoryBlockWatchStore::new());
+        store
+            .request_walk(NetworkType::MidenLocal, chrono::Utc::now(), &test_fence())
+            .await
+            .unwrap();
+        let queue = observation_queue(
+            store.clone(),
+            Arc::new(crate::builder::clock::SystemClock),
+            20,
+        );
+        let mut rotation = Rotation::new(&config);
+        queue.take_over_owed_walk(&mut rotation).await;
+
+        hold_for(&sweeper, &mut rotation, &queue, Duration::from_secs(45)).await;
+        assert_eq!(
+            metadata.get_calls.lock().unwrap().clone(),
+            vec!["x", "y", "z"]
+        );
+        let walks = store
+            .walk_requests(NetworkType::MidenLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(walks.owed(), "a walk that checked nothing covers nothing");
+
+        hold_for(&sweeper, &mut rotation, &queue, Duration::from_secs(200)).await;
+        assert_eq!(
+            metadata.get_calls.lock().unwrap().clone(),
+            vec!["x", "y", "z", "a", "b", "c"],
+            "the walk ran again after the re-check delay"
+        );
+        let walks = store
+            .walk_requests(NetworkType::MidenLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!((walks.requested_seq, walks.completed_seq), (1, 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_walk_in_progress_that_covers_the_request_is_not_repeated() {
+        // The same process gets the lease back mid-walk: the walk it is
+        // still running started under the recorded request.
+        let store = Arc::new(InMemoryBlockWatchStore::new());
+        store
+            .request_walk(NetworkType::MidenLocal, chrono::Utc::now(), &test_fence())
+            .await
+            .unwrap();
+        let queue = observation_queue(
+            store.clone(),
+            Arc::new(crate::builder::clock::SystemClock),
+            20,
+        );
+        let mut rotation = Rotation::new(&owed_walk_config());
+        rotation.started_at = Some(Instant::now());
+        rotation.started_under = Some(1);
+        queue.take_over_owed_walk(&mut rotation).await;
+        assert!(!rotation.requested && !rotation.requested_after_current);
+
+        // One that started before the request is no cover.
+        rotation.started_under = Some(0);
+        queue.take_over_owed_walk(&mut rotation).await;
+        assert!(rotation.requested_after_current);
     }
 
     #[tokio::test(start_paused = true)]

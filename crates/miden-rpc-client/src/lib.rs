@@ -732,6 +732,10 @@ pub struct BlockAccountState {
 pub struct BlockAccountUpdates {
     pub block_num: u32,
     pub updates: Vec<BlockAccountState>,
+    /// Entries of `updated_accounts` that could not be read (an account ID
+    /// or commitment this client does not understand), left out of
+    /// `updates`.
+    pub undecodable: Vec<BlockDecodeError>,
 }
 
 /// A committed block the node sent without something every block has.
@@ -751,9 +755,11 @@ pub enum BlockDecodeError {
 
 /// Read the account updates of a committed block. Notes, nullifiers,
 /// transactions and signatures are not inspected. A block missing its
-/// header or body, or an update without a valid account ID or commitment,
-/// is an error rather than a partial answer: a feed that skipped an update
-/// would silently miss that account's move.
+/// header or body is an error. An update without a valid account ID or
+/// commitment is reported in `undecodable` rather than failing the whole
+/// block: the rest of the block is still read, and the caller, told which
+/// updates it missed, decides how to cover them (one entry a newer protocol
+/// writes differently must not stop a feed at that block for good).
 pub fn block_account_updates(
     block: &blockchain::SignedBlock,
 ) -> Result<BlockAccountUpdates, BlockDecodeError> {
@@ -766,21 +772,32 @@ pub fn block_account_updates(
         .ok_or(BlockDecodeError::MissingBlockNumber)?
         .block_num;
     let body = block.body.as_ref().ok_or(BlockDecodeError::MissingBody)?;
+    let mut undecodable = Vec::new();
     let updates = body
         .updated_accounts
         .iter()
         .enumerate()
-        .map(|(index, update)| {
-            let account_id = update
-                .account_id
-                .as_ref()
-                .and_then(account_id_from_proto)
-                .ok_or(BlockDecodeError::InvalidAccountId { index })?;
-            let commitment = update
-                .final_state_commitment
-                .as_ref()
-                .and_then(word_to_hex)
-                .ok_or(BlockDecodeError::InvalidCommitment { index })?;
+        .filter_map(|(index, update)| {
+            let decoded = (|| {
+                let account_id = update
+                    .account_id
+                    .as_ref()
+                    .and_then(account_id_from_proto)
+                    .ok_or(BlockDecodeError::InvalidAccountId { index })?;
+                let commitment = update
+                    .final_state_commitment
+                    .as_ref()
+                    .and_then(word_to_hex)
+                    .ok_or(BlockDecodeError::InvalidCommitment { index })?;
+                Ok::<_, BlockDecodeError>((account_id, commitment))
+            })();
+            let (account_id, commitment) = match decoded {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    undecodable.push(error);
+                    return None;
+                }
+            };
             let is_public = matches!(
                 update
                     .details
@@ -788,14 +805,18 @@ pub fn block_account_updates(
                     .and_then(|details| details.update.as_ref()),
                 Some(account::account_update_details::Update::Public(_))
             );
-            Ok(BlockAccountState {
+            Some(BlockAccountState {
                 account_id,
                 commitment,
                 is_public,
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(BlockAccountUpdates { block_num, updates })
+        .collect();
+    Ok(BlockAccountUpdates {
+        block_num,
+        updates,
+        undecodable,
+    })
 }
 
 #[cfg(test)]
@@ -1417,27 +1438,41 @@ mod tests {
             block_account_updates(&no_body),
             Err(BlockDecodeError::MissingBody)
         );
+        // An entry that cannot be read is reported, and the rest of the
+        // block is still read.
         let mut no_id = good();
         no_id.body.as_mut().unwrap().updated_accounts[1].account_id = None;
+        let decoded = block_account_updates(&no_id).expect("the rest is read");
+        assert_eq!(decoded.updates.len(), 1);
+        assert_eq!(decoded.updates[0].account_id, test_account_id());
         assert_eq!(
-            block_account_updates(&no_id),
-            Err(BlockDecodeError::InvalidAccountId { index: 1 })
+            decoded.undecodable,
+            vec![BlockDecodeError::InvalidAccountId { index: 1 }]
         );
         let mut short_word = good();
         short_word.body.as_mut().unwrap().updated_accounts[0].final_state_commitment =
             Some(primitives::Word {
                 encoded: vec![7; 31],
             });
+        let decoded = block_account_updates(&short_word).expect("the rest is read");
+        assert_eq!(decoded.updates.len(), 1);
+        assert_eq!(decoded.updates[0].account_id, second_account_id());
         assert_eq!(
-            block_account_updates(&short_word),
-            Err(BlockDecodeError::InvalidCommitment { index: 0 })
+            decoded.undecodable,
+            vec![BlockDecodeError::InvalidCommitment { index: 0 }]
         );
         let mut empty_word = good();
         empty_word.body.as_mut().unwrap().updated_accounts[1].final_state_commitment =
             Some(primitives::Word::default());
         assert_eq!(
-            block_account_updates(&empty_word),
-            Err(BlockDecodeError::InvalidCommitment { index: 1 })
+            block_account_updates(&empty_word).unwrap().undecodable,
+            vec![BlockDecodeError::InvalidCommitment { index: 1 }]
+        );
+        assert!(
+            block_account_updates(&good())
+                .unwrap()
+                .undecodable
+                .is_empty()
         );
     }
 

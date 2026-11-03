@@ -499,7 +499,7 @@ pub const REGISTRY: &[MetricDef] = &[
         labels: &[LABEL_OUTCOME],
         help: "Account updates in processed blocks, by what block watch made of them \
                (not_guarded, skipped_pending_candidate, at_stored, own_history, \
-               unfinished_configuration, observed).",
+               unfinished_configuration, observed, undecodable).",
     },
     MetricDef {
         name: BLOCK_WATCH_OBSERVATIONS_PENDING,
@@ -520,7 +520,8 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[LABEL_REASON],
         help: "Block sources block watch had to reopen, by reason (status_<grpc code>, \
-               transport, ended, out_of_sequence, malformed, unavailable_block, stall).",
+               transport, ended, out_of_sequence, malformed, unavailable_block, stall, \
+               timeout, skipped_malformed_block).",
     },
     MetricDef {
         name: BLOCK_WATCH_TRANSPORT,

@@ -1060,24 +1060,41 @@ resource "aws_cloudwatch_metric_alarm" "metrics_refresh_stale" {
 
 # Block watch (issue #585) lagging: the feed processes blocks more slowly
 # than the chain commits them (or the node closed it for lag and the
-# polling fallback cannot keep up). 200 blocks is ~10 minutes of chain;
-# five 1-minute periods in a row rule out a replay burst after a restart.
+# polling fallback cannot keep up). 200 blocks is ~10 minutes of chain.
+# Breaching only while the lag shrinks by fewer than 100 blocks per period:
+# a replay after a restart starts far behind (up to `max_catchup_blocks`,
+# minutes of work at the database's per-block cost) but closes thousands
+# of blocks a period, which is catching up; a feed that barely gains on
+# the chain is still hours late. Two 5-minute periods in a row.
 resource "aws_cloudwatch_metric_alarm" "block_watch_lag" {
   count = local.cloudwatch_metrics_enabled && local.effective_guardian_block_watch_enabled ? 1 : 0
 
   alarm_name          = "${var.stack_name}-block-watch-lag"
-  alarm_description   = "Guardian block watch is more than 200 blocks behind the chain tip; guardian switches are detected late (check block_watch_* events in the server log)${local.alarm_description_links}"
-  namespace           = local.metrics_namespace
-  metric_name         = "guardian_block_watch_lag_blocks"
-  statistic           = "Maximum"
-  period              = 60
+  alarm_description   = "Guardian block watch is more than 200 blocks behind the chain tip and not catching up; guardian switches are detected late (check block_watch_* events in the server log)${local.alarm_description_links}"
   comparison_operator = "GreaterThanThreshold"
-  threshold           = 200
-  evaluation_periods  = 5
-  datapoints_to_alarm = 5
+  threshold           = 0
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
   treat_missing_data  = "notBreaching"
   alarm_actions       = local.effective_alarm_actions
   ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "behind"
+    expression  = "IF(lag > 200 AND DIFF(lag) > -100, 1, 0)"
+    label       = "behind the tip and not catching up"
+    return_data = true
+  }
+
+  metric_query {
+    id = "lag"
+    metric {
+      namespace   = local.metrics_namespace
+      metric_name = "guardian_block_watch_lag_blocks"
+      stat        = "Maximum"
+      period      = 300
+    }
+  }
 }
 
 # Complements the lag alarm: a feed that stopped altogether (node down,

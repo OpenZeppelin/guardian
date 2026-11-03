@@ -10,8 +10,13 @@ pub struct ObservedBlock {
     /// The node's committed tip when it sent the block (never below the
     /// block itself), for the lag gauge.
     pub committed_chain_tip: u32,
-    /// Every entry of the block's `updated_accounts`, in block order.
+    /// Every entry of the block's `updated_accounts` that could be read,
+    /// in block order.
     pub updates: Vec<AccountUpdate>,
+    /// Entries of `updated_accounts` that could not be read (an account ID
+    /// or commitment this server does not understand): their accounts'
+    /// moves are unknown.
+    pub undecodable_updates: usize,
 }
 
 /// One account a block updated, and the commitment it ended the block at.
@@ -59,6 +64,8 @@ pub enum BlockSourceError {
     Unavailable { block_num: u32 },
     /// The stream ended without a status.
     Ended,
+    /// The node accepted the call but did not answer it in time.
+    Timeout(String),
 }
 
 impl std::fmt::Display for BlockSourceError {
@@ -72,6 +79,7 @@ impl std::fmt::Display for BlockSourceError {
             Self::Malformed(reason) => write!(f, "malformed block: {reason}"),
             Self::Unavailable { block_num } => write!(f, "block {block_num} is not served"),
             Self::Ended => write!(f, "the stream ended without a status"),
+            Self::Timeout(reason) => write!(f, "timed out: {reason}"),
         }
     }
 }
@@ -95,6 +103,7 @@ impl BlockSourceError {
             Self::Malformed(_) => "malformed",
             Self::Unavailable { .. } => "unavailable_block",
             Self::Ended => "ended",
+            Self::Timeout(_) => "timeout",
         }
     }
 }
@@ -225,6 +234,7 @@ mod tests {
             BlockSourceError::Malformed(String::new()),
             BlockSourceError::Unavailable { block_num: 1 },
             BlockSourceError::Ended,
+            BlockSourceError::Timeout(String::new()),
         ] {
             assert!(
                 error

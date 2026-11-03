@@ -2623,6 +2623,19 @@ mod tests {
             ],
             "a candidate's post-state is not a state this server held"
         );
+        let found = storage
+            .filter_candidate_post_states(&[
+                (account_id, "0xpost1"),
+                (account_id, "0xpost4"),
+                ("0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d", "0xpost4"),
+            ])
+            .await
+            .expect("candidate lookup");
+        assert_eq!(
+            found.into_iter().collect::<Vec<_>>(),
+            vec![(account_id.to_string(), "0xpost4".to_string())],
+            "only the candidate's post-state, of its own account"
+        );
         let _ = std::fs::remove_dir_all(temp_dir);
     }
 

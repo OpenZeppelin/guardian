@@ -8,7 +8,8 @@ pub mod session_store;
 pub mod stats_store;
 
 pub use block_watch_store::{
-    BlockWatchStore, Cursor, CursorWrite, InMemoryBlockWatchStore, NewObservation, Observation,
+    BlockWatchStore, Cursor, CursorWrite, FencedWrite, InMemoryBlockWatchStore, NewObservation,
+    Observation, WalkRequests,
 };
 pub use challenge_store::{
     ChallengePayload, ChallengeStore, InMemoryChallengeStore, StoredChallenge,

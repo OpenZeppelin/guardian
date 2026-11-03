@@ -425,3 +425,36 @@ Where the code differs from the design above, and why:
   upgrade. `poll_seconds` must be below `stall_seconds`. The Miden sources
   live in `network/miden/block_feed/` (AGENTS.md: shared layers stay
   network-agnostic); `RpcSettings::block_source_factory` opens them.
+- **PR #586 review fixes.** (B1) The stream open waits for the node's
+  answer at most `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` (`BlockSourceError::
+  Timeout`, `reason=timeout`, counted as an ordinary failure), and the
+  consumer's open races the lease's cancel, so `run_worker` never waits on
+  a hung open. (B2) On a block watch visit a storage read whose
+  `block_num` is before the observed block, or a history search that
+  ends before it, is no answer: `Deferred` (`read_behind_observation`,
+  `history_behind_observation`), not `Checked`. Keyed on the read's
+  block rather than the origin alone, so a current read showing the
+  account back at its stored base, or older than a re-onboarded state,
+  still settles the observation. (I1) Walk requests are recorded in
+  `block_watch_walks` (fenced; sequence numbers, so a request made during
+  a walk stays owed and a stale holder's late completion clears
+  nothing); a holder takes an owed walk over when it gains the lease, a
+  walk records the sequence it started under and completes up to it.
+  (I2) Accounts with a candidate in flight are compared with their
+  stored commitment and their candidates' post-states
+  (`StorageBackend::filter_candidate_post_states`); only an unexplained
+  move is an observation, and its visit is `Deferred` while the
+  candidate is in flight (canonicalization settles one within minutes,
+  well inside `max_attempts`). (I3) A first foreign-key sighting keeps
+  its observation (`Deferred`) while the streak is open. (I4)
+  `block_account_updates` reports undecodable entries instead of failing
+  the block (outcome `undecodable`, one walk requested); a block that
+  fails to decode five times, on both transports in `auto` mode, is
+  skipped with one walk (`block_watch_block_skipped`). (M1/M2)
+  `last_block` is exported from the stored cursor before the node is
+  reached and reset to 0 on step-down. (M3) The caught-up branch reports
+  an own-key mismatch. (M5) `OUT_OF_RANGE` retries back off. (M7) The lag
+  alarm breaches only while the lag shrinks by fewer than 100 blocks per
+  5-minute period. The filesystem
+  cursor writes its file before moving in memory. Deferred: case-
+  insensitive account-id matching (M4; both SDKs send lowercase).

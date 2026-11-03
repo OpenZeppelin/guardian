@@ -224,13 +224,11 @@ Rust client suites are unaffected (no contract change).
   match finds the delta: no release in either case.
 - **A switch lands while a candidate of this server's is in flight** (an
   offline switch while a stuck candidate holds `has_pending_candidate`):
-  the block is skipped for that account like any pending-candidate
-  update, and nothing revisits it once the candidate is parked. Only the
-  rotation catches this switch, within one `rotation_seconds`, as today;
-  operators who raise the rotation to a weekly safety net accept that
-  latency for this case. Phase 2 (compare the block commitment with the
-  queued candidates' post-states, `plan.md` D10) turns it into an
-  observation.
+  the block commitment is compared with the account's candidate
+  post-states. A match is the candidate landing (left to the push path);
+  anything else is an observation, whose visit waits while the
+  candidate is in flight and then runs the detectors (PR #586 review,
+  I2; the comparison half of `plan.md` D10's phase 2).
 - **Account moves twice before its observation is visited**: observations
   are keyed `(account_id, block_num)`, so both are kept and visited in block
   order. The candidate match checks each observed commitment, so a switch

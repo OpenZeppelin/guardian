@@ -33,9 +33,21 @@ CREATE TABLE block_watch_observations (
 
 CREATE INDEX block_watch_observations_due_idx
     ON block_watch_observations (next_attempt_at, block_num);
+
+-- Walks block watch owes the fleet (PR #586 review, I1): owed while
+-- requested_seq > completed_seq; a walk raises completed_seq to the
+-- requested_seq it started under. Fenced like the cursor.
+CREATE TABLE block_watch_walks (
+    network       TEXT        PRIMARY KEY,
+    requested_seq BIGINT      NOT NULL,
+    completed_seq BIGINT      NOT NULL DEFAULT 0,
+    requested_at  TIMESTAMPTZ NOT NULL,
+    holder_id     TEXT        NOT NULL,
+    fence_token   BIGINT      NOT NULL
+);
 ```
 
-`down.sql` drops the index and both tables.
+`down.sql` drops the index and the three tables.
 
 ## Queries (all in `coordination/postgres/block_watch_store.rs`)
 

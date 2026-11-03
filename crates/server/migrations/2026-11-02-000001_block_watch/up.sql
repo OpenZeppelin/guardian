@@ -34,3 +34,21 @@ CREATE TABLE block_watch_observations (
 
 CREATE INDEX block_watch_observations_due_idx
     ON block_watch_observations (next_attempt_at, block_num);
+
+-- Walks of the release sweep rotation that block watch owes the fleet: it
+-- skipped blocks (a first start, a gap too large to replay, a block the
+-- node no longer serves, a reset chain) and asked for one walk to cover
+-- them. One row per network; a walk is owed while `requested_seq` is past
+-- `completed_seq`. Each request raises `requested_seq`; a walk records the
+-- sequence it started under and, once complete, raises `completed_seq` to
+-- it, so a request made during a walk stays owed. Kept here rather than in
+-- the holder's memory so a successor, or a restart with the rotation
+-- turned off, still runs the walk. Written under the `release_sweep` lease.
+CREATE TABLE block_watch_walks (
+    network       TEXT        PRIMARY KEY,
+    requested_seq BIGINT      NOT NULL,
+    completed_seq BIGINT      NOT NULL DEFAULT 0,
+    requested_at  TIMESTAMPTZ NOT NULL,
+    holder_id     TEXT        NOT NULL,
+    fence_token   BIGINT      NOT NULL
+);

@@ -473,7 +473,7 @@ Operator checks:
     `rotation_seconds`) and `Release sweep rotation completed` (with
     `accounts`, `unchecked_accounts`, `duration_seconds`)
   - `event=release_sweep_skipped reason=pending_candidate`
-  - `event=release_sweep_deferred reason=chain_at_stored_base|not_on_chain|chain_probe_unavailable|history_read_unavailable|binding_read_unavailable|storage_opaque|chain_behind_stored|no_guardian_binding|guardian_still_bound|stored_base_moved`
+  - `event=release_sweep_deferred reason=chain_at_stored_base|not_on_chain|chain_probe_unavailable|history_read_unavailable|binding_read_unavailable|storage_opaque|chain_behind_stored|no_guardian_binding|guardian_still_bound|stored_base_moved|pending_candidate|read_behind_observation|history_behind_observation`
   - `event=release_sweep_confirming` (with `observations` / `confirmations` / `block_num`)
   - `event=release_sweep_own_key_mismatch` (warn, with `guardian_commitment` / `own_guardian_commitment`)
   - `event=release_sweep_unwritten_push_release` (with `delta_nonce`)
@@ -497,6 +497,11 @@ Operator checks:
   section above). `history_read_unavailable` means the transaction
   history could not be searched: the visit falls back to the storage
   read, and a private account is retried on its next visit.
+  On a block watch visit, `read_behind_observation` and
+  `history_behind_observation` mean the node answered from before the
+  observed block (it lags the block feed): the observation is retried,
+  never settled on the stale read; `pending_candidate` (debug) means the
+  observation waits while this server's own candidate is in flight.
   `not_on_chain` (debug) means the account has no state on chain yet.
   `stored_base_moved` means the stored state was replaced (a
   `/configure`, or a promoted delta) before the release was written,
@@ -517,6 +522,8 @@ Operator checks:
     to this caller; `stream_retry_due` is the scheduled retry.
   - `block_watch_reconnect` (warn, with `reason`, `code`, `backoff_ms`,
     `from_block`): a source ended and is reopened from the cursor.
+    `reason=timeout` means the node took the subscription and did not
+    answer it within `GUARDIAN_MIDEN_RPC_TIMEOUT_MS`.
   - `block_watch_stall` (warn, with `last_block`, `chain_tip`,
     `idle_seconds`): no block within `GUARDIAN_BLOCK_WATCH_STALL_SECONDS`
     while the chain moved on.
@@ -530,7 +537,19 @@ Operator checks:
     `max_catchup_blocks` or `reason=block_unavailable`): the feed starts
     at the tip instead of replaying and requests one rotation;
     `block_watch_observations_lost` (filesystem backend) does the same
-    after a restart.
+    after a restart. The request is recorded (Postgres:
+    `block_watch_walks`) until a walk completes, so a successor holder,
+    or a restart with the rotation turned off, still runs it:
+    `block_watch_walk_owed` (info) when a holder takes one over,
+    `block_watch_walk_request_failed` (warn) when the record could not be
+    written (this replica still runs the walk).
+  - `block_watch_undecodable_updates` (warn, with `block_num`,
+    `undecodable`): the block carries account updates this server cannot
+    read (a newer protocol); the rest of the block is processed and one
+    rotation is requested to cover them. `block_watch_block_skipped`
+    (warn, with `block_num`, `attempts`): a block failed to decode on
+    every transport, repeatedly; it is skipped and one rotation covers
+    it. Either means this server is older than the node's protocol.
   - `block_watch_block` (debug, with `block_num`, `updates`, `guarded`,
     `observed`, `lag_blocks`, `duration_ms`).
   - `block_watch_observation_recorded` (info, with `account_id`,
@@ -553,7 +572,7 @@ Operator checks:
   `guardian_block_watch_blocks_total{transport=stream|poll}`,
   `guardian_block_watch_transport{transport}` (1 for the active one),
   `guardian_block_watch_reconnects_total{reason}`,
-  `guardian_block_watch_account_updates_total{outcome=not_guarded|skipped_pending_candidate|at_stored|own_history|unfinished_configuration|observed}`,
+  `guardian_block_watch_account_updates_total{outcome=not_guarded|skipped_pending_candidate|at_stored|own_history|unfinished_configuration|observed|undecodable}`,
   `guardian_block_watch_observations_pending`,
   `guardian_block_watch_observation_visits_total{outcome=checked|deferred|failed|dropped}`
   and `guardian_block_watch_block_processing_seconds` describe the feed.
@@ -1093,9 +1112,13 @@ ECS Exec requires the task role's `ssmmessages:*` actions
   state has not landed on chain yet.
 - **`guardian_block_watch_lag_blocks` above a few blocks for minutes, or
   `guardian_block_watch_last_block` not advancing** (alarms
-  `<stack>-block-watch-lag` and `<stack>-block-watch-stalled`) — the
+  `<stack>-block-watch-lag`, more than 200 blocks behind and not
+  catching up for 10 minutes, and `<stack>-block-watch-stalled`) — the
   feed is behind or stopped, and switch detection falls back to the
-  rotation. Check the `block_watch_transport` / `block_watch_reconnect`
+  rotation. A replay after a restart starts far behind but shrinks the
+  lag by thousands of blocks a period, which the lag alarm does not
+  count; it fires while the lag shrinks by fewer than 100 blocks per
+  5 minutes. Check the `block_watch_transport` / `block_watch_reconnect`
   events and Miden RPC health. A feed stuck on `transport=poll` with
   `reason=status_resource_exhausted` repeating means this server keeps
   falling behind the stream: the store is slow

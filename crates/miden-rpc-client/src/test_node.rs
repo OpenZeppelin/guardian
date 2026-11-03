@@ -49,6 +49,8 @@ struct ScriptedChain {
     /// without one the stream stays open.
     stream_terminal: Mutex<Option<(tonic::Code, String)>>,
     subscription_disabled: Mutex<bool>,
+    /// Subscriptions are accepted and never answered.
+    subscription_unanswered: Mutex<bool>,
     /// `block_from` of every subscription request, in order.
     subscription_requests: Arc<Mutex<Vec<u32>>>,
     /// `block_num` of every `GetBlockByNumber` request, in order.
@@ -187,6 +189,18 @@ impl ScriptedNode {
         self
     }
 
+    /// `BlockSubscription` is accepted and never answered (no response
+    /// headers), as a stuck node or proxy would; the connection itself
+    /// stays healthy.
+    pub fn with_unanswered_block_subscription(self) -> Self {
+        *self
+            .chain
+            .subscription_unanswered
+            .lock()
+            .expect("chain lock") = true;
+        self
+    }
+
     /// The `block_from` of every subscription request, in order.
     pub fn subscription_requests(&self) -> Arc<Mutex<Vec<u32>>> {
         self.chain.subscription_requests.clone()
@@ -296,6 +310,14 @@ impl rpc::node_service_server::NodeService for ScriptedNode {
             .push(block_from);
         if *self.chain.subscription_disabled.lock().expect("chain lock") {
             return Err(tonic::Status::unimplemented("scripted node"));
+        }
+        if *self
+            .chain
+            .subscription_unanswered
+            .lock()
+            .expect("chain lock")
+        {
+            std::future::pending::<()>().await;
         }
         let chain = self.chain.clone();
         let (sender, receiver) = tokio::sync::mpsc::channel(8);

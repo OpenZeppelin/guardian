@@ -12,7 +12,8 @@ use super::testing::{Open, ScriptedBlockSourceFactory, block, status};
 use super::*;
 use crate::block_watch::{BlockWatchConfig, TransportMode};
 use crate::coordination::{
-    BlockWatchStore, Cursor, CursorWrite, InMemoryBlockWatchStore, NewObservation, Observation,
+    BlockWatchStore, Cursor, CursorWrite, FencedWrite, InMemoryBlockWatchStore, NewObservation,
+    Observation, WalkRequests,
 };
 use crate::error::Result;
 use crate::metadata::auth::Auth;
@@ -56,6 +57,8 @@ struct RecordingStore {
     cursor_writes: Mutex<Vec<u32>>,
     resets: Mutex<Vec<u32>>,
     stale_from: Mutex<Option<u32>>,
+    /// Walk requests still to fail.
+    walk_request_failures: Mutex<u32>,
 }
 
 impl RecordingStore {
@@ -135,6 +138,39 @@ impl BlockWatchStore for RecordingStore {
 
     async fn count_pending_observations(&self) -> Result<u64> {
         self.inner.count_pending_observations().await
+    }
+
+    async fn walk_requests(&self, network: NetworkType) -> Result<Option<WalkRequests>> {
+        self.inner.walk_requests(network).await
+    }
+
+    async fn request_walk(
+        &self,
+        network: NetworkType,
+        now: DateTime<Utc>,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        {
+            let mut failures = self.walk_request_failures.lock().unwrap();
+            if *failures > 0 {
+                *failures -= 1;
+                return Err(crate::error::GuardianError::StorageError(
+                    "walk request: database down".to_string(),
+                ));
+            }
+        }
+        self.inner.request_walk(network, now, fence).await
+    }
+
+    async fn complete_walk(
+        &self,
+        network: NetworkType,
+        started_under: i64,
+        fence: &LeaseFence,
+    ) -> Result<FencedWrite> {
+        self.inner
+            .complete_walk(network, started_under, fence)
+            .await
     }
 }
 
@@ -261,8 +297,13 @@ fn config() -> BlockWatchConfig {
 
 #[tokio::test]
 async fn a_block_records_only_the_moves_this_server_cannot_explain() {
+    // Two accounts with a candidate in flight: one moved to that
+    // candidate's post-state (its own transaction landed), the other to a
+    // state no candidate explains (PR #586 review, I2).
     let mut busy = miden_meta("0xbusy");
     busy.has_pending_candidate = true;
+    let mut busy_moved = miden_meta("0xbusy_moved");
+    busy_moved.has_pending_candidate = true;
     let mut released = miden_meta("0xreleased");
     released.released_at = Some(Utc::now());
     let metadata = MockMetadataStore::new()
@@ -270,10 +311,15 @@ async fn a_block_records_only_the_moves_this_server_cannot_explain() {
         .with_row(miden_meta("0xmoved"))
         .with_row(miden_meta("0xunconfigured"))
         .with_row(busy)
+        .with_row(busy_moved)
         .with_row(released);
     let storage = MockStorageBackend::new()
         .with_state_commitment("0xlanded", "0xc_landed")
-        .with_state_commitment("0xmoved", "0xc_stored");
+        .with_state_commitment("0xmoved", "0xc_stored")
+        .with_state_commitment("0xbusy", "0xc_busy_base")
+        .with_state_commitment("0xbusy_moved", "0xc_busy_moved_base")
+        .with_candidate_post_state("0xbusy", "0xc_busy_landed")
+        .with_candidate_post_state("0xbusy_moved", "0xc_busy_moved_candidate");
     let rig = Rig::new(
         metadata,
         storage,
@@ -288,7 +334,8 @@ async fn a_block_records_only_the_moves_this_server_cannot_explain() {
             &[
                 ("0xlanded", "0xC_LANDED"),
                 ("0xmoved", "0xc_elsewhere"),
-                ("0xbusy", "0xc_any"),
+                ("0xbusy", "0xc_busy_landed"),
+                ("0xbusy_moved", "0xc_switched"),
                 ("0xstranger", "0xc_any"),
                 ("0xunconfigured", "0xc_any"),
                 ("0xreleased", "0xc_any"),
@@ -302,9 +349,9 @@ async fn a_block_records_only_the_moves_this_server_cannot_explain() {
     assert_eq!(
         summary,
         BlockSummary {
-            updates: 7,
-            guarded: 5,
-            observed: 1,
+            updates: 8,
+            guarded: 6,
+            observed: 2,
         }
     );
     let observation = rig
@@ -312,9 +359,27 @@ async fn a_block_records_only_the_moves_this_server_cannot_explain() {
         .next_due_observation(Utc::now())
         .await
         .unwrap()
-        .expect("the unexplained move is queued");
+        .expect("the unexplained moves are queued");
     assert_eq!(
         observation,
+        Observation {
+            account_id: "0xbusy_moved".into(),
+            block_num: 42,
+            on_chain_commitment: "0xc_switched".into(),
+            attempts: 0,
+        },
+        "a move no candidate explains is queued despite the candidate"
+    );
+    rig.store
+        .delete_observation("0xbusy_moved", 42)
+        .await
+        .unwrap();
+    assert_eq!(
+        rig.store
+            .next_due_observation(Utc::now())
+            .await
+            .unwrap()
+            .expect("the other unexplained move"),
         Observation {
             account_id: "0xmoved".into(),
             block_num: 42,
@@ -330,6 +395,7 @@ async fn a_block_records_only_the_moves_this_server_cannot_explain() {
             "0xlanded".to_string(),
             "0xmoved".into(),
             "0xbusy".into(),
+            "0xbusy_moved".into(),
             "0xstranger".into(),
             "0xunconfigured".into(),
             "0xreleased".into(),
@@ -341,9 +407,11 @@ async fn a_block_records_only_the_moves_this_server_cannot_explain() {
         vec![vec![
             "0xlanded".to_string(),
             "0xmoved".into(),
-            "0xunconfigured".into()
+            "0xunconfigured".into(),
+            "0xbusy".into(),
+            "0xbusy_moved".into(),
         ]],
-        "stored commitments of sweepable accounts only"
+        "stored commitments of guarded accounts only"
     );
     rig.assert_no_chain_reads();
     assert!(
@@ -482,6 +550,14 @@ async fn the_first_start_begins_at_the_tip_and_asks_for_one_rotation() {
     );
     assert_eq!(rig.consumer().start_position_for_test().await, Ok(500));
     assert!(rig.signals.take_rotation_request(), "no genesis replay");
+    assert_eq!(
+        rig.store.walk_requests(NETWORK).await.unwrap(),
+        Some(WalkRequests {
+            requested_seq: 1,
+            completed_seq: 0
+        }),
+        "the walk is recorded, so a successor still owes it (PR #586 review, I1)"
+    );
 }
 
 #[tokio::test]
@@ -1347,4 +1423,306 @@ async fn a_pruned_block_is_skipped_on_the_stream_alone_too() {
     task.await.unwrap();
     assert!(rig.signals.take_rotation_request());
     assert_eq!(rig.store.cursor_writes(), vec![12]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_open_that_never_returns_still_stops_with_the_lease() {
+    // A node that takes the subscription and never answers it holds the
+    // open; the lease's cancel must still stop the consumer, or the
+    // release sweep worker that waits for it never competes for the lease
+    // again (PR #586 review, B1).
+    let factory = ScriptedBlockSourceFactory::new().with_streams(vec![Open::Hang]);
+    factory.chain.push_empty(1, 10);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.set_cursor(5).await;
+    let (cancel, task) = rig.spawn();
+    for _ in 0..1_000 {
+        if !rig.factory.opens().is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(rig.factory.opens(), vec![(Transport::Stream, 6)]);
+    tokio::time::sleep(Duration::from_secs(3_600)).await;
+    assert!(!task.is_finished(), "the open is still waiting");
+    assert_eq!(rig.handle.status.snapshot().transport, None);
+    cancel.cancel();
+    let stopped = tokio::time::timeout(Duration::from_secs(1), task)
+        .await
+        .expect("the cancel reaches the open")
+        .unwrap();
+    assert_eq!(stopped, Stopped::Cancelled);
+}
+
+#[tokio::test]
+async fn a_block_with_unreadable_entries_is_processed_and_asks_for_a_walk() {
+    // One entry this server cannot read (a newer account id version): the
+    // rest of the block is processed, the cursor moves on, and one walk
+    // covers the account it may have missed (PR #586 review, I4).
+    let rig = Rig::new(
+        MockMetadataStore::new().with_row(miden_meta("0xmoved")),
+        MockStorageBackend::new().with_state_commitment("0xmoved", "0xc_stored"),
+        ScriptedBlockSourceFactory::new(),
+        config(),
+    );
+    let mut partly = block(42, &[("0xmoved", "0xc_elsewhere")]);
+    partly.undecodable_updates = 1;
+    let summary = rig
+        .consumer()
+        .process_for_test(&partly)
+        .await
+        .expect("processed");
+    assert_eq!(summary.observed, 1);
+    assert_eq!(rig.cursor().await, Some(42));
+    assert!(rig.signals.take_rotation_request());
+    assert_eq!(
+        rig.store
+            .walk_requests(NETWORK)
+            .await
+            .unwrap()
+            .map(|walks| walks.requested_seq),
+        Some(1)
+    );
+
+    // A block read in full asks for nothing.
+    rig.consumer()
+        .process_for_test(&block(43, &[]))
+        .await
+        .expect("processed");
+    assert!(!rig.signals.take_rotation_request());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_block_that_never_decodes_is_skipped_once_every_transport_failed_on_it() {
+    // Block 6 fails to decode wherever it is read. In `auto` mode it is
+    // skipped only once the polling fallback failed on it too; with one
+    // transport, after the attempts on that one. Then the feed carries on
+    // from block 7 and one walk covers block 6 (PR #586 review, I4).
+    let malformed = || BlockSourceError::Malformed("scripted".to_string());
+    for (mode, streams, polls, expected) in [
+        (
+            TransportMode::Auto,
+            5,
+            1,
+            vec![
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Poll, 6),
+                (Transport::Poll, 7),
+            ],
+        ),
+        (
+            TransportMode::Stream,
+            5,
+            0,
+            vec![
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 6),
+                (Transport::Stream, 7),
+            ],
+        ),
+        (
+            TransportMode::Poll,
+            0,
+            5,
+            vec![
+                (Transport::Poll, 6),
+                (Transport::Poll, 6),
+                (Transport::Poll, 6),
+                (Transport::Poll, 6),
+                (Transport::Poll, 6),
+                (Transport::Poll, 7),
+            ],
+        ),
+    ] {
+        let factory = ScriptedBlockSourceFactory::new()
+            .with_streams(
+                (0..streams)
+                    .map(|_| Open::then_fail(0, malformed()))
+                    .collect(),
+            )
+            .with_polls(
+                (0..polls)
+                    .map(|_| Open::then_fail(0, malformed()))
+                    .collect(),
+            );
+        factory.chain.push_empty(1, 10);
+        let rig = Rig::new(
+            MockMetadataStore::new(),
+            MockStorageBackend::new(),
+            factory,
+            config().with_transport(mode),
+        );
+        rig.set_cursor(5).await;
+        let (cancel, task) = rig.spawn();
+        rig.wait_for_cursor(10).await;
+        cancel.cancel();
+        task.await.unwrap();
+        assert_eq!(rig.factory.opens(), expected, "{mode:?}");
+        assert_eq!(
+            rig.store.cursor_writes(),
+            vec![7, 8, 9, 10],
+            "{mode:?}: block 6 is skipped"
+        );
+        assert!(rig.signals.take_rotation_request(), "{mode:?}");
+        assert_eq!(
+            rig.store
+                .walk_requests(NETWORK)
+                .await
+                .unwrap()
+                .map(|walks| walks.requested_seq),
+            Some(1),
+            "{mode:?}"
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_position_gauge_shows_the_cursor_without_a_node_and_clears_on_step_down() {
+    // The stall alarm watches `last_block`: a feed that never reaches the
+    // node exports the stored cursor (M1), and a replica that stepped down
+    // stops exporting its old position (M2, PR #586 review).
+    let recorder = crate::metrics::build_recorder();
+    let metrics_handle = recorder.handle();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.set_tip(Err(BlockSourceError::Transport("unreachable".to_string())));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.set_cursor(41).await;
+    let (cancel, task) = rig.spawn();
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert!(rig.factory.opens().is_empty(), "never attached");
+    let gauge = format!("{} ", crate::metrics::names::BLOCK_WATCH_LAST_BLOCK);
+    let position = |rendered: &str| {
+        rendered
+            .lines()
+            .find_map(|line| line.strip_prefix(&gauge))
+            .map(str::to_string)
+    };
+    assert_eq!(position(&metrics_handle.render()).as_deref(), Some("41"));
+    cancel.cancel();
+    assert_eq!(task.await.unwrap(), Stopped::Cancelled);
+    assert_eq!(position(&metrics_handle.render()).as_deref(), Some("0"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_node_that_keeps_refusing_the_cursor_is_asked_less_and_less_often() {
+    // The cursor stands just past what the node serves (a node behind):
+    // every subscription is refused as out of range. The retries back off
+    // instead of hitting the node every second (PR #586 review, M5).
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 100);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.set_cursor(200).await;
+    let (cancel, task) = rig.spawn();
+    tokio::time::sleep(Duration::from_secs(120)).await;
+    cancel.cancel();
+    task.await.unwrap();
+    let times = rig.factory.open_times();
+    assert!(times.len() >= 6, "{} opens", times.len());
+    let gaps: Vec<Duration> = times.windows(2).map(|pair| pair[1] - pair[0]).collect();
+    assert!(gaps[0] <= Duration::from_secs(1), "{gaps:?}");
+    assert!(
+        gaps[4] >= Duration::from_secs(8),
+        "the fifth retry waits at least half of 16 s: {gaps:?}"
+    );
+    assert!(
+        rig.factory
+            .opens()
+            .iter()
+            .all(|open| *open == (Transport::Stream, 201)),
+        "{:?}",
+        rig.factory.opens()
+    );
+}
+
+#[tokio::test]
+async fn a_walk_request_that_cannot_be_recorded_holds_the_cursor_back() {
+    // The walk must be recorded before the consumer moves past what it
+    // covers; otherwise a failover would lose it (PR #586 review).
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 500);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    *rig.store.walk_request_failures.lock().unwrap() = 1;
+    assert!(
+        rig.consumer().start_position_for_test().await.is_err(),
+        "the start is retried"
+    );
+    assert!(!rig.signals.take_rotation_request());
+    assert_eq!(rig.consumer().start_position_for_test().await, Ok(500));
+    assert!(rig.signals.take_rotation_request());
+
+    // A block with entries this server cannot read is not done until its
+    // walk is recorded.
+    *rig.store.walk_request_failures.lock().unwrap() = 1;
+    let mut partly = block(501, &[]);
+    partly.undecodable_updates = 1;
+    assert!(rig.consumer().process_for_test(&partly).await.is_err());
+    assert_eq!(rig.cursor().await, None, "the cursor did not move");
+    rig.consumer()
+        .process_for_test(&partly)
+        .await
+        .expect("the retry processes it");
+    assert_eq!(rig.cursor().await, Some(501));
+    assert_eq!(
+        rig.store
+            .walk_requests(NETWORK)
+            .await
+            .unwrap()
+            .map(|walks| walks.requested_seq),
+        Some(2)
+    );
+}
+
+#[tokio::test]
+async fn the_walk_a_restart_owes_is_requested_once_however_often_the_start_runs() {
+    // `start` runs again on every re-evaluation (an out-of-range refusal, a
+    // chain far behind): only the first one follows the restart.
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 500);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.set_cursor(400).await;
+    let consumer = rig.consumer_with(rig.handle.clone(), true);
+    for _ in 0..3 {
+        assert_eq!(consumer.start_position_for_test().await, Ok(401));
+    }
+    assert_eq!(
+        rig.store
+            .walk_requests(NETWORK)
+            .await
+            .unwrap()
+            .map(|walks| walks.requested_seq),
+        Some(1)
+    );
 }

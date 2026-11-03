@@ -25,6 +25,7 @@ pub fn block(block_num: u32, updates: &[(&str, &str)]) -> ObservedBlock {
                 is_public: true,
             })
             .collect(),
+        undecodable_updates: 0,
     }
 }
 
@@ -79,6 +80,9 @@ pub enum Open {
     /// Serve up to `blocks` blocks (all of them when `None`), following the
     /// chain as it grows, then end as `then` says.
     Serve { blocks: Option<usize>, then: End },
+    /// The open never returns, as against a node that takes the call and
+    /// never answers it.
+    Hang,
 }
 
 #[derive(Clone, Debug)]
@@ -237,7 +241,7 @@ impl ScriptedBlockSourceFactory {
             .collect()
     }
 
-    fn open_scripted(
+    async fn open_scripted(
         &self,
         transport: Transport,
         from: u32,
@@ -262,6 +266,7 @@ impl ScriptedBlockSourceFactory {
             return Err(status(tonic::Code::OutOfRange));
         }
         match script {
+            Open::Hang => std::future::pending().await,
             Open::Refuse(error) => Err(error),
             Open::Serve { blocks, then } => Ok(Box::new(ScriptedSource {
                 chain: self.chain.clone(),
@@ -277,11 +282,11 @@ impl ScriptedBlockSourceFactory {
 #[async_trait]
 impl BlockSourceFactory for ScriptedBlockSourceFactory {
     async fn open_stream(&self, from: u32) -> Result<Box<dyn BlockSource>, BlockSourceError> {
-        self.open_scripted(Transport::Stream, from)
+        self.open_scripted(Transport::Stream, from).await
     }
 
     async fn open_poll(&self, from: u32) -> Result<Box<dyn BlockSource>, BlockSourceError> {
-        self.open_scripted(Transport::Poll, from)
+        self.open_scripted(Transport::Poll, from).await
     }
 
     async fn chain_tip(&self) -> Result<u32, BlockSourceError> {

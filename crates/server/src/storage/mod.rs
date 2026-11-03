@@ -914,6 +914,35 @@ pub trait StorageBackend: Send + Sync {
         Ok(found)
     }
 
+    /// Which of `pairs` (`(account_id, commitment)`) are the post-state of
+    /// one of that account's candidate deltas: this server's own
+    /// transaction in flight. Block watch (issue #585) uses it for accounts
+    /// with a candidate pending, whose own landing is no observation while
+    /// any other move is. The default reads each account's candidates (a
+    /// handful per account); backends that can query by commitment
+    /// override it.
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        let mut wanted: std::collections::BTreeMap<&str, std::collections::HashSet<&str>> =
+            std::collections::BTreeMap::new();
+        for (account_id, commitment) in pairs {
+            wanted.entry(account_id).or_default().insert(commitment);
+        }
+        let mut found = std::collections::HashSet::new();
+        for (account_id, commitments) in wanted {
+            for delta in self.pull_candidate_deltas(account_id).await? {
+                if let Some(commitment) = delta.new_commitment.as_deref()
+                    && commitments.contains(commitment)
+                {
+                    found.insert((account_id.to_string(), commitment.to_string()));
+                }
+            }
+        }
+        Ok(found)
+    }
+
     /// The commitment and nonce of the account's stored state, without
     /// its payload: what the canonical-nonce pre-check (issue #191)
     /// serves. `nonce` is `None` when the row does not know it (see
