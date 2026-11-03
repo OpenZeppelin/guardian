@@ -8,6 +8,7 @@ protocol partners, integrators, and anyone reading the repository publicly.
 | # | Title | Status | Feature |
 |---|---|---|---|
 | [0001](./0001-server-side-transaction-execution.md) | Guardian executes, proves and submits transactions | Accepted for implementation | [#254](https://github.com/OpenZeppelin/guardian/issues/254) |
+| [0002](./0002-guardian-modules.md) | Guardian modules, a hook pipeline for pluggable policy | Accepted for implementation | [#251](https://github.com/OpenZeppelin/guardian/issues/251) |
 
 ## What belongs here
 
@@ -39,7 +40,7 @@ is opened for review and never reused or renumbered.
 
 **Claim tags.** Where an RFC asserts something about upstream or our own code,
 tag how far it was verified — **[RAN]** (verified by executing code), **[READ]**
-(verified against dependency source), **[INFERRED]** (reasoned, not directly
+(verified by reading source, ours or a dependency's), **[INFERRED]** (reasoned, not directly
 verified) — and cite `file:line` so a reviewer can check it independently. Pin
 the dependency versions the claims are made against; upstream moves.
 
