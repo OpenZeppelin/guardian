@@ -1,4 +1,7 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+
 import type { RequestAuthPayload } from './auth-request.js';
+import type { ServerExecutionCapability } from './execution.js';
 
 export interface Signer {
   readonly commitment: string;
@@ -153,6 +156,12 @@ export type ProposalSignature = FalconSignature | EcdsaSignature;
 
 export type SignatureScheme = 'falcon' | 'ecdsa';
 
+/** One cosigner of a {@link AuthConfig} `Miden` auth and the scheme Guardian verifies its signatures under. */
+export interface MidenCosignerConfig {
+  commitment: string;
+  scheme: SignatureScheme;
+}
+
 export type AuthConfig =
   | {
       MidenFalconRpo: {
@@ -162,6 +171,18 @@ export type AuthConfig =
   | {
       MidenEcdsa: {
         cosigner_commitments: string[];
+      };
+    }
+  /**
+   * Cosigners that each carry their own scheme, and the GUARDIAN's scheme
+   * (issue #563). Send it only for an account whose cosigners and GUARDIAN
+   * do not all share one scheme; servers before #563 reject it, and the
+   * single-scheme variants keep serving the accounts that do.
+   */
+  | {
+      Miden: {
+        cosigners: MidenCosignerConfig[];
+        guardian_scheme: SignatureScheme;
       };
     };
 
@@ -206,6 +227,15 @@ export interface ProposalMetadata {
   targetThreshold?: number;
   requiredSignatures?: number;
   signerCommitments?: string[];
+  /**
+   * Target signer schemes (`"falcon"` / `"ecdsa"`), index-aligned with
+   * `signerCommitments`, for an update-signers proposal whose signers do not
+   * all share one scheme (issue #563). Absent => every target signer keeps the
+   * proposer's scheme. GUARDIAN stores the proposer's values as sent, so a
+   * consumer validates them, as it validates the rest of the metadata against
+   * the transaction summary, before relying on them.
+   */
+  signerSchemes?: string[];
   targetProcedure?: string;
   salt?: string;
   description?: string;
@@ -245,6 +275,8 @@ export interface DeltaObject {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Absent on a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
   ackSig?: string;
   ackPubkey?: string;
@@ -268,6 +300,7 @@ export interface StateObject {
   stateJson: { data: string };
   createdAt: string;
   updatedAt: string;
+  /** `falcon` or `ecdsa` when the account's cosigners and GUARDIAN share that scheme, `mixed` when they do not. */
   authScheme?: string;
 }
 
@@ -310,6 +343,11 @@ export interface StatusResponse {
   environment: string;
   startedAt: string;
   uptimeSeconds: number;
+  /**
+   * Whether the server accepts Guardian execution requests. Absent on a Guardian that predates
+   * Guardian execution: it does not offer it.
+   */
+  execution?: ServerExecutionCapability;
   /** Present on every Guardian that accepts session grants; absent on older servers. */
   sessions?: SessionsStatus;
 }
@@ -321,6 +359,8 @@ export interface DeltaProposalRequest {
     txSummary: { data: string };
     signatures: Array<{ signerId: string; signature: ProposalSignature }>;
     metadata?: ProposalMetadata;
+    /** The request a Guardian-executable proposal stores. Omit for a self-executed one. */
+    transactionRequest?: TransactionRequestEnvelope;
   };
 }
 
@@ -357,13 +397,22 @@ export interface AbandonCandidateResponse {
    * return the original timestamp; absent once resolved.
    */
   abandonRequestedAt?: string;
+  /**
+   * The abandoned delta's `new_commitment`. Another delta can later take
+   * the same nonce (a Guardian execution archives the abandoned one), so
+   * pass this to `abandonStatus` to poll for this delta.
+   */
+  commitment: string;
 }
 
 /**
  * Resolution of an abandon request, as observed via the delta feed.
  * `'retained'` means the account slot is released but the on-chain
  * outcome is still uncertain — "unlocked but unresolved", never to be
- * read as "the transaction did not land".
+ * read as "the transaction did not land". When another delta has taken
+ * the nonce, `'abandoned'` means it is canonical (the abandoned
+ * transaction can no longer land) and `'waiting'` that it is still a
+ * candidate.
  */
 export type AbandonStatus = 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected';
 

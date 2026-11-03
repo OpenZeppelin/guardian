@@ -9,10 +9,10 @@ use crate::error::Result;
 
 impl MultisigClient {
     /// Starts a Guardian session: the key manager signs one grant, then a
-    /// delegated signer signs this client's state and delta reads and its
-    /// proposal list, get, create and sign requests until the session ends.
-    /// Account registration, delta pushes, candidate abandons, account lookup
-    /// and transaction approvals keep using the key manager.
+    /// delegated signer signs this client's state and delta reads, its
+    /// proposal list, get, create and sign requests and its delta pushes
+    /// until the session ends. Account registration, candidate abandons,
+    /// account lookup and transaction approvals keep using the key manager.
     ///
     /// A session this client already holds is logged out, best effort, once
     /// the new one is registered. Changing the Guardian endpoint drops the

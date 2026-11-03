@@ -96,6 +96,18 @@ impl StorageBackend for InstrumentedStorage {
         timed("pull_state_head", self.inner.pull_state_head(account_id)).await
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        timed(
+            "replace_state",
+            self.inner.replace_state(state, expected_commitment),
+        )
+        .await
+    }
+
     async fn backfill_state_nonce(
         &self,
         account_id: &str,
@@ -193,6 +205,30 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
+        timed(
+            "pull_superseded_deltas",
+            self.inner.pull_superseded_deltas(account_id, since),
+        )
+        .await
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, String> {
+        timed(
+            "prune_superseded_deltas",
+            self.inner.prune_superseded_deltas(account_id, before),
+        )
+        .await
+    }
+
     async fn list_accounts_with_recoverable_deltas(
         &self,
         abandoned_since: chrono::DateTime<chrono::Utc>,
@@ -213,6 +249,17 @@ impl StorageBackend for InstrumentedStorage {
         timed(
             "submit_delta_proposal",
             self.inner.submit_delta_proposal(commitment, proposal),
+        )
+        .await
+    }
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: crate::storage::ProposalAdmission,
+    ) -> Result<crate::storage::ProposalWrite, String> {
+        timed(
+            "admit_delta_proposal",
+            self.inner.admit_delta_proposal(admission),
         )
         .await
     }
@@ -263,6 +310,20 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        timed(
+            "update_delta_proposal_if_status",
+            self.inner
+                .update_delta_proposal_if_status(commitment, proposal, expected),
+        )
+        .await
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
@@ -283,11 +344,13 @@ impl StorageBackend for InstrumentedStorage {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         timed(
             "request_candidate_abandon",
-            self.inner.request_candidate_abandon(account_id, nonce, now),
+            self.inner
+                .request_candidate_abandon(account_id, nonce, new_commitment, now),
         )
         .await
     }
@@ -297,12 +360,11 @@ impl StorageBackend for InstrumentedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<CandidateSubmission, String> {
         timed(
             "submit_candidate",
-            self.inner
-                .submit_candidate(metadata, delta, now, max_pending_candidates),
+            self.inner.submit_candidate(metadata, delta, now, policy),
         )
         .await
     }
@@ -360,6 +422,138 @@ impl StorageBackend for InstrumentedStorage {
         timed(
             "update_delta_status",
             self.inner.update_delta_status(account_id, nonce, status),
+        )
+        .await
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        timed(
+            "create_execution_reservation",
+            self.inner.create_execution_reservation(reservation),
+        )
+        .await
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        timed(
+            "renew_execution_reservation",
+            self.inner
+                .renew_execution_reservation(account_id, fence, lease_expires_at, phase),
+        )
+        .await
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        timed(
+            "claim_execution_reservation",
+            self.inner.claim_execution_reservation(
+                account_id,
+                expected,
+                claimant,
+                lease_expires_at,
+            ),
+        )
+        .await
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        timed(
+            "load_active_execution",
+            self.inner.load_active_execution(account_id),
+        )
+        .await
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        timed(
+            "load_latest_execution",
+            self.inner.load_latest_execution(account_id, proposal_id),
+        )
+        .await
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        timed(
+            "admit_execution_candidate",
+            self.inner.admit_execution_candidate(metadata, admission),
+        )
+        .await
+    }
+
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        timed(
+            "resolve_execution",
+            self.inner.resolve_execution(metadata, resolution),
+        )
+        .await
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        timed("fail_execution", self.inner.fail_execution(resolution)).await
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        timed(
+            "settle_promoted_execution",
+            self.inner.settle_promoted_execution(account_id, fence, now),
+        )
+        .await
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        timed(
+            "list_active_executions",
+            self.inner.list_active_executions(),
+        )
+        .await
+    }
+
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        timed(
+            "prune_execution_records",
+            self.inner.prune_execution_records(cutoff, limit),
         )
         .await
     }
@@ -519,6 +713,43 @@ mod tests {
             rendered.contains("outcome=\"error\"} 1"),
             "missing error outcome in:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn replace_state_forwards_the_compare_and_swap() {
+        let inner = Arc::new(MockStorageBackend::new().with_replace_state(Ok(
+            crate::storage::StateReplace::StateMoved {
+                current: "0xpromoted".to_string(),
+            },
+        )));
+        let state = StateObject {
+            account_id: "acct".to_string(),
+            state_json: serde_json::json!({}),
+            commitment: "0xsubmitted".to_string(),
+            nonce: Some(1),
+            created_at: String::new(),
+            updated_at: String::new(),
+            auth_scheme: String::new(),
+        };
+        let recorder = build_recorder();
+        let handle = recorder.handle();
+        let outcome = metrics::with_local_recorder(&recorder, || {
+            let storage = InstrumentedStorage::new(inner.clone());
+            block_on(async move { storage.replace_state(&state, "0xread").await })
+        });
+        assert_eq!(
+            outcome,
+            Ok(crate::storage::StateReplace::StateMoved {
+                current: "0xpromoted".to_string()
+            })
+        );
+        let calls = inner.get_replace_state_calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].1, "0xread");
+        assert!(inner.get_submit_state_calls().is_empty());
+        assert!(handle.render().contains(
+            "guardian_storage_operations_total{operation=\"replace_state\",outcome=\"ok\"} 1"
+        ));
     }
 
     #[test]

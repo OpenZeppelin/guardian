@@ -158,6 +158,21 @@ impl NetworkClient for IntegrationMockNetworkClient {
         Ok(StateVerification::Match)
     }
 
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
+    ) -> Result<crate::network::ObservedState, String> {
+        let verification = self
+            .verify_commitment(account_id, expected_commitment, read_mode)
+            .await?;
+        Ok(crate::network::ObservedState {
+            verification,
+            block: 0,
+        })
+    }
+
     fn verify_delta(
         &self,
         prev_proof: &str,
@@ -222,6 +237,7 @@ impl NetworkClient for IntegrationMockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _expected_guardian_commitment: &str,
+        _expected_guardian_scheme: guardian_shared::SignatureScheme,
     ) -> Result<(), String> {
         Ok(())
     }
@@ -304,6 +320,14 @@ impl NetworkClient for IntegrationMockNetworkClient {
         self.miden_client.account_auth_binding(state_json)
     }
 
+    fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_multisig_auth(state_json)
+    }
+
+    fn validate_first_state(&self, state_json: &serde_json::Value) -> Result<(), String> {
+        self.miden_client.validate_first_state(state_json)
+    }
+
     async fn should_update_auth(
         &self,
         state_json: &serde_json::Value,
@@ -342,6 +366,7 @@ pub async fn create_test_app_state() -> AppState {
         .expect("Failed to create signer registry");
 
     AppState {
+        execution: Default::default(),
         miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
         storage: storage_backend,
         metadata: Arc::new(metadata),
@@ -467,6 +492,72 @@ pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
     (account_id, account_id_hex, fixture_string)
 }
 
+/// A guarded-multisig account built straight from the upstream
+/// `AuthGuardedMultisig` component (plus a `BasicWallet`), whose approvers
+/// and GUARDIAN each carry their own scheme, as `miden-standards` stores
+/// them. Available under every feature set, unlike the contracts crate.
+pub fn build_guarded_multisig_account(
+    seed: [u8; 32],
+    threshold: u32,
+    approvers: &[(Word, guardian_shared::SignatureScheme)],
+    guardian: (Word, guardian_shared::SignatureScheme),
+) -> miden_protocol::account::Account {
+    use miden_protocol::account::AccountBuilder;
+    use miden_protocol::account::auth::PublicKeyCommitment;
+    use miden_standards::account::auth::{
+        Approver, ApproverSet, AuthGuardedMultisig, AuthGuardedMultisigConfig, GuardianConfig,
+    };
+    use miden_standards::account::wallets::BasicWallet;
+
+    let approver = |(commitment, scheme): (Word, guardian_shared::SignatureScheme)| {
+        Approver::new(PublicKeyCommitment::from(commitment), scheme.auth_scheme())
+    };
+    let approver_set =
+        ApproverSet::new(approvers.iter().copied().map(approver).collect(), threshold)
+            .expect("valid approver set");
+    let config =
+        AuthGuardedMultisigConfig::new(approver_set, GuardianConfig::new(approver(guardian)))
+            .expect("valid guarded-multisig config");
+    let component: miden_protocol::account::AccountComponent = AuthGuardedMultisig::new(config)
+        .expect("valid guarded multisig")
+        .into();
+    AccountBuilder::new(seed)
+        .with_component(component)
+        .with_component(BasicWallet)
+        .build()
+        .expect("account builds")
+}
+
+/// A single-key account built from the upstream `AuthSingleSig` component
+/// (plus a `BasicWallet`): an account without the multisig auth.
+pub fn build_single_key_account(
+    seed: [u8; 32],
+    signer: (Word, guardian_shared::SignatureScheme),
+) -> miden_protocol::account::Account {
+    use miden_protocol::account::AccountBuilder;
+    use miden_protocol::account::auth::PublicKeyCommitment;
+    use miden_standards::account::auth::{Approver, AuthSingleSig};
+    use miden_standards::account::wallets::BasicWallet;
+
+    let (commitment, scheme) = signer;
+    AccountBuilder::new(seed)
+        .with_component(miden_protocol::account::AccountComponent::from(
+            AuthSingleSig::new(Approver::new(
+                PublicKeyCommitment::from(commitment),
+                scheme.auth_scheme(),
+            )),
+        ))
+        .with_component(BasicWallet)
+        .build()
+        .expect("account builds")
+}
+
+/// A key commitment parsed from its `0x` hex.
+pub fn word_from_commitment_hex(hex: &str) -> Word {
+    use guardian_shared::hex::FromHex;
+    Word::from_hex(hex).expect("valid commitment hex")
+}
+
 /// Signer 1 of the fixture account and the account's full cosigner set, in
 /// the signer map's canonical (index) order, as generated alongside
 /// `account.json` by `generate_fixtures`. Configuring the fixture account
@@ -474,22 +565,9 @@ pub fn load_fixture_account_grpc() -> (AccountId, String, String) {
 /// `MidenNetworkClient`) only succeeds with this declared set, and only
 /// these keys then pass the account's cosigner check.
 pub fn fixture_signer() -> (TestSigner, Vec<String>) {
-    use miden_protocol::utils::serde::Deserializable;
-
     let keys: serde_json::Value = serde_json::from_str(crate::testing::fixtures::KEYS_JSON)
         .expect("Failed to parse keys.json");
-    let secret_key_bytes = hex::decode(keys["signer_1_secret_key"].as_str().expect("signer key"))
-        .expect("signer key hex");
-    let signer = TestSigner::from_secret_key(
-        SecretKey::read_from_bytes(&secret_key_bytes).expect("signer key bytes"),
-    );
-    assert_eq!(
-        signer.commitment_hex,
-        keys["signer_1_commitment"]
-            .as_str()
-            .expect("signer commitment"),
-        "keys.json signer 1 commitment must match its secret key"
-    );
+    let signer = fixture_signer_n(1);
     let cosigner_commitments = (1..=3)
         .map(|i| {
             keys[format!("signer_{i}_commitment")]
@@ -499,6 +577,195 @@ pub fn fixture_signer() -> (TestSigner, Vec<String>) {
         })
         .collect();
     (signer, cosigner_commitments)
+}
+
+/// Signer `n` (1-based) of the fixture account, from `keys.json`.
+pub fn fixture_signer_n(n: usize) -> TestSigner {
+    let keys: serde_json::Value = serde_json::from_str(crate::testing::fixtures::KEYS_JSON)
+        .expect("Failed to parse keys.json");
+    let signer = TestSigner::from_secret_key(fixture_secret_key_n(n));
+    assert_eq!(
+        signer.commitment_hex,
+        keys[format!("signer_{n}_commitment")]
+            .as_str()
+            .expect("signer commitment"),
+        "keys.json signer {n} commitment must match its secret key"
+    );
+    signer
+}
+
+/// The secret key of signer `n` (1-based) of the fixture account.
+pub fn fixture_secret_key_n(n: usize) -> SecretKey {
+    use miden_protocol::utils::serde::Deserializable;
+
+    let keys: serde_json::Value = serde_json::from_str(crate::testing::fixtures::KEYS_JSON)
+        .expect("Failed to parse keys.json");
+    let secret_key_bytes = hex::decode(
+        keys[format!("signer_{n}_secret_key")]
+            .as_str()
+            .expect("signer key"),
+    )
+    .expect("signer key hex");
+    SecretKey::read_from_bytes(&secret_key_bytes).expect("signer key bytes")
+}
+
+/// What [`store_authorizing_proposal`] replaced, so the proposal store can
+/// be put back the way the test had arranged it once the push is done.
+pub struct StoredAuthorization {
+    account_id: String,
+    proposal_id: Option<String>,
+    prior: Option<crate::delta_object::DeltaObject>,
+}
+
+impl StoredAuthorization {
+    pub async fn restore(self, state: &crate::state::AppState) {
+        let Some(proposal_id) = self.proposal_id else {
+            return;
+        };
+        match self.prior {
+            Some(row) => {
+                state
+                    .storage
+                    .submit_delta_proposal(&proposal_id, &row)
+                    .await
+                    .expect("prior proposal restored");
+            }
+            None => {
+                state
+                    .storage
+                    .delete_delta_proposal(&self.account_id, &proposal_id)
+                    .await
+                    .expect("authorizing proposal removed");
+            }
+        }
+    }
+}
+
+/// Store the pending proposal that authorizes `delta` under the multisig
+/// push gate (issue #524): the row matching `delta`'s transaction summary,
+/// carrying one verified Falcon approval per given key. When the row
+/// already exists (a test created it through the proposal service), only
+/// its signatures are replaced, so its payload and metadata survive. The
+/// returned [`StoredAuthorization`] restores the prior store contents, so
+/// a test's proposal-listing assertions keep their meaning.
+pub async fn store_authorizing_proposal(
+    state: &crate::state::AppState,
+    delta: &crate::delta_object::DeltaObject,
+    approver_keys: &[SecretKey],
+) -> StoredAuthorization {
+    use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus, ProposalSignature};
+    use guardian_shared::FromJson;
+
+    let untouched = StoredAuthorization {
+        account_id: delta.account_id.clone(),
+        proposal_id: None,
+        prior: None,
+    };
+    let Ok(proposal_id) = state.network_client.delta_proposal_id(
+        &delta.account_id,
+        delta.nonce,
+        &delta.delta_payload,
+    ) else {
+        return untouched;
+    };
+    let Ok(summary) =
+        miden_protocol::transaction::TransactionSummary::from_json(&delta.delta_payload)
+    else {
+        return untouched;
+    };
+    let signers: Vec<TestSigner> = approver_keys
+        .iter()
+        .map(|key| TestSigner::from_secret_key(key.clone()))
+        .collect();
+    let status = DeltaStatus::Pending {
+        timestamp: "2024-11-14T12:00:00Z".to_string(),
+        proposer_id: signers[0].commitment_hex.clone(),
+        cosigner_sigs: signers
+            .iter()
+            .map(|signer| CosignerSignature {
+                signature: ProposalSignature::Falcon {
+                    signature: signer.sign_word(summary.to_commitment()),
+                },
+                timestamp: "2024-11-14T12:00:00Z".to_string(),
+                signer_id: signer.commitment_hex.clone(),
+            })
+            .collect(),
+    };
+    let prior = state
+        .storage
+        .pull_delta_proposal(&delta.account_id, &proposal_id)
+        .await
+        .ok();
+    let proposal = match prior.clone() {
+        Some(mut row) => {
+            row.status = status;
+            row
+        }
+        None => DeltaObject {
+            account_id: delta.account_id.clone(),
+            nonce: delta.nonce,
+            prev_commitment: delta.prev_commitment.clone(),
+            new_commitment: None,
+            delta_payload: serde_json::json!({
+                "tx_summary": delta.delta_payload,
+                "signatures": [],
+                "metadata": { "proposal_type": "custom" },
+            }),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status,
+            metadata: None,
+        },
+    };
+    state
+        .storage
+        .submit_delta_proposal(&proposal_id, &proposal)
+        .await
+        .expect("authorizing proposal stored");
+    StoredAuthorization {
+        account_id: delta.account_id.clone(),
+        proposal_id: Some(proposal_id),
+        prior,
+    }
+}
+
+/// Store the proposal that authorizes a fixture delta (as loaded by
+/// [`load_fixture_delta`] / [`load_queue_fixture_delta`]) under the
+/// multisig push gate, approved by all three fixture signers. The row
+/// stays in the store afterwards, as it would in production.
+pub async fn store_fixture_authorizing_proposal(
+    state: &crate::state::AppState,
+    fixture_delta: &serde_json::Value,
+) {
+    let delta = crate::delta_object::DeltaObject {
+        account_id: fixture_delta["account_id"]
+            .as_str()
+            .expect("fixture account_id")
+            .to_string(),
+        nonce: fixture_delta["nonce"].as_u64().expect("fixture nonce"),
+        prev_commitment: fixture_delta["prev_commitment"]
+            .as_str()
+            .expect("fixture prev_commitment")
+            .to_string(),
+        new_commitment: None,
+        delta_payload: fixture_delta["delta_payload"].clone(),
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    store_authorizing_proposal(
+        state,
+        &delta,
+        &[
+            fixture_secret_key_n(1),
+            fixture_secret_key_n(2),
+            fixture_secret_key_n(3),
+        ],
+    )
+    .await;
 }
 
 pub fn get_test_account_id() -> (AccountId, String) {
@@ -839,6 +1106,7 @@ pub fn create_test_app_state_with_mocks(
         .expect("Failed to create signer registry");
 
     AppState {
+        execution: Default::default(),
         miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
         storage: storage_backend,
         metadata,

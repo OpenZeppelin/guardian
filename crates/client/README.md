@@ -33,15 +33,35 @@ knows the transaction will never land:
 
 ```rust
 // Records an abandon intent; the guardian's worker confirms over a short
-// quarantine that the tx did not land, then releases the account.
-let response = client.abandon_candidate(&account_id, nonce).await?;
+// quarantine that the tx did not land, then releases the account. The
+// transaction is named by its summary's commitment: a Guardian execution
+// can take the nonce, and the abandon still answers for this transaction.
+let proposal_id = guardian_client::tx_summary_commitment_hex(&tx_summary);
+let response = client
+    .abandon_candidate(&account_id, nonce, &proposal_id)
+    .await?;
 assert_eq!(response.state, "pending");
 
-// Poll the delta for the resolution: still `candidate` -> waiting,
-// `canonical` -> the tx landed after all, `discarded` with reason
-// `client_abandoned` -> the account is released.
-let delta = client.get_delta(&account_id, nonce).await?;
+// Poll the delta for the resolution. Compare its commitment with the one
+// the abandon returned first: a Guardian execution can take the nonce
+// with a delta of its own, which says nothing about the abandoned tx.
+match client.get_delta(&account_id, nonce).await?.delta {
+    Some(delta) if delta.new_commitment.eq_ignore_ascii_case(&response.commitment) => {
+        // `candidate` -> waiting, `canonical` -> the tx landed after all,
+        // `discarded` with reason `client_abandoned` -> the account is
+        // released.
+    }
+    Some(_) => {
+        // Another delta holds the nonce: `canonical` -> the abandoned tx
+        // can no longer land, `candidate` -> waiting on that delta.
+    }
+    None => {}
+}
 ```
+
+Naming the transaction needs a Guardian server from the same release: an
+older server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
 
 ### Canonical Nonce
 
@@ -87,6 +107,34 @@ loop {
     }
 }
 ```
+
+### Guardian Execution
+
+A Guardian-executable proposal (one whose payload stores a `transaction_request`) can be
+proved, submitted and committed by Guardian once it has enough signatures:
+
+```rust
+let mut execution = client
+    .execute_delta_proposal(&account_id, &proposal_id)
+    .await?;
+while !execution.state.is_terminal() {
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    execution = client.get_delta_proposal_execution(&account_id, &proposal_id).await?;
+}
+
+// The account's in-flight execution, if any
+let current = client.get_current_execution(&account_id).await?;
+```
+
+Guardian executes a transaction that creates a private output note like any other; deliver the
+note to its recipient with the multisig SDK's `export_p2id_note_to_file`. A guardian switch is
+refused with `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `switch_guardian`).
+
+A refusal is a `ClientError` whose `guardian_code()` is the wire code (for example
+`GUARDIAN_EXECUTION_CONFLICT`), with `is_retryable()`, `retry_after()` and, on a conflict,
+`guardian_meta()["blocking_proposal_id"]`. The multisig SDK adds
+`wait_for_guardian_execution` with backoff, retries and a deadline; see
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution).
 
 ### Rate Limits and Retries
 
@@ -173,11 +221,35 @@ let client = GuardianClient::connect("http://localhost:50051")
 
 ### 3. Set Up Account Authorization
 
-```rust
-use guardian_client::auth;
+The `AuthConfig` passed to `configure` lists the account's cosigners. When every
+cosigner and the GUARDIAN use one scheme, use that scheme's variant:
 
-// Add the public key to the account's authorized cosigners
-let auth_config = auth::miden_falcon_rpo_auth(vec![pubkey_hex]);
+```rust
+use guardian_client::{AuthConfig, MidenFalconRpoAuth, auth_config::AuthType};
+
+let auth_config = AuthConfig {
+    auth_type: Some(AuthType::MidenFalconRpo(MidenFalconRpoAuth {
+        cosigner_commitments: vec![commitment_hex],
+    })),
+};
+```
+
+An account whose cosigners mix Falcon and ECDSA keys declares each cosigner's
+scheme and the GUARDIAN's scheme. Servers before this variant reject it, so keep
+the single-scheme variants for every other account:
+
+```rust
+use guardian_client::{AuthConfig, MidenAuth, MidenCosigner, auth_config::AuthType};
+
+let auth_config = AuthConfig {
+    auth_type: Some(AuthType::Miden(MidenAuth {
+        cosigners: vec![
+            MidenCosigner { commitment: wallet_commitment_hex, scheme: "ecdsa".into() },
+            MidenCosigner { commitment: falcon_commitment_hex, scheme: "falcon".into() },
+        ],
+        guardian_scheme: "ecdsa".into(),
+    })),
+};
 ```
 
 ### 4. Sign Requests With a Session (optional)
@@ -186,7 +258,7 @@ When the Guardian accepts sessions (it advertises `sessions` on HTTP
 `GET /status`; an older Guardian answers `CreateSession` as unimplemented),
 the wallet can sign one session grant and let a delegated P-256 key sign the
 session-eligible requests (state and delta reads, proposal
-list/get/create/sign):
+list/get/create/sign, delta pushes):
 
 ```rust
 use std::time::Duration;
@@ -200,14 +272,16 @@ let info = client
     })
     .await?;
 
-// ...get_state, get_delta_since, push_delta_proposal: signed by the session key.
+// ...get_state, get_delta_since, push_delta_proposal, push_delta, execute_delta_proposal
+// and the execution status reads: signed by the session key.
 
 client.revoke_session().await?; // this session only, signed by the session key
 client.revoke_all_sessions().await?; // every session of the wallet, wallet-signed
 ```
 
-Every other route, including `configure`, `push_delta`, `abandon` and account
-lookup, keeps using the wallet signer. The session is used only while the
+Every other route, including `configure`, `abandon` and account lookup, keeps
+using the wallet signer. A session-signed `push_delta` needs a Guardian that
+accepts it; an older one answers `wallet_signature_required`. The session is used only while the
 wallet that granted it is the client's signer. When Guardian answers a
 session-signed request with `session_expired`, `session_revoked` or
 `authentication_failed`, the client drops the session and the next request is

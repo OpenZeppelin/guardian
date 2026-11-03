@@ -20,6 +20,8 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.19.0-rc.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
+| 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.0 | 0.17 | `=0.17.0` | `=0.17.0` | `0.17.0` (exact) |
@@ -30,7 +32,13 @@ elsewhere and link here:
 | 0.13.x | 0.13 | n/a | `0.13.0` | `^0.13.0` |
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
-0.18.2 keeps the 0.18.1 pins.
+0.18.2 and 0.18.3 keep the 0.18.1 pins.
+
+0.19.0-rc.1 keeps the 0.18.1 pins as well; it is the first release candidate of 0.19.0
+and stays on Miden 0.17, so accounts and stores carry over. It changes server and SDK
+contracts (see the 0.19.0 upgrade notes below). The release candidates are published
+to npm under the `rc` dist-tag, so `npm install` without an explicit version still
+resolves the 0.18.x line.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
@@ -123,6 +131,96 @@ be reproduced: `TransactionRequest` serialization changed and the auth arg commi
 Execute or cancel every pending proposal on the rc version, have GUARDIAN drop any that
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
+
+**Upgrading from 0.18.3 to 0.19.0: accounts that mix Falcon and ECDSA cosigners (issue #563).**
+GUARDIAN can now register and operate a guarded multisig whose approvers use
+different schemes, for example an ECDSA wallet or hardware signer next to a
+locally held Falcon key. Existing stored data needs no migration, and
+single-scheme accounts keep their wire and storage shape.
+
+- **A new auth variant.** `/configure` (HTTP and gRPC) accepts `Miden { cosigners:
+  [{ commitment, scheme }], guardian_scheme }` next to `MidenFalconRpo` and
+  `MidenEcdsa`. Each request is verified under its signer's registered scheme,
+  deltas are acknowledged with the GUARDIAN scheme's ACK key, and `auth_scheme`
+  reads `mixed` for such an account. Servers up to 0.18.3 reject the variant, so
+  upgrade the server before clients register mixed accounts; clients keep sending
+  the single-scheme variants for every other account.
+- **`/configure` also checks the scheme slots**, for every variant: the account
+  must store the GUARDIAN under the scheme of the ACK key it holds
+  (`authorization_failed`), and a supported scheme for every multisig approver
+  (`invalid_input`). An account that does not would fail every transaction on
+  chain, or every one that approver signs.
+- **Approvals are checked against the approver's scheme.** `PUT` and `POST
+  /delta/proposal` refuse an approval made under another scheme than the account
+  registers its signer with (`invalid_proposal_signature`), and the multisig push
+  gate does not count one. A correctly registered account is unaffected, since a
+  key's commitment is derived under its own scheme; an account that registers a
+  key under the wrong scheme now gets the refusal instead of an acknowledgement
+  for a transaction the chain refuses.
+- **The scheme policy holds for reconfigurations too.** With
+  `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` set, a reconfiguration that adds a scheme
+  the stored account does not use yet is refused with
+  `signature_scheme_not_allowed`; re-configuring under the schemes an account
+  already uses keeps working.
+- **Canonicalization keeps schemes in step with the chain.** A single-scheme
+  account that gains a cosigner of the other scheme is stored as `Miden` from then
+  on, and that cosigner can authenticate.
+- **Postgres** gains the index `idx_account_metadata_miden_cosigners` (embedded
+  migration `2026-10-20-000001_miden_auth_cosigner_index`) so `GET /state/lookup`
+  and session grants find the cosigners of such accounts.
+- **No rollback once a mixed account is stored.** Servers up to 0.18.3 cannot
+  read a stored `Miden` auth, whether `/configure` wrote it or canonicalization
+  promoted an account to it: a filesystem metadata store then fails to load as a
+  whole, and on Postgres every request for that account fails. During a rolling
+  deploy, older replicas fail requests for such an account until they are
+  replaced, so finish the rollout before clients register mixed accounts.
+- **SDKs.** The base clients can send the variant. Both multisig SDKs, Rust
+  (#549) and TypeScript (#576), create such accounts (Rust
+  `create_account_with_signers`, TypeScript `SignerSpec` signers), register the
+  schemes an account stores (the per-signer variant only when an approver's
+  scheme differs from the GUARDIAN's), and keep every approver's and the
+  GUARDIAN's scheme through signer updates and GUARDIAN switches. Their
+  update-signers proposals carry `signer_schemes` unless every target signer uses
+  the proposer's scheme and the scheme of the approvers it keeps, and both refuse
+  a proposal that would rewrite a kept approver's scheme, such as one from an
+  older SDK, which wrote its own scheme for every approver. Older SDKs ignore
+  `signer_schemes`, so on a mixed account they may not reproduce such a proposal
+  and then refuse to sign it. The TypeScript SDK reports a server up to 0.18.3
+  refusing the variant as `GuardianMixedSchemesUnsupportedError`.
+- **Rust SDK API.** `TransactionType::AddCosigner` gains `scheme` (`None` takes
+  the proposer's; `add_cosigner` is unchanged), `ProposalMetadata` gains
+  `signer_scheme_names` and `ExportedMetadata` `signer_schemes`, and
+  `build_update_signers_transaction_request` takes `SignerSpec`s in place of
+  commitments and one scheme. Code that matches the variant without `..`, or
+  builds the metadata structs without `..Default::default()`, needs updating.
+- **TypeScript SDK API.** `SignerSchemeMismatchError` now reports a signer update
+  that would change a kept approver's scheme (`changes`), and is no longer thrown
+  for mixed accounts; `KeySchemeMismatchError` and
+  `GuardianMixedSchemesUnsupportedError` are new.
+  `UpdateSignersProposalMetadata` gains `targetSignerSchemes`.
+
+**Upgrading from 0.18.2 to 0.18.3: patched CA trust store.** The Miden pins, the
+`auth_tx` procedure root, stored data, existing contracts and the wire contract are
+unchanged, so accounts and stores carry over and 0.18.2 SDKs keep working against a
+0.18.3 server. The release is mainly a server image:
+
+- **CA trust store.** The image requires Debian `ca-certificates 20250419~deb12u2`,
+  which distrusts the compromised
+  [eMudhra intermediates](https://emudhra.we-have-a-problem.com/). Earlier images
+  ship `20250419~deb12u1`. The server trusts the system store for Miden RPC and
+  AWS, so redeploy the 0.18.3 image; restarting a container from an older image
+  keeps the old trust store. The workspace lockfile also moves to
+  `rustls-webpki` 0.103.16 and `webpki-roots` / `webpki-root-certs` 1.0.10.
+  Applications using the Rust SDKs keep their own lockfile; run
+  `cargo update -p rustls-webpki` there to pick up 0.103.16.
+- **First configuration claims the account** before consuming its replay
+  timestamp (#558), so two concurrent first `/configure` requests for one account
+  can no longer both write state; the loser is judged as a reconfiguration.
+- **Fewer account decodes** on `push_delta` and canonicalization promotion (#523),
+  and `push_delta_proposal` verification now shares the reconstruction gate with
+  pushes.
+- **Logging.** Client-caused auth and configure rejections log at WARN instead of
+  ERROR, and gRPC server-fault statuses produced by tonic are logged (#522).
 
 **Upgrading from 0.18.1 to 0.18.2: Cedar and mainnet network labels.** The Miden pins,
 the `auth_tx` procedure root, stored data and existing contracts are unchanged, so
@@ -230,7 +328,7 @@ empty storage and metadata directories, preserving the keystore directory.
 A deployment upgrading across more than one line runs every pending reset in the
 same startup; the newer reset subsumes the older ones.
 
-## Guardian 0.18.x on Miden 0.17
+## Guardian 0.18.x and 0.19.x on Miden 0.17
 
 Nothing stored under Miden 0.16 survives:
 
@@ -269,6 +367,151 @@ Nothing stored under Miden 0.16 survives:
   height, timelock height). The script roots moved with the layouts.
 - **Execution proofs come from VM 0.35** (Plonky3 0.8). A 0.16 proof is rejected.
 
+### Guardian execution
+
+Guardian 0.19.0 adds server-side execution of Guardian-executable proposals on this line. A
+stored request declaring a protocol line other than `0.17` is refused before it is decoded.
+Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
+release candidates changed it, so the SDK that created a proposal and the server should run the
+same `miden-client`: this build pins client 0.17.3 in the server and the Rust SDK and web SDK
+0.17.3 in the TypeScript SDK. A request from a different client either fails to decode
+(`GUARDIAN_EXECUTION_REQUEST_CODEC`) or reproduces a transaction other than the signed one
+(`GUARDIAN_EXECUTION_BINDING_MISMATCH`); either way nothing is submitted. The live
+scenarios (`live-guardian-execute-*`) passed by hand on devnet (node 0.17.0) on 2026-10-06 with
+the 0.17.0 pins, on both SDKs; the qualification matrix requires them on testnet and excludes
+them from devnet runs, whose step budget they exceed.
+
+Source-level changes in the Rust SDK (`miden-multisig-client`) for integrators upgrading:
+
+- `ProposalPayload` has a new public field, `transaction_request`, so a struct literal must set
+  it (`None` for a self-executed proposal) or start from `ProposalPayload::new` and
+  `with_transaction_request`.
+- `MultisigError` has new variants, so an exhaustive `match` on the error needs an arm for
+  each:
+  <!-- multisig-error-variants:start -->
+  - `GuardianExecutionRefused { code, message, retryable, retry_after, blocking_proposal_id }`:
+    Guardian refused an execution request with a stable code.
+  - `LocalExecutionRequired { proposal_id, reason }`: the proposal must be executed by a
+    client, not by Guardian; `reason` is a `LocalExecutionReason`.
+  - `ProposalNotHeldLocally { proposal_id }`: execution was requested for a proposal this
+    client has not listed, fetched, signed, created or imported, so it cannot check it first.
+  - `GuardianExecutionWaitTimedOut { proposal_id, deadline, last_observed }`: from
+    `wait_for_guardian_execution`, whose deadline passed while the execution kept running.
+  - `GuardianProposalRefused { code, message, retryable, retry_after }`: Guardian refused a
+    proposal push with a stable code, carried as the wire string (for example
+    `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`); a push failure
+    without a Guardian code stays `GuardianServer`.
+  - `ProposalBaseMismatch { proposal_id, pinned, local }`: GUARDIAN pinned the proposal to an
+    account state other than the one this client holds, so executing it would build on the
+    wrong base; sync the account and retry, or create a new proposal.
+  <!-- multisig-error-variants:end -->
+- `guardian_client::GuardianClient::execute_delta_proposal` is new:
+  `execute_delta_proposal(account_id, proposal_id)`, signed by the session while one is
+  active. The execute payload is tagged `guardian.ExecuteDeltaProposal`, so a client that signs
+  the plain request bytes is refused with `authentication_failed`.
+- `guardian_shared::execution::ExecutionFailureCode` includes
+  `AcknowledgementFailed` (`GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`): Guardian could not sign
+  or record its acknowledgement, a failure on Guardian's side that leaves the proposal
+  retryable.
+- `MultisigClient::request_guardian_execution(proposal_id)` and
+  `MultisigClient::export_p2id_note_to_file(&proposal, path)` / `export_p2id_note_to_bytes` are
+  new. A private P2ID is executed by Guardian like any other proposal; the export rebuilds its
+  note from the proposal, whoever executed it, and is how the recipient receives it.
+- `MultisigClient::request_imported_guardian_execution(&exported)` is new: it relays
+  an exported document's approvals to Guardian before requesting execution, which
+  `request_guardian_execution` alone cannot do for approvals collected off channel.
+- `MultisigClient::abandon_candidate` takes `(nonce, proposal_id)` and returns
+  `AbandonRequest { state, commitment }` instead of `AbandonRequestState`, and `abandon_status`
+  takes `(nonce, commitment)`. A Guardian execution can archive an abandoned delta and take its
+  nonce, so the proposal id names the abandoned transaction and the commitment identifies its
+  delta; once another delta at the nonce is canonical, the status is `Abandoned`.
+  `GuardianClient::abandon_candidate` takes `(account_id, nonce, proposal_id)`, the transaction
+  summary's commitment (`tx_summary_commitment_hex`). The abandon needs a Guardian server from
+  the same release: a server from 0.18.3 or earlier does not know `proposal_id`, so it refuses
+  the signed request as unauthenticated, before recording anything.
+
+Source-level changes in the TypeScript packages:
+
+- `GuardianErrorCode` (`@openzeppelin/guardian-client`) has new members, so an exhaustive
+  `switch` over it stops compiling until it handles them: `account_request_capacity_exceeded`,
+  `execution_busy`, `execution_conflict`, `execution_not_found`,
+  `proposal_executes_locally`, `proposal_missing_transaction_request`, `proposal_not_ready`,
+  `proposal_request_too_large` and `proving_unavailable`.
+- `GuardianHttpClient.executeDeltaProposal` is new:
+  `executeDeltaProposal(accountId, proposalId)`, signed by the session while one is set. A
+  direct HTTP caller signs the body `{account_id, proposal_id}` tagged as
+  `guardian.ExecuteDeltaProposal` (`RequestAuthPayload.forOperation`); a plain signature is
+  refused with `authentication_failed`. `GuardianErrorMeta.reason` (`switch_guardian`) says why
+  a `proposal_executes_locally` refusal left the proposal to local execution.
+- `Multisig.requestGuardianExecution(proposalId)` and
+  `Multisig.exportP2idNoteToBytes(proposal)` / `exportP2idNoteToFile(proposal, filename?)` are
+  new. A private P2ID is executed by Guardian like any other proposal; the export rebuilds its
+  note from the proposal, whoever executed it.
+- `StatusResponse.execution` is a new optional field (`{ enabled: true }` or
+  `{ enabled: false, reason }`). `getStatus()` leaves it out when the server sends none, as a
+  Guardian that predates Guardian execution does, so a client still starts a session against
+  an older server; absent means the server does not offer Guardian execution.
+- `Multisig.createProposal` (`@openzeppelin/miden-multisig-client`) throws on a client created
+  with `executionMode: 'guardian_executable'`, because it takes a summary without the request
+  Guardian would execute. Use a typed `create*Proposal` method or `createCustomProposal` there.
+- The multisig execution methods (`requestGuardianExecution`, `executionStatus`,
+  `currentExecution`) throw `GuardianExecutionRefusedError`, whose `code` is the wire code (for
+  example `GUARDIAN_EXECUTION_CONFLICT`), instead of the base client's `GuardianHttpError`, which
+  stays available as `cause`. `waitForGuardianExecution` throws
+  `GuardianExecutionWaitTimeoutError` when its deadline passes.
+- `requestGuardianExecution` relays the held proposal's approvals to Guardian before the
+  request, so an imported, offline-signed proposal can be executed by Guardian. A Guardian
+  refusal while relaying throws `GuardianExecutionRefusedError`, as one of the request does.
+- `abandonCandidate` takes the proposal id: `abandonCandidate(nonce, proposalId)` on
+  `Multisig`, `abandonCandidate(accountId, nonce, proposalId)` on `GuardianHttpClient`.
+- `AbandonCandidateResponse` carries `commitment`, and `abandonStatus` takes it:
+  `abandonStatus(nonce, commitment)` on `Multisig`, `abandonStatus(accountId, nonce,
+  commitment)` on `GuardianHttpClient`. Once another delta at the nonce is canonical, the status
+  is `'abandoned'`. As in Rust, the abandon needs a Guardian server from the same release; a
+  server from 0.18.3 or earlier refuses it as unauthenticated, before recording anything.
+
+Server behavior that changes for every client:
+
+- The abandon response (`AbandonDeltaCandidateResponse`, HTTP `POST /delta/candidate/abandon`)
+  carries the abandoned delta's `commitment`.
+- The abandon request (`AbandonDeltaCandidateRequest`, HTTP `POST /delta/candidate/abandon`)
+  takes `proposal_id`, the transaction summary's commitment. The abandon answers for the delta
+  carrying that transaction, at the nonce or archived after a Guardian execution took the
+  nonce, and records an intent only while the candidate at the nonce is still that one. A
+  delta at the nonce carrying another transaction is answered as not found.
+- Without `proposal_id` (an SDK from 0.18.3 or earlier), the abandon names whatever delta is at
+  the nonce, as before.
+- With or without `proposal_id`, an abandon never records an intent on an active Guardian
+  execution's candidate, checked inside the storage write: that is refused with
+  `GUARDIAN_EXECUTION_CONFLICT`. Naming the proposal Guardian is executing gets the same
+  refusal.
+
+- Pushing a proposal that already exists answers with the proposal as stored, not an echo of
+  the push, and is refused as an invalid delta when its `transaction_request` differs from the
+  stored one: the stored request is the one Guardian would execute.
+
+#### Upgrading and rolling back
+
+- **Migration.** `2026-10-01-000001_execution_reservations` runs at startup. It is additive,
+  not a data reset: it creates `execution_reservations`, `execution_submissions` and
+  `execution_outcomes`, and adds `delta_proposals.request_bytes` (default `0`). Stored accounts,
+  deltas and proposals are kept.
+- **Enable in two deploys.** A replica from an earlier release still canonicalizes during a
+  rolling update, but it promotes a Guardian-executed candidate without releasing its execution
+  reservation and skips the `ProtectedByExecution` gate that stops a candidate under a live
+  execution from being discarded. Either can leave the account reserved with nothing able to
+  release it, so no further execution starts on that account. Once every replica runs this
+  release, reconciliation settles a reservation an older replica promoted, but nothing undoes a
+  candidate an older replica discarded. Finish rolling out this release with
+  `GUARDIAN_TX_PROVER_URL` unset, then set it in a second deploy once no old replica is
+  running. Proposals stored by old replicas during the overlap have `request_bytes = 0`
+  whatever request they carry, so they do not count toward `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`.
+- **Rolling back.** Set `GUARDIAN_PROVING_ENABLED=false` first and wait until no execution is
+  active: `SELECT count(*) FROM execution_reservations WHERE released_at IS NULL` returns `0`,
+  or `guardian_execution_oldest_reservation_age_seconds` reads `0`. Reconciliation keeps
+  settling in-flight executions while execution is switched off. Only then roll back, for the same
+  reason as above: an older replica cannot release a reservation.
+
 ### Proposals name their bound block (0.18.1)
 
 0.18.1 changes the proposal metadata both SDKs write. It is a
@@ -305,6 +548,98 @@ breaking SDK change and needs no server change.
   `AuthArgErrorCode` values `bound_block_mismatch` and
   `transaction_summary_layout_unsupported`.
 
+### Multisig pushes need stored approvals (0.19.0)
+
+0.19.0 makes the server refuse to acknowledge a multisig
+delta unless the proposal it stores for that delta carries verified cosigner
+approvals, at least as many as the lowest threshold the account permits (its
+default threshold, or a lower override on one of its non-auth procedures; an
+override on the auth procedure or on a root the account does not export is
+never used on chain and is ignored; issue #524). The push
+fails with `insufficient_signatures` (400). It is a breaking change for released SDKs, so
+**release the SDKs first, then deploy the servers**.
+
+- **Proposals signed through GUARDIAN keep working on every SDK.** Each
+  cosigner's approval is already on the stored proposal.
+- **0.18.3 and earlier clients cannot execute a proposal whose approvals were
+  collected off channel** (an exported document signed elsewhere and imported),
+  in either SDK, unless the approvals already stored reach that floor. Those
+  approvals exist only in the document, and these clients push without
+  relaying them.
+- **New clients relay off-channel approvals before the push.** The signing
+  endpoint credits an approval to the cosigner its signature verifies for, so
+  any configured signer can relay the whole document. New clients relay the
+  caller's own approval first. A 0.18.1, 0.18.2 or 0.18.3 server refuses each approval
+  that is not the caller's own (with `invalid_proposal_signature`, or
+  `proposal_already_signed` once the caller has signed); new clients skip that
+  refusal and push anyway, and that server acknowledges the push as before, so
+  new clients work against servers from 0.18.1 on, with or without the gate.
+- **0.18.0 servers do not verify relayed approvals** and store each one under
+  the request signer. Relaying the caller's own approval first makes such a
+  server refuse the rest as already signed. If the caller has no approval in
+  the document, the first relayed approval would be stored under the caller,
+  and new clients stop with an error instead of executing. Upgrade the server
+  to 0.18.1 or later before executing off-channel proposals.
+- **Guardian switches pushed back to the old GUARDIAN.** The TypeScript SDK
+  relays off-channel approvals to the old GUARDIAN's stored switch proposal
+  before that best-effort push. A switch the old GUARDIAN never stored (one
+  created offline) is refused there and released by its release sweep, as
+  [`CONCEPTS.md`](./CONCEPTS.md) describes.
+- **Accounts without the multisig auth.** `/configure` now registers only
+  guarded multisig accounts and refuses any other state with `invalid_input`.
+  An account registered before this change without the multisig is still
+  acknowledged as before, but only for wallet-signed pushes.
+- **P2ID transfers need the higher of the `send_asset` and `create_note`
+  thresholds.** A transfer calls both procedures, and the chain counts each.
+  Both SDKs now know `create_note` as a procedure name and take the higher of
+  the two, so a lower `send_asset` override alone no longer lowers what a
+  P2ID proposal asks for. Earlier SDKs asked for the `send_asset` override
+  alone, and the chain refused such a transfer.
+
+### Session-signed delta pushes (0.19.0)
+
+0.19.0 lets a Guardian session sign delta pushes
+(`POST /delta`, `PushDelta`), which a 0.18.1, 0.18.2 or 0.18.3 server keeps
+wallet-only. The new SDKs sign a push with the session whenever one is active.
+
+- **New SDKs fall back to the wallet on an older server.** An older server
+  answers a session-signed push with `wallet_signature_required` (403); both
+  SDKs then sign the same push again with the wallet, and keep the session for
+  every other route. Against an older server the wallet signs the push, as it
+  did before sessions could, so the order above holds for session users too:
+  upgrade the SDKs first.
+- **A push onto an account without the multisig auth stays wallet-only**
+  (`wallet_signature_required`); see the previous section.
+
+### Registration and reconfiguration (0.19.0)
+
+- **`/configure` registers only guarded multisig accounts.** A state without
+  the multisig threshold slot is refused with `invalid_input`.
+- **Registering from the chain's state.** `/configure` stores a state only
+  when it is the account's current on-chain state, with two exceptions: a new
+  account's first state at nonce 0, and a stored cosigner re-registering the
+  state already stored. So an account that already transacted registers here
+  for the first time (for example after switching to this GUARDIAN), and any
+  reconfiguration that changes the stored state, must submit the on-chain
+  state. Until the chain holds it the request fails with the new retryable
+  code `state_not_on_chain` (409, gRPC `FailedPrecondition`), and so does a
+  state the chain has moved past. A stored cosigner's state older than the
+  stored one, while the chain sits at the stored state, is refused with
+  `commitment_mismatch`, which is not retryable.
+- **Breaking for older SDKs: switching GUARDIAN.** The new SDKs wait for the
+  switch transaction to reach the chain (about 45 seconds at most, reading the
+  chain without a wallet signature) before they register on the new GUARDIAN.
+  A registration that still gets `state_not_on_chain` is returned to the
+  caller, who registers again once the transaction lands. SDKs from 0.18.3 and earlier
+  register on the new GUARDIAN right after submitting the switch, do not
+  retry, and so fail every switch to a GUARDIAN on this release until the user
+  registers again once the transaction lands
+  ([recovery](./TROUBLESHOOTING.md#transaction-executed-successfully-but-failed-to-register-on-new-guardian)).
+  Upgrade the SDKs before, or with, the servers.
+- **Stored single-key accounts can no longer re-register.** An account stored
+  before `/configure` required a multisig keeps being served, but any
+  `/configure` for it is refused with `invalid_input`.
+
 ### Open upstream items
 
 The facts below change independently of this repository. This list is the one
@@ -312,13 +647,15 @@ place that tracks them; other documents point here rather than restating them.
 Last checked 2026-10-20.
 
 - **Public networks.** Devnet runs node 0.17.0, which this build's pins reach:
-  on 2026-10-12 it answered requests whose accept header named client 0.17.3
-  (and 0.17.0), and refused 0.18.0 and 0.17.0-rc.5. Testnet runs node 0.17.1:
-  on 2026-10-20 it answered requests whose accept header named client 0.17.3
-  (and 0.17.1), and refused 0.16.0. The OZ stacks serve the 0.18.x line on
-  both: `guardian-testnet` reports 0.18.1 and `guardian-devnet` 0.18.2.
-  The devnet run below was made on the Miden 0.17 release candidates and has not
-  been repeated on 0.17.0. There, this build's protocol
+  live qualification, including the `live-guardian-execute-*` scenarios, passed
+  there on both SDKs on 2026-10-06, and on 2026-10-12 it answered requests whose
+  accept header named client 0.17.3 (and 0.17.0), and refused 0.18.0 and
+  0.17.0-rc.5. Testnet runs node 0.17.1: on 2026-10-20 it answered requests
+  whose accept header named client 0.17.3 (and 0.17.1), and refused 0.16.0. The
+  OZ stacks serve the 0.18.x line on both: `guardian-testnet` reports 0.18.1 and
+  `guardian-devnet` 0.18.2. The manual devnet run described next is a separate,
+  earlier run on the Miden 0.17 release candidates and has not been repeated on
+  0.17.0. There, this build's protocol
   configuration for devnet's fee asset hashed to the commitment in devnet's
   block headers, so the transaction kernels matched. A guarded 2-of-2 multisig
   ran two proposals there end to end, a first consume-notes

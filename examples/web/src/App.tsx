@@ -172,6 +172,10 @@ export default function App() {
     connectError: midenWalletConnectError,
   } = useMidenWallet(midenWalletAdapter);
   const preferredSource = preferredWalletSource(midenWalletSession.connected);
+  const [accountScheme, setAccountScheme] = useState<SignatureScheme>('ecdsa');
+  const midenWalletScheme = midenWalletSession.scheme ?? accountScheme;
+  const schemeSelectable =
+    walletSource === 'local' || (walletSource === 'miden-wallet' && midenWalletSession.scheme === null);
 
   const activeWalletCommitment = activeWalletCommitmentForSource(
     walletSource,
@@ -181,7 +185,7 @@ export default function App() {
   const activeWalletScheme = activeWalletSchemeForSource(
     walletSource,
     signer,
-    midenWalletSession.scheme,
+    midenWalletScheme,
   );
 
   const resolveSignerContext = useCallback(
@@ -190,19 +194,19 @@ export default function App() {
       signatureScheme: SignatureScheme = activeWalletSchemeForSource(
         source,
         signer,
-        midenWalletSession.scheme,
+        midenWalletScheme,
       ) ?? 'falcon',
     ) => {
       if (source === 'miden-wallet') {
-        if (!midenWalletSession.commitment || !midenWalletSession.publicKey || !midenWalletSession.scheme) {
+        if (!midenWalletSession.commitment || !midenWalletSession.publicKey) {
           throw new Error('Miden Wallet is not connected');
         }
 
         return resolveMidenWalletSigner({
           wallet: { signBytes },
           commitment: midenWalletSession.commitment,
-          publicKey: midenWalletSession.publicKey,
-          scheme: midenWalletSession.scheme,
+          publicKey: midenWalletSession.scheme ? midenWalletSession.publicKey : undefined,
+          scheme: midenWalletSession.scheme ?? signatureScheme,
         });
       }
 
@@ -216,6 +220,7 @@ export default function App() {
       midenWalletSession.commitment,
       midenWalletSession.publicKey,
       midenWalletSession.scheme,
+      midenWalletScheme,
       signBytes,
       signer,
     ],
@@ -469,6 +474,7 @@ export default function App() {
             }
           : current,
       );
+      setAccountScheme(signatureScheme);
       setMultisig(ms);
 
       // Auto-register on GUARDIAN
@@ -532,6 +538,7 @@ export default function App() {
             }
           : current,
       );
+      setAccountScheme(signatureScheme);
       setMultisig(ms);
 
       const { state, config } = await fetchAccountState(ms);
@@ -813,6 +820,7 @@ export default function App() {
   // Disconnect
   const handleDisconnect = () => {
     setMultisig(null);
+    setAccountScheme('ecdsa');
     setGuardianState(null);
     setProposals([]);
     setError(null);
@@ -912,6 +920,7 @@ export default function App() {
             onCreate={handleCreate}
             walletSource={walletSource}
             walletCommitment={activeWalletCommitment}
+            schemeSelectable={schemeSelectable}
           />
           <LoadMultisigDialog
             open={loadDialogOpen}
@@ -922,6 +931,7 @@ export default function App() {
             defaultScheme={activeWalletScheme ?? signer.activeScheme}
             onLoad={handleLoad}
             walletSource={walletSource}
+            schemeSelectable={schemeSelectable}
           />
           <ImportProposalDialog
             open={importDialogOpen}

@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use super::{Action, Availability, Manifest, Runtime, Scheme, Sdk, SdkSelector};
+use super::{Action, Availability, Manifest, Profile, Runtime, Scheme, Sdk, SdkSelector};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
@@ -39,10 +39,22 @@ pub enum ValidationError {
     },
 
     #[error(
-        "scenario `{id}` names a mixed signature scheme; no account builder can construct a \
-         mixed-scheme account, so this is a known capability gap and cannot be covered"
+        "scenario `{id}` names a mixed signature scheme outside the deterministic Rust leg; \
+         neither multisig SDK can construct a mixed-scheme account yet (#549, and the \
+         TypeScript follow-up to #540), so only the driver's own builder can, against the \
+         server alone"
     )]
     MixedScheme { id: String },
+
+    #[error("scenario `{id}` names a scheme outside falcon, ecdsa, mixed and n/a")]
+    UnrecognizedScheme { id: String },
+
+    #[error(
+        "scenario `{id}` must be labelled `scheme = \"mixed\"` exactly when its actions are \
+         `mixed-scheme-*` ones; a mixed label on other actions would claim coverage no \
+         mixed-scheme account produced"
+    )]
+    MixedSchemeActions { id: String },
 
     #[error("scenario `{id}` names action `{action}`, which is outside the vocabulary")]
     UnknownAction { id: String, action: String },
@@ -105,7 +117,33 @@ pub fn validate(manifest: &Manifest) -> Result<(), Vec<ValidationError>> {
             });
         }
 
-        if scenario.scheme == Scheme::Mixed {
+        if scenario.scheme == Scheme::Unrecognized {
+            errors.push(ValidationError::UnrecognizedScheme {
+                id: scenario.id.clone(),
+            });
+        }
+        let mixed_actions = scenario
+            .actions
+            .iter()
+            .filter(|a| a.is_mixed_scheme())
+            .count();
+        let labelled_mixed = scenario.scheme == Scheme::Mixed;
+        if (labelled_mixed && mixed_actions != scenario.actions.len())
+            || (!labelled_mixed && mixed_actions > 0)
+        {
+            errors.push(ValidationError::MixedSchemeActions {
+                id: scenario.id.clone(),
+            });
+        }
+
+        // The Rust driver builds a mixed-scheme account itself, from the
+        // upstream component, and drives the server with it. Flows through an
+        // SDK, which is every live scenario and the whole TypeScript leg,
+        // cannot construct one yet.
+        if scenario.scheme == Scheme::Mixed
+            && (scenario.profile != Profile::Deterministic
+                || scenario.sdk.includes(Sdk::Typescript))
+        {
             errors.push(ValidationError::MixedScheme {
                 id: scenario.id.clone(),
             });
@@ -271,10 +309,69 @@ required = false
     }
 
     #[test]
-    fn rejects_mixed_scheme() {
-        let doc = scenario("a", "").replace(r#"scheme = "falcon""#, r#"scheme = "falcon+ecdsa""#);
+    fn rejects_mixed_scheme_on_the_live_profile() {
+        let doc = scenario("a", "").replace(r#"scheme = "falcon""#, r#"scheme = "mixed""#);
         let errors = validate(&manifest(&doc, "")).unwrap_err();
         assert!(errors.contains(&ValidationError::MixedScheme { id: "a".into() }));
+    }
+
+    #[test]
+    fn rejects_mixed_scheme_for_the_typescript_leg() {
+        let doc = scenario("a", r#"runtime = "server-side""#)
+            .replace(r#"profile = "live""#, r#"profile = "deterministic""#)
+            .replace(r#"sdk = "rust""#, r#"sdk = "both""#)
+            .replace(r#"scheme = "falcon""#, r#"scheme = "mixed""#);
+        let errors = validate(&manifest(&doc, "")).unwrap_err();
+        assert!(errors.contains(&ValidationError::MixedScheme { id: "a".into() }));
+    }
+
+    // Before `mixed` was allowed anywhere, every unknown spelling became
+    // `Mixed` and was refused; now a misspelling on the deterministic Rust leg
+    // would be accepted as mixed unless it is refused in its own right.
+    #[test]
+    fn rejects_an_unrecognized_scheme_even_where_mixed_is_allowed() {
+        let doc = scenario("a", "")
+            .replace(r#"profile = "live""#, r#"profile = "deterministic""#)
+            .replace(r#"scheme = "falcon""#, r#"scheme = "falcon+ecdsa""#);
+        let errors = validate(&manifest(&doc, "")).unwrap_err();
+        assert!(errors.contains(&ValidationError::UnrecognizedScheme { id: "a".into() }));
+        assert!(!errors.contains(&ValidationError::MixedScheme { id: "a".into() }));
+    }
+
+    fn deterministic_mixed(actions: &str) -> String {
+        scenario("a", "")
+            .replace(r#"profile = "live""#, r#"profile = "deterministic""#)
+            .replace(r#"scheme = "falcon""#, r#"scheme = "mixed""#)
+            .replace(
+                r#"actions = ["proposal-create", "proposal-sign", "proposal-execute"]"#,
+                actions,
+            )
+    }
+
+    #[test]
+    fn accepts_mixed_scheme_on_the_deterministic_rust_leg() {
+        let doc =
+            deterministic_mixed(r#"actions = ["mixed-scheme-register", "mixed-scheme-approvals"]"#);
+        assert_eq!(validate(&manifest(&doc, "")), Ok(()));
+    }
+
+    #[test]
+    fn rejects_a_mixed_label_on_actions_that_build_no_mixed_account() {
+        let doc = deterministic_mixed(r#"actions = ["mixed-scheme-register", "account-register"]"#);
+        let errors = validate(&manifest(&doc, "")).unwrap_err();
+        assert!(errors.contains(&ValidationError::MixedSchemeActions { id: "a".into() }));
+    }
+
+    #[test]
+    fn rejects_mixed_scheme_actions_under_a_single_scheme_label() {
+        let doc = scenario("a", "")
+            .replace(r#"profile = "live""#, r#"profile = "deterministic""#)
+            .replace(
+                r#"actions = ["proposal-create", "proposal-sign", "proposal-execute"]"#,
+                r#"actions = ["mixed-scheme-register"]"#,
+            );
+        let errors = validate(&manifest(&doc, "")).unwrap_err();
+        assert!(errors.contains(&ValidationError::MixedSchemeActions { id: "a".into() }));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::builder::state::AppState;
-use crate::delta_object::DeltaStatus;
+use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::network::StateVerification;
@@ -12,6 +12,10 @@ use tracing::info;
 pub struct AbandonCandidateParams {
     pub account_id: String,
     pub nonce: u64,
+    /// The transaction to abandon: its summary's commitment, which is the
+    /// proposal id of a multisig proposal. `None` from a client up to
+    /// 0.18.3, which names only the nonce.
+    pub proposal_id: Option<String>,
     pub credentials: Credentials,
 }
 
@@ -53,33 +57,138 @@ pub struct AbandonCandidateResult {
     /// return the original timestamp — the quarantine never restarts.
     /// `None` once the abandon is already resolved.
     pub abandon_requested_at: Option<String>,
+    /// The abandoned delta's `new_commitment`, which tells it apart from a
+    /// delta that later takes the same nonce.
+    pub commitment: String,
 }
 
-/// Read the delta at `nonce` while distinguishing "absent" from "backend
-/// failure": a storage outage must surface as a 5xx `StorageError`, never
-/// as a spurious 404.
+/// Read the delta at `nonce`, `None` when there is none: a storage outage
+/// must surface as a 5xx `StorageError`, never as a spurious 404.
 async fn pull_delta_at_nonce(
     storage: &std::sync::Arc<dyn crate::storage::StorageBackend>,
     account_id: &str,
     nonce: u64,
-) -> Result<crate::delta_object::DeltaObject> {
-    storage.pull_delta(account_id, nonce).await.map_err(|e| {
-        if crate::storage::is_storage_not_found(&e) {
-            GuardianError::DeltaNotFound {
+) -> Result<Option<DeltaObject>> {
+    match storage.pull_delta(account_id, nonce).await {
+        Ok(delta) => Ok(Some(delta)),
+        Err(e) if crate::storage::is_storage_not_found(&e) => Ok(None),
+        Err(e) => Err(GuardianError::StorageError(format!(
+            "Failed to read delta: {e}"
+        ))),
+    }
+}
+
+/// Whether `delta` carries the transaction `proposal_id` names.
+fn carries_transaction(delta: &DeltaObject, proposal_id: &str) -> bool {
+    use guardian_shared::hex::IntoHex;
+    crate::ack::ack_message(delta)
+        .is_some_and(|commitment| commitment.into_hex().eq_ignore_ascii_case(proposal_id))
+}
+
+/// The delta an abandon names. A Guardian execution can archive a parked
+/// delta and take its nonce, so a delta is found either at its nonce or in
+/// the archive, where reconciliation can still restore it.
+enum Target {
+    Live(DeltaObject),
+    Archived(DeltaObject),
+}
+
+/// The delta at `nonce` carrying `proposal_id`, live or archived, or
+/// without a proposal id (a client up to 0.18.3) whatever delta is at the
+/// nonce.
+async fn find_target(
+    storage: &std::sync::Arc<dyn crate::storage::StorageBackend>,
+    account_id: &str,
+    nonce: u64,
+    proposal_id: Option<&str>,
+) -> Result<Target> {
+    let not_found = || GuardianError::DeltaNotFound {
+        account_id: account_id.to_string(),
+        nonce,
+    };
+    let live = pull_delta_at_nonce(storage, account_id, nonce).await?;
+    let Some(proposal_id) = proposal_id else {
+        return live.map(Target::Live).ok_or_else(not_found);
+    };
+    if let Some(live) = live.filter(|live| carries_transaction(live, proposal_id)) {
+        return Ok(Target::Live(live));
+    }
+    let archived = storage
+        .pull_superseded_deltas(account_id, crate::storage::EVERY_ARCHIVED_DELTA)
+        .await
+        .map_err(|e| GuardianError::StorageError(format!("Failed to read archived deltas: {e}")))?;
+    if let Some(archived) = archived
+        .into_iter()
+        .filter(|archived| {
+            archived.delta.nonce == nonce && carries_transaction(&archived.delta, proposal_id)
+        })
+        .max_by_key(|archived| archived.superseded_at)
+    {
+        return Ok(Target::Archived(archived.delta));
+    }
+    // A restore moves an archived delta back to its nonce in between the
+    // two reads, so a delta missed by both is read once more where it went.
+    pull_delta_at_nonce(storage, account_id, nonce)
+        .await?
+        .filter(|live| carries_transaction(live, proposal_id))
+        .map(Target::Live)
+        .ok_or_else(not_found)
+}
+
+/// Where the named delta stands: settled, so the abandon answers at once,
+/// or a candidate the intent can be recorded on.
+enum Resolution {
+    Settled(AbandonCandidateResult),
+    Candidate(Box<DeltaObject>, String),
+}
+
+fn resolve(account_id: &str, nonce: u64, target: Target) -> Result<Resolution> {
+    let delta = match target {
+        Target::Live(delta) | Target::Archived(delta) => delta,
+    };
+    let commitment = delta.new_commitment.clone().ok_or_else(|| {
+        GuardianError::StorageError(format!(
+            "Delta at nonce {nonce} of account {account_id} has no new_commitment"
+        ))
+    })?;
+    let settled = |state| {
+        Ok(Resolution::Settled(AbandonCandidateResult {
+            account_id: account_id.to_string(),
+            nonce,
+            state,
+            abandon_requested_at: None,
+            commitment: commitment.clone(),
+        }))
+    };
+    match &delta.status {
+        DeltaStatus::Candidate { .. } => Ok(Resolution::Candidate(Box::new(delta), commitment)),
+        DeltaStatus::Canonical { .. } => Err(GuardianError::CandidateLanded {
+            account_id: account_id.to_string(),
+            nonce,
+        }),
+        // Already resolved: a retried abandon reports success.
+        status if status.is_client_abandoned() => settled(AbandonState::Abandoned),
+        // The worker already gave up on this candidate and released the
+        // account (issue #345): there is nothing left to unlock. Reported
+        // as `retained`, NOT `abandoned`: the on-chain outcome is still
+        // uncertain, and the row stays in the recovery net, so if the
+        // transaction landed it is promoted later (the landed-always-wins
+        // rule every abandon carries).
+        DeltaStatus::Retained { .. } => settled(AbandonState::Retained),
+        DeltaStatus::Pending { .. } | DeltaStatus::Discarded { .. } => {
+            Err(GuardianError::DeltaNotFound {
                 account_id: account_id.to_string(),
                 nonce,
-            }
-        } else {
-            GuardianError::StorageError(format!("Failed to read delta: {e}"))
+            })
         }
-    })
+    }
 }
 
 /// Client-initiated abandon of a pending canonicalization candidate
 /// (issue #319), as an intent: the request records
 /// `abandon_requested_at` on the candidate and returns immediately; the
-/// canonicalization worker — the sole owner of candidate lifecycles under
-/// the lease model — resolves the intent after the abandon quarantine
+/// canonicalization worker, the sole owner of candidate lifecycles under
+/// the lease model, resolves the intent after the abandon quarantine
 /// (consecutive at-base observations plus a minimum age), transitioning
 /// the delta to `Discarded { reason: ClientAbandoned }` and releasing the
 /// account.
@@ -90,9 +199,16 @@ async fn pull_delta_at_nonce(
 /// submission grace period plus retry budget. Only the client knows its
 /// transaction will never land.
 ///
+/// The request names the transaction as well as the nonce: a Guardian
+/// execution can archive a parked delta and take its nonce, and a retry
+/// then answers for the archived delta, never for Guardian's. The intent
+/// is recorded only while the candidate at the nonce is still the named
+/// one, and never on an execution's candidate
+/// ([`GuardianError::ExecutionConflict`]).
+///
 /// The request is refused with [`GuardianError::CandidateLanded`] when
 /// the on-chain state already matches the candidate's expected state. An
-/// on-chain read failure does NOT block the request — recording intent is
+/// on-chain read failure does NOT block the request: recording intent is
 /// non-destructive, and the worker independently re-verifies against
 /// chain before finalizing. Retries are idempotent: the original request
 /// timestamp is preserved so the quarantine never restarts.
@@ -103,52 +219,43 @@ pub async fn abandon_candidate(
     let AbandonCandidateParams {
         account_id,
         nonce,
+        proposal_id,
         credentials,
     } = params;
 
+    let proposal_id = proposal_id
+        .as_deref()
+        .map(crate::utils::normalize_commitment_hex)
+        .transpose()?;
     let resolved = resolve_account(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
 
-    let delta = pull_delta_at_nonce(&resolved.storage, &account_id, nonce).await?;
+    let target = find_target(
+        &resolved.storage,
+        &account_id,
+        nonce,
+        proposal_id.as_deref(),
+    )
+    .await?;
+    let (delta, commitment) = match resolve(&account_id, nonce, target)? {
+        Resolution::Settled(answer) => return Ok(answer),
+        Resolution::Candidate(delta, commitment) => (delta, commitment),
+    };
 
-    match &delta.status {
-        DeltaStatus::Candidate { .. } => {}
-        DeltaStatus::Canonical { .. } => {
-            return Err(GuardianError::CandidateLanded { account_id, nonce });
-        }
-        status if status.is_client_abandoned() => {
-            // Already resolved: a retried abandon reports success.
-            return Ok(AbandonCandidateResult {
-                account_id,
-                nonce,
-                state: AbandonState::Abandoned,
-                abandon_requested_at: None,
-            });
-        }
-        DeltaStatus::Retained { .. } => {
-            // The worker already gave up on this candidate and released
-            // the account (issue #345): there is nothing left to unlock.
-            // Reported as `retained`, NOT `abandoned` — the on-chain
-            // outcome is still uncertain, and the row stays in the
-            // recovery net: if the transaction actually landed it is
-            // promoted later (the same landed-always-wins rule every
-            // abandon carries), and a resubmission at this nonce
-            // supersedes it either way.
-            return Ok(AbandonCandidateResult {
-                account_id,
-                nonce,
-                state: AbandonState::Retained,
-                abandon_requested_at: None,
-            });
-        }
-        _ => {
-            return Err(GuardianError::DeltaNotFound { account_id, nonce });
-        }
+    let execution = resolved
+        .storage
+        .load_active_execution(&account_id)
+        .await
+        .map_err(|e| GuardianError::StorageError(format!("Failed to load the execution: {e}")))?;
+    if let Some(execution) = execution.filter(|execution| execution.owns_candidate(nonce)) {
+        return Err(GuardianError::ExecutionConflict {
+            blocking_proposal_id: execution.reservation.proposal_id,
+        });
     }
 
     // Landed guard, best-effort: refuse when the transaction demonstrably
     // landed (the worker will canonicalize it shortly; abandoning would
-    // put guardian behind chain). An RPC failure only skips the guard —
+    // put guardian behind chain). An RPC failure only skips the guard:
     // the intent write is non-destructive and the worker re-verifies
     // against chain before finalizing.
     let current_state = resolved
@@ -198,7 +305,7 @@ pub async fn abandon_candidate(
     let now = state.clock.now_rfc3339();
     let intent = resolved
         .storage
-        .request_candidate_abandon(&account_id, nonce, &now)
+        .request_candidate_abandon(&account_id, nonce, &commitment, &now)
         .await
         .map_err(|e| {
             GuardianError::StorageError(format!("Failed to record abandon request: {e}"))
@@ -216,6 +323,7 @@ pub async fn abandon_candidate(
                 nonce,
                 state: AbandonState::Pending,
                 abandon_requested_at: Some(now),
+                commitment,
             })
         }
         AbandonIntent::AlreadyRequested { requested_at } => Ok(AbandonCandidateResult {
@@ -223,30 +331,27 @@ pub async fn abandon_candidate(
             nonce,
             state: AbandonState::Pending,
             abandon_requested_at: Some(requested_at),
+            commitment,
+        }),
+        AbandonIntent::OwnedByExecution { proposal_id } => Err(GuardianError::ExecutionConflict {
+            blocking_proposal_id: proposal_id,
         }),
         AbandonIntent::NotCandidate => {
-            // Resolved between our read and the write: classify precisely.
-            // A row the worker retained meanwhile (issue #345) reports
-            // `retained`, matching the direct retained arm above — the
-            // account is already released, but the on-chain outcome is
-            // still uncertain.
-            let delta = pull_delta_at_nonce(&resolved.storage, &account_id, nonce).await?;
-            if delta.status.is_client_abandoned() {
-                Ok(AbandonCandidateResult {
-                    account_id,
-                    nonce,
-                    state: AbandonState::Abandoned,
-                    abandon_requested_at: None,
-                })
-            } else if delta.status.is_retained() {
-                Ok(AbandonCandidateResult {
-                    account_id,
-                    nonce,
-                    state: AbandonState::Retained,
-                    abandon_requested_at: None,
-                })
-            } else {
-                Err(GuardianError::CandidateLanded { account_id, nonce })
+            // The candidate settled, or left the nonce, between the read
+            // and the write: answer for the named delta as it now stands.
+            // Without a proposal id the nonce names only the delta read
+            // first, so its commitment pins the re-read.
+            let named = proposal_id.as_deref();
+            let target = find_target(&resolved.storage, &account_id, nonce, named).await?;
+            let (Target::Live(delta) | Target::Archived(delta)) = &target;
+            if delta.new_commitment.as_deref() != Some(commitment.as_str()) {
+                return Err(GuardianError::DeltaNotFound { account_id, nonce });
+            }
+            match resolve(&account_id, nonce, target)? {
+                Resolution::Settled(answer) => Ok(answer),
+                Resolution::Candidate(..) => {
+                    Err(GuardianError::DeltaNotFound { account_id, nonce })
+                }
             }
         }
     }
@@ -289,6 +394,13 @@ mod tests {
             updated_at: "2024-11-14T12:00:00Z".to_string(),
             auth_scheme: String::new(),
         }
+    }
+
+    fn proposal_id_of(delta: &DeltaObject) -> String {
+        use guardian_shared::hex::IntoHex;
+        crate::ack::ack_message(delta)
+            .expect("the fixture payload is a transaction summary")
+            .into_hex()
     }
 
     fn create_candidate_delta(account_id: &str, nonce: u64) -> DeltaObject {
@@ -352,6 +464,7 @@ mod tests {
             network.with_apply_delta(Ok((serde_json::json!({"new": true}), "0x456".to_string())));
 
         let params = AbandonCandidateParams {
+            proposal_id: Some(proposal_id_of(&create_candidate_delta(&account_id, 1))),
             account_id,
             nonce: 1,
             credentials: Credentials::signature(test_pubkey, test_signature, test_timestamp),
@@ -379,6 +492,7 @@ mod tests {
         assert_eq!(result.nonce, 1);
         assert_eq!(result.state, AbandonState::Pending);
         assert!(result.abandon_requested_at.is_some());
+        assert_eq!(result.commitment, "0x456");
 
         // Intent only: the endpoint never deletes or discards anything —
         // resolution belongs to the canonicalization worker.
@@ -463,6 +577,7 @@ mod tests {
         let params = AbandonCandidateParams {
             account_id,
             nonce: 9,
+            proposal_id: None,
             credentials: Credentials::signature(pubkey, signature, timestamp),
         };
         let result = abandon_candidate(&state, params).await;
@@ -502,6 +617,258 @@ mod tests {
         match result.unwrap_err() {
             GuardianError::CandidateLanded { .. } => {}
             e => panic!("Expected CandidateLanded, got: {:?}", e),
+        }
+    }
+
+    const GUARDIAN_COMMITMENT: &str = "0x457c";
+    const ABANDONED_COMMITMENT: &str = "0x2085";
+
+    fn execution_owning(account_id: &str, nonce: u64) -> crate::storage::ExecutionRecord {
+        let now = chrono::Utc::now();
+        crate::storage::ExecutionRecord {
+            reservation: crate::storage::ExecutionReservation {
+                account_id: account_id.to_string(),
+                proposal_id: "0xproposal".to_string(),
+                attempt: 1,
+                fence: crate::storage::LeaseFence {
+                    lease_name: format!("execution:{account_id}"),
+                    holder_id: "replica:worker".to_string(),
+                    fence_token: 1,
+                },
+                lease_expires_at: now,
+                phase: crate::storage::ExecutionPhase::Sent,
+                ignored_signatures: 0,
+                released_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+            evidence: Some(crate::storage::SubmissionEvidence {
+                account_id: account_id.to_string(),
+                proposal_id: "0xproposal".to_string(),
+                attempt: 1,
+                candidate_nonce: nonce,
+                transaction_id: "0xtx".to_string(),
+                expected_commitment: GUARDIAN_COMMITMENT.to_string(),
+                reference_block: 100,
+                expiration_block: 356,
+                base_commitment: "0x123".to_string(),
+                committed_at: now,
+            }),
+            outcome: None,
+        }
+    }
+
+    /// The client's abandoned delta, archived when a Guardian execution took
+    /// its nonce.
+    fn archived_abandoned(delta: DeltaObject) -> crate::storage::SupersededDelta {
+        crate::storage::SupersededDelta {
+            delta: DeltaObject {
+                new_commitment: Some(ABANDONED_COMMITMENT.to_string()),
+                status: DeltaStatus::discarded_client_abandoned("2024-11-14T12:05:00Z".to_string()),
+                ..delta
+            },
+            superseded_at: chrono::Utc::now(),
+        }
+    }
+
+    /// A delta at `nonce` carrying another transaction than the fixture's,
+    /// as a Guardian execution's does.
+    fn other_transaction(account_id: &str, nonce: u64, status: DeltaStatus) -> DeltaObject {
+        let fixture: serde_json::Value = serde_json::from_str(fixtures::DELTA_2_JSON).unwrap();
+        DeltaObject {
+            new_commitment: Some(GUARDIAN_COMMITMENT.to_string()),
+            delta_payload: fixture["delta_payload"].clone(),
+            status,
+            ..create_candidate_delta(account_id, nonce)
+        }
+    }
+
+    #[tokio::test]
+    async fn test_abandon_retry_after_an_execution_took_the_nonce_answers_from_the_archive() {
+        // Guardian's candidate sits at the nonce: the retry reports the
+        // client's archived delta and records no intent on Guardian's.
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let guardian = other_transaction(
+            &account_id,
+            1,
+            DeltaStatus::candidate("2024-11-14T12:06:00Z".to_string()),
+        );
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_delta(Ok(guardian))
+            .with_pull_superseded_deltas(Ok(vec![archived_abandoned(create_candidate_delta(
+                &account_id,
+                1,
+            ))]))
+            .with_request_candidate_abandon(Err("intent recorded on Guardian's candidate".into()));
+
+        let result = abandon_candidate(&t.state, t.params).await.unwrap();
+        assert_eq!(result.state, AbandonState::Abandoned);
+        assert_eq!(result.commitment, ABANDONED_COMMITMENT);
+        assert!(result.abandon_requested_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_abandon_of_an_execution_candidate_is_refused() {
+        // A client up to 0.18.3 names only the nonce, which Guardian's
+        // candidate holds: no intent is recorded on it.
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let _ = t
+            .storage
+            .clone()
+            .with_load_active_execution(Ok(Some(execution_owning(&account_id, 1))))
+            .with_request_candidate_abandon(Err("intent recorded on Guardian's candidate".into()));
+        let params = AbandonCandidateParams {
+            proposal_id: None,
+            ..t.params
+        };
+
+        match abandon_candidate(&t.state, params).await.unwrap_err() {
+            GuardianError::ExecutionConflict {
+                blocking_proposal_id,
+            } => assert_eq!(blocking_proposal_id, "0xproposal"),
+            e => panic!("Expected ExecutionConflict, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_abandon_retry_after_an_execution_landed_at_the_nonce_answers_from_the_archive() {
+        // Guardian's transaction landed at the nonce: the abandoned one did
+        // not, so the retry reports the archived delta, not CandidateLanded.
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let guardian = other_transaction(
+            &account_id,
+            1,
+            DeltaStatus::canonical("2024-11-14T12:06:00Z".to_string()),
+        );
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_delta(Ok(guardian))
+            .with_pull_superseded_deltas(Ok(vec![archived_abandoned(create_candidate_delta(
+                &account_id,
+                1,
+            ))]));
+
+        let result = abandon_candidate(&t.state, t.params).await.unwrap();
+        assert_eq!(result.state, AbandonState::Abandoned);
+        assert_eq!(result.commitment, ABANDONED_COMMITMENT);
+    }
+
+    #[tokio::test]
+    async fn test_abandon_of_a_landed_transaction_ignores_an_older_archived_one() {
+        // The client's own transaction was restored and landed; an older
+        // archived transaction at the nonce says nothing about it.
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let mut landed = create_candidate_delta(&account_id, 1);
+        landed.status = DeltaStatus::canonical("2024-11-14T12:06:00Z".to_string());
+        let older = other_transaction(
+            &account_id,
+            1,
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:01:00Z".to_string()),
+        );
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_delta(Ok(landed))
+            .with_pull_superseded_deltas(Ok(vec![crate::storage::SupersededDelta {
+                delta: older,
+                superseded_at: chrono::Utc::now(),
+            }]));
+
+        match abandon_candidate(&t.state, t.params).await.unwrap_err() {
+            GuardianError::CandidateLanded { nonce, .. } => assert_eq!(nonce, 1),
+            e => panic!("Expected CandidateLanded, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_abandon_retry_after_an_execution_failed_answers_from_the_archive() {
+        // Guardian's failed execution deleted its candidate, leaving the
+        // nonce empty; the archived delta still answers.
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_delta(Err("Mock: delta not found".to_string()))
+            .with_pull_superseded_deltas(Ok(vec![archived_abandoned(create_candidate_delta(
+                &account_id,
+                1,
+            ))]));
+
+        let result = abandon_candidate(&t.state, t.params).await.unwrap();
+        assert_eq!(result.state, AbandonState::Abandoned);
+        assert_eq!(result.commitment, ABANDONED_COMMITMENT);
+    }
+
+    #[tokio::test]
+    async fn test_abandon_of_another_transaction_at_the_nonce_is_not_found() {
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let guardian = other_transaction(
+            &account_id,
+            1,
+            DeltaStatus::candidate("2024-11-14T12:06:00Z".to_string()),
+        );
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_delta(Ok(guardian.clone()))
+            .with_pull_delta(Ok(guardian))
+            .with_request_candidate_abandon(Err("intent recorded on Guardian's candidate".into()));
+
+        match abandon_candidate(&t.state, t.params).await.unwrap_err() {
+            GuardianError::DeltaNotFound { nonce, .. } => assert_eq!(nonce, 1),
+            e => panic!("Expected DeltaNotFound, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_abandon_finds_a_delta_restored_between_its_reads() {
+        // Reconciliation restored the archived delta to its nonce after the
+        // first read and before the archive read: the delta is read once
+        // more where it went, and it landed.
+        let t = setup(MockNetworkClient::new());
+        let account_id = t.params.account_id.clone();
+        let mut restored = create_candidate_delta(&account_id, 1);
+        restored.status = DeltaStatus::canonical("2024-11-14T12:06:00Z".to_string());
+        let guardian = other_transaction(
+            &account_id,
+            1,
+            DeltaStatus::retained(
+                "2024-11-14T12:06:00Z".to_string(),
+                crate::delta_object::RetainReason::RetryExhausted,
+            ),
+        );
+        let _ = t
+            .storage
+            .clone()
+            .with_pull_delta(Ok(restored))
+            .with_pull_delta(Ok(guardian));
+
+        match abandon_candidate(&t.state, t.params).await.unwrap_err() {
+            GuardianError::CandidateLanded { nonce, .. } => assert_eq!(nonce, 1),
+            e => panic!("Expected CandidateLanded, got: {:?}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_abandon_refuses_a_malformed_proposal_id() {
+        let t = setup(MockNetworkClient::new());
+        let params = AbandonCandidateParams {
+            proposal_id: Some("not hex".to_string()),
+            ..t.params
+        };
+
+        match abandon_candidate(&t.state, params).await.unwrap_err() {
+            GuardianError::InvalidCommitment(_) => {}
+            e => panic!("Expected InvalidCommitment, got: {:?}", e),
         }
     }
 
@@ -574,6 +941,7 @@ mod tests {
         let params = AbandonCandidateParams {
             account_id,
             nonce: 1,
+            proposal_id: None,
             credentials: Credentials::signature(pubkey, signature, timestamp),
         };
         let result = abandon_candidate(&state, params).await;
@@ -595,15 +963,12 @@ mod tests {
         let mut resolved = create_candidate_delta(&t.params.account_id, 1);
         resolved.status =
             DeltaStatus::discarded_client_abandoned("2024-11-14T12:05:00Z".to_string());
-        // LIFO: the initial read pops the candidate canned by setup() only
-        // after this re-read response, so push the re-read FIRST.
         let _ = t
             .storage
             .clone()
             .with_request_candidate_abandon(Ok(crate::storage::AbandonIntent::NotCandidate));
-        // Re-read response must be popped AFTER setup's candidate: push
-        // order is [setup candidate, resolved] -> pops resolved first.
-        // Re-can both reads explicitly to control order.
+        // Canned reads pop last-in first: the first read gets the candidate
+        // pushed last, the re-read after the lost race gets `resolved`.
         let _ = t
             .storage
             .clone()
@@ -612,6 +977,39 @@ mod tests {
 
         let result = abandon_candidate(&t.state, t.params).await.unwrap();
         assert_eq!(result.state, AbandonState::Abandoned);
+    }
+
+    #[tokio::test]
+    async fn test_abandon_race_answers_only_for_the_delta_it_read() {
+        // A client up to 0.18.3 names only the nonce. Its candidate left the
+        // nonce between the read and the write, and Guardian's delta landed
+        // there: that says nothing about the client's transaction.
+        let network =
+            MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "0x123".to_string(),
+            }));
+        let t = setup(network);
+        let account_id = t.params.account_id.clone();
+        let guardian = other_transaction(
+            &account_id,
+            1,
+            DeltaStatus::canonical("2024-11-14T12:06:00Z".to_string()),
+        );
+        let _ = t
+            .storage
+            .clone()
+            .with_request_candidate_abandon(Ok(crate::storage::AbandonIntent::NotCandidate))
+            .with_pull_delta(Ok(guardian))
+            .with_pull_delta(Ok(create_candidate_delta(&account_id, 1)));
+        let params = AbandonCandidateParams {
+            proposal_id: None,
+            ..t.params
+        };
+
+        match abandon_candidate(&t.state, params).await.unwrap_err() {
+            GuardianError::DeltaNotFound { nonce, .. } => assert_eq!(nonce, 1),
+            e => panic!("Expected DeltaNotFound, got: {:?}", e),
+        }
     }
 
     #[tokio::test]

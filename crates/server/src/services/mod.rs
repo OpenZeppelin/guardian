@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 mod abandon_candidate;
 pub mod account_status;
+pub(crate) mod ack_delta_internal;
 pub mod candidate_chain;
 mod configure_account;
 mod create_session;
@@ -23,6 +24,9 @@ mod dashboard_info;
 mod dashboard_pagination;
 mod dashboard_stats;
 mod delta_commit;
+pub mod execute_proposal;
+pub mod execution_codec;
+pub mod execution_status;
 mod get_canonical_nonce;
 mod get_delta;
 mod get_delta_history;
@@ -31,8 +35,9 @@ mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
 mod lookup_account;
+mod multisig_admission;
 pub mod pause_account;
-mod proposal_signature;
+pub(crate) mod proposal_signature;
 mod push_delta;
 mod push_delta_proposal;
 pub mod release_on_switch;
@@ -110,7 +115,7 @@ pub use revoke_session::{RevokeSessionParams, RevokeSessionResult, revoke_sessio
 pub use sign_delta_proposal::{
     SignDeltaProposalParams, SignDeltaProposalResult, sign_delta_proposal,
 };
-pub use status::{SessionsStatus, StatusResponse, build_status};
+pub use status::{ExecutionStatus, SessionsStatus, StatusResponse, build_status};
 
 #[derive(Clone)]
 pub struct ResolvedAccount {
@@ -144,8 +149,8 @@ pub async fn resolve_account(
 }
 
 /// Resolves an account and authenticates a request on a session-eligible
-/// route: reads, proposal list/get and proposal create/sign (FR-008 of
-/// issue #219). The wallet may always sign these too.
+/// route: reads, proposal list/get, proposal create/sign, delta pushes,
+/// execution requests and status reads (FR-008 of issue #219). The wallet may always sign these too.
 pub async fn resolve_account_allowing_session(
     state: &AppState,
     account_id: &str,
@@ -314,14 +319,11 @@ async fn verify_session_request(
             "Session grant names another Guardian key or network".to_string(),
         ));
     }
-    let same_scheme = names_ack_key(&metadata.auth.scheme());
+    // The grant names this Guardian's key of the wallet's scheme, which
+    // must be the scheme the account registers that signer under.
     let signer_commitment = session.signer_commitment;
-    if !same_scheme
-        || !metadata
-            .auth
-            .cosigner_commitments()
-            .contains(&signer_commitment)
-    {
+    let registered_scheme = metadata.auth.signer_scheme(&signer_commitment);
+    if !registered_scheme.as_ref().is_some_and(names_ack_key) {
         tracing::warn!(
             account_id = %account_id,
             signer_commitment = %signer_commitment,
@@ -336,7 +338,7 @@ async fn verify_session_request(
 
 /// Longest wallet signature a session route accepts: a Falcon signature with
 /// its embedded public key.
-const MAX_WALLET_SIGNATURE_BYTES: usize = 1524;
+const MAX_WALLET_SIGNATURE_BYTES: usize = crate::metadata::auth::FALCON_SIGNATURE_LEN;
 
 /// Rejects a wallet signature on an unauthenticated session route
 /// (`POST /session`, `POST /session/revoke-all`) unless it is even-length hex
@@ -694,6 +696,7 @@ mod tests {
             .expect("Failed to create ack registry");
 
         AppState {
+            execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),

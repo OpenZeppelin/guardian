@@ -37,6 +37,7 @@ use super::MultisigClient;
 use crate::keystore::{GuardianKeyStore, KeyManager};
 use crate::prover::ProverConfig;
 use crate::rpc::RpcConfig;
+use crate::signers::SignerSpec;
 use crate::transaction::word_to_hex;
 
 const BASE64: base64::engine::general_purpose::GeneralPurpose =
@@ -61,8 +62,9 @@ pub(crate) async fn offline_client_parts_with_keystore(
     transport: Option<Arc<dyn NoteTransportClient>>,
     keystore: Arc<dyn KeyManager>,
 ) -> (MultisigClient, Arc<SqliteStore>) {
+    let store_path = dir.join("store.sqlite3");
     let store = Arc::new(
-        SqliteStore::new(dir.join("store.sqlite3"))
+        SqliteStore::new(store_path.clone())
             .await
             .expect("sqlite store opens"),
     );
@@ -90,6 +92,7 @@ pub(crate) async fn offline_client_parts_with_keystore(
     let client = MultisigClient::new(
         miden_client,
         store.clone(),
+        store_path,
         keystore,
         "http://localhost:1".to_string(),
         dir.to_path_buf(),
@@ -187,6 +190,17 @@ pub(crate) fn chain_with_notes(
     api
 }
 
+/// A mock chain whose state for `account` is `account` itself.
+pub(crate) fn chain_holding(account: Account) -> Arc<MockRpcApi> {
+    let mut builder = miden_client::testing::MockChain::builder();
+    builder
+        .add_account(account)
+        .expect("mock chain takes the account");
+    let api = Arc::new(MockRpcApi::new(builder.build().expect("mock chain builds")));
+    api.advance_blocks(4);
+    api
+}
+
 /// A guarded-multisig account, the account shape every create path builds requests for.
 pub(crate) fn guarded_multisig_account() -> Account {
     let signer_commitment = SecretKey::new().public_key().to_commitment();
@@ -236,6 +250,14 @@ pub(crate) fn multisig_account_with_scheme(
         .with_seed([seed; 32])
         .build()
         .expect("multisig account builds")
+}
+
+/// `signers`, every one under `scheme`.
+pub(crate) fn signer_specs(signers: &[Word], scheme: SignatureScheme) -> Vec<SignerSpec> {
+    signers
+        .iter()
+        .map(|commitment| SignerSpec::new(*commitment, scheme))
+        .collect()
 }
 
 /// The canned `get_state` a mock GUARDIAN serves for `account`: the same

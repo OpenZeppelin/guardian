@@ -2,7 +2,8 @@
 
 use std::num::NonZeroU32;
 
-use guardian_shared::{DeltaSignature, ProposalSignature, ToJson};
+use guardian_shared::request_envelope::TransactionRequestEnvelope;
+use guardian_shared::{DeltaSignature, ProposalSignature, SignatureScheme, ToJson};
 use miden_protocol::note::NoteType;
 use miden_protocol::transaction::TransactionSummary;
 use serde::{Deserialize, Serialize};
@@ -24,6 +25,19 @@ pub struct ProposalMetadataPayload {
 
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signer_commitments: Vec<String>,
+
+    /// Target signer schemes (`"falcon"` / `"ecdsa"`) of an update-signers
+    /// proposal, index-aligned with `signer_commitments`. Absent => every
+    /// target signer takes the scheme the account stores for the first
+    /// approver the proposal keeps (the account's first approver when it keeps
+    /// none): the proposer's scheme on a proposal from before per-signer
+    /// schemes that rewrote no approver. This SDK omits it only when every
+    /// target signer uses the proposer's scheme and that rule reads them back.
+    /// Kept as sent, like `signer_commitments`, and parsed only when the
+    /// proposal is rebuilt, so an unknown name fails that proposal's
+    /// verification rather than every listing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signer_schemes: Vec<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub salt: Option<String>,
@@ -95,6 +109,10 @@ pub struct ProposalPayload {
     pub signatures: Vec<DeltaSignature>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<ProposalMetadataPayload>,
+    /// The request a Guardian-executable proposal stores. Absent on a self-executed proposal, so
+    /// its wire shape is unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transaction_request: Option<TransactionRequestEnvelope>,
 }
 
 impl ProposalPayload {
@@ -108,7 +126,14 @@ impl ProposalPayload {
                 bound_block_num: Some(tx_summary.block_number().as_u32()),
                 ..Default::default()
             }),
+            transaction_request: None,
         }
+    }
+
+    /// Stores `request` with the proposal, when there is one to store.
+    pub fn with_transaction_request(mut self, request: Option<TransactionRequestEnvelope>) -> Self {
+        self.transaction_request = request;
+        self
     }
 
     fn replace_metadata(mut self, metadata: ProposalMetadataPayload) -> Self {
@@ -283,6 +308,16 @@ impl ProposalPayload {
         })
     }
 
+    /// Sets the target signer schemes of an update-signers proposal. Call it
+    /// after the update-signers metadata setter, which resets them.
+    pub fn with_signer_schemes(mut self, signer_schemes: &[SignatureScheme]) -> Self {
+        let metadata = self
+            .metadata
+            .get_or_insert_with(ProposalMetadataPayload::default);
+        metadata.signer_schemes = crate::signers::SignerSpec::names(signer_schemes);
+        self
+    }
+
     pub fn with_required_signatures(mut self, required_signatures: usize) -> Self {
         let metadata = self
             .metadata
@@ -345,6 +380,7 @@ mod tests {
                 salt: Some("0x456".to_string()),
                 ..Default::default()
             }),
+            transaction_request: None,
         };
 
         let json = payload.to_json();
@@ -367,6 +403,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_add_signer_metadata(
             3,
@@ -387,6 +424,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_remove_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string());
 
@@ -395,12 +433,56 @@ mod tests {
         assert_eq!(meta.target_threshold, Some(2));
     }
 
+    /// The wire names match what GUARDIAN lifts into delta metadata and the
+    /// TypeScript client's `signerSchemes`; a single-scheme proposal keeps the
+    /// shape it had before per-signer schemes.
+    #[test]
+    fn signer_schemes_are_written_only_when_named() {
+        let named = ProposalPayload::new(&summary_binding(3))
+            .with_add_signer_metadata(
+                2,
+                vec!["0xabc".to_string(), "0xdef".to_string()],
+                "0xsalt".to_string(),
+            )
+            .with_signer_schemes(&[SignatureScheme::Falcon, SignatureScheme::Ecdsa])
+            .to_json();
+        assert_eq!(
+            named["metadata"]["signer_schemes"],
+            serde_json::json!(["falcon", "ecdsa"])
+        );
+
+        let single = ProposalPayload::new(&summary_binding(3))
+            .with_add_signer_metadata(2, vec!["0xabc".to_string()], "0xsalt".to_string())
+            .with_signer_schemes(&[])
+            .to_json();
+        assert!(single["metadata"].get("signer_schemes").is_none());
+
+        let parsed: ProposalPayload = serde_json::from_value(named).unwrap();
+        assert_eq!(
+            parsed.metadata.unwrap().signer_schemes,
+            vec!["falcon", "ecdsa"]
+        );
+    }
+
+    /// GUARDIAN stores `signer_schemes` as sent. A name the SDK does not know
+    /// still parses here, so it fails only that proposal's rebuild.
+    #[test]
+    fn unknown_signer_scheme_still_parses() {
+        let json = serde_json::json!({
+            "tx_summary": {},
+            "metadata": { "proposal_type": "add_signer", "signer_schemes": ["rsa"] }
+        });
+        let payload: ProposalPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(payload.metadata.unwrap().signer_schemes, vec!["rsa"]);
+    }
+
     #[test]
     fn with_payment_metadata_sets_fields() {
         let payload = ProposalPayload {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -428,6 +510,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -448,6 +531,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -471,6 +555,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -492,6 +577,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_payment_metadata(
             "0xrecipient".to_string(),
@@ -537,6 +623,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_note_consumption_metadata(&note_ids, "0xsalt".to_string());
 
@@ -553,6 +640,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_guardian_update_metadata(
             "0xpubkey".to_string(),
@@ -576,6 +664,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         };
 
         let json = payload.to_json();
@@ -588,6 +677,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         };
 
         let json = payload.to_json();
@@ -657,6 +747,7 @@ mod tests {
                 bound_block_num: Some(42),
                 ..Default::default()
             }),
+            transaction_request: None,
         };
         let salt = || "0xsalt".to_string();
         let built = [
@@ -801,6 +892,7 @@ mod tests {
             tx_summary: serde_json::json!({}),
             signatures: vec![],
             metadata: None,
+            transaction_request: None,
         }
         .with_note_consumption_metadata_v2(
             vec!["0xabc".to_string()],

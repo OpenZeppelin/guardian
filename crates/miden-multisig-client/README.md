@@ -22,7 +22,8 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.18.x | 0.17.x (pre-release) |
+| 0.19.x (pre-release) | 0.17.x |
+| 0.18.x | 0.17.x |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -90,12 +91,56 @@ error, not a silent fall-through to the full fetch, so the GUARDIAN server must
 serve `GetCanonicalNonce` (issue #191) before this SDK version is rolled out
 against it.
 
+A local state ahead of GUARDIAN is normally a transaction this client
+executed that GUARDIAN has not canonicalized yet, and it is kept. Membership,
+threshold and switch transactions are written to the local store without a
+miden-client transaction record, so miden-client cannot undo one the node drops
+(expired, or evicted with a dropped dependency). Sync therefore rolls the local
+account back to GUARDIAN's state once the conditions below hold. The
+client records each such submission, and judges it dropped by miden-client's own
+discard rule for the transactions it does record: the transaction expired
+(proof), or is still unconfirmed 20 blocks after submission (a heuristic, the
+same one miden-client applies to recorded transactions). On top of that,
+GUARDIAN is not ahead, the chain holds GUARDIAN's state, and miden-client has
+no pending transaction for the account. A transaction that did not expire also
+needs GUARDIAN not to hold the local state as a candidate or retained delta,
+since the 20-block rule alone proves nothing; an expired one cannot land, so
+GUARDIAN is not asked. GUARDIAN's absence of the delta alone proves
+nothing (it can drop a delta whose transaction is still pending), and a failed
+GUARDIAN, chain or store read keeps the local state. A state this client did not
+submit in the current session (the store is per process) is never rolled back
+this way, and neither is a switch to a new endpoint, which registers the
+switched state on the new GUARDIAN.
+
+How soon the rollback happens depends on the proposal. A proposal created with
+`ProposalOptions::approval_expiration_delta` gives its transaction that
+expiration, and the first sync after it expires rolls back. A proposal without
+one (the default) relies on the 20-block rule, so GUARDIAN's veto applies and
+it keeps the delta until its canonicalization gives up and the retained delta
+expires (`GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS`, 24 hours by
+default); the first sync after that rolls back. To recover at once, restart
+the client, which starts a fresh store (the store is per process), and pull the
+account. `pull_account` on the current store does not: miden-client refuses to
+replace an account with one at a lower nonce.
+
+The rollback starts from a fresh local store, as a restarted client does,
+carrying the unconsumed input notes over; when a note cannot be tracked again
+(its tag is unknown) the local state is kept instead. The fresh store is synced
+to the chain tip, which re-authenticates the carried notes, and replaces the
+current one only once it holds the account and every carried note, so a failed
+rollback keeps the current store for the next sync to retry. A fresh store
+cannot take over output-note records, so the client keeps the replaced store
+for the session and `export_note_to_bytes` reads a note created before the
+rollback from it. The replaced store file is left in the account directory and
+named in the logged warning: should the transaction land after all, it still
+holds the local state.
+
 ### Signing Guardian requests with a session
 
 The key manager signs every Guardian request unless a session is active.
 `start_session` has it sign one session grant instead; a delegated P-256 key
-then signs the state and delta reads and the proposal list, get, create and
-sign requests of every later operation:
+then signs the state and delta reads, the proposal list, get, create and
+sign requests and the delta pushes of every later operation:
 
 ```rust
 use std::time::Duration;
@@ -114,8 +159,8 @@ client.end_session().await?; // log this session out
 client.revoke_all_sessions().await?; // every session of this key, signed by the key manager
 ```
 
-Account registration, delta pushes, candidate abandons, account lookup and
-transaction approvals keep using the key manager. A session Guardian ends or
+Account registration, candidate abandons, account lookup and transaction
+approvals keep using the key manager. A session Guardian ends or
 no longer accepts is dropped by the operation that learns of it, after which
 `session()` returns `None` and the key manager signs again. Starting a session
 logs out the one it replaces, and `set_guardian_endpoint` drops the session.
@@ -289,6 +334,39 @@ itself gated by whatever threshold governs `update_signers`.
 The TypeScript SDK exposes the same three as `createAddSignerProposal`,
 `createRemoveSignerProposal` and `createChangeThresholdProposal`.
 
+### Mixed Falcon and ECDSA approvers
+
+The account stores a scheme for each approver and one for GUARDIAN, so a Falcon
+key and an ECDSA wallet or hardware signer can share one account:
+
+```rust
+use miden_multisig_client::{SignatureScheme, SignerSpec, TransactionType};
+
+let account = client.create_account_with_signers(
+    2,
+    vec![
+        SignerSpec::new(client.user_commitment(), SignatureScheme::Falcon),
+        SignerSpec::new(wallet_commitment, SignatureScheme::Ecdsa),
+    ],
+    SignatureScheme::Falcon, // GUARDIAN's scheme
+    Vec::new(),
+).await?;
+client.push_account().await?;
+
+let tx = TransactionType::add_cosigner_with_scheme(other_wallet, SignatureScheme::Ecdsa);
+```
+
+`push_account` registers the schemes the account stores (`MultisigAccount::cosigners`,
+`MultisigAccount::guardian_scheme`), which for a mixed account needs a GUARDIAN
+0.19.0-rc.1 or later. Signer updates keep each approver's stored scheme, `add_cosigner`
+gives the new signer your scheme, and a GUARDIAN switch keeps the GUARDIAN's
+scheme. A proposal that would write a kept approver under another scheme,
+including one from an older SDK that wrote its own scheme for every approver,
+is refused before anything is signed or pushed (`MultisigError::SignerSchemeMismatch`,
+or a summary mismatch for an older SDK's proposal that cannot be reproduced).
+`build_update_signers_transaction_request` takes the approvers as `SignerSpec`s
+for the same reason.
+
 ### Proposal verification status
 
 `list_proposals` checks every proposal's metadata against its signed
@@ -319,6 +397,19 @@ them, load at the tip, so a proposal stays verifiable however long it waits
 for signatures, even after the node has pruned the bound block's account
 state (devnet keeps about 50 blocks). Proposals also record the bound block as `bound_block_num`; this SDK and the TypeScript one read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees.
 
+GUARDIAN pins every proposal to the account state its transaction must
+execute on. `execute_proposal`, `prepare_custom_execution` and
+`execute_imported_proposal` refuse a proposal pinned to a state other than
+the one this client holds with `MultisigError::ProposalBaseMismatch`, as
+the TypeScript SDK does: sync and retry, or create a new proposal if the
+account has moved past that state. Executing it anyway would run its
+transaction on a state its signers did not approve it for. A
+`switch_guardian` proposal is checked against the pre-switch GUARDIAN that
+serves it by `execute_proposal`; `execute_imported_proposal` reads the pin
+from GUARDIAN only for the types it acknowledges, so an imported switch is
+not checked. Releases up to 0.18.3 did not check and executed on the
+client's own state whatever state GUARDIAN had pinned.
+
 ### Recovering From a Dead Transaction (Abandon)
 
 If `execute_proposal` dies after guardian approval (RPC submit failure,
@@ -332,22 +423,79 @@ one), and any candidate queued behind it can never land. Record an abandon inten
 ```rust
 use miden_multisig_client::{AbandonRequestState, AbandonStatus};
 
-// The nonce the proposal was pushed with (committed account nonce + 1).
-let state = client.abandon_candidate(nonce).await?;
-assert_eq!(state, AbandonRequestState::Pending);
+// The nonce the proposal was pushed with (committed account nonce + 1), and
+// the proposal whose transaction is abandoned.
+let request = client.abandon_candidate(nonce, &proposal_id).await?;
+assert_eq!(request.state, AbandonRequestState::Pending);
 
 // The guardian's worker confirms over a short quarantine (typically well
 // under a minute) that the transaction did not land, then releases the
 // account.
 loop {
-    match client.abandon_status(nonce).await? {
+    // The commitment identifies the abandoned delta: a Guardian execution can
+    // archive it and take its nonce.
+    match client.abandon_status(nonce, &request.commitment).await? {
         AbandonStatus::Waiting => tokio::time::sleep(Duration::from_secs(5)).await,
         AbandonStatus::Abandoned => break,           // account released
         AbandonStatus::Landed => break,              // tx landed after all
+        AbandonStatus::Retained => break,            // released, outcome still uncertain
         AbandonStatus::Unexpected => anyhow::bail!("unexpected candidate state"),
     }
 }
 ```
+
+Naming the proposal needs a Guardian server from the same release: an older
+server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
+
+### Guardian Execution
+
+A client built with `.execution_mode(ProposalExecutionMode::GuardianExecutable)` stores each
+proposal's transaction request with it, so once the proposal has enough signatures any cosigner
+can ask Guardian to prove, submit and commit it:
+
+```rust
+use miden_multisig_client::{ExecutionState, ExecutionWaitOptions};
+
+client
+    .request_guardian_execution(&proposal.id)
+    .await?;
+let execution = client
+    .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
+    .await?;
+if execution.state == ExecutionState::Failed {
+    anyhow::bail!("Guardian execution failed: {:?}", execution.error);
+}
+```
+
+`execution_status(&proposal_id)` reads the latest execution once and `current_execution()` the
+account's in-flight one. `wait_for_guardian_execution` only reads: it polls until the execution
+is `committed` or `failed`, backing off from 1 s to 10 s, retries reads that fail with a
+retryable or transport error (honouring the server's retry-after hint), returns any other error,
+and gives up after 15 minutes with `MultisigError::GuardianExecutionWaitTimedOut`, which carries
+the last execution it read. A refusal surfaces as `MultisigError::GuardianExecutionRefused {
+code, message, retryable, retry_after, blocking_proposal_id }`, where `code` is the wire string
+(for example `GUARDIAN_EXECUTION_CONFLICT`).
+
+A Guardian-executable client still executes a `SwitchGuardian` itself, and
+`request_guardian_execution` refuses one before contacting Guardian with
+`MultisigError::LocalExecutionRequired { proposal_id, reason }`
+(`LocalExecutionReason::SwitchGuardian`, the executing client finishes the switch). Execute it
+with `execute_proposal`. A P2ID that creates a private note is sent like any other; deliver the
+note with `export_p2id_note_to_file(&proposal, path)`, which rebuilds it from the proposal
+whoever executed it. Keep the `Proposal` from before execution: GUARDIAN deletes it once its
+transaction is canonical. The check uses the
+proposal this client already holds (listed, fetched, signed, created or imported); any other proposal
+fails closed with `MultisigError::ProposalNotHeldLocally { proposal_id }`. Call
+`LocalExecutionReason::of(&proposal.transaction_type)` to route a proposal up front.
+
+For a proposal signed off channel, call
+`request_imported_guardian_execution(&exported)` with the
+signed document: it relays the document's approvals to Guardian before requesting execution, as
+`execute_imported_proposal` does before the acknowledgement. Guardian executes a proposal only once
+its stored copy carries a threshold of approvals, so `request_guardian_execution` alone answers
+`GUARDIAN_PROPOSAL_NOT_READY` for one whose approvals exist only in the document. See
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
 
 ### Fallback to Offline (if GUARDIAN unavailable)
 

@@ -43,7 +43,8 @@ pub struct DashboardLifecycleCounts {
 /// Guardian asserting which client a shape belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
 pub struct DashboardAuthMethodSignerCount {
-    /// Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`, `evm`).
+    /// Stable `Auth::method_label()` (`miden_falcon`, `miden_ecdsa`,
+    /// `miden`, `evm`).
     pub auth_method: String,
     /// Distinct authorized signers, as on `DashboardAccountSummary`.
     pub authorized_signer_count: u64,
@@ -362,6 +363,7 @@ mod tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
+            execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(MockStorageBackend::new()),
             metadata: Arc::new(MockMetadataStore::new()),

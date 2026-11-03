@@ -302,7 +302,7 @@ jobs:
       - name: Sync pinned toolchain and prebuild example fixtures
         if: matrix.package == 'miden-multisig-client'
         working-directory: .
-        run: cargo build --quiet --example procedure_roots --example serialized_account -p miden-multisig-client
+        run: cargo build --quiet --example procedure_roots --example serialized_account --example mixed_scheme_account -p miden-multisig-client
 
       - name: Install dependencies
         working-directory: packages

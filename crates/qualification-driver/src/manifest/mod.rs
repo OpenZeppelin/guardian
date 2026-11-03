@@ -62,8 +62,12 @@ pub enum Runtime {
     Browser,
 }
 
-/// `Mixed` exists so a manifest naming a mixed signer set fails validation with
-/// a message about the capability gap, rather than a bare deserialization error.
+/// `Mixed` is a signer set whose approvers do not share one scheme. Only the
+/// deterministic Rust leg can build one (its own builder, not an SDK's), so
+/// validation refuses it anywhere else with a message about the capability gap,
+/// rather than a bare deserialization error. Any other spelling is
+/// `Unrecognized`, which validation always refuses: a typo must not become a
+/// scheme a scenario runs under.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Scheme {
@@ -72,6 +76,7 @@ pub enum Scheme {
     Mixed,
     #[serde(rename = "n/a")]
     NotApplicable,
+    Unrecognized,
 }
 
 impl From<String> for Scheme {
@@ -79,8 +84,9 @@ impl From<String> for Scheme {
         match raw.as_str() {
             "falcon" => Self::Falcon,
             "ecdsa" => Self::Ecdsa,
+            "mixed" => Self::Mixed,
             "n/a" | "none" => Self::NotApplicable,
-            _ => Self::Mixed,
+            _ => Self::Unrecognized,
         }
     }
 }
@@ -146,7 +152,10 @@ pub enum Action {
     SignerRemovedRefused,
     AssetSend,
     AssetSendAssert,
+    PrivateP2idSend,
+    PrivateNoteDeliver,
     ProcedureThresholdSet,
+    ProcedureThresholdLower,
     ProcedureThresholdAssert,
     AssetTransfer,
     NoteConsume,
@@ -155,6 +164,8 @@ pub enum Action {
     GuardianMigrate,
     GuardianSwitchOnline,
     GuardianSwitchAssert,
+    GuardianSwitchBack,
+    GuardianSwitchBackAssert,
     HandoffRustToTs,
     HandoffTsToRust,
     StatusIdentity,
@@ -176,12 +187,25 @@ pub enum Action {
     CustomProposalCreate,
     CustomProposalAssert,
     CustomProposalPrepare,
+    GuardianExecute,
+    GuardianExecutionUnavailable,
+    GuardianExecutionRefusals,
+    ChainAdvancePastBound,
+    GuardianExecuteBaseClient,
     QueueCosignerProposalRefused,
     QueueDepthLimit,
     QueueAccountCreate,
     QueueTransfersChained,
     QueueHeadBlocksProposal,
     QueueHeadAbandonRecover,
+    MixedSchemeDeclarationsRefused,
+    MixedSchemeRegister,
+    MixedSchemeCosignersAuthenticate,
+    MixedSchemeReported,
+    MixedSchemeApprovals,
+    MixedSchemeGate,
+    SessionStart,
+    SessionAssert,
     Unknown(String),
 }
 
@@ -207,7 +231,10 @@ impl From<String> for Action {
             "signer-removed-refused" => Self::SignerRemovedRefused,
             "asset-send" => Self::AssetSend,
             "asset-send-assert" => Self::AssetSendAssert,
+            "private-p2id-send" => Self::PrivateP2idSend,
+            "private-note-deliver" => Self::PrivateNoteDeliver,
             "procedure-threshold-set" => Self::ProcedureThresholdSet,
+            "procedure-threshold-lower" => Self::ProcedureThresholdLower,
             "procedure-threshold-assert" => Self::ProcedureThresholdAssert,
             "asset-transfer" => Self::AssetTransfer,
             "note-consume" => Self::NoteConsume,
@@ -216,6 +243,8 @@ impl From<String> for Action {
             "guardian-migrate" => Self::GuardianMigrate,
             "guardian-switch-online" => Self::GuardianSwitchOnline,
             "guardian-switch-assert" => Self::GuardianSwitchAssert,
+            "guardian-switch-back" => Self::GuardianSwitchBack,
+            "guardian-switch-back-assert" => Self::GuardianSwitchBackAssert,
             "handoff-rust-to-ts" => Self::HandoffRustToTs,
             "handoff-ts-to-rust" => Self::HandoffTsToRust,
             "status-identity" => Self::StatusIdentity,
@@ -237,14 +266,42 @@ impl From<String> for Action {
             "custom-proposal-create" => Self::CustomProposalCreate,
             "custom-proposal-assert" => Self::CustomProposalAssert,
             "custom-proposal-prepare" => Self::CustomProposalPrepare,
+            "guardian-execute" => Self::GuardianExecute,
+            "guardian-execution-unavailable" => Self::GuardianExecutionUnavailable,
+            "guardian-execution-refusals" => Self::GuardianExecutionRefusals,
+            "chain-advance-past-bound" => Self::ChainAdvancePastBound,
+            "guardian-execute-base-client" => Self::GuardianExecuteBaseClient,
             "queue-cosigner-proposal-refused" => Self::QueueCosignerProposalRefused,
             "queue-depth-limit" => Self::QueueDepthLimit,
             "queue-account-create" => Self::QueueAccountCreate,
             "queue-transfers-chained" => Self::QueueTransfersChained,
             "queue-head-blocks-proposal" => Self::QueueHeadBlocksProposal,
             "queue-head-abandon-recover" => Self::QueueHeadAbandonRecover,
+            "mixed-scheme-declarations-refused" => Self::MixedSchemeDeclarationsRefused,
+            "mixed-scheme-register" => Self::MixedSchemeRegister,
+            "mixed-scheme-cosigners-authenticate" => Self::MixedSchemeCosignersAuthenticate,
+            "mixed-scheme-reported" => Self::MixedSchemeReported,
+            "mixed-scheme-approvals" => Self::MixedSchemeApprovals,
+            "mixed-scheme-gate" => Self::MixedSchemeGate,
+            "session-start" => Self::SessionStart,
+            "session-assert" => Self::SessionAssert,
             other => Self::Unknown(other.to_string()),
         }
+    }
+}
+
+impl Action {
+    /// Whether this action drives the driver's own mixed-scheme account.
+    pub fn is_mixed_scheme(&self) -> bool {
+        matches!(
+            self,
+            Self::MixedSchemeDeclarationsRefused
+                | Self::MixedSchemeRegister
+                | Self::MixedSchemeCosignersAuthenticate
+                | Self::MixedSchemeReported
+                | Self::MixedSchemeApprovals
+                | Self::MixedSchemeGate
+        )
     }
 }
 
@@ -486,6 +543,7 @@ mod tests {
             Scheme::Ecdsa,
             Scheme::Mixed,
             Scheme::NotApplicable,
+            Scheme::Unrecognized,
         ] {
             let rendered = serde_json::to_string(&scheme).expect("serializes");
             let parsed: Scheme = serde_json::from_str(&rendered).expect("round-trips");

@@ -40,7 +40,7 @@ pub async fn get_delta_proposals(
             GuardianError::StorageError(format!("Failed to load delta proposals: {e}"))
         })?
         .into_iter()
-        .map(|record| record.proposal)
+        .map(|record| record.proposal.into_listing_entry())
         .collect();
 
     proposals.retain(|p| p.status.is_pending());
@@ -198,6 +198,44 @@ mod tests {
 
         assert_eq!(result.proposals.len(), 1);
         assert_eq!(result.proposals[0].nonce, 1);
+    }
+
+    #[tokio::test]
+    async fn a_listing_omits_the_stored_transaction_request() {
+        let (state, storage, _network, metadata) = create_test_state();
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+
+        let (signer_pubkey, signer_commitment, signer_signature, timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+
+        let _metadata = metadata.with_get(Ok(Some(create_account_metadata(
+            account_id.clone(),
+            vec![signer_commitment.clone()],
+        ))));
+
+        let mut proposal = create_pending_proposal(account_id.clone(), 1, signer_commitment);
+        proposal.delta_payload["transaction_request"] = serde_json::json!({ "bytes": "AQID" });
+        let _storage = storage.with_pull_all_delta_proposals(Ok(vec![proposal.clone()]));
+
+        let params = GetDeltaProposalsParams {
+            account_id,
+            credentials: Credentials::signature(signer_pubkey, signer_signature, timestamp),
+        };
+
+        let result = get_delta_proposals(&state, params).await.unwrap();
+
+        assert_eq!(result.proposals.len(), 1);
+        assert!(
+            result.proposals[0]
+                .delta_payload
+                .get("transaction_request")
+                .is_none()
+        );
+        assert_eq!(
+            result.proposals[0].delta_payload["tx_summary"],
+            proposal.delta_payload["tx_summary"]
+        );
     }
 
     #[tokio::test]

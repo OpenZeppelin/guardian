@@ -19,7 +19,7 @@ impl RunSigner {
         match scheme {
             Scheme::Falcon => Some(Self::Falcon(FalconSecretKey::new())),
             Scheme::Ecdsa => Some(Self::Ecdsa(EcdsaSecretKey::new())),
-            Scheme::Mixed | Scheme::NotApplicable => None,
+            Scheme::Mixed | Scheme::NotApplicable | Scheme::Unrecognized => None,
         }
     }
 

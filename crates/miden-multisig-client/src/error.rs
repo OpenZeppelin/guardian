@@ -28,6 +28,62 @@ pub enum MultisigError {
     #[error("GUARDIAN server error: {0}")]
     GuardianServer(String),
 
+    /// GUARDIAN refused a Guardian-execution request with a stable code, such as
+    /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. `retryable` is the
+    /// server's `meta.retryable`; `retry_after` is the server's backoff hint, when it sent one;
+    /// `blocking_proposal_id` names the proposal whose execution holds the account, on a
+    /// conflict.
+    #[error("GUARDIAN refused execution ({code}): {message}")]
+    GuardianExecutionRefused {
+        code: String,
+        message: String,
+        retryable: bool,
+        retry_after: Option<std::time::Duration>,
+        blocking_proposal_id: Option<String>,
+    },
+
+    /// GUARDIAN refused to store a new proposal with a stable code, such as
+    /// `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` or `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`.
+    /// `retryable` is the server's `meta.retryable`; `retry_after` is the server's backoff hint,
+    /// when it sent one. A push failure that carries no GUARDIAN code stays
+    /// [`GuardianServer`](MultisigError::GuardianServer).
+    #[error("GUARDIAN refused the proposal ({code}): {message}")]
+    GuardianProposalRefused {
+        code: String,
+        message: String,
+        retryable: bool,
+        retry_after: Option<std::time::Duration>,
+    },
+
+    /// The proposal must be executed by a client, not by GUARDIAN; `reason` says why. Execute it
+    /// with [`execute_proposal`](crate::MultisigClient::execute_proposal).
+    #[error(
+        "proposal {proposal_id} must be executed locally, not by GUARDIAN: {}",
+        reason.description()
+    )]
+    LocalExecutionRequired {
+        proposal_id: String,
+        reason: crate::local_execution::LocalExecutionReason,
+    },
+
+    /// A GUARDIAN execution was requested for a proposal this client has not listed, fetched,
+    /// signed or created, so it cannot tell whether GUARDIAN may execute it.
+    #[error(
+        "proposal {proposal_id} is not held by this client, so it cannot be checked before \
+         GUARDIAN executes it: list proposals and request again"
+    )]
+    ProposalNotHeldLocally { proposal_id: String },
+
+    /// [`wait_for_guardian_execution`](crate::MultisigClient::wait_for_guardian_execution)
+    /// reached its deadline before the execution finished. `last_observed` is the last execution
+    /// it read, if any read succeeded; the execution itself keeps running.
+    #[error("GUARDIAN execution of proposal {proposal_id} did not finish within {deadline:?}")]
+    GuardianExecutionWaitTimedOut {
+        proposal_id: String,
+        deadline: std::time::Duration,
+        last_observed: Option<Box<guardian_client::ProposalExecution>>,
+    },
+
     /// Miden client error.
     #[error("miden client error: {0}")]
     MidenClient(String),
@@ -43,6 +99,22 @@ pub enum MultisigError {
         proposal_id: String,
         declared: u32,
         bound: BlockNumber,
+    },
+
+    /// GUARDIAN pinned the proposal to an account state other than the one
+    /// this client holds, so executing it here would run its transaction on
+    /// a state its signers did not approve it for. Sync the account and
+    /// retry, or create a new proposal if the account has moved past the
+    /// pinned state.
+    #[error(
+        "proposal {proposal_id} was made for account state {pinned}, but this client's account \
+         is at {local}: sync the account and retry, or create a new proposal if the account has \
+         moved past that state"
+    )]
+    ProposalBaseMismatch {
+        proposal_id: String,
+        pinned: String,
+        local: String,
     },
 
     /// A multisig request binds a block in its auth args without declaring it
@@ -120,6 +192,37 @@ pub enum MultisigError {
     /// Serialization/deserialization error.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+
+    /// A signer update would write an approver under another signature scheme
+    /// than the one the account stores for it. The approver's key verifies
+    /// only under its own scheme, so the update would lock it out. Raised for
+    /// a proposal that names such a scheme, and for one that names none (any
+    /// from before per-signer schemes) on an account whose kept approvers do
+    /// not share one. The TypeScript SDK's counterpart is
+    /// `SignerSchemeMismatchError` (`signer_scheme_mismatch`).
+    #[error(
+        "signer update would change the signature scheme of {}; an approver's key verifies \
+         only under its own scheme",
+        crate::signers::SignerSchemeChange::list(.changes)
+    )]
+    SignerSchemeMismatch {
+        changes: Vec<crate::signers::SignerSchemeChange>,
+    },
+
+    /// The account stores this client's key under another signature scheme
+    /// than the key's own, or under none it supports. Its approvals would not
+    /// verify on chain, and GUARDIAN refuses them, so it neither proposes nor
+    /// signs.
+    #[error(
+        "this client's {key} key {commitment} is stored on the account under {}; its approvals \
+         cannot verify",
+        .stored.map_or_else(|| "no supported scheme".to_string(), |scheme| format!("'{scheme}'"))
+    )]
+    KeySchemeMismatch {
+        commitment: String,
+        key: guardian_shared::SignatureScheme,
+        stored: Option<guardian_shared::SignatureScheme>,
+    },
 
     /// User is not a cosigner for this account.
     #[error("not a cosigner for this account")]
@@ -304,6 +407,23 @@ impl From<guardian_client::ClientError> for MultisigError {
     }
 }
 
+impl MultisigError {
+    /// A failed proposal push: [`GuardianProposalRefused`](MultisigError::GuardianProposalRefused)
+    /// when GUARDIAN answered with a stable code, else
+    /// [`GuardianServer`](MultisigError::GuardianServer).
+    pub(crate) fn proposal_push(err: guardian_client::ClientError) -> Self {
+        match err.guardian_code() {
+            Some(code) => MultisigError::GuardianProposalRefused {
+                message: err.user_message().unwrap_or_else(|| err.to_string()),
+                retryable: err.is_retryable(),
+                retry_after: err.retry_after(),
+                code,
+            },
+            None => MultisigError::GuardianServer(format!("failed to push proposal: {err}")),
+        }
+    }
+}
+
 /// Flattens an error's full `source()` chain into one string so callers see the underlying cause
 /// (e.g. the gRPC status behind a terse "RPC error"), not just the outermost `Display`.
 pub(crate) fn error_chain(err: &dyn std::error::Error) -> String {
@@ -427,5 +547,79 @@ mod tests {
             error.miden_rpc_kind(),
             Some(GrpcError::Unavailable)
         ));
+    }
+
+    fn guardian_status(
+        code: tonic::Code,
+        details: serde_json::Value,
+    ) -> guardian_client::ClientError {
+        guardian_client::ClientError::from(tonic::Status::with_details(
+            code,
+            "refused",
+            details.to_string().into_bytes().into(),
+        ))
+    }
+
+    #[test]
+    fn a_coded_push_refusal_is_typed_with_its_code_and_retry_meta() {
+        let error = MultisigError::proposal_push(guardian_status(
+            tonic::Code::InvalidArgument,
+            serde_json::json!({
+                "code": "GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE",
+                "message": "This transaction is too large for Guardian to store.",
+                "meta": { "retryable": false }
+            }),
+        ));
+        let MultisigError::GuardianProposalRefused {
+            code,
+            message,
+            retryable,
+            retry_after,
+        } = error
+        else {
+            panic!("expected a typed proposal refusal, got {error:?}");
+        };
+        assert_eq!(code, "GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE");
+        assert_eq!(
+            message,
+            "This transaction is too large for Guardian to store."
+        );
+        assert!(!retryable);
+        assert_eq!(retry_after, None);
+    }
+
+    #[test]
+    fn a_retryable_push_refusal_keeps_the_server_retry_hint() {
+        let error = MultisigError::proposal_push(guardian_status(
+            tonic::Code::ResourceExhausted,
+            serde_json::json!({
+                "code": "rate_limit_exceeded",
+                "message": "Too many requests, please try again shortly.",
+                "meta": { "retryable": true, "retry_after_secs": 7 }
+            }),
+        ));
+        let MultisigError::GuardianProposalRefused {
+            code,
+            retryable,
+            retry_after,
+            ..
+        } = error
+        else {
+            panic!("expected a typed proposal refusal, got {error:?}");
+        };
+        assert_eq!(code, "rate_limit_exceeded");
+        assert!(retryable);
+        assert_eq!(retry_after, Some(std::time::Duration::from_secs(7)));
+    }
+
+    #[test]
+    fn a_push_failure_without_a_guardian_code_stays_a_server_error() {
+        let error = MultisigError::proposal_push(guardian_client::ClientError::from(
+            tonic::Status::unavailable("connection refused"),
+        ));
+        let MultisigError::GuardianServer(message) = error else {
+            panic!("expected an untyped server error, got {error:?}");
+        };
+        assert!(message.starts_with("failed to push proposal: "));
     }
 }

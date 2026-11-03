@@ -38,7 +38,7 @@ pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetSt
         .await
         .map_err(|_e| GuardianError::StateNotFound(params.account_id.clone()))?;
 
-    account_state.auth_scheme = resolved.metadata.auth.scheme().to_string();
+    account_state.auth_scheme = resolved.metadata.auth.auth_scheme_label().to_string();
 
     Ok(GetStateResult {
         state: account_state,

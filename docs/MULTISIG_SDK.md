@@ -27,13 +27,13 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.2 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.19.0-rc.1 @miden-sdk/miden-sdk@0.17.3
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "=0.18.2"
+miden-multisig-client = "=0.19.0-rc.1"
 miden-client = "=0.17.3"
 ```
 
@@ -532,6 +532,267 @@ integration extends rather than replaces its advice map.
 > Cosigners must verify the raw `tx_summary` they are signing — not trust the
 > label or description.
 
+### Guardian Execution
+
+By default a proposal is self-executed: a cosigner with a Miden client proves and submits it.
+A client built in the **Guardian-executable** mode instead stores the proposal's request with
+it, so any cosigner can ask Guardian to prove, submit and commit it once it has enough
+signatures. The mode is set once, on the client; no method signature changes, and the client
+never asks the server whether it offers execution; a server without a prover refuses the
+request with `GUARDIAN_PROVING_UNAVAILABLE`. An application that wants to know beforehand, for
+example to show or hide an "execute through Guardian" action, can read `execution` from the
+server's public `GET /status` (`getStatus()` in the TypeScript base client). A Guardian that
+predates Guardian execution sends no `execution`, so `getStatus()` leaves it out: such a server
+does not offer it.
+
+```rust
+use miden_multisig_client::{
+    ExecutionState, ExecutionWaitOptions, MultisigClient,
+    ProposalExecutionMode, TransactionType,
+};
+
+let mut client = MultisigClient::builder()
+    // ...endpoints and key...
+    .execution_mode(ProposalExecutionMode::GuardianExecutable)
+    .build()
+    .await?;
+let proposal = client.propose_transaction(TransactionType::consume_notes(note_ids)).await?;
+// ...cosigners sign to threshold...
+client
+    .request_guardian_execution(&proposal.id)
+    .await?;
+let execution = client
+    .wait_for_guardian_execution(&proposal.id, ExecutionWaitOptions::default())
+    .await?;
+if execution.state == ExecutionState::Failed {
+    return Err(format!("{:?}", execution.error).into());
+}
+client.sync().await?;
+```
+
+```ts
+const client = new MultisigClient(midenClient, {
+  guardianEndpoint,
+  midenRpcEndpoint,
+  executionMode: 'guardian_executable',
+});
+const multisig = await client.load(accountId, signer);
+const proposal = await multisig.createConsumeNotesProposal(noteIds);
+// ...cosigners sign to threshold...
+await multisig.requestGuardianExecution(proposal.id);
+const execution = await multisig.waitForGuardianExecution(proposal.id);
+if (execution.state === 'failed') {
+  throw new Error(`${execution.error?.code}: ${execution.error?.message}`);
+}
+await multisig.syncState();
+```
+
+Guardian commits the transaction and pushes its delta, so the local account is behind until the
+client syncs: sync once the execution is `committed`, as the snippets do, before reading the
+account or proposing again.
+
+Guardian executes a proposal only once its stored copy carries a threshold of approvals, so
+approvals collected off channel are relayed to it before the request, as local execution relays
+them before Guardian's acknowledgement. TypeScript's `requestGuardianExecution` relays the
+approvals of the proposal it holds, an imported one included. In Rust, pass the signed document
+to `request_imported_guardian_execution(&exported, request)`, the counterpart of
+`execute_imported_proposal`; `request_guardian_execution` sends only the proposal id. Both
+SDKs count and relay only the approvals the account can verify: one per approver, under the
+scheme the account stores for that approver. A document short of a threshold of those is
+refused locally (`ProposalNotReady`) before Guardian is contacted.
+
+#### Proposals a Guardian-executable client still executes locally
+
+One proposal type does client-side work when executed that Guardian execution skips, so both
+SDKs refuse to send it to Guardian, identically:
+
+| Reason (`LocalExecutionReason`) | Proposal | Refused |
+|---|---|---|
+| `switch_guardian` | `switch_guardian` | Always. The executing client verifies the new endpoint, registers the account there and repoints itself. |
+
+Every other proposal type is sent, a P2ID that creates a private note included. Its recipient
+learns the note only from a note file, which any cosigner exports from the proposal whoever
+executed it: `export_p2id_note_to_file(&proposal, path)` / `export_p2id_note_to_bytes(&proposal)`
+in Rust, `exportP2idNoteToFile(proposal, filename?)` / `exportP2idNoteToBytes(proposal)` in
+TypeScript. The export rebuilds the note from the proposal, checks that the summary the proposal
+id commits to creates it, and includes its inclusion proof once the transaction has committed.
+GUARDIAN deletes a proposal once its transaction is canonical, so the exporting cosigner keeps
+the proposal it listed, signed or created (or its offline export) from before it is executed.
+
+The check runs on the proposal the client already holds, before Guardian is contacted: one it
+synced, signed, created or imported (`syncProposals`, `signProposal`, the `create*Proposal`
+methods and `importProposal` in TypeScript; `list_proposals`, `sign_proposal`, the `propose_*`
+methods and `import_proposal` / `import_proposal_from_string` in Rust). A proposal the client does not hold fails closed without
+a request: the client never asks Guardian what a proposal is to decide whether Guardian may run
+it. Only a proposal that passed verification is held: one a listing reports as `Failed` fails
+closed until a later listing verifies it. A TypeScript proposal still `unchecked` (imported, or
+parsed without a check) is verified once before the request, and fails closed if that fails.
+
+Guardian applies the same rule on its side: it refuses a switch with
+`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`meta.reason` `switch_guardian`). Guardian reads it from
+the signed summary, not the label: a proposal whose transaction changes the guardian key is a switch whatever it is called. Both SDKs surface that refusal as the same
+`LocalExecutionRequired` error as the local check.
+
+| Outcome | Rust | TypeScript |
+|---|---|---|
+| Must execute locally | `MultisigError::LocalExecutionRequired { proposal_id, reason }` | `LocalExecutionRequiredError` (`proposalId`, `reason`) |
+| Not held by this client | `MultisigError::ProposalNotHeldLocally { proposal_id }` | `ProposalNotHeldLocallyError` (`proposalId`) |
+
+The message reads `proposal <id> must be executed locally, not by GUARDIAN: <description>`.
+Execute such a proposal with `execute_proposal` / `executeProposal`. To route a proposal before
+requesting, call the exported rule: `LocalExecutionReason::of(&proposal.transaction_type)`
+(with `as_str()` for the stable string and `description()` for the sentence) in Rust,
+`localExecutionReason(proposal)` and `describeLocalExecutionReason(reason)` in TypeScript.
+
+```rust
+use miden_multisig_client::{LocalExecutionReason};
+
+match LocalExecutionReason::of(&proposal.transaction_type) {
+    Some(reason) => {
+        println!("executing locally: {}", reason.description());
+        client.execute_proposal(&proposal.id).await?;
+    }
+    None => {
+        client
+            .request_guardian_execution(&proposal.id)
+            .await?;
+    }
+}
+```
+
+```ts
+import { describeLocalExecutionReason, localExecutionReason } from '@openzeppelin/miden-multisig-client';
+
+const reason = localExecutionReason(proposal);
+if (reason) {
+  console.log(`executing locally: ${describeLocalExecutionReason(reason)}`);
+  await multisig.executeProposal(proposal.id);
+} else {
+  await multisig.requestGuardianExecution(proposal.id);
+}
+```
+
+`execution_status` / `executionStatus` reads the latest execution once and
+`current_execution` / `currentExecution` the account's in-flight one.
+`wait_for_guardian_execution(proposal_id, options)` / `waitForGuardianExecution(proposalId,
+options)` polls `execution_status` until the execution is `committed` or `failed` and returns
+it, with identical semantics in both SDKs:
+
+- **Backoff.** The first read is immediate. The pause between reads starts at 1 s and doubles up
+  to 10 s (`initial_backoff` and `max_backoff` in Rust's `ExecutionWaitOptions`,
+  `initialBackoffMs` and `maxBackoffMs` in TypeScript).
+- **Retried reads.** A read that fails with an error Guardian marks retryable, or with a
+  transport failure, is retried after the server's retry-after hint when it sent one, else after
+  the current backoff. A transport failure is one with no Guardian error object: in Rust a
+  connection failure or an `Unavailable` / `DeadlineExceeded` status, in TypeScript a `fetch`
+  that got no response or a 502, 503 or 504. Any other error is returned as it would be from
+  `execution_status`.
+- **Deadline.** After 15 minutes (`deadline` / `deadlineMs`) it stops with
+  `MultisigError::GuardianExecutionWaitTimedOut` (Rust) or `GuardianExecutionWaitTimeoutError`
+  (TypeScript), carrying the last execution it read, if any. The execution keeps running on
+  Guardian; waiting again picks it up.
+- **Read-only.** It never requests execution. Call `request_guardian_execution` /
+  `requestGuardianExecution` first; repeating that request while an execution runs returns it
+  with `newly_accepted: false`.
+
+What the mode changes, identically in both SDKs:
+
+- **A switch is unchanged.** Guardian never executes a `switch_guardian` proposal, so it is
+  created exactly as in the self-executed mode: no stored request, no transaction expiration and
+  no default approval expiration (an explicit `approval_expiration_delta` /
+  `approvalExpirationDelta` still applies).
+- **Two signed expiration bounds.** The approval expires `GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA`
+  (28,800) blocks after the proposal's bound block unless the caller sets
+  `approval_expiration_delta` / `approvalExpirationDelta`. The transaction expires a window
+  after the block it executes against, and that window is set by the transaction: the request
+  scripts `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` as a ceiling, and an expiration can only be
+  lowered, so anything else in the transaction that applies a shorter one wins. On devnet every
+  fee-paying transaction gets 20 blocks, because the fee faucet's transfer policy
+  (`expiration::apply_default`) caps it at the reference block + 20. That window is the real
+  budget for proving plus sending, whoever executes. Both bounds are bound by the summary, so
+  the same effects create a **different** proposal in each mode.
+- **The stored request.** `transaction_request` carries the serialized request in an envelope
+  tagged with the protocol line (`0.17`). The server must run the same `miden-client` as the SDK
+  that wrote it to decode it. It does not change the proposal id.
+- **Pinned consume-notes.** Every consumed note is stored with its inclusion proof, so Guardian
+  consumes it in the same mode the cosigners signed, whatever its own store holds.
+- **Custom proposals.** `propose_custom_transaction` / `createCustomProposal` store the
+  producer's bytes unchanged. For Guardian to execute them, the request needs a non-zero
+  approval expiration in its auth arguments, and its script should apply the same transaction
+  expiration ceiling the SDKs script (`push.256 exec.::miden::protocol::tx::update_expiration_block_delta`);
+  without it the proven expiration is the approval window and Guardian refuses it as beyond its
+  horizon. As above, the window the transaction ends up with may be shorter, such as 20 blocks
+  for a fee-paying transaction on devnet.
+- **The low-level `createProposal(nonce, txSummaryBase64, metadata)`** (TypeScript) carries no
+  request, so it refuses on a Guardian-executable client.
+- **Thresholds.** Guardian accepts a request once the valid signatures meet the threshold of the
+  procedure the proposal type implies. The account enforces the highest threshold among every
+  procedure the transaction calls; when that is higher, the execution fails with
+  `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` before anything is proved, and the proposal can be
+  executed once more cosigners sign.
+- **Invalid signatures.** Guardian executes with the valid signatures it holds and ignores
+  invalid, duplicate or revoked-signer ones, as long as the valid ones meet the threshold; the
+  ignored count is reported with the execution. Local execution passes every collected signature
+  to the account's auth procedure, so one invalid signature makes it fail.
+
+A proposal created in either mode can still be executed locally with `execute_proposal` /
+`executeProposal`, and listing, signing, exporting and importing work the same. A listing
+(`get_delta_proposals` / `getDeltaProposals`) never carries the stored `transaction_request`, so
+it stays within the transport's message limit however many requests an account stores; the
+single-proposal read (`get_delta_proposal` / `getDeltaProposal`) returns it. For a thin
+client with no Miden connectivity, use the base clients' `execute_delta_proposal` /
+`executeDeltaProposal`, `get_delta_proposal_execution` / `getDeltaProposalExecution` and
+`get_current_execution` / `getCurrentExecution`. The base clients carry no Miden dependency (a
+test in each enforces it), and the caller brings its own signer, such as a wallet, an HSM or a
+KMS. The base clients have no wait helper, so a thin client polls itself (and handles
+retryable read errors as it sees fit).
+
+The base clients skip the SDKs' local check: they send whatever proposal they are given, and
+Guardian's own rule is the only guard: it refuses a switch with
+`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`. The same holds for `MultisigClient.guardianClient` in TypeScript: it
+exposes the base client, without the local check. Prefer the SDKs'
+`request_guardian_execution` / `requestGuardianExecution`, which check the proposal locally
+first.
+
+```ts
+import { GuardianHttpClient, isTerminalExecutionState } from '@openzeppelin/guardian-client';
+
+const guardian = new GuardianHttpClient(guardianUrl);
+guardian.setSigner(cosignerSigner); // any `Signer` for one of the account's cosigners
+let execution = await guardian.executeDeltaProposal(accountId, proposalId);
+while (!isTerminalExecutionState(execution.state)) {
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  execution = await guardian.getDeltaProposalExecution(accountId, proposalId);
+}
+```
+
+```rust
+use guardian_client::GuardianClient;
+
+let mut guardian = GuardianClient::connect(guardian_endpoint).await?.with_signer(cosigner_signer);
+let mut execution = guardian
+    .execute_delta_proposal(&account_id, &proposal_id)
+    .await?;
+while !execution.state.is_terminal() {
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    execution = guardian.get_delta_proposal_execution(&account_id, &proposal_id).await?;
+}
+```
+
+A failed execution carries a stable `error.code`. A refusal from the multisig SDKs' execution
+methods surfaces in Rust as `MultisigError::GuardianExecutionRefused { code, message, retryable,
+retry_after, blocking_proposal_id }` and in TypeScript as a `GuardianExecutionRefusedError`
+with the same fields (`code`, `userMessage`, `retryable`, `retryAfterSecs`, `blockingProposalId`).
+`code` is the wire string, such as `GUARDIAN_EXECUTION_CONFLICT`, in both. A refusal to store a new proposal, such as
+`GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` or `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`, surfaces from
+the Rust `propose_*` methods and `propose_custom_transaction` as
+`MultisigError::GuardianProposalRefused { code, message, retryable, retry_after }`, with the same
+meaning for each field; a push failure that carries no Guardian code stays
+`MultisigError::GuardianServer`. In TypeScript it is the base client's `GuardianHttpError`. The base clients
+report a refusal as their usual error: `ClientError` in Rust and a `GuardianHttpError` whose
+`rawCode` is the wire string in TypeScript. See
+[`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution) for every code.
+
 ### Side-channel (offline) workflow
 
 For moving a proposal between cosigners as a document instead of through
@@ -704,6 +965,40 @@ admits ECDSA accounts (`GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa`): both ACK keys
 stay loaded for existing accounts. Always pass the scheme of the account you
 are creating, usually `signer.scheme`. A Falcon commitment in an ECDSA account
 is refused at registration with an authorization error, not a scheme mismatch.
+
+An approver may use its own signature scheme: pass `{ commitment, scheme }`
+(a `SignerSpec`) instead of a bare commitment, which keeps using
+`signatureScheme` (default `'falcon'`, also the GUARDIAN's scheme). The account
+then stores one scheme per approver in `approver_schemes`, as
+`miden-standards` does, so an ECDSA wallet or hardware signer and a locally held
+Falcon key can share one account (issue #576):
+
+- `registerOnGuardian()` registers the schemes the account stores: the
+  single-scheme auth when every approver uses the GUARDIAN's scheme
+  (`Multisig.guardianScheme`), the per-signer `Miden` auth otherwise. A GUARDIAN
+  up to 0.18.3 refuses the per-signer auth (`GuardianMixedSchemesUnsupportedError`,
+  see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)). `signatureScheme`
+  also sets the GUARDIAN's scheme: all-ECDSA `SignerSpec`s with it omitted build
+  a Falcon GUARDIAN, which is registered per signer.
+- Signer updates keep every approver's stored scheme. `createAddSignerProposal`
+  adds a bare commitment under your scheme and a `SignerSpec` under its own. A
+  proposal carries `signerSchemes` unless every target signer uses the
+  proposer's scheme and the scheme of the approvers it keeps, and every cosigner
+  rebuilds it from them. The Rust SDK applies the same rule (#549).
+- A proposal that would write a kept approver under another scheme is refused:
+  its listing shows a failed verification, and signing and executing refuse it
+  before an approval or a delta reaches GUARDIAN (`SignerSchemeMismatchError`).
+  SDKs before this one named no schemes and wrote their own for every approver,
+  so their signer updates on a mixed account are refused this way.
+- An approval made under another scheme than the account stores for its signer
+  is left out when the proposal executes, as on chain and in GUARDIAN's push
+  gate, and a client whose key the account stores under another scheme refuses
+  to propose or sign (`KeySchemeMismatchError`).
+- A GUARDIAN switch keeps the account's GUARDIAN scheme. The new endpoint is
+  asked for its key of that scheme, whatever your key's scheme is. Switching a
+  mixed-scheme account to a GUARDIAN up to 0.18.3 executes on chain but fails to
+  register there; switch again with `createSwitchGuardianProposalOffline`, to a
+  GUARDIAN with per-signer schemes.
 
 ### Loading Existing Accounts
 
@@ -983,18 +1278,18 @@ usually not what you want.
 > **Warning:** a `private` P2ID note publishes only its hash on chain. The
 > recipient cannot discover the note by syncing; the full note details must
 > be shared with them out-of-band before they can consume it. Use
-> `exportNoteToBytes` / `importNoteFromBytes` (or the browser file variants
-> `exportNoteToFile` / `importNoteFromFile`) for that transfer (issue #356):
+> `exportP2idNoteToBytes` / `importNoteFromBytes` (or the browser file variants
+> `exportP2idNoteToFile` / `importNoteFromFile`) for that transfer (issue #356).
+> The export rebuilds the note from the proposal, so it works whoever executed
+> it, this client or GUARDIAN. Keep the `Proposal` from before execution:
+> GUARDIAN deletes it once its transaction is canonical.
 
 ```typescript
-// Sender: resolve the note ID BEFORE executing (it derives from the
-// pre-execution vault state), then export after execution.
-const noteId = await multisig.getP2idNoteId(privateProposal);
-// ...sign + execute the proposal...
-const noteFileBytes = await multisig.exportNoteToBytes(noteId);
+// Sender (any cosigner holding the proposal): export once it is executed.
+const noteFileBytes = await multisig.exportP2idNoteToBytes(privateProposal);
 // Deliver `noteFileBytes` to the recipient out-of-band (file, message, ...).
 // Or, in a browser, trigger a download of the note file directly:
-await multisig.exportNoteToFile(noteId);
+await multisig.exportP2idNoteToFile(privateProposal);
 
 // Recipient: import the bytes (or a File from an <input type="file">), then
 // sync so the note's on-chain commitment is tracked; it then appears in
@@ -1114,6 +1409,11 @@ const exported = await multisig.createSwitchGuardianProposalOffline(
 );
 ```
 
+An offline proposal is always self-executed, whatever the client's execution mode: it never
+reaches Guardian, so there is nothing for Guardian to execute. It carries no stored request and
+neither of the Guardian-executable bounds, and it executes through `executeProposal` /
+`execute_imported_proposal` as before. A `guardian_executable` client creates it the same way.
+
 ### Signing & Executing Proposals
 
 > **The two SDKs differ on who has signed a new proposal.** On ordinary
@@ -1207,10 +1507,11 @@ one implicitly.
 Every Guardian request is otherwise signed by the wallet, which means a prompt
 per request on a hardware wallet. When the Guardian advertises `sessions` on
 `GET /status`, the wallet can sign one session grant; a non-extractable
-WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing
-and proposal create/sign until the session ends. Transaction approvals,
-account registration, delta pushes, candidate abandons and account lookup
-still use the wallet.
+WebCrypto P-256 key (the delegated signer) then signs reads, proposal listing,
+proposal create/sign, delta pushes, Guardian execution requests
+(`requestGuardianExecution`) and execution status reads until the session
+ends. Transaction approvals, account registration, candidate abandons and
+account lookup still use the wallet.
 
 ```typescript
 import { IndexedDbSessionKeyStore, describeSessionGrant } from '@openzeppelin/miden-multisig-client';
@@ -1255,33 +1556,35 @@ Authentication).
 | `resumeSession(signer, store, { onEnded? }?)` | Reuse a stored session key without a wallet prompt; `null` when none or about to expire |
 | `endSession(store?)` | Log out the current session and forget its stored key |
 | `revokeAllSessions(signer, store?)` | Wallet-signed: revoke every session of the signer on this Guardian |
-| `guardianClient` | Access to underlying GUARDIAN HTTP client |
+| `guardianClient` | Access to underlying GUARDIAN HTTP client. Its `executeDeltaProposal` skips the SDK's local execution check; prefer `Multisig.requestGuardianExecution` |
 
 #### Multisig
 
 | Method | Description |
 |--------|-------------|
 | `accountId` | Get account ID (hex string) |
-| `threshold` | Get current threshold |
-| `signerCommitments` | Get list of signer commitments |
+| `threshold` | Get current threshold, as of the last read of the local store |
+| `signerCommitments` | Get list of signer commitments, as of the last read of the local store. Every proposal creator, signing (online and offline), import, listing (`syncProposals`), registration, `submitTransaction` and execution (built-in and custom) re-read the store before deciding, after their own chain sync when they make one (a chain sync can undo a dropped transaction), and refuse when the store's record cannot be read in full rather than decide on the cache |
 | `fetchState()` | Fetch latest state from GUARDIAN |
 | `syncState()` | Reconcile the local store with GUARDIAN; pre-checks GUARDIAN's canonical nonce (`getCanonicalNonce`) and skips the state fetch when that nonce is below the local nonce, or equal to it at the same commitment. Returns `{ source: 'guardian', state }` or `{ source: 'local', localNonce, guardianNonce }` |
 | `registerOnGuardian()` | Register new account with GUARDIAN |
 | `syncProposals()` | Sync proposals from GUARDIAN, pruning ones it no longer reports (TS-only cache reconciliation; the Rust `list_proposals` builds a fresh list per call and has no cache to prune) |
-| `abandonCandidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
-| `abandonStatus(nonce)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `unexpected` |
+| `abandonCandidate(nonce, proposalId)` | Record an abandon intent for the stuck candidate carrying the proposal's transaction (worker resolves after a short quarantine); returns the abandoned delta's `commitment`. After a Guardian execution archived the delta and took its nonce, a retry answers for the archived delta. Needs a Guardian server from the same release |
+| `abandonStatus(nonce, commitment)` | Poll the abandon resolution: `waiting` / `landed` / `abandoned` / `retained` / `unexpected`. Once another delta (a Guardian execution) takes the nonce, its being canonical reports `abandoned`. |
 | `deltaHistory({ limit?, cursor? }?)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `listProposals()` | Get proposals from the most recent sync plus not-yet-reported local creates/imports |
 | `createP2idProposal(recipient, faucet, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)` | Create transfer proposal (`noteType`: `NoteType.Public` (default) or `NoteType.Private`; presence of `reclaimHeight`/`timelockHeight` creates a P2IDE note, issue #366) |
 | `createConsumeNotesProposal(noteIds, { nonce }?)` | Create note consumption proposal |
-| `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
-| `exportNoteToBytes(noteId)` | Export a created note as note-file bytes for out-of-band delivery |
+| `getP2idNoteId(proposal)` | Compute the note ID a P2ID proposal creates |
+| `exportP2idNoteToBytes(proposal)` | Export the note a P2ID proposal creates as note-file bytes for out-of-band delivery, whoever executed it |
+| `exportP2idNoteToFile(proposal, filename?)` | Browser-only: download that note file |
+| `exportNoteToBytes(noteId)` | Export a note this client's own execution created as note-file bytes |
 | `exportNoteToFile(noteId, filename?)` | Browser-only: download the note file |
 | `importNoteFromBytes(noteBytes)` | Import a note file received out-of-band |
 | `importNoteFromFile(file)` | Import a note file from a browser `File`/`Blob` |
 | `recoverNotes(options?)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
 | `preservePreSwitchProposalNotes()` | Pre-switch slice of the flow (issue #417): import notes embedded in the old GUARDIAN's pending proposals before repointing; run automatically by `executeProposal` on the switch path; returns the report or `undefined` |
-| `createAddSignerProposal(commitment, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold) |
+| `createAddSignerProposal(commitmentOrSignerSpec, { nonce, newThreshold }?)` | Create add signer proposal (`newThreshold` defaults to the current threshold). A bare commitment takes your scheme; a `SignerSpec` sets the new signer's scheme |
 | `createRemoveSignerProposal(commitment, { nonce, newThreshold }?)` | Create remove signer proposal (`newThreshold` defaults to min of current threshold and remaining signer count) |
 | `createChangeThresholdProposal(threshold, { nonce }?)` | Change the account-wide threshold (not a per-procedure override) |
 | `createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)` | Create per-procedure threshold override proposal (`threshold: 0` clears the override) |
@@ -1292,7 +1595,7 @@ Authentication).
 | `executeProposal(id)` | Execute ready proposal |
 | `exportProposalToJson(id)` | Export for offline signing |
 | `importProposal(json)` | Import offline proposal |
-| `signProposalOffline(id)` | Sign imported proposal offline |
+| `signProposalOffline(id)` | Sign imported proposal offline. A built-in proposal type syncs the chain first, before the already-signed check, so it needs the node |
 | `getConsumableNotes()` | Get notes that can be consumed |
 | `getSignerPublicKeyCommitments()` | Read the current signer public-key commitments from account storage, ordered by signer index (strict; throws on partial reads) |
 | `getGuardianPublicKeyCommitment()` | Read the current guardian commitment from account storage (strict; throws when the entry is missing — the guarded-multisig always includes a guardian) |
@@ -1322,7 +1625,9 @@ Authentication).
 - `threshold`: number
 - `numSigners`: number
 - `signerCommitments`: string[]
+- `signers`: { commitment, scheme }[] (each approver's stored scheme, signer-index order)
 - `guardianCommitment`: string | null
+- `guardianScheme`: 'falcon' | 'ecdsa' | null
 - `vaultBalances`: { faucetId, amount }[]
 
 > **Reading an account's keys:** since the account uses the upstream
@@ -1386,6 +1691,59 @@ println!("Threshold: {}", account.threshold()?);
 println!("Signers: {:?}", account.cosigner_commitments_hex());
 ```
 
+`create_account` puts every signer and the GUARDIAN under your key's scheme.
+
+#### Mixed Falcon and ECDSA approvers
+
+The account stores a scheme for each approver and one for GUARDIAN, so a Falcon
+key held by your app can share an account with an ECDSA wallet or hardware
+signer:
+
+```rust
+use miden_multisig_client::{SignatureScheme, SignerSpec};
+
+let account = client.create_account_with_signers(
+    2,
+    vec![
+        SignerSpec::new(client.user_commitment(), SignatureScheme::Falcon),
+        SignerSpec::new(wallet_commitment, SignatureScheme::Ecdsa),
+    ],
+    SignatureScheme::Falcon, // GUARDIAN's scheme: which of its keys acknowledges
+    Vec::new(),              // per-procedure threshold overrides
+).await?;
+client.push_account().await?;
+
+let approvers = account.cosigners()?; // Vec<SignerSpec>, in storage order
+let guardian_scheme = account.guardian_scheme()?;
+```
+
+- `push_account` registers the schemes the account stores: the single-scheme
+  auth when every approver uses the GUARDIAN's scheme, the per-signer `Miden`
+  auth otherwise. A GUARDIAN up to 0.18.3 refuses the per-signer auth (see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md)).
+- Signer updates keep every approver's stored scheme. `add_cosigner` gives the
+  new signer your scheme and `add_cosigner_with_scheme` sets it. A proposal
+  carries `signer_schemes` unless every target signer uses the proposer's scheme
+  and the scheme of the approvers it keeps, and every cosigner rebuilds it from
+  them.
+- A proposal that would write a kept approver under another scheme is refused:
+  its listing shows a failed verification, and signing and executing refuse it
+  before an approval or a delta reaches GUARDIAN. The error is
+  `MultisigError::SignerSchemeMismatch` when the proposal names another scheme
+  for a kept approver, or names none while the kept approvers do not share one.
+  SDKs before this one named none and wrote their own scheme for every
+  approver; such a proposal over kept approvers that share another scheme fails
+  as a summary mismatch instead.
+- An approval made under another scheme than the account stores for its signer
+  is not counted toward the threshold, as on chain and in GUARDIAN's push gate,
+  and a client whose key the account stores under another scheme refuses to
+  propose or sign (`MultisigError::KeySchemeMismatch`).
+- A GUARDIAN switch keeps the account's GUARDIAN scheme. The new endpoint is
+  asked for its key of that scheme, whatever your key's scheme is.
+- The TypeScript SDK writes and reads `signer_schemes` the same way (#576).
+  TypeScript SDKs before it ignore the field, so they may not reproduce such a
+  proposal, and then refuse to sign it.
+
 ### Loading Existing Accounts
 
 ```rust
@@ -1408,6 +1766,30 @@ Unlike the TypeScript `load()`, `pull_account` overwrites the local store with
 GUARDIAN's state unconditionally, by design: it is for joining an account or
 discarding a store known to be bad. Use `sync_from_guardian` to refresh an
 account you intend to keep.
+
+`sync` also rolls back a membership, threshold or same-endpoint switch
+transaction this client executed and the node dropped: those are written to the
+local store without a miden-client record, so miden-client cannot undo them.
+The rollback needs miden-client's own discard rule to say the transaction is
+dropped (expired, or still unconfirmed 20 blocks after submission; the second
+is a heuristic, as it is for every recorded transaction), the chain at
+GUARDIAN's state, and, unless the transaction expired, GUARDIAN not holding the
+local state as a candidate or retained delta. It replaces the local store with a fresh one holding GUARDIAN's
+state and the unconsumed input notes (notes it created earlier stay exportable,
+read from the replaced store); the replaced store file stays in the
+account directory, and the warning logged names it, in case the transaction
+lands after all. A switch to a new endpoint is not rolled back this way: the
+new GUARDIAN is registered with the switched state.
+
+An expired transaction cannot land, so its rollback skips the GUARDIAN check
+and follows the first sync after expiry. Only a proposal created with
+`ProposalOptions::approval_expiration_delta` carries an expiration. Without one
+(the default) the rollback waits for GUARDIAN to drop the delta, which it holds
+as a candidate and then as a retained delta until
+`GUARDIAN_CANONICALIZATION_RETAINED_TTL_SECONDS` (24 hours by default) runs out.
+Restarting the client (each process starts a fresh store) and pulling the
+account recovers immediately; `pull_account` on the current store does not,
+since miden-client refuses to replace an account with one at a lower nonce.
 
 ### Delta History
 
@@ -1649,8 +2031,11 @@ let tx = TransactionType::transfer_p2ide(
 // Consume Notes
 let tx = TransactionType::consume_notes(vec![note_id1, note_id2]);
 
-// Add Cosigner
+// Add Cosigner (takes your key's scheme)
 let tx = TransactionType::add_cosigner(new_commitment);
+
+// Add Cosigner under another scheme (an ECDSA wallet on a Falcon account)
+let tx = TransactionType::add_cosigner_with_scheme(wallet_commitment, SignatureScheme::Ecdsa);
 
 // Remove Cosigner
 let tx = TransactionType::remove_cosigner(commitment_to_remove);
@@ -1763,14 +2148,15 @@ for note in notes {
 
 A private P2ID note publishes only its commitment on chain, so the recipient's
 client can never learn the note contents via sync. The sender must export the
-note and deliver the file out-of-band (issue #356):
+note and deliver the file out-of-band (issue #356). The export rebuilds the note
+from the proposal, so any cosigner can export it, whoever executed the proposal
+(this client or GUARDIAN). Keep the `Proposal` from before execution: GUARDIAN
+deletes it once its transaction is canonical.
 
 ```rust
-// Sender: resolve the note ID BEFORE executing (it derives from the
-// pre-execution vault state), then export after execution.
-let note_id = client.p2id_note_id(&proposal)?;
+// Sender (any cosigner holding the proposal): export once it is executed.
 client.execute_proposal(&proposal.id).await?;
-client.export_note_to_file(&note_id.to_hex(), Path::new("note.mno")).await?;
+client.export_p2id_note_to_file(&proposal, Path::new("note.mno")).await?;
 // Deliver note.mno to the recipient out-of-band (file, message, ...).
 
 // Recipient: import the file, then sync so the note's on-chain commitment
@@ -1780,8 +2166,8 @@ let imported_note_id = client.import_note_from_file(Path::new("note.mno")).await
 client.sync().await?;
 ```
 
-`export_note_to_bytes` / `import_note_from_bytes` are the in-memory variants
-for programmatic delivery.
+`export_p2id_note_to_bytes` / `import_note_from_bytes` are the in-memory
+variants for programmatic delivery.
 
 Every cosigner device that verifies or signs the consume-notes proposal needs
 the note in its local store with the on-chain inclusion proof — deliver the
@@ -1852,6 +2238,7 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 |--------|-------------|
 | `builder()` | Create builder for configuration |
 | `create_account(threshold, commitments)` | Create new multisig |
+| `create_account_with_signers(threshold, signers, guardian_scheme, overrides)` | Create a multisig whose approvers each carry a scheme (`SignerSpec`) |
 | `pull_account(id)` | Join existing multisig |
 | `push_account()` | Register account with GUARDIAN |
 | `sync()` | Sync with Miden network |
@@ -1869,8 +2256,8 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 | `list_proposals()` | List pending proposals |
 | `sign_proposal(id)` | Sign a proposal |
 | `execute_proposal(id)` | Execute ready proposal |
-| `abandon_candidate(nonce)` | Record an abandon intent for a stuck candidate (worker resolves after a short quarantine) |
-| `abandon_status(nonce)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Unexpected` |
+| `abandon_candidate(nonce, proposal_id)` | Record an abandon intent for the stuck candidate carrying the proposal's transaction (worker resolves after a short quarantine); returns an `AbandonRequest` with the abandoned delta's `commitment`. After a Guardian execution archived the delta and took its nonce, a retry answers for the archived delta. Needs a Guardian server from the same release |
+| `abandon_status(nonce, commitment)` | Poll the abandon resolution: `Waiting` / `Landed` / `Abandoned` / `Retained` / `Unexpected`. Once another delta (a Guardian execution) takes the nonce, its being canonical reports `Abandoned`. |
 | `delta_history(limit, cursor)` | One page of canonical delta history, newest-first, with decoded note summaries |
 | `create_proposal_offline(tx)` | Create offline proposal |
 | `sign_imported_proposal(exported)` | Sign offline proposal |
@@ -1879,9 +2266,11 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 | `import_proposal(path)` | Import from file |
 | `list_consumable_notes()` | List available notes |
 | `list_consumable_notes_filtered(filter)` | Filter notes |
-| `p2id_note_id(proposal)` | Compute the note ID a P2ID proposal creates (call before executing) |
-| `export_note_to_file(note_id, path)` | Export a created note to a file for out-of-band delivery |
-| `export_note_to_bytes(note_id)` | Export a created note as note-file bytes |
+| `p2id_note_id(proposal)` | Compute the note ID a P2ID proposal creates |
+| `export_p2id_note_to_file(proposal, path)` | Export the note a P2ID proposal creates to a file for out-of-band delivery, whoever executed it |
+| `export_p2id_note_to_bytes(proposal)` | Export that note as note-file bytes |
+| `export_note_to_file(note_id, path)` | Export a note this client's own execution created to a file |
+| `export_note_to_bytes(note_id)` | Export a note this client's own execution created as note-file bytes |
 | `import_note_from_file(path)` | Import a note file received out-of-band |
 | `import_note_from_bytes(bytes)` | Import a note from note-file bytes |
 | `recover_notes(options)` | Run the note-recovery strategies (transport drain, proposal import, public backfill) as one flow with a final verifying sync; returns a combined `NoteRecoveryReport` |
@@ -1899,7 +2288,9 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 | `cosigner_commitments()` | List of commitments (Word) |
 | `cosigner_commitments_hex()` | List as hex strings |
 | `is_cosigner(commitment)` | Check if commitment is signer |
+| `cosigners()` | Approvers with their stored schemes (`Vec<SignerSpec>`) |
 | `guardian_commitment()` | GUARDIAN server commitment |
+| `guardian_scheme()` | Scheme the account verifies GUARDIAN under |
 
 #### TransactionType
 
@@ -1907,7 +2298,7 @@ wallet-signed; run it again 10 minutes later when a key may be compromised
 |---------|-------------|
 | `P2ID { recipient, faucet_id, amount, note_type, heights }` | Transfer funds (`note_type` selects note visibility; `heights: P2ideHeights` with either constraint set creates a P2IDE note — use `transfer_p2ide()`; `transfer()` defaults to a public plain-P2ID note) |
 | `ConsumeNotes { note_ids }` | Consume notes |
-| `AddCosigner { new_commitment }` | Add signer |
+| `AddCosigner { new_commitment, scheme }` | Add signer (`scheme: None` takes the proposer's) |
 | `RemoveCosigner { commitment }` | Remove signer |
 | `UpdateSigners { new_threshold, signer_commitments }` | Update config |
 | `SwitchGuardian { new_endpoint, new_commitment }` | Switch GUARDIAN |
@@ -2069,6 +2460,10 @@ console.log('Notes consumed, funds now in vault');
   }
 }
 ```
+
+A signer update also carries `"signer_schemes": ["falcon", "ecdsa"]`,
+index-aligned with `signer_commitments_hex`, unless every target signer uses the
+proposer's scheme and the scheme of the approvers it keeps.
 
 ## Version Compatibility
 

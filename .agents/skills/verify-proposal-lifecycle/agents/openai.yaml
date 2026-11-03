@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Proposal Lifecycle"
+  short_description: "Model-check multisig proposal execution across Guardian and both SDKs with TLA+"
+  default_prompt: "Use $verify-proposal-lifecycle to model-check this change to proposal creation, execution or Guardian acknowledgement."

@@ -84,7 +84,7 @@ function nowSeconds(): number {
  * registered, becomes `guardian`'s signer; a non-extractable P-256 delegated
  * signer then signs the
  * session-eligible requests on `guardian` (reads, proposal list/get, proposal
- * create/sign). Every other route, including `configure`, `pushDelta`,
+ * create/sign, `pushDelta`). Every other route, including `configure`,
  * `abandonCandidate`, account lookup and `revokeAllSessions`, keeps using the
  * wallet. A session already set on `guardian` is replaced but stays valid on
  * the server until it expires; end it first with {@link endGuardianSession}.

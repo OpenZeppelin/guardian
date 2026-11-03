@@ -479,3 +479,92 @@ async fn test_grpc_sign_delta_proposal_verifies_signature() {
     let response = service.sign_delta_proposal(valid).await;
     assert!(response.is_ok(), "{:?}", response.err());
 }
+
+#[tokio::test]
+async fn test_grpc_listing_omits_the_stored_request_the_single_read_keeps() {
+    let state = create_test_app_state().await;
+    let service = create_grpc_service(state);
+
+    let (_account_id, account_id_hex, initial_state) = load_fixture_account();
+    let signer = TestSigner::new();
+    service
+        .configure(create_signed_request_with_auth(
+            ConfigureRequest {
+                account_id: account_id_hex.clone(),
+                auth: Some(create_miden_falcon_rpo_auth(vec![
+                    signer.commitment_hex.clone(),
+                ])),
+                network_config: Some(create_miden_network_config()),
+                initial_state,
+            },
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap();
+
+    let envelope = serde_json::to_value(
+        crate::services::execution_codec::TransactionRequestEnvelope::seal(&[7u8; 64]),
+    )
+    .unwrap();
+    let delta_payload = serde_json::json!({
+        "tx_summary": load_fixture_delta(1)["delta_payload"],
+        "signatures": [],
+        "metadata": {
+            "proposal_type": "change_threshold",
+            "target_threshold": 1,
+            "signer_commitments": [signer.commitment_hex.clone()]
+        },
+        "transaction_request": envelope.clone(),
+    });
+    let commitment = service
+        .push_delta_proposal(create_signed_request_with_auth(
+            PushDeltaProposalRequest {
+                account_id: account_id_hex.clone(),
+                nonce: 1,
+                delta_payload: serde_json::to_string(&delta_payload).unwrap(),
+            },
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap()
+        .into_inner()
+        .commitment;
+
+    let listed = service
+        .get_delta_proposals(create_signed_request_with_auth(
+            GetDeltaProposalsRequest {
+                account_id: account_id_hex.clone(),
+            },
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(listed.proposals.len(), 1);
+    let listed_payload: serde_json::Value =
+        serde_json::from_str(&listed.proposals[0].delta_payload).unwrap();
+    assert!(listed_payload["tx_summary"].is_object());
+    assert!(
+        listed_payload.get("transaction_request").is_none(),
+        "a listing omits the stored request: {listed_payload}"
+    );
+
+    let single = service
+        .get_delta_proposal(create_signed_request_with_auth(
+            GetDeltaProposalRequest {
+                account_id: account_id_hex.clone(),
+                commitment,
+            },
+            &account_id_hex,
+            &signer,
+        ))
+        .await
+        .unwrap()
+        .into_inner();
+    let single_payload: serde_json::Value =
+        serde_json::from_str(&single.proposal.unwrap().delta_payload).unwrap();
+    assert_eq!(single_payload["transaction_request"], envelope);
+}

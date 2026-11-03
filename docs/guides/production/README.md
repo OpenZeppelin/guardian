@@ -60,7 +60,7 @@ least-travelled configuration.
 | Decision | Production choice |
 |---|---|
 | **Miden network** | Set `GUARDIAN_NETWORK_TYPE` explicitly: `MidenLocal`, `MidenDevnet`, `MidenTestnet`, `MidenCedar`, or `MidenMainnet`. The server refuses to start when it is unset or unrecognized; there is no fallback network. |
-| **Image version** | Pin an explicit release tag, **`v0.18.2` or later**, and prefer the newest 0.18.x patch. This guide depends on server features that older releases do not have: from v0.18.0, `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults; from v0.18.1, sessions (`GUARDIAN_SESSION_MAX_TTL_SECONDS`) and the candidate queue (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`); from v0.18.2, the `MidenCedar` and `MidenMainnet` network types. An older server does not fail on variables it does not know: it boots and ignores them, and a pre-0.18.0 image stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. Check the running release with `GET /status` (`version`); `smoke.sh` fails at its first step on a pre-0.18.0 image. Guardian 0.18.x runs on Miden 0.17 and needs a stable Miden 0.17 node, so the release and `GUARDIAN_NETWORK_TYPE` must agree: a network still on Miden 0.16 needs Guardian 0.17.x, which this guide does not cover. Check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.17](../../PRODUCTION.md#upgrading-to-miden-017) if you are moving an existing deployment: the first 0.18.x start irreversibly deletes stored Miden account data. Moving between 0.18.x patches keeps stored data, but read the release's upgrade notes in `MIDEN_COMPATIBILITY.md` first: 0.18.1 requires deploying the server before the SDKs, and changed proposal metadata so that 0.18.0 SDKs cannot sign or execute new proposals ([Upgrading within 0.18.x](../../PRODUCTION.md#upgrading-within-018x)). Never run `latest` in production. |
+| **Image version** | Pin an explicit release tag, **`v0.18.3` or later**, and prefer the newest 0.18.x patch. This guide depends on server features that older releases do not have: from v0.18.0, `ack-keygen` in the image, `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`, `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`, and the `GUARDIAN_ENV=prod` runtime defaults; from v0.18.1, sessions (`GUARDIAN_SESSION_MAX_TTL_SECONDS`) and the candidate queue (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`); from v0.18.2, the `MidenCedar` and `MidenMainnet` network types; from v0.18.3, a CA trust store that no longer trusts the compromised eMudhra intermediates. An older server does not fail on variables it does not know: it boots and ignores them, and a pre-0.18.0 image stores payloads in **plaintext**, accepts every scheme, and runs the development rate limits. Check the running release with `GET /status` (`version`); `smoke.sh` fails at its first step on a pre-0.18.0 image. Guardian 0.18.x runs on Miden 0.17 and needs a stable Miden 0.17 node, so the release and `GUARDIAN_NETWORK_TYPE` must agree: a network still on Miden 0.16 needs Guardian 0.17.x, which this guide does not cover. Check [`MIDEN_COMPATIBILITY.md`](../../MIDEN_COMPATIBILITY.md) before choosing, and read [Upgrading to Miden 0.17](../../PRODUCTION.md#upgrading-to-miden-017) if you are moving an existing deployment: the first 0.18.x start irreversibly deletes stored Miden account data. Moving between 0.18.x patches keeps stored data, but read the release's upgrade notes in `MIDEN_COMPATIBILITY.md` first: 0.18.1 requires deploying the server before the SDKs, and changed proposal metadata so that 0.18.0 SDKs cannot sign or execute new proposals ([Upgrading within the Miden 0.17 line](../../PRODUCTION.md#upgrading-within-the-miden-017-line)). Never run `latest` in production. |
 | **Server features** | The published `ghcr.io/openzeppelin/guardian` image is built with the `postgres` feature, which is the production storage backend; that is the image every track in this guide runs. |
 | **Storage backend** | Postgres, always. The filesystem backend is dev-only and refused at startup in the prod stage. |
 | **Account signature scheme** | Set `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` on a new deployment, and treat it as required on the AWS tracks (A and C): only ECDSA has a hosted signer (KMS), so an ECDSA-only fleet is the only one whose account-facing ACK key never enters the process. Falcon has no remote signer, so every Falcon account is acked by a key that has to be loaded into memory from Secrets Manager; Falcon is second-class ([`PRODUCTION.md`](../../PRODUCTION.md#account-signature-scheme)). The gate applies to **new** registrations only, so it is safe on a fleet that already has Falcon accounts, and it has no effect on which ACK keys the server needs: the Falcon ACK key is still required today, so bootstrap and protect it exactly as below. Rejected registrations get `signature_scheme_not_allowed`; `GET /dashboard/info` shows `accounts_by_auth_method` if you want to check what exists before tightening. All three templates carry the variable. |
@@ -197,7 +197,7 @@ What **you** provide in `.env.aws-ecs`:
 | Variable | Notes |
 |---|---|
 | `DEPLOY_STAGE=prod`, `STACK_NAME`, `AWS_REGION`, `GUARDIAN_NETWORK_TYPE` | Stack identity and network. |
-| `GUARDIAN_SERVER_FEATURES` | `postgres`. |
+| `GUARDIAN_SERVER_FEATURES` | `postgres`. Guardian execution is always built in; it stays off until `GUARDIAN_TX_PROVER_URL` is set. The prover receives each executed transaction's full inputs, so use one you trust or host yourself ([prover trust](../../CONFIGURATION.md#runtime--guardian-execution)), and enable it in a second deploy after the release has fully rolled out ([why](../../MIDEN_COMPATIBILITY.md#upgrading-and-rolling-back)). |
 | `GUARDIAN_CORS_ALLOWED_ORIGINS` | Exact browser origins, comma-separated; wildcards are rejected. Unset means permissive `Any` with credentials disabled, which is not for production. |
 | `TF_VAR_guardian_ack_ecdsa_kms_key_arn` | From A1. |
 | `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa` | From A1: new accounts must use the KMS-backed scheme. Terraform injects it only when set; unset keeps both schemes. |
@@ -296,7 +296,7 @@ Then, outside the server:
   [`PRODUCTION.md`](../../PRODUCTION.md#upgrading-to-miden-017).
 - **Patch upgrades** within a protocol line keep stored data, but can still
   change SDK behavior or require a deploy order. Read the release's entry in
-  [`PRODUCTION.md` → Upgrading within 0.18.x](../../PRODUCTION.md#upgrading-within-018x)
+  [`PRODUCTION.md` → Upgrading within the Miden 0.17 line](../../PRODUCTION.md#upgrading-within-the-miden-017-line)
   before rolling the image.
 - **Secrets**: replacement, rotation, and compromise response per category in
   [`runbooks/secrets.md`](../../runbooks/secrets.md). ACK key replacement is an
@@ -335,7 +335,7 @@ docker run --rm --user "$(id -u):$(id -g)" -v "$PWD/ack-keys:/out" \
   ghcr.io/openzeppelin/guardian:<version> /app/ack-keygen --out-dir /out
 ```
 
-Use the same tag you will put in `.env` (`v0.18.2` or later, see
+Use the same tag you will put in `.env` (`v0.18.3` or later, see
 [Decisions](#decisions-every-track-shares)). It writes
 `ack-keys/ack-falcon-secret-key` and `ack-keys/ack-ecdsa-secret-key` as `0600`
 files owned by you (the `--user` flag), and refuses to overwrite files that
@@ -368,7 +368,7 @@ Fill in `.env`. Each value maps to a checklist item:
 
 | Set | Why |
 |---|---|
-| `GUARDIAN_VERSION` | An explicit release, `v0.18.2` or later (see [Decisions](#decisions-every-track-shares)), never `latest`. The template leaves it blank so Compose refuses to start until you choose one. |
+| `GUARDIAN_VERSION` | An explicit release, `v0.18.3` or later (see [Decisions](#decisions-every-track-shares)), never `latest`. The template leaves it blank so Compose refuses to start until you choose one. |
 | `GUARDIAN_NETWORK_TYPE` | Required; the server refuses to start without it. |
 | `DATABASE_URL` | Your production Postgres with `sslmode=verify-full&sslrootcert=/etc/guardian/tls/ca.pem` (B3). The template's `POSTGRES_PASSWORD` is for the bundled smoke-only database. |
 | `storage-encryption-keys.json` | The `{ "active": kid, "keys": { kid: base64-32-bytes } }` key document, mounted as a Compose secret and read through `GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE`. Its presence turns encryption on. It is the same document Secrets Manager holds on tracks A and C, so rotation works the same way: add a key, repoint `active`, keep the old key ([`runbooks/secrets.md` → Rotation](../../runbooks/secrets.md#rotation)). Keep it `0600` (the server refuses anything wider) and keep a copy with your database backups; ciphertext is unrecoverable without it ([nonce budget](../../runbooks/secrets.md#nonce-budget) if you write at very high volume). |

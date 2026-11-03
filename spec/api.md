@@ -6,6 +6,8 @@
 - Miden credentials are provided via HTTP headers `x-pubkey`, `x-signature`, `x-timestamp` and the same keys in gRPC metadata.
 - Miden `x-pubkey` is interpreted by the account auth policy:
   - Miden Falcon/ECDSA accounts use the serialized public key or its commitment.
+  - Per-signer-scheme (`Miden`) accounts use either scheme's serialized public key or its commitment.
+- On a per-signer-scheme (`Miden`) account each request is verified under the scheme its signer is registered with, against only the cosigners registered under that scheme: a raw signature of exactly 1524 bytes is Falcon and one of exactly 65 bytes (`r || s || v`) is ECDSA, any other length is rejected, and `x-auth-format: eip712` is ECDSA.
 - EVM HTTP requests under `/evm/*` use a `guardian_evm_session` cookie. The session EOA is recovered from a wallet signature and is checked against the configured account signer set or proposal signer snapshot.
 - Miden per-account requests MAY instead be signed by a delegated signer registered through `POST /session` (`x-auth-format: session`, see [Session Authentication](#session-authentication)).
 - Replay protection applies to every Miden signed request. EVM challenge nonces are single-use and time-limited, and EVM sessions expire.
@@ -27,8 +29,37 @@
   re-reads the account and is judged as a reconfiguration, so a replay from the
   same signer is refused with `authentication_replay` before it writes anything.
   A configuration from a different signer that loses the claim passes its own
-  replay check and reconfigures the account it lost to; callers must not use
-  `/configure` as a general concurrent state-update mechanism.
+  replay check and reconfigures the account it lost to, under the rule below;
+  callers must not use `/configure` as a general concurrent state-update
+  mechanism.
+- `POST /configure` registers only guarded multisig accounts: an
+  `initial_state` without the multisig threshold slot is refused with
+  `invalid_input`.
+- `initial_state` must be the account's current on-chain state, with two
+  exceptions: a first configuration at nonce 0, which the account seed binds
+  to its account id (decoding checks it) and whose vault must be empty
+  (`invalid_input` otherwise), whoever claimed the account id before; and a
+  stored cosigner of an active
+  account re-registering the state already stored. Every other configuration
+  needs the chain: a first configuration past nonce 0 (an account that already
+  transacted, for example one switching to this GUARDIAN), a released
+  account, a key the stored auth does not list, and any state other than the
+  stored one. Until the chain holds the submitted state the
+  request fails with `state_not_on_chain` (HTTP 409 / gRPC
+  `FailedPrecondition`, `meta.retryable: true`), for example right after the
+  transaction is submitted; retry once it lands. After a guardian switch both
+  SDKs wait for the chain to hold the switched state (a chain read, about 45
+  seconds at most) before they register on the new GUARDIAN; a registration
+  itself is not retried. One head read decides, so a state the chain has
+  already moved past fails the same way, and its retries keep failing until the client
+  submits the account's current state. A state older than the stored one
+  is refused from the same read with `commitment_mismatch` (not retryable)
+  when a stored cosigner submits it and the chain sits at the stored state;
+  otherwise it gets `state_not_on_chain`. `rpc_unavailable` when the chain
+  cannot be read. A
+  configuration that skipped the chain read fails with `state_not_on_chain`
+  when the account was released while it ran and its state is not the chain
+  head; the retry of it is held to the chain.
 - A first configuration that fails after its claim (a storage error before the
   state write) leaves metadata with no stored state. Such an account is not
   listed by `GET /state/lookup` and is skipped by the release sweep. A retry of
@@ -51,6 +82,7 @@
 
 - HTTP request payload digest: RPO256 over canonical JSON bytes of the request payload (`body` for `POST`/`PUT`, query object for `GET`).
 - gRPC request payload digest: RPO256 over protobuf-encoded request bytes.
+- `ExecuteDeltaProposal` is domain-separated, because its body (`account_id`, `proposal_id`) encodes to the same bytes as a `GetDeltaProposalExecution` read on both transports. Its payload digest is RPO256 over the ASCII tag `guardian.ExecuteDeltaProposal` and one zero byte, followed by the request bytes: the protobuf-encoded request over gRPC, the canonical JSON body over HTTP. No protobuf message begins with that tag, and canonical JSON begins with `{`. A signed status read therefore never authenticates an execute.
 - Signed message format: `RPO256_hash([account_id_prefix, account_id_suffix, timestamp_ms, payload_hash_0, payload_hash_1, payload_hash_2, payload_hash_3])`.
 - ECDSA accounts may send `x-auth-format: eip712` with the same three required headers. The signature is over `GuardianRequest(bytes32 requestHash)` in the `EIP712Domain` `{ name: "Guardian Request", version: "1" }`; `requestHash` is the 32-byte little-endian encoding of the signed message above. An absent format header keeps the raw signature behavior. Falcon does not accept EIP-712 request auth. The existing timestamp skew and replay checks apply to both formats.
 - The typed request message displays a hash, not the decoded HTTP operation or proposal. The client must show the transaction details separately before prompting a hardware wallet.
@@ -160,14 +192,26 @@ approval prompts: the wallet still signs every transaction summary.
 - **Routes.** Session credentials are accepted only on the session-eligible
   routes: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
   `GET /delta/history`, `GET /delta/proposal`, `GET /delta/proposal/single`,
-  `POST /delta/proposal` and `PUT /delta/proposal` (and their gRPC twins).
+  `GET /delta/proposal/execution`, `GET /delta/execution/current`,
+  `POST /delta/proposal`, `PUT /delta/proposal`, `POST /delta` and
+  `POST /delta/proposal/execution` (and their gRPC twins).
   Every other route is wallet-only by default, including routes added later:
   after the delegated signature verifies and the session resolves (an ended
   session gets its own code first), it is rejected with
   `wallet_signature_required` (HTTP 403, gRPC `PERMISSION_DENIED`) before any
   state change. An unverifiable delegated signature is `authentication_failed`.
-  `POST /delta` stays wallet-only until Guardian verifies cosigner signatures
-  and threshold when it admits a candidate (#524).
+  A session-signed `POST /delta` meets the same cosigner signature gate as a
+  wallet-signed one (`insufficient_signatures` below the floor), so a
+  delegated signer cannot push a transaction the cosigners did not approve.
+  A tail without the multisig auth, which that gate does not cover (an
+  account registered before `/configure` required the multisig), keeps
+  `POST /delta` wallet-only: it answers `wallet_signature_required` before
+  the delta is applied or acknowledged. The candidate-queue checks run first,
+  so such a push can be refused with `conflict_pending_delta` or
+  `commitment_mismatch` before it is refused as session-signed.
+  A session-signed `POST /delta/proposal/execution` meets the same readiness
+  checks as a wallet-signed one, so Guardian executes only what the cosigners
+  approved.
 - **Ended sessions.** A request from an expired session fails with
   `session_expired`, from a revoked one with `session_revoked` (both HTTP 401,
   gRPC `UNAUTHENTICATED`). An unknown key (an expired one whose record was
@@ -243,12 +287,28 @@ HTTP JSON uses externally tagged variants:
 ```
 
 ```json
+{
+  "Miden": {
+    "cosigners": [
+      { "commitment": "0x...", "scheme": "ecdsa" },
+      { "commitment": "0x...", "scheme": "falcon" }
+    ],
+    "guardian_scheme": "ecdsa"
+  }
+}
+```
+
+```json
 { "EvmEcdsa": { "signers": ["0x..."] } }
 ```
 
+`MidenFalconRpo` and `MidenEcdsa` bind every cosigner and the GUARDIAN to one scheme. `Miden` declares each cosigner's scheme (`"falcon"` or `"ecdsa"`) and the GUARDIAN's scheme separately, for an account whose approvers mix Falcon and ECDSA keys (issue #563). Clients send `Miden` only when the cosigners and the GUARDIAN do not all share one scheme; servers before #563 reject it, and the single-scheme variants keep their wire shape. The server accepts `Miden` for a uniform set too and stores the declared variant as is.
+
+For every variant `/configure` checks the declaration against `initial_state`: the cosigner commitments must equal the approver map in index order, every approver must have a supported scheme in the approver scheme map (`invalid_input` otherwise; the chain verifies each approver under that scheme), each cosigner's scheme must equal it, the GUARDIAN slot must hold this server's ACK commitment for the GUARDIAN scheme, and the GUARDIAN scheme slot must store that scheme. Over HTTP the scheme names are lowercase (`"falcon"`, `"ecdsa"`): the request signature covers the canonical JSON of the parsed body, so a name in another case could not authenticate and is rejected when the body is parsed. gRPC signs the message as sent and accepts any case. The GUARDIAN scheme selects the ACK key the account's deltas are acknowledged with. When canonicalization syncs the cosigners from a new canonical state it keeps the GUARDIAN scheme and the schemes the state stores: a single-scheme auth whose cosigners all keep its scheme stays single-scheme, and one that gains a cosigner of another scheme becomes `Miden`.
+
 The contract may expose EVM-shaped auth metadata, but `/configure` and the Miden delta routes only accept Miden auth variants. EVM account registration derives signer metadata from the validator module through `/evm/accounts`.
 
-gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa}` for schema compatibility, while EVM behavior remains HTTP-only under `/evm/*`.
+gRPC uses `AuthConfig::{miden_falcon_rpo, miden_ecdsa, evm_ecdsa, miden}` for schema compatibility (`MidenAuth { repeated MidenCosigner cosigners; string guardian_scheme }`, `MidenCosigner { string commitment; string scheme }`; scheme names are case-insensitive), while EVM behavior remains HTTP-only under `/evm/*`.
 
 ### NetworkConfig
 
@@ -288,7 +348,7 @@ gRPC uses `NetworkConfig::{miden, evm}`.
 }
 ```
 
-`auth_scheme` may be `"falcon"` or `"ecdsa"` when present.
+`auth_scheme` may be `"falcon"` or `"ecdsa"` when the account's cosigners and GUARDIAN share that scheme, and `"mixed"` when they do not.
 
 ### DeltaObject
 
@@ -338,6 +398,33 @@ Miden delta proposals use:
 `p2id` metadata carries `recipient_id`, `faucet_id`, `amount`, and an optional `note_type` (`"public"` or `"private"`, issue #322). Clients emit `note_type` only when the note is private; an absent field means public, which keeps proposals created before the field existed valid. The value is part of the signed metadata: verifiers rebuild the transaction from it, so a tampered `note_type` fails the tx_summary commitment check.
 
 `p2id` metadata may additionally carry `reclaim_height` and/or `timelock_height` (issue #366): absolute `u32` block heights that make the proposal create a P2IDE note instead of a plain P2ID note (`reclaim_height` lets the sender reclaim an unconsumed note from that block on; `timelock_height` blocks consumption before that block). Presence of either field selects P2IDE; both absent means plain P2ID, which keeps pre-existing proposals valid. `0` is rejected because it is the on-chain encoding for "no constraint". Like `note_type`, the heights are part of the signed metadata and a tampered value fails the tx_summary commitment check.
+
+A proposal created by a Guardian-executable client additionally carries `transaction_request`,
+the serialized `TransactionRequest` Guardian executes, in an envelope:
+
+```json
+{
+  "transaction_request": {
+    "format_version": 1,
+    "protocol_line": "0.17",
+    "checksum": "0x<lowercase sha-256 of the raw bytes>",
+    "bytes": "<base64 of the raw bytes>"
+  }
+}
+```
+
+Request serialization carries no `miden-client` version tag. Creation checks the body (base64,
+checksum, `format_version`) and the size caps. Execution checks the protocol line, decodes the
+bytes, and refuses a request that does not decode (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or does
+not reproduce the signed summary (`GUARDIAN_EXECUTION_BINDING_MISMATCH`). A self-executed proposal omits the field, so its wire shape is unchanged, and the
+proposal id is the summary commitment either way.
+
+Only the single-proposal reads (`GET /delta/proposal/single`, `GetDeltaProposal`) and the
+create and sign responses return `transaction_request`. Listings (`GET /delta/proposal`,
+`GetDeltaProposals`) omit it on both transports: each request may be as large as
+`GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`, so a listing that carried every stored request could
+outgrow a client's message limit (tonic decodes at most 4 MiB). Nothing a cosigner verifies,
+signs or exports reads the field, and the proposal id never covers it.
 
 Every proposal the multisig SDKs create also carries `bound_block_num`, the `u32` block its transaction summary binds. It is not signed and the server does not read it: the clients read the block from the signed summary and refuse a proposal whose `bound_block_num` disagrees, so a wrong value can deny a proposal, never get a wrong one accepted. Proposals created by 0.18.0 clients carry `chain_anchor` (a base64 Miden `ChainAnchor`) instead; current clients take their block from the summary, never read the anchor and never write it.
 
@@ -415,9 +502,46 @@ For an EIP-712 Miden approval, the same endpoint and envelope use `"message_form
 Guardian verifies every Miden approval against the proposal's transaction summary before storing it:
 
 - Falcon and raw ECDSA approvals sign the transaction-summary commitment; EIP-712 approvals sign the typed-data hash above. The Falcon public key comes from the signature. ECDSA approvals must carry `public_key`; a raw approval's `v` must be `0/1` and recover to that key, as execution recovers it.
-- The verified key's commitment is the approval's signer. On `PUT /delta/proposal` it must equal the request signer, so a cosigner can only approve for themselves.
+- The verified key's commitment is the approval's signer. It must be signed under the scheme the account registers that signer with: a key the account stores under the other scheme is refused, since the chain verifies each approver under its stored scheme. On `PUT /delta/proposal` it must be one of the account's configured cosigners, but it need not be the request signer: an authenticated signer may relay an approval another cosigner produced off channel (the SDK execute flows relay a proposal document's collected approvals this way before requesting the acknowledgement). The approval is credited to the cosigner the signature verifies for, never to the relaying caller, and one the proposal already holds for that cosigner is rejected with `proposal_already_signed`.
 - On `POST /delta/proposal`, `signatures` may carry at most the proposer's own approval. Other cosigners approve through `PUT /delta/proposal`.
-- A signature that does not parse or verify, or whose signer is not the request signer (`PUT`) or the proposer (`POST`), is rejected with `invalid_proposal_signature`.
+- A signature that does not parse or verify, whose signer is not a cosigner of the account (`PUT`) or the proposer (`POST`), or that is made under another scheme than the account registers its signer with, is rejected with `invalid_proposal_signature`.
+
+### ProposalExecution
+
+The envelope every execution operation returns, identical on HTTP and gRPC (where `error.meta`
+travels as `meta_json`):
+
+```json
+{
+  "account_id": "0x...",
+  "proposal_id": "0x...",
+  "state": "failed",
+  "error": { "code": "GUARDIAN_EXECUTION_EXPIRATION_REACHED", "message": "...", "meta": { "bound": "approval" } },
+  "delta_nonce": 7,
+  "newly_accepted": false,
+  "proposal_exists": true,
+  "ignored_signatures": 0,
+  "updated_at": "2026-09-30T12:00:00Z"
+}
+```
+
+- `state` is one of exactly five values: `pending`, `proving`, `submitted`, `committed`, `failed`.
+  They move forward only. `submitted` means the transaction may have been sent and is never
+  retried; it resolves only from what the chain shows.
+- `error` is present exactly when `state` is `failed`. Three codes carry `meta`:
+  `GUARDIAN_EXECUTION_REQUEST_INVALID` (`reason`: `bound_block_not_declared`, `auth_args_missing`,
+  `approval_expiration_missing`, `input_notes_not_pinned`, `too_many_declared_blocks`),
+  `GUARDIAN_EXECUTION_EXPIRATION_REACHED`
+  (`bound`: `approval`, `transaction`) and `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`
+  (`reason`: `private`, `unavailable`). The full list is in
+  [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md#guardian-execution).
+- `delta_nonce` is set once the execution committed to its candidate delta.
+- `newly_accepted` separates the request that started the execution from a repeat that found
+  it running (HTTP also answers 202 versus 200).
+- `proposal_exists` is a fact about storage, not retry advice: a post-submission failure deletes
+  the proposal.
+- `ignored_signatures` counts stored signatures that were invalid, duplicated or not from a
+  cosigner, which never block an otherwise ready proposal.
 
 ### DeltaProposalEnvelope
 
@@ -471,7 +595,7 @@ component schemas.
 | Surface | Method & path | Auth | Summary |
 | --- | --- | --- | --- |
 | client | `POST /configure` | signed headers | Register an account with its auth set and initial state |
-| client | `POST /delta` | signed headers | Push a signed single-key delta |
+| client | `POST /delta` | signed headers | Push a delta; a multisig account must meet its cosigner threshold |
 | client | `GET /delta` | signed headers | Fetch the delta at a nonce |
 | client | `GET /delta/since` | signed headers | Merged delta since a nonce |
 | client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
@@ -479,13 +603,16 @@ component schemas.
 | client | `GET /state/nonce` | signed headers | Nonce and commitment of the latest canonical state (sync pre-check) |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment for `?scheme=falcon\|ecdsa` (default `falcon`) |
-| client | `GET /status` | public | Server liveness, version, environment, uptime |
+| client | `GET /status` | public | Server liveness, version, environment, uptime, execution capability, session parameters |
 | client | `GET /` | public | Alias of `GET /status` |
 | client | `POST /delta/proposal` | signed headers | Create a multisig proposal |
-| client | `GET /delta/proposal` | signed headers | List pending proposals |
+| client | `GET /delta/proposal` | signed headers | List pending proposals (without `transaction_request`; see [Proposal Payloads](#proposal-payloads)) |
 | client | `GET /delta/proposal/single` | signed headers | Fetch one proposal by commitment |
 | client | `PUT /delta/proposal` | signed headers | Add a cosigner signature |
-| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine) |
+| client | `POST /delta/candidate/abandon` | signed headers | Record an abandon intent for a stuck candidate (202; worker resolves after quarantine). The request names the transaction with `proposal_id` (its summary's commitment) as well as the nonce; the abandon answers for the delta carrying it, at the nonce or archived after a Guardian execution took the nonce, and another transaction at the nonce is answered `delta_not_found`. The response carries the abandoned delta's `commitment`. Without `proposal_id` (SDKs up to 0.18.3) the delta at the nonce is named. Either way, an active Guardian execution's own candidate is never abandoned (HTTP 409 `GUARDIAN_EXECUTION_CONFLICT`; over gRPC the in-band `error_code`), and a malformed `proposal_id` is refused with 400 `invalid_commitment` |
+| client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id}`, both required and signed as `guardian.ExecuteDeltaProposal` (see [Miden Request Signing](#miden-request-signing)) |
+| client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
+| client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
 | client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
 | client | `POST /session/logout` | session-key-signed headers | Revoke this session |
 | client | `POST /session/revoke-all` | wallet-signed headers | Revoke every session of a signer |
@@ -618,6 +745,11 @@ Semantics not captured by the OpenAPI shapes:
 
 ## Errors
 
+Codes come in two spellings. The lowercase `snake_case` codes below keep that spelling. The
+uppercase codes carry a `GUARDIAN_` prefix (`GUARDIAN_<AREA>_<CONDITION>`, for example
+`GUARDIAN_EXECUTION_EXPIRATION_REACHED`), and every new code uses that form. Existing codes are
+not renamed, because a code is a wire contract that clients match on.
+
 Stable error codes include:
 
 - `account_not_found`
@@ -631,11 +763,12 @@ Stable error codes include:
 - `conflict_pending_proposal`
 - `pending_proposals_limit`
 - `commitment_mismatch`
+- `state_not_on_chain` (a reconfiguration that must submit the account's on-chain state submitted one the chain does not hold yet; HTTP 409 / gRPC `FailedPrecondition`, retryable, as is a state the chain has moved past, unless a stored cosigner submits a state older than the stored one while the chain sits at the stored state, which is `commitment_mismatch`)
 - `invalid_commitment`
 - `authentication_failed`
 - `authentication_replay` (retryable replay-CAS rejection, see [Replay Protection](#replay-protection))
 - `authorization_failed`
-- `signature_scheme_not_allowed` (new-account registration used a scheme excluded by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`; HTTP 403 / gRPC `PermissionDenied`, `meta.scheme` + `meta.allowed_schemes`)
+- `signature_scheme_not_allowed` (a new-account registration, or a reconfiguration adding a scheme the account did not use, used a scheme excluded by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`; HTTP 403 / gRPC `PermissionDenied`, `meta.scheme` + `meta.allowed_schemes`)
 - `invalid_input`
 - `storage_error`
 - `network_error`
@@ -649,6 +782,21 @@ Stable error codes include:
 - `invalid_network_config`
 - `rpc_unavailable`
 - `rpc_validation_failed`
+- Guardian execution: `GUARDIAN_PROVING_UNAVAILABLE`, `GUARDIAN_PROPOSAL_NOT_READY`,
+  `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`, `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`
+  (`meta.proposal_type` and `meta.reason`: `switch_guardian` for a guardian switch, labelled
+  `switch_guardian` or with a signed summary that changes the guardian public key slot, which
+  only the client that finishes the GUARDIAN handoff executes. Nothing is reserved and the
+  proposal stays pending), `GUARDIAN_EXECUTION_CONFLICT`
+  (`meta.blocking_proposal_id`), `GUARDIAN_EXECUTION_BUSY` (retryable: another request is
+  starting an execution for the account, the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT`
+  executions, or the server is shutting down and its drain refuses new executions; nothing is
+  reserved, and a retry reaches another replica or the restarted server),
+  `GUARDIAN_EXECUTION_NOT_FOUND`,
+  `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE`, `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED`. An
+  execution request gets `commitment_mismatch` when the proposal builds on a state other than
+  the account's current one, and `conflict_pending_delta` while a client candidate is pending. Their
+  HTTP and gRPC status pairs are verified by `crates/server/src/api/execution_tests.rs`.
 - `signer_not_authorized`
 - `wallet_signature_required` (session credentials on a wallet-only route; HTTP 403 / gRPC `PermissionDenied`)
 - `session_expired`, `session_revoked` (the delegated signer's session ended; HTTP 401 / gRPC `Unauthenticated`)
@@ -687,6 +835,9 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `SignDeltaProposal(SignDeltaProposalRequest) -> SignDeltaProposalResponse`
 - `GetAccountByKeyCommitment(GetAccountByKeyCommitmentRequest) -> GetAccountByKeyCommitmentResponse`
 - `GetDeltaHistory(GetDeltaHistoryRequest) -> GetDeltaHistoryResponse`
+- `ExecuteDeltaProposal(ExecuteDeltaProposalRequest) -> ExecuteDeltaProposalResponse`
+- `GetDeltaProposalExecution(GetDeltaProposalExecutionRequest) -> GetDeltaProposalExecutionResponse`
+- `GetCurrentExecution(GetCurrentExecutionRequest) -> GetCurrentExecutionResponse`
 - `GetCanonicalNonce(GetCanonicalNonceRequest) -> GetCanonicalNonceResponse`
 - `CreateSession(CreateSessionRequest) -> CreateSessionResponse`
 - `RevokeSession(RevokeSessionRequest) -> RevokeSessionResponse`
@@ -754,6 +905,16 @@ behavior.
 | `guardian_miden_rpc_duration_seconds` | histogram | `operation` |
 | `guardian_storage_operations_total` | counter | `operation`, `outcome` |
 | `guardian_storage_operation_duration_seconds` | histogram | `operation` |
+| `guardian_execution_outcomes_total` | counter | `outcome` (`committed`/`failed`), `code` |
+| `guardian_execution_reconcile_outcomes_total` | counter | `outcome` |
+| `guardian_execution_chain_view_duration_seconds` | histogram | — |
+| `guardian_execution_proving_duration_seconds` | histogram (1 s to 20 min) | — |
+| `guardian_execution_phase_duration_seconds` | histogram | `phase` (`prepare`, `acknowledge`, `execute`, `prove`, `seal`, `checks`, `boundary`, `send`) |
+| `guardian_execution_prover_retries_total` | counter | — |
+| `guardian_execution_capacity_refusals_total` | counter | none |
+| `guardian_execution_oldest_reservation_age_seconds` | gauge | — |
+| `guardian_execution_observation_outage_seconds` | gauge | — |
+| `guardian_execution_records_pruned_total` | counter | none |
 | `guardian_db_pool_connections_max` / `_connections` / `_connections_available` / `_pending_acquires` | gauges | `pool` (`storage`/`metadata`; postgres builds) |
 | `guardian_canonicalization_runs_total` | counter | `outcome` (`completed`/`partial`/`cancelled`/`error`) |
 | `guardian_canonicalization_run_duration_seconds` | histogram | — |
@@ -814,7 +975,7 @@ scrape_configs:
 ## Idempotency and Ordering
 
 - `push_delta` MAY be retried by clients; identical Miden deltas SHOULD be treated as idempotent when possible.
-- Miden `push_delta` enforces `prev_commitment` match.
+- Miden `push_delta` enforces `prev_commitment` match. A multisig push is also rejected with `insufficient_signatures` until the matching proposal's verified cosigner signatures meet the effective threshold of the procedures the pushed transaction invokes.
 - EVM proposal create is idempotent for duplicate active proposals with the same deterministic proposal ID.
 - EVM proposals remain active/pending-only in the EVM proposal store; expired or finalized proposals are lazily deleted.
 

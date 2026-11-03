@@ -2,9 +2,11 @@ use crate::proto::guardian_server::{Guardian, GuardianServer};
 use crate::proto::{
     AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AccountState, ConfigureRequest,
     ConfigureResponse, CreateSessionRequest, CreateSessionResponse,
-    DeltaObject as ProtoDeltaObject, GetAccountByKeyCommitmentRequest,
-    GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
-    GetDeltaHistoryRequest, GetDeltaHistoryResponse, GetDeltaProposalRequest,
+    DeltaObject as ProtoDeltaObject, ExecuteDeltaProposalRequest, ExecuteDeltaProposalResponse,
+    ExecutionEnvelope, GetAccountByKeyCommitmentRequest, GetAccountByKeyCommitmentResponse,
+    GetCanonicalNonceRequest, GetCanonicalNonceResponse, GetCurrentExecutionRequest,
+    GetCurrentExecutionResponse, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
+    GetDeltaProposalExecutionRequest, GetDeltaProposalExecutionResponse, GetDeltaProposalRequest,
     GetDeltaProposalResponse, GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest,
     GetDeltaResponse, GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest,
     GetStateRequest, GetStateResponse, PushDeltaProposalRequest, PushDeltaProposalResponse,
@@ -37,6 +39,11 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// Every `abandon_delta_candidate` request body, in arrival order.
+    abandon_requests: Arc<StdMutex<Vec<AbandonDeltaCandidateRequest>>>,
+    /// Every `execute_delta_proposal` request with the auth metadata it carried, in arrival
+    /// order.
+    execute_requests: Arc<StdMutex<Vec<SignedExecuteRequest>>>,
     /// The `scheme` field of every `get_pubkey` request, in arrival order.
     get_pubkey_schemes: Arc<StdMutex<Vec<Option<String>>>>,
     persistent_get_pubkey: Arc<StdMutex<Option<String>>>,
@@ -55,6 +62,16 @@ impl MockGuardianHandle {
     /// Every `push_delta_proposal` request received so far.
     pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
         self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// Every `abandon_delta_candidate` request received so far.
+    pub fn abandon_requests(&self) -> Vec<AbandonDeltaCandidateRequest> {
+        self.abandon_requests.lock().unwrap().clone()
+    }
+
+    /// Every `execute_delta_proposal` request received so far.
+    pub fn execute_requests(&self) -> Vec<SignedExecuteRequest> {
+        self.execute_requests.lock().unwrap().clone()
     }
 
     /// The signature scheme each `get_pubkey` call asked for, in arrival
@@ -93,6 +110,16 @@ impl MockGuardianHandle {
     }
 }
 
+/// An `execute_delta_proposal` request as the mock received it.
+#[derive(Clone, Debug)]
+pub struct SignedExecuteRequest {
+    pub request: ExecuteDeltaProposalRequest,
+    pub signature_hex: String,
+    pub timestamp: i64,
+}
+
+type CurrentExecutionResult = Result<Option<ExecutionEnvelope>, Status>;
+
 #[derive(Default)]
 pub struct MockGuardianService {
     handle: MockGuardianHandle,
@@ -104,6 +131,7 @@ pub struct MockGuardianService {
     sign_delta_proposal_response: Arc<StdMutex<Option<Result<SignDeltaProposalResponse, Status>>>>,
     push_delta_response: Arc<StdMutex<Option<Result<PushDeltaResponse, Status>>>>,
     get_delta_response: Arc<StdMutex<Option<Result<GetDeltaResponse, Status>>>>,
+    get_delta_requests: Arc<StdMutex<Vec<GetDeltaRequest>>>,
     get_delta_since_response: Arc<StdMutex<Option<Result<GetDeltaSinceResponse, Status>>>>,
     get_delta_history_response: Arc<StdMutex<Option<Result<GetDeltaHistoryResponse, Status>>>>,
     get_delta_history_requests: Arc<StdMutex<Vec<(GetDeltaHistoryRequest, i64, String)>>>,
@@ -114,17 +142,22 @@ pub struct MockGuardianService {
         Arc<StdMutex<Option<Result<GetAccountByKeyCommitmentResponse, Status>>>>,
     abandon_delta_candidate_response:
         Arc<StdMutex<Option<Result<AbandonDeltaCandidateResponse, Status>>>>,
+    execution_responses: Arc<StdMutex<Vec<Result<ExecutionEnvelope, Status>>>>,
+    current_execution_response: Arc<StdMutex<Option<CurrentExecutionResult>>>,
     create_session_requests: Arc<StdMutex<Vec<CreateSessionRequest>>>,
     /// (x-pubkey, x-signature, x-timestamp) of each RevokeSession call.
     revoke_session_auth: Arc<StdMutex<Vec<(String, String, i64)>>>,
     /// Each RevokeAllSessions call.
     revoke_all_sessions_calls: Arc<StdMutex<Vec<RevokeAllSessionsCall>>>,
-    /// x-auth-format of each PushDelta and AbandonDeltaCandidate call.
-    wallet_route_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
+    /// x-auth-format of each PushDelta, AbandonDeltaCandidate and
+    /// ExecuteDeltaProposal call.
+    push_and_abandon_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     /// x-auth-format and x-pubkey of each GetState call.
     get_state_auth_formats: Arc<StdMutex<Vec<(String, String)>>>,
     /// x-auth-format of each Configure call.
     configure_auth_formats: Arc<StdMutex<Vec<String>>>,
+    /// Each Configure request, as the server received it.
+    configure_requests: Arc<StdMutex<Vec<ConfigureRequest>>>,
 }
 
 impl MockGuardianService {
@@ -140,9 +173,10 @@ impl MockGuardianService {
         self.revoke_all_sessions_calls.clone()
     }
 
-    /// `(rpc, x-auth-format)` of each PushDelta and AbandonDeltaCandidate call.
-    pub fn wallet_route_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
-        self.wallet_route_auth_formats.clone()
+    /// `(rpc, x-auth-format)` of each PushDelta, AbandonDeltaCandidate and
+    /// ExecuteDeltaProposal call.
+    pub fn push_and_abandon_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
+        self.push_and_abandon_auth_formats.clone()
     }
 
     pub fn get_state_auth_formats_handle(&self) -> Arc<StdMutex<Vec<(String, String)>>> {
@@ -151,6 +185,10 @@ impl MockGuardianService {
 
     pub fn configure_auth_formats_handle(&self) -> Arc<StdMutex<Vec<String>>> {
         self.configure_auth_formats.clone()
+    }
+
+    pub fn configure_requests_handle(&self) -> Arc<StdMutex<Vec<ConfigureRequest>>> {
+        self.configure_requests.clone()
     }
 
     pub fn with_get_pubkey(self, response: Result<String, Status>) -> Self {
@@ -208,6 +246,12 @@ impl MockGuardianService {
     pub fn with_get_delta(self, response: Result<GetDeltaResponse, Status>) -> Self {
         *self.get_delta_response.lock().unwrap() = Some(response);
         self
+    }
+
+    /// Requests seen by `get_delta`, in arrival order, so tests can assert
+    /// which nonce was asked for.
+    pub fn get_delta_requests_handle(&self) -> Arc<StdMutex<Vec<GetDeltaRequest>>> {
+        self.get_delta_requests.clone()
     }
 
     pub fn with_get_delta_since(self, response: Result<GetDeltaSinceResponse, Status>) -> Self {
@@ -268,6 +312,30 @@ impl MockGuardianService {
     ) -> Self {
         *self.abandon_delta_candidate_response.lock().unwrap() = Some(response);
         self
+    }
+
+    /// Queue the envelopes `ExecuteDeltaProposal` and `GetDeltaProposalExecution` answer with,
+    /// in order.
+    pub fn with_execution(self, response: Result<ExecutionEnvelope, Status>) -> Self {
+        self.execution_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_current_execution(
+        self,
+        response: Result<Option<ExecutionEnvelope>, Status>,
+    ) -> Self {
+        *self.current_execution_response.lock().unwrap() = Some(response);
+        self
+    }
+
+    fn next_execution(&self, method: &str) -> Result<Response<ExecutionEnvelope>, Status> {
+        self.record_call(method);
+        let mut responses = self.execution_responses.lock().unwrap();
+        if responses.is_empty() {
+            return Err(Status::not_found("no scripted execution"));
+        }
+        responses.remove(0).map(Response::new)
     }
 
     /// Clone the post-start control surface before moving the service into
@@ -334,6 +402,10 @@ impl Guardian for MockGuardianService {
             .lock()
             .unwrap()
             .push(auth_format);
+        self.configure_requests
+            .lock()
+            .unwrap()
+            .push(request.get_ref().clone());
         self.record_call("configure");
         let response = self
             .configure_response
@@ -431,6 +503,7 @@ impl Guardian for MockGuardianService {
         &self,
         _request: Request<SignDeltaProposalRequest>,
     ) -> Result<Response<SignDeltaProposalResponse>, Status> {
+        self.record_call("sign_delta_proposal");
         let response = self
             .sign_delta_proposal_response
             .lock()
@@ -447,15 +520,75 @@ impl Guardian for MockGuardianService {
         response.map(Response::new)
     }
 
+    async fn execute_delta_proposal(
+        &self,
+        request: Request<ExecuteDeltaProposalRequest>,
+    ) -> Result<Response<ExecuteDeltaProposalResponse>, Status> {
+        let metadata = |key: &str| {
+            request
+                .metadata()
+                .get(key)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let signed = SignedExecuteRequest {
+            signature_hex: metadata("x-signature"),
+            timestamp: metadata("x-timestamp").parse().unwrap_or_default(),
+            request: request.get_ref().clone(),
+        };
+        self.handle.execute_requests.lock().unwrap().push(signed);
+        self.push_and_abandon_auth_formats.lock().unwrap().push((
+            "execute_delta_proposal".to_string(),
+            metadata("x-auth-format"),
+        ));
+        self.next_execution("execute_delta_proposal")
+            .map(|envelope| {
+                Response::new(ExecuteDeltaProposalResponse {
+                    execution: Some(envelope.into_inner()),
+                })
+            })
+    }
+
+    async fn get_delta_proposal_execution(
+        &self,
+        _request: Request<GetDeltaProposalExecutionRequest>,
+    ) -> Result<Response<GetDeltaProposalExecutionResponse>, Status> {
+        self.next_execution("get_delta_proposal_execution")
+            .map(|envelope| {
+                Response::new(GetDeltaProposalExecutionResponse {
+                    execution: Some(envelope.into_inner()),
+                })
+            })
+    }
+
+    async fn get_current_execution(
+        &self,
+        _request: Request<GetCurrentExecutionRequest>,
+    ) -> Result<Response<GetCurrentExecutionResponse>, Status> {
+        self.record_call("get_current_execution");
+        self.current_execution_response
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap_or(Ok(None))
+            .map(|execution| Response::new(GetCurrentExecutionResponse { execution }))
+    }
+
     async fn abandon_delta_candidate(
         &self,
         request: Request<AbandonDeltaCandidateRequest>,
     ) -> Result<Response<AbandonDeltaCandidateResponse>, Status> {
-        self.wallet_route_auth_formats.lock().unwrap().push((
+        self.push_and_abandon_auth_formats.lock().unwrap().push((
             "abandon_delta_candidate".to_string(),
             metadata_str(&request, "x-auth-format"),
         ));
         let data = request.into_inner();
+        self.handle
+            .abandon_requests
+            .lock()
+            .unwrap()
+            .push(data.clone());
         let response = self
             .abandon_delta_candidate_response
             .lock()
@@ -470,6 +603,7 @@ impl Guardian for MockGuardianService {
                     state: "pending".to_string(),
                     abandon_requested_at: "2026-07-14T12:00:00Z".to_string(),
                     error_code: String::new(),
+                    commitment: String::new(),
                 })
             });
 
@@ -481,7 +615,7 @@ impl Guardian for MockGuardianService {
         request: Request<PushDeltaRequest>,
     ) -> Result<Response<PushDeltaResponse>, Status> {
         self.record_call("push_delta");
-        self.wallet_route_auth_formats.lock().unwrap().push((
+        self.push_and_abandon_auth_formats.lock().unwrap().push((
             "push_delta".to_string(),
             metadata_str(&request, "x-auth-format"),
         ));
@@ -504,8 +638,12 @@ impl Guardian for MockGuardianService {
 
     async fn get_delta(
         &self,
-        _request: Request<GetDeltaRequest>,
+        request: Request<GetDeltaRequest>,
     ) -> Result<Response<GetDeltaResponse>, Status> {
+        self.get_delta_requests
+            .lock()
+            .unwrap()
+            .push(request.into_inner());
         let response = self
             .get_delta_response
             .lock()

@@ -207,12 +207,14 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     let executed_commitment_hex = commitment_hex(&executed_account);
     let executed_nonce = executed_account.nonce().as_canonical_u64();
 
-    // Network client with real commitment computation; the executed
-    // post-switch commitment is the registered on-chain answer.
+    // Network client with real commitment computation. The chain holds the
+    // pre-switch state while the account onboards, and the executed
+    // post-switch commitment once the switch lands.
     let miden_client = MidenNetworkClient::lazy_for_test(NetworkType::MidenLocal);
     let mut integration_client = IntegrationMockNetworkClient::new(miden_client);
-    integration_client.register_account(account_id_hex.clone(), executed_commitment_hex.clone());
-    state.network_client = Arc::new(integration_client);
+    integration_client.register_account(account_id_hex.clone(), commitment_hex(&multisig_account));
+    let chain = Arc::new(integration_client);
+    state.network_client = chain.clone();
 
     // Capture audit emissions so the release event can be asserted.
     let auditor = CapturingAuditor::new();
@@ -247,23 +249,28 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     )
     .await
     .expect("configure_account succeeds");
+    chain.set_on_chain_commitment(&account_id_hex, &executed_commitment_hex);
 
-    // Push the switch delta exactly as `execute_proposal` does client-side.
+    // Push the switch delta exactly as `execute_proposal` does client-side,
+    // with the threshold-satisfying proposal the push gate requires.
+    let delta = DeltaObject {
+        account_id: account_id_hex.clone(),
+        nonce: executed_nonce,
+        prev_commitment: pre_switch_commitment.clone(),
+        new_commitment: None,
+        delta_payload,
+        ack_sig: String::new(),
+        ack_pubkey: String::new(),
+        ack_scheme: String::new(),
+        status: Default::default(),
+        metadata: None,
+    };
+    let authorization =
+        crate::testing::helpers::store_authorizing_proposal(&state, &delta, &cosigner_keys).await;
     let push_result = push_delta(
         &state,
         PushDeltaParams {
-            delta: DeltaObject {
-                account_id: account_id_hex.clone(),
-                nonce: executed_nonce,
-                prev_commitment: pre_switch_commitment.clone(),
-                new_commitment: None,
-                delta_payload,
-                ack_sig: String::new(),
-                ack_pubkey: String::new(),
-                ack_scheme: String::new(),
-                status: Default::default(),
-                metadata: None,
-            },
+            delta,
             credentials: falcon_credentials(
                 &cosigner_keys[0],
                 &api_pubkey_hex,
@@ -274,6 +281,7 @@ async fn test_switch_guardian_delta_canonicalizes_and_releases_on_old_guardian()
     )
     .await
     .expect("push_delta accepts the switch delta");
+    authorization.restore(&state).await;
 
     assert!(
         push_result.delta.status.is_candidate(),

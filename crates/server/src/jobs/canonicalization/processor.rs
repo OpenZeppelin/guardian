@@ -201,11 +201,10 @@ impl DeltasProcessorBase {
     /// intentionally unfenced but not blind: proposal deletion is idempotent
     /// and only follows a committed transition.
     fn fence(&self) -> Option<LeaseFence> {
-        self.pass.leader.supports_fencing().then(|| LeaseFence {
-            lease_name: self.pass.lease.name.clone(),
-            holder_id: self.pass.lease.holder_id.clone(),
-            fence_token: self.pass.lease.fence_token,
-        })
+        self.pass
+            .leader
+            .supports_fencing()
+            .then(|| LeaseFence::from(&self.pass.lease))
     }
 
     /// Map a superseded-lease outcome to the error the pass surfaces; the
@@ -217,6 +216,15 @@ impl DeltasProcessorBase {
             "Canonicalization lease lost; write refused by storage fence"
         );
         GuardianError::StorageError("canonicalization lease lost; write refused".to_string())
+    }
+
+    fn log_protected_by_execution(delta: &DeltaObject, operation: &str) {
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            operation,
+            "Candidate belongs to an unresolved Guardian execution; leaving it to that execution"
+        );
     }
 
     /// Log a stale-candidate outcome: another owner already promoted or
@@ -777,6 +785,77 @@ impl DeltasProcessorBase {
             && successors.iter().any(|successor| successor == on_chain)
     }
 
+    /// Whether this candidate is the one a Guardian execution submitted and
+    /// the account's transaction history shows it landed: the chain then
+    /// passed through it before moving on, as when the cosigners switch the
+    /// account's guardian, which needs no acknowledgment from this server.
+    /// The execution's evidence bounds the search from its reference block.
+    /// Any other candidate, or a search that could not be made, is left to
+    /// the divergence path, which never discards an executing candidate.
+    async fn executed_candidate_landed(&self, delta: &DeltaObject, recomputed: &str) -> bool {
+        let evidence = match self
+            .state
+            .storage
+            .load_active_execution(&delta.account_id)
+            .await
+        {
+            Ok(Some(record)) => record.evidence,
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    %error,
+                    "Failed to read the account's execution; leaving the diverged candidate to the next pass"
+                );
+                None
+            }
+        };
+        let Some(evidence) = evidence else {
+            return false;
+        };
+        if evidence.candidate_nonce != delta.nonce
+            || !evidence
+                .expected_commitment
+                .eq_ignore_ascii_case(recomputed)
+        {
+            return false;
+        }
+        match self
+            .state
+            .network_client
+            .find_transaction_ending_at(
+                &delta.account_id,
+                recomputed,
+                evidence.reference_block,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
+            .await
+        {
+            Ok(search) => match search.found_in_block {
+                Some(block) => {
+                    tracing::info!(
+                        account_id = %delta.account_id,
+                        nonce = delta.nonce,
+                        landed_in_block = block,
+                        "The executed candidate landed before the account moved on; promoting it"
+                    );
+                    true
+                }
+                None => false,
+            },
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    nonce = delta.nonce,
+                    %error,
+                    "Transaction history could not be searched for the executed candidate"
+                );
+                false
+            }
+        }
+    }
+
     /// Whether the candidate queued just before the current one is still
     /// a candidate (issue #17). A successor only *waits* on a queued
     /// predecessor; one that was parked, discarded, or abandoned on this
@@ -834,6 +913,12 @@ impl DeltasProcessorBase {
                 record_candidate_outcome(if retain { outcomes.0 } else { outcomes.1 });
             }
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(
+                    delta,
+                    if retain { operations.0 } else { operations.1 },
+                );
+            }
             CanonicalWrite::NotCandidate => {
                 Self::log_not_candidate(delta, if retain { operations.0 } else { operations.1 });
             }
@@ -900,6 +985,12 @@ impl DeltasProcessorBase {
         // moved out-of-band; either way it can never verify from here
         // (issue #17).
         if current_state.commitment != delta.prev_commitment {
+            if let Some(step) = self
+                .finish_interrupted_promotion(&delta, &current_state)
+                .await?
+            {
+                return Ok(step);
+            }
             self.handle_orphaned_candidate(delta).await?;
             return Ok(CandidateStep::Orphaned);
         }
@@ -948,6 +1039,7 @@ impl DeltasProcessorBase {
                 self.canonicalize_verified_delta(
                     delta,
                     applied,
+                    crate::storage::PromotableKind::Candidate,
                     crate::metrics::labels::CandidateOutcome::Canonicalized,
                 )
                 .await
@@ -996,6 +1088,7 @@ impl DeltasProcessorBase {
                 self.canonicalize_verified_delta(
                     delta,
                     applied,
+                    crate::storage::PromotableKind::Candidate,
                     crate::metrics::labels::CandidateOutcome::Canonicalized,
                 )
                 .await
@@ -1005,9 +1098,24 @@ impl DeltasProcessorBase {
             // never land anymore and the expected commitment is permanently
             // unsatisfiable. Waiting out the grace period would only keep the
             // account locked (every new proposal 409s meanwhile) — discard as
-            // soon as the divergence is confirmed.
+            // soon as the divergence is confirmed. The exception is a
+            // Guardian-executed candidate whose transaction history shows it
+            // landed before the account moved on: it is promoted instead.
             Ok(StateVerification::Mismatch { on_chain }) if on_chain != delta.prev_commitment => {
-                self.handle_diverged_candidate(delta, &on_chain).await
+                if self
+                    .executed_candidate_landed(&delta, &recomputed_commitment)
+                    .await
+                {
+                    self.canonicalize_verified_delta(
+                        delta,
+                        applied,
+                        crate::storage::PromotableKind::Candidate,
+                        crate::metrics::labels::CandidateOutcome::Canonicalized,
+                    )
+                    .await
+                } else {
+                    self.handle_diverged_candidate(delta, &on_chain).await
+                }
             }
             // On-chain still shows the candidate's base state: the
             // transaction simply has not landed yet. This read also proves
@@ -1134,6 +1242,7 @@ impl DeltasProcessorBase {
         self.canonicalize_verified_delta(
             delta,
             applied,
+            crate::storage::PromotableKind::Candidate,
             crate::metrics::labels::CandidateOutcome::Canonicalized,
         )
         .await
@@ -1195,6 +1304,9 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => {}
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "abandon_confirm")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "abandon_confirm"),
         }
 
@@ -1207,6 +1319,30 @@ impl DeltasProcessorBase {
     /// cleanup failure leaves the candidate in place for the next worker
     /// run to retry.
     async fn finalize_abandoned_candidate(&self, delta: DeltaObject) -> Result<()> {
+        // A Guardian execution's candidate is not the client's to abandon, and its proposal must
+        // survive until the execution settles; storage refuses the discard below too, but only
+        // after the proposal would already be gone.
+        match self
+            .state
+            .storage
+            .load_active_execution(&delta.account_id)
+            .await
+        {
+            Ok(Some(record)) if record.owns_candidate(delta.nonce) => {
+                Self::log_protected_by_execution(&delta, "abandon_finalize");
+                return Ok(());
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    account_id = %delta.account_id,
+                    %error,
+                    "could not read the account's execution; deferring the abandon"
+                );
+                return Ok(());
+            }
+        }
+
         // Shared cleanup helper: a failed delete (or an unverifiable
         // proposal read) defers the finalize to the next worker run. An
         // UNDERIVABLE proposal id proceeds instead — the condition is
@@ -1233,6 +1369,10 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => {}
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "abandon_finalize");
+                return Ok(());
+            }
             CanonicalWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "abandon_finalize");
                 return Ok(());
@@ -1288,6 +1428,9 @@ impl DeltasProcessorBase {
         match outcome {
             CanonicalWrite::Applied => delta.status = new_status,
             CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+            CanonicalWrite::ProtectedByExecution => {
+                Self::log_protected_by_execution(&delta, "divergence_reset")
+            }
             CanonicalWrite::NotCandidate => Self::log_not_candidate(&delta, "divergence_reset"),
         }
 
@@ -1335,6 +1478,9 @@ impl DeltasProcessorBase {
                     crate::metrics::labels::CandidateOutcome::DivergenceDeferred,
                 ),
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "divergence_increment")
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "divergence_increment")
                 }
@@ -1505,6 +1651,9 @@ impl DeltasProcessorBase {
                         .increment(1);
                 }
                 CanonicalWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
+                CanonicalWrite::ProtectedByExecution => {
+                    Self::log_protected_by_execution(&delta, "retry_increment");
+                }
                 CanonicalWrite::NotCandidate => {
                     Self::log_not_candidate(&delta, "retry_increment");
                 }
@@ -1743,13 +1892,68 @@ impl DeltasProcessorBase {
         Ok(CanonicalWrite::Applied)
     }
 
+    /// A filesystem promotion is several file writes, so one interrupted after its state write
+    /// leaves the stored state at the candidate's own target with the candidate still queued.
+    /// That candidate is not orphaned: its promotion is finished once the chain confirms the
+    /// stored state. Postgres promotes atomically and never leaves this shape. Returns `None`
+    /// when the candidate is not such a leftover.
+    async fn finish_interrupted_promotion(
+        &self,
+        delta: &DeltaObject,
+        current_state: &StateObject,
+    ) -> Result<Option<CandidateStep>> {
+        if delta.new_commitment.as_deref() != Some(current_state.commitment.as_str()) {
+            return Ok(None);
+        }
+        let verified = self
+            .state
+            .network_client
+            .verify_commitment(
+                &delta.account_id,
+                &current_state.commitment,
+                crate::network::RpcReadMode::SingleAttempt,
+            )
+            .await;
+        if !matches!(verified, Ok(StateVerification::Match)) {
+            return Ok(None);
+        }
+        tracing::info!(
+            account_id = %delta.account_id,
+            nonce = delta.nonce,
+            "Stored state is already this candidate's verified target; finishing an interrupted promotion"
+        );
+        let binding = self
+            .state
+            .network_client
+            .account_auth_binding(&current_state.state_json)
+            .map_err(GuardianError::InvalidDelta)?
+            .unwrap_or_default();
+        let applied = AppliedState {
+            state_json: current_state.state_json.clone(),
+            commitment: current_state.commitment.clone(),
+            nonce: current_state.nonce,
+            cosigners: binding.signers,
+            guardian_commitment: binding.guardian,
+        };
+        self.canonicalize_verified_delta(
+            delta.clone(),
+            applied,
+            crate::storage::PromotableKind::Candidate,
+            crate::metrics::labels::CandidateOutcome::Canonicalized,
+        )
+        .await?;
+        Ok(Some(CandidateStep::Processed))
+    }
+
     /// Promote `delta` to canonical with the state `applied` carries: the
     /// state its reconstruction produced, whose commitment the caller just
-    /// verified against the chain.
+    /// verified against the chain. `source` is the lifecycle kind of the row
+    /// the pass verified: the write only promotes a row still in that kind.
     async fn canonicalize_verified_delta(
         &self,
         delta: DeltaObject,
         applied: AppliedState,
+        source: crate::storage::PromotableKind,
         success_outcome: crate::metrics::labels::CandidateOutcome,
     ) -> Result<()> {
         tracing::info!(
@@ -1817,10 +2021,7 @@ impl DeltasProcessorBase {
                     new_auth,
                     now: now.clone(),
                     fence: self.fence(),
-                    // Derived from the status the verification read: the
-                    // write must only flip a row still in that exact
-                    // lifecycle kind (see `PromotableKind`).
-                    source: crate::storage::PromotableKind::of(&delta.status),
+                    source,
                 },
             )
             .await
@@ -1828,7 +2029,11 @@ impl DeltasProcessorBase {
                 GuardianError::StorageError(format!("Failed to canonicalize delta: {e}"))
             })?;
         match outcome {
-            PromoteWrite::Applied => {}
+            PromoteWrite::Applied { settled_execution } => {
+                if settled_execution {
+                    crate::metrics::execution::record_outcome(None);
+                }
+            }
             PromoteWrite::StaleLease => return Err(Self::stale_lease_error(&delta)),
             PromoteWrite::NotCandidate => {
                 Self::log_not_candidate(&delta, "promote");
@@ -2170,7 +2375,9 @@ mod tests {
                 .with_pull_recent_candidate_deltas(Ok(vec![candidate]))
                 .with_pull_state(Ok(create_test_state(account_id)))
                 .with_pull_state(Ok(create_test_state(account_id)))
-                .with_promote_candidate(Ok(PromoteWrite::Applied)),
+                .with_promote_candidate(Ok(PromoteWrite::Applied {
+                    settled_execution: false,
+                })),
         );
         let network = Arc::new(
             MockNetworkClient::new()
@@ -2434,6 +2641,21 @@ mod tests {
             })
         }
 
+        async fn observe_commitment(
+            &self,
+            account_id: &str,
+            expected_commitment: &str,
+            read_mode: crate::network::RpcReadMode,
+        ) -> std::result::Result<crate::network::ObservedState, String> {
+            let verification = self
+                .verify_commitment(account_id, expected_commitment, read_mode)
+                .await?;
+            Ok(crate::network::ObservedState {
+                verification,
+                block: 0,
+            })
+        }
+
         fn verify_delta(
             &self,
             _prev_proof: &str,
@@ -2489,10 +2711,17 @@ mod tests {
             unreachable!()
         }
 
+        fn validate_first_state(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unreachable!()
+        }
+        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unreachable!()
+        }
         fn validate_guardian_commitment(
             &self,
             _state_json: &serde_json::Value,
             _expected_guardian_commitment: &str,
+            _expected_guardian_scheme: guardian_shared::SignatureScheme,
         ) -> std::result::Result<(), String> {
             unreachable!()
         }
@@ -3183,6 +3412,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_abandon_never_touches_a_guardian_execution_candidate() {
+        let account_id = "0xtest_account";
+        let mut candidate = create_candidate_delta(account_id, 1);
+        candidate.status = candidate
+            .status
+            .with_abandon_requested("2024-01-01T00:00:00Z".to_string())
+            .with_incremented_abandon_confirm();
+        let now = Utc.with_ymd_and_hms(2024, 1, 1, 0, 1, 0).unwrap();
+        let execution = crate::storage::ExecutionRecord {
+            reservation: crate::storage::ExecutionReservation {
+                account_id: account_id.to_string(),
+                proposal_id: "0xproposal".to_string(),
+                attempt: 1,
+                fence: crate::storage::LeaseFence {
+                    lease_name: format!("execution:{account_id}"),
+                    holder_id: "replica:worker".to_string(),
+                    fence_token: 1,
+                },
+                lease_expires_at: now,
+                phase: crate::storage::ExecutionPhase::Sent,
+                ignored_signatures: 0,
+                released_at: None,
+                created_at: now,
+                updated_at: now,
+            },
+            evidence: Some(crate::storage::SubmissionEvidence {
+                account_id: account_id.to_string(),
+                proposal_id: "0xproposal".to_string(),
+                attempt: 1,
+                candidate_nonce: 1,
+                transaction_id: "0xtx".to_string(),
+                expected_commitment: "new_commitment".to_string(),
+                reference_block: 100,
+                expiration_block: 356,
+                base_commitment: "prev_commitment".to_string(),
+                committed_at: now,
+            }),
+            outcome: None,
+        };
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_deltas_after(Ok(vec![candidate]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_load_active_execution(Ok(Some(execution))),
+        );
+        let mock_network = MockNetworkClient::new()
+            .with_apply_delta(Ok((
+                serde_json::json!({"new": "state"}),
+                "new_commitment".to_string(),
+            )))
+            .with_verify_commitment(Ok(StateVerification::Mismatch {
+                on_chain: "prev_commitment".to_string(),
+            }));
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id)))),
+        );
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            Arc::new(mock_network),
+            metadata,
+            Arc::new(MockClock::new(now)),
+        );
+        let config = CanonicalizationConfig::new(10, 18)
+            .with_submission_grace_period_seconds(600)
+            .with_abandon_quarantine_seconds(30)
+            .with_abandon_quarantine_checks(2);
+
+        DeltasProcessor::new(state, config)
+            .process_all_accounts()
+            .await
+            .unwrap();
+
+        assert!(
+            storage.get_delete_delta_proposal_calls().is_empty(),
+            "the executing proposal must survive"
+        );
+        assert!(storage.get_update_delta_status_calls().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_abandon_quarantine_waits_for_request_age() {
         // Confirmation count is satisfied but the request is too fresh:
         // the quarantine keeps waiting so a late-landing transaction can
@@ -3330,7 +3642,7 @@ mod tests {
         ));
         let state = create_test_app_state_with_clock(
             storage.clone(),
-            Arc::new(mock_network),
+            Arc::new(mock_network.clone()),
             metadata.clone(),
             clock,
         );
@@ -3347,6 +3659,12 @@ mod tests {
         assert_eq!(status_updates[0].2.retry_count(), 0);
         assert!(storage.get_delete_delta_calls().is_empty());
         assert!(metadata.get_set_calls().is_empty());
+        assert!(
+            mock_network
+                .get_find_transaction_ending_at_calls()
+                .is_empty(),
+            "only a Guardian-executed candidate is searched for in the account's history"
+        );
     }
 
     #[tokio::test]
@@ -3906,6 +4224,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_head_whose_promotion_stopped_after_the_state_write_is_finished_not_orphaned() {
+        let account_id = "0xtest_account";
+        let head = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![head]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_pull_state(Ok(state_at(account_id, "0xc1")))
+                .with_promote_candidate(Ok(crate::storage::PromoteWrite::Applied {
+                    settled_execution: false,
+                })),
+        );
+        let network =
+            Arc::new(MockNetworkClient::new().with_verify_commitment(Ok(StateVerification::Match)));
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state =
+            create_test_app_state_with_mocks(storage.clone(), network.clone(), metadata.clone());
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert_eq!(storage.promote_candidate_fences.lock().unwrap().len(), 1);
+        assert!(
+            storage.get_update_delta_status_calls().is_empty(),
+            "the candidate is not parked as orphaned"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_head_at_its_own_target_is_orphaned_when_the_chain_does_not_confirm_it() {
+        let account_id = "0xtest_account";
+        let head = chained_candidate(account_id, 1, "prev_commitment", "0xc1");
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_pull_candidate_deltas(Ok(vec![head]))
+                .with_pull_state(Ok(state_at(account_id, "0xc1"))),
+        );
+        let network = Arc::new(MockNetworkClient::new().with_verify_commitment(Ok(
+            StateVerification::Mismatch {
+                on_chain: "0xelsewhere".to_string(),
+            },
+        )));
+        let metadata = Arc::new(
+            MockMetadataStore::new()
+                .with_list_with_pending_candidates(Ok(vec![account_id.to_string()]))
+                .with_get(Ok(Some(create_test_metadata(account_id))))
+                .with_set(Ok(())),
+        );
+        let state =
+            create_test_app_state_with_mocks(storage.clone(), network.clone(), metadata.clone());
+        let processor = DeltasProcessor::new(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert!(storage.promote_candidate_fences.lock().unwrap().is_empty());
+        let writes = storage.get_update_delta_status_calls();
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].2.retain_reason(), Some(RetainReason::Orphaned));
+    }
+
+    #[tokio::test]
     async fn queue_head_that_no_longer_chains_is_retained_as_orphaned_without_rpc() {
         // Its predecessor left the queue without promoting: the break
         // is a fact of the store, so no chain observation and no
@@ -4235,8 +4617,12 @@ mod tests {
                 .with_pull_state(Ok(state_at(account_id, "0xc1")))
                 .with_pull_state(Ok(create_test_state(account_id)))
                 .with_pull_state(Ok(create_test_state(account_id)))
-                .with_promote_candidate(Ok(PromoteWrite::Applied))
-                .with_promote_candidate(Ok(PromoteWrite::Applied)),
+                .with_promote_candidate(Ok(PromoteWrite::Applied {
+                    settled_execution: false,
+                }))
+                .with_promote_candidate(Ok(PromoteWrite::Applied {
+                    settled_execution: false,
+                })),
         );
         let network = Arc::new(
             MockNetworkClient::new()
@@ -4842,6 +5228,77 @@ mod tests {
                 .iter()
                 .any(|d| d.status.is_canonical()),
             "the abandoned delta ends canonical"
+        );
+    }
+
+    #[tokio::test]
+    async fn late_landing_superseded_delta_reconciles_from_the_archive() {
+        // A resubmission at an abandoned row's nonce archived that row;
+        // the abandoned transaction then landed after all. The archived
+        // row is the only record of that step, and the reconcile pass
+        // promotes it with the `Superseded` kind, which writes it back as
+        // the canonical row at its nonce.
+        let account_id = "0xtest_account";
+        let mut archived = create_candidate_delta(account_id, 1);
+        archived.status =
+            DeltaStatus::discarded_client_abandoned("2024-01-01T00:00:00Z".to_string());
+
+        let storage = Arc::new(
+            MockStorageBackend::new()
+                .with_list_accounts_with_recoverable_deltas(Ok(vec![account_id.to_string()]))
+                .with_pull_recoverable_deltas(Ok(vec![]))
+                .with_pull_superseded_deltas(Ok(vec![crate::storage::SupersededDelta {
+                    delta: archived,
+                    superseded_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 5, 0).unwrap(),
+                }]))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_pull_state(Ok(create_test_state(account_id)))
+                .with_submit_state(Ok(()))
+                .with_submit_delta(Ok(())),
+        );
+        let mock_network = Arc::new(
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((
+                    serde_json::json!({"new": "state"}),
+                    "new_commitment".to_string(),
+                )))
+                .with_verify_commitment(Ok(StateVerification::Mismatch {
+                    on_chain: "new_commitment".to_string(),
+                }))
+                .with_should_update_auth(Ok(None)),
+        );
+        let mut account_metadata = create_test_metadata(account_id);
+        account_metadata.has_pending_candidate = false;
+        let mock_metadata = MockMetadataStore::new()
+            .with_list_with_pending_candidates(Ok(vec![]))
+            .with_get(Ok(Some(account_metadata)))
+            .with_set(Ok(()));
+        let clock = Arc::new(MockClock::new(
+            Utc.with_ymd_and_hms(2024, 1, 1, 0, 10, 0).unwrap(),
+        ));
+        let state = create_test_app_state_with_clock(
+            storage.clone(),
+            mock_network,
+            Arc::new(mock_metadata),
+            clock,
+        );
+
+        let processor = reconcile_processor(state, CanonicalizationConfig::new(10, 18));
+        assert!(processor.process_all_accounts().await.is_ok());
+
+        assert_eq!(
+            storage.get_promote_candidate_sources(),
+            vec![crate::storage::PromotableKind::Superseded],
+            "the archived row is promoted as superseded"
+        );
+        let states = storage.get_submit_state_calls();
+        assert_eq!(states.len(), 1, "the late-landed state is recovered");
+        assert_eq!(states[0].commitment, "new_commitment");
+        assert_eq!(
+            storage.prune_superseded_calls.lock().unwrap().len(),
+            1,
+            "expired archived rows are pruned on every visit"
         );
     }
 
@@ -5639,7 +6096,10 @@ mod tests {
                 state_json: serde_json::json!({"new": "state"}),
                 commitment: "new_commitment".to_string(),
                 nonce: None,
-                cosigner_commitments: vec!["0xnew_commitment".to_string()],
+                cosigners: vec![crate::metadata::auth::ChainCosigner {
+                    commitment: "0xnew_commitment".to_string(),
+                    scheme: None,
+                }],
                 guardian_commitment: None,
             }))
             .with_verify_commitment(Ok(StateVerification::Match));

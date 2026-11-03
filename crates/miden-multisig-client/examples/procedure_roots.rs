@@ -98,6 +98,7 @@ fn main() {
     let next = procedure_roots.len();
     let send_asset: Word = BasicWallet::move_asset_to_note_root().into();
     let receive_asset: Word = BasicWallet::receive_asset_root().into();
+    let create_note: Word = BasicWallet::create_note_root().into();
     procedure_roots.push(record(
         next,
         "send_asset".to_string(),
@@ -109,6 +110,12 @@ fn main() {
         "receive_asset".to_string(),
         "BasicWallet",
         receive_asset,
+    ));
+    procedure_roots.push(record(
+        next + 2,
+        "create_note".to_string(),
+        "BasicWallet",
+        create_note,
     ));
 
     if env::args().any(|arg| arg == "--json") {

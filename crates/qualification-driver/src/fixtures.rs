@@ -1,8 +1,8 @@
 use anyhow::{Context, anyhow};
-use guardian_shared::FromJson;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::hex::IntoHex;
+use guardian_shared::{FromJson, ProposalSignature};
 use miden_multisig_client::ProposalPayload;
 use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey;
 use miden_protocol::transaction::TransactionSummary;
@@ -37,9 +37,15 @@ pub struct Fixtures {
     pub initial_commitment: String,
     pub cosigner_commitments: Vec<String>,
     pub delta: Value,
+    /// A second committed transaction summary, for a proposal distinct from the first.
+    pub second_delta: Value,
     /// `queue_1`, `queue_2` and `queue_3`, in nonce order.
     pub chained: Vec<ChainedDelta>,
     signer_key: SecretKey,
+    /// Every cosigner key of the fixture account, signer 1 first, so a delta
+    /// can carry the threshold of approvals GUARDIAN requires before
+    /// acknowledging it (issue #524).
+    cosigner_keys: Vec<SecretKey>,
     /// The operator identity the allowlist grants `accounts:pause`, kept whole
     /// so a dashboard challenge can be signed rather than only recognised.
     operator_key: SecretKey,
@@ -59,6 +65,7 @@ impl Fixtures {
         let commitments = read("commitments.json")?;
         let account = read("account.json")?;
         let delta = read("delta_1.json")?;
+        let second_delta = read("delta_2.json")?;
 
         let account_id = commitments["account_id"]
             .as_str()
@@ -101,6 +108,16 @@ impl Fixtures {
         let signer_key = SecretKey::read_from_bytes(&hex::decode(secret_hex)?)
             .map_err(|error| anyhow!("signer_1_secret_key is not a Falcon key: {error}"))?;
 
+        let cosigner_keys = (1..=3)
+            .map(|index| -> anyhow::Result<SecretKey> {
+                let hex_key = keys[format!("signer_{index}_secret_key")]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("keys.json has no signer_{index}_secret_key"))?;
+                SecretKey::read_from_bytes(&hex::decode(hex_key)?)
+                    .map_err(|error| anyhow!("signer_{index} is not a Falcon key: {error}"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
         let cosigner_commitments = (1..=3)
             .map(|index| {
                 keys[format!("signer_{index}_commitment")]
@@ -122,8 +139,10 @@ impl Fixtures {
             initial_commitment,
             cosigner_commitments,
             delta,
+            second_delta,
             chained,
             signer_key,
+            cosigner_keys,
             operator_key,
         })
     }
@@ -171,6 +190,118 @@ impl Fixtures {
         let summary = TransactionSummary::from_json(summary)
             .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?;
         Ok(ProposalPayload::new(&summary).with_custom_metadata("qualification".to_string()))
+    }
+
+    /// The id GUARDIAN gives the fixture proposal: the commitment of its transaction summary.
+    pub fn proposal_id(&self) -> anyhow::Result<String> {
+        let summary = TransactionSummary::from_json(&self.delta["delta_payload"])
+            .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?;
+        Ok(summary.to_commitment().to_hex())
+    }
+
+    /// The fixture proposal's effects as a Guardian-executable client signs them: the same delta,
+    /// notes and bound block, with the transaction expiration delta and an approval expiration
+    /// bound into the summary. The committed fixture was produced by a self-executed client and
+    /// signs neither, so Guardian refuses to execute it as it stands.
+    pub fn executable_summary(&self) -> anyhow::Result<TransactionSummary> {
+        use miden_protocol::transaction::TransactionSummaryUserParams;
+
+        let summary = TransactionSummary::from_json(&self.delta["delta_payload"])
+            .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?;
+        let mut params = *summary.user_params().as_elements();
+        params[0] = miden_protocol::Felt::new_unchecked(
+            u64::from(summary.block_number().as_u32())
+                + u64::from(
+                    miden_multisig_client::GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA.get(),
+                ),
+        );
+        Ok(TransactionSummary::new(
+            summary.account_delta().clone(),
+            summary.input_notes().clone(),
+            summary.output_notes().clone(),
+            summary.block_number(),
+            summary.block_commitment(),
+            miden_multisig_client::GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA.get(),
+            TransactionSummaryUserParams::new(params),
+        ))
+    }
+
+    /// The Guardian-executable fixture proposal: [`Self::executable_summary`] with a stored
+    /// request that is structurally Guardian-executable (multisig auth args and the summary's
+    /// bound block declared). The request is not the one that produced the summary, so an
+    /// execution of it can never pass binding; it exists to get past every check that runs
+    /// before Guardian reads the chain.
+    pub fn executable_proposal_payload(&self) -> anyhow::Result<ProposalPayload> {
+        use miden_client::transaction::TransactionRequestBuilder;
+        use miden_protocol::crypto::SequentialCommit;
+        use miden_standards::account::auth::MultisigAuthArgs;
+
+        let summary = self.executable_summary()?;
+        let bound = summary.block_number();
+        let auth_args = MultisigAuthArgs::new(bound, miden_protocol::Word::from([7u32; 4]))
+            .with_approval_expiration_delta(
+                miden_multisig_client::GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA,
+            )
+            .map_err(|error| anyhow!("building the fixture auth args: {error}"))?;
+        let commitment = auth_args.to_commitment();
+        let request = TransactionRequestBuilder::new()
+            .auth_arg(commitment)
+            .extend_advice_map([(commitment, auth_args.to_elements())])
+            .block_numbers([bound])
+            .build()
+            .map_err(|error| anyhow!("building the fixture request: {error}"))?;
+        Ok(ProposalPayload::new(&summary)
+            .with_custom_metadata("qualification".to_string())
+            .with_transaction_request(
+                miden_multisig_client::ProposalExecutionMode::GuardianExecutable
+                    .attachment(&request),
+            ))
+    }
+
+    /// A proposal distinct from the fixture proposal, created without a stored request.
+    pub fn second_proposal_payload(&self) -> anyhow::Result<ProposalPayload> {
+        let summary = TransactionSummary::from_json(&self.second_delta["delta_payload"])
+            .map_err(|error| anyhow!("the second fixture summary does not load: {error}"))?;
+        Ok(ProposalPayload::new(&summary).with_custom_metadata("qualification".to_string()))
+    }
+
+    pub fn second_proposal_id(&self) -> anyhow::Result<String> {
+        let summary = TransactionSummary::from_json(&self.second_delta["delta_payload"])
+            .map_err(|error| anyhow!("the second fixture summary does not load: {error}"))?;
+        Ok(summary.to_commitment().to_hex())
+    }
+
+    /// One signer per fixture cosigner.
+    pub fn cosigners(&self) -> anyhow::Result<Vec<guardian_client::FalconKeyStore>> {
+        self.cosigner_keys
+            .iter()
+            .map(|key| {
+                let bytes = miden_protocol::utils::serde::Serializable::to_bytes(key);
+                SecretKey::read_from_bytes(&bytes)
+                    .map(guardian_client::FalconKeyStore::new)
+                    .map_err(|error| anyhow!("cloning a fixture cosigner: {error}"))
+            })
+            .collect()
+    }
+
+    /// Every cosigner's approval of the fixture transaction `summary`, the
+    /// signatures a proposal needs before GUARDIAN acknowledges its delta.
+    pub fn cosigner_approvals(&self, summary: &Value) -> anyhow::Result<Vec<ProposalSignature>> {
+        let commitment = TransactionSummary::from_json(summary)
+            .map_err(|error| anyhow!("the fixture transaction summary does not load: {error}"))?
+            .to_commitment();
+        Ok(self
+            .cosigner_keys
+            .iter()
+            .map(|key| ProposalSignature::Falcon {
+                signature: format!(
+                    "0x{}",
+                    hex::encode(miden_protocol::utils::serde::Serializable::to_bytes(
+                        &key.sign(commitment)
+                    ))
+                ),
+            })
+            .collect())
     }
 
     pub fn proposal_nonce(&self) -> u64 {

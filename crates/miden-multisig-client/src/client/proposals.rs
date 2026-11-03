@@ -3,10 +3,10 @@
 //! This module handles listing, signing, executing, and creating proposals
 //! via GUARDIAN (online mode).
 
-use std::collections::HashSet;
-
+use guardian_client::DeltaObject;
 use guardian_shared::{ProposalSignature, ToJson};
 use miden_client::transaction::TransactionRequest;
+use miden_protocol::Word;
 
 use super::{MultisigClient, ProposalResult};
 
@@ -26,15 +26,29 @@ pub enum AbandonRequestState {
     Retained,
 }
 
+/// An abandon request as GUARDIAN recorded it: its immediate state and the
+/// delta it abandoned, which [`MultisigClient::abandon_status`] polls for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AbandonRequest {
+    pub state: AbandonRequestState,
+    /// The abandoned delta's `new_commitment`. Another delta can later take
+    /// the same nonce (a GUARDIAN execution archives the abandoned one), so
+    /// the nonce alone does not identify it.
+    pub commitment: String,
+}
+
 /// Resolution of an abandon request, as observed via the delta feed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AbandonStatus {
-    /// The delta is still a candidate; the quarantine is running.
+    /// The delta is still a candidate; the quarantine is running. Also
+    /// reported while another delta holds the nonce as a candidate.
     Waiting,
     /// The transaction landed after all; the delta canonicalized.
     Landed,
     /// The abandon completed; the delta is discarded as client-abandoned
-    /// and the account is released.
+    /// and the account is released. Also reported once another delta at
+    /// the same nonce is canonical: the abandoned transaction can no
+    /// longer land.
     Abandoned,
     /// GUARDIAN stopped verifying and released the account slot, but the
     /// on-chain outcome is still uncertain — "unlocked but unresolved",
@@ -46,11 +60,12 @@ pub enum AbandonStatus {
     /// The delta is missing or in a state no abandon flow produces.
     Unexpected,
 }
+use crate::account::MultisigAccount;
 use crate::error::{MultisigError, Result};
 use crate::execution::{
     SignatureAdvice, SignatureInput, build_final_transaction_request, collect_signature_advice,
 };
-use crate::keystore::proposal_public_key_hex;
+use crate::keystore::{proposal_public_key_hex, word_from_hex};
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
 use crate::transaction::{
     ProposalBuilder, ProposalOptions, deserialize_transaction_request, execute_for_summary_at_tip,
@@ -63,6 +78,45 @@ impl MultisigClient {
         account_id: &miden_protocol::account::AccountId,
         proposal_id: &str,
     ) -> Result<Proposal> {
+        self.get_pinned_proposal(account_id, proposal_id)
+            .await
+            .map(|(proposal, _)| proposal)
+    }
+
+    /// Fetches a proposal together with the account state GUARDIAN pinned it
+    /// to (the delta proposal's `prev_commitment`).
+    async fn get_pinned_proposal(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<(Proposal, Word)> {
+        let (raw_proposal, pinned_base) = self
+            .get_raw_pinned_proposal(account_id, proposal_id)
+            .await?;
+        let mut proposal = Proposal::from(&raw_proposal)?;
+        self.verify_proposal_summary_binding(&mut proposal).await?;
+        self.known_proposals.record(*account_id, &proposal);
+        Ok((proposal, pinned_base))
+    }
+
+    /// The state GUARDIAN pinned a stored proposal to, for a caller that
+    /// already holds the proposal itself (an imported document).
+    pub(super) async fn get_pinned_base(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<Word> {
+        let (_, pinned_base) = self
+            .get_raw_pinned_proposal(account_id, proposal_id)
+            .await?;
+        Ok(pinned_base)
+    }
+
+    async fn get_raw_pinned_proposal(
+        &mut self,
+        account_id: &miden_protocol::account::AccountId,
+        proposal_id: &str,
+    ) -> Result<(DeltaObject, Word)> {
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
             .get_delta_proposal(account_id, proposal_id)
@@ -73,9 +127,34 @@ impl MultisigClient {
             .proposal
             .ok_or_else(|| MultisigError::ProposalNotFound(proposal_id.to_string()))?;
         Self::ensure_proposal_account_id(&raw_proposal.account_id, account_id)?;
-        let mut proposal = Proposal::from(&raw_proposal)?;
-        self.verify_proposal_summary_binding(&mut proposal).await?;
-        Ok(proposal)
+        let pinned_base =
+            word_from_hex(&raw_proposal.prev_commitment).map_err(MultisigError::HexDecode)?;
+        Ok((raw_proposal, pinned_base))
+    }
+
+    /// Refuses to execute a proposal GUARDIAN pinned to a state other than
+    /// the one this client holds, as the TypeScript SDK's
+    /// `assertExecutesOnPinnedBase` does. The transaction executes on this
+    /// client's own record of the account, and the execution push names that
+    /// record as its base, so a proposal made for another state would run on
+    /// a state its signers never approved it for: one pinned to a state the
+    /// account has since left would apply its intent again, and one pinned
+    /// to a queued candidate's post-state this client does not hold would
+    /// land without that candidate.
+    pub(super) fn ensure_executes_on_pinned_base(
+        account: &MultisigAccount,
+        proposal_id: &str,
+        pinned_base: Word,
+    ) -> Result<()> {
+        let local = account.commitment();
+        if local != pinned_base {
+            return Err(MultisigError::ProposalBaseMismatch {
+                proposal_id: proposal_id.to_string(),
+                pinned: word_to_hex(&pinned_base),
+                local: word_to_hex(&local),
+            });
+        }
+        Ok(())
     }
 
     /// Lists pending proposals for the current account.
@@ -90,7 +169,10 @@ impl MultisigClient {
     /// hide the others (issue #462). `Failed { retryable: true }`
     /// means a transient node error, worth listing again; `retryable: false`
     /// means the proposal cannot be reproduced and must be re-proposed.
-    /// Signing and executing re-verify and refuse a failed proposal.
+    /// Signing and executing re-verify and refuse a failed proposal. Only a
+    /// verified proposal is held for
+    /// [`request_guardian_execution`](Self::request_guardian_execution); a
+    /// failed one is refused there as not held until a listing verifies it.
     ///
     /// # Errors
     ///
@@ -124,9 +206,13 @@ impl MultisigClient {
 
         self.sync_chain_before_verifying(&proposals).await;
         for proposal in &mut proposals {
-            // The outcome lands on the proposal either way; a failure is
-            // reported there rather than failing the listing.
-            let _ = self.verify_listed_proposal_summary_binding(proposal).await;
+            if self
+                .verify_listed_proposal_summary_binding(proposal)
+                .await
+                .is_ok()
+            {
+                self.known_proposals.record(account_id, proposal);
+            }
         }
 
         Ok(proposals)
@@ -210,6 +296,7 @@ impl MultisigClient {
                 ));
                 continue;
             }
+            self.known_proposals.record(account_id, &proposal);
             proposals.push(proposal);
         }
 
@@ -225,6 +312,7 @@ impl MultisigClient {
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
+        self.ensure_key_scheme_matches(account)?;
 
         let account_id = account.id();
         // Verification re-executes the proposal at the store's sync height, so
@@ -267,6 +355,7 @@ impl MultisigClient {
         // actionable once the threshold is met) rather than `Unchecked`.
         let mut updated = Proposal::from(updated_raw)?;
         self.verify_proposal_summary_binding(&mut updated).await?;
+        self.known_proposals.record(account_id, &updated);
         Ok(updated)
     }
 
@@ -300,7 +389,7 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        let proposal = self.get_proposal(&account_id, proposal_id).await?;
+        let (proposal, pinned_base) = self.get_pinned_proposal(&account_id, proposal_id).await?;
 
         if proposal.nonce <= account.nonce() {
             return Err(MultisigError::InvalidConfig(format!(
@@ -331,10 +420,13 @@ impl MultisigClient {
             ));
         }
 
+        Self::ensure_executes_on_pinned_base(&account, proposal_id, pinned_base)?;
+
         self.assert_approval_not_expired(&proposal.id, &proposal.tx_summary)
             .await?;
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
+        let target_signers = proposal.target_signers(&account)?;
 
         let mut signature_inputs: Vec<SignatureInput> = proposal
             .signatures
@@ -355,14 +447,14 @@ impl MultisigClient {
         // Build signature advice from cosigner signatures
         // Important: Use CURRENT account signers for validation, not proposal's new signers.
         // The on-chain MASM verifies signatures against the currently stored public keys.
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let approvers = account.verifiable_cosigners();
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
-            &required_commitments,
+            &approvers,
             tx_summary_commitment,
             Some(&proposal.tx_summary),
         )?;
+        account.ensure_threshold_met(&proposal.transaction_type, signature_advice.len())?;
 
         if proposal.transaction_type.requires_guardian_ack() {
             // Get GUARDIAN ack signature and add to advice
@@ -410,30 +502,17 @@ impl MultisigClient {
             }
         }
 
-        // For signer-update transactions, we must propagate parse errors for signer commitments
-        // rather than silently converting to None. This ensures malformed hex is diagnosed properly.
-        let signer_commitments = if matches!(
-            &proposal.transaction_type,
-            TransactionType::AddCosigner { .. }
-                | TransactionType::RemoveCosigner { .. }
-                | TransactionType::UpdateSigners { .. }
-        ) {
-            Some(proposal.metadata.signer_commitments()?)
-        } else {
-            proposal.metadata.signer_commitments().ok()
-        };
-
         let auth_args = proposal_auth_args(&self.miden_client, &proposal.tx_summary).await?;
 
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
-            account.inner(),
+            &account,
             &auth_args,
             signature_advice,
             proposal.metadata.new_threshold,
-            signer_commitments.as_deref(),
-            self.key_manager.scheme(),
+            target_signers.as_deref(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 
@@ -474,6 +553,7 @@ impl MultisigClient {
         }
 
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         let account_id = account.id();
 
         let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
@@ -492,6 +572,10 @@ impl MultisigClient {
         };
 
         let payload = crate::payload::ProposalPayload::new(&tx_summary)
+            .with_transaction_request(
+                self.execution_mode
+                    .attachment_of_bytes(transaction_request_bytes),
+            )
             .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures);
@@ -501,9 +585,7 @@ impl MultisigClient {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
 
@@ -518,6 +600,7 @@ impl MultisigClient {
             )));
         }
 
+        self.known_proposals.record(account_id, &proposal);
         Ok(proposal)
     }
 
@@ -541,7 +624,7 @@ impl MultisigClient {
         let account = self.require_account()?.clone();
         let account_id = account.id();
 
-        let proposal = self.get_proposal(&account_id, proposal_id).await?;
+        let (proposal, pinned_base) = self.get_pinned_proposal(&account_id, proposal_id).await?;
 
         if !matches!(proposal.transaction_type, TransactionType::Custom) {
             return Err(MultisigError::UnsupportedTransactionType(
@@ -558,6 +641,8 @@ impl MultisigClient {
                 required,
             });
         }
+
+        Self::ensure_executes_on_pinned_base(&account, proposal_id, pinned_base)?;
 
         let tx_summary_commitment = proposal.tx_summary.to_commitment();
 
@@ -598,11 +683,10 @@ impl MultisigClient {
         signature_inputs.sort_by(|a, b| a.signer_commitment.cmp(&b.signer_commitment));
         signature_inputs.dedup_by(|a, b| a.signer_commitment == b.signer_commitment);
 
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let approvers = account.verifiable_cosigners();
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
-            &required_commitments,
+            &approvers,
             tx_summary_commitment,
             Some(&derived_summary),
         )?;
@@ -658,7 +742,7 @@ impl MultisigClient {
     ///
     /// // Add a new cosigner
     /// let proposal = client.propose_transaction(
-    ///     TransactionType::AddCosigner { new_commitment }
+    ///     TransactionType::add_cosigner(new_commitment)
     /// ).await?;
     ///
     /// // Remove a cosigner
@@ -685,12 +769,14 @@ impl MultisigClient {
         self.sync().await?;
 
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         warn_on_override_dilution(&account, &transaction_type);
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
 
         let node_rpc = self.node_rpc_client();
-        ProposalBuilder::new(transaction_type)
+        let proposal = ProposalBuilder::new(transaction_type)
             .with_options(options)
+            .with_execution_mode(self.execution_mode)
             .build(
                 &mut self.miden_client,
                 &node_rpc,
@@ -698,7 +784,9 @@ impl MultisigClient {
                 &account,
                 self.key_manager.as_ref(),
             )
-            .await
+            .await?;
+        self.known_proposals.record(account.id(), &proposal);
+        Ok(proposal)
     }
 
     /// Proposes a transaction with automatic fallback to offline mode.
@@ -743,7 +831,9 @@ impl MultisigClient {
         match self.propose_transaction(transaction_type.clone()).await {
             Ok(proposal) => Ok(ProposalResult::Online(Box::new(proposal))),
             Err(
-                error @ (MultisigError::GuardianConnection(_) | MultisigError::GuardianServer(_)),
+                error @ (MultisigError::GuardianConnection(_)
+                | MultisigError::GuardianServer(_)
+                | MultisigError::GuardianProposalRefused { .. }),
             ) => {
                 if transaction_type.supports_offline_execution() {
                     let exported = self.create_proposal_offline(transaction_type).await?;
@@ -765,11 +855,14 @@ impl MultisigClient {
     /// guardian's canonicalization worker confirms over a short
     /// quarantine (typically well under a minute) that the transaction
     /// did not land, then releases the account. Poll [`Self::abandon_status`]
-    /// for the resolution.
+    /// with the returned commitment for the resolution.
     ///
     /// `nonce` pins the exact candidate to release; it is the nonce the
-    /// proposal was pushed with (committed account nonce + 1). Retries
-    /// are idempotent and preserve the original request timestamp.
+    /// proposal was pushed with (committed account nonce + 1).
+    /// `proposal_id` names the proposal whose transaction is abandoned: a
+    /// GUARDIAN execution can archive its delta and take the nonce, and
+    /// the abandon then still answers for this proposal's transaction.
+    /// Retries are idempotent and preserve the original request timestamp.
     ///
     /// # Errors
     ///
@@ -777,27 +870,36 @@ impl MultisigClient {
     /// on-chain (`GUARDIAN_CANDIDATE_LANDED` — the server will
     /// canonicalize it shortly), if no candidate exists at this nonce,
     /// or if GUARDIAN cannot be reached.
-    pub async fn abandon_candidate(&mut self, nonce: u64) -> Result<AbandonRequestState> {
+    pub async fn abandon_candidate(
+        &mut self,
+        nonce: u64,
+        proposal_id: &str,
+    ) -> Result<AbandonRequest> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let response = guardian_client
-            .abandon_candidate(&account_id, nonce)
+            .abandon_candidate(&account_id, nonce, proposal_id)
             .await
             .map_err(|e| {
                 MultisigError::GuardianServer(format!("failed to abandon candidate: {}", e))
             })?;
 
-        Ok(match response.state.as_str() {
+        let state = match response.state.as_str() {
             "abandoned" => AbandonRequestState::Abandoned,
             "retained" => AbandonRequestState::Retained,
             _ => AbandonRequestState::Pending,
+        };
+        Ok(AbandonRequest {
+            state,
+            commitment: response.commitment,
         })
     }
 
     /// Polls GUARDIAN for the resolution of an abandon request made with
-    /// [`Self::abandon_candidate`].
-    pub async fn abandon_status(&mut self, nonce: u64) -> Result<AbandonStatus> {
+    /// [`Self::abandon_candidate`], identified by its nonce and the
+    /// commitment that request returned ([`AbandonRequest::commitment`]).
+    pub async fn abandon_status(&mut self, nonce: u64, commitment: &str) -> Result<AbandonStatus> {
         let account_id = self.require_account()?.id();
 
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
@@ -819,11 +921,14 @@ impl MultisigClient {
         let Some(delta) = response.delta else {
             return Ok(AbandonStatus::Unexpected);
         };
-        let Some(status) = delta.status else {
+        let Some(status) = &delta.status else {
             return Ok(AbandonStatus::Unexpected);
         };
+        if !delta.new_commitment.eq_ignore_ascii_case(commitment) {
+            return Ok(classify_successor_status(status));
+        }
 
-        Ok(classify_abandon_status(&status))
+        Ok(classify_abandon_status(status))
     }
 }
 
@@ -841,6 +946,18 @@ fn classify_abandon_status(status: &guardian_client::DeltaStatus) -> AbandonStat
         // `Abandoned`, which would wrongly imply the transaction
         // definitively did not land.
         Some(ProtoStatus::RetainedAt(_)) => AbandonStatus::Retained,
+        _ => AbandonStatus::Unexpected,
+    }
+}
+
+/// Maps the status of another delta that took the abandoned delta's nonce.
+/// Once it is canonical the abandoned transaction can no longer land; while
+/// it is a candidate the nonce is still contested.
+fn classify_successor_status(status: &guardian_client::DeltaStatus) -> AbandonStatus {
+    use guardian_client::delta_status::Status as ProtoStatus;
+    match status.status {
+        Some(ProtoStatus::CanonicalAt(_)) => AbandonStatus::Abandoned,
+        Some(ProtoStatus::CandidateAt(_)) => AbandonStatus::Waiting,
         _ => AbandonStatus::Unexpected,
     }
 }
@@ -887,7 +1004,7 @@ mod tests {
     };
     use miden_protocol::{Felt, Word, ZERO};
 
-    use super::{AbandonStatus, classify_abandon_status};
+    use super::{AbandonStatus, classify_abandon_status, classify_successor_status};
     use crate::error::{MultisigError, Result};
     use crate::proposal::Proposal;
 
@@ -1046,6 +1163,36 @@ mod tests {
         );
         assert_eq!(
             classify_abandon_status(&status(None, "")),
+            AbandonStatus::Unexpected
+        );
+    }
+
+    #[test]
+    fn abandon_status_classifies_a_successor_at_the_nonce() {
+        use guardian_client::DeltaStatus;
+        use guardian_client::delta_status::Status as ProtoStatus;
+
+        let status = |status: Option<ProtoStatus>| DeltaStatus {
+            status,
+            discard_reason: String::new(),
+            retain_reason: String::new(),
+        };
+
+        let ts = "2026-07-28T00:00:00Z".to_string();
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::CanonicalAt(ts.clone())))),
+            AbandonStatus::Abandoned
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::CandidateAt(ts.clone())))),
+            AbandonStatus::Waiting
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::RetainedAt(ts.clone())))),
+            AbandonStatus::Unexpected
+        );
+        assert_eq!(
+            classify_successor_status(&status(Some(ProtoStatus::DiscardedAt(ts)))),
             AbandonStatus::Unexpected
         );
     }

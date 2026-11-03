@@ -25,11 +25,11 @@ vi.mock('./signature.js', () => ({
 
 describe('PublicKeyFormat', () => {
   describe('parse', () => {
-    it('should treat 32-byte input as Word commitment with falcon scheme', () => {
+    it('should treat 32-byte input as Word commitment with unknown scheme', () => {
       const bytes = new Uint8Array(32);
       bytes[0] = 0x42;
       const result = PublicKeyFormat.parse(bytes);
-      expect(result.scheme).toBe('falcon');
+      expect(result.scheme).toBeNull();
       expect(result.commitment).toBe(result.publicKeyHex);
       expect(result.publicKeyHex).toMatch(/^0x[a-f0-9]{64}$/);
     });

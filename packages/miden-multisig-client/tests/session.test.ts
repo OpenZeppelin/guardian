@@ -542,8 +542,15 @@ describe('IndexedDbSessionKeyStore', () => {
 });
 
 describe('MultisigClient sessions', () => {
+  const CURRENT_STATUS = {
+    status: 'ok',
+    environment: 'devnet',
+    execution: { enabled: true },
+    sessions: { max_ttl_seconds: 28800 },
+  };
+
   /** A Guardian that accepts every session call and answers reads with `readError`. */
-  function guardianServer(readError?: string) {
+  function guardianServer(readError?: string, status: Record<string, unknown> = CURRENT_STATUS) {
     const fetch = vi.fn(async (url: string, init: RequestInit = {}) => {
       const path = new URL(url).pathname;
       if (path === '/state' && readError) {
@@ -557,7 +564,7 @@ describe('MultisigClient sessions', () => {
         };
       }
       const bodies: Record<string, unknown> = {
-        '/status': { status: 'ok', environment: 'devnet', sessions: { max_ttl_seconds: 28800 } },
+        '/status': status,
         '/pubkey': { commitment: GUARDIAN_COMMITMENT },
         '/session': { signer_commitment: SIGNER_COMMITMENT, expires_at: '' },
         '/session/logout': { revoked: true },
@@ -618,6 +625,17 @@ describe('MultisigClient sessions', () => {
     // Nothing left to log out.
     await expect(client.endSession()).resolves.toBe(false);
     expect(logouts(fetch)).toEqual([]);
+  });
+
+  it('starts a session on a Guardian whose status predates Guardian execution', async () => {
+    const { execution: _, ...olderStatus } = CURRENT_STATUS;
+    guardianServer(undefined, olderStatus);
+    const client = multisigClient();
+
+    const session = await client.startSession(fakeSigner(), approve);
+
+    expect(client.guardianClient.getSession()).toBe(session);
+    await expect(client.guardianClient.getStatus()).resolves.not.toHaveProperty('execution');
   });
 
   it('keeps the session when logout fails', async () => {

@@ -7,6 +7,9 @@ pub trait IntoHex {
     fn into_hex(self) -> String;
 }
 
+/// Serialized Falcon signature length, public key embedded.
+pub const FALCON_SIGNATURE_LEN: usize = 1524;
+
 /// Trait for parsing types from hex strings (with or without `0x` prefix)
 pub trait FromHex: Sized {
     fn from_hex(hex: &str) -> Result<Self, String>;
@@ -47,10 +50,9 @@ impl FromHex for Signature {
         let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
         let bytes = hex::decode(hex_str).map_err(|e| format!("Invalid signature hex: {e}"))?;
 
-        const EXPECTED_SIG_LEN: usize = 1524;
-        if bytes.len() != EXPECTED_SIG_LEN {
+        if bytes.len() != FALCON_SIGNATURE_LEN {
             return Err(format!(
-                "Signature must be exactly {EXPECTED_SIG_LEN} bytes, got {} bytes",
+                "Signature must be exactly {FALCON_SIGNATURE_LEN} bytes, got {} bytes",
                 bytes.len()
             ));
         }

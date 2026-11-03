@@ -21,3 +21,13 @@ This crate contains shared types and utilities for the GUARDIAN project.
   only while the account is new (nonce zero); on an existing account it is a
   code upgrade. Shared so the server and the multisig client agree
   byte-for-byte on the resulting state commitment
+- `execution`: the Guardian execution wire vocabulary shared by the server and
+  every client: the reported execution states, the synchronous refusal codes,
+  and the stable failure codes with their structured `meta`
+- `request_envelope`: the envelope a Guardian-executable proposal stores its
+  serialized `TransactionRequest` in (format version, Miden protocol line,
+  checksum), written by the SDKs and read by the server
+- `multisig_threshold`: the signature threshold a guarded-multisig
+  transaction must meet, read from account state: which procedures each
+  proposal type calls and the highest of their overrides, as the chain
+  computes it

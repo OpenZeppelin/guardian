@@ -7,7 +7,7 @@
       "name": "AGPL-3.0",
       "identifier": "AGPL-3.0"
     },
-    "version": "0.18.2"
+    "version": "0.19.0-rc.1"
   },
   "paths": {
     "/": {
@@ -19,7 +19,7 @@
         "operationId": "status_root",
         "responses": {
           "200": {
-            "description": "Alias of `GET /status`: server liveness, version, and environment",
+            "description": "Alias of `GET /status`: server liveness, version, environment, and execution capability",
             "content": {
               "application/json": {
                 "schema": {
@@ -123,6 +123,16 @@
               }
             }
           },
+          "409": {
+            "description": "A reconfiguration that must submit the account's on-chain state (first registration past nonce 0, released account, key the stored auth does not list, or a state other than the stored one) submitted one the chain does not hold yet (`state_not_on_chain`, retryable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "413": {
             "description": "Request body exceeds the configured size limit",
             "content": {
@@ -135,6 +145,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The chain could not be read to check whether the stored state landed (re-onboarding with an older state) or whether a reconfiguration's state is on chain (`rpc_unavailable`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -256,7 +276,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Push a signed state delta for a single-key account. The request\nbody is the JSON-encoded [`DeltaObject`] to commit.",
+        "summary": "Push a state delta. The request body is the JSON-encoded\n[`DeltaObject`] to commit. A multisig account is accepted only when\na matching proposal carries verified cosigner signatures, at least as\nmany as the lowest threshold the account permits.",
         "operationId": "push_delta",
         "parameters": [
           {
@@ -294,7 +314,7 @@
             }
           },
           "400": {
-            "description": "Invalid delta payload",
+            "description": "Invalid delta payload, or a multisig push below the cosigner threshold",
             "content": {
               "application/json": {
                 "schema": {
@@ -313,8 +333,18 @@
               }
             }
           },
+          "403": {
+            "description": "Signed by a delegated signer onto an account without the multisig auth (`wallet_signature_required`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
-            "description": "Conflicting pending delta/proposal",
+            "description": "Conflicting pending delta/proposal, or a Guardian execution holds the account (GUARDIAN_EXECUTION_CONFLICT)",
             "content": {
               "application/json": {
                 "schema": {
@@ -396,6 +426,16 @@
               }
             }
           },
+          "400": {
+            "description": "Malformed proposal_id (invalid_commitment)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication failed or replay rejected",
             "content": {
@@ -407,7 +447,7 @@
             }
           },
           "404": {
-            "description": "No candidate delta at this nonce",
+            "description": "No delta at this nonce carrying the named transaction, live or archived",
             "content": {
               "application/json": {
                 "schema": {
@@ -417,7 +457,87 @@
             }
           },
           "409": {
-            "description": "Candidate already landed on-chain, or account paused/released",
+            "description": "Candidate already landed on-chain, account paused/released, or the candidate belongs to an active Guardian execution (GUARDIAN_EXECUTION_CONFLICT)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/execution/current": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Report the account's in-flight execution, if any.",
+        "operationId": "get_current_execution",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The in-flight execution, or null",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CurrentExecutionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -605,7 +725,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Pending proposals",
+            "description": "Pending proposals, each without its stored `transaction_request` (the single-proposal read returns it)",
             "content": {
               "application/json": {
                 "schema": {
@@ -657,7 +777,7 @@
         "tags": [
           "client"
         ],
-        "summary": "Add a cosigner signature to an existing multisig proposal. When the\nsignature threshold is reached the proposal is promoted to a delta.",
+        "summary": "Add a cosigner signature to an existing multisig proposal. The approval\nis credited to the cosigner its signature cryptographically verifies\nfor, so an authenticated signer may also relay an approval another\ncosigner produced off channel. When the signature threshold is reached\nthe proposal is promoted to a delta.",
         "operationId": "sign_delta_proposal",
         "parameters": [
           {
@@ -825,7 +945,216 @@
             }
           },
           "409": {
-            "description": "Conflicting / too many pending proposals",
+            "description": "Conflicting / too many pending proposals, or the account's stored requests would exceed their capacity (GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The stored transaction request exceeds the per-request limit (GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
+    "/delta/proposal/execution": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Report the latest execution of a proposal.",
+        "operationId": "get_delta_proposal_execution",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "proposal_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Execution state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal absent, or never executed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "client"
+        ],
+        "summary": "Ask Guardian to prove and submit a threshold-met proposal.",
+        "description": "Returns `202 Accepted` when this call created the execution and `200 OK` when an execution\nof the same proposal is already active; `newly_accepted` carries the same distinction.",
+        "operationId": "execute_delta_proposal",
+        "parameters": [
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExecuteProposalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Execution already active",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionEnvelope"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Execution accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExecutionEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Proposal not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not ready, not Guardian-executable, left to local execution, the account is busy, or this server does not offer Guardian execution",
             "content": {
               "application/json": {
                 "schema": {
@@ -1120,7 +1449,7 @@
           "client"
         ],
         "summary": "Register a wallet-authorized P-256 delegated signer.",
-        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session`. Wallet-only\nroutes (`POST /delta`, `/delta/candidate/abandon`, `/configure`,\n`/state/lookup`, `/session/revoke-all`) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
+        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session`. Wallet-only\nroutes (`/delta/candidate/abandon`, `/configure`, `/state/lookup`,\n`/session/revoke-all`, and `POST /delta` onto an account without the\nmultisig auth) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
         "operationId": "create_session",
         "requestBody": {
           "content": {
@@ -1667,11 +1996,11 @@
         "tags": [
           "client"
         ],
-        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, and uptime.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
+        "summary": "Public, unauthenticated liveness + identity probe. Returns the\nserver's version, git commit, environment, start time, uptime, and\nwhether it accepts Guardian execution requests.\nConsumed by wallet clients (pre-auth health check) and the status\nhomepage. Exposes no account, operator, or auth data.",
         "operationId": "status",
         "responses": {
           "200": {
-            "description": "Server liveness, version, and environment",
+            "description": "Server liveness, version, environment, and execution capability",
             "content": {
               "application/json": {
                 "schema": {
@@ -1721,6 +2050,10 @@
             "format": "int64",
             "description": "Nonce of the candidate delta to abandon. Requiring the explicit\ntarget prevents a stale request from releasing a newer candidate.",
             "minimum": 0
+          },
+          "proposal_id": {
+            "type": "string",
+            "description": "The transaction to abandon: its summary's commitment, which is the\nproposal id of a multisig proposal. A Guardian execution can archive\nthe delta and take its nonce, and the abandon then answers for the\narchived delta. Absent from a client up to 0.18.3, which names only\nthe nonce."
           }
         }
       },
@@ -1729,7 +2062,8 @@
         "required": [
           "account_id",
           "nonce",
-          "state"
+          "state",
+          "commitment"
         ],
         "properties": {
           "abandon_requested_at": {
@@ -1741,6 +2075,10 @@
           },
           "account_id": {
             "type": "string"
+          },
+          "commitment": {
+            "type": "string",
+            "description": "The `new_commitment` of the delta this request abandoned. Another\ndelta can later take the same nonce (a Guardian execution archives\nthe abandoned one), so a poll of the nonce compares against this."
           },
           "nonce": {
             "type": "integer",
@@ -1770,6 +2108,13 @@
             },
             "description": "Signature schemes this Guardian accepts for new accounts. Present\nonly for `signature_scheme_not_allowed`."
           },
+          "blocking_proposal_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The proposal whose execution holds the account. Present only for\n`GUARDIAN_EXECUTION_CONFLICT`."
+          },
           "missing_permissions": {
             "type": [
               "array",
@@ -1793,6 +2138,20 @@
               "null"
             ],
             "description": "Pause reason. Present only for `GUARDIAN_ACCOUNT_PAUSED`."
+          },
+          "proposal_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The proposal type Guardian leaves to local execution. Present only for\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`."
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Why the request was refused, for the code that names one:\n`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` (`switch_guardian`)."
           },
           "released_at": {
             "type": [
@@ -1920,6 +2279,34 @@
                     "items": {
                       "type": "string"
                     }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Miden cosigners that each carry their own signature scheme, and the\nGUARDIAN's scheme, set independently. Clients send it for an account\nwhose cosigners and GUARDIAN do not all share one scheme; the two\nsingle-scheme variants keep serving the accounts that do.",
+            "required": [
+              "Miden"
+            ],
+            "properties": {
+              "Miden": {
+                "type": "object",
+                "description": "Miden cosigners that each carry their own signature scheme, and the\nGUARDIAN's scheme, set independently. Clients send it for an account\nwhose cosigners and GUARDIAN do not all share one scheme; the two\nsingle-scheme variants keep serving the accounts that do.",
+                "required": [
+                  "cosigners",
+                  "guardian_scheme"
+                ],
+                "properties": {
+                  "cosigners": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/MidenCosigner"
+                    }
+                  },
+                  "guardian_scheme": {
+                    "$ref": "#/components/schemas/SignatureScheme"
                   }
                 }
               }
@@ -2129,6 +2516,24 @@
           },
           "signer_commitment": {
             "type": "string"
+          }
+        }
+      },
+      "CurrentExecutionResponse": {
+        "type": "object",
+        "required": [
+          "execution"
+        ],
+        "properties": {
+          "execution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionEnvelope"
+              }
+            ]
           }
         }
       },
@@ -2538,6 +2943,143 @@
           "eip712"
         ]
       },
+      "ExecuteProposalRequest": {
+        "type": "object",
+        "description": "The body of an execution request. It is signed as `guardian.ExecuteDeltaProposal`, so its\nsignature never authenticates a signed read of the same proposal, whose fields are the same.",
+        "required": [
+          "account_id",
+          "proposal_id"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "proposal_id": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutionEnvelope": {
+        "type": "object",
+        "description": "The execution envelope every execution operation returns.",
+        "required": [
+          "account_id",
+          "proposal_id",
+          "state",
+          "newly_accepted",
+          "proposal_exists",
+          "ignored_signatures",
+          "updated_at"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "delta_nonce": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "error": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionError"
+              }
+            ]
+          },
+          "ignored_signatures": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "newly_accepted": {
+            "type": "boolean"
+          },
+          "proposal_exists": {
+            "type": "boolean"
+          },
+          "proposal_id": {
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ExecutionState"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "ExecutionError": {
+        "type": "object",
+        "description": "Why an execution failed, on the wire.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "meta": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        }
+      },
+      "ExecutionState": {
+        "type": "string",
+        "description": "The reported state of an execution: exactly five values, a state existing only where it\nchanges what the caller does.",
+        "enum": [
+          "pending",
+          "proving",
+          "submitted",
+          "committed",
+          "failed"
+        ]
+      },
+      "ExecutionStatus": {
+        "type": "object",
+        "description": "Whether `POST /delta/proposal/execution` is offered. It reflects configuration, the same\ncheck the endpoint makes, not whether the prover is reachable right now.",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ExecutionUnavailable",
+                "description": "Why execution is off; absent when it is enabled."
+              }
+            ]
+          }
+        }
+      },
+      "ExecutionUnavailable": {
+        "type": "string",
+        "description": "Why this server does not offer Guardian execution.",
+        "enum": [
+          "prover_not_configured",
+          "disabled",
+          "canonicalization_disabled"
+        ]
+      },
       "HistoryEntry": {
         "type": "object",
         "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
@@ -2620,6 +3162,23 @@
             "items": {
               "$ref": "#/components/schemas/LookupAccount"
             }
+          }
+        }
+      },
+      "MidenCosigner": {
+        "type": "object",
+        "description": "One cosigner of a per-signer-scheme (`Miden`) auth: its public-key\ncommitment and the scheme the account verifies its signatures under.",
+        "required": [
+          "commitment",
+          "scheme"
+        ],
+        "properties": {
+          "commitment": {
+            "type": "string",
+            "description": "`0x` followed by 64 lowercase hex digits."
+          },
+          "scheme": {
+            "$ref": "#/components/schemas/SignatureScheme"
           }
         }
       },
@@ -2891,6 +3450,13 @@
               "type": "string"
             }
           },
+          "signer_schemes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Target signer schemes (`\"falcon\"` / `\"ecdsa\"`), index-aligned with\n`signer_commitments`, for an update-signers proposal whose signers\ndo not all share one scheme (issue #563). Absent => every target\nsigner keeps the proposer's scheme (pre-#563 proposals)."
+          },
           "target_procedure": {
             "type": [
               "string",
@@ -3151,7 +3717,8 @@
             "type": "string"
           },
           "auth_scheme": {
-            "type": "string"
+            "type": "string",
+            "description": "`falcon` or `ecdsa` when the account's cosigners and GUARDIAN share\nthat scheme, `mixed` when they do not. Set on reads from the\naccount's auth; stored rows may carry an older value or none."
           },
           "commitment": {
             "type": "string"
@@ -3178,12 +3745,17 @@
           "environment",
           "started_at",
           "uptime_seconds",
+          "execution",
           "sessions"
         ],
         "properties": {
           "environment": {
             "type": "string",
             "description": "Deployment environment / network label, e.g. `\"testnet\"`. Same\nvalue surfaced on `GET /dashboard/info`."
+          },
+          "execution": {
+            "$ref": "#/components/schemas/ExecutionStatus",
+            "description": "Whether this server accepts Guardian execution requests."
           },
           "git_commit": {
             "type": "string",

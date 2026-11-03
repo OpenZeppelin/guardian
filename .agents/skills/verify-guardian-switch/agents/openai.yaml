@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Guardian Switch"
+  short_description: "Model-check guardian-switch release, re-onboarding and pause with TLA+"
+  default_prompt: "Use $verify-guardian-switch to model-check this change to the release hook, the release sweep, /configure re-onboarding, pause/unpause or the account status chokepoint."

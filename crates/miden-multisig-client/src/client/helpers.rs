@@ -14,7 +14,7 @@ use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::utils::serde::Serializable;
 
-use super::MultisigClient;
+use super::{MultisigClient, UntrackedSubmission};
 use crate::account::MultisigAccount;
 use crate::builder::create_miden_client;
 use crate::error::{MultisigError, Result, error_chain};
@@ -127,6 +127,27 @@ impl MultisigClient {
             "proposal is for account {} instead of {}",
             proposal_account_id, expected_account_id
         )))
+    }
+
+    /// Refuses to propose or sign for an account that stores this client's
+    /// key under another scheme than the key's own, or under none it
+    /// supports: the approval could not verify on chain, GUARDIAN refuses
+    /// it, and execution would not count it. A client that is not a cosigner
+    /// is left to the checks that refuse it.
+    pub(crate) fn ensure_key_scheme_matches(&self, account: &MultisigAccount) -> Result<()> {
+        let own = self.key_manager.commitment();
+        if !account.is_cosigner(&own) {
+            return Ok(());
+        }
+        let key = self.key_manager.scheme();
+        match account.cosigner_scheme(&own) {
+            Some(stored) if stored == key => Ok(()),
+            stored => Err(MultisigError::KeySchemeMismatch {
+                commitment: word_to_hex(&own),
+                key,
+                stored,
+            }),
+        }
     }
 
     /// Gets the GUARDIAN acknowledgment signature for a transaction.
@@ -310,7 +331,7 @@ impl MultisigClient {
                 proposal.id
             )));
         }
-        let signer_commitments = proposal.metadata.signer_commitments()?;
+        let target_signers = proposal.target_signers(&account)?;
         // The rebuild reads the chain's fee faucet from the synced protocol
         // configuration and executes at the tip, so the store has to have
         // synced to the block the summary binds; a cosigner that has only
@@ -357,12 +378,12 @@ impl MultisigClient {
         let tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
-            account.inner(),
+            &account,
             &auth_args,
             Vec::new(),
             proposal.metadata.new_threshold,
-            Some(signer_commitments.as_slice()),
-            self.key_manager.scheme(),
+            target_signers.as_deref(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 
@@ -450,8 +471,8 @@ impl MultisigClient {
             new_commitment,
         } = transaction_type
         {
-            verify_endpoint_commitment(new_endpoint, *new_commitment, self.key_manager.scheme())
-                .await?;
+            let guardian_scheme = self.require_account()?.guardian_scheme()?;
+            verify_endpoint_commitment(new_endpoint, *new_commitment, guardian_scheme).await?;
         }
 
         let new_guardian_endpoint =
@@ -499,7 +520,9 @@ impl MultisigClient {
                     )
                 })?;
 
-            self.miden_client
+            let expiration_block_num = proven.expiration_block_num();
+            let submission_height = self
+                .miden_client
                 .submit_proven_transaction(proven, &tx_result)
                 .await
                 .map_err(|e| {
@@ -529,6 +552,11 @@ impl MultisigClient {
             };
 
             self.add_or_update_account(&rebuilt, true).await?;
+            self.untracked_submission = Some(UntrackedSubmission {
+                commitment: rebuilt.to_commitment(),
+                submission_height,
+                expiration_block_num,
+            });
 
             let _ = self.miden_client.sync_state().await;
 
@@ -556,6 +584,14 @@ impl MultisigClient {
             self.account = Some(MultisigAccount::new(updated_account.clone()));
 
             if switching_endpoint {
+                self.wait_for_on_chain_state(account_id, updated_account.to_commitment())
+                    .await
+                    .map_err(|e| {
+                        MultisigError::GuardianServer(format!(
+                            "transaction executed successfully but failed to register on new GUARDIAN: {}",
+                            e
+                        ))
+                    })?;
                 self.register_on_guardian().await.map_err(|e| {
                     MultisigError::GuardianServer(format!(
                         "transaction executed successfully but failed to register on new GUARDIAN: {}",
@@ -630,19 +666,35 @@ impl MultisigClient {
         Ok(())
     }
 
-    /// Resets the miden-client by creating a new instance with a fresh database.
+    /// Resets the miden-client by creating a new instance with a fresh database,
+    /// on the same node RPC client.
     pub async fn reset_miden_client(&mut self) -> Result<()> {
-        let (miden_client, miden_store) = create_miden_client(
+        let (miden_client, miden_store, miden_store_path) = self.fresh_miden_client().await?;
+        self.miden_client = miden_client;
+        let replaced = std::mem::replace(&mut self.miden_store, miden_store);
+        self.replaced_stores.insert(0, replaced);
+        self.miden_store_path = miden_store_path;
+        Ok(())
+    }
+
+    /// A new miden-client on a fresh database and the same node RPC client,
+    /// not yet installed, with the database's file.
+    pub(crate) async fn fresh_miden_client(
+        &self,
+    ) -> Result<(
+        crate::MidenSdkClient,
+        std::sync::Arc<dyn miden_client::store::Store>,
+        std::path::PathBuf,
+    )> {
+        create_miden_client(
             &self.account_dir,
             &self.miden_endpoint,
+            self.node_rpc_client(),
             self.note_transport_endpoint.as_deref(),
             &self.prover_config,
             &self.rpc_config,
         )
-        .await?;
-        self.miden_client = miden_client;
-        self.miden_store = miden_store;
-        Ok(())
+        .await
     }
 
     /// Adds an account to miden-client if it doesn't exist, or updates it if it does.

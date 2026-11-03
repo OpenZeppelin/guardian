@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Candidate Queue"
+  short_description: "Model-check the canonicalization candidate queue with TLA+"
+  default_prompt: "Use $verify-candidate-queue to model-check this change to candidate admission, promotion or the pending-candidate flag."

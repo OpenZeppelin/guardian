@@ -28,7 +28,7 @@ guarded-multisig auth procedure always creates the fee note, so this means the
 account was deployed by a build pinned to an earlier Miden 0.17 release
 candidate, whose auth procedure never paid the fee. Funding that account does
 not help, because its code cannot change: recreate it with the current build
-(see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+(see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 
 The execute path requests the GUARDIAN acknowledgement before it submits, so a
 rejected submission leaves the delta pending on GUARDIAN as a candidate. The
@@ -42,8 +42,8 @@ the stuck candidate's plus one, which a proposal built on the canonical state
 do) never carries; a TypeScript SDK proposal from 0.18.0 or earlier carries
 a timestamp label and is refused there too (see
 [`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
-before proposing again, with `abandon_candidate(nonce)` /
-`abandonCandidate(nonce)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
+before proposing again, with `abandon_candidate(nonce, proposal_id)` /
+`abandonCandidate(nonce, proposalId)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
 for the submission grace period to expire.
 
 ### "the amount of the asset in the vault is less than the amount to remove" when proposing or executing
@@ -395,7 +395,11 @@ its predecessor if the chain turns out to have landed.
 Recovery for the client: check the delta's status first — if it flipped
 to `canonical`, the transaction landed and there is nothing to redo.
 Otherwise `GET /delta/since` → replay canonical chain → rebuild the
-transaction → resubmit (this supersedes the retained row).
+transaction → resubmit. The resubmission supersedes the retained row,
+which moves to the `superseded_deltas` archive: if the original
+transaction lands after all, the reconcile pass still promotes it from
+there (within the retention TTL), and the resubmission's candidate is
+parked as diverged.
 
 An error log `Failed to replay the candidate queue onto the canonical
 state` (or `Candidate queue replay does not reproduce the stored tail
@@ -481,8 +485,7 @@ Operator checks:
   pending proposal or unpromoted delta on this server reached the chain
   (neither at the head nor in the account's transaction history), and
   the guardian key cannot be read from chain. If that account is known to have switched
-  guardians (an offline switch with no proposal here, or a switch delta
-  that was queued behind another candidate, issue #504), it will not
+  guardians (an offline switch with no proposal here), it will not
   release by itself. `own_key_mismatch` (warn) means the account is
   bound to a guardian key this server does not hold and nothing on chain
   moved it there: this server's ack key changed since the account was
@@ -536,6 +539,54 @@ GET /delta/since?account_id=...&nonce=<last-known-nonce>
 Replay the returned canonical deltas locally, then resubmit your new
 delta. This is the same pattern as a Git fast-forward.
 
+### `commitment_mismatch` on `ConfigureAccount`
+
+Re-onboarding an existing account never puts an older state over a newer
+one. Two cases refuse it, and in both nothing is written and the release,
+if any, stands:
+
+- The submitted state's nonce is below the stored state's, and the chain
+  already reached the stored state (it is the chain head, or a committed
+  transaction ended at it): the wallet's state is stale. A stored state
+  that never landed (optimistic mode, ahead of the chain) can still be
+  replaced by the older chain state.
+- The stored state changed while the request ran: a delta was promoted in
+  between, for example a `switch_guardian` delta landing while the wallet
+  re-onboards.
+
+`expected` is the commitment now stored: re-read the account's state
+(from chain or `GET /state`) and retry with it. When the submitted state
+is older and the chain cannot be read to decide, the request fails with
+`rpc_unavailable` (retryable) rather than risk the overwrite.
+
+### "Transaction executed successfully but failed to register on new GUARDIAN"
+
+The `SwitchGuardian` transaction was submitted and the client already
+points at the new Guardian, but registering there failed. With SDKs
+0.18.3 and earlier against a Guardian 0.19.0-rc.1 or later, the cause is
+almost always `state_not_on_chain`: those SDKs register right after
+submitting the switch, before the transaction lands, and do not retry.
+The newer SDKs wait for the chain before registering, so they rarely hit
+this.
+
+The switch itself is not lost. Wait for the transaction to land, then
+register again from the same client:
+
+- Rust: `client.register_on_guardian().await?`
+- TypeScript: `await multisig.registerOnGuardian()`
+
+Both send the post-switch state the client already holds, and the account
+cannot transact until it is registered on the new Guardian, so the chain
+stays at that state in the meantime. If the retry still gets
+`state_not_on_chain`, check that the transaction landed on chain. If it
+gets `commitment_mismatch`, sync the account and register again (see
+above). If it gets `rpc_unavailable`, the new Guardian could not read the
+chain to check the state; register again once its Miden node is
+reachable. The newer SDKs can also fail here with "has not reached the
+chain" when the transaction takes longer than their wait; register again
+the same way. Any other code is unrelated to the switch timing; look it
+up in the [error code reference](#error-code-reference).
+
 ### Stale state served by Guardian
 
 Symptoms: client reads look "behind reality" relative to Miden. Causes:
@@ -564,6 +615,112 @@ EVM proposal/session operations) return `409 GUARDIAN_ACCOUNT_PAUSED`
 - **Don't bypass:** the pause is enforced server-side at the metadata
   layer, not in the client. There is no env var or feature flag to
   disable it.
+
+### Guardian execution fails or never starts
+
+A proposal handed to Guardian (`POST /delta/proposal/execution`) reports one of five states:
+`pending`, `proving`, `submitted`, `committed`, `failed`. A `failed` execution carries a stable
+`error.code`, and `error.meta` for the three codes that have one. Refusals that can be decided at
+once come back synchronously and create nothing.
+
+- **Every request refused with `GUARDIAN_PROVING_UNAVAILABLE`.** The server offers no
+  execution. Its startup log says why: no `GUARDIAN_TX_PROVER_URL`, `GUARDIAN_PROVING_ENABLED=false`,
+  or canonicalization off. `GET /status` reports the same reason under `execution.reason`
+  without needing the logs. A warning that "a prover is configured but Guardian execution is not
+  offered" means `GUARDIAN_PROVING_ENABLED=false` is switching it off.
+- **`GUARDIAN_EXECUTION_PROVING_FAILED`, with a message starting "the prover refused the
+  transaction".** The prover answered with a permanent error, such as an invalid argument, and the
+  message carries its whole cause chain. Transport failures and transient gRPC codes
+  (unavailable, deadline exceeded, connection errors, i/o timeouts, and an HTTP/2 GoAway that tonic
+  reports as `Internal` "h2 protocol error") never produce this code: they
+  are retried with backoff under the held reservation. A deadline that keeps firing usually means
+  `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (default 300) was lowered below a real proof; the client
+  library's own 10 s default is far too short, which is why Guardian always sets its own. If the prover stays unreachable until the transaction's expiration, the
+  attempt fails with `GUARDIAN_EXECUTION_EXPIRATION_REACHED` (`meta.bound: "transaction"`),
+  and the message carries the last prover error's whole cause chain. `guardian_execution_prover_retries_total` counts
+  the retries.
+- **`GUARDIAN_EXECUTION_EXPIRATION_REACHED` (`meta.bound: "transaction"`) with a prover that
+  answers, just slowly.** The transaction sets its own expiration window, and that window is the
+  whole budget for proving plus sending. Built-in proposals script 256 blocks, but the expiration
+  can only be lowered, and a fee faucet with a transfer policy lowers it for every transaction
+  that pays a fee: its policy runs `miden::standards::expiration::apply_default`, which caps the
+  expiration at the reference block plus 20 (`DEFAULT_EXPIRATION_BLOCK_DELTA`). Devnet's fee
+  faucet does, so on devnet every fee-paying transaction expires 20 blocks after its reference
+  block, about one minute at three-second blocks. Treat those 20 blocks as the real budget: a
+  slow prover (Falcon proofs take around 47 s) or a few prover retries can exhaust it. Guardian
+  checks the window once more just before the no-retry boundary and refuses the attempt there,
+  with the proposal intact, unless at least 15 s remain for the send, counted at the chain's
+  measured block time with 2 blocks held in reserve; the message gives the tip, the expiration
+  and the time left. Once past that check the transaction is sent with whatever window is left,
+  even below 15 s, and the send waits for the node for up to 60 s, never past the window.
+  Point `GUARDIAN_TX_PROVER_URL` at a faster or less loaded prover, then request execution again;
+  the new attempt executes at the new tip with a fresh window.
+- **`GUARDIAN_EXECUTION_CHAIN_BEHIND`.** The node's tip is below the block the proposal's summary
+  binds. Retrying once the node catches up works; the proposal is untouched.
+- **`GUARDIAN_EXECUTION_NODE_UNAVAILABLE`.** Guardian could not read its configured node (the tip,
+  a header, or the chain view). Check that the node at `GUARDIAN_MIDEN_RPC_ENDPOINT` answers; the proposal is
+  untouched, so a retry works once the node answers.
+- **`GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`.** The node served chain data that does not verify
+  against itself: an MMR path or delta, a header, or a `ProtocolConfig` that differs from the
+  reference header. This is a node problem, not a proposal one (it used to surface as
+  `BINDING_MISMATCH`). Point Guardian at a healthy node, then retry.
+- **`GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` although the request was accepted.** Guardian
+  accepts a request once the valid signatures meet the threshold of the procedure the proposal's
+  type implies. The account itself requires the highest threshold among every procedure the
+  transaction calls, falling back to the account default for a procedure without an override.
+  A consume-notes proposal on an account with `receive_asset` lowered to 1, whose note also calls
+  another account procedure, therefore needs the default threshold. Nothing was proved or sent
+  and the proposal is untouched: collect the missing signatures and request execution again.
+- **`GUARDIAN_EXECUTION_INSUFFICIENT_FEE`.** The account cannot pay the fee at the block Guardian
+  executes against. The fee is recomputed there, so an account funded to the cent when the
+  proposal was created can fall short. On devnet there is no faucet UI:
+  `scripts/devnet-register-account.sh` mints a funding note to the account, which then has to be
+  consumed.
+- **`GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON` on a custom proposal.** The request scripts no
+  transaction expiration, and nothing else in it lowers one (a fee faucet with a transfer policy
+  would cap it at 20 blocks), so it expires at its approval window (28,800 blocks by default),
+  past the server's `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (default 512). The producer
+  must apply `GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA` (256) in its script with
+  `exec.::miden::protocol::tx::update_expiration_block_delta`; built-in proposals already do.
+- **`GUARDIAN_EXECUTION_BINDING_MISMATCH` right after a fee or protocol change.** The stored
+  request no longer reproduces the summary the cosigners signed. When the log line "the
+  reproduced transaction differs from the signed one" lists different output notes on each side
+  with the account delta still matching, the fee note moved: the network's fee parameters changed
+  between creation and execution. The proposal cannot be executed by anyone as signed; create it
+  again.
+- **`GUARDIAN_EXECUTION_REQUEST_CODEC` or `GUARDIAN_EXECUTION_BINDING_MISMATCH` after an SDK or
+  server upgrade.** Stored requests carry no `miden-client` version, and prerelease clients have
+  changed the serialization. A proposal created by an SDK on a different `miden-client` than the
+  server may not decode, or may decode to a different transaction, which execution refuses
+  before proving. Run the same `miden-client` on both sides, or execute the proposal from an SDK.
+- **An execution ends `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` while a cosigner's delta was
+  parked on the same state.** A parked delta (`retained`, or client-abandoned) does not block
+  execution: admission moves it to the superseded-delta archive. If its transaction lands
+  instead of Guardian's, the execution ends `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` and
+  reconciliation restores the parked delta's step, so Guardian matches the chain. See
+  [Candidates are being retained or discarded](#candidates-are-being-retained-or-discarded).
+- **An execution stays `submitted`.** The send's outcome is unknown and reconciliation waits for
+  the chain: it resolves `committed` through promotion, `EXPIRED` once the chain reaches the
+  transaction's expiration block with the account unchanged, or `CANDIDATE_DISCARDED` when the account
+  moved elsewhere and its transaction history shows the transaction never landed. An account that
+  moved on after the transaction landed (a guardian switch, for example) still commits, and a
+  history that cannot be searched yet keeps the execution `submitted`. It never settles by elapsed
+  time. `guardian_execution_observation_outage_seconds`
+  above zero means the chain cannot be read.
+- **An execution stays `submitted` after a restart.** If the Guardian process died after the
+  boundary commit (the state reads `submitted` from then on) but before the send had a definite
+  outcome, the transaction may never have reached the node. Reconciliation only observes the chain
+  and never resends, so the account stays reserved: new execution requests get
+  `GUARDIAN_EXECUTION_CONFLICT` and client deltas are refused. Once the chain passes the
+  transaction's recorded expiration block with the account unchanged (at most 256 blocks after
+  the reference block for built-in proposals, and 20 for a fee-paying transaction on devnet,
+  whose fee faucet caps it), it settles as `GUARDIAN_EXECUTION_EXPIRED` and the
+  proposal is deleted; the cosigners must propose and sign again. This is an accepted risk, not a
+  fault to repair by hand. The signal is `guardian_execution_oldest_reservation_age_seconds`
+  climbing; it drops back once the execution settles. The AWS reservation-age alarm
+  (`alarm_execution_reservation_age_threshold_seconds`, default 1800 s) sits above even the
+  256-block window built-in proposals script, so it fires only when a reservation outlives the
+  transaction's expiration, which is worth investigating.
 
 ### Rate limits triggered
 
@@ -660,10 +817,10 @@ come from
 | `authentication_replay` | 401 | Correctly signed but the timestamp lost the per-signer replay CAS. `retryable: true`; SDK clients retry it automatically with a fresh timestamp and signature. See [the auth-layer section](#signed-requests-are-rejected-at-the-auth-layer). |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
-| `wallet_signature_required` | 403 | A wallet-only route (delta push, candidate abandon, configure, lookup, revoke-all) was called with session (delegated-signer) credentials. Sign it with the wallet. |
+| `wallet_signature_required` | 403 | A wallet-only route (candidate abandon, configure, lookup, revoke-all, or a delta push onto an account without the multisig auth) was called with session (delegated-signer) credentials. Sign it with the wallet. Both SDKs do so for a delta push: an older server, or an account without the multisig auth, gets the push signed again by the wallet. |
 | `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
 | `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
-| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Accounts already configured on this Guardian are never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
+| `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account, or a reconfiguration adding a scheme the account does not use yet, used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. Every scheme the account uses counts: each cosigner's and the GUARDIAN's, so a mixed Falcon + ECDSA account needs both allowed. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Re-configuring an account under the schemes it already uses is never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
 ### Resource lookup
@@ -681,12 +838,47 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, a delta behind a queued candidate is labelled with a nonce other than the one it leaves the account at (a client labelling with a timestamp), the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, a delta behind a queued candidate is labelled with a nonce other than the one it leaves the account at (a client labelling with a timestamp), the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. A parked (`retained` or client-abandoned) delta does not refuse a Guardian execution request. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
 | `GUARDIAN_ACCOUNT_PAUSED` | 409 (gRPC `FailedPrecondition`) | Account is paused by an operator. Response body includes the operator-supplied `paused_reason`. Unpause via `POST /dashboard/accounts/{id}/unpause` (requires `accounts:pause`). See [`DASHBOARD.md`](./DASHBOARD.md#account-pausing). |
 | `GUARDIAN_ACCOUNT_RELEASED` | 409 (gRPC `FailedPrecondition`) | The account switched to a different guardian and this server released it — either a canonicalized `switch_guardian` delta moved the guardian key away from this server, or the release sweep proved the switch from chain: either a pending proposal or an unpromoted switch delta on this server whose post-state the chain reached, at the head or in the account's transaction history (`detected_by: proposal_match` / `recoverable_delta`, any account) or, for a public account, a foreign guardian key read from the account's published on-chain storage (`detected_by: chain_sweep`). A canonicalized switch delta whose own release write failed is released by the sweep with the same `detected_by: delta` row. The `accounts.release` audit row says which. Response body includes `released_at`. Reads keep working; mutations stay refused until the wallet re-onboards via `/configure`. |
+
+### Guardian execution
+
+Synchronous refusals of `POST /delta/proposal/execution` and the proposal-creation caps:
+
+| Code | HTTP | First check |
+|---|---|---|
+| `GUARDIAN_PROVING_UNAVAILABLE` | 409 (gRPC `FailedPrecondition`) | The server offers no execution; see its startup log. |
+| `GUARDIAN_PROPOSAL_NOT_READY` | 409 (gRPC `FailedPrecondition`) | Fewer valid cosigner signatures than the effective threshold. |
+| `GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST` | 409 (gRPC `FailedPrecondition`) | The proposal was created by a self-executed client; create it again from a Guardian-executable one. |
+| `GUARDIAN_PROPOSAL_EXECUTES_LOCALLY` | 409 (gRPC `FailedPrecondition`) | `meta.reason` is `switch_guardian`: GUARDIAN never executes a guardian switch, because only the client can finish the handoff (register the account at the new GUARDIAN and switch its endpoint); a GUARDIAN-executed switch would leave the account stuck. `meta.proposal_type` names the proposal's type. Nothing was reserved and the proposal stays pending: execute it locally from the wallet. |
+| `GUARDIAN_EXECUTION_CONFLICT` | 409 (gRPC `Aborted`) | Another execution holds the account; `meta.blocking_proposal_id` names it. Also returned to a client `push_delta` while an execution is active, and to an abandon of the execution's own candidate (Guardian resolves its candidate itself). Over gRPC the abandon reports it in-band, as the response's `error_code`, without `blocking_proposal_id`. |
+| `GUARDIAN_EXECUTION_BUSY` | 409 (gRPC `Aborted`) | Another request is starting an execution for the same account and has not reserved it yet, the process already holds `GUARDIAN_EXECUTION_MAX_CONCURRENT` executions (default 64), a safety bound on memory, or the process is shutting down (its drain refuses every new execution). Nothing was reserved. Retryable; retry shortly. If `guardian_execution_capacity_refusals_total` keeps rising, give the task more memory before raising the bound. |
+| `GUARDIAN_EXECUTION_NOT_FOUND` | 404 | The proposal exists but was never executed. `proposal_not_found` means the proposal itself is gone and no execution record is left, which is also how a finished execution reads once `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` deleted its records. |
+| `GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE` | 413 (gRPC `InvalidArgument`) | Stored request over `GUARDIAN_MAX_PROPOSAL_REQUEST_BYTES`. |
+| `GUARDIAN_ACCOUNT_REQUEST_CAPACITY_EXCEEDED` | 409 (gRPC `FailedPrecondition`) | The account's viable proposals already hold `GUARDIAN_MAX_ACCOUNT_REQUEST_BYTES`; finish or discard one. |
+
+Causes of a `failed` execution, in `error.code`:
+
+| Code | `meta` | Retry? |
+|---|---|---|
+| `GUARDIAN_EXECUTION_REQUEST_INVALID` | `reason`: `bound_block_not_declared`, `auth_args_missing`, `approval_expiration_missing`, `input_notes_not_pinned`, `too_many_declared_blocks` (the request declares more than 16 blocks in `block_numbers`) | No; the request cannot be executed by Guardian. |
+| `GUARDIAN_EXECUTION_EXPIRATION_REACHED` | `bound`: `approval` or `transaction` | `approval`: no, the cosigners must sign a new proposal. `transaction`: yes, a new request executes at the new tip with a fresh transaction window. |
+| `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE` | `reason`: `private` or `unavailable` | Only for `unavailable`. |
+| `GUARDIAN_EXECUTION_CHAIN_BEHIND`, `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, `GUARDIAN_EXECUTION_CHAIN_INCONSISTENT`, `GUARDIAN_EXECUTION_PROVING_FAILED`, `GUARDIAN_EXECUTION_SEALING_FAILED`, `GUARDIAN_EXECUTION_ACKNOWLEDGEMENT_FAILED`, `GUARDIAN_EXECUTION_LEASE_EXPIRED`, `GUARDIAN_EXECUTION_ABANDONED` | none | Yes; the proposal is untouched. |
+| `GUARDIAN_EXECUTION_BINDING_MISMATCH`, `GUARDIAN_EXECUTION_STATE_MISMATCH`, `GUARDIAN_EXECUTION_REQUEST_CODEC`, `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | none | Not until the cause is fixed. |
+| `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` | none | Yes, once more cosigners have signed; the proposal is untouched. |
+| `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED` | none | Yes; the node refused the send before processing it (a rate limit that outlasted the client's retries, an authentication or permission refusal, an unimplemented call, or inputs sealed against an encryption key the validator no longer holds), so the transaction cannot land and the proposal is kept. Check the node endpoint and its limits if it repeats. |
+| `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
+
+`error.message` is a fixed, user-safe sentence for its cause, plus chain facts such as block
+numbers and transaction ids. The underlying node, prover, storage or decoder error is never
+stored or served; find it in the server log (`WARN`, same `code`) for the account and proposal.
+A transaction whose execution stopped because the node could not serve a note script it needed
+fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 
 ### Validation
 
@@ -696,8 +888,9 @@ come from
 | `invalid_account_id` | 400 | Malformed account ID. |
 | `invalid_delta` | 400 | Delta payload failed schema or commitment validation. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
-| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. |
-| `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload. |
+| `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
+| `state_not_on_chain` | 409 | `ConfigureAccount` that must submit the account's on-chain state (a first registration past nonce 0, a released account, a key the stored auth does not list, or a state other than the stored one) submitted a state the chain does not hold yet (typically right after submitting a guardian switch back or a signer change). Retryable: register again once the transaction lands. After a guardian switch both SDKs wait for the chain to hold the switched state (about 45 seconds at most, with no wallet signature) before they register, and do not retry the registration; if it persists, check that the transaction landed, or that the client is not submitting a state the chain has already moved past (sync and register again). |
+| `invalid_proposal_signature` | 400 | Signature doesn't verify against the proposal payload, its signer is not a cosigner of the account, or it is made under another scheme than the account registers that cosigner with (an ECDSA approval for a key the account stores as Falcon, which the chain would refuse). |
 | `invalid_network_config` | 400 | `Configure` payload's network config is malformed. |
 | `invalid_cursor` | 400 | Pagination cursor doesn't decode. |
 | `invalid_limit` | 400 | Pagination limit out of range. |
@@ -705,7 +898,7 @@ come from
 | `unsupported_for_network` | 400 | Endpoint not available for the account's network. |
 | `unsupported_evm_chain` | 400 | EVM chain ID not in the configured allowlist. |
 | `invalid_evm_proposal` | 400 | EVM proposal payload validation failed. |
-| `insufficient_signatures` | 400 | Threshold not met for a multi-sig execute. |
+| `insufficient_signatures` | 400 | Multisig threshold not met: an EVM execute, or a Miden `push_delta` whose matching proposal lacks verified cosigner signatures for the lowest threshold the account permits (its default threshold, or a lower override on one of its non-auth procedures). |
 
 ### Network and infrastructure
 

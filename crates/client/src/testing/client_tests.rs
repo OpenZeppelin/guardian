@@ -130,6 +130,47 @@ async fn test_configure_success() {
     assert_eq!(response.ack_pubkey, "test_pubkey_123");
 }
 
+/// A per-signer-scheme auth (issue #563) reaches the server as sent: each
+/// cosigner with its scheme, and the GUARDIAN's scheme.
+#[tokio::test]
+async fn test_configure_sends_a_per_signer_scheme_auth() {
+    let service = MockGuardianService::default();
+    let requests = service.configure_requests_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let auth_config = AuthConfig {
+        auth_type: Some(AuthType::Miden(crate::proto::MidenAuth {
+            cosigners: vec![
+                crate::proto::MidenCosigner {
+                    commitment: format!("0x{}", "aa".repeat(32)),
+                    scheme: "falcon".to_string(),
+                },
+                crate::proto::MidenCosigner {
+                    commitment: format!("0x{}", "bb".repeat(32)),
+                    scheme: "ecdsa".to_string(),
+                },
+            ],
+            guardian_scheme: "ecdsa".to_string(),
+        })),
+    };
+    client
+        .configure(
+            &create_test_account_id(),
+            auth_config.clone(),
+            serde_json::json!({"balance": 1000}),
+        )
+        .await
+        .expect("configure succeeds");
+
+    let received = requests.lock().unwrap().clone();
+    assert_eq!(received.len(), 1);
+    assert_eq!(received[0].auth, Some(auth_config));
+}
+
 #[tokio::test]
 async fn test_configure_server_error() {
     let service = MockGuardianService::default().with_configure(Ok(ConfigureResponse {
@@ -991,10 +1032,10 @@ async fn test_configure_keeps_using_the_wallet_while_a_session_is_active() {
 }
 
 #[tokio::test]
-async fn test_push_delta_and_abandon_keep_using_the_wallet_while_a_session_is_active() {
+async fn test_push_delta_uses_the_session_and_abandon_the_wallet() {
     let service =
         MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
-    let formats = service.wallet_route_auth_formats_handle();
+    let formats = service.push_and_abandon_auth_formats_handle();
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = GuardianClient::connect(endpoint)
         .await
@@ -1007,13 +1048,91 @@ async fn test_push_delta_and_abandon_keep_using_the_wallet_while_a_session_is_ac
         .push_delta(&account_id, 1, "0x00", serde_json::json!({}))
         .await
         .unwrap();
-    client.abandon_candidate(&account_id, 1).await.unwrap();
+    client
+        .abandon_candidate(&account_id, 1, "0x00")
+        .await
+        .unwrap();
 
     assert_eq!(
         formats.lock().unwrap().as_slice(),
         [
-            ("push_delta".to_string(), String::new()),
+            ("push_delta".to_string(), "session".to_string()),
             ("abandon_delta_candidate".to_string(), String::new()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn test_a_push_guardian_takes_only_from_the_wallet_is_re_signed_by_the_wallet() {
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_push_delta(Err(guardian_auth_status(
+            "wallet_signature_required",
+            false,
+        )));
+    let formats = service.push_and_abandon_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    client
+        .push_delta(&create_test_account_id(), 1, "0x00", serde_json::json!({}))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        formats.lock().unwrap().as_slice(),
+        [
+            ("push_delta".to_string(), "session".to_string()),
+            ("push_delta".to_string(), String::new()),
+        ]
+    );
+    assert!(client.session().is_some());
+}
+
+#[tokio::test]
+async fn test_execute_delta_proposal_uses_the_session() {
+    let envelope = crate::ExecutionEnvelope {
+        account_id: create_test_account_id().to_string(),
+        proposal_id: "0x2222".to_string(),
+        state: "pending".to_string(),
+        error: None,
+        delta_nonce: None,
+        newly_accepted: true,
+        proposal_exists: true,
+        ignored_signatures: 0,
+        updated_at: "2026-09-30T12:00:00Z".to_string(),
+    };
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_execution(Ok(envelope.clone()))
+        .with_execution(Ok(envelope));
+    let formats = service.push_and_abandon_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    client.start_session(session_options()).await.unwrap();
+
+    let account_id = create_test_account_id();
+    client
+        .execute_delta_proposal(&account_id, "0x2222")
+        .await
+        .unwrap();
+    client
+        .execute_delta_proposal(&account_id, "0x2222")
+        .await
+        .unwrap();
+
+    assert_eq!(
+        formats.lock().unwrap().as_slice(),
+        [
+            ("execute_delta_proposal".to_string(), "session".to_string()),
+            ("execute_delta_proposal".to_string(), "session".to_string()),
         ]
     );
 }

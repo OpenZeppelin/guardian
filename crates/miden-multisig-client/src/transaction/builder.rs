@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use guardian_client::GuardianClient;
 use guardian_shared::ToJson;
+use guardian_shared::multisig_threshold::ThresholdedTransaction;
 use miden_client::rpc::NodeRpcClient;
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
@@ -17,13 +18,16 @@ use crate::error::{MultisigError, Result};
 use crate::execution::build_transfer_asset;
 use crate::guardian_endpoint::verify_endpoint_commitment;
 use crate::keystore::{KeyManager, ensure_hex_prefix};
+use crate::local_execution::LocalExecutionReason;
 use crate::payload::ProposalPayload;
 use crate::procedures::ProcedureName;
 use crate::proposal::{P2ideHeights, Proposal, ProposalMetadata, TransactionType};
+use crate::signers::SignerSpec;
 use crate::utils::hex_body_eq;
 
 use super::{
-    build_p2id_transaction_request, build_update_guardian_transaction_request,
+    ProposalExecutionMode, build_p2id_transaction_request_with_expiration,
+    build_update_guardian_transaction_request,
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,
     execute_for_summary_at_tip, generate_salt, proposer_auth_args, word_to_hex,
 };
@@ -35,13 +39,14 @@ use super::{
 /// ```ignore
 /// use miden_multisig_client::TransactionType;
 ///
-/// let proposal = ProposalBuilder::new(TransactionType::AddCosigner { new_commitment })
+/// let proposal = ProposalBuilder::new(TransactionType::add_cosigner(new_commitment))
 ///     .build(&mut miden_client, &node_rpc, &mut guardian_client, &account, key_manager)
 ///     .await?;
 /// ```
 pub struct ProposalBuilder {
     transaction_type: TransactionType,
     approval_expiration_delta: Option<NonZeroU32>,
+    execution_mode: ProposalExecutionMode,
 }
 
 /// Per-proposal settings a caller may set when proposing a transaction.
@@ -52,7 +57,17 @@ pub struct ProposalOptions {
     /// summary binds it, so the executing party can neither shorten nor extend it.
     /// At most [`MAX_APPROVAL_EXPIRATION_DELTA`](crate::MAX_APPROVAL_EXPIRATION_DELTA)
     /// blocks, the furthest a transaction can expire after its reference block.
-    /// `None` means the approval never expires, the upstream default.
+    /// `None` applies the client's default: in
+    /// [`SelfExecuted`](ProposalExecutionMode::SelfExecuted) mode, and for a `SwitchGuardian` in
+    /// either mode, the approval never expires (the upstream default); in
+    /// [`GuardianExecutable`](ProposalExecutionMode::GuardianExecutable) mode it expires
+    /// [`GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA`](crate::GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA)
+    /// blocks after the bound block. A Guardian-executable proposal is also bounded, whatever
+    /// this field says, by its transaction's own expiration window, measured from the block it
+    /// executes against: at most
+    /// [`GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA`](crate::GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA)
+    /// blocks, and less when the transaction applies a shorter one (on devnet the fee faucet's
+    /// transfer policy caps a fee-paying transaction at 20 blocks).
     pub approval_expiration_delta: Option<NonZeroU32>,
 }
 
@@ -132,7 +147,21 @@ impl ProposalBuilder {
         Self {
             transaction_type,
             approval_expiration_delta: None,
+            execution_mode: ProposalExecutionMode::SelfExecuted,
         }
+    }
+
+    /// Creates the proposal under `mode`: a Guardian-executable proposal stores its request,
+    /// bounded by both expirations. A GUARDIAN switch is always created self-executed, since
+    /// GUARDIAN never executes one ([`LocalExecutionReason::SwitchGuardian`]): it stores no
+    /// request and takes no default approval expiration, while an explicit
+    /// [`ProposalOptions::approval_expiration_delta`] still applies.
+    pub fn with_execution_mode(mut self, mode: ProposalExecutionMode) -> Self {
+        self.execution_mode = match LocalExecutionReason::of(&self.transaction_type) {
+            Some(LocalExecutionReason::SwitchGuardian) => ProposalExecutionMode::SelfExecuted,
+            None => mode,
+        };
+        self
     }
 
     /// Applies `options` to this builder.
@@ -151,12 +180,17 @@ impl ProposalBuilder {
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         match self.transaction_type {
-            TransactionType::AddCosigner { new_commitment } => {
+            TransactionType::AddCosigner {
+                new_commitment,
+                scheme,
+            } => {
+                let new_signer =
+                    SignerSpec::new(new_commitment, scheme.unwrap_or(key_manager.scheme()));
                 self.build_add_cosigner(
                     miden_client,
                     guardian_client,
                     account,
-                    new_commitment,
+                    new_signer,
                     key_manager,
                 )
                 .await
@@ -266,7 +300,8 @@ impl ProposalBuilder {
         proposer_auth_args(
             miden_client,
             generate_salt(),
-            self.approval_expiration_delta,
+            self.execution_mode
+                .approval_expiration_delta(self.approval_expiration_delta),
         )
         .await
     }
@@ -276,18 +311,22 @@ impl ProposalBuilder {
         miden_client: &mut MidenSdkClient,
         guardian_client: &mut GuardianClient,
         account: &MultisigAccount,
-        new_commitment: Word,
+        new_signer: SignerSpec,
         key_manager: &dyn KeyManager,
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
-        let mut current_signers = account.cosigner_commitments();
+        let approvers = account.cosigners()?;
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         // Add the new signer
-        current_signers.push(new_commitment);
+        let mut target_signers = approvers.clone();
+        target_signers.push(new_signer);
+        let current_signers = SignerSpec::commitments(&target_signers);
         ensure_admissible_signer_set(&current_signers, account.guardian_commitment()?)?;
+        let signer_schemes =
+            SignerSpec::wire_schemes(&target_signers, key_manager.scheme(), &approvers);
 
         // Keep same threshold
         let new_threshold = current_threshold as u64;
@@ -298,13 +337,14 @@ impl ProposalBuilder {
         // Build the transaction request (without signatures - we just want the summary)
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
-            &current_signers,
+            &target_signers,
             &auth_args,
             std::iter::empty(),
-            key_manager.scheme(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
@@ -318,6 +358,7 @@ impl ProposalBuilder {
             proposal_type: None,
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: SignerSpec::names(&signer_schemes),
             salt_hex: Some(word_to_hex(&salt)),
             recipient_hex: None,
             faucet_id_hex: None,
@@ -338,12 +379,14 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_add_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
+            .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
@@ -351,15 +394,16 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
             tx_summary,
             nonce,
-            TransactionType::AddCosigner { new_commitment },
+            TransactionType::AddCosigner {
+                new_commitment: new_signer.commitment,
+                scheme: Some(new_signer.scheme),
+            },
             metadata,
         );
         Self::ensure_response_commitment(&proposal, &response.commitment)?;
@@ -386,9 +430,10 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
-        let current_signers = account.cosigner_commitments();
+        let target_signers = account.cosigners()?;
+        let current_signers = SignerSpec::commitments(&target_signers);
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         validate_threshold_change(
             current_threshold,
@@ -396,6 +441,8 @@ impl ProposalBuilder {
             requested_signers,
             new_threshold,
         )?;
+        let signer_schemes =
+            SignerSpec::wire_schemes(&target_signers, key_manager.scheme(), &target_signers);
 
         let new_threshold = new_threshold as u64;
         let auth_args = self.fresh_auth_args(miden_client).await?;
@@ -403,12 +450,13 @@ impl ProposalBuilder {
 
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
-            &current_signers,
+            &target_signers,
             &auth_args,
             std::iter::empty(),
-            key_manager.scheme(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
+        let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
@@ -423,6 +471,7 @@ impl ProposalBuilder {
             proposal_type: Some("change_threshold".to_string()),
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: SignerSpec::names(&signer_schemes),
             salt_hex: Some(word_to_hex(&salt)),
             recipient_hex: None,
             faucet_id_hex: None,
@@ -442,21 +491,21 @@ impl ProposalBuilder {
         };
 
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_threshold_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
+            .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -482,16 +531,19 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let current_threshold = account.threshold()?;
-        let current_signers = account.cosigner_commitments();
+        let current_signers = account.cosigners()?;
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateSigners)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateSigners)? as usize;
 
         // Remove the signer
-        let new_signers: Vec<Word> = current_signers
+        let target_signers: Vec<SignerSpec> = current_signers
             .iter()
-            .filter(|&c| c != &commitment_to_remove)
+            .filter(|signer| signer.commitment != commitment_to_remove)
             .copied()
             .collect();
+        let new_signers = SignerSpec::commitments(&target_signers);
+        let signer_schemes =
+            SignerSpec::wire_schemes(&target_signers, key_manager.scheme(), &current_signers);
 
         if new_signers.len() == current_signers.len() {
             return Err(MultisigError::InvalidConfig(
@@ -514,13 +566,14 @@ impl ProposalBuilder {
         // Build the transaction request
         let (tx_request, _config_hash) = build_update_signers_transaction_request(
             new_threshold,
-            &new_signers,
+            &target_signers,
             &auth_args,
             std::iter::empty(),
-            key_manager.scheme(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
@@ -534,6 +587,7 @@ impl ProposalBuilder {
             proposal_type: None,
             new_threshold: Some(new_threshold),
             signer_commitments_hex: signer_commitments_hex.clone(),
+            signer_scheme_names: SignerSpec::names(&signer_schemes),
             salt_hex: Some(word_to_hex(&salt)),
             recipient_hex: None,
             faucet_id_hex: None,
@@ -554,12 +608,14 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_remove_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
                 word_to_hex(&salt),
             )
+            .with_signer_schemes(&signer_schemes)
             .with_required_signatures(required_signatures);
 
         // Push proposal to GUARDIAN
@@ -567,9 +623,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -600,7 +654,7 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::SendAsset)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::P2id)? as usize;
 
         let asset = build_transfer_asset(faucet_id, amount)?;
 
@@ -608,7 +662,7 @@ impl ProposalBuilder {
         let salt = auth_args.salt();
 
         // Build the P2ID transaction request (no signature advice needed for proposal)
-        let tx_request = build_p2id_transaction_request(
+        let tx_request = build_p2id_transaction_request_with_expiration(
             account.inner(),
             recipient,
             vec![asset.into()],
@@ -616,9 +670,11 @@ impl ProposalBuilder {
             heights,
             &auth_args,
             std::iter::empty(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
@@ -650,6 +706,7 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_payment_metadata(
                 recipient.to_string(),
@@ -666,9 +723,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -699,7 +754,7 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::ReceiveAsset)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::ConsumeNotes)? as usize;
 
         let auth_args = self.fresh_auth_args(miden_client).await?;
         let salt = auth_args.salt();
@@ -717,11 +772,27 @@ impl ProposalBuilder {
             .map(crate::proposal::SerializedNote::from_note)
             .collect();
 
-        let tx_request = crate::transaction::build_consume_notes_transaction_request_from_notes(
-            fetched_notes,
-            &auth_args,
-            std::iter::empty(),
-        )?;
+        let tx_request = match self.execution_mode {
+            ProposalExecutionMode::SelfExecuted => {
+                crate::transaction::build_consume_notes_transaction_request_from_notes(
+                    fetched_notes,
+                    &auth_args,
+                    std::iter::empty(),
+                    None,
+                )?
+            }
+            ProposalExecutionMode::GuardianExecutable => {
+                crate::transaction::build_pinned_consume_notes_transaction_request(
+                    miden_client,
+                    &fetched_notes,
+                    &auth_args,
+                    self.execution_mode.transaction_expiration_delta(),
+                )
+                .await?
+            }
+        };
+
+        let attachment = self.execution_mode.attachment(&tx_request);
 
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
@@ -758,6 +829,7 @@ impl ProposalBuilder {
             .collect();
 
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
@@ -780,9 +852,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Clone notes for the runtime TransactionType; metadata keeps its own copy.
         let notes_for_tx_type = metadata.consume_notes_notes.clone();
@@ -813,15 +883,12 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures =
-            account.effective_threshold_for_procedure(ProcedureName::UpdateGuardian)? as usize;
+            account.effective_threshold_for(ThresholdedTransaction::UpdateGuardian)? as usize;
         ensure_admissible_signer_set(&account.cosigner_commitments(), new_guardian_pubkey)?;
+        let guardian_scheme = account.guardian_scheme()?;
 
-        verify_endpoint_commitment(
-            &new_guardian_endpoint,
-            new_guardian_pubkey,
-            key_manager.scheme(),
-        )
-        .await?;
+        verify_endpoint_commitment(&new_guardian_endpoint, new_guardian_pubkey, guardian_scheme)
+            .await?;
 
         let auth_args = self.fresh_auth_args(miden_client).await?;
         let salt = auth_args.salt();
@@ -829,12 +896,14 @@ impl ProposalBuilder {
         // Build the GUARDIAN update transaction request (no signatures for proposal)
         let tx_request = build_update_guardian_transaction_request(
             new_guardian_pubkey,
-            key_manager.scheme(),
+            guardian_scheme,
             &auth_args,
             std::iter::empty(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
 
         // Execute to get the TransactionSummary
+        let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
 
         // Sign the transaction summary commitment
@@ -866,6 +935,7 @@ impl ProposalBuilder {
 
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_guardian_update_metadata(
                 word_to_hex(&new_guardian_pubkey),
@@ -879,9 +949,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         // Build the Proposal
         let proposal = Proposal::new(
@@ -909,7 +977,7 @@ impl ProposalBuilder {
     ) -> Result<Proposal> {
         let account_id = account.id();
         let required_signatures = account
-            .effective_threshold_for_procedure(ProcedureName::UpdateProcedureThreshold)?
+            .effective_threshold_for(ThresholdedTransaction::SetProcedureThreshold)?
             as usize;
 
         let auth_args = self.fresh_auth_args(miden_client).await?;
@@ -919,7 +987,9 @@ impl ProposalBuilder {
             new_threshold,
             &auth_args,
             std::iter::empty(),
+            self.execution_mode.transaction_expiration_delta(),
         )?;
+        let attachment = self.execution_mode.attachment(&tx_request);
         let tx_summary = execute_for_summary_at_tip(miden_client, account_id, tx_request).await?;
         let tx_commitment = tx_summary.to_commitment();
 
@@ -947,6 +1017,7 @@ impl ProposalBuilder {
         };
 
         let payload = ProposalPayload::new(&tx_summary)
+            .with_transaction_request(attachment)
             .with_signature(key_manager, tx_commitment)
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
@@ -955,9 +1026,7 @@ impl ProposalBuilder {
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
-            .map_err(|e| {
-                MultisigError::GuardianServer(format!("failed to push proposal: {}", e))
-            })?;
+            .map_err(MultisigError::proposal_push)?;
 
         let proposal = Proposal::new(
             tx_summary,
@@ -977,6 +1046,7 @@ impl ProposalBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::transaction::build_p2id_transaction_request;
     use miden_protocol::account::AccountCodePatch;
     use miden_protocol::account::AccountStoragePatch;
     use miden_protocol::account::delta::{AccountDelta, AccountVaultDelta};
@@ -1135,10 +1205,13 @@ mod tests {
         fn signer_update_request_carries_the_auth_args() {
             let (request, _) = build_update_signers_transaction_request(
                 1,
-                &[Word::from([5u32, 6, 7, 8])],
+                &[SignerSpec::new(
+                    Word::from([5u32, 6, 7, 8]),
+                    SignatureScheme::Falcon,
+                )],
                 &auth_args(),
                 std::iter::empty(),
-                SignatureScheme::Falcon,
+                None,
             )
             .expect("the signer-update request builds");
 
@@ -1172,6 +1245,7 @@ mod tests {
                 vec![note],
                 &auth_args(),
                 std::iter::empty(),
+                None,
             )
             .expect("the consume-notes request builds");
 
@@ -1185,6 +1259,7 @@ mod tests {
                 SignatureScheme::Falcon,
                 &auth_args(),
                 std::iter::empty(),
+                None,
             )
             .expect("the switch-guardian request builds");
 
@@ -1198,6 +1273,7 @@ mod tests {
                 2,
                 &auth_args(),
                 std::iter::empty(),
+                None,
             )
             .expect("the procedure-threshold request builds");
 

@@ -7,8 +7,6 @@
 //! check that reproduces the transaction. Every other type needs a synced store
 //! to verify, and an acknowledgement from GUARDIAN to execute.
 
-use std::collections::HashSet;
-
 use super::MultisigClient;
 use crate::error::{MultisigError, Result};
 use crate::execution::{SignatureInput, build_final_transaction_request, collect_signature_advice};
@@ -28,6 +26,9 @@ impl MultisigClient {
     /// shared with cosigners.
     ///
     /// The proposer's signature is automatically included in the exported proposal.
+    ///
+    /// The proposal is always self-executed, whatever this client's execution mode: it never
+    /// reaches GUARDIAN, so it carries no stored request and neither Guardian-executable bound.
     ///
     /// # Example
     ///
@@ -49,9 +50,11 @@ impl MultisigClient {
         self.sync_network_only().await?;
 
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         let account_id = account.id();
         let signatures_required =
             account.effective_threshold_for_transaction(&transaction_type)? as usize;
+        let guardian_scheme = account.guardian_scheme()?;
 
         let salt = crate::transaction::generate_salt();
         let (new_endpoint, new_commitment) = match &transaction_type {
@@ -59,12 +62,7 @@ impl MultisigClient {
                 new_endpoint,
                 new_commitment,
             } => {
-                verify_endpoint_commitment(
-                    new_endpoint,
-                    *new_commitment,
-                    self.key_manager.scheme(),
-                )
-                .await?;
+                verify_endpoint_commitment(new_endpoint, *new_commitment, guardian_scheme).await?;
                 (new_endpoint.clone(), *new_commitment)
             }
             _ => {
@@ -77,9 +75,10 @@ impl MultisigClient {
         let auth_args = self.multisig_auth_args(salt, None, None).await?;
         let tx_request = crate::transaction::build_update_guardian_transaction_request(
             new_commitment,
-            self.key_manager.scheme(),
+            guardian_scheme,
             &auth_args,
             std::iter::empty(),
+            None,
         )?;
 
         let tx_summary = crate::transaction::execute_for_summary_at_tip(
@@ -167,6 +166,7 @@ impl MultisigClient {
         if !account.is_cosigner(&user_commitment) {
             return Err(MultisigError::NotCosigner);
         }
+        self.ensure_key_scheme_matches(account)?;
 
         Self::ensure_proposal_account_id(&proposal.account_id, &account_id)?;
 
@@ -210,6 +210,11 @@ impl MultisigClient {
     /// request. Verification reproduces the transaction for every type but
     /// `SwitchGuardian` and `Custom`, so the caller needs a synced store and,
     /// for consume-notes, the node.
+    ///
+    /// Every type GUARDIAN acknowledges is refused with
+    /// [`MultisigError::ProposalBaseMismatch`] when GUARDIAN pinned the
+    /// proposal to a state other than the one this client holds, as
+    /// [`MultisigClient::execute_proposal`] refuses it.
     ///
     /// For `SwitchGuardian` only, deliberately skips the pre-switch
     /// proposal-note import (issue #417): it would contact the very GUARDIAN
@@ -261,6 +266,7 @@ impl MultisigClient {
         }
 
         self.verify_proposal_summary_binding(&mut proposal).await?;
+        let target_signers = proposal.target_signers(&account)?;
         let tx_summary = proposal.tx_summary.clone();
         let tx_summary_commitment = tx_summary.to_commitment();
 
@@ -278,21 +284,29 @@ impl MultisigClient {
             .collect();
 
         // Build signature advice from cosigner signatures
-        let required_commitments: HashSet<String> =
-            account.cosigner_commitments_hex().into_iter().collect();
+        let approvers = account.verifiable_cosigners();
         let mut signature_advice = collect_signature_advice(
             signature_inputs,
-            &required_commitments,
+            &approvers,
             tx_summary_commitment,
             Some(&tx_summary),
         )?;
+        account.ensure_threshold_met(&proposal.transaction_type, signature_advice.len())?;
 
         // Cosigner signatures come from the document; the acknowledgement comes
         // from GUARDIAN, exactly as on the online path. Without this the
         // document could only ever execute a guardian switch, the one type that
         // needs no acknowledgement, which is what tied off-channel signature
-        // collection to that single type.
+        // collection to that single type. GUARDIAN acknowledges a multisig
+        // delta only when its stored proposal carries a threshold of verified
+        // approvals (issue #524), and approvals collected off channel exist
+        // only in the document, so they are relayed to the stored proposal
+        // before the acknowledgement is requested.
         if proposal.transaction_type.requires_guardian_ack() {
+            let pinned_base = self.get_pinned_base(&account_id, &proposal.id).await?;
+            Self::ensure_executes_on_pinned_base(&account, &proposal.id, pinned_base)?;
+            self.relay_collected_approvals(&proposal.id, &exported.signatures)
+                .await?;
             let guardian_advice = self
                 .get_guardian_ack_signature(
                     &account,
@@ -316,12 +330,12 @@ impl MultisigClient {
         let final_tx_request = build_final_transaction_request(
             &self.miden_client,
             &proposal.transaction_type,
-            account.inner(),
+            &account,
             &auth_args,
             signature_advice,
-            None,
-            None,
-            self.key_manager.scheme(),
+            proposal.metadata.new_threshold,
+            target_signers.as_deref(),
+            crate::transaction::summary_expiration_delta(&proposal.tx_summary),
         )
         .await?;
 
@@ -342,5 +356,235 @@ impl MultisigClient {
 
         self.finalize_transaction(account_id, final_tx_request, &proposal.transaction_type)
             .await
+    }
+
+    /// Relays the document's collected approvals to GUARDIAN's stored
+    /// proposal. The signing endpoint credits each approval to the cosigner
+    /// its signature cryptographically verifies for, so any configured
+    /// signer may relay them; an approval GUARDIAN already holds answers
+    /// with `proposal_already_signed` and is skipped. A refusal with
+    /// `invalid_proposal_signature` is skipped too: a server without the
+    /// gate accepts only the caller's own approval and acknowledges the
+    /// push without the rest, and a server with it does not count the
+    /// refused approval, so the push itself reports a missing threshold.
+    ///
+    /// The caller's own approval goes first: a server that credits every
+    /// approval to the request signer (before 0.18.1) then refuses the rest
+    /// as already signed. A response that stores a relayed approval under
+    /// another signer stops the relay. Only the approvals the account can
+    /// verify are relayed ([`approvals_under_stored_schemes`]).
+    pub(super) async fn relay_collected_approvals(
+        &mut self,
+        proposal_id: &str,
+        signatures: &[ExportedSignature],
+    ) -> Result<()> {
+        let account = self.require_account()?;
+        let account_id = account.id();
+        let signatures =
+            approvals_under_stored_schemes(signatures, &account.verifiable_cosigners());
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let caller = self.key_manager.commitment_hex();
+        let (own, others): (Vec<_>, Vec<_>) = signatures
+            .into_iter()
+            .partition(|collected| collected.signer_commitment.eq_ignore_ascii_case(&caller));
+        for collected in own.into_iter().chain(others) {
+            let signature = match collected.scheme {
+                guardian_shared::SignatureScheme::Falcon => {
+                    guardian_shared::ProposalSignature::Falcon {
+                        signature: collected.signature.clone(),
+                    }
+                }
+                guardian_shared::SignatureScheme::Ecdsa => {
+                    guardian_shared::ProposalSignature::Ecdsa {
+                        signature: collected.signature.clone(),
+                        public_key: collected.public_key_hex.clone(),
+                        message_format: collected.message_format,
+                    }
+                }
+            };
+            match guardian_client
+                .sign_delta_proposal(&account_id, proposal_id, signature)
+                .await
+            {
+                Ok(response) => {
+                    assert_approval_credited_to_its_signer(response.delta.as_ref(), collected)?
+                }
+                Err(error)
+                    if error.guardian_code().as_deref() == Some("proposal_already_signed") => {}
+                Err(error)
+                    if error.guardian_code().as_deref() == Some("invalid_proposal_signature") =>
+                {
+                    tracing::warn!(
+                        signer = %collected.signer_commitment,
+                        %error,
+                        "GUARDIAN refused a relayed approval; a server without the multisig \
+                         push gate accepts only the caller's own approval, otherwise the push \
+                         reports a missing threshold"
+                    );
+                }
+                Err(error) => {
+                    return Err(MultisigError::GuardianServer(format!(
+                        "failed to relay a collected approval to GUARDIAN: {error}"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Refuses a relay whose response stores the relayed approval under another
+/// signer. A server before 0.18.1 credits every approval to the request
+/// signer, and other devices that load such an entry would execute with it.
+/// The document's approvals the account can verify: from one of its approvers, under the scheme
+/// the account stores for that approver, one per approver. The rest are skipped as
+/// [`collect_signature_advice`] skips them, so they count toward no threshold and never reach
+/// GUARDIAN.
+pub(super) fn approvals_under_stored_schemes<'a>(
+    signatures: &'a [ExportedSignature],
+    approvers: &[crate::signers::SignerSpec],
+) -> Vec<&'a ExportedSignature> {
+    let mut seen = std::collections::HashSet::new();
+    signatures
+        .iter()
+        .filter(|collected| {
+            approvers.iter().any(|approver| {
+                approver.scheme == collected.scheme
+                    && crate::transaction::word_to_hex(&approver.commitment)
+                        .eq_ignore_ascii_case(&collected.signer_commitment)
+            })
+        })
+        .filter(|collected| seen.insert(collected.signer_commitment.to_lowercase()))
+        .collect()
+}
+
+fn assert_approval_credited_to_its_signer(
+    stored: Option<&guardian_client::DeltaObject>,
+    relayed: &ExportedSignature,
+) -> Result<()> {
+    let Some(guardian_client::delta_status::Status::Pending(pending)) = stored
+        .and_then(|delta| delta.status.as_ref())
+        .and_then(|status| status.status.as_ref())
+    else {
+        return Ok(());
+    };
+    let relayed_signature = relayed.signature.trim_start_matches("0x");
+    let misattributed = pending.cosigner_sigs.iter().find(|stored| {
+        stored.signature.as_ref().is_some_and(|signature| {
+            signature
+                .signature
+                .trim_start_matches("0x")
+                .eq_ignore_ascii_case(relayed_signature)
+        }) && !stored
+            .signer_id
+            .eq_ignore_ascii_case(&relayed.signer_commitment)
+    });
+    match misattributed {
+        Some(stored) => Err(MultisigError::GuardianServer(format!(
+            "GUARDIAN stored the relayed approval of {} as {}; it does not verify relayed \
+             approvals (a server before 0.18.1). Upgrade the server before executing this proposal",
+            relayed.signer_commitment, stored.signer_id
+        ))),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use guardian_client::{
+        CosignerSignature, DeltaObject, DeltaStatus, PendingStatus, ProposalSignature, delta_status,
+    };
+    use guardian_shared::SignatureScheme;
+    use miden_protocol::Word;
+
+    use super::*;
+    use crate::export::ExportedSignature;
+
+    const CALLER: &str = "0x1111111111111111111111111111111111111111111111111111111111111111";
+    const OTHER: &str = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn only_approvals_the_account_can_verify_are_kept() {
+        let falcon = Word::from([1u32, 0, 0, 0]);
+        let ecdsa = Word::from([2u32, 0, 0, 0]);
+        let approvers = [
+            crate::signers::SignerSpec::new(falcon, SignatureScheme::Falcon),
+            crate::signers::SignerSpec::new(ecdsa, SignatureScheme::Ecdsa),
+        ];
+        let approval = |signer: &Word, scheme| ExportedSignature {
+            signer_commitment: crate::transaction::word_to_hex(signer)
+                .to_uppercase()
+                .replace("0X", "0x"),
+            scheme,
+            ..relayed()
+        };
+        let documented = [
+            approval(&falcon, SignatureScheme::Falcon),
+            approval(&ecdsa, SignatureScheme::Falcon),
+            approval(&Word::from([3u32, 0, 0, 0]), SignatureScheme::Falcon),
+            approval(&falcon, SignatureScheme::Falcon),
+        ];
+
+        let kept = approvals_under_stored_schemes(&documented, &approvers);
+
+        assert_eq!(
+            kept.len(),
+            1,
+            "an approval under another scheme, from a non-approver, or repeated is dropped"
+        );
+        assert_eq!(kept[0].scheme, SignatureScheme::Falcon);
+    }
+
+    fn relayed() -> ExportedSignature {
+        ExportedSignature {
+            signer_commitment: OTHER.to_string(),
+            signature: format!("0x{}", "e".repeat(128)),
+            scheme: SignatureScheme::Falcon,
+            public_key_hex: None,
+            message_format: Default::default(),
+        }
+    }
+
+    fn stored_under(signer_id: &str) -> DeltaObject {
+        DeltaObject {
+            status: Some(DeltaStatus {
+                status: Some(delta_status::Status::Pending(PendingStatus {
+                    timestamp: "2026-01-01T00:00:00Z".to_string(),
+                    proposer_id: CALLER.to_string(),
+                    cosigner_sigs: vec![CosignerSignature {
+                        signer_id: signer_id.to_string(),
+                        signature: Some(ProposalSignature {
+                            scheme: "falcon".to_string(),
+                            signature: format!("0x{}", "E".repeat(128)),
+                            public_key: None,
+                            message_format: String::new(),
+                        }),
+                        timestamp: "2026-01-01T00:00:00Z".to_string(),
+                    }],
+                })),
+                discard_reason: String::new(),
+                retain_reason: String::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn accepts_a_relayed_approval_stored_under_its_signer() {
+        assert!(
+            assert_approval_credited_to_its_signer(Some(&stored_under(OTHER)), &relayed()).is_ok()
+        );
+    }
+
+    /// A server before 0.18.1 stores a relayed approval under the request
+    /// signer; the relay stops instead of leaving that entry for others.
+    #[test]
+    fn refuses_a_relayed_approval_stored_under_another_signer() {
+        let result =
+            assert_approval_credited_to_its_signer(Some(&stored_under(CALLER)), &relayed());
+        assert!(
+            matches!(&result, Err(MultisigError::GuardianServer(message)) if message.contains("stored the relayed approval")),
+            "{result:?}"
+        );
     }
 }

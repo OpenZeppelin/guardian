@@ -1,0 +1,7 @@
+# tier reconcilers proposals parked group expected [note]
+quick 1 1 FALSE safety PASS
+quick 1 1 TRUE safety PASS
+deep 2 1 FALSE safety PASS
+deep 1 2 FALSE safety PASS
+deep 1 1 FALSE live PASS
+deep 1 1 TRUE live PASS

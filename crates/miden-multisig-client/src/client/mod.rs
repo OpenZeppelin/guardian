@@ -14,6 +14,8 @@
 //! - `public_note_backfill` - Recovery primitive: historical public-note backfill by tag
 //! - `helpers` - Internal GUARDIAN client helpers
 
+#[cfg(test)]
+mod abandoned_sync_tests;
 mod account;
 #[cfg(test)]
 mod anchor_binding_tests;
@@ -22,8 +24,13 @@ mod canonical_nonce_sync_tests;
 mod delta_history;
 #[cfg(test)]
 mod endpoint_scheme_tests;
+#[cfg(test)]
+mod execution_mode_tests;
+mod guardian_execution;
 mod helpers;
 mod io;
+#[cfg(test)]
+mod mixed_scheme_tests;
 mod note_recovery;
 mod notes;
 mod offline;
@@ -31,6 +38,8 @@ mod proposal_note_import;
 mod proposals;
 mod public_note_backfill;
 mod recovery;
+#[cfg(test)]
+mod registration_tests;
 mod session;
 #[cfg(test)]
 mod session_tests;
@@ -42,14 +51,16 @@ pub use delta_history::{
     HistoryAssetKind, HistoryDecodeSection, HistoryDecodeWarning, HistoryEntry, HistoryEntryStatus,
     HistoryNote, HistoryNoteAsset, HistoryNoteTag, HistoryNoteVisibility, HistoryPage,
 };
+pub use guardian_execution::ExecutionWaitOptions;
 pub use note_recovery::{
     NoteRecoveryOptions, NoteRecoveryReport, RecoveryStep, RecoveryStepProblem,
 };
 pub use proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
-pub use proposals::{AbandonRequestState, AbandonStatus};
+pub use proposals::{AbandonRequest, AbandonRequestState, AbandonStatus};
 pub use public_note_backfill::{BlockRange, PublicBackfillOptions, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 
+use crate::transaction::ProposalExecutionMode;
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -68,6 +79,7 @@ use crate::builder::MultisigClientBuilder;
 use crate::error::{MultisigError, Result};
 use crate::export::ExportedProposal;
 use crate::keystore::KeyManager;
+use crate::local_execution::KnownProposals;
 use crate::proposal::Proposal;
 use crate::prover::ProverConfig;
 use crate::rpc::RpcConfig;
@@ -126,6 +138,13 @@ pub struct MultisigClient {
     /// The store `miden_client` was built on, for the client-owned settings
     /// the public settings API does not reach (the note-transport cursors).
     pub(crate) miden_store: Arc<dyn Store>,
+    /// The file `miden_store` lives in. A rollback replaces the store and
+    /// leaves this file in place, so its path is logged.
+    pub(crate) miden_store_path: PathBuf,
+    /// Stores a rollback or reset replaced, newest first. A fresh store cannot
+    /// take over output-note records, so exporting a note this session created
+    /// before the replacement reads it from here.
+    pub(crate) replaced_stores: Vec<Arc<dyn Store>>,
     pub(crate) key_manager: Arc<dyn KeyManager>,
     /// Guardian server endpoint.
     pub(crate) guardian_endpoint: String,
@@ -144,8 +163,49 @@ pub struct MultisigClient {
     pub(crate) prover_config: ProverConfig,
     /// Node RPC timeout and read-retry configuration (for recovery).
     pub(crate) rpc_config: RpcConfig,
+    /// Whether proposals this client creates can be executed by Guardian.
+    pub(crate) execution_mode: ProposalExecutionMode,
+    /// The proposals this client has seen, consulted before asking GUARDIAN to execute one.
+    pub(crate) known_proposals: KnownProposals,
     /// The Guardian session every per-operation client shares.
     pub(crate) guardian_session: SessionSlot,
+    /// The last transaction this client wrote to the store without a
+    /// miden-client record, kept for the session as the store is.
+    pub(crate) untracked_submission: Option<UntrackedSubmission>,
+}
+
+/// A submitted transaction whose post-state execution wrote to the store
+/// itself (`rebuilds_local_state_from_delta`), so miden-client holds no record
+/// of it and cannot tell when the node drops it. Sync rolls a dropped one back
+/// for membership and threshold changes and for a switch that keeps the
+/// endpoint. A switch to a new endpoint registers the unlanded state on the new
+/// GUARDIAN, whose head then equals local, so it is not rolled back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UntrackedSubmission {
+    pub(crate) commitment: Word,
+    pub(crate) submission_height: BlockNumber,
+    pub(crate) expiration_block_num: BlockNumber,
+}
+
+impl UntrackedSubmission {
+    /// Whether miden-client would have discarded this transaction by
+    /// `sync_height` had it held a record: expired, or still unconfirmed
+    /// [`TX_DISCARD_DELTA`](crate::builder::TX_DISCARD_DELTA) blocks after
+    /// submission (miden-client `apply_sync_height_update`).
+    pub(crate) fn dropped_at(&self, sync_height: BlockNumber) -> bool {
+        self.expired_at(sync_height)
+            || self.submission_height
+                < sync_height
+                    .checked_sub(crate::builder::TX_DISCARD_DELTA)
+                    .unwrap_or_default()
+    }
+
+    /// Whether the transaction expired by `sync_height`, which proves no
+    /// later block can include it. Only a proposal created with
+    /// `ProposalOptions::approval_expiration_delta` carries an expiration.
+    pub(crate) fn expired_at(&self, sync_height: BlockNumber) -> bool {
+        self.expiration_block_num <= sync_height
+    }
 }
 
 impl MultisigClient {
@@ -159,6 +219,7 @@ impl MultisigClient {
     pub(crate) fn new(
         miden_client: MidenSdkClient,
         miden_store: Arc<dyn Store>,
+        miden_store_path: PathBuf,
         key_manager: Arc<dyn KeyManager>,
         guardian_endpoint: String,
         account_dir: PathBuf,
@@ -172,6 +233,8 @@ impl MultisigClient {
         Self {
             miden_client,
             miden_store,
+            miden_store_path,
+            replaced_stores: Vec::new(),
             key_manager,
             guardian_endpoint,
             account: None,
@@ -181,12 +244,23 @@ impl MultisigClient {
             node_rpc_client,
             prover_config,
             rpc_config,
+            execution_mode: ProposalExecutionMode::SelfExecuted,
+            known_proposals: KnownProposals::default(),
             guardian_session: SessionSlot::default(),
+            untracked_submission: None,
         }
     }
 
+    /// Whether proposals this client creates can be executed by Guardian.
+    pub fn execution_mode(&self) -> ProposalExecutionMode {
+        self.execution_mode
+    }
+
     /// The multisig auth args a request this client's account executes has to
-    /// carry. Producers of custom proposals (issue #266) build them here, then
+    /// carry. A custom proposal meant for Guardian execution needs a non-zero
+    /// `approval_expiration_delta`, and its script SHOULD apply
+    /// [`GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA`](crate::GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA)
+    /// so the transaction's outcome stays within Guardian's resolution horizon. Producers of custom proposals (issue #266) build them here, then
     /// attach them with [`crate::TransactionRequestBuilderExt`]. `bound_block_num`
     /// left out binds the store's sync height, which a fresh proposal wants:
     /// [`sync`](Self::sync) first, then build, then

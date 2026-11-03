@@ -431,6 +431,16 @@ impl DeltaObject {
             .get("proposal_type")?
             .as_str()
     }
+
+    /// The proposal as a listing serves it: without the stored transaction request, which only
+    /// the single-proposal read returns, so a listing stays within a client's message size
+    /// however many requests the account stores.
+    pub fn into_listing_entry(mut self) -> Self {
+        if let Some(payload) = self.delta_payload.as_object_mut() {
+            payload.remove("transaction_request");
+        }
+        self
+    }
 }
 
 impl<'de> Deserialize<'de> for DeltaObject {

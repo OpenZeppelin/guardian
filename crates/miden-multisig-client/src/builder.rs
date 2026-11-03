@@ -1,5 +1,6 @@
 //! Builder pattern for constructing MultisigClient instances.
 
+use crate::transaction::ProposalExecutionMode;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,6 +30,11 @@ use crate::prover::{ProverConfig, ProverSelection, RetryingTransactionProver};
 use crate::rpc::{
     RetryingNodeRpcClient, RpcConfig, RpcSelection, configured_note_transport_client,
 };
+
+/// Blocks a submitted transaction may stay unconfirmed before miden-client
+/// discards it as stale. [`crate::client::UntrackedSubmission`] applies the
+/// same rule to the transactions miden-client holds no record of.
+pub(crate) const TX_DISCARD_DELTA: u32 = 20;
 
 /// Always constructed with the inner miden-client retry loop disabled:
 /// that loop retransmits rate-limited submissions (`is_retryable` covers
@@ -101,6 +107,7 @@ fn resolved_note_transport_endpoint(
 
 fn configured_client_builder(
     endpoint: &Endpoint,
+    node_rpc_client: Arc<dyn miden_client::rpc::NodeRpcClient>,
     note_transport_endpoint: Option<&str>,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
@@ -117,7 +124,7 @@ fn configured_client_builder(
         ClientBuilder::<FilesystemKeyStore>::new()
     };
 
-    let builder = base.rpc(configured_node_rpc_client(endpoint, rpc_config));
+    let builder = base.rpc(node_rpc_client);
 
     let selection = rpc_config.resolve(DEFAULT_GRPC_TIMEOUT_MS);
     let builder =
@@ -188,6 +195,7 @@ pub struct MultisigClientBuilder {
     key_manager: Option<Arc<dyn KeyManager>>,
     prover_config: ProverConfig,
     rpc_config: RpcConfig,
+    execution_mode: ProposalExecutionMode,
 }
 
 impl Default for MultisigClientBuilder {
@@ -207,7 +215,15 @@ impl MultisigClientBuilder {
             key_manager: None,
             prover_config: ProverConfig::new(),
             rpc_config: RpcConfig::new(),
+            execution_mode: ProposalExecutionMode::SelfExecuted,
         }
+    }
+
+    /// Whether proposals the client creates can be executed by Guardian. Defaults to
+    /// [`ProposalExecutionMode::SelfExecuted`]; the client never asks the server which it offers.
+    pub fn execution_mode(mut self, mode: ProposalExecutionMode) -> Self {
+        self.execution_mode = mode;
+        self
     }
 
     /// Sets the Miden node RPC endpoint.
@@ -317,18 +333,20 @@ impl MultisigClientBuilder {
             MultisigError::MidenClient(format!("failed to create account dir: {}", e))
         })?;
 
-        let (miden_client, miden_store) = create_miden_client(
+        let (miden_client, miden_store, miden_store_path) = create_miden_client(
             &account_dir,
             &miden_endpoint,
+            configured_node_rpc_client(&miden_endpoint, &self.rpc_config),
             note_transport_endpoint.as_deref(),
             &self.prover_config,
             &self.rpc_config,
         )
         .await?;
 
-        Ok(MultisigClient::new(
+        let mut client = MultisigClient::new(
             miden_client,
             miden_store,
+            miden_store_path,
             key_manager,
             guardian_endpoint,
             account_dir,
@@ -336,22 +354,25 @@ impl MultisigClientBuilder {
             note_transport_endpoint,
             self.prover_config,
             self.rpc_config,
-        ))
+        );
+        client.execution_mode = self.execution_mode;
+        Ok(client)
     }
 }
 
 /// Creates a miden-client instance with SQLite storage, returned with the
-/// store it was built on.
+/// store it was built on and that store's file.
 ///
 /// Each call creates a fresh database with a unique filename to ensure
 /// no accumulated state from previous sessions.
 pub(crate) async fn create_miden_client(
     account_dir: &std::path::Path,
     endpoint: &Endpoint,
+    node_rpc_client: Arc<dyn miden_client::rpc::NodeRpcClient>,
     note_transport_endpoint: Option<&str>,
     prover_config: &ProverConfig,
     rpc_config: &RpcConfig,
-) -> Result<(MidenSdkClient, Arc<dyn Store>)> {
+) -> Result<(MidenSdkClient, Arc<dyn Store>, PathBuf)> {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -361,22 +382,25 @@ pub(crate) async fn create_miden_client(
         "miden-client-{}-{}.sqlite",
         timestamp, random_suffix
     ));
-    let store = SqliteStore::new(store_path)
+    let store = SqliteStore::new(store_path.clone())
         .await
         .map_err(|e| MultisigError::MidenClient(format!("failed to open SQLite store: {}", e)))?;
     let store: Arc<dyn Store> = Arc::new(store);
 
-    let client =
-        configured_client_builder(endpoint, note_transport_endpoint, prover_config, rpc_config)
-            .store(store.clone())
-            .tx_discard_delta(Some(20))
-            .max_block_number_delta(256)
-            .build()
-            .await
-            .map_err(|e| {
-                MultisigError::MidenClient(format!("failed to create miden client: {}", e))
-            })?;
-    Ok((client, store))
+    let client = configured_client_builder(
+        endpoint,
+        node_rpc_client,
+        note_transport_endpoint,
+        prover_config,
+        rpc_config,
+    )
+    .store(store.clone())
+    .tx_discard_delta(Some(TX_DISCARD_DELTA))
+    .max_block_number_delta(256)
+    .build()
+    .await
+    .map_err(|e| MultisigError::MidenClient(format!("failed to create miden client: {}", e)))?;
+    Ok((client, store, store_path))
 }
 
 #[cfg(test)]

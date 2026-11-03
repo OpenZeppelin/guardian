@@ -153,6 +153,12 @@ impl Default for CanonicalizationConfig {
 }
 
 impl CanonicalizationConfig {
+    /// Whether a parked row replaced at its nonce is archived for late landings rather than
+    /// deleted: only while retention is on, since nothing reconciles an archive otherwise.
+    pub fn archives_superseded(&self) -> bool {
+        self.retained_ttl_seconds > 0
+    }
+
     /// Create a new canonicalization config with custom settings
     pub fn new(check_interval_seconds: u64, max_retries: u32) -> Self {
         Self {

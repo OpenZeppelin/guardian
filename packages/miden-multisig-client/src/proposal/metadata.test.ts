@@ -6,6 +6,7 @@ import type {
   ConsumeNotesProposalMetadata,
   CustomProposalMetadata,
   P2IdProposalMetadata,
+  UpdateSignersProposalMetadata,
 } from '../types/proposal.js';
 
 describe('ProposalMetadataCodec consume_notes v2 round-trip (issue #229)', () => {
@@ -262,5 +263,46 @@ describe('ProposalMetadataCodec bound block (issue #538)', () => {
 
     expect(metadata.boundBlockNum).toBeUndefined();
     expect(onTheWire(ProposalMetadataCodec.toGuardian(metadata))).toEqual(wireFixture.legacy.guardian);
+  });
+});
+
+describe('ProposalMetadataCodec signer schemes (issue #576)', () => {
+  it('carries the target signer schemes as signerSchemes on the wire and back', () => {
+    const md: UpdateSignersProposalMetadata = {
+      proposalType: 'add_signer',
+      description: '',
+      targetThreshold: 2,
+      targetSignerCommitments: ['0xabc', '0xdef'],
+      targetSignerSchemes: ['falcon', 'ecdsa'],
+    };
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.signerCommitments).toEqual(['0xabc', '0xdef']);
+    expect(wire.signerSchemes).toEqual(['falcon', 'ecdsa']);
+    const back = ProposalMetadataCodec.fromGuardian(wire) as UpdateSignersProposalMetadata;
+    expect(back.targetSignerSchemes).toEqual(['falcon', 'ecdsa']);
+  });
+
+  it('leaves signerSchemes absent for a single-scheme proposal (pre-#576 wire shape)', () => {
+    const md: UpdateSignersProposalMetadata = {
+      proposalType: 'change_threshold',
+      description: '',
+      targetThreshold: 1,
+      targetSignerCommitments: ['0xabc'],
+    };
+    const wire = ProposalMetadataCodec.toGuardian(md);
+    expect(wire.signerSchemes).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(wire))).not.toHaveProperty('signerSchemes');
+    const back = ProposalMetadataCodec.fromGuardian(wire) as UpdateSignersProposalMetadata;
+    expect(back.targetSignerSchemes).toBeUndefined();
+  });
+
+  it('passes names it does not know through, for the rebuild to refuse', () => {
+    const back = ProposalMetadataCodec.fromGuardian({
+      proposalType: 'add_signer',
+      targetThreshold: 1,
+      signerCommitments: ['0xabc'],
+      signerSchemes: ['rsa'],
+    }) as UpdateSignersProposalMetadata;
+    expect(back.targetSignerSchemes).toEqual(['rsa']);
   });
 });

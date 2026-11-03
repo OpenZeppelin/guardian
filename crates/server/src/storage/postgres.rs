@@ -1,14 +1,16 @@
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
-use crate::schema::{account_metadata, delta_proposals, deltas, states, storage_encryption_marker};
+use crate::schema::{
+    account_metadata, delta_proposals, deltas, states, storage_encryption_marker, superseded_deltas,
+};
 use crate::state_object::{StateHead, StateObject};
 use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, CandidatePromotion,
     CandidateSubmission, CanonicalWrite, DeltaStatusCounts, DeltaStatusKind, GlobalDeltaCursor,
-    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite, ProposalRecord,
-    StorageType,
+    GlobalDeltaRow, GlobalProposalCursor, LeaseFence, PromotableKind, PromoteWrite,
+    ProposalAdmission, ProposalRecord, ProposalWrite, StateReplace, StorageType,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Timelike, Utc};
@@ -31,6 +33,9 @@ use rustls::{
 use std::sync::{Arc, Once};
 use tokio_postgres_rustls::MakeRustlsConnect;
 use url::Url;
+
+#[path = "postgres_execution.rs"]
+mod execution;
 
 pub const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 
@@ -585,6 +590,21 @@ struct DeltaRow {
 }
 
 #[derive(Queryable, Selectable)]
+#[diesel(table_name = superseded_deltas)]
+#[diesel(check_for_backend(diesel::pg::Pg))]
+struct SupersededRow {
+    superseded_at: chrono::DateTime<chrono::Utc>,
+    account_id: String,
+    nonce: i64,
+    prev_commitment: String,
+    new_commitment: Option<String>,
+    delta_payload: serde_json::Value,
+    ack_sig: Option<String>,
+    status: serde_json::Value,
+    metadata: Option<serde_json::Value>,
+}
+
+#[derive(Queryable, Selectable)]
 #[diesel(table_name = delta_proposals)]
 #[diesel(check_for_backend(diesel::pg::Pg))]
 struct ProposalRow {
@@ -659,6 +679,7 @@ struct NewProposal<'a> {
     status: serde_json::Value,
     status_kind: &'a str,
     status_timestamp: chrono::DateTime<chrono::Utc>,
+    request_bytes: i64,
 }
 
 /// Decompose a [`DeltaStatus`] into the typed `(status_kind,
@@ -743,6 +764,31 @@ impl From<DeltaRow> for DeltaObject {
             ack_scheme: String::new(),
             status,
             metadata,
+        }
+    }
+}
+
+impl From<SupersededRow> for crate::storage::SupersededDelta {
+    fn from(row: SupersededRow) -> Self {
+        let status: DeltaStatus =
+            serde_json::from_value(row.status).unwrap_or_else(|_| DeltaStatus::default());
+        let delta = DeltaObject {
+            account_id: row.account_id,
+            nonce: row.nonce as u64,
+            prev_commitment: row.prev_commitment,
+            new_commitment: row.new_commitment,
+            delta_payload: row.delta_payload,
+            ack_sig: row.ack_sig.unwrap_or_default(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status,
+            metadata: row
+                .metadata
+                .and_then(crate::delta_summary::metadata_from_value),
+        };
+        crate::storage::SupersededDelta {
+            delta,
+            superseded_at: row.superseded_at,
         }
     }
 }
@@ -937,6 +983,150 @@ async fn clear_pending_flag_if_none(
         .map(|_| ())
 }
 
+/// Copy the parked (retained or client-abandoned) row at `nonce` into
+/// `superseded_deltas`, stamped `superseded_at`, inside the caller's
+/// transaction. The payload moves as stored, so an encrypted payload stays
+/// encrypted. Returns how many rows were archived (0 or 1).
+pub(super) async fn archive_parked_delta(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+    nonce: u64,
+    superseded_at: chrono::DateTime<chrono::Utc>,
+) -> Result<usize, diesel::result::Error> {
+    use diesel::sql_types::{BigInt, Text, Timestamptz};
+    diesel::sql_query(
+        "INSERT INTO superseded_deltas \
+             (account_id, nonce, prev_commitment, new_commitment, delta_payload, ack_sig, \
+              status, status_kind, status_timestamp, metadata, superseded_at) \
+         SELECT account_id, nonce, prev_commitment, new_commitment, delta_payload, ack_sig, \
+                status, status_kind, status_timestamp, metadata, $3 \
+         FROM deltas \
+         WHERE account_id = $1 AND nonce = $2 \
+           AND (status_kind = 'retained' \
+                OR (status_kind = 'discarded' AND status->>'reason' = 'client_abandoned'))",
+    )
+    .bind::<Text, _>(account_id)
+    .bind::<BigInt, _>(nonce as i64)
+    .bind::<Timestamptz, _>(superseded_at)
+    .execute(conn)
+    .await
+}
+
+/// Flip the `deltas` row at the delta's nonce to canonical, only while it
+/// still matches `gate` (the exact lifecycle kind the pass verified).
+async fn flip_to_canonical<G>(
+    conn: &mut AsyncPgConnection,
+    delta: &DeltaObject,
+    gate: G,
+    status_json: &serde_json::Value,
+    status_kind: &str,
+    status_timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<bool, diesel::result::Error>
+where
+    G: diesel::BoxableExpression<deltas::table, diesel::pg::Pg, SqlType = diesel::sql_types::Bool>
+        + diesel::expression::NonAggregate
+        + diesel::query_builder::QueryId
+        + Send
+        + 'static,
+{
+    let flipped = diesel::update(deltas::table)
+        .filter(deltas::account_id.eq(&delta.account_id))
+        .filter(deltas::nonce.eq(delta.nonce as i64))
+        .filter(gate)
+        .set((
+            deltas::status.eq(status_json),
+            deltas::status_kind.eq(status_kind),
+            deltas::status_timestamp.eq(status_timestamp),
+            deltas::new_commitment.eq(&delta.new_commitment),
+        ))
+        .execute(conn)
+        .await?;
+    Ok(flipped > 0)
+}
+
+/// Write an archived superseded delta back as the canonical row at its
+/// nonce. The `deltas` row there may be replaced only while it is parked
+/// (retained or client-abandoned): a candidate is still in flight and a
+/// canonical row is settled history. The replaced row is archived in turn,
+/// and the archived copy being restored is removed. `false` when the row
+/// there may not be replaced or the archived copy is already gone.
+async fn restore_superseded(
+    conn: &mut AsyncPgConnection,
+    delta: &DeltaObject,
+    status_json: &serde_json::Value,
+    status_kind: &str,
+    status_timestamp: chrono::DateTime<chrono::Utc>,
+    metadata_json: Option<&serde_json::Value>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<bool, diesel::result::Error> {
+    use diesel::OptionalExtension;
+    let current: Option<(String, Option<String>)> = deltas::table
+        .filter(deltas::account_id.eq(&delta.account_id))
+        .filter(deltas::nonce.eq(delta.nonce as i64))
+        .select((
+            deltas::status_kind,
+            diesel::dsl::sql::<diesel::sql_types::Nullable<diesel::sql_types::Text>>(
+                "status->>'reason'",
+            ),
+        ))
+        .for_update()
+        .first(conn)
+        .await
+        .optional()?;
+    let replaceable = match &current {
+        None => true,
+        Some((kind, reason)) => {
+            kind == "retained"
+                || (kind == "discarded" && reason.as_deref() == Some("client_abandoned"))
+        }
+    };
+    if !replaceable {
+        return Ok(false);
+    }
+
+    let archived: Vec<i64> = superseded_deltas::table
+        .filter(superseded_deltas::account_id.eq(&delta.account_id))
+        .filter(superseded_deltas::nonce.eq(delta.nonce as i64))
+        .filter(superseded_deltas::prev_commitment.eq(&delta.prev_commitment))
+        .filter(superseded_deltas::new_commitment.eq(&delta.new_commitment))
+        .select(superseded_deltas::id)
+        .for_update()
+        .load(conn)
+        .await?;
+    if archived.is_empty() {
+        return Ok(false);
+    }
+
+    if current.is_some() {
+        archive_parked_delta(conn, &delta.account_id, delta.nonce, now).await?;
+        diesel::delete(deltas::table)
+            .filter(deltas::account_id.eq(&delta.account_id))
+            .filter(deltas::nonce.eq(delta.nonce as i64))
+            .execute(conn)
+            .await?;
+    }
+    diesel::delete(superseded_deltas::table)
+        .filter(superseded_deltas::id.eq_any(&archived))
+        .execute(conn)
+        .await?;
+    diesel::insert_into(deltas::table)
+        .values(&NewDelta {
+            account_id: &delta.account_id,
+            nonce: delta.nonce as i64,
+            prev_commitment: &delta.prev_commitment,
+            new_commitment: delta.new_commitment.as_deref(),
+            delta_payload: &delta.delta_payload,
+            ack_sig: Some(delta.ack_sig.as_str()),
+            status: status_json.clone(),
+            status_kind,
+            status_timestamp,
+            metadata: metadata_json,
+        })
+        .execute(conn)
+        .await?;
+    Ok(true)
+}
+
 #[async_trait]
 impl StorageBackend for PostgresService {
     fn kind(&self) -> StorageType {
@@ -994,6 +1184,50 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to submit state: {e}"))?;
 
         Ok(())
+    }
+
+    // One conditional UPDATE: under READ COMMITTED it waits behind a
+    // concurrent writer of the row and re-evaluates the commitment filter
+    // on the committed row, like `promote_candidate`'s base gate.
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<StateReplace, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let updated_at: chrono::DateTime<chrono::Utc> = state
+            .updated_at
+            .parse()
+            .map_err(|e| format!("Failed to parse updated_at: {e}"))?;
+
+        let replaced = diesel::update(states::table)
+            .filter(states::account_id.eq(&state.account_id))
+            .filter(states::commitment.eq(expected_commitment))
+            .set((
+                states::state_json.eq(&state.state_json),
+                states::commitment.eq(&state.commitment),
+                states::nonce.eq(nonce_column(state.nonce)),
+                states::updated_at.eq(updated_at),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to replace state: {e}"))?;
+        if replaced > 0 {
+            return Ok(StateReplace::Replaced);
+        }
+
+        let current = states::table
+            .filter(states::account_id.eq(&state.account_id))
+            .select(states::commitment)
+            .first::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull state commitment: {e}"))?;
+        Ok(StateReplace::StateMoved { current })
     }
 
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
@@ -1355,7 +1589,7 @@ impl StorageBackend for PostgresService {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        deltas::table
+        let mut accounts = deltas::table
             .filter(
                 deltas::status_kind.eq("retained").or(deltas::status_kind
                     .eq("discarded")
@@ -1366,7 +1600,62 @@ impl StorageBackend for PostgresService {
             .distinct()
             .load::<String>(&mut conn)
             .await
-            .map_err(|e| format!("Failed to list accounts with recoverable deltas: {e}"))
+            .map_err(|e| format!("Failed to list accounts with recoverable deltas: {e}"))?;
+        let archived = superseded_deltas::table
+            .select(superseded_deltas::account_id)
+            .distinct()
+            .load::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to list accounts with superseded deltas: {e}"))?;
+        accounts.extend(archived);
+        accounts.sort();
+        accounts.dedup();
+        Ok(accounts)
+    }
+
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let rows: Vec<SupersededRow> = superseded_deltas::table
+            .filter(superseded_deltas::account_id.eq(account_id))
+            .filter(superseded_deltas::superseded_at.ge(since))
+            .order((superseded_deltas::nonce.asc(), superseded_deltas::id.asc()))
+            .select(SupersededRow::as_select())
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to pull superseded deltas: {e}"))?;
+        Ok(rows
+            .into_iter()
+            .map(crate::storage::SupersededDelta::from)
+            .collect())
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        diesel::delete(superseded_deltas::table)
+            .filter(superseded_deltas::account_id.eq(account_id))
+            .filter(superseded_deltas::superseded_at.lt(before))
+            .execute(&mut conn)
+            .await
+            .map(|pruned| pruned as u64)
+            .map_err(|e| format!("Failed to prune superseded deltas: {e}"))
     }
 
     async fn submit_delta_proposal(
@@ -1395,6 +1684,7 @@ impl StorageBackend for PostgresService {
             status: status_json,
             status_kind,
             status_timestamp,
+            request_bytes: 0,
         };
 
         diesel::insert_into(delta_proposals::table)
@@ -1406,6 +1696,93 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to submit delta proposal: {e}"))?;
 
         Ok(())
+    }
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: ProposalAdmission,
+    ) -> Result<ProposalWrite, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let status_json = serde_json::to_value(&admission.proposal.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&admission.proposal.status)?;
+        let request_bytes = i64::try_from(admission.request_bytes)
+            .map_err(|_| "request size does not fit the column".to_string())?;
+
+        conn.transaction::<ProposalWrite, diesel::result::Error, _>(|conn| {
+            async move {
+                let proposal = &admission.proposal;
+                lock_account_metadata(conn, &proposal.account_id).await?;
+
+                let exists: bool = diesel::select(diesel::dsl::exists(
+                    delta_proposals::table
+                        .filter(delta_proposals::account_id.eq(&proposal.account_id))
+                        .filter(delta_proposals::commitment.eq(&admission.commitment)),
+                ))
+                .get_result(conn)
+                .await?;
+                if exists {
+                    return Ok(ProposalWrite::AlreadyStored);
+                }
+
+                let doomed_at_or_below = admission
+                    .queue_tail_nonce
+                    .map_or(i64::MIN, |tail| tail as i64);
+                let viable = delta_proposals::table
+                    .filter(delta_proposals::account_id.eq(&proposal.account_id))
+                    .filter(delta_proposals::prev_commitment.eq(&proposal.prev_commitment))
+                    .filter(delta_proposals::nonce.gt(doomed_at_or_below))
+                    .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                        "status->>'status' = 'pending'",
+                    ));
+                let viable_count: i64 = viable.clone().count().get_result(conn).await?;
+                if viable_count as usize >= admission.max_viable_proposals {
+                    return Ok(ProposalWrite::PendingLimit {
+                        limit: admission.max_viable_proposals,
+                    });
+                }
+                let used: i64 = viable
+                    .select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                        "COALESCE(SUM(request_bytes), 0)::BIGINT",
+                    ))
+                    .first(conn)
+                    .await?;
+                let used = u64::try_from(used).unwrap_or(0);
+                if used.saturating_add(admission.request_bytes)
+                    > admission.max_account_request_bytes
+                {
+                    return Ok(ProposalWrite::AccountRequestBytesLimit {
+                        limit: admission.max_account_request_bytes,
+                        used,
+                    });
+                }
+
+                diesel::insert_into(delta_proposals::table)
+                    .values(&NewProposal {
+                        account_id: &proposal.account_id,
+                        commitment: &admission.commitment,
+                        nonce: proposal.nonce as i64,
+                        prev_commitment: &proposal.prev_commitment,
+                        new_commitment: proposal.new_commitment.as_deref(),
+                        delta_payload: &proposal.delta_payload,
+                        ack_sig: Some(proposal.ack_sig.as_str()),
+                        status: status_json,
+                        status_kind,
+                        status_timestamp,
+                        request_bytes,
+                    })
+                    .execute(conn)
+                    .await?;
+                Ok(ProposalWrite::Stored)
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to admit delta proposal: {e}"))
     }
 
     async fn pull_delta_proposal(
@@ -1510,6 +1887,48 @@ impl StorageBackend for PostgresService {
         Ok(())
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let expected_json = serde_json::to_value(expected)
+            .map_err(|e| format!("Failed to serialize expected status: {e}"))?;
+        let status_json = serde_json::to_value(&proposal.status)
+            .map_err(|e| format!("Failed to serialize status: {e}"))?;
+        let (status_kind, status_timestamp) = derive_status_columns(&proposal.status)?;
+
+        // One statement, so the status comparison and the write are atomic:
+        // a concurrent signing that committed first changed the status and
+        // this update matches no row.
+        let updated = diesel::update(delta_proposals::table)
+            .filter(delta_proposals::account_id.eq(&proposal.account_id))
+            .filter(delta_proposals::commitment.eq(commitment))
+            .filter(delta_proposals::status.eq(&expected_json))
+            .set((
+                delta_proposals::nonce.eq(proposal.nonce as i64),
+                delta_proposals::prev_commitment.eq(&proposal.prev_commitment),
+                delta_proposals::new_commitment.eq(&proposal.new_commitment),
+                delta_proposals::delta_payload.eq(&proposal.delta_payload),
+                delta_proposals::ack_sig.eq(Some(&proposal.ack_sig)),
+                delta_proposals::status.eq(&status_json),
+                delta_proposals::status_kind.eq(status_kind),
+                delta_proposals::status_timestamp.eq(status_timestamp),
+            ))
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to update delta proposal: {e}"))?;
+
+        Ok(updated == 1)
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
@@ -1552,6 +1971,7 @@ impl StorageBackend for PostgresService {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         use diesel::OptionalExtension;
@@ -1563,6 +1983,7 @@ impl StorageBackend for PostgresService {
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
         let account_id = account_id.to_string();
+        let new_commitment = new_commitment.to_string();
         let now = now.to_string();
 
         // Row-locked read + conditional in-place JSONB update: the intent
@@ -1572,10 +1993,17 @@ impl StorageBackend for PostgresService {
         // discarded delta is left untouched.
         conn.transaction::<AbandonIntent, diesel::result::Error, _>(|conn| {
             async move {
+                lock_account_metadata(conn, &account_id).await?;
+                if let Some(proposal_id) =
+                    execution::candidate_owner(conn, &account_id, nonce).await?
+                {
+                    return Ok(AbandonIntent::OwnedByExecution { proposal_id });
+                }
                 let existing: Option<Option<String>> = deltas::table
                     .filter(deltas::account_id.eq(&account_id))
                     .filter(deltas::nonce.eq(nonce as i64))
                     .filter(deltas::status_kind.eq("candidate"))
+                    .filter(deltas::new_commitment.eq(&new_commitment))
                     .select(diesel::dsl::sql::<
                         diesel::sql_types::Nullable<diesel::sql_types::Text>,
                     >("status->>'abandon_requested_at'"))
@@ -1594,6 +2022,7 @@ impl StorageBackend for PostgresService {
                             .filter(deltas::account_id.eq(&account_id))
                             .filter(deltas::nonce.eq(nonce as i64))
                             .filter(deltas::status_kind.eq("candidate"))
+                            .filter(deltas::new_commitment.eq(&new_commitment))
                             .set(
                                 deltas::status.eq(diesel::dsl::sql::<diesel::sql_types::Jsonb>(
                                     "jsonb_set(status, '{abandon_requested_at}', to_jsonb(",
@@ -1649,7 +2078,7 @@ impl StorageBackend for PostgresService {
         _metadata: &dyn MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<CandidateSubmission, String> {
         let mut conn = self
             .pool
@@ -1671,13 +2100,39 @@ impl StorageBackend for PostgresService {
 
         conn.transaction::<CandidateSubmission, diesel::result::Error, _>(|conn| {
             async move {
-                lock_account_metadata(conn, &delta.account_id).await?;
+                // The account lock, reading the lifecycle columns it guards:
+                // set_pause and set_released_if_state write this row, so a
+                // pause or release either commits before this read (and
+                // refuses the submission) or waits for it to commit.
+                let (paused_at, paused_reason, released_at) = account_metadata::table
+                    .filter(account_metadata::account_id.eq(&delta.account_id))
+                    .select((
+                        account_metadata::paused_at,
+                        account_metadata::paused_reason,
+                        account_metadata::released_at,
+                    ))
+                    .for_update()
+                    .first::<(Option<DateTime<Utc>>, Option<String>, Option<DateTime<Utc>>)>(conn)
+                    .await?;
+                if let Some(refused) = CandidateSubmission::refused_while_inactive(
+                    released_at,
+                    paused_at,
+                    paused_reason,
+                ) {
+                    return Ok(refused);
+                }
 
                 let current_commitment = states::table
                     .filter(states::account_id.eq(&delta.account_id))
                     .select(states::commitment)
                     .first::<String>(conn)
                     .await?;
+
+                if let Some(proposal_id) =
+                    execution::reserving_proposal(conn, &delta.account_id).await?
+                {
+                    return Ok(CandidateSubmission::ExecutionReserved { proposal_id });
+                }
 
                 // Race-proof twin of the service-layer admission gate:
                 // two submissions that both passed the pre-commit scan
@@ -1709,10 +2164,19 @@ impl StorageBackend for PostgresService {
                     &current_commitment,
                     &queue,
                     &delta,
-                    max_pending_candidates,
+                    policy.max_pending_candidates,
                 ) {
                     return Ok(refused);
                 }
+
+                // The superseded row is the only record of its transaction:
+                // archive it first so the reconcile pass can still promote
+                // it if that transaction lands after all.
+                let archived = if policy.archive_superseded {
+                    archive_parked_delta(conn, &delta.account_id, delta.nonce, updated_at).await?
+                } else {
+                    0
+                };
 
                 // A retained row (issue #345) or client-abandoned
                 // discard (issue #319) at this nonce is a best-effort
@@ -1738,6 +2202,7 @@ impl StorageBackend for PostgresService {
                         event = "reconcile_superseded",
                         account_id = %delta.account_id,
                         nonce = delta.nonce,
+                        archived = archived > 0,
                         "Recoverable row superseded by a new candidate at its nonce"
                     );
                 }
@@ -1818,6 +2283,10 @@ impl StorageBackend for PostgresService {
             .transpose()
             .map_err(|e| format!("Failed to serialize auth: {e}"))?;
         let fence = fence.ok_or_else(|| unfenced_write_error("promote_candidate"))?;
+        let metadata_json = delta
+            .metadata
+            .as_ref()
+            .map(crate::delta_summary::metadata_to_value);
 
         let result = conn
             .transaction::<PromoteWrite, diesel::result::Error, _>(|conn| {
@@ -1836,48 +2305,80 @@ impl StorageBackend for PostgresService {
                     // read and this write, and a union gate would stamp
                     // the client's fresh candidate canonical with the
                     // old delta's commitment. The exact gate turns a
-                    // superseded promotion into a no-op instead.
-                    let source_gate: Box<
-                        dyn diesel::BoxableExpression<
-                                deltas::table,
-                                diesel::pg::Pg,
-                                SqlType = diesel::sql_types::Bool,
-                            >,
-                    > = match source {
-                        PromotableKind::Candidate => Box::new(deltas::status_kind.eq("candidate")),
-                        PromotableKind::Retained => Box::new(deltas::status_kind.eq("retained")),
-                        PromotableKind::ClientAbandoned => Box::new(
-                            deltas::status_kind
-                                .eq("discarded")
-                                .and(client_abandoned_reason()),
-                        ),
+                    // superseded promotion into a no-op instead. An
+                    // archived row is written back instead of flipped.
+                    let written = match source {
+                        PromotableKind::Candidate => {
+                            flip_to_canonical(
+                                conn,
+                                &delta,
+                                deltas::status_kind.eq("candidate"),
+                                &status_json,
+                                status_kind,
+                                status_timestamp,
+                            )
+                            .await?
+                        }
+                        PromotableKind::Retained => {
+                            flip_to_canonical(
+                                conn,
+                                &delta,
+                                deltas::status_kind.eq("retained"),
+                                &status_json,
+                                status_kind,
+                                status_timestamp,
+                            )
+                            .await?
+                        }
+                        PromotableKind::ClientAbandoned => {
+                            flip_to_canonical(
+                                conn,
+                                &delta,
+                                deltas::status_kind
+                                    .eq("discarded")
+                                    .and(client_abandoned_reason()),
+                                &status_json,
+                                status_kind,
+                                status_timestamp,
+                            )
+                            .await?
+                        }
+                        PromotableKind::Superseded => {
+                            restore_superseded(
+                                conn,
+                                &delta,
+                                &status_json,
+                                status_kind,
+                                status_timestamp,
+                                metadata_json.as_ref(),
+                                metadata_updated_at,
+                            )
+                            .await?
+                        }
                     };
-                    let flipped = diesel::update(deltas::table)
-                        .filter(deltas::account_id.eq(&delta.account_id))
-                        .filter(deltas::nonce.eq(delta.nonce as i64))
-                        .filter(source_gate)
-                        .set((
-                            deltas::status.eq(&status_json),
-                            deltas::status_kind.eq(status_kind),
-                            deltas::status_timestamp.eq(status_timestamp),
-                            deltas::new_commitment.eq(&delta.new_commitment),
-                        ))
-                        .execute(conn)
-                        .await?;
-                    if flipped == 0 {
+                    if !written {
                         return Ok(PromoteWrite::NotCandidate);
                     }
 
                     // The base gate lives in the UPDATE predicate itself, not
                     // a prior read: `submit_state` writers take no account
                     // lock, so only the row-level write lock makes the
-                    // comparison race-proof. Zero rows means the state moved
-                    // (or vanished) since this pass read it — the delta flip
-                    // above must not survive that, hence the explicit
-                    // rollback mapped to `StaleBase` below.
+                    // comparison race-proof. A state already at this
+                    // promotion's target (a `/configure` re-onboarding to the
+                    // chain's state before promotion) is a resumed promotion,
+                    // as on the filesystem backend: refusing it would leave a
+                    // candidate no pass can ever promote, and an execution
+                    // owning it reserved for good. Zero rows means the state
+                    // moved elsewhere (or vanished) since this pass read it,
+                    // and the delta flip above must not survive that, hence
+                    // the explicit rollback mapped to `StaleBase` below.
                     let advanced = diesel::update(states::table)
                         .filter(states::account_id.eq(&state.account_id))
-                        .filter(states::commitment.eq(&delta.prev_commitment))
+                        .filter(
+                            states::commitment
+                                .eq(&delta.prev_commitment)
+                                .or(states::commitment.eq(&state.commitment)),
+                        )
                         .set((
                             states::state_json.eq(&state.state_json),
                             states::commitment.eq(&state.commitment),
@@ -1901,9 +2402,17 @@ impl StorageBackend for PostgresService {
                             .await?;
                     }
 
+                    let settled_execution = execution::commit_promoted_execution(
+                        conn,
+                        &state.account_id,
+                        delta.nonce,
+                        &state.commitment,
+                        metadata_updated_at,
+                    )
+                    .await?;
                     clear_pending_flag_if_none(conn, &state.account_id, metadata_updated_at)
                         .await?;
-                    Ok(PromoteWrite::Applied)
+                    Ok(PromoteWrite::Applied { settled_execution })
                 }
                 .scope_boxed()
             })
@@ -1944,6 +2453,11 @@ impl StorageBackend for PostgresService {
                 lock_account_metadata(conn, &account_id).await?;
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
+                }
+                if kind == DeltaStatusKind::Candidate
+                    && execution::execution_owns_candidate(conn, &account_id, nonce).await?
+                {
+                    return Ok(CanonicalWrite::ProtectedByExecution);
                 }
 
                 let deleted = diesel::delete(deltas::table)
@@ -1991,6 +2505,11 @@ impl StorageBackend for PostgresService {
                 lock_account_metadata(conn, &account_id).await?;
                 if !lease_fence_is_current(conn, &fence).await? {
                     return Ok(CanonicalWrite::StaleLease);
+                }
+                if status_kind != "candidate"
+                    && execution::execution_owns_candidate(conn, &account_id, nonce).await?
+                {
+                    return Ok(CanonicalWrite::ProtectedByExecution);
                 }
 
                 // Row-locked read of the stored abandon request: the new
@@ -2054,6 +2573,95 @@ impl StorageBackend for PostgresService {
         })
         .await
         .map_err(|e| format!("Failed to update candidate status: {e}"))
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        self.create_execution_reservation_tx(reservation).await
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        self.renew_execution_reservation_tx(account_id, fence, lease_expires_at, phase)
+            .await
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        self.claim_execution_reservation_tx(account_id, expected, claimant, lease_expires_at)
+            .await
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_active_execution_tx(account_id).await
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_latest_execution_tx(account_id, proposal_id).await
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        _metadata: &dyn MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        self.admit_execution_candidate_tx(admission).await
+    }
+
+    async fn resolve_execution(
+        &self,
+        _metadata: &dyn MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.resolve_execution_tx(resolution, true).await
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.resolve_execution_tx(resolution, false).await
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        self.settle_promoted_execution_tx(account_id, fence, now)
+            .await
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        self.list_active_executions_tx().await
+    }
+
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.prune_execution_records_tx(cutoff, limit).await
     }
 
     // ----------------------------------------------------------------------
@@ -2397,6 +3005,85 @@ impl StorageBackend for PostgresService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pending_with(signers: &[&str]) -> DeltaStatus {
+        DeltaStatus::Pending {
+            timestamp: "2026-10-19T00:00:00Z".to_string(),
+            proposer_id: "0xproposer".to_string(),
+            cosigner_sigs: signers
+                .iter()
+                .map(|signer| crate::delta_object::CosignerSignature {
+                    signature: crate::delta_object::ProposalSignature::Falcon {
+                        signature: format!("0xsig-{signer}"),
+                    },
+                    timestamp: "2026-10-19T00:00:00Z".to_string(),
+                    signer_id: signer.to_string(),
+                })
+                .collect(),
+        }
+    }
+
+    fn proposal_with(account_id: &str, status: DeltaStatus) -> DeltaObject {
+        DeltaObject {
+            account_id: account_id.to_string(),
+            nonce: 1,
+            prev_commitment: "0xprev".to_string(),
+            new_commitment: None,
+            delta_payload: serde_json::json!({"tx_summary": {}, "signatures": []}),
+            ack_sig: String::new(),
+            ack_pubkey: String::new(),
+            ack_scheme: String::new(),
+            status,
+            metadata: None,
+        }
+    }
+
+    /// Two signings commit concurrently from the same read: exactly one
+    /// write lands and the other is refused, so neither silently replaces
+    /// the approval the other added.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn update_delta_proposal_if_status_admits_one_write_per_read() {
+        let url = crate::testing::pg::test_database_url().await;
+        let storage = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xcas{}", Utc::now().timestamp_micros());
+        let commitment = "0xcas";
+        storage
+            .submit_delta_proposal(
+                commitment,
+                &proposal_with(&account_id, pending_with(&["0xc1"])),
+            )
+            .await
+            .expect("submit");
+        let read = pending_with(&["0xc1"]);
+
+        let with_c2 = proposal_with(&account_id, pending_with(&["0xc1", "0xc2"]));
+        let with_c4 = proposal_with(&account_id, pending_with(&["0xc1", "0xc4"]));
+        let (c2, c4) = tokio::join!(
+            storage.update_delta_proposal_if_status(commitment, &with_c2, &read),
+            storage.update_delta_proposal_if_status(commitment, &with_c4, &read),
+        );
+        let (c2, c4) = (c2.expect("c2 write"), c4.expect("c4 write"));
+        assert!(
+            c2 ^ c4,
+            "exactly one write from the same read commits: {c2} {c4}"
+        );
+
+        let stored = storage
+            .pull_delta_proposal(&account_id, commitment)
+            .await
+            .expect("pull")
+            .status;
+        let winner = if c2 { &with_c2 } else { &with_c4 };
+        assert_eq!(stored, winner.status);
+        assert!(
+            !storage
+                .update_delta_proposal_if_status(commitment, &with_c2, &read)
+                .await
+                .expect("stale write"),
+            "a write from a stale read is refused"
+        );
+    }
 
     #[test]
     fn postgres_timestamp_precision_truncates_sub_microseconds() {
@@ -3045,6 +3732,42 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn replace_state_writes_only_over_the_expected_commitment() {
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xreplace{}", chrono::Utc::now().timestamp_micros());
+
+        let mut state = create_test_state(&account_id);
+        state.nonce = Some(2);
+        service.submit_state(&state).await.expect("submit");
+
+        let mut older = state.clone();
+        older.commitment = "0xolder".to_string();
+        older.nonce = Some(1);
+        assert_eq!(
+            service.replace_state(&older, "0xstale").await.unwrap(),
+            StateReplace::StateMoved {
+                current: "0x789".to_string()
+            }
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0x789", Some(2)),
+            "a refused replace writes nothing"
+        );
+
+        assert_eq!(
+            service.replace_state(&older, "0x789").await.unwrap(),
+            StateReplace::Replaced
+        );
+        assert_eq!(
+            service.pull_state_head(&account_id).await.unwrap(),
+            head("0xolder", Some(1))
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn state_nonce_is_stored_and_backfilled_only_at_its_own_commitment() {
         let url = crate::testing::pg::test_database_url().await;
         let service = PostgresService::new(&url, 4).await.expect("storage");
@@ -3272,7 +3995,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert_eq!(
             service.pull_state_head(&account_id).await.unwrap(),
             head("0xpromoted", Some(4))
@@ -3436,10 +4164,14 @@ mod tests {
             .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), None, 1)
             .await
             .expect("first recent page");
+        assert_eq!(first_page.len(), 1, "the limit is applied in the store");
+        // The feed spans every account in the shared test database, so the
+        // cursor is anchored at this account's first candidate rather than
+        // at whichever row the global first page returned.
         let cursor = crate::storage::RecentCandidateCursor {
             last_status_timestamp: now_at,
             last_account_id: account_id.clone(),
-            last_nonce: first_page[0].nonce,
+            last_nonce: 2,
         };
         let second_page = service
             .pull_recent_candidate_deltas(now_at - chrono::TimeDelta::seconds(30), Some(&cursor), 1)
@@ -3746,7 +4478,12 @@ mod tests {
             )
             .await
             .expect("retained-source promotion resolves");
-        assert_eq!(promoted, PromoteWrite::Applied);
+        assert_eq!(
+            promoted,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             service
                 .pull_delta(&account_id, 10)
@@ -3807,7 +4544,12 @@ mod tests {
         resubmission.prev_commitment = "0xreconciled".to_string();
         resubmission.status = DeltaStatus::candidate(now.clone());
         let superseded = service
-            .submit_candidate(&metadata_store, &resubmission, &now, 4)
+            .submit_candidate(
+                &metadata_store,
+                &resubmission,
+                &now,
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("resubmission resolves");
         assert_eq!(superseded, CandidateSubmission::Submitted);
@@ -3833,7 +4575,16 @@ mod tests {
         // Retained-over-intent refusal: once an abandon intent is
         // recorded, the retained flip must refuse rather than wipe it.
         let intent = service
-            .request_candidate_abandon(&account_id, 11, &now)
+            .request_candidate_abandon(&account_id, 11, "0xother", &now)
+            .await
+            .expect("intent resolves");
+        assert_eq!(
+            intent,
+            AbandonIntent::NotCandidate,
+            "a candidate with another commitment is never marked"
+        );
+        let intent = service
+            .request_candidate_abandon(&account_id, 11, "0x456", &now)
             .await
             .expect("intent resolves");
         assert_eq!(intent, AbandonIntent::Recorded);
@@ -3875,6 +4626,374 @@ mod tests {
             .bind::<Text, _>(&lease_name)
             .execute(&mut conn)
             .await;
+    }
+
+    /// A resubmission at a parked row's nonce archives that row instead of
+    /// deleting it, and the archived delta can be written back as the
+    /// canonical row once its transaction is found to have landed: only
+    /// while the row now at its nonce is parked, never over a live
+    /// candidate. The row it replaces is archived in turn, and expired
+    /// archived rows are pruned.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn superseded_delta_is_archived_and_restored_when_it_lands_late() {
+        use crate::coordination::LeaderElector;
+        use crate::coordination::postgres::PgLeaseElector;
+        use crate::delta_object::{DeltaStatus, RetainReason};
+        use crate::storage::{CandidatePolicy, CandidatePromotion};
+        use diesel::sql_types::Text;
+        use std::time::Duration;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let metadata_store = crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+            .await
+            .expect("metadata store");
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xsupersede{stamp}");
+        let lease_name = format!("supersede-fence-{stamp}");
+        let now_dt = chrono::Utc::now();
+        let now = now_dt.to_rfc3339();
+        let cutoff = now_dt - chrono::Duration::days(1);
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+        drop(conn);
+
+        let base = create_test_state(&account_id);
+        let base_commitment = base.commitment.clone();
+        service.submit_state(&base).await.expect("base state");
+
+        // A: the client abandoned it, but its transaction is still in flight.
+        let mut abandoned = create_test_delta(&account_id, 1);
+        abandoned.prev_commitment = base_commitment.clone();
+        abandoned.new_commitment = Some("0xa1".to_string());
+        abandoned.delta_payload = serde_json::json!({"intent": "A"});
+        abandoned.status = DeltaStatus::discarded_client_abandoned(now.clone());
+        service
+            .submit_delta(&abandoned)
+            .await
+            .expect("abandoned row");
+
+        // B: the resubmission at the same nonce archives A.
+        let mut resubmission = create_test_delta(&account_id, 1);
+        resubmission.prev_commitment = base_commitment.clone();
+        resubmission.new_commitment = Some("0xb1".to_string());
+        resubmission.delta_payload = serde_json::json!({"intent": "B"});
+        resubmission.status = DeltaStatus::candidate(now.clone());
+        assert_eq!(
+            service
+                .submit_candidate(
+                    &metadata_store,
+                    &resubmission,
+                    &now,
+                    CandidatePolicy::new(1, true),
+                )
+                .await
+                .expect("resubmission resolves"),
+            CandidateSubmission::Submitted
+        );
+        let archived = service
+            .pull_superseded_deltas(&account_id, cutoff)
+            .await
+            .expect("archive read");
+        assert_eq!(
+            archived.len(),
+            1,
+            "the superseded row is archived, not deleted"
+        );
+        assert_eq!(archived[0].delta.new_commitment.as_deref(), Some("0xa1"));
+        assert_eq!(
+            archived[0].delta.delta_payload,
+            serde_json::json!({"intent": "A"})
+        );
+        assert!(archived[0].delta.status.is_client_abandoned());
+        assert_eq!(
+            service
+                .pull_superseded_deltas(&account_id, crate::storage::EVERY_ARCHIVED_DELTA)
+                .await
+                .expect("archive read with no cutoff")
+                .len(),
+            1,
+            "the abandon service reads the whole archive"
+        );
+        assert!(
+            service
+                .list_accounts_with_recoverable_deltas(now_dt + chrono::Duration::days(1))
+                .await
+                .expect("account scan")
+                .contains(&account_id),
+            "an account with archived rows is visited by the reconcile pass"
+        );
+
+        let elector = PgLeaseElector::new(
+            build_postgres_pool_lazy(&url, 2).unwrap(),
+            &lease_name,
+            "holder",
+        );
+        let lease = elector
+            .try_acquire(Duration::from_secs(60))
+            .await
+            .expect("acquire")
+            .expect("holder owns the lease");
+        let fence = LeaseFence {
+            lease_name: lease.name.clone(),
+            holder_id: lease.holder_id.clone(),
+            fence_token: lease.fence_token,
+        };
+
+        // A's transaction landed: the chain is at 0xa1.
+        let mut landed_state = create_test_state(&account_id);
+        landed_state.commitment = "0xa1".to_string();
+        let mut canonical_a = archived[0].delta.clone();
+        canonical_a.status = DeltaStatus::canonical(now.clone());
+        let restore = || CandidatePromotion {
+            state: landed_state.clone(),
+            delta: canonical_a.clone(),
+            new_auth: None,
+            now: now.clone(),
+            fence: Some(fence.clone()),
+            source: PromotableKind::Superseded,
+        };
+
+        assert_eq!(
+            service
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("restore over a candidate resolves"),
+            PromoteWrite::NotCandidate,
+            "an archived row never replaces a live candidate",
+        );
+        assert!(
+            service
+                .pull_delta(&account_id, 1)
+                .await
+                .expect("row readable")
+                .status
+                .is_candidate()
+        );
+
+        // B can never land now; the worker parks it.
+        assert_eq!(
+            service
+                .update_candidate_status(
+                    &account_id,
+                    1,
+                    DeltaStatus::retained(now.clone(), RetainReason::Diverged),
+                    Some(&fence),
+                )
+                .await
+                .expect("park B"),
+            CanonicalWrite::Applied
+        );
+        assert_eq!(
+            service
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("restore resolves"),
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
+        let row = service
+            .pull_delta(&account_id, 1)
+            .await
+            .expect("row readable");
+        assert!(row.status.is_canonical());
+        assert_eq!(row.new_commitment.as_deref(), Some("0xa1"));
+        assert_eq!(row.delta_payload, serde_json::json!({"intent": "A"}));
+        assert_eq!(
+            service
+                .pull_state(&account_id)
+                .await
+                .expect("state")
+                .commitment,
+            "0xa1",
+            "the stored state caught up with the chain"
+        );
+        let archived = service
+            .pull_superseded_deltas(&account_id, cutoff)
+            .await
+            .expect("archive read");
+        assert_eq!(
+            archived
+                .iter()
+                .map(|archived| archived.delta.new_commitment.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("0xb1".to_string())],
+            "the restored row left the archive and the replaced one entered it"
+        );
+        assert_eq!(
+            service
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("second restore resolves"),
+            PromoteWrite::NotCandidate,
+            "a restored row cannot be restored again",
+        );
+
+        assert_eq!(
+            service
+                .prune_superseded_deltas(&account_id, now_dt + chrono::Duration::minutes(1))
+                .await
+                .expect("prune"),
+            1
+        );
+        assert!(
+            service
+                .pull_superseded_deltas(&account_id, cutoff)
+                .await
+                .expect("archive read")
+                .is_empty()
+        );
+
+        let mut conn = service.pool.get().await.expect("conn");
+        for table in ["deltas", "states", "account_metadata"] {
+            let _ = diesel::sql_query(format!("DELETE FROM {table} WHERE account_id = $1"))
+                .bind::<Text, _>(&account_id)
+                .execute(&mut conn)
+                .await;
+        }
+        let _ = diesel::sql_query("DELETE FROM worker_leases WHERE lease_name = $1")
+            .bind::<Text, _>(&lease_name)
+            .execute(&mut conn)
+            .await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn submit_candidate_refuses_a_paused_or_released_account_under_the_account_lock() {
+        use diesel::sql_types::Text;
+
+        let url = crate::testing::pg::test_database_url().await;
+        let service = std::sync::Arc::new(PostgresService::new(&url, 4).await.expect("storage"));
+        let metadata_store = std::sync::Arc::new(
+            crate::metadata::postgres::PostgresMetadataStore::new(&url, 2)
+                .await
+                .expect("metadata store"),
+        );
+        let stamp = chrono::Utc::now().timestamp_micros();
+        let account_id = format!("0xpaused{stamp}");
+        let now = chrono::Utc::now().to_rfc3339();
+
+        let mut conn = service.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), false)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata row");
+
+        let initial_state = create_test_state(&account_id);
+        service
+            .submit_state(&initial_state)
+            .await
+            .expect("insert initial state");
+        let mut delta = create_test_delta(&account_id, 1);
+        delta.status = DeltaStatus::candidate(now.clone());
+        delta.prev_commitment = initial_state.commitment.clone();
+        delta.new_commitment = Some("0xc1".to_string());
+
+        // A pause whose transaction holds the row while the submission
+        // starts: the submission waits on the account lock and then sees
+        // the committed pause.
+        diesel::sql_query("BEGIN")
+            .execute(&mut conn)
+            .await
+            .expect("begin");
+        diesel::sql_query(
+            "UPDATE account_metadata SET paused_at = now(), paused_reason = 'compliance' \
+             WHERE account_id = $1",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("pause");
+        let submission = {
+            let service = service.clone();
+            let metadata_store = metadata_store.clone();
+            let delta = delta.clone();
+            let now = now.clone();
+            tokio::spawn(async move {
+                service
+                    .submit_candidate(
+                        metadata_store.as_ref(),
+                        &delta,
+                        &now,
+                        crate::storage::CandidatePolicy::new(1, true),
+                    )
+                    .await
+                    .expect("submission resolves")
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(
+            !submission.is_finished(),
+            "the submission waits for the pause's row lock"
+        );
+        diesel::sql_query("COMMIT")
+            .execute(&mut conn)
+            .await
+            .expect("commit");
+        match submission.await.expect("join") {
+            CandidateSubmission::Paused { paused_reason, .. } => {
+                assert_eq!(paused_reason.as_deref(), Some("compliance"))
+            }
+            other => panic!("expected Paused, got {other:?}"),
+        }
+
+        diesel::sql_query("UPDATE account_metadata SET released_at = now() WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("release");
+        assert!(
+            matches!(
+                service
+                    .submit_candidate(
+                        metadata_store.as_ref(),
+                        &delta,
+                        &now,
+                        crate::storage::CandidatePolicy::new(1, true)
+                    )
+                    .await
+                    .expect("submission resolves"),
+                CandidateSubmission::Released { .. }
+            ),
+            "released wins over paused"
+        );
+
+        diesel::sql_query(
+            "UPDATE account_metadata SET paused_at = NULL, paused_reason = NULL, \
+             released_at = NULL WHERE account_id = $1",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("reactivate");
+        assert_eq!(
+            service
+                .submit_candidate(
+                    metadata_store.as_ref(),
+                    &delta,
+                    &now,
+                    crate::storage::CandidatePolicy::new(1, true)
+                )
+                .await
+                .expect("submission resolves"),
+            CandidateSubmission::Submitted
+        );
     }
 
     /// Issue #17: the in-transaction admission gate queues chained
@@ -3929,7 +5048,12 @@ mod tests {
             let now = now.clone();
             async move {
                 service
-                    .submit_candidate(metadata_store, &delta, &now, depth)
+                    .submit_candidate(
+                        metadata_store,
+                        &delta,
+                        &now,
+                        crate::storage::CandidatePolicy::new(depth, true),
+                    )
                     .await
                     .expect("submission resolves")
             }
@@ -4114,13 +5238,23 @@ mod tests {
         candidate.prev_commitment = initial_commitment.clone();
         candidate.status = DeltaStatus::candidate(now.clone());
         let submitted = service
-            .submit_candidate(&metadata_store, &candidate, &now, 4)
+            .submit_candidate(
+                &metadata_store,
+                &candidate,
+                &now,
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("candidate insert + flag set commit together");
         assert_eq!(submitted, CandidateSubmission::Submitted);
 
         let racing_duplicate = service
-            .submit_candidate(&metadata_store, &candidate, &now, 4)
+            .submit_candidate(
+                &metadata_store,
+                &candidate,
+                &now,
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("duplicate submission resolves");
         assert_eq!(
@@ -4133,7 +5267,12 @@ mod tests {
         second_nonce.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
-                .submit_candidate(&metadata_store, &second_nonce, &now, 4)
+                .submit_candidate(
+                    &metadata_store,
+                    &second_nonce,
+                    &now,
+                    crate::storage::CandidatePolicy::new(4, true)
+                )
                 .await
                 .expect("second-nonce submission resolves"),
             CandidateSubmission::Conflict,
@@ -4288,7 +5427,12 @@ mod tests {
             .promote_candidate(&metadata_store, promotion.clone())
             .await
             .expect("current owner promotes");
-        assert_eq!(promoted, PromoteWrite::Applied);
+        assert_eq!(
+            promoted,
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             service
                 .pull_delta(&account_id, 1)
@@ -4313,7 +5457,12 @@ mod tests {
         stale_state_candidate.status = DeltaStatus::candidate(now.clone());
         assert_eq!(
             service
-                .submit_candidate(&metadata_store, &stale_state_candidate, &now, 4)
+                .submit_candidate(
+                    &metadata_store,
+                    &stale_state_candidate,
+                    &now,
+                    crate::storage::CandidatePolicy::new(4, true)
+                )
                 .await
                 .expect("stale-state submission resolves"),
             CandidateSubmission::CommitmentMismatch {
@@ -4425,7 +5574,12 @@ mod tests {
         candidate.prev_commitment = initial_commitment.clone();
         candidate.status = DeltaStatus::candidate(now.clone());
         service
-            .submit_candidate(&metadata_store, &candidate, &now, 4)
+            .submit_candidate(
+                &metadata_store,
+                &candidate,
+                &now,
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("candidate insert");
 

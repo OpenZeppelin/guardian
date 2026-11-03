@@ -235,9 +235,9 @@ pub async fn release_if_guardian_switched(
 }
 
 /// This server's own guardian public key commitment for the account's
-/// signature scheme — the value a bound account's guardian slot holds.
+/// GUARDIAN scheme — the value a bound account's guardian slot holds.
 pub fn own_guardian_commitment(state: &AppState, metadata: &AccountMetadata) -> String {
-    state.ack.commitment(&metadata.auth.scheme())
+    state.ack.commitment(&metadata.auth.guardian_scheme())
 }
 
 /// Transition the account to `released` because its guardian key is
@@ -353,6 +353,7 @@ mod tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
+            execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
@@ -366,6 +367,36 @@ mod tests {
             #[cfg(feature = "evm")]
             evm: Arc::new(crate::evm::EvmAppState::for_tests()),
         }
+    }
+
+    /// A mixed account's GUARDIAN key is this server's key of the
+    /// GUARDIAN's scheme, not of its cosigners': seeing it is no switch.
+    #[tokio::test]
+    async fn own_guardian_key_of_a_mixed_account_follows_the_guardian_scheme() {
+        use guardian_shared::SignatureScheme;
+        let metadata_store = MockMetadataStore::new();
+        let state = state_with(
+            MockNetworkClient::new(),
+            metadata_store.clone(),
+            CapturingAuditor::new(),
+        )
+        .await;
+        let mut metadata = miden_meta("acc-mixed");
+        metadata.auth = Auth::Miden {
+            cosigners: vec![crate::metadata::auth::MidenCosigner {
+                commitment: "0xc1".into(),
+                scheme: SignatureScheme::Falcon,
+            }],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+        let ecdsa_ack = state.ack.commitment(&SignatureScheme::Ecdsa);
+        assert_eq!(own_guardian_commitment(&state, &metadata), ecdsa_ack);
+
+        release_if_guardian_switched(&state, &metadata, Some(&ecdsa_ack), 7, "0xnew").await;
+        assert!(
+            metadata_store.set_released_calls.lock().unwrap().is_empty(),
+            "the account still names this server's GUARDIAN key"
+        );
     }
 
     #[tokio::test]

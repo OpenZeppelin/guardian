@@ -4,15 +4,25 @@ use crate::storage::StorageBackend;
 use crate::storage::encryption::marker::{EncryptionMarker, MarkerStore};
 use crate::storage::{
     AbandonIntent, AccountDeltaCursor, AccountProposalCursor, DeltaStatusCounts, DeltaStatusKind,
-    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalRecord, StorageType,
+    GlobalDeltaCursor, GlobalDeltaRow, GlobalProposalCursor, ProposalAdmission, ProposalRecord,
+    ProposalWrite, StorageType,
 };
 use crate::utils::normalize_commitment_hex;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+
+/// One archived superseded delta on disk: the delta as it was stored when
+/// a resubmission replaced it, and when that happened.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ArchivedDelta {
+    superseded_at: DateTime<Utc>,
+    delta: DeltaObject,
+}
 
 pub struct FilesystemService {
     app_path: PathBuf,
@@ -29,6 +39,12 @@ pub struct FilesystemService {
     /// concurrent write could put that older state back. Taken inside
     /// `delta_write_lock` where both are held, never the other way round.
     state_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// Serializes proposal-file writes so the conditional update
+    /// (`update_delta_proposal_if_status`) reads, compares and writes with
+    /// no other proposal write in between: concurrent signings of one
+    /// proposal would otherwise each rewrite the file from the same read
+    /// and drop each other's approval.
+    proposal_write_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 /// On-disk form of a state file: the state plus its nonce, which
@@ -51,6 +67,22 @@ struct StateFile {
     nonce: Option<u64>,
 }
 
+/// The candidate an execution admission is about to write. Recorded before the candidate, it
+/// names what a crash short of the evidence commit may have left behind. It outlives the
+/// commit harmlessly: only a failing attempt without evidence that it names consults it.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct InterruptedAdmission {
+    proposal_id: String,
+    attempt: u32,
+    nonce: u64,
+}
+
+impl InterruptedAdmission {
+    fn belongs_to(&self, reservation: &crate::storage::ExecutionReservation) -> bool {
+        self.proposal_id == reservation.proposal_id && self.attempt == reservation.attempt
+    }
+}
+
 impl FilesystemService {
     /// Create a new FilesystemService
     pub async fn new(app_path: PathBuf) -> Result<Self, String> {
@@ -63,7 +95,40 @@ impl FilesystemService {
             app_path,
             delta_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
             state_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
+            proposal_write_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
+    }
+
+    /// Write a proposal file WITHOUT taking `proposal_write_lock`.
+    async fn write_proposal_holding_lock(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+    ) -> Result<(), String> {
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
+        }
+
+        // Write to temp file first
+        let temp_path = path.with_extension("tmp");
+        let json = serde_json::to_string_pretty(&proposal)
+            .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
+
+        fs::write(&temp_path, json)
+            .await
+            .map_err(|e| format!("Failed to write proposal file: {e}"))?;
+
+        // Atomic rename
+        fs::rename(&temp_path, &path)
+            .await
+            .map_err(|e| format!("Failed to finalize proposal file: {e}"))?;
+
+        Ok(())
     }
 
     /// Serialize and write a state file WITHOUT taking `state_write_lock`.
@@ -116,6 +181,141 @@ impl FilesystemService {
     /// Get the path for an account's state file
     fn get_state_path(&self, account_id: &str) -> PathBuf {
         self.app_path.join(account_id).join("state.json")
+    }
+
+    /// Directory of an account's archived superseded deltas (the filesystem
+    /// twin of the `superseded_deltas` table).
+    fn superseded_dir(&self, account_id: &str) -> PathBuf {
+        self.app_path.join(account_id).join("superseded")
+    }
+
+    /// Archive `delta` as superseded at `superseded_at`. Callers hold
+    /// `delta_write_lock`.
+    async fn archive_delta_holding_lock(
+        &self,
+        delta: &DeltaObject,
+        superseded_at: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let dir = self.superseded_dir(&delta.account_id);
+        let stamp = superseded_at.timestamp_micros();
+        let mut index = 0u32;
+        let path = loop {
+            let candidate = dir.join(format!("{}-{stamp}-{index}.json", delta.nonce));
+            if !candidate.exists() {
+                break candidate;
+            }
+            index += 1;
+        };
+        let content = serde_json::to_string_pretty(&ArchivedDelta {
+            superseded_at,
+            delta: delta.clone(),
+        })
+        .map_err(|e| format!("Failed to serialize superseded delta: {e}"))?;
+        self.write(&path, &content).await
+    }
+
+    /// Every archived superseded delta of an account, with its file path.
+    async fn read_archived(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<(PathBuf, ArchivedDelta)>, String> {
+        let dir = self.superseded_dir(account_id);
+        let mut entries = match fs::read_dir(&dir).await {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(format!("Failed to read superseded deltas: {e}")),
+        };
+        let mut archived = Vec::new();
+        while let Some(entry) = entries
+            .next_entry()
+            .await
+            .map_err(|e| format!("Failed to read superseded deltas: {e}"))?
+        {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+                continue;
+            }
+            let content = fs::read_to_string(&path)
+                .await
+                .map_err(|e| format!("Failed to read superseded delta: {e}"))?;
+            let row: ArchivedDelta = serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to deserialize superseded delta: {e}"))?;
+            archived.push((path, row));
+        }
+        archived.sort_by_key(|(_, row)| (row.delta.nonce, row.superseded_at));
+        Ok(archived)
+    }
+
+    /// The `Superseded` arm of `promote_candidate`, under `delta_write_lock`:
+    /// write an archived delta back as the canonical row at its nonce,
+    /// replacing only a parked (retained or client-abandoned) row there,
+    /// which is archived in turn.
+    async fn restore_superseded_holding_lock(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        promotion: crate::storage::CandidatePromotion,
+    ) -> Result<crate::storage::PromoteWrite, String> {
+        let account_id = promotion.state.account_id.clone();
+        let current = match self.pull_delta(&account_id, promotion.delta.nonce).await {
+            Ok(existing) => Some(existing),
+            Err(e) if crate::storage::is_storage_not_found(&e) => None,
+            Err(e) => return Err(e),
+        };
+        if current
+            .as_ref()
+            .is_some_and(|existing| !promotion.source.matches(&existing.status))
+        {
+            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        }
+        let restored: Vec<PathBuf> = self
+            .read_archived(&account_id)
+            .await?
+            .into_iter()
+            .filter(|(_, row)| {
+                row.delta.nonce == promotion.delta.nonce
+                    && row.delta.prev_commitment == promotion.delta.prev_commitment
+                    && row.delta.new_commitment == promotion.delta.new_commitment
+            })
+            .map(|(path, _)| path)
+            .collect();
+        if restored.is_empty() {
+            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        }
+        let current_state = self.pull_state(&account_id).await?;
+        if current_state.commitment != promotion.delta.prev_commitment {
+            return Ok(crate::storage::PromoteWrite::StaleBase);
+        }
+
+        let now: DateTime<Utc> = promotion
+            .now
+            .parse()
+            .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+        if let Some(existing) = &current {
+            self.archive_delta_holding_lock(existing, now).await?;
+        }
+        self.submit_state(&promotion.state).await?;
+        if let Some(new_auth) = promotion.new_auth {
+            metadata
+                .update_auth(&account_id, new_auth, &promotion.now)
+                .await?;
+        }
+        self.write_delta_holding_lock(&promotion.delta).await?;
+        for path in restored {
+            fs::remove_file(&path)
+                .await
+                .map_err(|e| format!("Failed to remove superseded delta: {e}"))?;
+        }
+        self.release_pending_flag_if_queue_empty(metadata, &account_id, &promotion.now)
+            .await?;
+        let settled_execution = self
+            .commit_promoted_execution(
+                &account_id,
+                promotion.delta.nonce,
+                &promotion.state.commitment,
+                now,
+            )
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied { settled_execution })
     }
 
     /// Get the path for a delta file
@@ -448,6 +648,23 @@ impl StorageBackend for FilesystemService {
         self.write_state_holding_lock(state).await
     }
 
+    // Holds `delta_write_lock`, which `promote_candidate` holds across its
+    // base check and state write, then the state lock, in that order.
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        let _delta_guard = self.delta_write_lock.lock().await;
+        let _state_guard = self.state_write_lock.lock().await;
+        let current = self.pull_state(&state.account_id).await?.commitment;
+        if current != expected_commitment {
+            return Ok(crate::storage::StateReplace::StateMoved { current });
+        }
+        self.write_state_holding_lock(state).await?;
+        Ok(crate::storage::StateReplace::Replaced)
+    }
+
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
         let _guard = self.delta_write_lock.lock().await;
         self.write_delta_holding_lock(delta).await
@@ -674,12 +891,20 @@ impl StorageBackend for FilesystemService {
             // Per-account tolerance: one unreadable delta file must not
             // silently disable reconciliation (and TTL expiry) for every
             // other account in the store.
-            match self
+            let listed = match self
                 .pull_recoverable_deltas(&account_id, abandoned_since)
                 .await
             {
-                Ok(recoverable) if !recoverable.is_empty() => with_recoverable.push(account_id),
-                Ok(_) => {}
+                Ok(recoverable) if !recoverable.is_empty() => Ok(true),
+                Ok(_) => self
+                    .read_archived(&account_id)
+                    .await
+                    .map(|archived| !archived.is_empty()),
+                Err(e) => Err(e),
+            };
+            match listed {
+                Ok(true) => with_recoverable.push(account_id),
+                Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(
                         account_id = %account_id,
@@ -693,36 +918,52 @@ impl StorageBackend for FilesystemService {
         Ok(with_recoverable)
     }
 
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
+        Ok(self
+            .read_archived(account_id)
+            .await?
+            .into_iter()
+            .filter(|(_, row)| row.superseded_at >= since)
+            .map(|(_, row)| crate::storage::SupersededDelta {
+                delta: row.delta,
+                superseded_at: row.superseded_at,
+            })
+            .collect())
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: DateTime<Utc>,
+    ) -> Result<u64, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let mut pruned = 0;
+        for (path, row) in self.read_archived(account_id).await? {
+            if row.superseded_at < before {
+                fs::remove_file(&path)
+                    .await
+                    .map_err(|e| format!("Failed to prune superseded delta: {e}"))?;
+                pruned += 1;
+            }
+        }
+        if pruned > 0 && self.read_archived(account_id).await?.is_empty() {
+            let _ = fs::remove_dir(self.superseded_dir(account_id)).await;
+        }
+        Ok(pruned)
+    }
+
     // Delta proposal methods - stored separately from executed deltas
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
-
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|e| format!("Failed to create proposals directory: {e}"))?;
-        }
-
-        // Write to temp file first
-        let temp_path = path.with_extension("tmp");
-        let json = serde_json::to_string_pretty(&proposal)
-            .map_err(|e| format!("Failed to serialize proposal: {e}"))?;
-
-        fs::write(&temp_path, json)
-            .await
-            .map_err(|e| format!("Failed to write proposal file: {e}"))?;
-
-        // Atomic rename
-        fs::rename(&temp_path, &path)
-            .await
-            .map_err(|e| format!("Failed to finalize proposal file: {e}"))?;
-
-        Ok(())
+        let _guard = self.proposal_write_lock.lock().await;
+        self.write_proposal_holding_lock(commitment, proposal).await
     }
 
     async fn pull_delta_proposal(
@@ -759,13 +1000,100 @@ impl StorageBackend for FilesystemService {
         Ok(proposals)
     }
 
+    async fn admit_delta_proposal(
+        &self,
+        admission: ProposalAdmission,
+    ) -> Result<ProposalWrite, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let account_id = admission.proposal.account_id.clone();
+        let key = |commitment: &str| -> Result<String, String> {
+            let normalized = normalize_commitment_hex(commitment).map_err(|e| e.to_string())?;
+            Ok(normalized.trim_start_matches("0x").to_string())
+        };
+        let admitted = key(&admission.commitment)?;
+        let records = self.load_proposal_records(&account_id).await?;
+        let live = records
+            .iter()
+            .map(|record| key(&record.commitment))
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        if live.contains(&admitted) {
+            return Ok(ProposalWrite::AlreadyStored);
+        }
+        let viable = records
+            .iter()
+            .filter(|record| {
+                record.proposal.status.is_pending()
+                    && record.proposal.prev_commitment == admission.proposal.prev_commitment
+                    && admission
+                        .queue_tail_nonce
+                        .is_none_or(|tail| record.proposal.nonce > tail)
+            })
+            .map(|record| key(&record.commitment))
+            .collect::<Result<Vec<_>, _>>()?;
+        if viable.len() >= admission.max_viable_proposals {
+            return Ok(ProposalWrite::PendingLimit {
+                limit: admission.max_viable_proposals,
+            });
+        }
+        let mut sizes = self.read_request_sizes(&account_id).await?;
+        let used = viable
+            .iter()
+            .map(|commitment| sizes.get(commitment).copied().unwrap_or(0))
+            .fold(0u64, u64::saturating_add);
+        if used.saturating_add(admission.request_bytes) > admission.max_account_request_bytes {
+            return Ok(ProposalWrite::AccountRequestBytesLimit {
+                limit: admission.max_account_request_bytes,
+                used,
+            });
+        }
+        sizes.retain(|commitment, _| live.contains(commitment));
+        sizes.insert(admitted, admission.request_bytes);
+        self.write_request_sizes(&account_id, &sizes).await?;
+        self.submit_delta_proposal(&admission.commitment, &admission.proposal)
+            .await?;
+        Ok(ProposalWrite::Stored)
+    }
+
     async fn update_delta_proposal(
         &self,
         commitment: &str,
         proposal: &DeltaObject,
     ) -> Result<(), String> {
-        // For filesystem, update is the same as submit
+        // Like the Postgres `UPDATE`, a proposal that is gone stays gone: a signature racing the
+        // execution that consumed or discarded the proposal must not write it back. The lock is
+        // the one execution resolution deletes proposals under.
+        let _guard = self.delta_write_lock.lock().await;
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        if !fs::try_exists(&path)
+            .await
+            .map_err(|e| format!("Failed to check proposal file: {e}"))?
+        {
+            return Ok(());
+        }
         self.submit_delta_proposal(commitment, proposal).await
+    }
+
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let _guard = self.proposal_write_lock.lock().await;
+        let path = self.get_delta_proposal_path(&proposal.account_id, commitment)?;
+        let json = match fs::read_to_string(&path).await {
+            Ok(json) => json,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(format!("Failed to read proposal file: {error}")),
+        };
+        let stored: DeltaObject =
+            serde_json::from_str(&json).map_err(|e| format!("Failed to parse proposal: {e}"))?;
+        if &stored.status != expected {
+            return Ok(false);
+        }
+        self.write_proposal_holding_lock(commitment, proposal)
+            .await?;
+        Ok(true)
     }
 
     async fn delete_delta_proposal(
@@ -773,6 +1101,7 @@ impl StorageBackend for FilesystemService {
         account_id: &str,
         commitment: &str,
     ) -> Result<(), String> {
+        let _guard = self.proposal_write_lock.lock().await;
         let path = self.get_delta_proposal_path(account_id, commitment)?;
 
         // Check if the file exists
@@ -806,6 +1135,7 @@ impl StorageBackend for FilesystemService {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         let path = self.get_delta_path(account_id, nonce);
@@ -815,6 +1145,9 @@ impl StorageBackend for FilesystemService {
         // the intent annotation can neither clobber a concurrent status
         // transition nor lose worker-owned counters.
         let _guard = self.delta_write_lock.lock().await;
+        if let Some(proposal_id) = self.candidate_owner(account_id, nonce).await? {
+            return Ok(AbandonIntent::OwnedByExecution { proposal_id });
+        }
 
         let content = match fs::read_to_string(&path).await {
             Ok(content) => content,
@@ -826,7 +1159,7 @@ impl StorageBackend for FilesystemService {
         let mut delta: DeltaObject = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to deserialize delta: {e}"))?;
 
-        if !delta.status.is_candidate() {
+        if !delta.status.is_candidate() || delta.new_commitment.as_deref() != Some(new_commitment) {
             return Ok(AbandonIntent::NotCandidate);
         }
         if let Some(requested_at) = delta.status.abandon_requested_at() {
@@ -884,9 +1217,23 @@ impl StorageBackend for FilesystemService {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         let _guard = self.delta_write_lock.lock().await;
+
+        // The status re-read right before the write. The metadata store has
+        // its own lock, so a pause landing between this read and the write
+        // is not fenced; the Postgres twin reads under the lock the pause
+        // takes.
+        if let Some(account) = metadata.get(&delta.account_id).await?
+            && let Some(refused) = crate::storage::CandidateSubmission::refused_while_inactive(
+                account.released_at,
+                account.paused_at,
+                account.paused_reason,
+            )
+        {
+            return Ok(refused);
+        }
 
         // Race-proof twin of the service-layer admission gate, mirroring
         // the Postgres transaction: two submissions that both passed the
@@ -895,6 +1242,16 @@ impl StorageBackend for FilesystemService {
         // re-read under the lock so the chain-tail and depth rules
         // (issue #17) see every committed candidate.
         let current_state = self.pull_state(&delta.account_id).await?;
+        if let Some(active) = self
+            .read_executions(&delta.account_id)
+            .await?
+            .into_iter()
+            .find(|record| record.reservation.is_active())
+        {
+            return Ok(crate::storage::CandidateSubmission::ExecutionReserved {
+                proposal_id: active.reservation.proposal_id,
+            });
+        }
         let queue: Vec<crate::storage::QueuedCandidate> = self
             .pull_candidate_deltas(&delta.account_id)
             .await?
@@ -905,7 +1262,7 @@ impl StorageBackend for FilesystemService {
             &current_state.commitment,
             &queue,
             delta,
-            max_pending_candidates,
+            policy.max_pending_candidates,
         ) {
             return Ok(refused);
         }
@@ -918,11 +1275,22 @@ impl StorageBackend for FilesystemService {
             Ok(existing)
                 if existing.status.is_retained() || existing.status.is_client_abandoned() =>
             {
+                // The superseded row is the only record of its
+                // transaction: archive it so the reconcile pass can still
+                // promote it if that transaction lands after all.
+                if policy.archive_superseded {
+                    let superseded_at: DateTime<Utc> = now
+                        .parse()
+                        .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
+                    self.archive_delta_holding_lock(&existing, superseded_at)
+                        .await?;
+                }
                 self.delete_delta(&delta.account_id, delta.nonce).await?;
                 tracing::info!(
                     event = "reconcile_superseded",
                     account_id = %delta.account_id,
                     nonce = delta.nonce,
+                    archived = policy.archive_superseded,
                     "Recoverable row superseded by a new candidate at its nonce"
                 );
             }
@@ -948,21 +1316,43 @@ impl StorageBackend for FilesystemService {
     ) -> Result<crate::storage::PromoteWrite, String> {
         let _guard = self.delta_write_lock.lock().await;
 
-        // Source-kind gate under the lock: a superseded row cannot be
-        // stamped canonical, and a promoted row cannot be superseded
-        // mid-promotion.
-        if let Ok(existing) = self
-            .pull_delta(&promotion.state.account_id, promotion.delta.nonce)
-            .await
-            && !promotion.source.matches(&existing.status)
-        {
-            return Ok(crate::storage::PromoteWrite::NotCandidate);
+        if promotion.source == crate::storage::PromotableKind::Superseded {
+            return self
+                .restore_superseded_holding_lock(metadata, promotion)
+                .await;
         }
 
+        // Source-kind gate under the lock: a superseded row cannot be
+        // stamped canonical, and a promoted row cannot be superseded
+        // mid-promotion. A row that is gone was discarded or resolved
+        // meanwhile, and promoting it would re-create it.
+        match self
+            .pull_delta(&promotion.state.account_id, promotion.delta.nonce)
+            .await
+        {
+            Ok(existing) if promotion.source.matches(&existing.status) => {}
+            Ok(_) => return Ok(crate::storage::PromoteWrite::NotCandidate),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {
+                return Ok(crate::storage::PromoteWrite::NotCandidate);
+            }
+            Err(e) => return Err(e),
+        }
+
+        // The writes below are separate files. A promotion interrupted after the state write
+        // left the state at this promotion's target, and re-running it must finish the job
+        // rather than report a stale base.
         let current_state = self.pull_state(&promotion.state.account_id).await?;
-        if current_state.commitment != promotion.delta.prev_commitment {
+        let resumed = current_state.commitment == promotion.state.commitment;
+        if !resumed && current_state.commitment != promotion.delta.prev_commitment {
             return Ok(crate::storage::PromoteWrite::StaleBase);
         }
+        let promoted_at = DateTime::parse_from_rfc3339(&promotion.now)
+            .map(|at| at.with_timezone(&Utc))
+            .map_err(|e| format!("Failed to parse promotion timestamp: {e}"))?;
+        // The execution settles last, so a committed outcome never names a state that is not
+        // canonical. An interruption before the delta write leaves an execution-owned candidate
+        // that canonicalization promotes again; one after it leaves a canonical candidate under
+        // a held reservation, which reconciliation settles.
         self.submit_state(&promotion.state).await?;
         if let Some(new_auth) = promotion.new_auth {
             metadata
@@ -976,7 +1366,15 @@ impl StorageBackend for FilesystemService {
             &promotion.now,
         )
         .await?;
-        Ok(crate::storage::PromoteWrite::Applied)
+        let settled_execution = self
+            .commit_promoted_execution(
+                &promotion.state.account_id,
+                promotion.delta.nonce,
+                &promotion.state.commitment,
+                promoted_at,
+            )
+            .await?;
+        Ok(crate::storage::PromoteWrite::Applied { settled_execution })
     }
 
     async fn discard_candidate(
@@ -992,6 +1390,11 @@ impl StorageBackend for FilesystemService {
         // metadata flag ops) run under the guard, so holding it across
         // the sequence is deadlock-free.
         let _guard = self.delta_write_lock.lock().await;
+        if kind == DeltaStatusKind::Candidate
+            && self.execution_owns_candidate(account_id, nonce).await?
+        {
+            return Ok(crate::storage::CanonicalWrite::ProtectedByExecution);
+        }
 
         // Guard the delete on the expected lifecycle kind so a stale
         // discard can never remove a row that was promoted meanwhile.
@@ -1048,6 +1451,9 @@ impl StorageBackend for FilesystemService {
         if !delta.status.is_candidate() {
             return Ok(crate::storage::CanonicalWrite::NotCandidate);
         }
+        if !status.is_candidate() && self.execution_owns_candidate(account_id, nonce).await? {
+            return Ok(crate::storage::CanonicalWrite::ProtectedByExecution);
+        }
 
         // A concurrently recorded abandon intent must not be wiped into
         // a retained status, which has no field to carry it: refuse the
@@ -1064,6 +1470,409 @@ impl StorageBackend for FilesystemService {
         self.write(&path, &updated).await?;
 
         Ok(crate::storage::CanonicalWrite::Applied)
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        use crate::storage::ReservationWrite;
+        crate::storage::execution::ensure_execution_lease(
+            &reservation.account_id,
+            &reservation.fence,
+        )?;
+        if reservation.lease_expires_at <= reservation.now {
+            return Ok(ReservationWrite::StaleLease);
+        }
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&reservation.account_id).await?;
+        if let Some(active) = records.iter().find(|record| record.reservation.is_active()) {
+            return Ok(ReservationWrite::AlreadyReserved {
+                holder_id: active.reservation.fence.holder_id.clone(),
+                proposal_id: active.reservation.proposal_id.clone(),
+            });
+        }
+        if self.has_pending_candidate(&reservation.account_id).await? {
+            return Ok(ReservationWrite::CandidateExists);
+        }
+        match self
+            .pull_delta_proposal(&reservation.account_id, &reservation.proposal_id)
+            .await
+        {
+            Ok(_) => {}
+            Err(error) if crate::storage::is_storage_not_found(&error) => {
+                return Ok(ReservationWrite::ProposalGone);
+            }
+            Err(error) => return Err(error),
+        }
+        let attempt = records
+            .iter()
+            .filter(|record| record.reservation.proposal_id == reservation.proposal_id)
+            .map(|record| record.reservation.attempt)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        records.push(crate::storage::ExecutionRecord {
+            reservation: crate::storage::ExecutionReservation {
+                account_id: reservation.account_id.clone(),
+                proposal_id: reservation.proposal_id,
+                attempt,
+                fence: reservation.fence,
+                lease_expires_at: reservation.lease_expires_at,
+                phase: crate::storage::ExecutionPhase::Accepted,
+                ignored_signatures: reservation.ignored_signatures,
+                released_at: None,
+                created_at: reservation.now,
+                updated_at: reservation.now,
+            },
+            evidence: None,
+            outcome: None,
+        });
+        self.write_executions(&reservation.account_id, &records)
+            .await?;
+        Ok(ReservationWrite::Created { attempt })
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        use crate::storage::ReservationUpdate;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let now = Utc::now();
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(ReservationUpdate::NotActive);
+        };
+        if !active.reservation.owns_live(fence, now) {
+            return Ok(ReservationUpdate::StaleLease);
+        }
+        active.reservation.lease_expires_at = lease_expires_at;
+        active.reservation.phase = phase;
+        active.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(ReservationUpdate::Applied)
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &crate::storage::LeaseFence,
+        claimant: &crate::storage::LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        use crate::storage::ClaimWrite;
+        crate::storage::execution::ensure_execution_lease(account_id, claimant)?;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(ClaimWrite::NotActive);
+        };
+        if active.reservation.fence != *expected {
+            return Ok(ClaimWrite::ClaimSuperseded);
+        }
+        if claimant.fence_token <= expected.fence_token || lease_expires_at <= Utc::now() {
+            return Ok(ClaimWrite::StaleLease);
+        }
+        active.reservation.fence = claimant.clone();
+        active.reservation.lease_expires_at = lease_expires_at;
+        active.reservation.updated_at = Utc::now();
+        self.write_executions(account_id, &records).await?;
+        Ok(ClaimWrite::Claimed)
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        Ok(self
+            .read_executions(account_id)
+            .await?
+            .into_iter()
+            .find(|record| record.reservation.is_active()))
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        Ok(self
+            .read_executions(account_id)
+            .await?
+            .into_iter()
+            .filter(|record| record.reservation.proposal_id == proposal_id)
+            .max_by_key(|record| record.reservation.attempt))
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        use crate::storage::AdmissionWrite;
+        admission.ensure_evidence_describes_candidate()?;
+        let account_id = admission.delta.account_id.clone();
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(AdmissionWrite::NotAuthorized);
+        };
+        if !active.reservation.authorizes(
+            &admission.fence,
+            &admission.evidence.proposal_id,
+            admission.evidence.attempt,
+        ) || active.evidence.is_some()
+        {
+            return Ok(AdmissionWrite::NotAuthorized);
+        }
+        if !active
+            .reservation
+            .owns_live(&admission.fence, admission.now)
+        {
+            return Ok(AdmissionWrite::StaleLease);
+        }
+        let current_state = self.pull_state(&account_id).await?;
+        if current_state.commitment != admission.delta.prev_commitment {
+            return Ok(AdmissionWrite::StaleBase);
+        }
+        let account = metadata
+            .get(&account_id)
+            .await?
+            .ok_or_else(|| format!("account metadata for {account_id} disappeared"))?;
+        if account.paused_at.is_some() || account.released_at.is_some() {
+            return Ok(AdmissionWrite::AccountInactive);
+        }
+        if self.has_pending_candidate(&account_id).await? {
+            return Ok(AdmissionWrite::CandidateExists);
+        }
+        match self.pull_delta(&account_id, admission.delta.nonce).await {
+            Ok(existing)
+                if existing.status.is_retained() || existing.status.is_client_abandoned() =>
+            {
+                if admission.archive_parked {
+                    self.archive_delta_holding_lock(&existing, admission.now)
+                        .await?;
+                }
+                self.delete_delta(&account_id, admission.delta.nonce)
+                    .await?;
+            }
+            Ok(_) => return Ok(AdmissionWrite::NonceOccupied),
+            Err(e) if crate::storage::is_storage_not_found(&e) => {}
+            Err(e) => return Err(e),
+        }
+
+        // The filesystem cannot commit several files atomically, so the evidence, written last in
+        // one file, is the commit point. The admission is recorded first, so a crash before the
+        // evidence leaves a pre-boundary attempt that was never sent and whose failure removes
+        // exactly the candidate it wrote; a crash after it has everything a boundary-crossed
+        // attempt needs.
+        let interrupted = InterruptedAdmission {
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            nonce: admission.delta.nonce,
+        };
+        self.write_admission_marker(&account_id, &interrupted)
+            .await?;
+        self.write_delta_holding_lock(&admission.delta).await?;
+        metadata
+            .set_has_pending_candidate(&account_id, true, &admission.now.to_rfc3339())
+            .await?;
+        active.evidence = Some(admission.evidence.clone());
+        active.reservation.phase = crate::storage::ExecutionPhase::SubmissionCommitted;
+        active.reservation.updated_at = admission.now;
+        self.write_executions(&account_id, &records).await?;
+        Ok(AdmissionWrite::Admitted)
+    }
+
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        use crate::storage::ResolveWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&resolution.account_id).await?;
+        let record = match resolvable(&mut records, &resolution) {
+            Ok(record) => record,
+            Err(outcome) => return Ok(outcome),
+        };
+        let Some(evidence) = record.evidence.clone() else {
+            return Ok(ResolveWrite::WrongSideOfBoundary);
+        };
+        record.outcome = Some(failed_outcome(&resolution));
+        record.reservation.released_at = Some(resolution.now);
+        record.reservation.updated_at = resolution.now;
+        // The candidate and, when the cause ends it, the proposal go first: a crash before the
+        // outcome is written leaves an unresolved boundary-crossed attempt for reconciliation,
+        // never a released execution whose proposal still advertises a retry.
+        if let Ok(candidate) = self
+            .pull_delta(&resolution.account_id, evidence.candidate_nonce)
+            .await
+            && candidate.status.is_candidate()
+        {
+            self.delete_delta(&resolution.account_id, evidence.candidate_nonce)
+                .await?;
+        }
+        if resolution.failure.code.ends_proposal() {
+            self.delete_delta_proposal(&resolution.account_id, &resolution.proposal_id)
+                .await?;
+        }
+        self.release_pending_flag_if_queue_empty(
+            metadata,
+            &resolution.account_id,
+            &resolution.now.to_rfc3339(),
+        )
+        .await?;
+        self.write_executions(&resolution.account_id, &records)
+            .await?;
+        Ok(ResolveWrite::Resolved)
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        use crate::storage::ResolveWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(&resolution.account_id).await?;
+        let record = match resolvable(&mut records, &resolution) {
+            Ok(record) => record,
+            Err(outcome) => return Ok(outcome),
+        };
+        if record.evidence.is_some() {
+            return Ok(ResolveWrite::WrongSideOfBoundary);
+        }
+        record.outcome = Some(failed_outcome(&resolution));
+        record.reservation.released_at = Some(resolution.now);
+        record.reservation.updated_at = resolution.now;
+        // A marker for this attempt without evidence is an admission interrupted short of its
+        // commit point, which may have written its candidate. Canonicalization clears the flag
+        // it set.
+        if let Some(interrupted) = self
+            .read_admission_marker(&resolution.account_id)
+            .await?
+            .filter(|marker| marker.belongs_to(&record.reservation))
+        {
+            match self
+                .pull_delta(&resolution.account_id, interrupted.nonce)
+                .await
+            {
+                Ok(delta) if delta.status.is_candidate() => {
+                    self.delete_delta(&resolution.account_id, interrupted.nonce)
+                        .await?;
+                }
+                Ok(_) => {}
+                Err(e) if crate::storage::is_storage_not_found(&e) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        self.write_executions(&resolution.account_id, &records)
+            .await?;
+        Ok(ResolveWrite::Resolved)
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: DateTime<Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        use crate::storage::SettleWrite;
+        let _guard = self.delta_write_lock.lock().await;
+        let mut records = self.read_executions(account_id).await?;
+        let Some(active) = records
+            .iter_mut()
+            .find(|record| record.reservation.is_active())
+        else {
+            return Ok(SettleWrite::NotActive);
+        };
+        if !active.reservation.owns_live(fence, now) {
+            return Ok(SettleWrite::StaleLease);
+        }
+        let Some(evidence) = active.evidence.clone() else {
+            return Ok(SettleWrite::NotPromoted);
+        };
+        let current_state = self.pull_state(account_id).await?;
+        let canonical = match self.pull_delta(account_id, evidence.candidate_nonce).await {
+            Ok(delta) => delta.status.is_canonical(),
+            Err(e) if crate::storage::is_storage_not_found(&e) => false,
+            Err(e) => return Err(e),
+        };
+        if !canonical
+            || !current_state
+                .commitment
+                .eq_ignore_ascii_case(&evidence.expected_commitment)
+        {
+            return Ok(SettleWrite::NotPromoted);
+        }
+        active.outcome = Some(crate::storage::ExecutionOutcome {
+            account_id: account_id.to_string(),
+            proposal_id: active.reservation.proposal_id.clone(),
+            attempt: active.reservation.attempt,
+            terminal: crate::storage::ExecutionTerminal::Committed,
+            resolved_at: now,
+        });
+        active.reservation.released_at = Some(now);
+        active.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(SettleWrite::Settled)
+    }
+
+    /// One account whose records cannot be read is skipped, not allowed to stop reconciliation
+    /// for every other account.
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        let mut unresolved = Vec::new();
+        for account_id in self.fanout_account_ids().await? {
+            match self.read_executions(&account_id).await {
+                Ok(records) => unresolved.extend(
+                    records
+                        .into_iter()
+                        .filter(|record| record.reservation.is_active()),
+                ),
+                Err(error) => {
+                    tracing::error!(%account_id, %error, "cannot read the account's execution records; reconciliation skips it");
+                }
+            }
+        }
+        Ok(unresolved)
+    }
+
+    /// One account whose records cannot be read or rewritten is skipped, not allowed to stop
+    /// the sweep for every other account.
+    async fn prune_execution_records(
+        &self,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let mut pruned = 0;
+        for account_id in self.fanout_account_ids().await? {
+            if pruned >= limit {
+                break;
+            }
+            match self
+                .prune_account_executions(&account_id, cutoff, limit - pruned)
+                .await
+            {
+                Ok(count) => pruned += count,
+                Err(error) => {
+                    tracing::error!(%account_id, %error, "cannot prune the account's execution records; the sweep skips it");
+                }
+            }
+        }
+        Ok(pruned)
     }
 
     // ----------------------------------------------------------------------
@@ -1408,6 +2217,257 @@ impl FilesystemService {
     }
 }
 
+impl FilesystemService {
+    /// Decoded request sizes of the account's proposals, kept beside them because a proposal's
+    /// payload may be encrypted by the time it reaches this backend. Entries for deleted
+    /// proposals are pruned on the next admission and never counted before then.
+    fn get_request_sizes_path(&self, account_id: &str) -> PathBuf {
+        self.app_path
+            .join(account_id)
+            .join("proposal_request_bytes.json")
+    }
+
+    async fn read_request_sizes(
+        &self,
+        account_id: &str,
+    ) -> Result<std::collections::BTreeMap<String, u64>, String> {
+        match fs::read_to_string(self.get_request_sizes_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to deserialize proposal request sizes: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Default::default()),
+            Err(e) => Err(format!("Failed to read proposal request sizes: {e}")),
+        }
+    }
+
+    async fn write_request_sizes(
+        &self,
+        account_id: &str,
+        sizes: &std::collections::BTreeMap<String, u64>,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(sizes)
+            .map_err(|e| format!("Failed to serialize proposal request sizes: {e}"))?;
+        self.write(&self.get_request_sizes_path(account_id), &content)
+            .await
+    }
+
+    fn get_executions_path(&self, account_id: &str) -> PathBuf {
+        self.app_path.join(account_id).join("executions.json")
+    }
+
+    fn get_admission_marker_path(&self, account_id: &str) -> PathBuf {
+        self.app_path
+            .join(account_id)
+            .join("execution_admission.json")
+    }
+
+    async fn read_admission_marker(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<InterruptedAdmission>, String> {
+        match fs::read_to_string(self.get_admission_marker_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map(Some)
+                .map_err(|e| format!("Failed to deserialize the execution admission marker: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!(
+                "Failed to read the execution admission marker: {e}"
+            )),
+        }
+    }
+
+    async fn write_admission_marker(
+        &self,
+        account_id: &str,
+        marker: &InterruptedAdmission,
+    ) -> Result<(), String> {
+        let content = serde_json::to_string(marker)
+            .map_err(|e| format!("Failed to serialize the execution admission marker: {e}"))?;
+        self.write(&self.get_admission_marker_path(account_id), &content)
+            .await
+    }
+
+    async fn read_executions(
+        &self,
+        account_id: &str,
+    ) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        match fs::read_to_string(self.get_executions_path(account_id)).await {
+            Ok(content) => serde_json::from_str(&content)
+                .map_err(|e| format!("Failed to deserialize executions: {e}")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(format!("Failed to read executions file: {e}")),
+        }
+    }
+
+    async fn write_executions(
+        &self,
+        account_id: &str,
+        records: &[crate::storage::ExecutionRecord],
+    ) -> Result<(), String> {
+        let content = serde_json::to_string_pretty(records)
+            .map_err(|e| format!("Failed to serialize executions: {e}"))?;
+        self.write(&self.get_executions_path(account_id), &content)
+            .await
+    }
+
+    /// Drops up to `limit` of one account's prunable attempts under `delta_write_lock`,
+    /// rewriting its records only when one was dropped.
+    async fn prune_account_executions(
+        &self,
+        account_id: &str,
+        cutoff: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        let _guard = self.delta_write_lock.lock().await;
+        let records = self.read_executions(account_id).await?;
+        let mut newest: HashMap<String, u32> = HashMap::new();
+        for record in &records {
+            let attempt = newest
+                .entry(record.reservation.proposal_id.clone())
+                .or_default();
+            *attempt = (*attempt).max(record.reservation.attempt);
+        }
+        let mut proposal_exists: HashMap<String, bool> = HashMap::new();
+        let mut kept = Vec::with_capacity(records.len());
+        let mut dropped = 0;
+        for record in records {
+            if dropped >= limit || !record.finished_before(cutoff) {
+                kept.push(record);
+                continue;
+            }
+            let proposal_id = &record.reservation.proposal_id;
+            let superseded = newest
+                .get(proposal_id)
+                .is_some_and(|attempt| *attempt > record.reservation.attempt);
+            let prunable = superseded || {
+                let exists = match proposal_exists.get(proposal_id) {
+                    Some(exists) => *exists,
+                    None => {
+                        let exists = match self.pull_delta_proposal(account_id, proposal_id).await {
+                            Ok(_) => true,
+                            Err(error) if crate::storage::is_storage_not_found(&error) => false,
+                            Err(error) => return Err(error),
+                        };
+                        proposal_exists.insert(proposal_id.clone(), exists);
+                        exists
+                    }
+                };
+                !exists
+            };
+            if prunable {
+                dropped += 1;
+            } else {
+                kept.push(record);
+            }
+        }
+        if dropped > 0 {
+            self.write_executions(account_id, &kept).await?;
+        }
+        Ok(dropped)
+    }
+
+    /// Whether `delta` is the candidate of an unresolved boundary-crossed
+    /// execution. Callers must hold `delta_write_lock`.
+    async fn execution_owns_candidate(&self, account_id: &str, nonce: u64) -> Result<bool, String> {
+        Ok(self.candidate_owner(account_id, nonce).await?.is_some())
+    }
+
+    /// The proposal whose active, boundary-crossed execution owns the
+    /// candidate at `nonce`. Callers must hold `delta_write_lock`.
+    async fn candidate_owner(
+        &self,
+        account_id: &str,
+        nonce: u64,
+    ) -> Result<Option<String>, String> {
+        Ok(self
+            .read_executions(account_id)
+            .await?
+            .into_iter()
+            .find(|record| record.owns_candidate(nonce))
+            .map(|record| record.reservation.proposal_id))
+    }
+
+    /// Persist `committed` and release the reservation whose candidate was
+    /// just promoted to `promoted_commitment`, reporting whether one did.
+    /// Another delta promoted at the same nonce, such as a recovered client
+    /// delta, is not the execution's transaction and settles nothing.
+    /// Callers must hold `delta_write_lock`.
+    async fn commit_promoted_execution(
+        &self,
+        account_id: &str,
+        nonce: u64,
+        promoted_commitment: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool, String> {
+        let mut records = self.read_executions(account_id).await?;
+        let Some(record) = records.iter_mut().find(|record| {
+            record.owns_candidate(nonce)
+                && record.evidence.as_ref().is_some_and(|evidence| {
+                    evidence
+                        .expected_commitment
+                        .eq_ignore_ascii_case(promoted_commitment)
+                })
+        }) else {
+            return Ok(false);
+        };
+        record.outcome = Some(crate::storage::ExecutionOutcome {
+            account_id: account_id.to_string(),
+            proposal_id: record.reservation.proposal_id.clone(),
+            attempt: record.reservation.attempt,
+            terminal: crate::storage::ExecutionTerminal::Committed,
+            resolved_at: now,
+        });
+        record.reservation.released_at = Some(now);
+        record.reservation.updated_at = now;
+        self.write_executions(account_id, &records).await?;
+        Ok(true)
+    }
+}
+
+fn resolvable<'a>(
+    records: &'a mut [crate::storage::ExecutionRecord],
+    resolution: &crate::storage::ExecutionResolution,
+) -> Result<&'a mut crate::storage::ExecutionRecord, crate::storage::ResolveWrite> {
+    use crate::storage::ResolveWrite;
+    let record = records
+        .iter_mut()
+        .find(|record| {
+            record.reservation.proposal_id == resolution.proposal_id
+                && record.reservation.attempt == resolution.attempt
+        })
+        .ok_or(ResolveWrite::NotAuthorized)?;
+    if record.outcome.is_some() {
+        return Err(ResolveWrite::AlreadyResolved);
+    }
+    if !record.reservation.authorizes(
+        &resolution.fence,
+        &resolution.proposal_id,
+        resolution.attempt,
+    ) {
+        return Err(ResolveWrite::NotAuthorized);
+    }
+    if !record
+        .reservation
+        .owns_live(&resolution.fence, resolution.now)
+    {
+        return Err(ResolveWrite::StaleLease);
+    }
+    Ok(record)
+}
+
+fn failed_outcome(
+    resolution: &crate::storage::ExecutionResolution,
+) -> crate::storage::ExecutionOutcome {
+    crate::storage::ExecutionOutcome {
+        account_id: resolution.account_id.clone(),
+        proposal_id: resolution.proposal_id.clone(),
+        attempt: resolution.attempt,
+        terminal: crate::storage::ExecutionTerminal::Failed {
+            failure: resolution.failure.clone(),
+        },
+        resolved_at: resolution.now,
+    }
+}
+
 const ENCRYPTION_MARKER_FILE: &str = ".encryption-marker.json";
 
 #[async_trait]
@@ -1645,8 +2705,8 @@ mod tests {
     #[tokio::test]
     async fn test_submit_candidate_supersedes_retained_row() {
         // A fresh candidate at a retained row's nonce replaces it: the
-        // client re-supplied its intent for that slot, and the reconcile
-        // pass must never resurrect a base under the new candidate.
+        // client re-supplied its intent for that slot. The replaced row is
+        // archived, never written back over the new candidate.
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
             .await
@@ -1669,7 +2729,12 @@ mod tests {
         let mut candidate = create_test_delta(account_id, 1);
         candidate.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
         let submission = storage
-            .submit_candidate(&metadata_store, &candidate, "2024-11-14T12:10:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &candidate,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
@@ -1709,7 +2774,12 @@ mod tests {
         let mut rebuilt = create_test_delta(account_id, 2);
         rebuilt.status = DeltaStatus::candidate("2024-11-14T12:30:00Z".to_string());
         let submission = storage
-            .submit_candidate(&metadata_store, &rebuilt, "2024-11-14T12:30:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &rebuilt,
+                "2024-11-14T12:30:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(submission, crate::storage::CandidateSubmission::Submitted);
@@ -1720,6 +2790,193 @@ mod tests {
         assert!(
             stored.status.is_candidate(),
             "the rebuilt candidate replaced the abandoned discard"
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn superseded_delta_is_archived_and_restored_when_it_lands_late() {
+        use crate::storage::{CandidatePolicy, CandidatePromotion, PromotableKind, PromoteWrite};
+
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7c7c7c7a7c7c7c017c7c7c7c7c7c7c";
+        seed_account(&storage, &metadata_store, account_id).await;
+        let cutoff: DateTime<Utc> = "2024-11-13T12:00:00Z".parse().unwrap();
+
+        let mut abandoned = create_test_delta(account_id, 1);
+        abandoned.new_commitment = Some("0xa1".to_string());
+        abandoned.delta_payload = serde_json::json!({"intent": "A"});
+        abandoned.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:00:00Z".to_string());
+        storage
+            .submit_delta(&abandoned)
+            .await
+            .expect("abandoned row");
+
+        let mut resubmission = create_test_delta(account_id, 1);
+        resubmission.new_commitment = Some("0xb1".to_string());
+        resubmission.delta_payload = serde_json::json!({"intent": "B"});
+        resubmission.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        assert_eq!(
+            storage
+                .submit_candidate(
+                    &metadata_store,
+                    &resubmission,
+                    "2024-11-14T12:10:00Z",
+                    CandidatePolicy::new(1, true),
+                )
+                .await
+                .expect("resubmission resolves"),
+            crate::storage::CandidateSubmission::Submitted
+        );
+        let archived = storage
+            .pull_superseded_deltas(account_id, cutoff)
+            .await
+            .expect("archive read");
+        assert_eq!(
+            archived.len(),
+            1,
+            "the superseded row is archived, not deleted"
+        );
+        assert_eq!(
+            archived[0].delta.delta_payload,
+            serde_json::json!({"intent": "A"})
+        );
+        assert!(
+            storage
+                .list_accounts_with_recoverable_deltas(cutoff)
+                .await
+                .expect("account scan")
+                .contains(&account_id.to_string())
+        );
+
+        let mut landed_state = create_test_state(account_id);
+        landed_state.commitment = "0xa1".to_string();
+        let mut canonical_a = archived[0].delta.clone();
+        canonical_a.status = DeltaStatus::canonical("2024-11-14T12:20:00Z".to_string());
+        let restore = || CandidatePromotion {
+            state: landed_state.clone(),
+            delta: canonical_a.clone(),
+            new_auth: None,
+            now: "2024-11-14T12:20:00Z".to_string(),
+            fence: None,
+            source: PromotableKind::Superseded,
+        };
+        assert_eq!(
+            storage
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("restore over a candidate resolves"),
+            PromoteWrite::NotCandidate,
+            "an archived row never replaces a live candidate"
+        );
+
+        storage
+            .update_candidate_status(
+                account_id,
+                1,
+                DeltaStatus::retained(
+                    "2024-11-14T12:15:00Z".to_string(),
+                    crate::delta_object::RetainReason::Diverged,
+                ),
+                None,
+            )
+            .await
+            .expect("park B");
+        assert_eq!(
+            storage
+                .promote_candidate(&metadata_store, restore())
+                .await
+                .expect("restore resolves"),
+            PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
+        let row = storage
+            .pull_delta(account_id, 1)
+            .await
+            .expect("row readable");
+        assert!(row.status.is_canonical());
+        assert_eq!(row.delta_payload, serde_json::json!({"intent": "A"}));
+        assert_eq!(
+            storage
+                .pull_state(account_id)
+                .await
+                .expect("state")
+                .commitment,
+            "0xa1"
+        );
+        let archived = storage
+            .pull_superseded_deltas(account_id, cutoff)
+            .await
+            .expect("archive read");
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].delta.new_commitment.as_deref(), Some("0xb1"));
+
+        assert_eq!(
+            storage
+                .prune_superseded_deltas(account_id, "2024-11-15T00:00:00Z".parse().unwrap())
+                .await
+                .expect("prune"),
+            1
+        );
+        assert!(
+            storage
+                .pull_superseded_deltas(account_id, cutoff)
+                .await
+                .expect("archive read")
+                .is_empty()
+        );
+
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn a_resubmission_without_archiving_deletes_the_superseded_row() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7d7d7d7a7d7d7d017d7d7d7d7d7d7d";
+        seed_account(&storage, &metadata_store, account_id).await;
+
+        let mut abandoned = create_test_delta(account_id, 1);
+        abandoned.status =
+            DeltaStatus::discarded_client_abandoned("2024-11-14T12:00:00Z".to_string());
+        storage
+            .submit_delta(&abandoned)
+            .await
+            .expect("abandoned row");
+        let mut resubmission = create_test_delta(account_id, 1);
+        resubmission.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
+        storage
+            .submit_candidate(
+                &metadata_store,
+                &resubmission,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(1, false),
+            )
+            .await
+            .expect("resubmission resolves");
+        assert!(
+            storage
+                .pull_superseded_deltas(account_id, DateTime::<Utc>::MIN_UTC)
+                .await
+                .expect("archive read")
+                .is_empty(),
+            "with retention off nothing is archived"
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);
@@ -1749,8 +3006,18 @@ mod tests {
         second.new_commitment = Some("0xbbb".to_string());
 
         let (left, right) = tokio::join!(
-            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z", 4),
-            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z", 4),
+            storage.submit_candidate(
+                &metadata_store,
+                &first,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
+            storage.submit_candidate(
+                &metadata_store,
+                &second,
+                "2024-11-14T12:10:01Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
         );
         let outcomes = [left.expect("resolves"), right.expect("resolves")];
         assert_eq!(
@@ -1801,8 +3068,18 @@ mod tests {
         second.status = DeltaStatus::candidate("2024-11-14T12:10:01Z".to_string());
 
         let (left, right) = tokio::join!(
-            storage.submit_candidate(&metadata_store, &first, "2024-11-14T12:10:00Z", 4),
-            storage.submit_candidate(&metadata_store, &second, "2024-11-14T12:10:01Z", 4),
+            storage.submit_candidate(
+                &metadata_store,
+                &first,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
+            storage.submit_candidate(
+                &metadata_store,
+                &second,
+                "2024-11-14T12:10:01Z",
+                crate::storage::CandidatePolicy::new(4, true)
+            ),
         );
         let outcomes = [left.expect("resolves"), right.expect("resolves")];
         assert_eq!(
@@ -1823,6 +3100,73 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_submit_candidate_rereads_the_account_status() {
+        use crate::metadata::MetadataStore;
+
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let metadata_store =
+            crate::metadata::filesystem::FilesystemMetadataStore::new(temp_dir.clone())
+                .await
+                .expect("metadata store");
+        let account_id = "0x7d7d7d7a7d7d7d017d7d7d7d7d7d7d";
+        seed_account(&storage, &metadata_store, account_id).await;
+        let now = "2024-11-14T12:10:00Z";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate(now.to_string());
+        delta.prev_commitment = "0x123".to_string();
+        delta.new_commitment = Some("0xc1".to_string());
+
+        metadata_store
+            .set_pause(account_id, chrono::Utc::now(), "compliance")
+            .await
+            .expect("pause");
+        match storage
+            .submit_candidate(
+                &metadata_store,
+                &delta,
+                now,
+                crate::storage::CandidatePolicy::new(1, true),
+            )
+            .await
+            .expect("resolves")
+        {
+            crate::storage::CandidateSubmission::Paused { paused_reason, .. } => {
+                assert_eq!(paused_reason.as_deref(), Some("compliance"))
+            }
+            other => panic!("expected Paused, got {other:?}"),
+        }
+        assert!(
+            storage
+                .pull_candidate_deltas(account_id)
+                .await
+                .expect("candidates")
+                .is_empty()
+        );
+
+        metadata_store
+            .clear_pause(account_id)
+            .await
+            .expect("unpause");
+        assert_eq!(
+            storage
+                .submit_candidate(
+                    &metadata_store,
+                    &delta,
+                    now,
+                    crate::storage::CandidatePolicy::new(1, true)
+                )
+                .await
+                .expect("resolves"),
+            crate::storage::CandidateSubmission::Submitted
+        );
+
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 
     #[tokio::test]
@@ -1855,7 +3199,12 @@ mod tests {
         let first = chained(1, "0x123", "0xc1");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &first, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &first,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -1865,7 +3214,12 @@ mod tests {
         let competing = chained(2, "0x123", "0xother");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &competing, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &competing,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -1875,7 +3229,12 @@ mod tests {
         let second = chained(2, "0xc1", "0xc2");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &second, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &second,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -1885,7 +3244,12 @@ mod tests {
         let third = chained(3, "0xc2", "0xc3");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &third, now, 2)
+                .submit_candidate(
+                    &metadata_store,
+                    &third,
+                    now,
+                    crate::storage::CandidatePolicy::new(2, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -1894,7 +3258,12 @@ mod tests {
         let stale_nonce = chained(2, "0xc2", "0xc3");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &stale_nonce, now, 4)
+                .submit_candidate(
+                    &metadata_store,
+                    &stale_nonce,
+                    now,
+                    crate::storage::CandidatePolicy::new(4, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -1903,7 +3272,12 @@ mod tests {
         let unrelated = chained(3, "0xzzz", "0xc3");
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &unrelated, now, 4)
+                .submit_candidate(
+                    &metadata_store,
+                    &unrelated,
+                    now,
+                    crate::storage::CandidatePolicy::new(4, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::CommitmentMismatch {
@@ -1912,7 +3286,12 @@ mod tests {
         );
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &third, now, 3)
+                .submit_candidate(
+                    &metadata_store,
+                    &third,
+                    now,
+                    crate::storage::CandidatePolicy::new(3, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Submitted
@@ -1938,7 +3317,12 @@ mod tests {
         // with a candidate in flight is the historical single-candidate gate.
         assert_eq!(
             storage
-                .submit_candidate(&metadata_store, &chained(4, "0xzzz", "0xc4"), now, 3)
+                .submit_candidate(
+                    &metadata_store,
+                    &chained(4, "0xzzz", "0xc4"),
+                    now,
+                    crate::storage::CandidatePolicy::new(3, true)
+                )
                 .await
                 .expect("resolves"),
             crate::storage::CandidateSubmission::Conflict
@@ -1965,7 +3349,12 @@ mod tests {
         for (prev, label) in [("0xc3", "the orphaned tail"), ("0x123", "the stored base")] {
             assert_eq!(
                 storage
-                    .submit_candidate(&metadata_store, &chained(4, prev, "0xc4"), now, 8)
+                    .submit_candidate(
+                        &metadata_store,
+                        &chained(4, prev, "0xc4"),
+                        now,
+                        crate::storage::CandidatePolicy::new(8, true)
+                    )
                     .await
                     .expect("resolves"),
                 crate::storage::CandidateSubmission::Conflict,
@@ -2021,7 +3410,12 @@ mod tests {
         for delta in [&first, &second] {
             assert_eq!(
                 storage
-                    .submit_candidate(&metadata_store, delta, now, 4)
+                    .submit_candidate(
+                        &metadata_store,
+                        delta,
+                        now,
+                        crate::storage::CandidatePolicy::new(4, true)
+                    )
                     .await
                     .expect("resolves"),
                 crate::storage::CandidateSubmission::Submitted
@@ -2048,7 +3442,12 @@ mod tests {
             )
             .await
             .expect("promotion resolves");
-        assert_eq!(outcome, crate::storage::PromoteWrite::Applied);
+        assert_eq!(
+            outcome,
+            crate::storage::PromoteWrite::Applied {
+                settled_execution: false
+            }
+        );
         assert!(
             flag().await,
             "the queued successor keeps the account flagged"
@@ -2091,7 +3490,12 @@ mod tests {
         stale.status = DeltaStatus::candidate("2024-11-14T12:10:00Z".to_string());
         stale.prev_commitment = "0xstale".to_string();
         let submission = storage
-            .submit_candidate(&metadata_store, &stale, "2024-11-14T12:10:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &stale,
+                "2024-11-14T12:10:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(
@@ -2111,7 +3515,12 @@ mod tests {
         let mut late = create_test_delta(account_id, 1);
         late.status = DeltaStatus::candidate("2024-11-14T12:20:00Z".to_string());
         let submission = storage
-            .submit_candidate(&metadata_store, &late, "2024-11-14T12:20:00Z", 4)
+            .submit_candidate(
+                &metadata_store,
+                &late,
+                "2024-11-14T12:20:00Z",
+                crate::storage::CandidatePolicy::new(4, true),
+            )
             .await
             .expect("submission resolves");
         assert_eq!(submission, crate::storage::CandidateSubmission::Conflict);
@@ -2137,7 +3546,7 @@ mod tests {
         storage.submit_delta(&delta).await.expect("submit works");
 
         let intent = storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("intent recording works");
         assert_eq!(intent, AbandonIntent::Recorded);
@@ -2148,6 +3557,29 @@ mod tests {
             stored.status.abandon_requested_at(),
             Some("2024-11-14T12:05:00Z")
         );
+    }
+
+    #[tokio::test]
+    async fn test_request_candidate_abandon_leaves_another_candidate_at_the_nonce() {
+        // A candidate that took the nonce meanwhile (a Guardian execution's)
+        // is never marked.
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut delta = create_test_delta(account_id, 1);
+        delta.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&delta).await.expect("submit works");
+
+        let intent = storage
+            .request_candidate_abandon(account_id, 1, "0xother", "2024-11-14T12:05:00Z")
+            .await
+            .expect("call works");
+        assert_eq!(intent, AbandonIntent::NotCandidate);
+        let stored = storage.pull_delta(account_id, 1).await.expect("readable");
+        assert_eq!(stored.status.abandon_requested_at(), None);
     }
 
     #[tokio::test]
@@ -2163,11 +3595,11 @@ mod tests {
         storage.submit_delta(&delta).await.expect("submit works");
 
         storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("first request works");
         let retry = storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:09:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:09:00Z")
             .await
             .expect("retry works");
         assert_eq!(
@@ -2192,7 +3624,7 @@ mod tests {
         storage.submit_delta(&delta).await.expect("submit works");
 
         let intent = storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("call works");
         assert_eq!(intent, AbandonIntent::NotCandidate);
@@ -2221,7 +3653,7 @@ mod tests {
 
         // Client records the intent.
         storage
-            .request_candidate_abandon(account_id, 1, "2024-11-14T12:05:00Z")
+            .request_candidate_abandon(account_id, 1, "0x456", "2024-11-14T12:05:00Z")
             .await
             .expect("intent recording works");
 
@@ -2275,7 +3707,7 @@ mod tests {
             .expect("Failed to create storage");
 
         let intent = storage
-            .request_candidate_abandon("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1, "now")
+            .request_candidate_abandon("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1, "0x456", "now")
             .await
             .expect("call works");
         assert_eq!(intent, AbandonIntent::NotCandidate);
@@ -2346,6 +3778,57 @@ mod tests {
         // ...but not in the object's own serialization, the `GET /state` body.
         let body = serde_json::to_value(&state).expect("serializes");
         assert!(body.get("nonce").is_none(), "got {body}");
+
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    #[tokio::test]
+    async fn replace_state_writes_only_over_the_expected_commitment() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7c7c7c7a7c7c7c017c7c7c7c7c7c7c";
+        let state = |commitment: &str, nonce| StateObject {
+            account_id: account_id.to_string(),
+            state_json: serde_json::json!({ "test": commitment }),
+            commitment: commitment.to_string(),
+            nonce: Some(nonce),
+            created_at: "2024-11-14T12:00:00Z".to_string(),
+            updated_at: "2024-11-14T12:00:00Z".to_string(),
+            auth_scheme: "falcon".to_string(),
+        };
+        storage
+            .submit_state(&state("0xpromoted", 2))
+            .await
+            .expect("submit");
+
+        assert_eq!(
+            storage
+                .replace_state(&state("0xolder", 1), "0xstale")
+                .await
+                .unwrap(),
+            crate::storage::StateReplace::StateMoved {
+                current: "0xpromoted".to_string()
+            }
+        );
+        assert_eq!(
+            storage.pull_state(account_id).await.unwrap().commitment,
+            "0xpromoted",
+            "a refused replace writes nothing"
+        );
+
+        assert_eq!(
+            storage
+                .replace_state(&state("0xolder", 1), "0xpromoted")
+                .await
+                .unwrap(),
+            crate::storage::StateReplace::Replaced
+        );
+        assert_eq!(
+            storage.pull_state(account_id).await.unwrap().commitment,
+            "0xolder"
+        );
 
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
@@ -2697,6 +4180,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn updating_a_deleted_proposal_does_not_bring_it_back() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let service = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let proposal = create_test_delta(account_id, 1);
+        let commitment = "0xabc123";
+        service
+            .submit_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+        service
+            .delete_delta_proposal(account_id, commitment)
+            .await
+            .unwrap();
+        service
+            .update_delta_proposal(commitment, &proposal)
+            .await
+            .unwrap();
+        assert!(
+            service
+                .pull_delta_proposal(account_id, commitment)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
     async fn test_update_delta_proposal() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())
@@ -2729,6 +4241,97 @@ mod tests {
         assert_eq!(pulled_proposal.delta_payload["updated"], true);
 
         // Cleanup
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
+    /// Two signings that read the same row: the first write commits, the
+    /// second is refused instead of replacing it, and commits once rebuilt
+    /// on the current row, so both approvals survive.
+    #[tokio::test]
+    async fn test_update_delta_proposal_if_status_refuses_a_stale_read() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let commitment = "0xabc123";
+        let pending = |signers: &[&str]| DeltaStatus::Pending {
+            timestamp: "2026-10-19T00:00:00Z".to_string(),
+            proposer_id: "0xproposer".to_string(),
+            cosigner_sigs: signers
+                .iter()
+                .map(|signer| crate::delta_object::CosignerSignature {
+                    signature: crate::delta_object::ProposalSignature::Falcon {
+                        signature: format!("0xsig-{signer}"),
+                    },
+                    timestamp: "2026-10-19T00:00:00Z".to_string(),
+                    signer_id: signer.to_string(),
+                })
+                .collect(),
+        };
+        let with_status = |status: DeltaStatus| DeltaObject {
+            status,
+            ..create_test_delta(account_id, 1)
+        };
+        storage
+            .submit_delta_proposal(commitment, &with_status(pending(&["0xc1"])))
+            .await
+            .expect("Submit proposal failed");
+        let read = pending(&["0xc1"]);
+
+        let first = storage
+            .update_delta_proposal_if_status(
+                commitment,
+                &with_status(pending(&["0xc1", "0xc2"])),
+                &read,
+            )
+            .await
+            .expect("first write");
+        let second = storage
+            .update_delta_proposal_if_status(
+                commitment,
+                &with_status(pending(&["0xc1", "0xc4"])),
+                &read,
+            )
+            .await
+            .expect("second write");
+        assert!(first, "the first write from the read commits");
+        assert!(
+            !second,
+            "a write from a stale read must not replace the row"
+        );
+
+        let current = storage
+            .pull_delta_proposal(account_id, commitment)
+            .await
+            .expect("pull")
+            .status;
+        assert_eq!(current, pending(&["0xc1", "0xc2"]));
+        let retried = storage
+            .update_delta_proposal_if_status(
+                commitment,
+                &with_status(pending(&["0xc1", "0xc2", "0xc4"])),
+                &current,
+            )
+            .await
+            .expect("retried write");
+        assert!(retried);
+        assert_eq!(
+            storage
+                .pull_delta_proposal(account_id, commitment)
+                .await
+                .expect("pull")
+                .status,
+            pending(&["0xc1", "0xc2", "0xc4"])
+        );
+
+        let missing = storage
+            .update_delta_proposal_if_status("0xdead", &with_status(pending(&["0xc1"])), &read)
+            .await
+            .expect("missing row");
+        assert!(!missing, "a row that is gone is not recreated");
+
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 

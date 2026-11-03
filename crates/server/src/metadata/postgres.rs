@@ -50,6 +50,18 @@ impl PostgresMetadataStore {
     }
 }
 
+/// Account ids whose authorized cosigners include `$1`. Each arm of the
+/// `OR` must equal its GIN index expression for the planner to use it (see
+/// [`PostgresMetadataStore::find_by_cosigner_commitment`]).
+const COSIGNER_LOOKUP_SQL: &str = "SELECT account_id FROM account_metadata \
+     WHERE COALESCE( \
+         auth -> 'MidenFalconRpo' -> 'cosigner_commitments', \
+         auth -> 'MidenEcdsa'     -> 'cosigner_commitments', \
+         '[]'::jsonb \
+     ) @> to_jsonb($1::text) \
+     OR (auth -> 'Miden' -> 'cosigners') \
+         @> jsonb_build_array(jsonb_build_object('commitment', $1::text))";
+
 /// Row shape for the cosigner-commitment lookup query. Uses `QueryableByName`
 /// because the lookup is expressed as raw SQL (`@> to_jsonb($1::text)`) rather
 /// than the diesel DSL.
@@ -430,9 +442,15 @@ impl MetadataStore for PostgresMetadataStore {
         }
     }
 
-    /// Atomic override of the trait default: the candidate-row check and the
-    /// flag write run in one statement against one snapshot, so a raced-in
-    /// submission's flag can never be clobbered (see the trait doc).
+    /// Override of the trait default that can never clobber a raced-in
+    /// submission's flag (see the trait doc). One transaction locks the
+    /// metadata row first, the lock every candidate submission holds until
+    /// it commits, and only then runs the conditional clear. A lone
+    /// `UPDATE ... WHERE NOT EXISTS (candidate)` is not enough under READ
+    /// COMMITTED: when it waits on a submission's row lock it re-checks
+    /// only the row's own columns afterwards, while the `NOT EXISTS`
+    /// subquery keeps the statement's original snapshot and misses the
+    /// candidate that submission just committed.
     async fn clear_pending_candidate_if_none(
         &self,
         account_id: &str,
@@ -448,25 +466,41 @@ impl MetadataStore for PostgresMetadataStore {
             .parse()
             .map_err(|e| format!("Failed to parse timestamp: {e}"))?;
 
-        diesel::update(account_metadata::table)
-            .filter(account_metadata::account_id.eq(account_id))
-            .filter(account_metadata::has_pending_candidate.eq(true))
-            .filter(diesel::dsl::not(diesel::dsl::exists(
-                crate::schema::deltas::table
-                    .filter(crate::schema::deltas::account_id.eq(account_id))
-                    .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
-                        "status->>'status' = 'candidate'",
-                    )),
-            )))
-            .set((
-                account_metadata::has_pending_candidate.eq(false),
-                account_metadata::updated_at.eq(updated_at),
-            ))
-            .execute(&mut conn)
-            .await
-            .map_err(|e| format!("Failed to clear pending-candidate flag: {e}"))?;
-
-        Ok(())
+        let account = account_id.to_string();
+        conn.transaction::<(), diesel::result::Error, _>(|conn| {
+            async move {
+                let locked: Option<String> = account_metadata::table
+                    .filter(account_metadata::account_id.eq(&account))
+                    .select(account_metadata::account_id)
+                    .for_update()
+                    .first(conn)
+                    .await
+                    .optional()?;
+                if locked.is_none() {
+                    return Ok(());
+                }
+                diesel::update(account_metadata::table)
+                    .filter(account_metadata::account_id.eq(&account))
+                    .filter(account_metadata::has_pending_candidate.eq(true))
+                    .filter(diesel::dsl::not(diesel::dsl::exists(
+                        crate::schema::deltas::table
+                            .filter(crate::schema::deltas::account_id.eq(&account))
+                            .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
+                                "status->>'status' = 'candidate'",
+                            )),
+                    )))
+                    .set((
+                        account_metadata::has_pending_candidate.eq(false),
+                        account_metadata::updated_at.eq(updated_at),
+                    ))
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            }
+            .scope_boxed()
+        })
+        .await
+        .map_err(|e| format!("Failed to clear pending-candidate flag: {e}"))
     }
 
     /// First-writer-wins pause via `COALESCE` — re-pausing a paused
@@ -731,24 +765,20 @@ impl MetadataStore for PostgresMetadataStore {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        // The COALESCE expression must match the GIN index (see migration
-        // 2026-05-05-000001_cosigner_commitment_index/up.sql) exactly so the
-        // planner uses the index for `@>` containment lookups. EVM rows store
+        // Each arm must match its GIN index expression exactly so the
+        // planner uses the index for `@>` containment lookups: the COALESCE
+        // over the single-scheme variants (migration
+        // 2026-05-05-000001_cosigner_commitment_index/up.sql) and the
+        // per-signer-scheme cosigner objects (migration
+        // 2026-10-20-000001_miden_auth_cosigner_index/up.sql). EVM rows store
         // signers under `auth.EvmEcdsa.signers` (not `cosigner_commitments`)
         // and so coalesce to `'[]'::jsonb` — they contribute zero index entries
         // and never match.
-        let rows: Vec<LookupAccountIdRow> = diesel::sql_query(
-            "SELECT account_id FROM account_metadata \
-             WHERE COALESCE( \
-                 auth -> 'MidenFalconRpo' -> 'cosigner_commitments', \
-                 auth -> 'MidenEcdsa'     -> 'cosigner_commitments', \
-                 '[]'::jsonb \
-             ) @> to_jsonb($1::text)",
-        )
-        .bind::<Text, _>(commitment)
-        .load(&mut conn)
-        .await
-        .map_err(|e| format!("Failed to find by cosigner commitment: {e}"))?;
+        let rows: Vec<LookupAccountIdRow> = diesel::sql_query(COSIGNER_LOOKUP_SQL)
+            .bind::<Text, _>(commitment)
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to find by cosigner commitment: {e}"))?;
 
         Ok(rows.into_iter().map(|r| r.account_id).collect())
     }
@@ -1796,6 +1826,129 @@ mod tests {
             .expect("cleanup");
     }
 
+    #[derive(diesel::QueryableByName)]
+    struct QueryPlanRow {
+        #[diesel(sql_type = Text)]
+        #[diesel(column_name = "QUERY PLAN")]
+        line: String,
+    }
+
+    /// The per-signer `Miden` auth rows are found by either cosigner, next to
+    /// single-scheme rows, and the lookup reaches them through
+    /// `idx_account_metadata_miden_cosigners` (issue #563).
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn cosigner_lookup_finds_per_signer_auth_rows_through_their_index() {
+        use guardian_shared::SignatureScheme;
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let stamp = Utc::now().timestamp_micros();
+        let commitment = |byte: &str| format!("0x{}{:0>16x}", byte.repeat(24), stamp);
+        let (falcon, ecdsa, unknown) = (commitment("a1"), commitment("b2"), commitment("c3"));
+        let mixed_id = format!("0xmixed{stamp}");
+        let legacy_id = format!("0xlegacy{stamp}");
+        let now = Utc::now().to_rfc3339();
+        let metadata = |account_id: &str, auth: Auth| AccountMetadata {
+            account_id: account_id.to_string(),
+            auth,
+            network_config: NetworkConfig::miden_default(),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        };
+        let mixed = Auth::Miden {
+            cosigners: vec![
+                crate::metadata::auth::MidenCosigner {
+                    commitment: falcon.clone(),
+                    scheme: SignatureScheme::Falcon,
+                },
+                crate::metadata::auth::MidenCosigner {
+                    commitment: ecdsa.clone(),
+                    scheme: SignatureScheme::Ecdsa,
+                },
+            ],
+            guardian_scheme: SignatureScheme::Ecdsa,
+        };
+        assert!(
+            store
+                .create(metadata(&mixed_id, mixed.clone()))
+                .await
+                .unwrap()
+        );
+        assert!(
+            store
+                .create(metadata(
+                    &legacy_id,
+                    Auth::MidenEcdsa {
+                        cosigner_commitments: vec![ecdsa.clone()],
+                    },
+                ))
+                .await
+                .unwrap()
+        );
+        assert_eq!(store.get(&mixed_id).await.unwrap().unwrap().auth, mixed);
+
+        let mut found = store.find_by_cosigner_commitment(&ecdsa).await.unwrap();
+        found.sort();
+        let mut expected = vec![legacy_id.clone(), mixed_id.clone()];
+        expected.sort();
+        assert_eq!(found, expected);
+        assert_eq!(
+            store.find_by_cosigner_commitment(&falcon).await.unwrap(),
+            vec![mixed_id.clone()]
+        );
+        assert!(
+            store
+                .find_by_cosigner_commitment(&unknown)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // With sequential scans priced out the planner must answer from the
+        // two lookup indexes, which it can only do while each arm of the
+        // query matches its index expression.
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("SET enable_seqscan TO off")
+            .execute(&mut conn)
+            .await
+            .expect("disable seqscan");
+        let plan: Vec<QueryPlanRow> = diesel::sql_query(format!("EXPLAIN {COSIGNER_LOOKUP_SQL}"))
+            .bind::<Text, _>(&falcon)
+            .load(&mut conn)
+            .await
+            .expect("explain lookup");
+        let plan = plan
+            .into_iter()
+            .map(|row| row.line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        diesel::sql_query("RESET enable_seqscan")
+            .execute(&mut conn)
+            .await
+            .expect("reset seqscan");
+        assert!(
+            plan.contains("idx_account_metadata_miden_cosigners"),
+            "{plan}"
+        );
+        assert!(
+            plan.contains("idx_account_metadata_cosigner_commitments"),
+            "{plan}"
+        );
+
+        for account_id in [&mixed_id, &legacy_id] {
+            diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+                .bind::<Text, _>(account_id)
+                .execute(&mut conn)
+                .await
+                .expect("cleanup");
+        }
+    }
+
     #[tokio::test]
     #[ignore = "requires Postgres; reverts and re-applies the newest migration; run ./scripts/test-postgres.sh"]
     async fn migration_preserves_floor_for_non_canonical_signer_metadata() {
@@ -1864,6 +2017,33 @@ mod tests {
                 stored_auth_timestamp(&store, account_id, LEGACY_ACCOUNT_AUTH_FLOOR).await,
                 4242
             );
+        }
+    }
+
+    /// Poll `pg_stat_activity` until another backend is waiting on a lock in
+    /// a statement against `account_metadata`, panicking after 10 seconds.
+    async fn wait_until_blocked_on_account_metadata(store: &PostgresMetadataStore) {
+        let mut conn = store.pool.get().await.expect("observer conn");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let blocked: i64 = diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
+                "(SELECT count(*) FROM pg_stat_activity \
+                  WHERE datname = current_database() \
+                    AND pid <> pg_backend_pid() \
+                    AND wait_event_type = 'Lock' \
+                    AND query ILIKE '%account_metadata%')",
+            ))
+            .get_result(&mut conn)
+            .await
+            .expect("pg_stat_activity read");
+            if blocked > 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the clear never blocked on the submission's row lock"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     }
 
@@ -1986,6 +2166,95 @@ mod tests {
         );
 
         let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn clear_pending_candidate_waits_for_an_in_flight_submission() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PostgresMetadataStore::new(&url, 4).await.expect("store"));
+        let account_id = format!("0xclearrace{}", Utc::now().timestamp_micros());
+        let now = Utc::now().to_rfc3339();
+
+        // The state a retained candidate leaves behind: flag still set, no
+        // candidate row.
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query(
+            "INSERT INTO account_metadata \
+             (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+             VALUES ($1, '{}'::jsonb, '{}'::jsonb, now(), now(), true)",
+        )
+        .bind::<Text, _>(&account_id)
+        .execute(&mut conn)
+        .await
+        .expect("insert metadata");
+
+        // A submission in the shape of `submit_candidate`: lock the metadata
+        // row, insert the candidate, set the flag, and hold the transaction
+        // open while the worker's clear runs against it.
+        let clear_store = store.clone();
+        let observer = store.clone();
+        let clear_account = account_id.clone();
+        let clear_now = now.clone();
+        let txn_account = account_id.clone();
+        let clear = conn
+            .transaction::<_, diesel::result::Error, _>(|conn| {
+                async move {
+                    account_metadata::table
+                        .filter(account_metadata::account_id.eq(&txn_account))
+                        .select(account_metadata::account_id)
+                        .for_update()
+                        .first::<String>(conn)
+                        .await?;
+                    diesel::sql_query(
+                        "INSERT INTO deltas \
+                         (account_id, nonce, prev_commitment, delta_payload, status, status_kind, status_timestamp) \
+                         VALUES ($1, 1, '0x0', '{}'::jsonb, '{\"status\":\"candidate\"}'::jsonb, 'candidate', now())",
+                    )
+                    .bind::<Text, _>(&txn_account)
+                    .execute(conn)
+                    .await?;
+                    diesel::update(account_metadata::table)
+                        .filter(account_metadata::account_id.eq(&txn_account))
+                        .set(account_metadata::has_pending_candidate.eq(true))
+                        .execute(conn)
+                        .await?;
+                    let clear = tokio::spawn(async move {
+                        clear_store
+                            .clear_pending_candidate_if_none(&clear_account, &clear_now)
+                            .await
+                    });
+                    // Commit only once the clear is observably waiting on
+                    // this transaction's row lock: a clear that started
+                    // after the commit would pass against the old
+                    // single-statement implementation too.
+                    wait_until_blocked_on_account_metadata(&observer).await;
+                    Ok(clear)
+                }
+                .scope_boxed()
+            })
+            .await
+            .expect("submission commits");
+        clear
+            .await
+            .expect("clear task")
+            .expect("clear after the submission");
+
+        assert!(
+            flag(&store, &account_id).await,
+            "a clear that raced the submission must not unset its flag",
+        );
+
+        diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .expect("cleanup deltas");
         diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)

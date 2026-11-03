@@ -30,8 +30,13 @@ describe('exported manifest', () => {
     }
   });
 
+  // The SDK cannot build a mixed-scheme account yet; the Rust driver's
+  // deterministic leg builds its own, so only scenarios this driver would run
+  // are held to it.
   it('never asks this driver for a mixed-scheme account', () => {
-    const mixed = manifest.scenarios.filter((scenario) => scenario.scheme === 'mixed');
+    const mixed = manifest.scenarios.filter(
+      (scenario) => scenario.scheme === 'mixed' && appliesTo(scenario, 'typescript'),
+    );
     expect(mixed).toEqual([]);
   });
 });

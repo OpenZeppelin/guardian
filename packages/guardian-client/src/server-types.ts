@@ -1,3 +1,6 @@
+import type { TransactionRequestEnvelope } from './request-envelope.js';
+import type { ServerExecutionCapabilityWire } from './execution.js';
+
 export interface ServerFalconSignature {
   scheme: 'falcon';
   signature: string;
@@ -43,6 +46,11 @@ export interface ServerProposalMetadata {
   target_threshold?: number;
   required_signatures?: number;
   signer_commitments?: string[];
+  /**
+   * Target signer schemes (`"falcon"` / `"ecdsa"`), index-aligned with
+   * `signer_commitments` (issue #563). Proposer-supplied and stored as sent.
+   */
+  signer_schemes?: string[];
   target_procedure?: string;
   salt?: string;
   description?: string;
@@ -78,6 +86,7 @@ export interface ServerDeltaObject {
     data?: string;
     signatures?: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
+    transaction_request?: TransactionRequestEnvelope;
   };
   ack_sig?: string;
   ack_pubkey?: string;
@@ -121,7 +130,13 @@ export interface ServerCanonicalNonceResponse {
 
 export type ServerAuthConfig =
   | { MidenFalconRpo: { cosigner_commitments: string[] } }
-  | { MidenEcdsa: { cosigner_commitments: string[] } };
+  | { MidenEcdsa: { cosigner_commitments: string[] } }
+  | {
+      Miden: {
+        cosigners: { commitment: string; scheme: 'falcon' | 'ecdsa' }[];
+        guardian_scheme: 'falcon' | 'ecdsa';
+      };
+    };
 
 export interface ServerConfigureRequest {
   account_id: string;
@@ -143,6 +158,7 @@ export interface ServerDeltaProposalRequest {
     tx_summary: { data: string };
     signatures: Array<{ signer_id: string; signature: ServerProposalSignature }>;
     metadata?: ServerProposalMetadata;
+    transaction_request?: TransactionRequestEnvelope;
   };
 }
 
@@ -158,6 +174,7 @@ export interface ServerProposalsResponse {
 export interface ServerAbandonCandidateRequest {
   account_id: string;
   nonce: number;
+  proposal_id: string;
 }
 
 export interface ServerAbandonCandidateResponse {
@@ -165,6 +182,7 @@ export interface ServerAbandonCandidateResponse {
   nonce: number;
   state: 'pending' | 'abandoned' | 'retained';
   abandon_requested_at?: string;
+  commitment: string;
 }
 
 export interface ServerSignProposalRequest {
@@ -185,6 +203,7 @@ export interface ServerStatusResponse {
   environment: string;
   started_at: string;
   uptime_seconds: number;
+  execution?: ServerExecutionCapabilityWire | null;
   sessions?: {
     max_ttl_seconds: number;
   };

@@ -1,0 +1,9 @@
+# tier backend depth group expected [note]
+quick postgres 2 safety PASS
+quick postgres 2 listed PASS
+quick filesystem 2 safety PASS
+quick filesystem 2 listed FAIL:QueuedAccountIsListed [F2: filesystem plain flag clear, accepted residual]
+deep postgres 1 safety PASS
+deep postgres 1 listed PASS
+deep filesystem 1 safety PASS
+deep filesystem 1 listed FAIL:QueuedAccountIsListed [F2: filesystem plain flag clear, accepted residual]

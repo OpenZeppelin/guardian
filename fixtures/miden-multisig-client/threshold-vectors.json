@@ -1,0 +1,92 @@
+[
+  {
+    "name": "no overrides",
+    "threshold": 2,
+    "overrides": {},
+    "expected": {
+      "add_signer": 2,
+      "remove_signer": 2,
+      "change_threshold": 2,
+      "update_procedure_threshold": 2,
+      "switch_guardian": 2,
+      "consume_notes": 2,
+      "p2id": 2,
+      "custom": 2
+    }
+  },
+  {
+    "name": "a lower send override keeps a transfer at the create_note default",
+    "threshold": 2,
+    "overrides": { "send_asset": 1 },
+    "expected": {
+      "add_signer": 2,
+      "remove_signer": 2,
+      "change_threshold": 2,
+      "update_procedure_threshold": 2,
+      "switch_guardian": 2,
+      "consume_notes": 2,
+      "p2id": 2,
+      "custom": 2
+    }
+  },
+  {
+    "name": "send and create_note both lowered",
+    "threshold": 2,
+    "overrides": { "send_asset": 1, "create_note": 1 },
+    "expected": {
+      "add_signer": 2,
+      "remove_signer": 2,
+      "change_threshold": 2,
+      "update_procedure_threshold": 2,
+      "switch_guardian": 2,
+      "consume_notes": 2,
+      "p2id": 1,
+      "custom": 2
+    }
+  },
+  {
+    "name": "a higher create_note override raises a transfer",
+    "threshold": 2,
+    "overrides": { "send_asset": 1, "create_note": 3, "update_procedure_threshold": 3 },
+    "expected": {
+      "add_signer": 2,
+      "remove_signer": 2,
+      "change_threshold": 2,
+      "update_procedure_threshold": 3,
+      "switch_guardian": 2,
+      "consume_notes": 2,
+      "p2id": 3,
+      "custom": 2
+    }
+  },
+  {
+    "name": "a lower receive override lowers consume_notes only",
+    "threshold": 2,
+    "overrides": { "receive_asset": 1 },
+    "expected": {
+      "add_signer": 2,
+      "remove_signer": 2,
+      "change_threshold": 2,
+      "update_procedure_threshold": 2,
+      "switch_guardian": 2,
+      "consume_notes": 1,
+      "p2id": 2,
+      "custom": 2
+    }
+  },
+  {
+    "name": "auth procedure overrides",
+    "threshold": 2,
+    "overrides": { "update_signers": 3, "update_procedure_threshold": 3, "update_guardian": 1 },
+    "expected": {
+      "add_signer": 3,
+      "remove_signer": 3,
+      "change_threshold": 3,
+      "update_procedure_threshold": 3,
+      "switch_guardian": 1,
+      "consume_notes": 2,
+      "p2id": 2,
+      "custom": 2
+    }
+  }
+]

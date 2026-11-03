@@ -1,0 +1,25 @@
+# sdk1 sdk2 depth property expected [note]
+rust rust 1 ExecutesOnPinnedBase PASS
+rust rust 1 AckedForLandingBase PASS
+rust rust 1 LandedStepRecorded PASS
+rust rust 1 GuardianCatchesUp PASS
+rust rust 2 ExecutesOnPinnedBase PASS
+rust rust 2 AckedForLandingBase PASS
+rust rust 2 LandedStepRecorded PASS
+rust rust 2 GuardianCatchesUp PASS
+ts ts 1 ExecutesOnPinnedBase PASS
+ts ts 1 AckedForLandingBase PASS
+ts ts 1 LandedStepRecorded PASS
+ts ts 1 GuardianCatchesUp PASS
+ts ts 2 ExecutesOnPinnedBase PASS
+ts ts 2 AckedForLandingBase PASS
+ts ts 2 LandedStepRecorded PASS
+ts ts 2 GuardianCatchesUp PASS
+rust ts 1 ExecutesOnPinnedBase PASS
+rust ts 1 AckedForLandingBase PASS
+rust ts 1 LandedStepRecorded PASS
+rust ts 1 GuardianCatchesUp PASS
+rust ts 2 ExecutesOnPinnedBase PASS
+rust ts 2 AckedForLandingBase PASS
+rust ts 2 LandedStepRecorded PASS
+rust ts 2 GuardianCatchesUp PASS

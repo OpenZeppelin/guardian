@@ -68,7 +68,9 @@ pub fn qualification_claim(
 pub fn not_covered(operator_covered: bool) -> Vec<String> {
     let mut entries = vec![
         "EVM proposal surface (out of scope)".to_string(),
-        "mixed-scheme accounts (capability gap: no account builder can construct one)".to_string(),
+        "mixed-scheme accounts through the multisig SDKs (capability gap: neither SDK builds one \
+         yet; the server is qualified against the driver's own mixed-scheme account)"
+            .to_string(),
         "published package tarball consumers (downstream projects out of scope)".to_string(),
     ];
     if !operator_covered {

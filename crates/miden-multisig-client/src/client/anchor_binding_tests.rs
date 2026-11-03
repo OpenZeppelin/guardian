@@ -19,6 +19,7 @@ use miden_protocol::transaction::RawOutputNote;
 use super::test_support::{
     chain_with_notes, multisig_account, offline_client_parts_with_keystore,
     offline_client_with_node_parts, p2id_note_for, pending_proto_delta, registered_state,
+    signer_specs,
 };
 use crate::account::MultisigAccount;
 use crate::execution::build_final_transaction_request;
@@ -78,12 +79,12 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        proposer.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -169,12 +170,12 @@ async fn cosigner_at_a_later_sync_height_verifies_a_pending_proposal_at_its_tip(
     let tip_request = build_final_transaction_request(
         &cosigner.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        cosigner.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -255,12 +256,12 @@ async fn fresh_cosigner_verifies_a_consume_proposal_whose_proposer_held_the_note
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         Some(&[]),
-        proposer.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -456,10 +457,10 @@ async fn listing_reports_an_unverifiable_proposal_instead_of_failing_the_whole_l
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        client.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
@@ -563,10 +564,10 @@ async fn sign_proposal_returns_a_verified_actionable_proposal_after_the_final_si
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        client.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let tx_summary = execute_for_summary_at_tip(&mut client.miden_client, account.id(), tx_request)
@@ -700,12 +701,12 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
     let tx_request = build_final_transaction_request(
         &proposer.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         None,
-        proposer.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -825,6 +826,34 @@ async fn custom_proposal_bound_to_an_older_block_lands_after_the_proposer_syncs_
         .await
         .expect("the cosigner signs");
     assert!(signed.status.is_ready(), "2-of-2 met: {:?}", signed.status);
+
+    // A proposal GUARDIAN pinned to a state the producer does not hold is
+    // refused before any acknowledgement is requested, as execute_proposal
+    // refuses it.
+    let foreign_base = word_to_hex(&Word::from([7u32, 7, 7, 7]));
+    handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+        success: true,
+        message: String::new(),
+        proposal: Some(ProtoDeltaObject {
+            prev_commitment: foreign_base.clone(),
+            ..signed_delta.clone()
+        }),
+    });
+    let refused = proposer
+        .prepare_custom_execution(&expected_id, &request_bytes)
+        .await
+        .expect_err("a proposal pinned to another state must not be prepared");
+    assert!(
+        matches!(
+            &refused,
+            crate::error::MultisigError::ProposalBaseMismatch { pinned, .. } if *pinned == foreign_base
+        ),
+        "unexpected error: {refused}"
+    );
+    assert!(
+        !handle.calls().iter().any(|call| call == "push_delta"),
+        "no acknowledgement is requested for a refused proposal"
+    );
 
     // The producer assembles the advice, gets the GUARDIAN ack and submits.
     handle.set_persistent_get_delta_proposal(GetDeltaProposalResponse {
@@ -975,10 +1004,10 @@ async fn proposal_verifies_at_the_tip_after_the_node_prunes_its_bound_block_stat
     let auth_args = client.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, client.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        client.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let chain_anchor = client
@@ -1110,10 +1139,10 @@ async fn cosigner_below_the_bound_block_syncs_before_verifying() {
     let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, proposer.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        proposer.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let tx_summary =
@@ -1199,10 +1228,10 @@ async fn cosigner_that_never_synced_verifies_after_syncing() {
     let auth_args = proposer.multisig_auth_args(salt, None, None).await.unwrap();
     let (tx_request, _) = build_update_signers_transaction_request(
         1,
-        &signers,
+        &signer_specs(&signers, proposer.key_manager.scheme()),
         &auth_args,
         std::iter::empty(),
-        proposer.key_manager.scheme(),
+        None,
     )
     .unwrap();
     let tx_summary =
@@ -1289,12 +1318,12 @@ async fn client_with_summary(seed: u8) -> ClientWithSummary {
     let tx_request = build_final_transaction_request(
         &client.miden_client,
         &tx_type,
-        &account,
+        &MultisigAccount::new(account.clone()),
         &auth_args,
         Vec::new(),
         None,
         None,
-        client.key_manager.scheme(),
+        None,
     )
     .await
     .unwrap();
@@ -1573,9 +1602,7 @@ async fn built_in_proposals_write_the_bound_block_num() {
     // One proposal per builder in `transaction/builder.rs` (seven sites). A
     // P2ID transfer spends from the vault, so it runs on a funded account.
     for tx_type in [
-        TransactionType::AddCosigner {
-            new_commitment: Word::from([3u32, 3, 3, 3]),
-        },
+        TransactionType::add_cosigner(Word::from([3u32, 3, 3, 3])),
         TransactionType::RemoveCosigner {
             commitment: second_signer,
         },
@@ -1628,4 +1655,75 @@ async fn built_in_proposals_write_the_bound_block_num() {
         );
         assert!(payload["metadata"].get("chain_anchor").is_none());
     }
+}
+
+/// An imported proposal GUARDIAN pinned to a state other than the one this
+/// client holds is refused before any approval is relayed or any
+/// acknowledgement requested, as `execute_proposal` refuses it. The mock's
+/// sign handler is left unconfigured, so a relay attempted first would fail
+/// with a GUARDIAN error instead of the base mismatch.
+#[tokio::test]
+async fn execute_imported_proposal_refuses_a_proposal_pinned_to_another_state() {
+    use guardian_client::GetDeltaProposalResponse;
+
+    use crate::export::{ExportedProposal, ExportedSignature};
+    use crate::procedures::ProcedureName;
+
+    let mut setup = client_with_summary(61).await;
+    let payload = ProposalPayload::new(&setup.tx_summary)
+        .with_procedure_threshold_metadata(ProcedureName::SendAsset, 1, word_to_hex(&setup.salt))
+        .with_required_signatures(1)
+        .to_json();
+    let proposals = list_served(&mut setup, payload.clone()).await;
+    assert_eq!(proposals.len(), 1, "proposals: {proposals:?}");
+    let exported = ExportedProposal::from_proposal(&proposals[0], setup.account.id())
+        .unwrap()
+        .with_signatures(vec![ExportedSignature {
+            signer_commitment: word_to_hex(&setup.signer_commitment),
+            signature: setup
+                .client
+                .key_manager
+                .sign_word_hex(setup.tx_summary.to_commitment()),
+            scheme: guardian_shared::SignatureScheme::Falcon,
+            public_key_hex: None,
+            message_format: Default::default(),
+        }]);
+
+    let foreign_base = word_to_hex(&Word::from([7u32, 7, 7, 7]));
+    setup
+        .guardian
+        .set_persistent_get_delta_proposal(GetDeltaProposalResponse {
+            success: true,
+            message: String::new(),
+            proposal: Some(guardian_client::DeltaObject {
+                prev_commitment: foreign_base.clone(),
+                ..pending_proto_delta(
+                    &setup.account,
+                    1,
+                    payload.to_string(),
+                    &word_to_hex(&setup.signer_commitment),
+                )
+            }),
+        });
+
+    let refused = setup
+        .client
+        .execute_imported_proposal(&exported)
+        .await
+        .expect_err("an imported proposal pinned to another state must not execute");
+    assert!(
+        matches!(
+            &refused,
+            crate::error::MultisigError::ProposalBaseMismatch { pinned, .. } if *pinned == foreign_base
+        ),
+        "unexpected error: {refused}"
+    );
+    assert!(
+        !setup
+            .guardian
+            .calls()
+            .iter()
+            .any(|call| call == "push_delta"),
+        "no acknowledgement is requested for a refused proposal"
+    );
 }

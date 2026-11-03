@@ -1,6 +1,7 @@
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { promisify } from 'node:util';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { Account } from '@miden-sdk/miden-sdk';
 
@@ -13,25 +14,18 @@ interface SerializedAccountFixture {
   guardian_commitment: string;
 }
 
-let cachedFixture: SerializedAccountFixture | null = null;
+// `cargo run` compiles the example first when the target dir does not hold it yet: CI prebuilds
+// it, but a cold local run takes tens of seconds, far past the default per-test budget.
+const FIXTURE_BUILD_TIMEOUT_MS = 600_000;
 
-function loadFixture(): SerializedAccountFixture {
-  if (cachedFixture) {
-    return cachedFixture;
-  }
-
+async function loadFixture(): Promise<SerializedAccountFixture> {
   const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
-  const output = execFileSync(
+  const { stdout } = await promisify(execFile)(
     'cargo',
     ['run', '--quiet', '--example', 'serialized_account', '-p', 'miden-multisig-client'],
-    {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    },
+    { cwd: repoRoot, encoding: 'utf8' },
   );
-
-  cachedFixture = JSON.parse(output) as SerializedAccountFixture;
-  return cachedFixture;
+  return JSON.parse(stdout) as SerializedAccountFixture;
 }
 
 function hexToBytes(hex: string): Uint8Array {
@@ -48,8 +42,13 @@ function hexToBytes(hex: string): Uint8Array {
 // the accessors against the SDK's actual storage read semantics (empty word
 // for missing map keys, undefined for absent slots) instead of mocks.
 describe('AccountInspector round-trip against a Rust-built account', () => {
+  let fixture: SerializedAccountFixture;
+
+  beforeAll(async () => {
+    fixture = await loadFixture();
+  }, FIXTURE_BUILD_TIMEOUT_MS);
+
   it('reads the signer commitments in signer-index order', () => {
-    const fixture = loadFixture();
     const account = Account.deserialize(hexToBytes(fixture.account_hex));
 
     expect(AccountInspector.getSignerPublicKeyCommitments(account)).toEqual(
@@ -58,7 +57,6 @@ describe('AccountInspector round-trip against a Rust-built account', () => {
   });
 
   it('reads the guardian commitment', () => {
-    const fixture = loadFixture();
     const account = Account.deserialize(hexToBytes(fixture.account_hex));
 
     expect(AccountInspector.getGuardianPublicKeyCommitment(account)).toBe(
@@ -67,7 +65,6 @@ describe('AccountInspector round-trip against a Rust-built account', () => {
   });
 
   it('detects the full config through the lenient inspector', () => {
-    const fixture = loadFixture();
     const account = Account.deserialize(hexToBytes(fixture.account_hex));
 
     const detected = AccountInspector.fromAccount(account);
@@ -82,7 +79,6 @@ describe('AccountInspector round-trip against a Rust-built account', () => {
   // returned []. With the upstream AuthGuardedMultisig component it must
   // return the approver commitments natively.
   it('getPublicKeyCommitments() works natively on the upstream component (issue #306)', () => {
-    const fixture = loadFixture();
     const account = Account.deserialize(hexToBytes(fixture.account_hex));
 
     const native = account.getPublicKeyCommitments().map((word) => word.toHex());

@@ -1,0 +1,241 @@
+//! The envelope a Guardian-executable proposal stores its serialized `TransactionRequest` in,
+//! written by the SDKs and read by the server.
+
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::execution::ExecutionFailureCode;
+
+/// The envelope format this server writes and reads.
+pub const ENVELOPE_FORMAT_VERSION: u32 = 1;
+
+/// The Miden protocol line requests are serialized for and executed on, as `MAJOR.MINOR`.
+pub const PROTOCOL_LINE: &str = "0.17";
+
+/// A serialized `TransactionRequest` stored with a Guardian-executable proposal. The bytes carry
+/// no `miden-client` version: a request that does not decode is refused, and one that decodes to
+/// a different transaction fails execution against the signed summary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionRequestEnvelope {
+    pub format_version: u32,
+    pub protocol_line: String,
+    pub checksum: String,
+    pub bytes: String,
+}
+
+/// Why a stored envelope cannot be decoded by this server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnvelopeRejection {
+    MalformedBytes,
+    ChecksumMismatch,
+    UnsupportedFormat { format_version: u32 },
+    ProtocolLineMismatch { declared: String },
+}
+
+impl EnvelopeRejection {
+    pub fn failure_code(&self) -> ExecutionFailureCode {
+        match self {
+            EnvelopeRejection::MalformedBytes
+            | EnvelopeRejection::ChecksumMismatch
+            | EnvelopeRejection::UnsupportedFormat { .. } => ExecutionFailureCode::RequestCodec,
+            EnvelopeRejection::ProtocolLineMismatch { .. } => {
+                ExecutionFailureCode::ProtocolMismatch
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for EnvelopeRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnvelopeRejection::MalformedBytes => write!(f, "stored request bytes are not base64"),
+            EnvelopeRejection::ChecksumMismatch => {
+                write!(f, "stored request checksum does not match its bytes")
+            }
+            EnvelopeRejection::UnsupportedFormat { format_version } => {
+                write!(f, "unsupported request envelope format {format_version}")
+            }
+            EnvelopeRejection::ProtocolLineMismatch { declared } => write!(
+                f,
+                "request serialized for Miden {declared}, this server executes {PROTOCOL_LINE}"
+            ),
+        }
+    }
+}
+
+impl TransactionRequestEnvelope {
+    /// Wrap freshly serialized request bytes.
+    pub fn seal(bytes: &[u8]) -> Self {
+        Self {
+            format_version: ENVELOPE_FORMAT_VERSION,
+            protocol_line: PROTOCOL_LINE.to_string(),
+            checksum: checksum_of(bytes),
+            bytes: BASE64.encode(bytes),
+        }
+    }
+
+    /// The raw request bytes, returned only once the checksum matches and the format and
+    /// protocol line are ones this reader accepts.
+    pub fn verified_bytes(&self) -> Result<Vec<u8>, EnvelopeRejection> {
+        let bytes = self.intact_bytes()?;
+        if self.protocol_line != PROTOCOL_LINE {
+            return Err(EnvelopeRejection::ProtocolLineMismatch {
+                declared: self.protocol_line.clone(),
+            });
+        }
+        Ok(bytes)
+    }
+
+    /// The length of the raw request once its body is intact and in a format this server reads,
+    /// for size limits counted over decoded bytes rather than their base64 form. The protocol
+    /// line is left to execution, which is where it must match.
+    pub fn stored_len(&self) -> Result<usize, EnvelopeRejection> {
+        self.intact_bytes().map(|bytes| bytes.len())
+    }
+
+    /// The decoded bytes, once they match their checksum and the envelope is in a format this
+    /// reader understands.
+    fn intact_bytes(&self) -> Result<Vec<u8>, EnvelopeRejection> {
+        let bytes = BASE64
+            .decode(&self.bytes)
+            .map_err(|_| EnvelopeRejection::MalformedBytes)?;
+        if checksum_of(&bytes) != self.checksum {
+            return Err(EnvelopeRejection::ChecksumMismatch);
+        }
+        if self.format_version != ENVELOPE_FORMAT_VERSION {
+            return Err(EnvelopeRejection::UnsupportedFormat {
+                format_version: self.format_version,
+            });
+        }
+        Ok(bytes)
+    }
+}
+
+fn checksum_of(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The version Cargo.lock pins for the package `name`.
+    fn locked_version(name: &str) -> String {
+        include_str!("../../../Cargo.lock")
+            .split("[[package]]")
+            .find(|entry| entry.contains(&format!("\nname = \"{name}\"\n")))
+            .and_then(|entry| {
+                entry
+                    .lines()
+                    .find_map(|line| line.strip_prefix("version = \""))
+                    .map(|version| version.trim_end_matches('"').to_string())
+            })
+            .unwrap_or_else(|| panic!("{name} is in Cargo.lock"))
+    }
+
+    #[test]
+    fn the_protocol_line_matches_the_locked_protocol_crate() {
+        let version = locked_version("miden-protocol");
+        assert!(
+            version.starts_with(&format!("{PROTOCOL_LINE}.")),
+            "protocol line {PROTOCOL_LINE} does not match miden-protocol {version}"
+        );
+    }
+
+    #[test]
+    fn a_sealed_envelope_verifies_back_to_its_bytes() {
+        let envelope = TransactionRequestEnvelope::seal(b"request");
+        assert_eq!(envelope.format_version, 1);
+        assert_eq!(envelope.protocol_line, "0.17");
+        assert_eq!(envelope.verified_bytes().unwrap(), b"request");
+        assert_eq!(envelope.stored_len().unwrap(), 7);
+    }
+
+    #[test]
+    fn checksum_is_lowercase_prefixed_sha256_of_the_raw_bytes() {
+        let envelope = TransactionRequestEnvelope::seal(b"abc");
+        assert_eq!(
+            envelope.checksum,
+            "0xba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn a_tampered_body_is_rejected_on_its_checksum() {
+        let mut envelope = TransactionRequestEnvelope::seal(b"request");
+        envelope.bytes = BASE64.encode(b"tampered");
+        let rejection = envelope.verified_bytes().unwrap_err();
+        assert_eq!(rejection, EnvelopeRejection::ChecksumMismatch);
+        assert_eq!(rejection.failure_code(), ExecutionFailureCode::RequestCodec);
+    }
+
+    #[test]
+    fn non_base64_bytes_are_a_codec_failure() {
+        let mut envelope = TransactionRequestEnvelope::seal(b"request");
+        envelope.bytes = "not base64!".to_string();
+        assert_eq!(
+            envelope.verified_bytes().unwrap_err(),
+            EnvelopeRejection::MalformedBytes
+        );
+    }
+
+    #[test]
+    fn an_unsupported_format_is_a_codec_failure() {
+        let mut envelope = TransactionRequestEnvelope::seal(b"request");
+        envelope.format_version = 2;
+        let rejection = envelope.verified_bytes().unwrap_err();
+        assert_eq!(
+            rejection,
+            EnvelopeRejection::UnsupportedFormat { format_version: 2 }
+        );
+        assert_eq!(rejection.failure_code(), ExecutionFailureCode::RequestCodec);
+    }
+
+    #[test]
+    fn another_protocol_line_is_a_protocol_mismatch_compared_exactly() {
+        for declared in ["0.16", "0.17.0", "v0.17", "0.18"] {
+            let mut envelope = TransactionRequestEnvelope::seal(b"request");
+            envelope.protocol_line = declared.to_string();
+            let rejection = envelope.verified_bytes().unwrap_err();
+            assert_eq!(
+                rejection,
+                EnvelopeRejection::ProtocolLineMismatch {
+                    declared: declared.to_string()
+                }
+            );
+            assert_eq!(
+                rejection.failure_code(),
+                ExecutionFailureCode::ProtocolMismatch
+            );
+        }
+    }
+
+    #[test]
+    fn the_shared_fixture_seals_and_is_judged_the_same_in_every_implementation() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/miden-multisig-client/request-envelope.json"
+        ))
+        .unwrap();
+        let bytes = hex::decode(fixture["bytes_hex"].as_str().unwrap()).unwrap();
+        let sealed = TransactionRequestEnvelope::seal(&bytes);
+        assert_eq!(serde_json::to_value(&sealed).unwrap(), fixture["sealed"]);
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let envelope: TransactionRequestEnvelope =
+                serde_json::from_value(case["envelope"].clone()).unwrap();
+            let outcome = match envelope.verified_bytes() {
+                Ok(verified) => {
+                    assert_eq!(verified, bytes);
+                    "accepted"
+                }
+                Err(EnvelopeRejection::ChecksumMismatch) => "checksum_mismatch",
+                Err(EnvelopeRejection::UnsupportedFormat { .. }) => "unsupported_format",
+                Err(EnvelopeRejection::ProtocolLineMismatch { .. }) => "protocol_line_mismatch",
+                Err(EnvelopeRejection::MalformedBytes) => "malformed_bytes",
+            };
+            assert_eq!(outcome, case["expected"], "{}", case["name"]);
+        }
+    }
+}

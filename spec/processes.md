@@ -2,14 +2,14 @@
 
 ## Services overview
 
-- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. For MultisigGuardian accounts the list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order — the stored list is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
-- **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). EVM accounts do not support `push_delta` in v1.
+- **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. The account must be a guarded multisig: a state without the multisig threshold slot is rejected as `InvalidInput`. The list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order, every approver must have a supported scheme in the state's approver scheme map, and each cosigner's declared scheme must match it, since the stored auth is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. The state's GUARDIAN slot must hold this server's ACK commitment for the auth's GUARDIAN scheme and its GUARDIAN scheme slot must store that scheme (`AuthorizationFailed` otherwise); every scheme the auth uses must be allowed by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` for a new account, and every scheme a reconfiguration adds to the stored auth for an existing one. The state is stored only when `initial_state` is the account's current on-chain state (`StateNotOnChain` until the chain holds it, retryable; one head read decides, so a state the chain has moved past is refused the same way; `RpcUnavailable` when the chain cannot be read), with two exceptions that need no chain read: a first configuration at nonce 0, whose seed binds it to the account id and whose vault must be empty (`InvalidInput` otherwise), judged before the signer check so a claim another key left behind cannot block it, and a stored cosigner of an active account re-registering the state already stored. A first configuration past nonce 0, a released account, a key the stored auth does not list, and any state other than the stored one all need the chain. The decision and the write guard use one read of the stored state. A configuration that skipped the chain read clears a release written while it ran only once its state proves to be the chain head; otherwise the release stands and the request fails with `StateNotOnChain`. The check runs after the request's replay timestamp is consumed, so a replay is refused before any chain read. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
+- **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). When the tail account is a multisig, the acknowledgement is refused with `insufficient_signatures` unless a matching pending proposal (the same transaction summary commitment) carries verified cosigner signatures from the account's approvers, each under the scheme the tail state stores for its approver (an approver it stores no supported scheme for is not counted; a state without the approver scheme map at all leaves the scheme unchecked), counted once per key, at least as many as the lowest threshold the account permits for any transaction: the default threshold, or a lower override on one of the account's non-auth procedures. The chain skips the auth procedure and never calls a root the account does not export, so overrides on either are ignored. This floor is a denial-of-service guard, not the authorization rule. The chain requires the threshold of the procedures the transaction calls, which the summary does not show, so the gate never asks for more than the chain will and never refuses a transaction the chain would accept. A push that meets the floor but not the chain's requirement is acknowledged, refused on chain, and holds a candidate slot until canonicalization drops it; on an account with no per-procedure override below the default, that takes the default threshold of cosigners. The `proposal_type` label plays no part. A storage fault while loading that proposal refuses the push. The gate runs before the delta is verified or applied. `/configure` registers only guarded multisig accounts. A session-signed push meets the same gate; on a tail without the multisig auth (an account registered before `/configure` required it) it is refused with `wallet_signature_required`, while a wallet-signed push there is acknowledged without the gate as before. EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
-- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set or guardian key. The metadata is stored as sent apart from normalizing `proposal_type`, `description`, `amount` and `required_signatures`; client fields such as `bound_block_num` pass through unread.
-- **sign_delta_proposal**: appends one signer signature to a pending Miden proposal.
+- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set, a signer's scheme, or the guardian key or its scheme. The metadata is stored as sent apart from normalizing `proposal_type`, `description`, `amount` and `required_signatures`; client fields such as `bound_block_num` pass through unread.
+- **sign_delta_proposal**: appends one signer signature to a pending Miden proposal. The signature must verify for one of the account's cosigners, under the scheme the account registers that cosigner with; otherwise it is refused with `invalid_proposal_signature`. The append commits only if the proposal is unchanged since it was read, and otherwise is applied again to the current proposal, so concurrent signings never drop each other's approval (the multisig push gate counts the stored approvals).
 - **evm_session**: issues an EIP-712 wallet challenge, recovers the EOA with `ecrecover`, consumes the nonce once, and creates a cookie-backed session.
 - **evm_accounts**: registers EVM smart accounts under `/evm/accounts` by validating the cookie session signer, server-owned chain config, ERC-7579 validator installation, and signer snapshot before storing account metadata without state or acknowledgement data.
 - **evm_proposals**: creates, lists, approves, fetches executable data for, and cancels EVM proposals with opaque payloads, UserOperation hashes, signer snapshots, TTL, and lazy EntryPoint nonce cleanup.
@@ -30,7 +30,7 @@ sequenceDiagram
   S->>S: validate network_config for account_id
   S->>N: validate_credential(initial_state, credential)
   S->>N: should_update_auth(initial_state)\n(extract signer map)
-  S->>S: reject unless auth.cosigner_commitments == extracted signer map\n(exact set and order)
+  S->>S: reject unless auth cosigners == extracted signer map\n(exact set, order and schemes)
   S->>S: auth.verify(account_id, timestamp, request_payload_digest, credential)
   S->>N: get_state_head(account_id, initial_state)\n(commitment, nonce)
   alt no metadata for account_id
@@ -41,9 +41,17 @@ sequenceDiagram
   end
   Note over S,M: the claim guarantees the metadata row that replay state references by FK
   S->>M: update last_auth_timestamp (verified signer, CAS)\n(refused: authentication_replay, nothing written)
-  S->>ST: submit_state(state_json, commitment, nonce)
-  alt account already had metadata
+  Note over S,M: before any stored-state or chain read below, so a replayed request never drives the history search
+  alt existing account, submitted nonce below the stored one (decoded from the stored state when its row has none)
+    S->>N: verify_commitment / find_transaction_ending_at(stored commitment)
+    Note over S,N: the chain reached the stored state: 400 commitment_mismatch (a stale state); the chain cannot be read: rpc_unavailable (fail closed)
+  end
+  alt existing account
+    S->>ST: replace_state(state_json, commitment, nonce)\nonly while the stored commitment is the one read after the replay floor
+    Note over S,ST: a state promoted meanwhile is never overwritten: 400 commitment_mismatch (expected = the stored commitment)
     S->>M: set(account_id, auth, network_config, timestamps)
+  else first-time account
+    S->>ST: submit_state(state_json, commitment, nonce)
   end
   S-->>C: 200 {account_id, ack_pubkey, ack_commitment}
 ```
@@ -77,8 +85,12 @@ sequenceDiagram
     else prev_commitment is the queue tail
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
       S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
-      alt the tail binds another signer set or guardian key
+      alt the tail binds another signer set, guardian key or scheme
         S-->>C: 409 ConflictPendingDelta
+      end
+      S->>ST: pull_delta_proposal(account_id, summary commitment)
+      alt the tail account is a multisig and the matching proposal is missing,\nits verified approver signatures are below the lowest threshold\nthe account permits,\nor the proposal row cannot be loaded
+        S-->>C: 400 InsufficientSignatures, or 500 on a storage fault
       end
       S->>N: verify_and_apply_delta(tail_commitment, tail_state, payload)\n(one decode: new_state_json, new_commitment, new_nonce)
       alt a candidate is queued and new_nonce is not the delta's nonce
@@ -199,7 +211,7 @@ sequenceDiagram
     else
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
       S->>N: account_auth_binding(canonical_state), account_auth_binding(tail_state)
-      alt the tail binds another signer set or guardian key
+      alt the tail binds another signer set, guardian key or scheme
         S-->>C: 409 ConflictPendingDelta
       end
       S->>N: verify_delta(tail_commitment, tail_state, tx_summary)
@@ -343,8 +355,8 @@ sequenceDiagram
   has not swept the orphans yet) refuses everything; a delta competing for
   a base another queued candidate already claimed, or whose nonce does not
   exceed the tail's, is refused; so is anything behind a tail that changes
-  who may act on the account (the signer set or guardian key its state
-  binds differs from the canonical state's; both bindings are read in one
+  who may act on the account (the signer set, the signers' schemes, or the
+  guardian key or its scheme its state binds differ from the canonical state's; both bindings are read in one
   task on the reconstruction pool and compared on the replayed tail rather
   than on a proposal label, since a direct push changes signers without
   one): requests stay authorized against the canonical signer set until
@@ -386,8 +398,9 @@ sequenceDiagram
   nonce rule and, at execution, the SDKs keep a proposal from executing
   anywhere but on the tail: both SDKs refuse to execute a proposal pinned
   to a state the client does not hold (TypeScript 0.18.0 and earlier
-  pushed the pinned base regardless; a switch proposal is checked while
-  the pre-switch GUARDIAN serves it), and both push the state they
+  pushed the pinned base regardless, and the Rust SDK through 0.18.3
+  executed on its own state without the check; a switch proposal is
+  checked while the pre-switch GUARDIAN serves it), and both push the state they
   executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the
   tail's) count toward the pending-proposal limit, which is checked before
   the tail replay. Promotion of the oldest candidate
@@ -510,16 +523,30 @@ sequenceDiagram
     promoted in order, base-first. Anything else waits for a later tick
     — the TTL is the only bound.
   - A new candidate submission at a retained or client-abandoned delta's
-    nonce supersedes (deletes) that row inside the submission
-    transaction — without the abandoned-row supersede, the resubmission
-    the abandon endpoint exists to enable would be refused forever at
-    the nonce's unique constraint. Deltas are unique per
-    `(account_id, nonce)` and admission requires chaining from the
-    account's queue tail (the canonical head when nothing is queued), so
-    same-nonce supersede is the only
-    replacement path; a retained row orphaned by an out-of-band base
-    move (e.g. `configure`) can never promote — the base gate rules it
-    out — and ages out through the TTL.
+    nonce supersedes that row inside the submission transaction —
+    without the supersede, the resubmission the abandon endpoint exists
+    to enable would be refused forever at the nonce's unique
+    constraint. Deltas are unique per `(account_id, nonce)` and
+    admission requires chaining from the account's queue tail (the
+    canonical head when nothing is queued), so same-nonce supersede is
+    the only replacement path. The superseded row is moved to the
+    `superseded_deltas` archive, not deleted (with retention disabled,
+    `retained_ttl_seconds = 0`, nothing is reconciled and it is
+    deleted): its transaction may still land, and the row is then the
+    only record of that step. The reconcile pass treats archived rows as
+    recoverable for the retention TTL, counted from the supersede, and
+    prunes older ones; accounts holding archived rows are visited even
+    when nothing else is recoverable. The recoverable-path walk backs
+    out of a hop that leads nowhere, because an archived row and the row
+    that replaced it share a nonce and a base and only the one that
+    landed reaches the chain. Promoting an archived row writes it back
+    as the canonical row at its nonce, in one locked, fenced write: only
+    while the row now at that nonce is retained or client-abandoned
+    (never over a candidate, which first diverges and is parked, or a
+    canonical row), archiving the replaced row in turn, and gated on the
+    stored state still sitting at its base. A retained row orphaned by
+    an out-of-band base move (e.g. `configure`) can never promote — the
+    base gate rules it out — and ages out through the TTL.
 
 - Release on guardian switch, push path (issue #305): when a delta
   commits (optimistic mode) or canonicalizes (candidate mode) and the
@@ -579,10 +606,13 @@ sequenceDiagram
 
 ### State Machine
 - candidate -> canonical | retained | discarded; retained -> canonical
-  (reconciled) | superseded (deleted by a new submission at its nonce) |
+  (reconciled) | superseded (archived by a new submission at its nonce) |
   dropped (TTL expiry); discarded{client_abandoned} -> canonical
   (late-landing reconcile, within the TTL) | superseded (new submission
-  at its nonce). Discarded deltas MUST NOT be returned by default APIs.
+  at its nonce); superseded -> canonical (late-landing reconcile, within
+  the TTL from the supersede, replacing a retained or client-abandoned
+  row at its nonce) | pruned (TTL expiry). Discarded and superseded
+  deltas MUST NOT be returned by default APIs.
 
 ### Failure Handling
 - Transient failures SHOULD be retried with backoff. Malformed candidates SHOULD be quarantined with logs/metrics.
@@ -593,6 +623,153 @@ sequenceDiagram
   (`max_concurrent_accounts`, default 10); candidates within one account
   remain strictly sequential in nonce order, and every custody write is
   individually lease-fenced, so correctness does not depend on the bound.
+
+## Guardian execution
+
+A cosigner can hand a threshold-met, Guardian-executable proposal to Guardian, which proves,
+submits and commits it. The request returns at once; everything from step 1 on runs in the
+background under a per-account reservation held by a renewed, fenced lease.
+
+### Refusals before anything is reserved
+Guardian refuses synchronously, creating nothing, when the server offers no execution
+(`GUARDIAN_PROVING_UNAVAILABLE`), the account is paused or released, the proposal is a guardian
+switch, which only the client that registers the account at the new GUARDIAN and switches its
+endpoint can execute (`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, `meta.reason` `switch_guardian`),
+the proposal stores no request (`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`), another
+execution holds the account
+(`GUARDIAN_EXECUTION_CONFLICT`), a client candidate is pending, the proposal builds on a state other
+than the account's current one (`commitment_mismatch`; the proposal can never execute),
+or the valid, distinct cosigner signatures fall short of the effective per-procedure threshold
+(`GUARDIAN_PROPOSAL_NOT_READY`). The checks run in that order, so a proposal that must execute
+locally is told so even while another execution holds the account.
+
+A proposal is a guardian switch when it is labelled `switch_guardian` or when the
+`TransactionSummary` the cosigners signed changes the guardian public key slot. The label is not
+signed, so the signed summary decides: a switch labelled anything else is still refused.
+
+A transaction that creates a private output note is executed like any other. Guardian already
+holds the note: the stored request carries its recipient and the send script its assets. The
+recipient learns the note from the note file a cosigner exports from the proposal
+(`export_p2id_note_to_file` / `exportP2idNoteToFile`), whoever executed it. The proposal is
+deleted once its delta is canonical, so the exporting cosigner keeps its copy from before
+execution.
+
+The execute payload is domain-separated from a signed status read of the same proposal (see
+[Miden Request Signing](api.md#miden-request-signing)).
+
+### The fourteen steps
+1. Select the valid, distinct, currently registered cosigner signatures; invalid ones are
+   ignored and counted.
+2. Verify the stored envelope, decode the request, and check it is Guardian-executable: it
+   declares the summary's bound block, carries its auth arguments with their preimage, the
+   summary binds an approval expiration, and every consumed note is pinned. Stop if the chain
+   tip is already at or past the approval expiration.
+3. Check that the account's guardian slot holds the commitment of the key Guardian acknowledges
+   with (`GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` otherwise: no number of cosigner signatures
+   can authorize the transaction then).
+   Take the chain tip as the reference block `R` and build the chain view at `R`, tracking the
+   bound block and every authenticated note's creation block.
+4. Reproduce the transaction unsigned at `R` and confirm it yields the signed summary.
+5. Issue Guardian's acknowledgment through the internal path, which stores no candidate.
+6. Attach the cosigner signatures and the acknowledgment.
+7. Execute the authorized transaction at `R`, loading public foreign accounts at `R`.
+8. Re-check the executed notes against the summary and that the transaction has not expired.
+9. Prove through the remote prover, retrying transient failures with capped backoff until
+   the transaction's expiration.
+10. Seal the transaction inputs to the validator encryption key after verifying its
+    attestations.
+11. Re-check that the account is still at the proposal's base, active, and guarded by this
+    Guardian, and that the proven expiration is within the configured horizon. Read the tip
+    again and refuse (`GUARDIAN_EXECUTION_EXPIRATION_REACHED`) unless at least 15 s of the
+    transaction's window remain for the send, counted at the chain's block time measured from
+    its own block timestamps, with 2 blocks below the expiration held in reserve.
+12. **The no-retry boundary.** In one storage write, admit the candidate delta and record the
+    submission evidence (transaction id, expected commitment, expiration block). The same write
+    moves a parked (`retained` or client-abandoned) row at the candidate's nonce to the
+    superseded-delta archive, from which reconciliation restores it if its transaction lands
+    instead of Guardian's (the execution then resolves `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`);
+    with retention disabled the row is deleted. Nothing after this point is proved or sent
+    again.
+13. Re-validate the fence; a worker that lost ownership sends nothing. A storage error here
+    leaves ownership unknown, so the fenced claim is retried while the worker's lease is held
+    and the send window is open. The window is checked before every claim and again after the
+    one that succeeds, and the send uses whatever is left of it: the 15 s minimum gates crossing
+    the boundary, not the send, since an attempt past the boundary that does not send loses its
+    proposal while a late send can only land, be rejected or leave an outcome the chain settles.
+14. Send the sealed, proven transaction once, waiting for the node's answer for up to 60 s and
+    never past the window measured at step 11 (a node cut off mid-request drops the
+    transaction). The worker keeps renewing its lease and reservation, recording `Sent`, while
+    it waits, so reconciliation never takes over an attempt whose send is still in flight.
+
+A failure before step 12 records a `failed` outcome with its code and releases the account;
+the proposal stays executable. A definite rejection at step 14 deletes the candidate and the
+proposal; no delta is kept with a `discarded` status. A refusal the node made before processing
+the send (a rate limit that outlasted the client's retries, authentication, permission, an
+unimplemented call, inputs sealed against an encryption key the validator no longer holds) is
+`GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED`: the transaction cannot land,
+so the candidate is deleted but the proposal is kept and can be executed again. An unknown outcome
+leaves the execution `submitted`.
+
+```mermaid
+sequenceDiagram
+    participant C as Cosigner
+    participant G as Guardian
+    participant P as Remote prover
+    participant N as Miden node
+    C->>G: POST /delta/proposal/execution
+    G-->>C: 202 pending
+    G->>N: chain tip, chain view at R
+    G->>G: reproduce, acknowledge, execute at R
+    G->>P: prove (retries while transient)
+    G->>N: validator encryption key
+    G->>G: step 12: candidate + submission evidence, atomically
+    G->>N: submit once
+    C->>G: GET /delta/proposal/execution
+    G-->>C: submitted
+    Note over G,N: canonicalization promotes the candidate once the chain agrees
+    G-->>C: committed
+```
+
+### Reconciliation
+Only promotion writes `committed`. When a worker's lease lapses, the reconciler takes the
+reservation over by compare-and-set on its fence. Before the boundary it fails the attempt
+(`GUARDIAN_EXECUTION_LEASE_EXPIRED`, or `GUARDIAN_EXECUTION_ABANDONED` on the first pass after a
+restart). A storage outage longer than the lease, such as a database crash the Guardian process
+survives, therefore reads `GUARDIAN_EXECUTION_LEASE_EXPIRED`; the two codes are retried the same
+way. A process that is asked to stop (SIGTERM or Ctrl-C) refuses new executions as busy,
+fails its own attempts short of the boundary with `GUARDIAN_EXECUTION_ABANDONED`, and gives
+attempts past it up to 8 seconds to finish their send before exiting. An attempt still running
+when that grace ends (one past the boundary still sending, or one whose local execution is on the
+CPU and has not reached an await) is left to the lease and reconciliation, as after an
+unplanned stop. After the boundary, reconciliation settles only from the chain:
+
+- the account at the expected commitment: wait for promotion, write nothing;
+- still at the base with the chain strictly past the expiration block: `GUARDIAN_EXECUTION_EXPIRED`;
+- anywhere else, the account's transaction history from the reference block decides: a
+  transaction reaching the expected commitment means it landed and the account moved on (a
+  guardian switch needs no acknowledgment from this Guardian), so canonicalization promotes the
+  candidate and the execution commits; a history covering the observed block without one is
+  `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`; a history not yet covering it, or one that cannot be
+  searched, waits;
+- the chain unobservable: keep the reservation and try again next pass. Elapsed time never
+  settles an execution.
+
+A client `push_delta` is refused with `GUARDIAN_EXECUTION_CONFLICT` while a reservation is
+active, and canonicalization never discards a candidate an execution owns. A promotion commits
+the execution only when it brings the account to the execution's expected commitment; any
+other delta promoted at the same nonce leaves the execution to reconciliation.
+
+### Record retention
+Once a day, starting a few minutes after startup, every replica that runs reconciliation deletes
+the finished attempts (released, with an outcome) resolved more than
+`GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS` ago (default 30, `0` keeps them forever) whose proposal
+is gone or that a newer attempt of the same proposal supersedes, with their submission evidence
+and outcome, in bounded batches. An active attempt and the newest attempt of a proposal storage
+still holds are never deleted, so the next attempt of a live proposal is still numbered one past
+its newest and the latest execution of a live proposal stays readable. Only a deleted proposal
+loses its last attempt, so a status read for a proposal whose records were deleted returns
+`proposal_not_found`, as for any proposal storage no longer holds;
+`GUARDIAN_EXECUTION_NOT_FOUND` is reserved for a proposal that exists and was never executed. The sweep is idempotent and needs no lease.
 
 ## Release sweep
 
@@ -657,22 +834,25 @@ so the sweep is deliberately slow and rate-bounded.
      released: when the chain holds the stored state the account is
      reported as `own_key_mismatch`; when it moved on, the detectors
      below decide.
-  3. **Chain moved past the stored base: candidate match.** Every
-     pending proposal and every recoverable delta (`retained`, or
-     `discarded { client_abandoned }` within `retained_ttl_seconds`)
-     that chains from the stored base is applied to the stored state
-     (the same `apply_delta` canonicalization uses; computed once per
-     candidate and base, failures included). A proposal counts whatever
-     its label (the post-state's guardian key decides, not the
-     client-written type) and whatever base it was recorded against: the
-     candidate queue records a proposal against its tail. One built on
-     the stored state behind a queued candidate is refused unless its
-     nonce is the tail's plus one, but a summary does not name its base,
-     so one labelled exactly so is recorded against the tail all the
-     same.
-     A switch delta queued behind another candidate and parked with
-     it does not chain from the stored base and is not matched yet
-     (issue #504). The
+  3. **Chain moved past the stored base: candidate match.** The
+     candidates are every pending proposal and every recoverable delta
+     (`retained`, or `discarded { client_abandoned }` within
+     `retained_ttl_seconds`) that chains from the stored base, directly
+     or through other recoverable deltas. Their bases are the stored
+     state and the end state of every recoverable delta chaining from
+     it, each replayed with the same `apply_delta` canonicalization uses
+     and required to reproduce the commitment the delta was admitted
+     with: a switch delta parked behind another candidate (issue #504)
+     starts from its predecessor's end state, and a proposal built on a
+     state a retained delta reached by landing late starts from that
+     delta's. A recoverable delta is applied to the base it was admitted
+     on; a summary does not name its base, so a proposal is applied to
+     every base (post-states computed once per candidate and base,
+     failures included). A proposal counts whatever its label (the
+     post-state's guardian key decides, not the client-written type) and
+     whatever base it was recorded against: the candidate queue records
+     a proposal against its tail, and with an empty queue against the
+     stored state. The
      resulting commitment is looked for on chain: first at the head
      (free: the probe already read it), then — for post-states that move
      the guardian key away — in the account's transaction history
@@ -723,10 +903,16 @@ so the sweep is deliberately slow and rate-bounded.
     the one the evidence was proved against, atomically with that check
     (Postgres: one transaction under the metadata row lock; filesystem:
     under the metadata store's lock). `/configure` clears a release the
-    same way after storing a re-onboarded state, for every existing
-    account, so a re-onboarding racing a release never ends up released,
-    while a release of a later state (a switch delta that replaced the
-    re-onboarded one) stands. The stored state itself is left as is;
+    same way after storing a re-onboarded state the chain vouched for
+    (the submitted state was checked to be the on-chain state), so such a
+    re-onboarding racing a release never ends up released, while a release
+    of a later state (a switch delta that replaced the re-onboarded one)
+    stands. A configuration that skipped the chain read (a nonce-0 first
+    state, or a stored cosigner re-registering the stored state of an
+    account that was not released when the request started) clears a
+    release written while it ran only once its state proves to be the chain
+    head; otherwise the release stands and the request fails with
+    `StateNotOnChain`, so its retry is held to the chain. The stored state itself is left as is;
     reads keep serving the last state this server verified.
   - The sweep ignores `paused_at` like the canonicalization passes:
     pause gates client mutations, the sweep records chain truth.

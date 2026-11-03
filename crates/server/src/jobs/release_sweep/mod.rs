@@ -25,9 +25,11 @@
 //!   the queue, but a summary does not name its base, so one labelled
 //!   past the tail is recorded there all the same), and so does a switch
 //!   delta canonicalization
-//!   retained on the stored base (its proposal is gone by then, its
-//!   payload is not). A switch delta queued behind another candidate is
-//!   not matched yet (issue #504).
+//!   retained (its proposal is gone by then, its payload is not).
+//!   Candidates are applied to the stored state and to the end state of
+//!   every retained or abandoned delta chaining from it, so a switch
+//!   delta parked behind another candidate (issue #504), or a proposal
+//!   built past a retained delta that landed late, is matched too.
 //! * **Stored state.** The stored state's own guardian key is checked once
 //!   per stored state: a promoted switch whose push-path release was never
 //!   written is released here, proved by the ack this server signed for

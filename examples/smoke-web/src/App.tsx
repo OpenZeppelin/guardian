@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { normalizeError } from '@multisig-browser/errors';
 import {
+  describeLocalExecutionReason,
+  localExecutionReason,
+} from '@openzeppelin/miden-multisig-client';
+import {
   type CreateProposalInput,
   type InitSessionInput,
   useSmokeHarness,
@@ -46,6 +50,40 @@ function bootBadge(snapshot: ReturnType<typeof useSmokeHarness>['snapshot']): {
   }
 }
 
+function ExecuteButton({
+  disabled,
+  guardianExecutable,
+  proposal,
+  onExecute,
+}: {
+  disabled: boolean;
+  guardianExecutable: boolean;
+  proposal: Parameters<typeof localExecutionReason>[0];
+  onExecute: () => void;
+}) {
+  const localReason = localExecutionReason(proposal);
+  if (!guardianExecutable) {
+    return (
+      <button disabled={disabled} onClick={onExecute}>
+        Execute
+      </button>
+    );
+  }
+  if (localReason === null) {
+    return (
+      <button disabled={disabled} onClick={onExecute}>
+        Execute via GUARDIAN
+      </button>
+    );
+  }
+  const description = describeLocalExecutionReason(localReason);
+  return (
+    <button disabled={disabled} title={`Executes locally: ${description}`} onClick={onExecute}>
+      Execute locally ({description})
+    </button>
+  );
+}
+
 export default function App() {
   const { api, snapshot, events, midenWalletConnectError, disconnectMidenWallet } =
     useSmokeHarness();
@@ -54,6 +92,7 @@ export default function App() {
     midenRpcEndpoint: DEFAULT_MIDEN_RPC_URL,
     signerSource: 'local',
     signatureScheme: 'falcon',
+    executionMode: 'self_executed',
     browserLabel: DEFAULT_BROWSER_LABEL,
   });
   const [threshold, setThreshold] = useState('2');
@@ -94,10 +133,12 @@ export default function App() {
       midenRpcEndpoint: snapshot.midenRpcEndpoint ?? DEFAULT_MIDEN_RPC_URL,
       signerSource: snapshot.signerSource ?? 'local',
       signatureScheme: snapshot.signatureScheme ?? 'falcon',
+      executionMode: snapshot.executionMode ?? 'self_executed',
       browserLabel: snapshot.browserLabel ?? DEFAULT_BROWSER_LABEL,
     });
   }, [
     snapshot.browserLabel,
+    snapshot.executionMode,
     snapshot.guardianEndpoint,
     snapshot.midenRpcEndpoint,
     snapshot.signatureScheme,
@@ -261,6 +302,21 @@ export default function App() {
                 <option value="ecdsa">ECDSA</option>
               </select>
             </label>
+            <label>
+              <span>Proposal execution</span>
+              <select
+                value={sessionForm.executionMode ?? 'self_executed'}
+                onChange={(event) =>
+                  setSessionForm((current) => ({
+                    ...current,
+                    executionMode: event.target.value as InitSessionInput['executionMode'],
+                  }))
+                }
+              >
+                <option value="self_executed">Browser proves and submits</option>
+                <option value="guardian_executable">GUARDIAN proves and submits</option>
+              </select>
+            </label>
             <label className="wide">
               <span>Browser label</span>
               <input
@@ -317,6 +373,16 @@ export default function App() {
             <div>
               <span className="label">Scheme</span>
               <strong>{snapshot.signatureScheme ?? 'n/a'}</strong>
+            </div>
+            <div>
+              <span className="label">Proposal execution</span>
+              <strong>
+                {snapshot.executionMode === 'guardian_executable'
+                  ? 'GUARDIAN'
+                  : snapshot.executionMode === 'self_executed'
+                    ? 'Browser'
+                    : 'n/a'}
+              </strong>
             </div>
             <div>
               <span className="label">Guardian pubkey</span>
@@ -551,6 +617,12 @@ export default function App() {
             >
               List proposals
             </button>
+            <button
+              disabled={!sessionReady || !accountLoaded}
+              onClick={() => runAction(async () => api.guardianExecutionStatus())}
+            >
+              GUARDIAN execution status
+            </button>
             <button disabled={!sessionReady || !accountLoaded} onClick={handleImportProposal}>
               Import proposal
             </button>
@@ -592,15 +664,27 @@ export default function App() {
                         : 'Execute (custom) — no recipe'}
                     </button>
                   ) : (
+                    <ExecuteButton
+                      disabled={!sessionReady}
+                      guardianExecutable={snapshot.executionMode === 'guardian_executable'}
+                      proposal={proposal}
+                      onExecute={() =>
+                        runAction(async () => api.executeProposal({ proposalId: proposal.id }))
+                      }
+                    />
+                  )}
+                  {snapshot.executionMode === 'guardian_executable' ? (
                     <button
                       disabled={!sessionReady}
                       onClick={() =>
-                        runAction(async () => api.executeProposal({ proposalId: proposal.id }))
+                        runAction(async () =>
+                          api.guardianExecutionStatus({ proposalId: proposal.id }),
+                        )
                       }
                     >
-                      Execute
+                      Execution status
                     </button>
-                  )}
+                  ) : null}
                   <button
                     disabled={!sessionReady}
                     onClick={() =>
@@ -687,6 +771,7 @@ await window.smoke.initSession({
   midenRpcEndpoint: 'https://rpc.devnet.miden.io',
   signerSource: 'local',
   signatureScheme: 'falcon',
+  executionMode: 'guardian_executable', // or 'self_executed' (default)
   browserLabel: 'chrome-a',
 });
 

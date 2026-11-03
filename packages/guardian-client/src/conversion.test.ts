@@ -237,7 +237,49 @@ describe('conversion', () => {
 
       expect(result.newCommitment).toBeUndefined();
       expect(result.deltaPayload.metadata).toBeUndefined();
+      expect(result.deltaPayload.transactionRequest).toBeUndefined();
       expect(result.ackSig).toBeUndefined();
+    });
+
+    it('round-trips the stored transaction request from a read back into a push', () => {
+      const envelope = { format_version: 1, protocol_line: '0.17', checksum: '0xabc', bytes: 'AQID' };
+      const server: ServerDeltaObject = {
+        account_id: '0xaccount',
+        nonce: 1,
+        prev_commitment: '0xprev',
+        delta_payload: {
+          tx_summary: { data: 'base64data' },
+          signatures: [],
+          transaction_request: envelope,
+        },
+        status: { status: 'pending', timestamp: '2024-01-01T00:00:00Z', proposer_id: '0xp', cosigner_sigs: [] },
+      };
+
+      const fetched = fromServerDeltaObject(server);
+      expect(fetched.deltaPayload.transactionRequest).toEqual(envelope);
+
+      const reposted = toServerDeltaProposalRequest({
+        accountId: fetched.accountId,
+        nonce: fetched.nonce,
+        deltaPayload: fetched.deltaPayload,
+      });
+      expect(reposted.delta_payload.transaction_request).toEqual(envelope);
+    });
+
+    it('refuses a stored transaction request with a missing field', () => {
+      const server = {
+        account_id: '0xaccount',
+        nonce: 1,
+        prev_commitment: '0xprev',
+        delta_payload: {
+          tx_summary: { data: 'base64data' },
+          signatures: [],
+          transaction_request: { format_version: 1, protocol_line: '0.17', bytes: 'AQID' },
+        },
+        status: { status: 'pending', timestamp: '2024-01-01T00:00:00Z', proposer_id: '0xp', cosigner_sigs: [] },
+      } as unknown as ServerDeltaObject;
+
+      expect(() => fromServerDeltaObject(server)).toThrow(/invalid checksum/);
     });
 
     it('converts StateObject', () => {
@@ -358,6 +400,45 @@ describe('conversion', () => {
         faucet_id: undefined,
         amount: undefined,
       });
+    });
+
+    it('carries per-signer schemes in ProposalMetadata both ways (issue #563)', () => {
+      const server: ServerProposalMetadata = {
+        proposal_type: 'add_signer',
+        target_threshold: 2,
+        signer_commitments: ['0x1', '0x2'],
+        signer_schemes: ['falcon', 'ecdsa'],
+      };
+      const meta = fromServerProposalMetadata(server);
+      expect(meta.signerSchemes).toEqual(['falcon', 'ecdsa']);
+      expect(toServerProposalMetadata(meta).signer_schemes).toEqual(['falcon', 'ecdsa']);
+
+      // Absent on the wire stays absent: single-scheme proposals are unchanged.
+      const legacy = toServerProposalMetadata(
+        fromServerProposalMetadata({ proposal_type: 'add_signer', signer_commitments: ['0x1'] }),
+      );
+      expect(JSON.parse(JSON.stringify(legacy))).toEqual({
+        proposal_type: 'add_signer',
+        signer_commitments: ['0x1'],
+      });
+    });
+
+    it('passes a per-signer-scheme Miden auth through ConfigureRequest unchanged', () => {
+      const auth = {
+        Miden: {
+          cosigners: [
+            { commitment: '0x1', scheme: 'falcon' as const },
+            { commitment: '0x2', scheme: 'ecdsa' as const },
+          ],
+          guardian_scheme: 'ecdsa' as const,
+        },
+      };
+      const result = toServerConfigureRequest({
+        accountId: '0xaccount',
+        auth,
+        initialState: { data: 'statedata', accountId: '0xaccount' },
+      });
+      expect(result.auth).toEqual(auth);
     });
 
     it('converts ConfigureRequest', () => {

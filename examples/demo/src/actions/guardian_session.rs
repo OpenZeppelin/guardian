@@ -1,5 +1,6 @@
 //! Guardian session submenu: the signer signs one grant, then a delegated
-//! key signs reads and proposal requests without further prompts.
+//! key signs reads, proposal requests and delta pushes without further
+//! prompts.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -74,7 +75,9 @@ async fn start_session(state: &mut SessionState, editor: &mut DefaultEditor) -> 
         })
         .await
         .map_err(|e| format!("Failed to start session: {e}"))?;
-    print_success("Session started: reads and proposal requests no longer use the signer");
+    print_success(
+        "Session started: reads, proposal requests and delta pushes no longer use the signer",
+    );
     print_session(&info);
     Ok(())
 }

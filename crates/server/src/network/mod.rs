@@ -4,9 +4,10 @@ pub use guardian_shared::retry::RpcReadMode;
 
 use crate::config::positive_u32_from_env;
 use crate::error::GuardianError;
-use crate::metadata::auth::{Auth, Credentials};
+use crate::metadata::auth::{Auth, ChainCosigner, Credentials};
 use crate::state_object::StateHead;
 use async_trait::async_trait;
+use guardian_shared::SignatureScheme;
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -173,6 +174,13 @@ pub fn reconstructor() -> &'static Reconstructor {
 /// landed yet, or the account advanced past the expected state), not an
 /// error: `Err` from [`NetworkClient::verify_commitment`] is reserved for
 /// failures to make the comparison at all, such as an RPC failure.
+/// An account's on-chain state as of the block the node read it at, both from one response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservedState {
+    pub verification: StateVerification,
+    pub block: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StateVerification {
     /// The on-chain commitment equals the locally-computed one.
@@ -235,10 +243,10 @@ pub struct AppliedState {
     /// `None` on a network without account nonces (see
     /// [`crate::state_object::StateObject::nonce`]).
     pub nonce: Option<u64>,
-    /// Cosigner public key commitments the account's storage carries, the
-    /// values [`NetworkClient::should_update_auth`] reads. Empty when the
-    /// account carries none.
-    pub cosigner_commitments: Vec<String>,
+    /// Cosigners the account's storage carries, each with the scheme it
+    /// stores for it, the values [`NetworkClient::should_update_auth`]
+    /// reads. Empty when the account carries none.
+    pub cosigners: Vec<ChainCosigner>,
     /// The guardian public key commitment the account's storage carries,
     /// the value [`NetworkClient::extract_guardian_commitment`] reads.
     pub guardian_commitment: Option<String>,
@@ -248,10 +256,10 @@ impl AppliedState {
     /// The account auth to persist after this state commits, or `None`
     /// when the state carries no cosigner commitments to sync.
     pub fn updated_auth(&self, current_auth: &Auth) -> Option<Auth> {
-        if self.cosigner_commitments.is_empty() {
+        if self.cosigners.is_empty() {
             None
         } else {
-            Some(current_auth.with_updated_commitments(self.cosigner_commitments.clone()))
+            Some(current_auth.with_chain_cosigners(self.cosigners.clone()))
         }
     }
 }
@@ -262,10 +270,14 @@ impl AppliedState {
 /// decode. An account whose layout carries neither has an empty roster
 /// and no guardian; two states of one account compare equal when the
 /// queued candidates between them changed neither (issue #17).
+/// The schemes are part of the binding: a candidate that keeps every key
+/// but re-registers one under another scheme changes who may sign.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct AuthBinding {
-    pub signers: Vec<String>,
+    /// Sorted by commitment.
+    pub signers: Vec<ChainCosigner>,
     pub guardian: Option<String>,
+    pub guardian_scheme: Option<SignatureScheme>,
 }
 
 #[async_trait]
@@ -292,6 +304,16 @@ pub trait NetworkClient: Send + Sync {
         expected_commitment: &str,
         read_mode: RpcReadMode,
     ) -> Result<StateVerification, String>;
+
+    /// [`Self::verify_commitment`] together with the block the node read the account at. The
+    /// two come from one response, so the state is exactly the account's as of that block,
+    /// which a separate tip read, possibly served by another node, cannot promise.
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: RpcReadMode,
+    ) -> Result<ObservedState, String>;
 
     /// Verify delta is valid for given state
     fn verify_delta(
@@ -343,12 +365,31 @@ pub trait NetworkClient: Send + Sync {
         auth: &Auth,
     ) -> Result<(), String>;
 
-    /// Validate that account storage is bound to this server's GUARDIAN public key commitment.
+    /// Validate that account storage is bound to this server's GUARDIAN
+    /// public key commitment, stored under `expected_guardian_scheme`: the
+    /// scheme the account verifies this server's acknowledgements with.
     fn validate_guardian_commitment(
         &self,
         state_json: &serde_json::Value,
         expected_guardian_commitment: &str,
+        expected_guardian_scheme: SignatureScheme,
     ) -> Result<(), String>;
+
+    /// Validate that `state_json` carries the guarded multisig auth and that
+    /// every approver has a supported scheme stored for it. Guardian
+    /// acknowledges a delta only after the multisig push gate counts verified
+    /// cosigner approvals, so it registers no other account. The chain
+    /// verifies an approver's signatures under its stored scheme, so one
+    /// without it can never sign. `/configure` checks this; canonicalization
+    /// does not, and keeps an approver's registered scheme when the state
+    /// stores none.
+    fn validate_multisig_auth(&self, state_json: &serde_json::Value) -> Result<(), String>;
+
+    /// Validate that `state_json` is a state a new account can have: a
+    /// first state at nonce 0 starts with an empty vault. `/configure`
+    /// stores such a state with no chain read, since its seed binds the rest
+    /// of it to its account id.
+    fn validate_first_state(&self, state_json: &serde_json::Value) -> Result<(), String>;
 
     /// Extract the guardian public key commitment stored in the account
     /// state, or `Ok(None)` when the state carries no guardian binding
@@ -545,6 +586,27 @@ impl RpcSettings {
                 Ok(Self::Miden(settings))
             }
             None => Self::from_env(network),
+        }
+    }
+
+    /// The executor for Guardian execution on this network, when the configuration offers it.
+    pub(crate) fn proposal_executor(
+        &self,
+        config: &crate::config::execution::ExecutionConfig,
+    ) -> Result<
+        Option<std::sync::Arc<dyn crate::services::execute_proposal::ProposalExecutor>>,
+        String,
+    > {
+        let Ok(prover) = config.availability() else {
+            return Ok(None);
+        };
+        match self {
+            Self::Miden(settings) => crate::network::miden::execution::executor_for(
+                settings.endpoint().expose_secret(),
+                settings.timeout(),
+                prover,
+            )
+            .map(Some),
         }
     }
 

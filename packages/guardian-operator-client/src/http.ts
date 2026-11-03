@@ -2023,6 +2023,12 @@ function parseDeltaProposalMetadata(
       'signer_commitments',
       context,
     );
+  if (record.signer_schemes !== undefined)
+    proposal.signerSchemes = assertStringArray(
+      requireArray(record, 'signer_schemes', context),
+      'signer_schemes',
+      context,
+    );
   if (typeof record.new_guardian_pubkey === 'string')
     proposal.newGuardianPubkey = record.new_guardian_pubkey;
   if (typeof record.new_guardian_endpoint === 'string')

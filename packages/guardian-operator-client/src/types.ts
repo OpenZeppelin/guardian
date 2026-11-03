@@ -322,6 +322,13 @@ export interface DashboardDeltaProposalMetadata {
   consumeNotesNotes?: string[];
   targetThreshold?: number;
   signerCommitments?: string[];
+  /**
+   * Target signer schemes (`"falcon"` / `"ecdsa"`), index-aligned with
+   * `signerCommitments`, for an update-signers proposal whose signers do not
+   * all share one scheme (issue #563). Absent => every target signer keeps the
+   * proposer's scheme.
+   */
+  signerSchemes?: string[];
   newGuardianPubkey?: string;
   newGuardianEndpoint?: string;
   targetProcedure?: string;

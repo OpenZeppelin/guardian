@@ -527,6 +527,21 @@ mod tests {
                 block_num: 7,
             })
         }
+        async fn observe_commitment(
+            &self,
+            account_id: &str,
+            expected_commitment: &str,
+            read_mode: crate::network::RpcReadMode,
+        ) -> std::result::Result<crate::network::ObservedState, String> {
+            let verification = self
+                .verify_commitment(account_id, expected_commitment, read_mode)
+                .await?;
+            Ok(crate::network::ObservedState {
+                verification,
+                block: 0,
+            })
+        }
+
         fn verify_delta(
             &self,
             _: &str,
@@ -575,10 +590,17 @@ mod tests {
         ) -> std::result::Result<(), String> {
             unimplemented!()
         }
+        fn validate_first_state(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unimplemented!()
+        }
+        fn validate_multisig_auth(&self, _: &serde_json::Value) -> std::result::Result<(), String> {
+            unimplemented!()
+        }
         fn validate_guardian_commitment(
             &self,
             _: &serde_json::Value,
             _: &str,
+            _: guardian_shared::SignatureScheme,
         ) -> std::result::Result<(), String> {
             unimplemented!()
         }

@@ -57,6 +57,17 @@ export interface UpdateSignersProposalMetadata extends BaseProposalMetadata {
   proposalType: 'add_signer' | 'remove_signer' | 'change_threshold';
   targetThreshold: number;
   targetSignerCommitments: string[];
+  /**
+   * The scheme of each target signer (`'falcon'` / `'ecdsa'`), index-aligned with
+   * `targetSignerCommitments`; `signerSchemes` on the wire. Absent, every target signer takes
+   * the scheme the account stores for the first approver the proposal keeps (the first
+   * approver when it keeps none), which is what a proposal from before per-signer schemes
+   * wrote when it rewrote no approver. This SDK, like the Rust SDK, omits it only when every
+   * target signer uses the proposer's scheme and that rule reads them back. Kept as served and
+   * parsed when the proposal is rebuilt, so a malformed entry fails that proposal's
+   * verification rather than the listing.
+   */
+  targetSignerSchemes?: string[];
 }
 
 export interface SwitchGuardianProposalMetadata extends BaseProposalMetadata {

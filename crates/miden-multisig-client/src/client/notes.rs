@@ -8,7 +8,7 @@ use miden_protocol::account::AccountId;
 use miden_protocol::asset::Asset;
 use miden_protocol::block::BlockNumber;
 use miden_protocol::crypto::rand::RandomCoin;
-use miden_protocol::note::NoteId;
+use miden_protocol::note::{Note, NoteId};
 use miden_standards::note::{P2idNote, P2ideNote};
 
 use super::MultisigClient;
@@ -238,16 +238,18 @@ impl MultisigClient {
         Ok(filtered)
     }
 
-    /// Computes the ID of the note a P2ID proposal will create when executed.
+    /// Computes the ID of the note a P2ID proposal creates when executed.
     ///
     /// The P2ID note is rebuilt deterministically from the proposal salt, so
-    /// the ID is known ahead of execution. For a private P2ID this is the ID
-    /// to pass to `export_note_to_file` after executing, so the note file can be
-    /// delivered to the recipient out-of-band (issue #356).
-    ///
-    /// Call this before executing the proposal: the asset is derived from the
-    /// current vault state, which execution itself changes.
+    /// the ID is known before and after execution. To deliver a private P2ID
+    /// note to its recipient, use
+    /// [`export_p2id_note_to_file`](Self::export_p2id_note_to_file).
     pub fn p2id_note_id(&self, proposal: &Proposal) -> Result<NoteId> {
+        Ok(self.p2id_note(proposal)?.id())
+    }
+
+    /// Rebuilds the note a P2ID proposal creates from its metadata and salt.
+    pub(crate) fn p2id_note(&self, proposal: &Proposal) -> Result<Note> {
         let account = self.require_account()?;
         let TransactionType::P2ID {
             recipient,
@@ -258,13 +260,13 @@ impl MultisigClient {
         } = &proposal.transaction_type
         else {
             return Err(MultisigError::UnsupportedTransactionType(
-                "p2id_note_id requires a P2ID proposal".to_string(),
+                "rebuilding a P2ID note requires a P2ID proposal".to_string(),
             ));
         };
 
         if proposal.metadata.salt_hex.is_none() {
             return Err(MultisigError::InvalidConfig(
-                "p2id_note_id requires proposal metadata with a salt".to_string(),
+                "rebuilding a P2ID note requires proposal metadata with a salt".to_string(),
             ));
         }
         let salt = proposal.metadata.salt()?;
@@ -302,7 +304,7 @@ impl MultisigClient {
                 .into()
         };
 
-        Ok(note.id())
+        Ok(note)
     }
 }
 

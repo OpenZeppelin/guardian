@@ -182,7 +182,9 @@ The response carries:
 
 - `accounts` — unfiltered counts: `total`, mutually exclusive
   `by_lifecycle` (`released` if `released_at` is set, else `paused` if
-  `paused_at` is set, else `active`), `by_auth_method`,
+  `paused_at` is set, else `active`), `by_auth_method` (keys
+  `miden_falcon`, `miden_ecdsa`, `miden` for accounts whose cosigners
+  each carry their own scheme, and `evm`),
   `by_auth_method_and_signer_count` (so a consumer can reproduce its own
   account-shape heuristics without Guardian claiming what client a shape
   belongs to), and `updated_within_7d` / `updated_within_30d` anchored to
@@ -352,6 +354,14 @@ and gRPC `FailedPrecondition`
 ([`error.rs:97-101`](../crates/server/src/error.rs#L97)). Read endpoints
 and `ConfigureAccount` remain available so an account can be
 reconfigured while paused.
+
+A pause also stops a `PushDelta` that passed its status check before the
+pause and was still applying its delta: on Postgres in candidate mode the
+candidate write re-reads `paused_at` / `released_at` under the account row
+lock the pause takes, so once the pause call returns no further ack is
+issued for the account. In optimistic mode, and on the filesystem
+backend, the status is re-read right before the write but not under a
+shared lock, which narrows that window without closing it.
 
 | Route | Permission | Body |
 |---|---|---|

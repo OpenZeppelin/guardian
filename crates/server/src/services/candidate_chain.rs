@@ -341,11 +341,21 @@ pub async fn ensure_tail_keeps_auth(
         return Ok(());
     };
     if tail_binding != canonical {
+        let commitments = |binding: &AuthBinding| -> Vec<String> {
+            binding
+                .signers
+                .iter()
+                .map(|signer| signer.commitment.clone())
+                .collect()
+        };
+        let signers_changed = commitments(&tail_binding) != commitments(&canonical);
         tracing::info!(
             account_id = %current_state.account_id,
             tail_nonce,
-            signers_changed = tail_binding.signers != canonical.signers,
+            signers_changed,
+            signer_schemes_changed = !signers_changed && tail_binding.signers != canonical.signers,
             guardian_changed = tail_binding.guardian != canonical.guardian,
+            guardian_scheme_changed = tail_binding.guardian_scheme != canonical.guardian_scheme,
             "The newest queued candidate changes who may act on the account; \
              refusing to chain behind it until it promotes"
         );
@@ -686,8 +696,15 @@ mod tests {
 
     fn binding(signers: &[&str], guardian: Option<&str>) -> AuthBinding {
         AuthBinding {
-            signers: signers.iter().map(|s| s.to_string()).collect(),
+            signers: signers
+                .iter()
+                .map(|s| crate::metadata::auth::ChainCosigner {
+                    commitment: s.to_string(),
+                    scheme: None,
+                })
+                .collect(),
             guardian: guardian.map(str::to_string),
+            ..Default::default()
         }
     }
 

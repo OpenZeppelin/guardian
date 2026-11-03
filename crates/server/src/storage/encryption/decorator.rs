@@ -167,6 +167,16 @@ impl StorageBackend for EncryptedStorage {
         self.inner.pull_state_commitment(account_id).await
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> Result<crate::storage::StateReplace, String> {
+        self.inner
+            .replace_state(&self.encrypt_state(state)?, expected_commitment)
+            .await
+    }
+
     // The nonce is stored in the clear next to the commitment, so the
     // head read and the backfill both pass through without decrypting.
     async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
@@ -260,6 +270,32 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    async fn pull_superseded_deltas(
+        &self,
+        account_id: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
+        self.inner
+            .pull_superseded_deltas(account_id, since)
+            .await?
+            .into_iter()
+            .map(|archived| {
+                Ok(crate::storage::SupersededDelta {
+                    delta: self.decrypt_delta(archived.delta)?,
+                    superseded_at: archived.superseded_at,
+                })
+            })
+            .collect()
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> Result<u64, String> {
+        self.inner.prune_superseded_deltas(account_id, before).await
+    }
+
     async fn list_accounts_with_recoverable_deltas(
         &self,
         abandoned_since: chrono::DateTime<chrono::Utc>,
@@ -276,6 +312,19 @@ impl StorageBackend for EncryptedStorage {
     ) -> Result<(), String> {
         self.inner
             .submit_delta_proposal(commitment, &self.encrypt_proposal(commitment, proposal)?)
+            .await
+    }
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: crate::storage::ProposalAdmission,
+    ) -> Result<crate::storage::ProposalWrite, String> {
+        let proposal = self.encrypt_proposal(&admission.commitment, &admission.proposal)?;
+        self.inner
+            .admit_delta_proposal(crate::storage::ProposalAdmission {
+                proposal,
+                ..admission
+            })
             .await
     }
 
@@ -313,6 +362,21 @@ impl StorageBackend for EncryptedStorage {
             .await
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        self.inner
+            .update_delta_proposal_if_status(
+                commitment,
+                &self.encrypt_proposal(commitment, proposal)?,
+                expected,
+            )
+            .await
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
@@ -331,10 +395,11 @@ impl StorageBackend for EncryptedStorage {
         &self,
         account_id: &str,
         nonce: u64,
+        new_commitment: &str,
         now: &str,
     ) -> Result<AbandonIntent, String> {
         self.inner
-            .request_candidate_abandon(account_id, nonce, now)
+            .request_candidate_abandon(account_id, nonce, new_commitment, now)
             .await
     }
 
@@ -354,15 +419,10 @@ impl StorageBackend for EncryptedStorage {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<CandidateSubmission, String> {
         self.inner
-            .submit_candidate(
-                metadata,
-                &self.encrypt_delta(delta)?,
-                now,
-                max_pending_candidates,
-            )
+            .submit_candidate(metadata, &self.encrypt_delta(delta)?, now, policy)
             .await
     }
 
@@ -403,6 +463,106 @@ impl StorageBackend for EncryptedStorage {
         self.inner
             .update_candidate_status(account_id, nonce, status, fence)
             .await
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        self.inner.create_execution_reservation(reservation).await
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        account_id: &str,
+        fence: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+        phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        self.inner
+            .renew_execution_reservation(account_id, fence, lease_expires_at, phase)
+            .await
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        account_id: &str,
+        expected: &LeaseFence,
+        claimant: &LeaseFence,
+        lease_expires_at: DateTime<Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        self.inner
+            .claim_execution_reservation(account_id, expected, claimant, lease_expires_at)
+            .await
+    }
+
+    async fn load_active_execution(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.inner.load_active_execution(account_id).await
+    }
+
+    async fn load_latest_execution(
+        &self,
+        account_id: &str,
+        proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.inner
+            .load_latest_execution(account_id, proposal_id)
+            .await
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        let admission = crate::storage::CandidateAdmission {
+            delta: self.encrypt_delta(&admission.delta)?,
+            ..admission
+        };
+        self.inner
+            .admit_execution_candidate(metadata, admission)
+            .await
+    }
+
+    async fn resolve_execution(
+        &self,
+        metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.inner.resolve_execution(metadata, resolution).await
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.inner.fail_execution(resolution).await
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        account_id: &str,
+        fence: &crate::storage::LeaseFence,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        self.inner
+            .settle_promoted_execution(account_id, fence, now)
+            .await
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        self.inner.list_active_executions().await
+    }
+
+    async fn prune_execution_records(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.inner.prune_execution_records(cutoff, limit).await
     }
 
     async fn list_account_deltas_paged(
@@ -566,6 +726,42 @@ mod tests {
         assert_eq!(
             enc.pull_delta("acct1", 1).await.unwrap().delta_payload,
             json!({ "move": 7 })
+        );
+    }
+
+    #[tokio::test]
+    async fn replace_state_seals_the_payload_and_compares_the_plain_commitment() {
+        let (_dir, fs) = fs_backend().await;
+        let inner: Arc<dyn StorageBackend> = Arc::new(fs);
+        let enc = encrypted(inner.clone());
+
+        let mut stored = state("acct1", "first-secret");
+        stored.commitment = "0xstored".to_string();
+        enc.submit_state(&stored).await.unwrap();
+
+        let mut next = state("acct1", "second-secret");
+        next.commitment = "0xnext".to_string();
+        assert_eq!(
+            enc.replace_state(&next, "0xother").await.unwrap(),
+            crate::storage::StateReplace::StateMoved {
+                current: "0xstored".to_string()
+            }
+        );
+        assert_eq!(
+            enc.replace_state(&next, "0xstored").await.unwrap(),
+            crate::storage::StateReplace::Replaced
+        );
+
+        let raw = inner.pull_state("acct1").await.unwrap();
+        assert_eq!(raw.commitment, "0xnext");
+        assert!(
+            raw.state_json.get("ct").is_some(),
+            "payload must be an envelope"
+        );
+        assert!(!raw.state_json.to_string().contains("second-secret"));
+        assert_eq!(
+            enc.pull_state("acct1").await.unwrap().state_json,
+            json!({ "secret": "second-secret" })
         );
     }
 

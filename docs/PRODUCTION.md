@@ -9,7 +9,11 @@ configuration, and runbook docs.
 Every production Guardian, wherever it runs, has the same shape:
 
 - The **Postgres** storage backend: `GUARDIAN_SERVER_FEATURES=postgres`, plus
-  `evm` when EVM proposal support is required. Filesystem mode is a local
+  `evm` when EVM proposal support is required. Guardian execution is always built in and
+  stays off until a prover is configured. The prover sees every executed transaction's full
+  inputs (private account state, cosigner signatures, Guardian's acknowledgement), so it must
+  be one you trust or host yourself
+  ([prover trust](./CONFIGURATION.md#runtime--guardian-execution)). Filesystem mode is a local
   development backend only: it has no durable admin audit table, no schema
   migrations, and cannot safely back more than one replica. The prod stage
   refuses it at startup.
@@ -63,9 +67,10 @@ section enforces.
 
 ### Account signature scheme
 
-Each account picks its signature scheme (Falcon or ECDSA) once, at creation;
-the choice selects the account's on-chain auth code and cannot change later.
-ECDSA is the scheme with hosted-signer support (the KMS backend above) and the
+Each account stores a signature scheme (Falcon or ECDSA) for each approver and
+for its GUARDIAN key; usually all of them share one scheme, chosen at creation.
+The GUARDIAN scheme selects which of this server's ACK keys signs the account's
+deltas. ECDSA is the scheme with hosted-signer support (the KMS backend above) and the
 default direction for Guardian; Falcon has no remote signer and is second-class.
 New production deployments should therefore accept only ECDSA registrations:
 
@@ -75,11 +80,12 @@ GUARDIAN_ALLOWED_ACCOUNT_SCHEMES=ecdsa      # Terraform: guardian_allowed_accoun
 
 The gate acts on `/configure` for accounts that do not exist yet, returning
 `signature_scheme_not_allowed` (HTTP 403) with the rejected scheme and the
-accepted set in `meta`. Accounts already configured on this Guardian are never
-affected (except the retry of a first `/configure` that failed before storing
-the account's state, which counts as new), because every later request is
-verified with the scheme stored for that account, so the variable is safe to set on a fleet that already has Falcon
-accounts. An on-chain Falcon account that this Guardian does not know yet (a
+accepted set in `meta`, and on a reconfiguration that adds a scheme the stored
+account does not use yet. Accounts already configured on this Guardian keep
+working under the schemes they use (the retry of a first `/configure` that
+failed before storing the account's state counts as new), because every later
+request is verified with the scheme stored for its signer, so the variable is
+safe to set on a fleet that already has Falcon accounts. An on-chain Falcon account that this Guardian does not know yet (a
 re-onboard after a metadata restore, or a `SwitchGuardian` from another
 Guardian) counts as new: widen the list to `falcon,ecdsa` for that migration
 and tighten it again afterwards.
@@ -253,6 +259,52 @@ database's guarantees:
   `rds_multi_az = true` if the deployment needs automatic failover to a
   standby replica; this is an availability trade-off (roughly double the
   instance cost), not a backup mechanism.
+- **Guardian execution across a planned stop.** On SIGTERM (what ECS and
+  Docker send) the server refuses new executions with
+  `GUARDIAN_EXECUTION_BUSY`, fails its attempts that have not reached the
+  boundary commit with `GUARDIAN_EXECUTION_ABANDONED` (retryable, the
+  proposal is kept), and waits up to 8 seconds for attempts past it to send,
+  then exits. A deploy or scale-in therefore releases most of those accounts
+  at once instead of after the 120-second lease. Three cases still leave an
+  account to the lease and reconciliation: a kill that skips SIGTERM (OOM,
+  `SIGKILL`); an attempt whose local transaction execution is already running
+  on the CPU when the signal lands, which stops only at its next await, after
+  the grace; and a send still waiting on the node when the 8 seconds run out.
+  A send may wait up to 60 seconds (the slowest accepted devnet send took
+  about 9), so a slow node at deploy time leaves its accounts held until
+  reconciliation settles them from the chain. Nothing is sent twice either
+  way.
+- **Guardian execution across a crash (accepted risk).** If the process dies
+  after an execution's boundary commit (state `submitted`) and before the
+  send has a definite outcome, the transaction may never have been sent.
+  Reconciliation only observes the chain and never resends, so the account
+  stays reserved (new executions get `GUARDIAN_EXECUTION_CONFLICT`, client
+  deltas are refused) until the chain passes the transaction's expiration
+  (at most 256 blocks after the reference block for built-in proposals; 20
+  for a fee-paying transaction on devnet, whose fee faucet caps it). It then
+  settles as `GUARDIAN_EXECUTION_EXPIRED`, the proposal is deleted, and the
+  cosigners must propose and sign again. The signal is
+  `guardian_execution_oldest_reservation_age_seconds` climbing; the AWS
+  reservation-age alarm (default 1800 s) is set above this window, so it
+  fires only if the reservation outlives it. See
+  [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md#guardian-execution-fails-or-never-starts).
+- **Guardian execution record retention.** Every execution attempt leaves a
+  reservation, possibly submission evidence, and an outcome. Once a day,
+  starting a few minutes after startup, each replica deletes the finished
+  attempts resolved more than `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`
+  (default 30) ago whose proposal is gone or that a newer attempt of the same
+  proposal supersedes, in batches of 1,000 until a batch comes back short.
+  Active attempts and the newest attempt of a proposal that still exists are
+  never deleted, so attempt numbering continues and a client waiting on a
+  live proposal still reads its outcome; a status read for a proposal whose
+  records were deleted gets `proposal_not_found`, because only a deleted
+  proposal loses its last record. The sweep is
+  idempotent, so replicas need no coordination; each logs a summary at
+  `info` and adds what it deleted to `guardian_execution_records_pruned_total`.
+  Sizing: retained rows grow with executions per day times the retention
+  (three small rows per attempt in Postgres, a few hundred bytes each), plus
+  the newest attempt of every proposal still stored. `0` keeps records
+  forever, the earlier behavior; budget storage for it accordingly.
 
 What is deliberately **not** provided: cross-region replicas, automated
 disaster-recovery drills, or backup-failure alarms (see
@@ -295,6 +347,13 @@ none and behavior is unchanged.
   read access still sees which accounts exist, their nonce/commitment lineage,
   and proposal status. Use disk/database-level encryption if the index metadata
   itself is sensitive in your threat model.
+- Guardian execution records are plaintext too. In Postgres that is every column of
+  `execution_reservations`, `execution_submissions` and `execution_outcomes` (proposal ids,
+  transaction ids, expected and base commitments, reference and expiration blocks, ignored
+  signature counts, `error_code`, `error_message`, `error_meta`) and
+  `delta_proposals.request_bytes`; on the filesystem backend, each account's `executions.json`
+  and `proposal_request_bytes.json`. The stored transaction request itself sits inside the
+  proposal `delta_payload` and is encrypted with it.
 
 - Production key source: the key document
   `{ "active": "k1", "keys": { "k1": "<base64 32 bytes>" } }`, held either in
@@ -329,7 +388,7 @@ Full configuration and a dev walkthrough are in
 > account data. EVM accounts are unaffected.** Stored 0.16 Miden states, deltas,
 > proposals, and metadata can no longer be deserialized or recomputed, and cannot
 > be migrated. For what changed on the Miden side and why none of it survives, see
-> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
+> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017).
 > Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
 > Miden 0.16. Upgrade only once the network you serve runs a stable Miden 0.17 node (0.17.0 or later): which
 > public networks do, and the upstream items still open, are tracked in
@@ -361,7 +420,7 @@ plus:
   account's vault, including on the transaction that deploys the account, so an
   unfunded account cannot transact. Fund each account before its first
   proposal (on devnet, through the node's `RegisterAccount` RPC; see
-  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 - **Review the defaults that are new in 0.18.x**: `GUARDIAN_ENV=prod` now
   applies the production runtime defaults inside the server, the release sweep
   runs by default, and `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` is available. The
@@ -373,12 +432,12 @@ plus:
   apply the release's Terraform, which adds the alarm notification, release
   sweep, and account-scheme variables, before rolling the image.
 
-## Upgrading within 0.18.x
+## Upgrading within the Miden 0.17 line
 
-Patch releases on the Miden 0.17 line keep stored data, the `auth_tx` procedure
+Releases after 0.18.0 on the Miden 0.17 line (0.18.x patches and 0.19.x) keep stored data, the `auth_tx` procedure
 root, and existing accounts; no reset runs. Each one still has operator-visible
 changes. The SDK and Miden-side ones are in
-[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017),
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017),
 and each release's notes on GitHub carry the full list, including server
 behavior:
 
@@ -404,6 +463,48 @@ behavior:
   with `unsupported Miden network_type`. `/pubkey` without `scheme` returns the
   Falcon key even on an ECDSA-only server, so health checks and integrations
   that want the ECDSA commitment must pass `?scheme=ecdsa`.
+- **0.18.3** rebuilds the server image against Debian `ca-certificates
+  20250419~deb12u2`, which distrusts the compromised
+  [eMudhra intermediates](https://emudhra.we-have-a-problem.com/). The server
+  trusts the system store for Miden RPC and AWS, so redeploy the new image;
+  restarting a container from an older image keeps the old trust store. No
+  data reset, and no SDK upgrade is needed
+  ([release notes](https://github.com/OpenZeppelin/guardian/releases/tag/v0.18.3)).
+- **0.19.0** gates multisig pushes on stored approvals,
+  lets sessions sign delta pushes, registers only guarded multisig accounts,
+  and adds the retryable `409 state_not_on_chain` for reconfigurations that
+  must use the chain's state (a first registration of an account that already
+  transacted, a released account, a key the stored auth does not list, or a
+  state other than the stored one). After a GUARDIAN switch the new SDKs wait
+  for the chain to hold the switched state before they register, and register
+  once; older SDKs fail a switch to a GUARDIAN on this release until the user
+  registers again. Release the SDKs first: multisig pushes need them, and on an
+  older server the new SDKs sign a refused session push again with the wallet;
+  see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-0190).
+  One exception to SDKs-first: a new SDK's `abandon_candidate` /
+  `abandonCandidate` sends `proposal_id`, which a server up to 0.18.3 refuses
+  as unauthenticated, so abandons fail until the server is upgraded. The
+  release also brings:
+  - **Guardian execution, enabled in two deploys.** An older replica still
+    running during a rolling update can leave an executing account reserved
+    with nothing able to release it. Roll out 0.19.0 with
+    `GUARDIAN_TX_PROVER_URL` unset, then set it in a second deploy once no
+    older replica runs. To roll back, set `GUARDIAN_PROVING_ENABLED=false`
+    first, wait until `guardian_execution_oldest_reservation_age_seconds` reads
+    `0` (no active execution), and only then deploy the older image (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#upgrading-and-rolling-back)).
+    On AWS, the `Deploy AWS` workflow (`aws-deploy.yml`) only swaps the image:
+    turning execution on, and creating its alarms, needs a Terraform apply of
+    this release's `infra/` with `guardian_tx_prover_url` (or
+    `guardian_tx_prover_url_secret_arn`) set.
+  - **Mixed-scheme accounts (Falcon and ECDSA cosigners), with no rollback
+    once one is stored.** Servers up to 0.18.3 cannot read the stored `Miden`
+    auth, so finish the server rollout before clients register mixed
+    accounts, and do not roll back to 0.18.x afterwards: older replicas fail
+    every request for such an account, and a filesystem metadata store fails
+    to load as a whole (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 
 ## Upgrading to Miden 0.16
 

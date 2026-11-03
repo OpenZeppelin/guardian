@@ -13,7 +13,7 @@
 # Requires: docker (Compose v2), jq, curl, openssl. The ACK identity comes from
 # the image's own ack-keygen, so no Rust toolchain is needed.
 # Usage:    ./smoke.sh                                    # tag from ./.env, else .env.example
-#           GUARDIAN_VERSION=<release v0.18.2 or later> ./smoke.sh
+#           GUARDIAN_VERSION=<release v0.18.3 or later> ./smoke.sh
 #           SMOKE_PULL_POLICY=missing GUARDIAN_VERSION=<tag> ./smoke.sh
 #             # image built locally as ghcr.io/openzeppelin/guardian:<tag>
 #             # (docker build -t ghcr.io/openzeppelin/guardian:<tag> .); the
@@ -32,7 +32,7 @@ done
 version_from() { [ -f "$1" ] && grep -E '^GUARDIAN_VERSION=' "$1" | cut -d= -f2- || true; }
 GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env)}"
 GUARDIAN_VERSION="${GUARDIAN_VERSION:-$(version_from .env.example)}"
-[ -n "$GUARDIAN_VERSION" ] || { echo "set GUARDIAN_VERSION to a Guardian release v0.18.2 or later (see the Image version decision in README.md)" >&2; exit 1; }
+[ -n "$GUARDIAN_VERSION" ] || { echo "set GUARDIAN_VERSION to a Guardian release v0.18.3 or later (see the Image version decision in README.md)" >&2; exit 1; }
 PULL_POLICY="${SMOKE_PULL_POLICY:-always}"
 case "$PULL_POLICY" in
   always|missing|never) ;;

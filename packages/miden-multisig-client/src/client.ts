@@ -5,6 +5,7 @@
  * to create new multisig accounts and load existing ones.
  */
 
+import type { ProposalExecutionMode } from './transaction/expiration.js';
 import { type MidenClient, Account, AccountId } from '@miden-sdk/miden-sdk';
 import { GuardianHttpClient } from '@openzeppelin/guardian-client';
 import type { StateObject } from '@openzeppelin/guardian-client';
@@ -67,6 +68,11 @@ export interface MultisigClientConfig {
   prover?: ProverConfig;
   /** Retry policy for idempotent Miden node reads; submission is never retried. */
   rpc?: RpcConfig;
+  /**
+   * Whether proposals this client creates can be executed by Guardian. Defaults to
+   * `'self_executed'`; the client never asks the server which it offers.
+   */
+  executionMode?: ProposalExecutionMode;
 }
 
 /**
@@ -120,6 +126,7 @@ export class MultisigClient {
   private readonly midenRpcEndpoint: string;
   private readonly proverConfig: ResolvedProverConfig;
   private readonly rpcConfig: ResolvedRpcConfig;
+  private readonly executionMode: ProposalExecutionMode;
   private _guardianClient: GuardianHttpClient;
   private guardianSession: GuardianSession | null = null;
 
@@ -128,6 +135,7 @@ export class MultisigClient {
     this.midenRpcEndpoint = requireMidenRpcEndpoint(config?.midenRpcEndpoint);
     this.proverConfig = resolveProverConfig(config?.prover, midenClient.defaultProver);
     this.rpcConfig = resolveRpcConfig(config?.rpc);
+    this.executionMode = config?.executionMode ?? 'self_executed';
     this._guardianClient = new GuardianHttpClient(
       requireConfigValue('guardianEndpoint', config?.guardianEndpoint),
     );
@@ -147,6 +155,12 @@ export class MultisigClient {
 
   /**
    * Access the internal GUARDIAN client.
+   *
+   * This is the raw base client, without the SDK's local-execution check: its
+   * `executeDeltaProposal` asks GUARDIAN to execute any proposal id without checking the proposal
+   * this client holds, and rejects with a plain `GuardianHttpError` instead of a
+   * `LocalExecutionRequiredError`. GUARDIAN itself still refuses a `switch_guardian` proposal. Use
+   * `Multisig.requestGuardianExecution` to get the SDK's check.
    */
   get guardianClient(): GuardianHttpClient {
     return this._guardianClient;
@@ -155,8 +169,8 @@ export class MultisigClient {
   /**
    * Start a Guardian session: `signer` signs one grant, then a non-extractable
    * browser key (the delegated signer) signs this client's session-eligible
-   * Guardian requests (state and delta reads, proposal list/get/create/sign)
-   * until the session ends. Account configuration, lookup, delta pushes,
+   * Guardian requests (state and delta reads, proposal list/get/create/sign,
+   * delta pushes) until the session ends. Account configuration, lookup,
    * candidate abandons and transaction approvals keep using `signer`. Pass
    * `options.store` to survive page reloads via `resumeSession`, and
    * `options.onEnded` to learn when requests fall back to the wallet.
@@ -286,6 +300,7 @@ export class MultisigClient {
       this.midenRpcEndpoint,
       this.proverConfig,
       this.rpcConfig,
+      this.executionMode,
     );
   }
 
@@ -321,8 +336,9 @@ export class MultisigClient {
     assertCompleteDetectedConfig(detected);
     const config: MultisigConfig = {
       threshold: detected.threshold,
-      signerCommitments: detected.signerCommitments,
+      signerCommitments: detected.signers,
       guardianCommitment: detected.guardianCommitment,
+      signatureScheme: detected.guardianScheme,
       procedureThresholds: Array.from(detected.procedureThresholds.entries()).map(
         ([procedure, threshold]) => ({ procedure, threshold })
       ),
@@ -340,6 +356,7 @@ export class MultisigClient {
       this.midenRpcEndpoint,
       this.proverConfig,
       this.rpcConfig,
+      this.executionMode,
     );
   }
 

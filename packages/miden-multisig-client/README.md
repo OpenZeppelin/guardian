@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.18.2 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.19.0-rc.1 @miden-sdk/miden-sdk@0.17.3
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
@@ -37,7 +37,8 @@ matches your Miden node:
 
 | This package | Miden protocol |
 |---|---|
-| 0.18.x | 0.17.x (pre-release) |
+| 0.19.x (pre-release) | 0.17.x |
+| 0.18.x | 0.17.x |
 | 0.17.x | 0.16.x |
 | 0.16.x | 0.15.x |
 | 0.15.x | 0.15.x |
@@ -183,6 +184,30 @@ EIP-712 digest derived from that commitment, so the digest displayed by the
 wallet need not equal the proposal ID. The approval signature and the
 Guardian request-authentication signature are separate.
 
+For a Miden Wallet, use `MidenWalletSigner`. Some Miden wallets expose only a
+32-byte key commitment, which does not reveal the signature scheme: the older
+Miden Wallet extension signs with Falcon and the Bread wallet with ECDSA.
+`PublicKeyFormat.parse` returns `scheme: null` for such an input, so the
+application must choose the scheme, for example by letting the user select
+it. Pass that scheme to the signer and omit `publicKey`:
+
+```typescript
+import { MidenWalletSigner, PublicKeyFormat } from '@openzeppelin/miden-multisig-client';
+
+const { scheme, publicKeyHex, commitment } = PublicKeyFormat.parse(walletPublicKey);
+const signer = scheme
+  ? new MidenWalletSigner(wallet, commitment!, scheme, undefined, publicKeyHex)
+  : new MidenWalletSigner(wallet, commitment!, selectedScheme);
+```
+
+Do not pass the commitment as `publicKey`: it is not a public key, and an
+ECDSA signer rejects it. Without a `publicKey`, an ECDSA signer recovers the
+key from the wallet's first signature. If the wallet signs with the other
+scheme, the signer throws before contacting Guardian, naming the scheme to
+select (for example `select falcon`). Through 0.18.3, `PublicKeyFormat.parse`
+labelled every 32-byte input `falcon`; callers that read its `scheme` must now
+handle `null`.
+
 The nested `prover` configuration is optional. Without it, the injected Miden
 client's prover is preserved. By default, cloneable remote provers get two total
 attempts; endpoint-less injected provers, including local and callback provers,
@@ -267,6 +292,75 @@ const multisig = await client.create(config, signer);
 console.log('Account ID:', multisig.accountId);
 ```
 
+### Mixed Signature Schemes Per Approver
+
+Each approver of the guarded multisig carries its own signature scheme on
+chain (`approver_schemes` in `miden-standards`), so an ECDSA wallet or
+hardware signer and a locally held Falcon key can share one account. Give an
+approver its scheme with a `SignerSpec`; a bare commitment keeps using
+`signatureScheme` (default `'falcon'`), which also remains the GUARDIAN's
+scheme:
+
+```typescript
+import { createMultisigAccount, type MultisigConfig } from '@openzeppelin/miden-multisig-client';
+
+const config: MultisigConfig = {
+  threshold: 2,
+  signerCommitments: [
+    { commitment: walletSigner.commitment, scheme: 'ecdsa' },
+    { commitment: falconSigner.commitment, scheme: 'falcon' },
+  ],
+  guardianCommitment,
+  signatureScheme: 'ecdsa', // GUARDIAN's scheme and the default for bare commitments
+};
+
+const { account } = await createMultisigAccount(midenClient, config);
+```
+
+`buildUpdateSignersTransactionRequest` and the `updateSigners` transaction type
+accept the same `string | SignerSpec` entries, and
+`AccountInspector.fromAccount` returns each approver's stored scheme in
+`signers` (and the guardian's in `guardianScheme`) next to the unchanged
+`signerCommitments`. `Multisig.signers` holds the same list.
+
+Such an account is registered and operated through GUARDIAN like any other
+(issue #576; it needs a GUARDIAN with per-signer schemes, 0.19.0-rc.1 or
+later):
+
+- `registerOnGuardian()` registers the schemes the account stores: the
+  single-scheme auth when every approver uses the GUARDIAN's scheme
+  (`Multisig.guardianScheme`), the per-signer `Miden` auth otherwise. A GUARDIAN
+  up to 0.18.3 refuses the per-signer auth, reported as
+  `GuardianMixedSchemesUnsupportedError` (`code: 'mixed_schemes_unsupported'`).
+  Note that `signatureScheme` sets the GUARDIAN's scheme: all-ECDSA `SignerSpec`s
+  with it omitted get a Falcon GUARDIAN, registered per signer.
+- Signer updates keep every approver's stored scheme. `createAddSignerProposal`
+  adds a bare commitment under your scheme, and a `SignerSpec` under its own.
+  The proposal carries `signerSchemes` (`targetSignerSchemes` on
+  `UpdateSignersProposalMetadata`) unless every target signer uses the
+  proposer's scheme and the scheme of the approvers it keeps, and every cosigner
+  rebuilds it from them. The Rust SDK applies the same rule (#549).
+- A proposal that would write a kept approver under another scheme, such as
+  one from an SDK before per-signer schemes on a mixed account (it wrote its
+  own scheme for every approver), fails verification with
+  `SignerSchemeMismatchError` (`code: 'signer_scheme_mismatch'`, `changes`), and
+  signing and executing refuse it before an approval or a delta reaches
+  GUARDIAN.
+- An approval made under another scheme than the account stores for its signer
+  is left out when the proposal executes, as on chain and in GUARDIAN's push
+  gate (GUARDIAN refuses to store one), and a client whose key the account
+  stores under another scheme refuses to propose or sign
+  (`KeySchemeMismatchError`, `code: 'key_scheme_mismatch'`).
+- A GUARDIAN switch keeps the account's GUARDIAN scheme: the new endpoint is
+  asked for its key of that scheme, whatever your key's scheme is.
+
+A GUARDIAN up to 0.18.3 verifies an account under one scheme. A single-scheme
+account on it can still add a signer of the other scheme on chain, but the new
+signer cannot authenticate to that GUARDIAN; and switching a mixed-scheme
+account to it executes on chain but fails to register there (the error's
+`cause` is a `GuardianMixedSchemesUnsupportedError`), so switch again with
+`createSwitchGuardianProposalOffline`, to a GUARDIAN with per-signer schemes.
+
 ### Register on GUARDIAN
 
 After creating the account, register it on the GUARDIAN server:
@@ -319,8 +413,8 @@ Without registered display metadata, Ledger devices need "Verbose EIP-712"
 enabled. Raw (Falcon, raw ECDSA) wallets show only a hash, so `startSession`
 requires `confirm` for them; that shows the fields on an honest page but is
 no protection against a phishing page, which shows what it wants.
-Transaction approvals, account registration, delta pushes, candidate abandons
-and account lookup still use the wallet; the server rejects session
+Delta pushes are signed by the session too. Transaction approvals, account
+registration, candidate abandons and account lookup still use the wallet; the server rejects session
 credentials there with `wallet_signature_required`.
 
 The session ends when it expires, when it is logged out or revoked, or when
@@ -415,6 +509,13 @@ regardless. The pre-check needs a GUARDIAN server that serves `GET /state/nonce`
 (issue #191); against an older server `syncState()` fails rather than falling back
 to the full fetch, so deploy the server first.
 
+`multisig.threshold` and `multisig.signerCommitments` are a cache of the local
+store. Every call that decides from them (creating, signing, importing, listing,
+submitting and executing proposals, registration) re-reads the store first, after its own
+chain sync when it makes one, since an execution or a chain sync that undoes a
+dropped transaction can change the signer set under the cache. A store record
+whose config cannot be read in full makes the call throw instead.
+
 ### Creating Proposals
 
 Every `create*Proposal` method takes its required arguments followed by a
@@ -424,7 +525,7 @@ optional parameters:
 ```typescript
 createP2idProposal(recipientId, faucetId, amount, { nonce, noteType, reclaimHeight, timelockHeight }?)
 createConsumeNotesProposal(noteIds, { nonce }?)
-createAddSignerProposal(commitment, { nonce, newThreshold }?)
+createAddSignerProposal(commitmentOrSignerSpec, { nonce, newThreshold }?)
 createRemoveSignerProposal(commitment, { nonce, newThreshold }?)
 createChangeThresholdProposal(threshold, { nonce }?)
 createUpdateProcedureThresholdProposal(procedure, threshold, { nonce }?)
@@ -445,7 +546,8 @@ the block the proposal binds by which the transaction must be included. Past
 that block the approvers' signatures no longer authorize it, the SDK refuses to
 execute it, and the node rejects it as expired. The summary binds the value, so
 the executing party cannot change it. Omitted, the approval never expires,
-which is the Miden default.
+which is the Miden default, except on a `guardian_executable` client (see
+[Execute Through Guardian](#execute-through-guardian)).
 
 > **Breaking change (issue #387):** these methods previously took `nonce` (and
 > `newThreshold`) as positional parameters. Passing the old positional form
@@ -500,15 +602,21 @@ can never land. Record an abandon intent
 and poll for the resolution:
 
 ```typescript
-const accepted = await multisig.abandonCandidate(nonce);
+// The nonce the proposal was pushed with, and the proposal whose
+// transaction is abandoned.
+const accepted = await multisig.abandonCandidate(nonce, proposalId);
 console.log(accepted.state); // 'pending'
 
 // The guardian's worker confirms over a short quarantine (typically well
 // under a minute) that the transaction did not land, then releases the
 // account.
-const status = await multisig.abandonStatus(nonce);
-// 'waiting' | 'landed' | 'abandoned' | 'unexpected'
+const status = await multisig.abandonStatus(nonce, accepted.commitment);
+// 'waiting' | 'landed' | 'abandoned' | 'retained' | 'unexpected'
 ```
+
+Naming the proposal needs a Guardian server from the same release: an older
+server does not know `proposal_id` and refuses the signed request as
+unauthenticated, before recording anything.
 
 ### Delta History
 
@@ -618,6 +726,68 @@ executes without the check (logging a warning in the last two cases), so a
 GUARDIAN the account is rotating away from cannot block the rotation. After
 the switch the delta is pushed back to it best-effort, naming the state the
 switch executed on, as the Rust SDK does.
+
+### Execute Through Guardian
+
+A client created with `executionMode: 'guardian_executable'` stores each proposal's
+transaction request with it, except a `switch_guardian` proposal (see below), so once the
+proposal has enough signatures any cosigner can ask Guardian to prove, submit and commit it. Its
+proposals also bind two expiration bounds: an approval window of 28,800 blocks unless
+`approvalExpirationDelta` sets one, and a transaction expiration of 256 blocks:
+
+```typescript
+await multisig.requestGuardianExecution(proposal.id);
+const execution = await multisig.waitForGuardianExecution(proposal.id);
+if (execution.state === 'failed') {
+  console.error(execution.error?.code, execution.error?.message);
+}
+```
+
+`executionStatus(proposalId)` reads the latest execution once and `currentExecution()` the
+account's in-flight one. `waitForGuardianExecution(proposalId, options)` only reads: it polls
+until the execution is `committed` or `failed`, backing off from 1 s to 10 s
+(`initialBackoffMs`, `maxBackoffMs`), retries reads that fail with a retryable or transport
+error (honouring the server's retry-after hint), throws any other error, and gives up after 15
+minutes (`deadlineMs`) with a `GuardianExecutionWaitTimeoutError` whose `lastObserved` is the
+last execution it read. A refusal throws a `GuardianExecutionRefusedError` with `code` (the wire
+string, for example `GUARDIAN_EXECUTION_CONFLICT`), `userMessage`, `retryable`,
+`retryAfterSecs` and `blockingProposalId`. Status reads use the Guardian session when one is
+active. See
+[`docs/MULTISIG_SDK.md`](../../docs/MULTISIG_SDK.md#guardian-execution) for what the mode changes.
+
+One proposal still executes locally on a `guardian_executable` client, because local execution
+does work Guardian skips: a `switch_guardian` proposal, whose executing client verifies the new
+Guardian, registers the account there and repoints itself. It is therefore created exactly as on
+a `self_executed` client, with no stored request and no default expiration bounds.
+
+A P2ID proposal with a private note can be executed by Guardian like any other. Whoever executed
+it, a cosigner hands the note to its recipient with `exportP2idNoteToBytes(proposal)`, which
+rebuilds the note from the proposal. Keep the `Proposal` from before execution: GUARDIAN deletes
+it once its transaction is canonical.
+
+```typescript
+await multisig.requestGuardianExecution(proposal.id);
+await multisig.waitForGuardianExecution(proposal.id);
+const noteFileBytes = await multisig.exportP2idNoteToBytes(proposal);
+```
+
+`requestGuardianExecution` checks the proposal this client holds before contacting Guardian. It
+throws a `LocalExecutionRequiredError` whose `reason` is `'switch_guardian'` for a switch (execute
+it with `executeProposal`), and a `ProposalNotHeldLocallyError` for a proposal the client does not
+hold (sync proposals first). Guardian enforces the same rule: it refuses a switch with
+`GUARDIAN_PROPOSAL_EXECUTES_LOCALLY`, which the SDK throws as the same
+`LocalExecutionRequiredError`. `localExecutionReason(proposal)` returns the same
+`LocalExecutionReason`, or `null` when Guardian can execute the proposal, and
+`describeLocalExecutionReason(reason)` explains it, so an app can route a proposal before asking.
+
+Before the request it relays the held proposal's approvals to Guardian, which executes a proposal
+only once its stored copy carries a threshold of them. An imported, offline-signed proposal can
+therefore be sent to Guardian like any other.
+
+`client.guardianClient` is the raw base client and skips the SDK's check: its
+`executeDeltaProposal` sends any proposal id and rejects with a plain `GuardianHttpError`. Guardian
+still refuses a switch there, so prefer
+`requestGuardianExecution`.
 
 ### Export Proposal for Offline Signing
 
@@ -739,7 +909,9 @@ integration asks for one through `approvalExpirationDelta`, which the
 
 The integration keeps its own recipe (build inputs + salt) and reads the bound
 block from `proposal.metadata.boundBlockNum`, so it can reproduce the exact
-transaction at execute time - the SDK does not store the serialized request.
+transaction at execute time. A `self_executed` client does not store the
+serialized request; a `guardian_executable` client stores the bytes passed to
+`createCustomProposal` so Guardian can execute them.
 Verification and `prepareCustomExecution` refuse a custom proposal whose
 `boundBlockNum` disagrees with its signed summary, as for every other type. A
 proposal a 0.18.0 client made has none; `summaryBoundBlockNum` reads its block

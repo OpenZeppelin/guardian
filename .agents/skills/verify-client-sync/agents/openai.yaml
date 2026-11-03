@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Client Sync"
+  short_description: "Model-check how the Rust and TS multisig SDKs keep a device's local view on the chain with TLA+"
+  default_prompt: "Use $verify-client-sync to model-check this change to SDK sync, proposal execution, local state writes or the TS config cache."

@@ -1,4 +1,4 @@
-use crate::delta_object::DeltaObject;
+use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::MetadataStore;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::{AppliedState, NetworkClient, StateVerification};
@@ -38,6 +38,8 @@ pub struct MockNetworkClient {
     pub get_state_head_calls: Arc<StdMutex<Vec<(String, serde_json::Value)>>>,
     pub validate_credential_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub validate_guardian_commitment_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_multisig_auth_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
+    pub validate_first_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub verify_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub apply_delta_responses: Arc<StdMutex<Vec<ApplyDeltaResult>>>,
     pub should_update_auth_responses: Arc<StdMutex<Vec<ShouldUpdateAuthResult>>>,
@@ -49,6 +51,10 @@ pub struct MockNetworkClient {
     /// `(account_id, final_state_commitment, from_block)` per search.
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
+    /// The block every observed commitment reports it was read at.
+    pub observed_block: Arc<StdMutex<u32>>,
+    /// How long every observed commitment takes to answer.
+    pub observation_delay: Arc<StdMutex<std::time::Duration>>,
 }
 
 impl MockNetworkClient {
@@ -79,6 +85,22 @@ impl MockNetworkClient {
 
     pub fn with_validate_guardian_commitment(self, response: StdResult<(), String>) -> Self {
         self.validate_guardian_commitment_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_validate_first_state(self, response: StdResult<(), String>) -> Self {
+        self.validate_first_state_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_validate_multisig_auth(self, response: StdResult<(), String>) -> Self {
+        self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .push(response);
@@ -162,7 +184,7 @@ impl MockNetworkClient {
             state_json,
             commitment,
             nonce: None,
-            cosigner_commitments: Vec::new(),
+            cosigners: Vec::new(),
             guardian_commitment: None,
         }))
     }
@@ -246,6 +268,23 @@ impl NetworkClient for MockNetworkClient {
             .unwrap_or(Ok(StateVerification::Match))
     }
 
+    async fn observe_commitment(
+        &self,
+        account_id: &str,
+        expected_commitment: &str,
+        read_mode: crate::network::RpcReadMode,
+    ) -> StdResult<crate::network::ObservedState, String> {
+        let delay = *self.observation_delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        let verification = self
+            .verify_commitment(account_id, expected_commitment, read_mode)
+            .await?;
+        Ok(crate::network::ObservedState {
+            verification,
+            block: *self.observed_block.lock().unwrap(),
+        })
+    }
+
     fn verify_delta(
         &self,
         _prev_proof: &str,
@@ -273,7 +312,7 @@ impl NetworkClient for MockNetworkClient {
                     state_json: serde_json::json!({}),
                     commitment: "mock_new_commitment".to_string(),
                     nonce: None,
-                    cosigner_commitments: Vec::new(),
+                    cosigners: Vec::new(),
                     guardian_commitment: None,
                 })
             })
@@ -317,8 +356,25 @@ impl NetworkClient for MockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
         _expected_guardian_commitment: &str,
+        _expected_guardian_scheme: guardian_shared::SignatureScheme,
     ) -> StdResult<(), String> {
         self.validate_guardian_commitment_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
+    }
+
+    fn validate_first_state(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
+        self.validate_first_state_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(()))
+    }
+
+    fn validate_multisig_auth(&self, _state_json: &serde_json::Value) -> StdResult<(), String> {
+        self.validate_multisig_auth_responses
             .lock()
             .unwrap()
             .pop()
@@ -429,6 +485,12 @@ pub struct MockStorageBackend {
     pub pool_status: Option<crate::storage::PoolStatus>,
     pub submit_state_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_state_calls: Arc<StdMutex<Vec<StateObject>>>,
+    pub replace_state_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::StateReplace, String>>>>,
+    pub replace_state_calls: Arc<StdMutex<Vec<(StateObject, String)>>>,
+    /// Served by `pull_state_head` instead of the peeked stored state: a
+    /// head read that sees an older state than the full read after it.
+    pub pull_state_head_override: Arc<StdMutex<Option<crate::state_object::StateHead>>>,
     pub submit_delta_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub submit_delta_calls: Arc<StdMutex<Vec<DeltaObject>>>,
     pub pull_state_responses: Arc<StdMutex<Vec<StdResult<StateObject, String>>>>,
@@ -460,6 +522,10 @@ pub struct MockStorageBackend {
     pub pull_all_delta_proposals_calls: Arc<StdMutex<Vec<String>>>,
     pub update_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub update_delta_proposal_calls: Arc<StdMutex<Vec<(String, DeltaObject)>>>,
+    /// Answers for `update_delta_proposal_if_status`, popped last first;
+    /// `Ok(true)` (the write committed) when empty. A committed write is
+    /// recorded in `update_delta_proposal_calls`.
+    pub update_delta_proposal_if_status_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     pub delete_delta_proposal_responses: Arc<StdMutex<Vec<StdResult<(), String>>>>,
     pub delete_delta_proposal_calls: Arc<StdMutex<Vec<(String, String)>>>,
     pub delete_delta_calls: Arc<StdMutex<Vec<(String, u64)>>>,
@@ -473,6 +539,10 @@ pub struct MockStorageBackend {
     // falls through to the single-process sequential helper so
     // existing tests keep observing the underlying submit/delete/
     // update calls.
+    pub promote_candidate_sources: Arc<StdMutex<Vec<crate::storage::PromotableKind>>>,
+    pub pull_superseded_deltas_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<crate::storage::SupersededDelta>, String>>>>,
+    pub prune_superseded_calls: Arc<StdMutex<Vec<(String, chrono::DateTime<chrono::Utc>)>>>,
     pub submit_candidate_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CandidateSubmission, String>>>>,
     pub promote_candidate_responses:
@@ -483,6 +553,33 @@ pub struct MockStorageBackend {
     pub discard_candidate_calls: Arc<StdMutex<Vec<(String, u64, crate::storage::DeltaStatusKind)>>>,
     pub update_candidate_status_responses:
         Arc<StdMutex<Vec<StdResult<crate::storage::CanonicalWrite, String>>>>,
+    // Execution reservation writes. A queued outcome is returned (LIFO);
+    // otherwise the call reports the uncontended success variant, and the
+    // loads report no execution.
+    pub create_execution_reservation_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ReservationWrite, String>>>>,
+    pub create_execution_reservation_calls:
+        Arc<StdMutex<Vec<crate::storage::NewExecutionReservation>>>,
+    pub renew_execution_reservation_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ReservationUpdate, String>>>>,
+    pub claim_execution_reservation_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ClaimWrite, String>>>>,
+    pub load_active_execution_responses:
+        Arc<StdMutex<Vec<StdResult<Option<crate::storage::ExecutionRecord>, String>>>>,
+    pub load_latest_execution_responses:
+        Arc<StdMutex<Vec<StdResult<Option<crate::storage::ExecutionRecord>, String>>>>,
+    pub admit_execution_candidate_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::AdmissionWrite, String>>>>,
+    pub admit_execution_candidate_calls: Arc<StdMutex<Vec<crate::storage::CandidateAdmission>>>,
+    pub resolve_execution_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ResolveWrite, String>>>>,
+    pub fail_execution_responses:
+        Arc<StdMutex<Vec<StdResult<crate::storage::ResolveWrite, String>>>>,
+    pub execution_resolution_calls: Arc<StdMutex<Vec<crate::storage::ExecutionResolution>>>,
+    pub list_active_executions_responses:
+        Arc<StdMutex<Vec<StdResult<Vec<crate::storage::ExecutionRecord>, String>>>>,
+    pub prune_execution_records_responses: Arc<StdMutex<Vec<StdResult<usize, String>>>>,
+    pub prune_execution_records_calls: Arc<StdMutex<Vec<(chrono::DateTime<chrono::Utc>, usize)>>>,
     // Dashboard read APIs (feature `005-operator-dashboard-metrics`).
     // Each queue is consumed LIFO via `Vec::pop`, mirroring the
     // existing helpers — callers either push N identical responses or
@@ -508,9 +605,24 @@ pub struct MockStorageBackend {
     pub backfill_state_nonce_responses: Arc<StdMutex<Vec<StdResult<bool, String>>>>,
     /// `(account_id, commitment, nonce)` per backfill.
     pub backfill_state_nonce_calls: Arc<StdMutex<Vec<(String, String, u64)>>>,
+    /// Makes `admit_delta_proposal` report the proposal as already stored.
+    pub admit_already_stored: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockStorageBackend {
+    /// Whether no execution was reserved or admitted through this backend.
+    pub fn reserved_nothing(&self) -> bool {
+        self.create_execution_reservation_calls
+            .lock()
+            .unwrap()
+            .is_empty()
+            && self
+                .admit_execution_candidate_calls
+                .lock()
+                .unwrap()
+                .is_empty()
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -527,7 +639,7 @@ impl MockStorageBackend {
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or_else(|| "No state found".to_string()),
+                .ok_or_else(|| "State not found".to_string()),
         }
     }
 
@@ -543,6 +655,19 @@ impl MockStorageBackend {
 
     pub fn with_submit_state(self, response: StdResult<(), String>) -> Self {
         self.submit_state_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_pull_state_head(self, head: crate::state_object::StateHead) -> Self {
+        *self.pull_state_head_override.lock().unwrap() = Some(head);
+        self
+    }
+
+    pub fn with_replace_state(
+        self,
+        response: StdResult<crate::storage::StateReplace, String>,
+    ) -> Self {
+        self.replace_state_responses.lock().unwrap().push(response);
         self
     }
 
@@ -633,6 +758,10 @@ impl MockStorageBackend {
         self.submit_state_calls.lock().unwrap().clone()
     }
 
+    pub fn get_replace_state_calls(&self) -> Vec<(StateObject, String)> {
+        self.replace_state_calls.lock().unwrap().clone()
+    }
+
     /// Queue one `backfill_state_nonce` answer (LIFO). The default with an
     /// empty queue is `Ok(true)`: the row took the nonce.
     pub fn with_backfill_state_nonce(self, response: StdResult<bool, String>) -> Self {
@@ -664,6 +793,12 @@ impl MockStorageBackend {
         self
     }
 
+    pub fn with_admit_already_stored(self) -> Self {
+        self.admit_already_stored
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
     pub fn with_pull_delta_proposal(self, response: StdResult<DeltaObject, String>) -> Self {
         self.pull_delta_proposal_responses
             .lock()
@@ -685,6 +820,14 @@ impl MockStorageBackend {
 
     pub fn with_update_delta_proposal(self, response: StdResult<(), String>) -> Self {
         self.update_delta_proposal_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_update_delta_proposal_if_status(self, response: StdResult<bool, String>) -> Self {
+        self.update_delta_proposal_if_status_responses
             .lock()
             .unwrap()
             .push(response);
@@ -740,6 +883,17 @@ impl MockStorageBackend {
         self.update_delta_status_calls.lock().unwrap().clone()
     }
 
+    pub fn with_pull_superseded_deltas(
+        self,
+        response: StdResult<Vec<crate::storage::SupersededDelta>, String>,
+    ) -> Self {
+        self.pull_superseded_deltas_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
     pub fn with_submit_candidate(
         self,
         response: StdResult<crate::storage::CandidateSubmission, String>,
@@ -756,6 +910,110 @@ impl MockStorageBackend {
         response: StdResult<crate::storage::PromoteWrite, String>,
     ) -> Self {
         self.promote_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_create_execution_reservation(
+        self,
+        response: StdResult<crate::storage::ReservationWrite, String>,
+    ) -> Self {
+        self.create_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_renew_execution_reservation(
+        self,
+        response: StdResult<crate::storage::ReservationUpdate, String>,
+    ) -> Self {
+        self.renew_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_claim_execution_reservation(
+        self,
+        response: StdResult<crate::storage::ClaimWrite, String>,
+    ) -> Self {
+        self.claim_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_load_active_execution(
+        self,
+        response: StdResult<Option<crate::storage::ExecutionRecord>, String>,
+    ) -> Self {
+        self.load_active_execution_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_load_latest_execution(
+        self,
+        response: StdResult<Option<crate::storage::ExecutionRecord>, String>,
+    ) -> Self {
+        self.load_latest_execution_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_admit_execution_candidate(
+        self,
+        response: StdResult<crate::storage::AdmissionWrite, String>,
+    ) -> Self {
+        self.admit_execution_candidate_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_resolve_execution(
+        self,
+        response: StdResult<crate::storage::ResolveWrite, String>,
+    ) -> Self {
+        self.resolve_execution_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_fail_execution(
+        self,
+        response: StdResult<crate::storage::ResolveWrite, String>,
+    ) -> Self {
+        self.fail_execution_responses.lock().unwrap().push(response);
+        self
+    }
+
+    pub fn with_list_active_executions(
+        self,
+        response: StdResult<Vec<crate::storage::ExecutionRecord>, String>,
+    ) -> Self {
+        self.list_active_executions_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn with_prune_execution_records(self, response: StdResult<usize, String>) -> Self {
+        self.prune_execution_records_responses
             .lock()
             .unwrap()
             .push(response);
@@ -782,6 +1040,10 @@ impl MockStorageBackend {
             .unwrap()
             .push(response);
         self
+    }
+
+    pub fn get_promote_candidate_sources(&self) -> Vec<crate::storage::PromotableKind> {
+        self.promote_candidate_sources.lock().unwrap().clone()
     }
 
     pub fn get_promote_candidate_fences(&self) -> Vec<Option<crate::storage::LeaseFence>> {
@@ -897,6 +1159,21 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or(Ok(()))
     }
 
+    async fn replace_state(
+        &self,
+        state: &StateObject,
+        expected_commitment: &str,
+    ) -> StdResult<crate::storage::StateReplace, String> {
+        self.replace_state_calls
+            .lock()
+            .unwrap()
+            .push((state.clone(), expected_commitment.to_string()));
+        if let Some(response) = self.replace_state_responses.lock().unwrap().pop() {
+            return response;
+        }
+        crate::storage::replace_state_sequential(self, state, expected_commitment).await
+    }
+
     async fn submit_delta(&self, delta: &DeltaObject) -> StdResult<(), String> {
         self.submit_delta_calls.lock().unwrap().push(delta.clone());
         self.submit_delta_responses
@@ -912,7 +1189,7 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .pop()
-            .unwrap_or_else(|| Err("No state found".to_string()));
+            .unwrap_or_else(|| Err("State not found".to_string()));
         if let Ok(state) = &response {
             *self.last_pulled_state.lock().unwrap() = Some(state.clone());
         }
@@ -931,6 +1208,9 @@ impl StorageBackend for MockStorageBackend {
         &self,
         _account_id: &str,
     ) -> StdResult<crate::state_object::StateHead, String> {
+        if let Some(head) = self.pull_state_head_override.lock().unwrap().clone() {
+            return Ok(head);
+        }
         self.peek_stored_state()
             .map(|state| crate::state_object::StateHead {
                 commitment: state.commitment,
@@ -1035,6 +1315,30 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
+    async fn pull_superseded_deltas(
+        &self,
+        _account_id: &str,
+        _since: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<Vec<crate::storage::SupersededDelta>, String> {
+        self.pull_superseded_deltas_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Ok(vec![]))
+    }
+
+    async fn prune_superseded_deltas(
+        &self,
+        account_id: &str,
+        before: chrono::DateTime<chrono::Utc>,
+    ) -> StdResult<u64, String> {
+        self.prune_superseded_calls
+            .lock()
+            .unwrap()
+            .push((account_id.to_string(), before));
+        Ok(0)
+    }
+
     async fn submit_delta_proposal(
         &self,
         commitment: &str,
@@ -1049,6 +1353,43 @@ impl StorageBackend for MockStorageBackend {
             .unwrap()
             .pop()
             .unwrap_or(Ok(()))
+    }
+
+    async fn admit_delta_proposal(
+        &self,
+        admission: crate::storage::ProposalAdmission,
+    ) -> Result<crate::storage::ProposalWrite, String> {
+        if self
+            .admit_already_stored
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(crate::storage::ProposalWrite::AlreadyStored);
+        }
+        let viable = self
+            .pull_pending_proposals(&admission.proposal.account_id)
+            .await?
+            .into_iter()
+            .filter(|record| {
+                record.proposal.prev_commitment == admission.proposal.prev_commitment
+                    && admission
+                        .queue_tail_nonce
+                        .is_none_or(|tail| record.proposal.nonce > tail)
+            })
+            .count();
+        if viable >= admission.max_viable_proposals {
+            return Ok(crate::storage::ProposalWrite::PendingLimit {
+                limit: admission.max_viable_proposals,
+            });
+        }
+        if admission.request_bytes > admission.max_account_request_bytes {
+            return Ok(crate::storage::ProposalWrite::AccountRequestBytesLimit {
+                limit: admission.max_account_request_bytes,
+                used: 0,
+            });
+        }
+        self.submit_delta_proposal(&admission.commitment, &admission.proposal)
+            .await?;
+        Ok(crate::storage::ProposalWrite::Stored)
     }
 
     async fn pull_delta_proposal(
@@ -1104,6 +1445,27 @@ impl StorageBackend for MockStorageBackend {
             .unwrap_or(Ok(()))
     }
 
+    async fn update_delta_proposal_if_status(
+        &self,
+        commitment: &str,
+        proposal: &DeltaObject,
+        _expected: &DeltaStatus,
+    ) -> Result<bool, String> {
+        let response = self
+            .update_delta_proposal_if_status_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(true));
+        if matches!(response, Ok(true)) {
+            self.update_delta_proposal_calls
+                .lock()
+                .unwrap()
+                .push((commitment.to_string(), proposal.clone()));
+        }
+        response
+    }
+
     async fn delete_delta_proposal(
         &self,
         account_id: &str,
@@ -1132,6 +1494,7 @@ impl StorageBackend for MockStorageBackend {
         &self,
         _account_id: &str,
         _nonce: u64,
+        _new_commitment: &str,
         _now: &str,
     ) -> Result<crate::storage::AbandonIntent, String> {
         self.request_candidate_abandon_responses
@@ -1160,19 +1523,12 @@ impl StorageBackend for MockStorageBackend {
         metadata: &dyn crate::metadata::MetadataStore,
         delta: &DeltaObject,
         now: &str,
-        max_pending_candidates: usize,
+        policy: crate::storage::CandidatePolicy,
     ) -> Result<crate::storage::CandidateSubmission, String> {
         if let Some(response) = self.submit_candidate_responses.lock().unwrap().pop() {
             return response;
         }
-        crate::storage::submit_candidate_sequential(
-            self,
-            metadata,
-            delta,
-            now,
-            max_pending_candidates,
-        )
-        .await
+        crate::storage::submit_candidate_sequential(self, metadata, delta, now, policy).await
     }
 
     async fn promote_candidate(
@@ -1184,10 +1540,160 @@ impl StorageBackend for MockStorageBackend {
             .lock()
             .unwrap()
             .push(promotion.fence.clone());
+        self.promote_candidate_sources
+            .lock()
+            .unwrap()
+            .push(promotion.source);
         if let Some(response) = self.promote_candidate_responses.lock().unwrap().pop() {
             return response;
         }
         crate::storage::promote_candidate_sequential(self, metadata, promotion).await
+    }
+
+    async fn create_execution_reservation(
+        &self,
+        reservation: crate::storage::NewExecutionReservation,
+    ) -> Result<crate::storage::ReservationWrite, String> {
+        self.create_execution_reservation_calls
+            .lock()
+            .unwrap()
+            .push(reservation);
+        self.create_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ReservationWrite::Created { attempt: 1 }))
+    }
+
+    async fn renew_execution_reservation(
+        &self,
+        _account_id: &str,
+        _fence: &crate::storage::LeaseFence,
+        _lease_expires_at: chrono::DateTime<chrono::Utc>,
+        _phase: crate::storage::ExecutionPhase,
+    ) -> Result<crate::storage::ReservationUpdate, String> {
+        self.renew_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ReservationUpdate::Applied))
+    }
+
+    async fn claim_execution_reservation(
+        &self,
+        _account_id: &str,
+        _expected: &crate::storage::LeaseFence,
+        _claimant: &crate::storage::LeaseFence,
+        _lease_expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::ClaimWrite, String> {
+        self.claim_execution_reservation_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ClaimWrite::Claimed))
+    }
+
+    async fn load_active_execution(
+        &self,
+        _account_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_active_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
+    async fn load_latest_execution(
+        &self,
+        _account_id: &str,
+        _proposal_id: &str,
+    ) -> Result<Option<crate::storage::ExecutionRecord>, String> {
+        self.load_latest_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(None))
+    }
+
+    async fn admit_execution_candidate(
+        &self,
+        _metadata: &dyn crate::metadata::MetadataStore,
+        admission: crate::storage::CandidateAdmission,
+    ) -> Result<crate::storage::AdmissionWrite, String> {
+        self.admit_execution_candidate_calls
+            .lock()
+            .unwrap()
+            .push(admission);
+        self.admit_execution_candidate_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::AdmissionWrite::Admitted))
+    }
+
+    async fn resolve_execution(
+        &self,
+        _metadata: &dyn crate::metadata::MetadataStore,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.execution_resolution_calls
+            .lock()
+            .unwrap()
+            .push(resolution);
+        self.resolve_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ResolveWrite::Resolved))
+    }
+
+    async fn fail_execution(
+        &self,
+        resolution: crate::storage::ExecutionResolution,
+    ) -> Result<crate::storage::ResolveWrite, String> {
+        self.execution_resolution_calls
+            .lock()
+            .unwrap()
+            .push(resolution);
+        self.fail_execution_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(crate::storage::ResolveWrite::Resolved))
+    }
+
+    async fn settle_promoted_execution(
+        &self,
+        _account_id: &str,
+        _fence: &crate::storage::LeaseFence,
+        _now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<crate::storage::SettleWrite, String> {
+        Ok(crate::storage::SettleWrite::NotPromoted)
+    }
+
+    async fn list_active_executions(&self) -> Result<Vec<crate::storage::ExecutionRecord>, String> {
+        self.list_active_executions_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(Vec::new()))
+    }
+
+    async fn prune_execution_records(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+        limit: usize,
+    ) -> Result<usize, String> {
+        self.prune_execution_records_calls
+            .lock()
+            .unwrap()
+            .push((cutoff, limit));
+        self.prune_execution_records_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or(Ok(0))
     }
 
     async fn discard_candidate(

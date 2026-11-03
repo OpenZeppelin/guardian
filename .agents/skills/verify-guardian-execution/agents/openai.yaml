@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Guardian Execution"
+  short_description: "Model-check Guardian proposal execution (reservations, send, reconcile, promotion) with TLA+"
+  default_prompt: "Use $verify-guardian-execution to model-check this change to Guardian execution reservations, the boundary commit, the send, reconciliation or promotion."

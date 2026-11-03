@@ -40,6 +40,7 @@ interface CreateMultisigDialogProps {
   ) => void;
   walletSource?: WalletSource;
   walletCommitment?: string | null;
+  schemeSelectable?: boolean;
 }
 
 export function CreateMultisigDialog({
@@ -53,6 +54,7 @@ export function CreateMultisigDialog({
   onCreate,
   walletSource = 'local',
   walletCommitment,
+  schemeSelectable = walletSource === 'local',
 }: CreateMultisigDialogProps) {
   const [otherSigners, setOtherSigners] = useState<OtherSigner[]>([]);
   const [otherCommitmentInput, setOtherCommitmentInput] = useState('');
@@ -175,7 +177,7 @@ export function CreateMultisigDialog({
             <Select
               value={signatureScheme}
               onValueChange={(val) => setSignatureScheme(val as SignatureScheme)}
-              disabled={walletSource !== 'local'}
+              disabled={!schemeSelectable}
             >
               <SelectTrigger className="w-full" size="sm">
                 <SelectValue />
@@ -186,7 +188,11 @@ export function CreateMultisigDialog({
               </SelectContent>
             </Select>
             {walletSource === 'miden-wallet' && (
-              <p className="text-xs text-muted-foreground">Miden Wallet scheme: {defaultScheme}</p>
+              <p className="text-xs text-muted-foreground">
+                {schemeSelectable
+                  ? 'Miden Wallet shares only a key commitment: pick the scheme of the wallet account.'
+                  : `Miden Wallet scheme: ${defaultScheme}`}
+              </p>
             )}
           </div>
 

@@ -14,9 +14,12 @@ pub mod auth;
 pub mod auth_request_eip712;
 pub mod auth_request_message;
 pub mod auth_request_payload;
+pub mod execution;
 pub mod felt;
 pub mod hex;
 pub mod lookup_auth_message;
+pub mod multisig_threshold;
+pub mod request_envelope;
 pub mod retry;
 pub mod session_grant;
 pub mod session_key;
@@ -58,6 +61,14 @@ impl SignatureScheme {
     /// Numeric identifier the guarded-multisig MASM stores alongside each public key.
     pub const fn auth_scheme_id(self) -> u64 {
         self.auth_scheme() as u64
+    }
+
+    /// The scheme a guarded-multisig storage scheme id names (the inverse of
+    /// [`Self::auth_scheme_id`]), or `None` for an id no supported scheme uses.
+    pub fn from_auth_scheme_id(id: u64) -> Option<Self> {
+        [Self::Falcon, Self::Ecdsa]
+            .into_iter()
+            .find(|scheme| scheme.auth_scheme_id() == id)
     }
 
     pub fn parse_signature_hex(self, signature_hex: &str) -> Result<AccountSignature, String> {
@@ -143,7 +154,8 @@ fn signature_advice_key(pubkey_commitment: Word, message: Word) -> Word {
     Hasher::hash_elements(&elements)
 }
 
-fn parse_ecdsa_public_key_hex(
+/// Decodes an optionally `0x`-prefixed hex ECDSA public key.
+pub fn parse_ecdsa_public_key_hex(
     public_key_hex: &str,
 ) -> Result<ecdsa_k256_keccak::PublicKey, String> {
     let public_key_bytes = ::hex::decode(public_key_hex.trim_start_matches("0x"))
@@ -200,6 +212,15 @@ impl ProposalSignature {
                 public_key,
                 message_format: EcdsaMessageFormat::Raw,
             },
+        }
+    }
+
+    /// The scheme the signature is made under. An EIP-712 approval is an
+    /// ECDSA signature.
+    pub const fn scheme(&self) -> SignatureScheme {
+        match self {
+            ProposalSignature::Falcon { .. } => SignatureScheme::Falcon,
+            ProposalSignature::Ecdsa { .. } => SignatureScheme::Ecdsa,
         }
     }
 
@@ -321,6 +342,26 @@ mod tests {
     };
 
     #[test]
+    fn auth_scheme_id_round_trips_and_rejects_unknown_ids() {
+        for scheme in [SignatureScheme::Falcon, SignatureScheme::Ecdsa] {
+            assert_eq!(
+                SignatureScheme::from_auth_scheme_id(scheme.auth_scheme_id()),
+                Some(scheme)
+            );
+        }
+        assert_eq!(
+            SignatureScheme::from_auth_scheme_id(AuthScheme::EcdsaK256Keccak as u64),
+            Some(SignatureScheme::Ecdsa)
+        );
+        assert_eq!(
+            SignatureScheme::from_auth_scheme_id(AuthScheme::Falcon512Poseidon2 as u64),
+            Some(SignatureScheme::Falcon)
+        );
+        assert_eq!(SignatureScheme::from_auth_scheme_id(0), None);
+        assert_eq!(SignatureScheme::from_auth_scheme_id(99), None);
+    }
+
+    #[test]
     fn test_account_json_round_trip() {
         // Create a test account
         let secret_key = SecretKey::new();
@@ -376,6 +417,28 @@ mod tests {
         let error = SignatureScheme::from("unknown").unwrap_err();
 
         assert!(error.contains("unsupported signature scheme"));
+    }
+
+    #[test]
+    fn proposal_signature_scheme_names_the_signature_scheme() {
+        assert_eq!(
+            ProposalSignature::Falcon {
+                signature: "0x00".into()
+            }
+            .scheme(),
+            SignatureScheme::Falcon
+        );
+        for message_format in [EcdsaMessageFormat::Raw, EcdsaMessageFormat::Eip712] {
+            assert_eq!(
+                ProposalSignature::Ecdsa {
+                    signature: "0x00".into(),
+                    public_key: None,
+                    message_format,
+                }
+                .scheme(),
+                SignatureScheme::Ecdsa
+            );
+        }
     }
 
     #[test]
