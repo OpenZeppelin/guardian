@@ -56,8 +56,6 @@ impl FilesystemMetadataStore {
             return Ok(false);
         }
 
-        // One probe covers the replay check, the swap, and the prior value the
-        // rollback below needs; only a first-ever record allocates a key.
         let previous = match auth_state.get_mut(&key) {
             Some(current) => Some(std::mem::replace(current, new_timestamp)),
             None => {

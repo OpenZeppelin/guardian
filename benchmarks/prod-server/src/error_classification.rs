@@ -3,7 +3,7 @@ use anyhow::Error;
 pub fn classify(error: &Error) -> String {
     let message = error.to_string().to_ascii_lowercase();
 
-    if message.contains("authentication_replay") || message.contains("replay") {
+    if message.contains("replay") {
         return "auth_replay".to_string();
     }
     if message.contains("resource_exhausted")

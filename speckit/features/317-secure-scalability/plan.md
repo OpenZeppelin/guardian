@@ -35,8 +35,9 @@ same-machine comparison (the replay-store gate harness, a prototype kept
 outside this repository since 2026-11-02) showed the proposed read path costs less database work per read than
 today's (about 2x throughput, a third less CPU at 10,000/s), with about
 1 GB of live records at 10,000 reads/s as the main cost. `session-v2`
-starts now; the read duplicate record ships behind a server read-policy
-setting (`strict` or `unique`), and the end-to-end benchmark on a
+starts now; the read duplicate record was first planned behind a server
+read-policy setting (`strict` or `unique`; later removed, `unique` is the
+only behavior), and the end-to-end benchmark on a
 prod-like stack runs once per setting to give the absolute RDS answer.
 The text below is the original gating rationale.
 

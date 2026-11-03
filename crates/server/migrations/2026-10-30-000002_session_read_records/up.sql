@@ -65,7 +65,7 @@ BEGIN
     WHILE start < now_ms + ahead_ms LOOP
         IF to_regclass(format('session_read_seen_%s', start)) IS NULL THEN
             EXECUTE format(
-                'CREATE TABLE session_read_seen_%s PARTITION OF session_read_seen '
+                'CREATE TABLE IF NOT EXISTS session_read_seen_%s PARTITION OF session_read_seen '
                 'FOR VALUES FROM (%s) TO (%s)',
                 start, start, start + width
             );
@@ -145,14 +145,13 @@ BEGIN
     PERFORM set_config('lock_timeout', '2s', true);
     SELECT f.watermark_ms INTO watermark FROM replay_fence f WHERE f.fence = 'session_read';
     FOR part IN
-        SELECT c.relname
+        SELECT c.oid::regclass AS partition
           FROM pg_inherits i
           JOIN pg_class c ON c.oid = i.inhrelid
-          JOIN pg_class p ON p.oid = i.inhparent
-         WHERE p.relname = 'session_read_seen'
+         WHERE i.inhparent = 'session_read_seen'::regclass
            AND substring(c.relname FROM 'session_read_seen_([0-9]+)$')::BIGINT + width <= watermark + 1
     LOOP
-        EXECUTE format('DROP TABLE %I', part.relname);
+        EXECUTE format('DROP TABLE %s', part.partition);
         dropped := dropped + 1;
     END LOOP;
     RETURN dropped;

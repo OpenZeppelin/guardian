@@ -15,7 +15,7 @@ crates/server/src/metadata/postgres.rs create 28f431bf5762e1c5
 crates/server/src/metadata/filesystem.rs create c6958d523ad58cb4
 crates/server/src/metadata/postgres.rs advance_session_floor 60f602b2470ab43a
 crates/server/src/metadata/filesystem.rs advance_session_floor b1d09619d9d0d8b6
-crates/server/src/metadata/filesystem.rs advance_floor_locked 458b23da46238fd8
+crates/server/src/metadata/filesystem.rs advance_floor_locked 7fa81354d2c3d04e
 crates/server/src/services/mod.rs resolve_unique_session_read 20a1221981db3004
 crates/server/src/services/mod.rs check_session_grant 6959b87d4183d754
 crates/server/src/coordination/postgres/read_records.rs admit_session_read b95c8124e3207e97

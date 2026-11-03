@@ -123,7 +123,7 @@ impl MidenSession {
                 guardian_commitment,
                 network,
             }),
-            _ => None,
+            SessionSubject::Operator { .. } | SessionSubject::Evm { .. } => None,
         }
     }
 
@@ -304,7 +304,7 @@ impl MidenSessions {
                 SessionSubject::Miden {
                     signer_commitment, ..
                 } => Some(signer_commitment),
-                _ => None,
+                SessionSubject::Operator { .. } | SessionSubject::Evm { .. } => None,
             }))
     }
 

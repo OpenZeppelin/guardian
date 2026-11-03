@@ -110,6 +110,12 @@ export function assertSupportedSessionPolicy(policy: { requestAuthVersion?: numb
 export const SESSION_TIMESTAMP_MAX_AHEAD_MS = 1_000;
 
 /**
+ * A next timestamp this far ahead of the local clock means the clock stepped
+ * back, so minting restarts from the clock instead of waiting the step out.
+ */
+export const SESSION_CLOCK_STEP_BACK_MS = 5_000;
+
+/**
  * After a replay rejection the next timestamp jumps to within this much below
  * the ahead limit, at random, so it clears a floor an earlier page or tab of
  * the same session left, and two of them stop colliding.
@@ -142,7 +148,11 @@ export class SessionTimestamps {
     }
     for (;;) {
       const now = this.now();
-      const next = Math.max(now, (this.last.get(accountId) ?? -Infinity) + 1);
+      let last = this.last.get(accountId) ?? -Infinity;
+      if (last - now > SESSION_CLOCK_STEP_BACK_MS) {
+        last = now - 1;
+      }
+      const next = Math.max(now, last + 1);
       const ahead = next - now;
       if (ahead <= SESSION_TIMESTAMP_MAX_AHEAD_MS) {
         this.last.set(accountId, next);

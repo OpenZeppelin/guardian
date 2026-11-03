@@ -37,7 +37,7 @@ query/body; gRPC protobuf encoding of the request message;
 |---|---|
 | `x-auth-format` = `session` on a per-account route | `unsupported_auth_version` (HTTP 400, gRPC `INVALID_ARGUMENT`, not retryable) |
 | `session-v2` on a wallet-only route | existing `wallet_signature_required` |
-| `abs(now - ts) > 300000` | existing `authentication_failed` |
+| `abs(now - ts)` above 60000 for a read, 300000 for a write | `timestamp_out_of_window` (not retryable) |
 | Signature invalid for the derived operation and transport | existing `authentication_failed` |
 | Session expired / revoked / not a cosigner / Guardian or network mismatch | existing codes, unchanged |
 | Read: digest already recorded for this session, or `ts <= read watermark` | `authentication_replay` (retryable with a fresh signature) |
@@ -51,27 +51,29 @@ signature are the same request and the second is a duplicate.
 ## Test vectors
 
 `crates/shared/tests/fixtures/session_request_vectors.json`, generated from
-the Rust constructors and read by Rust and TypeScript tests. Each vector:
+the Rust constructors and read by Rust and TypeScript tests. The file holds
+one key pair (`secret_hex`, `public_key_hex`), the operation registry, and
+the vectors. Each vector:
 
 ```json
 {
-  "name": "get_state_http",
-  "account_id": "0x...",
+  "name": "GetState_http",
+  "account_id_hex": "0x...",
   "timestamp_ms": 1767225600000,
+  "payload_hex": "0x...",
   "transport": 1,
   "operation": 1,
-  "payload_hex": "...",
-  "envelope_hex": "...",
-  "signed_digest_hex": "...",
-  "record_key_hex": "...",
-  "public_key_hex": "...",
-  "signature_hex": "...",
-  "verifies_as": [{"transport": 1, "operation": 1}]
+  "request_word_hex": "0x...",
+  "envelope_hex": "0x...",
+  "signed_digest_hex": "0x...",
+  "record_key_hex": "0x...",
+  "signature_hex": "0x..."
 }
 ```
 
 Required cases: every operation on both transports; same-payload pairs
 (`GetState`/`GetCanonicalNonce`, `GetDeltaProposals`/`GetDeltaHistory` with
-no cursor); a synthetic same-payload write pair; high-S variant; each
-single-field mutation (version, transport, operation, account, timestamp,
-payload) failing verification.
+no cursor); a synthetic same-payload write pair. The high-S variant and the
+single-field mutations (version, transport, operation, account, timestamp,
+payload) failing verification are derived from the fixture in the Rust test
+rather than stored in it.

@@ -203,7 +203,9 @@ approval prompts: the wallet still signs every transaction summary.
   that the grant names this Guardian's current ACK key for the account's
   scheme and its network (key rotation ends sessions), requires the grant's
   signer to be a current cosigner of the account, and finally applies the
-  replay check. A signer that does not cosign the account, or a grant for
+  replay check. Session reads are the exception: their replay check runs
+  right after the signature, so a read refused by a later check has
+  already used its signature. A signer that does not cosign the account, or a grant for
   this Guardian's key of the other signature scheme, gets
   `authorization_failed` (HTTP 403, gRPC `PERMISSION_DENIED`) and keeps its
   session for its other accounts; removing a signer ends its delegated

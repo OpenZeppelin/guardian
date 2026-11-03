@@ -624,8 +624,7 @@ only; wallet-signed requests, session grants and logout are unchanged.
 - Cut a server fleet over as a whole (drained or blue/green). Replicas of
   both versions behind one endpoint would refuse each other's session
   requests intermittently.
-- Session reads use the `unique` read replay policy (not configurable): each
-  signed read is accepted
+- Each signed session read is accepted
   once, in any order, so parallel and reordered reads no longer fail with
   `authentication_replay`. Session writes keep the strict timestamp floor.
   A replica of an earlier release never accepts a version 2 session request.

@@ -4,7 +4,10 @@ Status: Superseded in part by feature 317 (2026-11-02). The operation-bound
 envelope shipped as proposed (`session-v2`). Concurrent reads did not ship as
 the window-only `read_replay_policy: "window"` below: session reads use
 `unique` (each signed read admitted once, through a record of accepted reads,
-with a 60 s window), for sessions stored by earlier releases too.
+with a 60 s window), for sessions stored by earlier releases too. The
+`read_replay_policy` and `read_timestamp_skew_ms` fields proposed below were
+not shipped: `request_auth_version: 2` is the only advertised field and
+implies the read and write rules.
 See `speckit/features/317-secure-scalability/` and
 `benchmarks/prod-server/results/2026-11-02-local-317-sustained.md`.
 

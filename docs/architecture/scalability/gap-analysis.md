@@ -9,7 +9,7 @@ The prioritized recommendations are at the end, in
 
 The [session-auth RFC](./session-auth-rfc.md) develops the proposed auth
 change and records its compatibility, confidentiality, and validation
-requirements. It is a draft, not an approved implementation plan.
+requirements. Feature 317 shipped part of it; its status line says which.
 
 ## Target
 

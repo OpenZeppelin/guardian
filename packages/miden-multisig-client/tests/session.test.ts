@@ -427,6 +427,32 @@ describe('resume and end', () => {
     expect(guardian.createSession).not.toHaveBeenCalled();
   });
 
+  it('logs out a session Guardian registered with another request version', async () => {
+    const guardian = fakeGuardian();
+    guardian.createSession.mockRejectedValue(new UnsupportedAuthVersionError('version 3'));
+
+    await expect(
+      startGuardianSession(guardian as unknown as GuardianHttpClient, fakeSigner(), approve),
+    ).rejects.toBeInstanceOf(UnsupportedAuthVersionError);
+    expect(guardian.revokeSession).toHaveBeenCalledOnce();
+    expect(guardian.setSession).not.toHaveBeenCalled();
+  });
+
+  it('does not resume a stored session against a Guardian without sessions', async () => {
+    const store = memoryStore();
+    await startGuardianSession(fakeGuardian() as unknown as GuardianHttpClient, fakeSigner(), {
+      store,
+      ...approve,
+    });
+    const disabled = fakeGuardian();
+    disabled.getStatus.mockResolvedValue({ status: 'ok', environment: 'devnet' });
+
+    await expect(
+      resumeGuardianSession(disabled as unknown as GuardianHttpClient, fakeSigner(), store),
+    ).rejects.toBeInstanceOf(GuardianSessionsUnsupportedError);
+    expect(disabled.setSession).not.toHaveBeenCalled();
+  });
+
   it('does not resume a stored session against a Guardian without session request version 2', async () => {
     const store = memoryStore();
     await startGuardianSession(fakeGuardian() as unknown as GuardianHttpClient, fakeSigner(), {

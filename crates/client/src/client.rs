@@ -97,7 +97,9 @@ struct ActiveSession {
 
 /// A session write's turn on one account. A write is only sent signed by the
 /// session whose turn it holds: when that session was replaced while the
-/// write waited, it takes the new session's turn instead.
+/// write waited, it takes the new session's turn instead. A write whose
+/// session ended while it waited is signed once by the wallet and sent
+/// without a turn.
 pub(crate) struct WriteTurn {
     session_public_key: String,
     _guard: tokio::sync::OwnedMutexGuard<()>,
@@ -111,6 +113,10 @@ impl WriteTurn {
 
 /// How far a session request timestamp may run ahead of the local clock.
 const SESSION_TIMESTAMP_MAX_AHEAD_MS: i64 = 1_000;
+
+/// A next timestamp this far ahead of the local clock means the clock stepped
+/// back, so reservation restarts from the clock instead of waiting the step out.
+const SESSION_CLOCK_STEP_BACK_MS: i64 = 5_000;
 
 /// After a replay rejection the next timestamp jumps to within this much below
 /// the ahead limit, at random, so it clears a floor another client of the same
@@ -136,7 +142,10 @@ impl SessionTimestamps {
     }
 
     fn reserve(&mut self, account_id: &str, now_ms: i64) -> Result<i64, Duration> {
-        let last = self.0.get(account_id).copied().unwrap_or(i64::MIN);
+        let mut last = self.0.get(account_id).copied().unwrap_or(i64::MIN);
+        if last.saturating_sub(now_ms) > SESSION_CLOCK_STEP_BACK_MS {
+            last = now_ms - 1;
+        }
         let next = now_ms.max(last.saturating_add(1));
         let ahead = next - now_ms;
         if ahead > SESSION_TIMESTAMP_MAX_AHEAD_MS {
@@ -420,7 +429,9 @@ impl GuardianClient {
                 && session_key.as_deref() != write_turn.as_ref().map(WriteTurn::session_public_key)
             {
                 write_turn = None;
-                continue;
+                if session_key.is_some() {
+                    continue;
+                }
             }
             match send(&mut self.client, request).await {
                 Ok(response) => return Ok(response.into_inner()),
@@ -1420,6 +1431,25 @@ mod session_timestamp_tests {
         assert_eq!(
             timestamps.reserve("0xa", NOW + 1),
             Ok(NOW + SESSION_TIMESTAMP_MAX_AHEAD_MS + 1)
+        );
+    }
+
+    #[test]
+    fn a_clock_stepping_back_restarts_from_the_clock_instead_of_waiting() {
+        let mut timestamps = SessionTimestamps::default();
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW));
+        let corrected = NOW - 10 * 60 * 1000;
+        assert_eq!(timestamps.reserve("0xa", corrected), Ok(corrected));
+        assert_eq!(timestamps.reserve("0xa", corrected), Ok(corrected + 1));
+    }
+
+    #[test]
+    fn a_small_clock_step_back_is_waited_out() {
+        let mut timestamps = SessionTimestamps::default();
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW));
+        assert_eq!(
+            timestamps.reserve("0xa", NOW - 2_000),
+            Err(Duration::from_millis(1_001))
         );
     }
 

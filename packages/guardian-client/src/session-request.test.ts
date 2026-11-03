@@ -118,6 +118,15 @@ describe('SessionTimestamps', () => {
     }
   });
 
+  it('restarts from the clock when it steps back instead of waiting', async () => {
+    let now = NOW;
+    const timestamps = new SessionTimestamps(() => now);
+    expect(await timestamps.next('0xa')).toBe(NOW);
+    now = NOW - 10 * 60 * 1000;
+    expect(await timestamps.next('0xa')).toBe(now);
+    expect(await timestamps.next('0xa')).toBe(now + 1);
+  });
+
   it('jumps near the ahead limit after a replay rejection', async () => {
     const timestamps = new SessionTimestamps(() => NOW);
     expect(await timestamps.next('0xa')).toBe(NOW);

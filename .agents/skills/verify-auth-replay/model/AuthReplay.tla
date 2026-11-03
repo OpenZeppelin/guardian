@@ -128,9 +128,10 @@ Revoke ==
 SessionLive == session.st = "live" /\ now < session.at + Ttl
 
 (* builder/handle.rs start_session_sweep_worker -> purge_session_floors   *)
-(* (metadata/postgres.rs guardian_purge_session_floors, one call under the *)
-(* exclusive fence lock; metadata/filesystem.rs under the auth_state write *)
-(* lock): raise the floor fence to just below the cutoff, then delete.     *)
+(* (metadata/postgres.rs guardian_raise_session_floor_fence, then          *)
+(* guardian_delete_fenced_session_floors; metadata/filesystem.rs under the *)
+(* auth_state write lock): raise the floor fence to just below the cutoff, *)
+(* then delete.                                                            *)
 FloorDeletable == floors["sess"] # None /\ floors["sess"] < PurgeCutoff
 FenceBehind == FloorChecks /\ PurgeCutoff - 1 > floorFence
 
@@ -235,7 +236,7 @@ PCas(h) ==
     /\ HUnchanged
     /\ UNCHANGED <<exists, version, wrote, hreq, hexist, hwrote, hstart>>
 
-(* services/mod.rs record_session_read -> ReadRecordStore::record          *)
+(* services/mod.rs resolve_unique_session_read -> admit_read_record       *)
 (* (guardian_record_session_read: shared fence lock, window re-check, fence *)
 (* check, insert, in one call): a session read is admitted               *)
 (* once instead of advancing a floor.                                       *)

@@ -320,7 +320,7 @@ Session read replay protection is not configurable. Session reads must carry
 a timestamp within 60 s of server time (wallet requests and session writes:
 5 minutes); the SDKs sign reads at send time, so only clock difference counts,
 and a client outside the window gets `timestamp_out_of_window` and keeps its
-session. Each signed read is admitted once, in any order (the `unique` policy),
+session. Each signed read is admitted once, in any order,
 through a record of accepted reads: on Postgres the table `session_read_seen`,
 partitioned by 5 minutes, at one database call per read and about 550 MB of
 records at 10,000 reads/s; on the filesystem backend (development only)

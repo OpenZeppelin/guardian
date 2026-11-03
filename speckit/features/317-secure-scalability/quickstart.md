@@ -36,7 +36,7 @@ Expect: Rust and TypeScript produce identical `envelope_hex`,
 cargo test -p guardian-server auth::session_v2
 cargo test -p guardian-server replay_fence
 # Postgres (ignored tests, live DB per repo convention)
-GUARDIAN_TEST_DATABASE_URL=postgres://... cargo test -p guardian-server \
+DATABASE_URL=postgres://... cargo test -p guardian-server \
   --features integration -- --ignored session_read_seen
 ```
 

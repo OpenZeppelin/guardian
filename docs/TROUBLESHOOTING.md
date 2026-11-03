@@ -316,12 +316,14 @@ The two 401 codes mean different things (issue #367 split them):
   process (background poller, second tab, another host) signing with
   the same key. Replay state is scoped per `(account, signer)`, so
   other cosigners of a multisig never cause this for you.
-  Session reads are not ordered (the `unique` read replay policy): a
-  session read gets `authentication_replay` only when the exact
-  same signed request is sent twice, or arrives after its 60 s window.
-  Session writes keep the ordered check above.
-- **Session reads fail with `storage_error` (500) while writes work.** Under
-  `unique`, each session read is recorded in a time bucket the session sweep
+  Session reads are not ordered: a session read gets
+  `authentication_replay` only when the exact same signed request is sent
+  twice, or a copy arrives after the read records covering its timestamp
+  were purged. A read outside its 60 s window gets
+  `timestamp_out_of_window` instead. Session writes keep the ordered check
+  above.
+- **Session reads fail with `storage_error` (500) while writes work.** Each
+  session read is recorded in a time bucket the session sweep
   creates an hour ahead; a read whose bucket does not exist is refused rather
   than admitted unrecorded. Check the
   `<stack>-session-read-maintenance-stale` alarm and the server log for

@@ -286,10 +286,10 @@ function parseRetryAfterSeconds(header: string | null | undefined): number | und
  */
 const SESSION_EXPIRY_MARGIN_MS = 30_000;
 
-/** Codes that end a session-signed request's session for good. */
 /** Replay rejections a request is re-signed and resent for. */
 const REPLAY_RETRIES = 2;
 
+/** Codes that end a session-signed request's session for good. */
 const SESSION_END_REASONS: Record<string, SessionEndReason> = {
   session_expired: 'expired',
   session_revoked: 'revoked',

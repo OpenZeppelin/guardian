@@ -2,7 +2,8 @@
 
 Same load against four server configurations, to compare the 317 changes
 with main and the two session read policies. Local A/B, not an absolute
-capacity measurement.
+capacity measurement. The `strict` read policy was removed after this run,
+so its leg describes a build that no longer exists.
 
 ## Setup
 
