@@ -310,7 +310,7 @@
   - _Status (2026-10-30): Partly done with US2: `spec/api.md` (envelope, operation ids, policy fields, error code), `docs/architecture/services.md`._
 - [ ] T092 [P] Update `docs/MULTISIG_SDK.md`, `docs/TROUBLESHOOTING.md` (new code, `stale`/duplicate replay causes), `docs/CONFIGURATION.md` (all new env vars)
   - _Status (2026-10-30): Partly done with US2: `docs/MULTISIG_SDK.md`, `docs/TROUBLESHOOTING.md`._
-- [ ] T093 [P] Update READMEs for `crates/shared`, `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/miden-multisig-client` (signer interface break, sequencer, policy fields); no relative links in npm READMEs
+- [x] T093 [P] Update READMEs for `crates/shared`, `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/miden-multisig-client` (signer interface break, sequencer, policy fields); no relative links in npm READMEs
   - _Status (2026-10-30): Partly done with US2: `crates/shared/README.md`, `packages/guardian-client/README.md`._
 - [ ] T094 [P] Add the cutover to `docs/MIDEN_COMPATIBILITY.md`: old browser SDKs lose session requests until upgraded; homogeneous blue/green server cutover; rollback fails explicitly; phases 1 and 3 ship independently
   - _Status (2026-10-30): Partly done with US2: cutover section in `docs/MIDEN_COMPATIBILITY.md` (under the after-0.18.3 heading, like its neighbours)._

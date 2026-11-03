@@ -134,11 +134,12 @@ would exceed `now + 1000 ms`, wait until it does not.
 ```text
 received
   -> credentials parsed (SessionV2)        else UnsupportedAuthVersion / AuthenticationFailed
-  -> timestamp within +-300 s              else AuthenticationFailed (reason timestamp_window)
+  -> timestamp within +-60 s               else TimestampOutOfWindow
   -> P-256 verify over envelope            else AuthenticationFailed (invalid_signature)
   -> authorize_and_record (one DB call, primary)
        account/session missing|expired|revoked -> existing errors, nothing inserted
-       lock, fresh check, fence, insert: duplicate|stale -> AuthenticationReplay
+       lock, window re-check by the DB clock    outside -> TimestampOutOfWindow
+       fence, insert: duplicate|stale -> AuthenticationReplay
        DB error -> fail closed
   -> metadata (cache if auth_version matches, else reload)
   -> grant Guardian key, network, cosigner checks   else existing errors

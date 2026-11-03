@@ -295,6 +295,20 @@ grant that was signed but not yet registered can still be registered for up
 to about 10 minutes, so when a key may be compromised, call it again 10
 minutes later.
 
+Session requests use the version 2 format (`x-auth-format: session-v2`): the
+session key signs an envelope that binds the transport and the route's
+operation, so a signed request cannot be replayed on another route. This is a
+hard cutover with no fallback in either direction. `start_session` fails with
+`ClientError::UnsupportedAuthVersion` (`is_unsupported_auth_version()`) and
+logs the new session out when the Guardian does not report
+`request_auth_version: 2`, and a Guardian of this version answers requests in
+the old format with `unsupported_auth_version`. Neither ends the session or
+falls back to the wallet, so upgrade the Guardian and the SDK together. Each
+signed session read is admitted once and must be within 60 s of server time
+(5 minutes for writes); outside it the request fails with
+`timestamp_out_of_window` and the session is kept. See
+[`docs/MIDEN_COMPATIBILITY.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
+
 ## Server Signature Verification
 
 After pushing a delta, the server returns an Acknowledgment signature that signs the new commitment. You should verify this signature to ensure the server is signing with the expected public key.

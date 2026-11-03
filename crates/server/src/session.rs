@@ -2,7 +2,7 @@
 //!
 //! A wallet signs a session grant once to authorize a client-held P-256
 //! delegated signer; afterwards that key signs ordinary per-account requests
-//! (`x-auth-format: session`). This module owns the session configuration,
+//! (`x-auth-format: session-v2`). This module owns the session configuration,
 //! the realm-scoped session store, and the delegated-signer key and signature
 //! checks. Grant, request, logout and revoke-all flows live in
 //! `services::{create_session, resolve_account, revoke_session,
