@@ -136,6 +136,17 @@ impl BlockWatchStore for RecordingStore {
             .await
     }
 
+    async fn postpone_observation(
+        &self,
+        account_id: &str,
+        block_num: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<()> {
+        self.inner
+            .postpone_observation(account_id, block_num, next_attempt_at)
+            .await
+    }
+
     async fn count_pending_observations(&self) -> Result<u64> {
         self.inner.count_pending_observations().await
     }
@@ -1278,7 +1289,11 @@ async fn a_chain_reset_while_running_is_followed_onto_the_new_chain() {
         factory,
         config(),
     );
-    rig.set_cursor(0).await;
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 0, Some("0xa"), &fence())
+        .await
+        .unwrap();
     let (cancel, task) = rig.spawn();
     rig.wait_for_cursor(5).await;
     // The node restarts on a reset chain while block watch backs off.
@@ -1725,4 +1740,133 @@ async fn the_walk_a_restart_owes_is_requested_once_however_often_the_start_runs(
             .map(|walks| walks.requested_seq),
         Some(1)
     );
+}
+
+#[tokio::test]
+async fn a_node_behind_on_the_same_chain_is_waited_for_never_rewound_to() {
+    // Same genesis, the node far behind the cursor (still syncing, or a
+    // lagging replica): the start stays at the cursor, nothing is reset and
+    // no walk is asked for (PR #586 review).
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 100);
+    factory.set_genesis(Some("0xsame"));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 50_000, Some("0xsame"), &fence())
+        .await
+        .unwrap();
+    assert_eq!(rig.consumer().start_position_for_test().await, Ok(50_001));
+    assert!(rig.store.resets.lock().unwrap().is_empty());
+    assert_eq!(rig.cursor().await, Some(50_000));
+    assert!(!rig.signals.take_rotation_request());
+}
+
+#[tokio::test]
+async fn a_genesis_that_can_no_longer_be_compared_is_taken_for_another_chain() {
+    // The cursor recorded a genesis and the node reports none, on a second
+    // read too: a reset chain that already grew past the old height cannot
+    // be told apart, so the start is the tip, with one walk (PR #586
+    // review).
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 500);
+    factory.set_genesis(None);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 400, Some("0xold_chain"), &fence())
+        .await
+        .unwrap();
+    assert_eq!(rig.consumer().start_position_for_test().await, Ok(500));
+    assert_eq!(rig.store.resets.lock().unwrap().clone(), vec![499]);
+    assert!(rig.signals.take_rotation_request());
+    // The new reading is recorded: the next start resumes normally.
+    assert_eq!(rig.consumer().start_position_for_test().await, Ok(500));
+    assert_eq!(rig.store.resets.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn one_status_answer_without_a_genesis_is_no_reset() {
+    // The first read has no genesis (a replica behind a balancer, one odd
+    // answer), the second has the recorded one: the same chain.
+    let factory = ScriptedBlockSourceFactory::new().with_genesis_reads(&[None]);
+    factory.chain.push_empty(1, 500);
+    factory.set_genesis(Some("0xsame"));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 400, Some("0xsame"), &fence())
+        .await
+        .unwrap();
+    assert_eq!(rig.consumer().start_position_for_test().await, Ok(401));
+    assert!(rig.store.resets.lock().unwrap().is_empty());
+    assert!(!rig.signals.take_rotation_request());
+}
+
+#[tokio::test]
+async fn a_genesis_first_reported_now_is_adopted_without_a_reset() {
+    // The cursor was written while the node reported no genesis; now it
+    // reports one. Adopted, and the height decides this once: within
+    // reach, the feed resumes.
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 500);
+    factory.set_genesis(Some("0xnow_reported"));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 400, None, &fence())
+        .await
+        .unwrap();
+    assert_eq!(rig.consumer().start_position_for_test().await, Ok(401));
+    assert!(rig.store.resets.lock().unwrap().is_empty());
+    assert!(!rig.signals.take_rotation_request());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_node_behind_on_the_same_chain_is_waited_for_an_hour_at_most() {
+    // A chain rebuilt from the same genesis looks like a node behind: the
+    // wait is bounded, then the cursor is taken for another chain's.
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 100);
+    factory.set_genesis(Some("0xsame"));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 50_000, Some("0xsame"), &fence())
+        .await
+        .unwrap();
+    let consumer = rig.consumer();
+    assert_eq!(consumer.start_position_for_test().await, Ok(50_001));
+    tokio::time::sleep(super::consumer::NODE_BEHIND_LIMIT - Duration::from_secs(1)).await;
+    assert_eq!(consumer.start_position_for_test().await, Ok(50_001));
+    assert!(rig.store.resets.lock().unwrap().is_empty());
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(consumer.start_position_for_test().await, Ok(100));
+    assert_eq!(rig.store.resets.lock().unwrap().clone(), vec![99]);
+    assert!(rig.signals.take_rotation_request());
 }

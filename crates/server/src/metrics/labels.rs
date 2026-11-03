@@ -283,10 +283,14 @@ pub enum BlockWatchVisitOutcome {
     Checked,
     /// A chain read failed; the observation is retried later.
     Deferred,
+    /// The account cannot be judged yet (its own candidate in flight, or a
+    /// confirmation streak open); the observation waits without spending
+    /// an attempt.
+    Waiting,
     /// The visit failed (storage error, failed release write); retried.
     Failed,
-    /// The observation ran out of attempts and was dropped; the rotation
-    /// remains the backstop.
+    /// The observation ran out of attempts and was dropped, with one walk
+    /// of the release sweep rotation recorded to cover the account.
     Dropped,
 }
 
@@ -295,6 +299,7 @@ impl BlockWatchVisitOutcome {
         match self {
             Self::Checked => "checked",
             Self::Deferred => "deferred",
+            Self::Waiting => "waiting",
             Self::Failed => "failed",
             Self::Dropped => "dropped",
         }

@@ -110,6 +110,10 @@ impl MalformedStreak {
     }
 }
 
+/// How long a node far behind the cursor on the same chain is waited for
+/// before the cursor is taken for another chain's (see `start_position`).
+pub const NODE_BEHIND_LIMIT: Duration = Duration::from_secs(3_600);
+
 /// What a stall timeout found when it read the tip.
 enum Stall {
     /// The chain moved past the cursor: the source is stuck.
@@ -135,6 +139,9 @@ pub struct Consumer {
     /// The genesis commitment of the chain the cursor counts, as the node
     /// reported it at start.
     genesis: std::sync::Mutex<Option<String>>,
+    /// Since when the node has been far behind the cursor on the same
+    /// chain, while it is.
+    behind_since: std::sync::Mutex<Option<Instant>>,
 }
 
 impl Consumer {
@@ -152,6 +159,7 @@ impl Consumer {
             fence,
             request_rotation_on_start: AtomicBool::new(request_rotation_on_start),
             genesis: std::sync::Mutex::new(None),
+            behind_since: std::sync::Mutex::new(None),
         }
     }
 
@@ -160,6 +168,21 @@ impl Consumer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .clone()
+    }
+
+    /// How long the node has been far behind the cursor on the same
+    /// chain (`behind`), counted from the first start that saw it; zero,
+    /// and forgotten, once it is not.
+    fn behind_for(&self, behind: bool) -> Duration {
+        let mut since = self
+            .behind_since
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !behind {
+            *since = None;
+            return Duration::ZERO;
+        }
+        since.get_or_insert_with(Instant::now).elapsed()
     }
 
     fn factory(&self) -> &Arc<dyn BlockSourceFactory> {
@@ -399,7 +422,13 @@ impl Consumer {
             .chain_tip()
             .await
             .map_err(|e| e.to_string())?;
-        let genesis = self.factory().genesis().await.map_err(|e| e.to_string())?;
+        let mut genesis = self.factory().genesis().await.map_err(|e| e.to_string())?;
+        // A cursor whose chain had a genesis and a node that reports none:
+        // asked once more before that counts (one status answer without it,
+        // or one replica behind a balancer, is no reset).
+        if genesis.is_none() && cursor.as_ref().is_some_and(|c| c.genesis.is_some()) {
+            genesis = self.factory().genesis().await.map_err(|e| e.to_string())?;
+        }
         *self
             .genesis
             .lock()
@@ -408,16 +437,53 @@ impl Consumer {
         if let Some(cursor) = &cursor {
             self.handle.status.set_last_block(cursor.last_block);
         }
-        // A cursor counted on another chain (the network was reset), or one
-        // the node refuses to stream from, starts over at the tip.
+        // A cursor counted on another chain (the network was reset) starts
+        // over at the tip. The genesis tells the chains apart; only when
+        // the cursor recorded none does the height decide, a cursor the
+        // node refuses to stream from being taken for another chain.
+        let far_ahead = cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.last_block > tip.saturating_add(MAX_CURSOR_LEAD_BLOCKS));
+        // The same chain, the node far behind (a lagging replica, a node
+        // still loading): waited for rather than rewound to, but not for
+        // ever: a chain rebuilt from the same genesis (a local node reset
+        // from a fixed configuration) looks the same, and would hold the
+        // feed until it regrows past the cursor.
+        let behind_same_chain = far_ahead
+            && cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.genesis.is_some() && cursor.genesis == genesis);
+        let behind_for = self.behind_for(behind_same_chain);
         let reset = cursor.as_ref().and_then(|cursor| {
-            if let (Some(recorded), Some(reported)) = (&cursor.genesis, &genesis)
-                && recorded != reported
-            {
-                return Some((cursor.last_block, "genesis_changed"));
+            match (&cursor.genesis, &genesis) {
+                (Some(recorded), Some(reported)) if recorded != reported => {
+                    Some((cursor.last_block, "genesis_changed"))
+                }
+                (Some(_), Some(_)) if behind_same_chain => {
+                    if behind_for >= NODE_BEHIND_LIMIT {
+                        return Some((cursor.last_block, "node_behind_too_long"));
+                    }
+                    tracing::warn!(
+                        event = "block_watch_node_behind",
+                        cursor = cursor.last_block,
+                        tip,
+                        behind_seconds = behind_for.as_secs(),
+                        "The node is far behind the cursor on the same chain; waiting \
+                         for it to catch up"
+                    );
+                    None
+                }
+                (Some(_), Some(_)) => None,
+                // The cursor's chain had a genesis and the node reports
+                // none, twice: the chains can no longer be told apart, so
+                // the safe reading is another chain (the skipped blocks get
+                // one walk).
+                (Some(_), None) => Some((cursor.last_block, "genesis_unknown")),
+                // The node reports a genesis where the cursor recorded none
+                // (it reported none then): adopted from here on, the height
+                // deciding this once.
+                (None, _) => far_ahead.then_some((cursor.last_block, "cursor_ahead_of_tip")),
             }
-            (cursor.last_block > tip.saturating_add(MAX_CURSOR_LEAD_BLOCKS))
-                .then_some((cursor.last_block, "cursor_ahead_of_tip"))
         });
         if let Some((last_block, reason)) = reset {
             tracing::warn!(
@@ -653,12 +719,22 @@ impl Consumer {
     }
 
     /// Whether the node now reports another genesis than the chain the
-    /// cursor counts. An unreadable genesis is no evidence of a reset.
+    /// cursor counts, or none at all where it reported one. A failed read
+    /// is no evidence of a reset.
     async fn chain_was_reset(&self) -> bool {
         let Some(known) = self.genesis() else {
             return false;
         };
         match self.factory().genesis().await {
+            Ok(None) => {
+                tracing::warn!(
+                    event = "block_watch_chain_reset",
+                    known_genesis = %known,
+                    "The node no longer reports a genesis; the chain block watch was \
+                     following can no longer be recognised"
+                );
+                true
+            }
             Ok(Some(reported)) if reported != known => {
                 tracing::warn!(
                     event = "block_watch_chain_reset",

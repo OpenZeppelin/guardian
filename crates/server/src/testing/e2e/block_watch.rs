@@ -206,7 +206,7 @@ async fn test_block_watch_releases_a_public_switch_seen_in_a_block_once_confirme
         vec![(
             fixture.account_id_hex.clone(),
             SWITCH_BLOCK,
-            VisitOutcome::Deferred
+            VisitOutcome::Waiting
         )],
         "the observation stays while the streak is open"
     );
@@ -378,7 +378,7 @@ async fn test_block_watch_ignores_own_landings_busy_accounts_and_strangers() {
     assert_eq!(store.count_pending_observations().await.unwrap(), 1);
     assert_eq!(
         holder.visit_observations().await,
-        vec![(fixture.account_id_hex.clone(), 12, VisitOutcome::Deferred)]
+        vec![(fixture.account_id_hex.clone(), 12, VisitOutcome::Waiting)]
     );
     assert!(fixture.released_at().await.is_none());
     assert!(fixture.release_events().is_empty());

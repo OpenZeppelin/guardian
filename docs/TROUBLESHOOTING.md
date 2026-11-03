@@ -528,10 +528,18 @@ Operator checks:
     `idle_seconds`): no block within `GUARDIAN_BLOCK_WATCH_STALL_SECONDS`
     while the chain moved on.
   - `block_watch_chain_reset` (warn, with `cursor`, `tip`,
-    `reason=genesis_changed|cursor_ahead_of_tip`, or `known_genesis` /
-    `reported_genesis`): the node's chain is not the one the cursor
-    counted (a network reset, or a cursor the node refuses to stream
-    from): the cursor moves to the new tip and one rotation is requested.
+    `reason=genesis_changed|genesis_unknown|node_behind_too_long|cursor_ahead_of_tip`,
+    or `known_genesis` / `reported_genesis`): the node's chain is not the
+    one the cursor counted (another genesis; no genesis reported, twice,
+    where the cursor recorded one; the same genesis but the node far
+    behind for over an hour, as a chain rebuilt from the same genesis
+    would be; or, when the cursor recorded no genesis, a cursor the node
+    refuses to stream from): the cursor moves to the new tip and one
+    rotation is requested. `block_watch_node_behind` (warn, with
+    `cursor`, `tip`, `behind_seconds`): same genesis, the node far behind
+    the cursor (a lagging replica): block watch waits for it, up to an
+    hour, instead of rewinding the cursor. A genesis reported where the
+    cursor recorded none is adopted without a reset.
   - `block_watch_cursor_init` (info, with `start_block`) and
     `block_watch_cursor_jump` (warn, with `cursor`, `tip`, `gap`,
     `max_catchup_blocks` or `reason=block_unavailable`): the feed starts
@@ -557,7 +565,15 @@ Operator checks:
     state this server does not hold; the release detectors visit it.
   - `block_watch_observation_visited` (debug, with `outcome`,
     `attempts`) and `block_watch_observation_dropped` (warn): an
-    observation that ran out of `GUARDIAN_BLOCK_WATCH_MAX_ATTEMPTS`.
+    observation that ran out of `GUARDIAN_BLOCK_WATCH_MAX_ATTEMPTS`; one
+    rotation is recorded to cover the account before it is dropped
+    (`block_watch_observation_kept`, warn, when that record fails).
+    `outcome=waiting` (its own candidate in flight, or a confirmation
+    streak open) spends no attempt; `block_watch_observation_waiting`
+    (warn) reports one that has waited about a day of blocks, then
+    visited hourly. `release_sweep_walk_unchecked` (warn): a requested
+    walk still could not check every account after five retries (the
+    re-check delay doubling) and counts as done.
   - `block_watch_block_failed` (warn) and `block_watch_start_failed`
     (warn): a storage or node read failed; the same block (or the start)
     is retried.
@@ -574,7 +590,7 @@ Operator checks:
   `guardian_block_watch_reconnects_total{reason}`,
   `guardian_block_watch_account_updates_total{outcome=not_guarded|skipped_pending_candidate|at_stored|own_history|unfinished_configuration|observed|undecodable}`,
   `guardian_block_watch_observations_pending`,
-  `guardian_block_watch_observation_visits_total{outcome=checked|deferred|failed|dropped}`
+  `guardian_block_watch_observation_visits_total{outcome=checked|deferred|waiting|failed|dropped}`
   and `guardian_block_watch_block_processing_seconds` describe the feed.
   `GET /dashboard/info` reports it under `backend.block_watch`.
 - `guardian_release_sweep_rotations_total{outcome=...}` counts walks of

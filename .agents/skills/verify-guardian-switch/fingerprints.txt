@@ -28,10 +28,10 @@ crates/server/src/jobs/canonicalization/processor.rs landed_through_successor 16
 crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 02f72218c5298266
 crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance a9652aaef66374ce
 crates/server/src/network/miden/mod.rs verify_delta 0f121467477a893b
-crates/server/src/jobs/release_sweep/sweep.rs visit bf3673c366e787d4
-crates/server/src/jobs/release_sweep/sweep.rs check_stored_state d39fbb6aa35e11f3
+crates/server/src/jobs/release_sweep/sweep.rs visit 60bfd30f9d96b36c
+crates/server/src/jobs/release_sweep/sweep.rs check_stored_state c0794794507565ea
 crates/server/src/jobs/release_sweep/sweep.rs promoting_delta_nonce f40636c8b5ae7261
-crates/server/src/jobs/release_sweep/sweep.rs visit_diverged cd540d6df5b85108
+crates/server/src/jobs/release_sweep/sweep.rs visit_diverged 16791a44f5aa4903
 crates/server/src/jobs/release_sweep/sweep.rs classify_key 33c8c049584cc948
 crates/server/src/jobs/release_sweep/sweep.rs switch_candidates 0eb160fd949a3435
 crates/server/src/jobs/release_sweep/sweep.rs candidate_bases 6c0ce3c48879c76b

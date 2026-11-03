@@ -145,6 +145,15 @@ pub trait BlockWatchStore: Send + Sync {
         next_attempt_at: DateTime<Utc>,
     ) -> Result<()>;
 
+    /// Make the observation due again at `next_attempt_at` without
+    /// counting an attempt: the visit waited (nothing failed).
+    async fn postpone_observation(
+        &self,
+        account_id: &str,
+        block_num: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<()>;
+
     /// Observations awaiting a visit, due or not.
     async fn count_pending_observations(&self) -> Result<u64>;
 
@@ -414,6 +423,20 @@ impl BlockWatchStore for InMemoryBlockWatchStore {
             locked(&self.observations).get_mut(&(block_num, account_id.to_string()))
         {
             stored.attempts = stored.attempts.saturating_add(1);
+            stored.next_attempt_at = next_attempt_at;
+        }
+        Ok(())
+    }
+
+    async fn postpone_observation(
+        &self,
+        account_id: &str,
+        block_num: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<()> {
+        if let Some(stored) =
+            locked(&self.observations).get_mut(&(block_num, account_id.to_string()))
+        {
             stored.next_attempt_at = next_attempt_at;
         }
         Ok(())

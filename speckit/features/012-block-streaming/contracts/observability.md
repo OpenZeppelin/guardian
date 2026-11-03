@@ -11,7 +11,7 @@
 | `guardian_block_watch_lag_blocks` | gauge | — | `committed_chain_tip - last_block` as of the last block (poll: tip read − last block). |
 | `guardian_block_watch_account_updates_total` | counter | `outcome=not_guarded\|skipped_pending_candidate\|at_stored\|own_history\|unfinished_configuration\|observed\|undecodable` | Every `updated_accounts` entry, by what the filter and the commitment comparison decided. |
 | `guardian_block_watch_observations_pending` | gauge | — | Rows awaiting a visit (store count, refreshed per block and per visit). |
-| `guardian_block_watch_observation_visits_total` | counter | `outcome=checked\|deferred\|failed\|dropped` | Visitor outcomes. |
+| `guardian_block_watch_observation_visits_total` | counter | `outcome=checked\|deferred\|waiting\|failed\|dropped` | Visitor outcomes. |
 | `guardian_block_watch_reconnects_total` | counter | `reason=status_<code>\|transport\|ended\|out_of_sequence\|stall\|malformed\|unavailable_block\|timeout\|skipped_malformed_block` | Source reopen events. |
 | `guardian_block_watch_transport` | gauge | `transport=stream\|poll` | 1 for the active transport, 0 for the other. |
 | `guardian_block_watch_block_processing_seconds` | histogram | — | `process(block)` duration (SC-003). |
@@ -53,6 +53,7 @@ status_resource_exhausted}` increments as a dashboard panel, not an alarm
 | `block_watch_walk_request_failed` | warn | `error` |
 | `block_watch_undecodable_updates` | warn | `block_num`, `undecodable` |
 | `block_watch_block_skipped` | warn | `block_num`, `attempts`, `error` |
+| `block_watch_node_behind` | warn | `cursor`, `tip` |
 
 Release events keep `release_sweep_released` with `detected_by`, plus
 `source=block_watch` and `observed_block_num` when applicable.

@@ -182,6 +182,8 @@ pub struct ScriptedBlockSourceFactory {
     tip_override: Mutex<Option<Result<u32, BlockSourceError>>>,
     /// The genesis commitment `genesis` reports.
     genesis: Mutex<Option<String>>,
+    /// Answers `genesis` gives first, in order, before `genesis`.
+    genesis_reads: Mutex<VecDeque<Option<String>>>,
     opens: Mutex<Vec<(Transport, u32, tokio::time::Instant)>>,
 }
 
@@ -211,6 +213,15 @@ impl ScriptedBlockSourceFactory {
     /// Report `genesis` as the chain's genesis commitment.
     pub fn set_genesis(&self, genesis: Option<&str>) {
         *self.genesis.lock().unwrap() = genesis.map(str::to_string);
+    }
+
+    /// Answer the next `genesis` reads with `reads`, in order.
+    pub fn with_genesis_reads(self, reads: &[Option<&str>]) -> Self {
+        self.genesis_reads
+            .lock()
+            .unwrap()
+            .extend(reads.iter().map(|read| read.map(str::to_string)));
+        self
     }
 
     /// Replace the chain with a new one (a reset): blocks `1..=tip`, and
@@ -299,6 +310,9 @@ impl BlockSourceFactory for ScriptedBlockSourceFactory {
     }
 
     async fn genesis(&self) -> Result<Option<String>, BlockSourceError> {
+        if let Some(read) = self.genesis_reads.lock().unwrap().pop_front() {
+            return Ok(read);
+        }
         Ok(self.genesis.lock().unwrap().clone())
     }
 

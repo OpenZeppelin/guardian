@@ -87,8 +87,9 @@ pub struct BlockWatchConfig {
     pub stream_retry_seconds: u64,
 
     /// Visits of one observation that end without checking the account
-    /// (a chain read failed) before it is dropped; the rotation remains
-    /// the backstop.
+    /// (a chain read failed) before it is dropped, once one walk of the
+    /// rotation is recorded to cover it. A visit that waits (own candidate
+    /// in flight, open streak) spends no attempt.
     pub max_attempts: u32,
 }
 

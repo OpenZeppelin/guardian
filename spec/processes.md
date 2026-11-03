@@ -856,11 +856,17 @@ proof.
   runs a walk its predecessor owed.
 - **Chain resets.** The cursor records the genesis commitment the node
   reported. A node reporting another one (at start, or when a source is
-  reopened), a cursor more than 100 blocks past the tip (the node refuses
-  to stream from it, `OUT_OF_RANGE`), or a tip that falls that far below
-  the cursor while polling means the cursor belongs to another chain: it
-  is moved to the new tip (the one write that moves it back, fenced like
-  the others) and one walk is requested. A stream that fails with
+  reopened), or reporting none on two reads where the cursor recorded
+  one (the chains can no longer be told apart), means the cursor belongs
+  to another chain; when the cursor recorded no genesis, so does a cursor
+  more than 100 blocks past the tip (the node refuses to stream from it,
+  `OUT_OF_RANGE`) or a tip that falls that far below the cursor while
+  polling, and a genesis the node reports now is adopted. The cursor is
+  then moved to the new tip (the one write that moves it back, fenced
+  like the others) and one walk is requested. With the same genesis on
+  both sides, a node far behind the cursor is waited for, up to an hour
+  (a chain rebuilt from the same genesis looks the same), instead of
+  rewinding the cursor to a lagging node's tip. A stream that fails with
   `INTERNAL` is asked about the next block directly: one at or below the
   tip the node no longer serves is skipped like an unavailable block.
 - **Observation visits.** The release sweep's paced loop takes turns
@@ -879,13 +885,19 @@ proof.
   later ones coming from re-checks as usual. A chain read from before
   the observed block (a node behind the feed) is no answer, and neither
   is a transaction history that ends before it. A checked observation is
-  deleted; one whose visit could not check the account (a chain read
-  failed or came from before the observed block, the store moved
-  between two reads, a candidate in flight, or a foreign key awaiting
-  confirmation, whose streak lives in the holder's memory) is retried
-  after
-  `recheck_seconds` doubling per attempt (at most 1 h), and dropped with
-  a warning after `max_attempts`; the rotation remains the backstop.
+  deleted. One that waits (a candidate of this server's in flight, or a
+  foreign key awaiting confirmation, whose streak lives in the holder's
+  memory) comes back after `recheck_seconds` and spends no attempt,
+  however long the wait lasts (after about a day of blocks it is
+  reported, and visited hourly). One whose visit could not check the
+  account (a chain read failed or came from before the observed block,
+  the store moved between two reads, or a release write found the
+  stored state replaced) is retried after `recheck_seconds` doubling per
+  attempt (at most 1 h), and after `max_attempts` dropped with a
+  warning once one walk is recorded to cover the account. A requested
+  walk that could not check every account runs again after
+  `recheck_seconds`, doubling, at most five times, then counts as done
+  with a warning.
 - **Cluster state.** The cursor (`block_watch_cursor`, one row per
   network) and the observations (`block_watch_observations`) are shared
   Postgres tables. The cursor is written forward-only, in the same

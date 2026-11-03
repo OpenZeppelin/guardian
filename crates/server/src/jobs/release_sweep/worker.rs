@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 use crate::builder::clock::Clock;
 use crate::coordination::{BlockWatchStore, FencedWrite, LeaderElector, Lease, Observation};
 use crate::error::Result;
-use crate::jobs::block_watch::{BlockWatchSignals, Consumer, Stopped};
+use crate::jobs::block_watch::{BlockWatchSignals, BlockWatchStatus, Consumer, Stopped};
 use crate::jobs::canonicalization::spawn_lease_renewal;
 use crate::metrics::labels::{BlockWatchVisitOutcome, RunOutcome};
 use crate::metrics::names;
@@ -87,6 +87,7 @@ async fn run_worker(state: AppState, config: ReleaseSweepConfig, leader: Arc<dyn
     let observations = state.block_watch.as_ref().map(|handle| ObservationQueue {
         store: handle.store.clone(),
         network: handle.network,
+        status: handle.status.clone(),
         signals: signals.clone(),
         clock: state.clock.clone(),
         recheck: config.recheck(),
@@ -194,6 +195,9 @@ fn spawn_consumer(consumer: Consumer, cancel: CancellationToken) -> tokio::task:
 struct ObservationQueue {
     store: Arc<dyn BlockWatchStore>,
     network: NetworkType,
+    /// The feed on this replica, for how long a waiting observation has
+    /// waited (in blocks).
+    status: Arc<BlockWatchStatus>,
     signals: Arc<BlockWatchSignals>,
     clock: Arc<dyn Clock>,
     recheck: Duration,
@@ -224,7 +228,7 @@ impl ObservationQueue {
 
     /// Visit the due observation of the lowest block, if any. `false` when
     /// there was none to visit.
-    async fn visit_next(&self, sweeper: &ReleaseSweeper) -> bool {
+    async fn visit_next(&self, sweeper: &ReleaseSweeper, fence: &LeaseFence) -> bool {
         let observation = match self.store.next_due_observation(self.clock.now()).await {
             Ok(Some(observation)) => observation,
             Ok(None) => return false,
@@ -252,7 +256,7 @@ impl ObservationQueue {
                 VisitOutcome::Failed
             }
         };
-        let recorded = self.settle(&observation, outcome).await;
+        let recorded = self.settle(&observation, outcome, fence).await;
         metrics::counter!(
             names::BLOCK_WATCH_OBSERVATION_VISITS_TOTAL,
             names::LABEL_OUTCOME => recorded.as_str()
@@ -272,12 +276,15 @@ impl ObservationQueue {
         true
     }
 
-    /// Delete a checked observation; retry one that could not be checked,
-    /// backing off, until it runs out of attempts.
+    /// Delete a checked observation; let one that waits come back after
+    /// the re-check delay, attempts untouched; retry one that could not be
+    /// checked, backing off, until it runs out of attempts, then drop it
+    /// once one walk of the rotation is recorded to cover the account.
     async fn settle(
         &self,
         observation: &Observation,
         outcome: VisitOutcome,
+        fence: &LeaseFence,
     ) -> BlockWatchVisitOutcome {
         let account_id = observation.account_id.as_str();
         let block_num = observation.block_num;
@@ -286,35 +293,94 @@ impl ObservationQueue {
                 BlockWatchVisitOutcome::Checked,
                 self.store.delete_observation(account_id, block_num).await,
             ),
+            // Its own candidate in flight, or a streak open: nothing failed,
+            // and dropping the observation would lose the only hint (the
+            // rotation skips an account with a candidate in flight). Waits
+            // as long as that lasts, at the re-check pace.
+            VisitOutcome::Waiting => {
+                // A wait this long means something holds the account (a
+                // candidate canonicalization cannot settle, re-checks that
+                // keep failing): reported, and visited hourly from here on.
+                let waited = self
+                    .status
+                    .snapshot()
+                    .last_block
+                    .map_or(0, |last| last.saturating_sub(block_num));
+                let wait = if waited >= LONG_WAIT_BLOCKS {
+                    tracing::warn!(
+                        event = "block_watch_observation_waiting",
+                        account_id = %account_id,
+                        block_num,
+                        waited_blocks = waited,
+                        "A block watch observation has waited about a day for this server's \
+                         own candidate or a confirmation; the account is not judged until \
+                         that resolves"
+                    );
+                    MAX_OBSERVATION_BACKOFF
+                } else {
+                    self.recheck
+                };
+                (
+                    BlockWatchVisitOutcome::Waiting,
+                    self.store
+                        .postpone_observation(account_id, block_num, self.due_in(wait))
+                        .await,
+                )
+            }
             VisitOutcome::Deferred | VisitOutcome::Failed
                 if observation.attempts.saturating_add(1) >= self.max_attempts =>
             {
-                tracing::warn!(
-                    event = "block_watch_observation_dropped",
-                    account_id = %account_id,
-                    block_num,
-                    attempts = observation.attempts.saturating_add(1),
-                    "Dropped a block watch observation that could not be checked; the \
-                     release sweep rotation remains the backstop"
-                );
-                (
-                    BlockWatchVisitOutcome::Dropped,
-                    self.store.delete_observation(account_id, block_num).await,
-                )
+                // The walk first: the observation is the only hint until it
+                // is recorded, so one that cannot be recorded keeps it.
+                match self
+                    .store
+                    .request_walk(self.network, self.clock.now(), fence)
+                    .await
+                {
+                    Ok(FencedWrite::Written) => {
+                        self.signals.request_rotation();
+                        tracing::warn!(
+                            event = "block_watch_observation_dropped",
+                            account_id = %account_id,
+                            block_num,
+                            attempts = observation.attempts.saturating_add(1),
+                            "Dropped a block watch observation that could not be checked; \
+                             requested one release sweep rotation to cover the account"
+                        );
+                        (
+                            BlockWatchVisitOutcome::Dropped,
+                            self.store.delete_observation(account_id, block_num).await,
+                        )
+                    }
+                    unrecorded => {
+                        let error = match &unrecorded {
+                            Err(error) => error.to_string(),
+                            _ => "the release sweep lease moved".to_string(),
+                        };
+                        tracing::warn!(
+                            event = "block_watch_observation_kept",
+                            account_id = %account_id,
+                            block_num,
+                            error = %error,
+                            "Could not record a walk for an observation out of attempts; \
+                             keeping it until one is recorded"
+                        );
+                        let wait = observation_backoff(self.recheck, observation.attempts);
+                        (
+                            unchecked_outcome(outcome),
+                            self.store
+                                .postpone_observation(account_id, block_num, self.due_in(wait))
+                                .await,
+                        )
+                    }
+                }
             }
             VisitOutcome::Deferred | VisitOutcome::Failed => {
                 let wait = observation_backoff(self.recheck, observation.attempts);
-                let next_attempt_at = self.clock.now()
-                    + chrono::Duration::from_std(wait).unwrap_or(chrono::Duration::hours(1));
-                let recorded = if outcome == VisitOutcome::Deferred {
-                    BlockWatchVisitOutcome::Deferred
-                } else {
-                    BlockWatchVisitOutcome::Failed
-                };
                 (
-                    recorded,
+                    unchecked_outcome(outcome),
                     self.store
-                        .defer_observation(account_id, block_num, next_attempt_at)
+                        .defer_observation(account_id, block_num, self.due_in(wait))
                         .await,
                 )
             }
@@ -374,6 +440,11 @@ impl ObservationQueue {
         }
     }
 
+    /// When an observation postponed by `wait` from now is due.
+    fn due_in(&self, wait: Duration) -> chrono::DateTime<chrono::Utc> {
+        self.clock.now() + chrono::Duration::from_std(wait).unwrap_or(chrono::Duration::hours(1))
+    }
+
     /// A walk that started under `started_under` completed.
     async fn complete_walk(&self, started_under: i64, fence: &LeaseFence) {
         if started_under == 0 {
@@ -397,6 +468,24 @@ impl ObservationQueue {
         }
     }
 }
+
+/// The visits metric's outcome for a visit that could not check the
+/// account.
+fn unchecked_outcome(outcome: VisitOutcome) -> BlockWatchVisitOutcome {
+    if outcome == VisitOutcome::Failed {
+        BlockWatchVisitOutcome::Failed
+    } else {
+        BlockWatchVisitOutcome::Deferred
+    }
+}
+
+/// Blocks a waiting observation waits (about a day of Miden's 3 s blocks)
+/// before it is reported, and then visited hourly.
+const LONG_WAIT_BLOCKS: u32 = 28_800;
+
+/// Retries of a requested walk that could not check every account, the
+/// re-check delay doubling between them, before it counts as done.
+const MAX_PARTIAL_WALK_RETRIES: u32 = 5;
 
 /// Retry delay of an observation after `attempts` unsuccessful visits:
 /// the re-check delay, doubling per attempt, at most an hour.
@@ -512,7 +601,7 @@ async fn hold_lease(
             }
             Turn::Observation => {
                 if let Some(queue) = observations {
-                    queue.visit_next(sweeper).await;
+                    queue.visit_next(sweeper, fence).await;
                 }
                 // Counted against the rate floor even when nothing could
                 // be visited (the store failed between its two reads), so
@@ -590,6 +679,8 @@ struct Rotation {
     /// Set when a walk that started under a known sequence completes, for
     /// the loop to record.
     completed_under: Option<i64>,
+    /// Retries of a requested walk that could not check every account.
+    partial_retries: u32,
     /// When the next walk may start.
     next_start: Instant,
     /// When the rotation's next turn is due.
@@ -616,6 +707,7 @@ impl Rotation {
             requested_after_current: false,
             started_under: None,
             completed_under: None,
+            partial_retries: 0,
             next_start: first_start,
             next_turn: first_start,
             visited: 0,
@@ -732,19 +824,41 @@ impl Rotation {
         self.buffer.clear();
         // A walk that could not check every account does not cover what it
         // was asked to: the request stays owed, and a requested walk runs
-        // again after the re-check delay (a node outage would otherwise
-        // turn the walk the skipped blocks need into one that checked
-        // nothing).
+        // again after the re-check delay, doubling per retry (a node outage
+        // would otherwise turn the walk the skipped blocks need into one
+        // that checked nothing). An account that never answers cannot hold
+        // the fleet walking for good: after the last retry the walk counts
+        // as done, and the accounts it could not check are reported.
         let partial = self.unchecked > 0;
         let started_under = self.started_under.take();
-        self.completed_under = if partial { None } else { started_under };
         let requested_again = std::mem::take(&mut self.requested_after_current);
-        let retry = partial && self.requested;
+        let retry = partial
+            && self.requested
+            && !requested_again
+            && self.partial_retries < MAX_PARTIAL_WALK_RETRIES;
+        if partial && self.requested && !retry && !requested_again {
+            tracing::warn!(
+                event = "release_sweep_walk_unchecked",
+                unchecked_accounts = self.unchecked,
+                retries = self.partial_retries,
+                "A walk block watch asked for could not check every account, retries \
+                 included; counting it as done"
+            );
+        }
+        self.completed_under = if partial && (retry || !self.requested) {
+            None
+        } else {
+            started_under
+        };
+        self.partial_retries = if retry { self.partial_retries + 1 } else { 0 };
         self.requested = requested_again || retry;
         self.next_start = if requested_again {
             Instant::now()
         } else if retry {
-            Instant::now() + config.recheck()
+            Instant::now()
+                + config
+                    .recheck()
+                    .saturating_mul(2u32.saturating_pow(self.partial_retries - 1))
         } else if self.enabled {
             started_at + config.rotation()
         } else {
@@ -1265,6 +1379,7 @@ mod tests {
         ObservationQueue {
             store,
             network: NetworkType::MidenLocal,
+            status: Arc::new(BlockWatchStatus::default()),
             signals: Arc::new(BlockWatchSignals::default()),
             clock,
             recheck: Duration::from_secs(60),
@@ -1306,13 +1421,17 @@ mod tests {
 
         let first = store.next_due_observation(now).await.unwrap().unwrap();
         assert_eq!(
-            queue.settle(&first, VisitOutcome::Checked).await,
+            queue
+                .settle(&first, VisitOutcome::Checked, &test_fence())
+                .await,
             BlockWatchVisitOutcome::Checked
         );
         let second = store.next_due_observation(now).await.unwrap().unwrap();
         assert_eq!(second.account_id, "0xb");
         assert_eq!(
-            queue.settle(&second, VisitOutcome::Deferred).await,
+            queue
+                .settle(&second, VisitOutcome::Deferred, &test_fence())
+                .await,
             BlockWatchVisitOutcome::Deferred
         );
         assert_eq!(store.next_due_observation(now).await.unwrap(), None);
@@ -1329,7 +1448,9 @@ mod tests {
             .unwrap();
         assert_eq!(retried.attempts, 1);
         assert_eq!(
-            queue.settle(&retried, VisitOutcome::Failed).await,
+            queue
+                .settle(&retried, VisitOutcome::Failed, &test_fence())
+                .await,
             BlockWatchVisitOutcome::Failed
         );
         assert_eq!(
@@ -1345,11 +1466,82 @@ mod tests {
             .unwrap();
         assert_eq!(last.attempts, 2);
         assert_eq!(
-            queue.settle(&last, VisitOutcome::Deferred).await,
+            queue
+                .settle(&last, VisitOutcome::Deferred, &test_fence())
+                .await,
             BlockWatchVisitOutcome::Dropped,
             "the third unchecked visit is the last"
         );
         assert_eq!(store.count_pending_observations().await.unwrap(), 0);
+        assert_eq!(
+            store
+                .walk_requests(NetworkType::MidenLocal)
+                .await
+                .unwrap()
+                .map(|walks| walks.requested_seq),
+            Some(1),
+            "the drop is covered by one recorded walk (PR #586 review)"
+        );
+        assert!(queue.signals.take_rotation_request());
+    }
+
+    #[tokio::test]
+    async fn a_waiting_observation_is_never_dropped() {
+        // Its own candidate in flight, or a streak open: nothing failed.
+        // However long that lasts, the observation comes back at the
+        // re-check pace with its attempts untouched (PR #586 review).
+        let store = Arc::new(InMemoryBlockWatchStore::new());
+        let clock = MockClock::fixed("2026-11-02T12:00:00Z");
+        let queue = observation_queue(store.clone(), Arc::new(clock.clone()), 3);
+        store
+            .record_observations(&[observed("0xbusy", 7)], clock.now())
+            .await
+            .unwrap();
+        for _ in 0..50 {
+            let observation = store
+                .next_due_observation(clock.now())
+                .await
+                .unwrap()
+                .expect("still queued");
+            assert_eq!(observation.attempts, 0);
+            assert_eq!(
+                queue
+                    .settle(&observation, VisitOutcome::Waiting, &test_fence())
+                    .await,
+                BlockWatchVisitOutcome::Waiting
+            );
+            assert_eq!(
+                store.next_observation_due_at().await.unwrap(),
+                Some(clock.now() + chrono::Duration::seconds(60)),
+                "back after the re-check delay"
+            );
+            clock.advance_secs(60);
+        }
+        assert_eq!(store.count_pending_observations().await.unwrap(), 1);
+        assert_eq!(
+            store.walk_requests(NetworkType::MidenLocal).await.unwrap(),
+            None
+        );
+
+        // About a day of blocks later the wait is reported and the visits
+        // slow to hourly; the observation is still kept.
+        queue.status.set_last_block(7 + LONG_WAIT_BLOCKS);
+        let observation = store
+            .next_due_observation(clock.now())
+            .await
+            .unwrap()
+            .expect("still queued");
+        assert_eq!(
+            queue
+                .settle(&observation, VisitOutcome::Waiting, &test_fence())
+                .await,
+            BlockWatchVisitOutcome::Waiting
+        );
+        assert_eq!(
+            store.next_observation_due_at().await.unwrap(),
+            Some(clock.now() + chrono::Duration::hours(1))
+        );
+        assert_eq!(store.count_pending_observations().await.unwrap(), 1);
     }
 
     /// Run `hold_lease` for `window` of virtual time over the three-account
@@ -1707,6 +1899,58 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!((walks.requested_seq, walks.completed_seq), (1, 1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_account_that_never_answers_cannot_keep_the_fleet_walking() {
+        // Every visit of every walk fails: the requested walk is retried
+        // five times, the delay doubling, then counts as done (reported)
+        // instead of walking the fleet for good (PR #586 review).
+        let mut storage = MockStorageBackend::new();
+        for _ in 0..200 {
+            storage = storage.with_pull_state(Ok(state_row()));
+        }
+        let mut metadata = MockMetadataStore::new().with_get(Err("metadata store down".into()));
+        for _ in 0..8 {
+            metadata = metadata
+                .with_count_release_sweep_accounts(Ok(3))
+                .with_count_release_sweep_accounts(Ok(3))
+                .with_list_release_sweep_ids(Ok(vec![]))
+                .with_list_release_sweep_ids(Ok(vec!["x".into(), "y".into(), "z".into()]));
+        }
+        let metadata = Arc::new(metadata);
+        let network = Arc::new(SlowNetwork {
+            probe_delay: Duration::ZERO,
+            probes: StdMutex::new(vec![]),
+        });
+        let state = create_test_app_state_with_mocks(Arc::new(storage), network, metadata.clone());
+        let config = owed_walk_config();
+        let sweeper =
+            ReleaseSweeper::new(state, 2, config.recheck(), Arc::new(SweepState::default()));
+        let store = Arc::new(InMemoryBlockWatchStore::new());
+        store
+            .request_walk(NetworkType::MidenLocal, chrono::Utc::now(), &test_fence())
+            .await
+            .unwrap();
+        let queue = observation_queue(
+            store.clone(),
+            Arc::new(crate::builder::clock::SystemClock),
+            20,
+        );
+        let mut rotation = Rotation::new(&config);
+        queue.take_over_owed_walk(&mut rotation).await;
+        hold_for(&sweeper, &mut rotation, &queue, Duration::from_secs(20_000)).await;
+        assert_eq!(
+            metadata.get_calls.lock().unwrap().len(),
+            3 * 6,
+            "the walk and its five retries, then no more"
+        );
+        let walks = store
+            .walk_requests(NetworkType::MidenLocal)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!walks.owed(), "counted as done after the last retry");
     }
 
     #[tokio::test(start_paused = true)]

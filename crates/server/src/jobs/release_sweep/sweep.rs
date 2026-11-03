@@ -35,6 +35,29 @@ pub struct SweepSummary {
     pub failed_accounts: usize,
 }
 
+/// What a release write leaves of the visit. A write voided because the
+/// stored state moved (a promotion that raced it, or a `/configure`)
+/// proves nothing about the state that replaced it: an observation visit
+/// is retried from that state instead of deleting the observation, the
+/// only hint block watch had. The rotation visits again on its own.
+fn after_release(write: ReleaseWrite, visit: ReleaseOrigin) -> VisitOutcome {
+    match (write, visit) {
+        (ReleaseWrite::StateMoved, ReleaseOrigin::BlockWatch { .. }) => VisitOutcome::Deferred,
+        _ => VisitOutcome::Checked,
+    }
+}
+
+impl StoredState {
+    /// The stored state's evidence led to `write`.
+    fn released(write: ReleaseWrite) -> Self {
+        if write == ReleaseWrite::StateMoved {
+            Self::Moved
+        } else {
+            Self::Released
+        }
+    }
+}
+
 /// What one visit amounted to, for the walk's own accounting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VisitOutcome {
@@ -42,6 +65,11 @@ pub enum VisitOutcome {
     Checked,
     /// A chain read failed; a later visit checks the account again.
     Deferred,
+    /// The account cannot be judged yet, though nothing failed: this
+    /// server's own candidate is in flight, or a confirmation streak is
+    /// open. Only block watch observation visits wait; a later visit
+    /// checks the account again.
+    Waiting,
     /// The visit failed (storage error, failed release write).
     Failed,
 }
@@ -406,6 +434,9 @@ enum StoredState {
     /// The stored state proved a switch and the release was written (or
     /// a concurrent writer settled the account first).
     Released,
+    /// The stored state proved a switch, but it was replaced before the
+    /// release was written: the evidence no longer applies.
+    Moved,
     /// Nothing to release; carries the stored key when it was parsed.
     Kept(BaseGuardian),
 }
@@ -554,8 +585,8 @@ impl ReleaseSweeper {
         // The push path owns the account while a candidate is in flight;
         // the observation waits for it rather than being dropped, since a
         // move no candidate explains (a switch that landed meanwhile) is
-        // seen by nothing else until the next walk. Canonicalization
-        // settles a candidate within minutes, inside the attempt limit.
+        // seen by nothing else until the next walk (the rotation skips an
+        // account with a candidate in flight). Waiting spends no attempt.
         if metadata.has_pending_candidate {
             tracing::debug!(
                 event = "release_sweep_deferred",
@@ -563,7 +594,7 @@ impl ReleaseSweeper {
                 account_id = %account_id,
                 "Candidate in flight; the observation waits for the push path"
             );
-            return Ok(VisitOutcome::Deferred);
+            return Ok(VisitOutcome::Waiting);
         }
         let stored_commitment = match self.state.storage.pull_state_commitment(account_id).await {
             Ok(commitment) => commitment,
@@ -588,9 +619,12 @@ impl ReleaseSweeper {
         if stored_commitment.eq_ignore_ascii_case(on_chain) {
             if !self.sweep.is_stored_checked(account_id, &stored_commitment) {
                 let stored = self.pull_full_state(account_id).await?;
-                if stored.commitment == stored_commitment {
-                    self.check_stored_state(metadata, &stored, true, origin)
-                        .await?;
+                if stored.commitment == stored_commitment
+                    && let StoredState::Moved = self
+                        .check_stored_state(metadata, &stored, true, origin)
+                        .await?
+                {
+                    return Ok(VisitOutcome::Deferred);
                 }
             }
             return Ok(VisitOutcome::Checked);
@@ -600,7 +634,7 @@ impl ReleaseSweeper {
         // observation only waits, without chain reads of its own, so a
         // successor that has no streak still sees the account.
         if self.sweep.streak(account_id).is_some() {
-            return Ok(VisitOutcome::Deferred);
+            return Ok(VisitOutcome::Waiting);
         }
         let stored = self.pull_full_state(account_id).await?;
         if stored.commitment != stored_commitment {
@@ -613,6 +647,8 @@ impl ReleaseSweeper {
             .await?
         {
             StoredState::Released => return Ok(VisitOutcome::Checked),
+            // Visited again from the state that replaced it.
+            StoredState::Moved => return Ok(VisitOutcome::Deferred),
             StoredState::Kept(base) => base,
         };
         self.visit_diverged(metadata, &stored, on_chain, base, origin)
@@ -723,7 +759,10 @@ impl ReleaseSweeper {
                     .check_stored_state(metadata, &stored, false, origin)
                     .await?
                 {
-                    StoredState::Released => return Ok(VisitOutcome::Checked),
+                    // The rotation visits the account again on its own.
+                    StoredState::Released | StoredState::Moved => {
+                        return Ok(VisitOutcome::Checked);
+                    }
                     StoredState::Kept(base) => base,
                 };
                 self.visit_diverged(metadata, &stored, &on_chain, base, origin)
@@ -749,7 +788,7 @@ impl ReleaseSweeper {
             if stored.commitment != stored_commitment {
                 return Ok(VisitOutcome::Checked);
             }
-            if let StoredState::Released = self
+            if let StoredState::Released | StoredState::Moved = self
                 .check_stored_state(metadata, &stored, true, origin)
                 .await?
             {
@@ -810,17 +849,18 @@ impl ReleaseSweeper {
                     "The stored state is a promoted delta's whose guardian key is not this \
                      server's, and its push-path release was never written"
                 );
-                self.release(
-                    metadata,
-                    guardian,
-                    ReleaseEvidence::Delta {
-                        delta_nonce,
-                        new_commitment: &stored.commitment,
-                    },
-                    origin,
-                )
-                .await?;
-                return Ok(StoredState::Released);
+                let write = self
+                    .release(
+                        metadata,
+                        guardian,
+                        ReleaseEvidence::Delta {
+                            delta_nonce,
+                            new_commitment: &stored.commitment,
+                        },
+                        origin,
+                    )
+                    .await?;
+                return Ok(StoredState::released(write));
             }
             if report_mismatch {
                 self.report_own_key_mismatch(account_id, guardian, &own_commitment);
@@ -1178,24 +1218,25 @@ impl ReleaseSweeper {
         }
         let observations = match observation {
             Observation::Counted(observations) if observations >= self.confirmations => {
-                // The streak's origin, when block watch opened it.
-                let origin = self
+                // Credited to the streak's origin, when block watch opened it.
+                let credited = self
                     .sweep
                     .streak_origin(account_id)
                     .map_or(origin, |observed_block_num| ReleaseOrigin::BlockWatch {
                         observed_block_num,
                     });
-                self.release(
-                    metadata,
-                    &new_guardian_commitment,
-                    ReleaseEvidence::ChainSweep {
-                        on_chain_commitment: &on_chain_commitment,
-                        stored_commitment: &stored.commitment,
-                    },
-                    origin,
-                )
-                .await?;
-                return Ok(VisitOutcome::Checked);
+                let write = self
+                    .release(
+                        metadata,
+                        &new_guardian_commitment,
+                        ReleaseEvidence::ChainSweep {
+                            on_chain_commitment: &on_chain_commitment,
+                            stored_commitment: &stored.commitment,
+                        },
+                        credited,
+                    )
+                    .await?;
+                return Ok(after_release(write, origin));
             }
             Observation::Counted(observations) | Observation::NotNewer(observations) => {
                 observations
@@ -1217,7 +1258,7 @@ impl ReleaseSweeper {
         // a successor holder sees the account again instead of losing the
         // confirmation with the lease.
         Ok(if observed_block.is_some() {
-            VisitOutcome::Deferred
+            VisitOutcome::Waiting
         } else {
             VisitOutcome::Checked
         })
@@ -1670,7 +1711,7 @@ impl ReleaseSweeper {
             self.finalize_proposal(account_id, storage_id, proposal_id)
                 .await;
         }
-        Ok(VisitOutcome::Checked)
+        Ok(after_release(write, origin))
     }
 
     /// Release through the shared transition, which writes only while the
@@ -2560,6 +2601,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_release_voided_by_a_moved_store_keeps_the_observation() {
+        // The switch is proved, but the stored state moved before the
+        // release was written (a promotion raced it): the observation is
+        // visited again from the new state instead of deleted, on every
+        // path that writes a release (PR #586 review).
+        let moved = || {
+            MockMetadataStore::new()
+                .with_set_released(Ok(crate::metadata::ReleaseTransition::StateMoved))
+        };
+        // The candidate match.
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_all_delta_proposals(Ok(vec![switch_proposal(ACCOUNT, STORED)])),
+            MockNetworkClient::new()
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+            moved(),
+            2,
+        );
+        assert_eq!(h.visit_observed(ON_CHAIN).await, VisitOutcome::Deferred);
+        assert!(h.storage.get_delete_delta_proposal_calls().is_empty());
+        // The published key, confirmed.
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED))),
+            MockNetworkClient::new().with_fetch_on_chain_guardian_binding(Ok(visible(
+                Some(FOREIGN),
+                5,
+                OBSERVED_BLOCK + 1,
+            ))),
+            moved(),
+            1,
+        );
+        assert_eq!(h.visit_observed(ON_CHAIN).await, VisitOutcome::Deferred);
+        // A promoted switch delta whose release was never written, the
+        // chain moved on (or caught up with the stored state).
+        for on_chain in [ON_CHAIN, STORED] {
+            let h = harness(
+                MockStorageBackend::new().with_pull_state(Ok(stored_state(ACCOUNT, STORED))),
+                MockNetworkClient::new().with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+                moved(),
+                2,
+            );
+            h.sweeper.sweep_state().forget_stored_check(ACCOUNT);
+            let promoted = canonical_delta(6, STORED, Some(&h.sweeper.state.ack)).await;
+            h.storage
+                .list_canonical_deltas_paged_responses
+                .lock()
+                .unwrap()
+                .push(Ok(vec![promoted]));
+            assert_eq!(
+                h.visit_observed(on_chain).await,
+                VisitOutcome::Deferred,
+                "{on_chain}"
+            );
+            assert_eq!(released_ids(&h.metadata), vec![ACCOUNT.to_string()]);
+        }
+        // The rotation visits again on its own: checked, as before.
+        let h = harness(
+            MockStorageBackend::new()
+                .with_pull_state(Ok(stored_state(ACCOUNT, STORED)))
+                .with_pull_all_delta_proposals(Ok(vec![switch_proposal(ACCOUNT, STORED)])),
+            MockNetworkClient::new()
+                .with_verify_commitment(mismatch())
+                .with_apply_delta(Ok((serde_json::json!({"post": true}), ON_CHAIN.into())))
+                .with_extract_guardian_commitment(Ok(Some(FOREIGN.into()))),
+            moved(),
+            2,
+        );
+        assert_eq!(h.visit().await, VisitOutcome::Checked);
+    }
+
+    #[tokio::test]
     async fn an_observed_foreign_key_is_confirmed_by_a_recheck_and_credited_to_the_block() {
         // Visit 1 is the observation (no head probe): the published
         // storage shows a foreign key at the block after the observed one.
@@ -2588,7 +2704,7 @@ mod tests {
 
         assert_eq!(
             h.visit_observed(ON_CHAIN).await,
-            VisitOutcome::Deferred,
+            VisitOutcome::Waiting,
             "kept until the streak resolves"
         );
         assert!(
@@ -2772,7 +2888,7 @@ mod tests {
             MockMetadataStore::new().with_get(Ok(Some(busy))),
             1,
         );
-        assert_eq!(h.visit_observed(ON_CHAIN).await, VisitOutcome::Deferred);
+        assert_eq!(h.visit_observed(ON_CHAIN).await, VisitOutcome::Waiting);
         h.assert_no_chain_reads();
         assert!(released_ids(&h.metadata).is_empty());
         for row in [Some(evm), Some(released), None] {
@@ -2897,7 +3013,7 @@ mod tests {
         h.sweeper
             .sweep_state()
             .record_foreign_observation(ACCOUNT, FOREIGN, OBSERVED_BLOCK + 1);
-        assert_eq!(h.visit_observed(ON_CHAIN).await, VisitOutcome::Deferred);
+        assert_eq!(h.visit_observed(ON_CHAIN).await, VisitOutcome::Waiting);
         h.assert_no_chain_reads();
         assert_eq!(h.sweeper.sweep_state().streak(ACCOUNT), Some(1));
     }

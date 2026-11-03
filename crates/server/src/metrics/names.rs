@@ -513,7 +513,7 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
         help: "Release-detector visits of block watch observations, by outcome (checked, \
-               deferred, failed, dropped).",
+               deferred, waiting, failed, dropped).",
     },
     MetricDef {
         name: BLOCK_WATCH_RECONNECTS_TOTAL,

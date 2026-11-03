@@ -399,6 +399,26 @@ impl BlockWatchStore for PgBlockWatchStore {
         Ok(())
     }
 
+    async fn postpone_observation(
+        &self,
+        account_id: &str,
+        block_num: u32,
+        next_attempt_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let mut conn = super::checkout(&self.pool, "block watch").await?;
+        diesel::sql_query(
+            "UPDATE block_watch_observations SET next_attempt_at = $3 \
+             WHERE account_id = $1 AND block_num = $2",
+        )
+        .bind::<Text, _>(account_id)
+        .bind::<BigInt, _>(i64::from(block_num))
+        .bind::<Timestamptz, _>(next_attempt_at)
+        .execute(&mut conn)
+        .await
+        .map_err(|e| storage_err("postpone observation", e))?;
+        Ok(())
+    }
+
     async fn count_pending_observations(&self) -> Result<u64> {
         let mut conn = super::checkout(&self.pool, "block watch").await?;
         let row = diesel::sql_query("SELECT count(*) AS count FROM block_watch_observations")

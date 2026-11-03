@@ -232,9 +232,10 @@ VisitOutcome`:
 
 Outcome handling: `Checked` → `delete_observation`; `Deferred | Failed` →
 `defer_observation(attempts + 1, next_attempt_at = now + min(recheck_seconds
-× 2^attempts, 1 h))`; after `max_attempts` (20) → delete + `warn`
-`event=block_watch_observation_dropped` + metric (the rotation remains the
-backstop). Streak re-checks keep working as today (`schedule_recheck` when a
+× 2^attempts, 1 h))`; after `max_attempts` (20) → record one walk, then
+delete + `warn` `event=block_watch_observation_dropped` + metric (kept when
+the walk cannot be recorded). `Waiting` (own candidate in flight, open
+streak; PR #586 review) → `postpone_observation`, no attempt counted. Streak re-checks keep working as today (`schedule_recheck` when a
 streak is open after the visit).
 
 ### D7. Release write and audit
@@ -458,3 +459,27 @@ Where the code differs from the design above, and why:
   5-minute period. The filesystem
   cursor writes its file before moving in memory. Deferred: case-
   insensitive account-id matching (M4; both SDKs send lowercase).
+- **PR #586 review, round 2.** A visit that waits (own candidate in
+  flight, open streak) returns `VisitOutcome::Waiting`, which postpones
+  the observation by `recheck_seconds` without counting an attempt
+  (`BlockWatchStore::postpone_observation`, visits outcome `waiting`),
+  so a long wait never drops the only hint. An observation out of
+  attempts is dropped only after a walk is recorded for it. A release
+  write that finds the stored state replaced (`StateMoved`, also through
+  `StoredState::Moved`) is `Deferred` on an observation visit, so the
+  next visit re-reads the new base. Start position: with the same
+  genesis on both sides the cursor is never rewound (a node behind is
+  waited for, `block_watch_node_behind`); a genesis on one side only is
+  a reset (`genesis_unknown`), and `chain_was_reset` counts a node that
+  stops reporting its genesis; the height heuristic applies only when
+  neither side knows one.
+  Then, from the review of those fixes: a genesis missing on one read
+  is read again before it counts; a genesis first reported where the
+  cursor recorded none is adopted (height check only); a node behind on
+  the same chain is waited for at most `NODE_BEHIND_LIMIT` (1 h,
+  `node_behind_too_long`); a requested walk that stays partial is
+  retried at most `MAX_PARTIAL_WALK_RETRIES` (5) times, the delay
+  doubling, then counts as done (`release_sweep_walk_unchecked`); a
+  waiting observation older than `LONG_WAIT_BLOCKS` (28,800) is
+  reported and visited hourly; an observation whose drop cannot record
+  its walk is kept (`block_watch_observation_kept`).

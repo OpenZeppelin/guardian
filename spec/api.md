@@ -930,7 +930,7 @@ behavior.
 | `guardian_block_watch_lag_blocks` | gauge | — |
 | `guardian_block_watch_account_updates_total` | counter | `outcome` (`not_guarded`/`skipped_pending_candidate`/`at_stored`/`own_history`/`unfinished_configuration`/`observed`/`undecodable`) |
 | `guardian_block_watch_observations_pending` | gauge | — |
-| `guardian_block_watch_observation_visits_total` | counter | `outcome` (`checked`/`deferred`/`failed`/`dropped`) |
+| `guardian_block_watch_observation_visits_total` | counter | `outcome` (`checked`/`deferred`/`waiting`/`failed`/`dropped`) |
 | `guardian_block_watch_reconnects_total` | counter | `reason` (`status_<grpc code>`/`transport`/`ended`/`out_of_sequence`/`malformed`/`unavailable_block`/`stall`/`timeout`/`skipped_malformed_block`) |
 | `guardian_block_watch_transport` | gauge | `transport` (`stream`/`poll`; 1 for the active one) |
 | `guardian_block_watch_block_processing_seconds` | histogram | — |

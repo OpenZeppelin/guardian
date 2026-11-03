@@ -18,7 +18,7 @@ per variable in the existing table.
 | `GUARDIAN_BLOCK_WATCH_MAX_CATCHUP_BLOCKS` | `10000` | 0–1000000 | Largest gap between the cursor and the tip that is replayed on (re)start; a larger gap (or no cursor) starts at the tip and requests one rotation. `0` always starts at the tip. |
 | `GUARDIAN_BLOCK_WATCH_BAN_COOLDOWN_SECONDS` | `600` | 1–86400 | After the node closed the stream as too slow (`RESOURCE_EXHAUSTED`; the node bans the IP for 10 min) block watch polls and does not retry the stream for this long. |
 | `GUARDIAN_BLOCK_WATCH_STREAM_RETRY_SECONDS` | `600` | 1–86400 | How long block watch stays on the polling transport after the stream was unavailable (`UNIMPLEMENTED`, `PERMISSION_DENIED`, repeated connect failures) before trying it again. |
-| `GUARDIAN_BLOCK_WATCH_MAX_ATTEMPTS` | `20` | 1–1000 | Deferred/failed visits of one observation before it is dropped (warned and counted); the rotation remains the backstop. |
+| `GUARDIAN_BLOCK_WATCH_MAX_ATTEMPTS` | `20` | 1–1000 | Deferred/failed visits of one observation before it is dropped (warned and counted) once one walk is recorded to cover it; waiting visits spend no attempt. |
 
 Semantics changes to existing variables:
 
