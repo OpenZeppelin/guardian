@@ -81,7 +81,10 @@ async fn operations_sign_with_the_session_until_it_ends() {
     let signed = get_state_auth.lock().unwrap().clone();
     assert_eq!(signed.len(), 2);
     for (auth_format, pubkey) in &signed {
-        assert_eq!(auth_format, "session", "each operation reuses the session");
+        assert_eq!(
+            auth_format, "session-v2",
+            "each operation reuses the session"
+        );
         assert_eq!(pubkey, &info.session_public_key);
     }
 

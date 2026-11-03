@@ -223,7 +223,7 @@ impl RateLimitStore {
         self.maybe_cleanup();
 
         let now = Instant::now();
-        let mut entries = self.entries.write().unwrap();
+        let mut entries = self.lock_entries();
         if burst_allows(entry_mut(&mut entries, key), self.config.burst_per_sec, now) {
             Ok(())
         } else {
@@ -237,7 +237,7 @@ impl RateLimitStore {
         self.maybe_cleanup();
 
         let now = Instant::now();
-        let mut entries = self.entries.write().unwrap();
+        let mut entries = self.lock_entries();
         if sustained_allows(entry_mut(&mut entries, key), self.config.per_min, now) {
             Ok(())
         } else {
@@ -279,7 +279,7 @@ impl RateLimitStore {
             .map(|e| format!("{sustained_key}|{e}"));
 
         let now = Instant::now();
-        let mut entries = self.entries.write().unwrap();
+        let mut entries = self.lock_entries();
 
         for key in [Some(&burst_key), enhanced_burst_key.as_ref()]
             .into_iter()
@@ -312,6 +312,14 @@ impl RateLimitStore {
         Ok(())
     }
 
+    fn lock_entries(&self) -> std::sync::RwLockWriteGuard<'_, HashMap<String, RateLimitEntry>> {
+        let started = Instant::now();
+        let entries = self.entries.write().unwrap();
+        metrics::histogram!(crate::metrics::names::RATE_LIMIT_LOCK_WAIT_DURATION_SECONDS)
+            .record(started.elapsed().as_secs_f64());
+        entries
+    }
+
     /// Periodically clean up stale entries
     fn maybe_cleanup(&self) {
         let should_cleanup = {
@@ -321,7 +329,7 @@ impl RateLimitStore {
 
         if should_cleanup {
             let now = Instant::now();
-            let mut entries = self.entries.write().unwrap();
+            let mut entries = self.lock_entries();
             let mut last = self.last_cleanup.write().unwrap();
 
             // Remove entries that haven't been used in over 2 minutes

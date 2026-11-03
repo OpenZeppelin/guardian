@@ -58,6 +58,12 @@ const EXECUTION_PHASE_BUCKETS: &[f64] = &[
     600.0, 1200.0,
 ];
 
+/// An uncontended lock is taken in microseconds, so the request-scale
+/// buckets would put every observation in the first one.
+const LOCK_WAIT_BUCKETS: &[f64] = &[
+    0.000_001, 0.000_005, 0.000_01, 0.000_05, 0.000_1, 0.000_5, 0.001, 0.005, 0.01, 0.05, 0.1,
+];
+
 /// Build an uninstalled recorder. The caller decides whether to
 /// install it globally (production) or scope it locally (tests).
 pub fn build_recorder() -> PrometheusRecorder {
@@ -102,6 +108,11 @@ pub fn build_recorder() -> PrometheusRecorder {
         )
         .expect("static stats refresh buckets are non-empty")
         .set_buckets_for_metric(
+            Matcher::Full(names::RATE_LIMIT_LOCK_WAIT_DURATION_SECONDS.to_string()),
+            LOCK_WAIT_BUCKETS,
+        )
+        .expect("static lock wait buckets are non-empty")
+        .set_buckets_for_metric(
             Matcher::Full(names::EXECUTION_PROVING_DURATION_SECONDS.to_string()),
             PROVING_BUCKETS,
         )
@@ -143,6 +154,31 @@ pub fn record_build_info() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_histogram_renders_with_buckets() {
+        let recorder = build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            for def in REGISTRY
+                .iter()
+                .filter(|def| def.kind == MetricKind::Histogram)
+            {
+                metrics::histogram!(def.name).record(0.5);
+            }
+        });
+        let rendered = handle.render();
+        for def in REGISTRY
+            .iter()
+            .filter(|def| def.kind == MetricKind::Histogram)
+        {
+            assert!(
+                rendered.contains(&format!("{}_bucket", def.name)),
+                "{} renders without buckets: give it a bucket rule or a name ending in `{DURATION_SECONDS_SUFFIX}`",
+                def.name
+            );
+        }
+    }
 
     #[test]
     fn build_info_renders_constant_gauge_with_identity_labels() {

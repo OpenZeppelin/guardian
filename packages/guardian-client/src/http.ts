@@ -1,4 +1,9 @@
 import {
+  SESSION_REQUEST_AUTH_FORMAT,
+  SessionOperation,
+  isSessionWrite,
+} from './session-request.js';
+import {
   type GuardianErrorCode,
   normalizeGuardianErrorCode,
 } from './error-codes.js';
@@ -282,6 +287,9 @@ function parseRetryAfterSeconds(header: string | null | undefined): number | und
 const SESSION_EXPIRY_MARGIN_MS = 30_000;
 
 /** Codes that end a session-signed request's session for good. */
+/** Replay rejections a request is re-signed and resent for. */
+const REPLAY_RETRIES = 2;
+
 const SESSION_END_REASONS: Record<string, SessionEndReason> = {
   session_expired: 'expired',
   session_revoked: 'revoked',
@@ -292,13 +300,13 @@ const SESSION_END_REASONS: Record<string, SessionEndReason> = {
  * Which key signs a per-account request. Mirrors the server: requests are
  * wallet-signed unless the route is session-eligible.
  */
-type AuthMode = 'session' | 'wallet';
+type AuthMode = SessionOperation | 'wallet';
 
 function authHeaders(
   publicKey: string,
   signature: string,
   timestamp: number,
-  format?: 'eip712' | 'session'
+  format?: 'eip712' | typeof SESSION_REQUEST_AUTH_FORMAT
 ): Record<string, string> {
   return {
     'x-pubkey': publicKey,
@@ -480,6 +488,9 @@ export class GuardianHttpClient {
         ? {
             sessions: {
               maxTtlSeconds: data.sessions.max_ttl_seconds,
+              ...(data.sessions.request_auth_version === undefined
+                ? {}
+                : { requestAuthVersion: data.sessions.request_auth_version }),
             },
           }
         : {}),
@@ -502,7 +513,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/state?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery, 'session');
+    }, accountId, requestQuery, SessionOperation.GetState);
     const server = (await response.json()) as ServerStateObject;
     return fromServerStateObject(server);
   }
@@ -519,7 +530,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/state/nonce?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery, 'session');
+    }, accountId, requestQuery, SessionOperation.GetCanonicalNonce);
     const server = (await response.json()) as ServerCanonicalNonceResponse;
     return fromServerCanonicalNonce(server);
   }
@@ -546,7 +557,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/proposal?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery, 'session');
+    }, accountId, requestQuery, SessionOperation.GetDeltaProposals);
     const data = (await response.json()) as ServerProposalsResponse;
     return data.proposals.map(fromServerDeltaObject);
   }
@@ -556,7 +567,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/proposal/single?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery, 'session');
+    }, accountId, requestQuery, SessionOperation.GetDeltaProposal);
     const data = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(data);
   }
@@ -566,7 +577,7 @@ export class GuardianHttpClient {
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
-    }, request.accountId, serverRequest, 'session');
+    }, request.accountId, serverRequest, SessionOperation.PushDeltaProposal);
     const server = (await response.json()) as ServerDeltaProposalResponse;
     return {
       delta: fromServerDeltaObject(server.delta),
@@ -591,7 +602,7 @@ export class GuardianHttpClient {
     const response = await this.fetchSigned('/delta/proposal/execution', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
-    }, accountId, RequestAuthPayload.forOperation('ExecuteDeltaProposal', serverRequest), 'session');
+    }, accountId, RequestAuthPayload.forOperation('ExecuteDeltaProposal', serverRequest), SessionOperation.ExecuteDeltaProposal);
     return fromServerExecution((await response.json()) as ServerProposalExecution);
   }
 
@@ -601,7 +612,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/proposal/execution?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery, 'session');
+    }, accountId, requestQuery, SessionOperation.GetDeltaProposalExecution);
     return fromServerExecution((await response.json()) as ServerProposalExecution);
   }
 
@@ -611,7 +622,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/execution/current?${params}`, {
       method: 'GET',
-    }, accountId, requestQuery, 'session');
+    }, accountId, requestQuery, SessionOperation.GetCurrentExecution);
     const server = (await response.json()) as ServerCurrentExecution;
     return server.execution === null ? null : fromServerExecution(server.execution);
   }
@@ -721,7 +732,7 @@ export class GuardianHttpClient {
     const response = await this.fetchAuthenticated('/delta/proposal', {
       method: 'PUT',
       body: JSON.stringify(serverRequest),
-    }, request.accountId, serverRequest, 'session');
+    }, request.accountId, serverRequest, SessionOperation.SignDeltaProposal);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
@@ -743,7 +754,7 @@ export class GuardianHttpClient {
       init,
       delta.accountId,
       serverDelta,
-      'session'
+      SessionOperation.PushDelta
     ).catch((err: unknown) => {
       if (err instanceof GuardianHttpError && err.code === 'wallet_signature_required') {
         return this.fetchAuthenticated('/delta', init, delta.accountId, serverDelta, 'wallet');
@@ -773,7 +784,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta?${params}`, {
       method: 'GET',
-    }, accountId, requestPayload, 'session');
+    }, accountId, requestPayload, SessionOperation.GetDelta);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
@@ -790,7 +801,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestQuery);
     const response = await this.fetchAuthenticated(`/delta/since?${params}`, {
       method: 'GET',
-    }, accountId, requestPayload, 'session');
+    }, accountId, requestPayload, SessionOperation.GetDeltaSince);
     const server = (await response.json()) as ServerDeltaObject;
     return fromServerDeltaObject(server);
   }
@@ -817,7 +828,7 @@ export class GuardianHttpClient {
     const params = new URLSearchParams(requestPayload);
     const response = await this.fetchAuthenticated(`/delta/history?${params}`, {
       method: 'GET',
-    }, accountId, requestPayload, 'session');
+    }, accountId, requestPayload, SessionOperation.GetDeltaHistory);
     const server = (await response.json()) as ServerHistoryPage;
     return fromServerHistoryPage(server);
   }
@@ -894,19 +905,55 @@ export class GuardianHttpClient {
     init: RequestInit,
     accountId: string,
     authPayload: RequestAuthPayload,
-    mode: AuthMode,
-    retries = 2
+    mode: AuthMode
   ): Promise<Response> {
-    const timestamp = this.nextTimestamp();
-    const session = mode === 'session' ? this.getSession() : null;
-    const headers = session
+    for (;;) {
+      const session = mode === 'wallet' ? null : this.getSession();
+      const response =
+        session && mode !== 'wallet' && isSessionWrite(mode)
+          ? await session.writeSequencer.run(accountId, () =>
+              this.sendSigned(path, init, accountId, authPayload, mode, session)
+            )
+          : await this.sendSigned(path, init, accountId, authPayload, mode, session);
+      if (response) {
+        return response;
+      }
+    }
+  }
+
+  /**
+   * Signs with `session` (the wallet when null) and retries replay
+   * rejections. Returns null, without sending, once `session` is no longer
+   * this client's session: a session write only ever signs within the write
+   * turn of the session it holds, and the caller starts over with the
+   * current one.
+   */
+  private async sendSigned(
+    path: string,
+    init: RequestInit,
+    accountId: string,
+    authPayload: RequestAuthPayload,
+    mode: AuthMode,
+    session: SessionRequestSigner | null,
+    retries = REPLAY_RETRIES
+  ): Promise<Response | null> {
+    if (session && this.getSession() !== session) {
+      return null;
+    }
+    const timestamp = session
+      ? await session.nextTimestamp(accountId, retries < REPLAY_RETRIES)
+      : this.nextTimestamp();
+    const headers = session && mode !== 'wallet'
       ? authHeaders(
           session.publicKey,
-          await session.signRequest(accountId, timestamp, authPayload),
+          await session.signRequest(mode, accountId, timestamp, authPayload),
           timestamp,
-          'session'
+          SESSION_REQUEST_AUTH_FORMAT
         )
       : await this.walletAuthHeaders(accountId, timestamp, authPayload);
+    if (session && this.getSession() !== session) {
+      return null;
+    }
 
     try {
       return await this.fetch(path, {
@@ -939,7 +986,7 @@ export class GuardianHttpClient {
         err.code === 'authentication_replay'
       ) {
         await new Promise((resolve) => setTimeout(resolve, 50));
-        return this.fetchSigned(path, init, accountId, authPayload, mode, retries - 1);
+        return this.sendSigned(path, init, accountId, authPayload, mode, session, retries - 1);
       }
       throw err;
     }

@@ -4,5 +4,9 @@ quick configure-fresh writes PASS
 quick configure-existing all PASS
 quick migrated all PASS
 quick session-bounded all PASS
-quick session-unbounded accept FAIL:AcceptedAtMostOnce [F2: a handler stalled past max TTL + skew outlives its session floor]
+quick session-unbounded accept PASS [F2 closed: freshness re-check and floor fence at the update]
+quick session-unbounded-unfenced accept FAIL:AcceptedAtMostOnce [F2 reproduced: without the floor checks a handler stalled past max TTL + skew outlives its session floor]
+quick session-reads-quick accept PASS [session reads admitted once each]
+deep session-reads-writes all PASS [session reads and writes from one session]
+deep session-reads accept PASS [session reads admitted once each even with unbounded stalls]
 deep session-mixed all PASS

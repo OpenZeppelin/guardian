@@ -1,6 +1,6 @@
 use crate::metadata::{
     AccountListCursor, AccountMetadata, ClearTransition, LEGACY_ACCOUNT_AUTH_FLOOR, MetadataStore,
-    ReleaseTransition,
+    ReleaseTransition, SessionFloorOutcome,
 };
 use crate::services::account_status::{AccountStatus, PauseTransition};
 use async_trait::async_trait;
@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -27,9 +27,55 @@ pub struct FilesystemMetadataStore {
     /// In-memory cache of account metadata
     cache: Arc<RwLock<HashMap<String, AccountMetadata>>>,
     auth_state: Arc<RwLock<HashMap<String, i64>>>,
+    session_floor_fence_path: PathBuf,
+    /// Session floor fence; read and raised only while `auth_state` is locked.
+    session_floor_fence: Arc<AtomicI64>,
 }
 
 impl FilesystemMetadataStore {
+    /// The compare-and-set of [`MetadataStore::update_last_auth_timestamp_cas`]
+    /// on an `auth_state` the caller has locked.
+    async fn advance_floor_locked(
+        &self,
+        auth_state: &mut HashMap<String, i64>,
+        account_id: &str,
+        signer_commitment: &str,
+        new_timestamp: i64,
+    ) -> Result<bool, String> {
+        let key = auth_state_key(account_id, signer_commitment);
+        let legacy_key = auth_state_key(account_id, LEGACY_ACCOUNT_AUTH_FLOOR);
+
+        let signer_floor = auth_state.get(&key).copied();
+        let legacy_floor = auth_state.get(&legacy_key).copied();
+        if signer_floor
+            .into_iter()
+            .chain(legacy_floor)
+            .max()
+            .is_some_and(|floor| new_timestamp <= floor)
+        {
+            return Ok(false);
+        }
+
+        // One probe covers the replay check, the swap, and the prior value the
+        // rollback below needs; only a first-ever record allocates a key.
+        let previous = match auth_state.get_mut(&key) {
+            Some(current) => Some(std::mem::replace(current, new_timestamp)),
+            None => {
+                auth_state.insert(key.clone(), new_timestamp);
+                None
+            }
+        };
+
+        if let Err(persist_error) = self.persist_auth_state(auth_state).await {
+            match previous {
+                Some(prior) => auth_state.insert(key, prior),
+                None => auth_state.remove(&key),
+            };
+            return Err(persist_error);
+        }
+        Ok(true)
+    }
+
     /// Create a new FilesystemMetadataStore
     pub async fn new(base_path: PathBuf) -> Result<Self, String> {
         let metadata_dir = base_path.join(".metadata");
@@ -39,6 +85,15 @@ impl FilesystemMetadataStore {
 
         let file_path = metadata_dir.join("accounts.json");
         let auth_state_path = metadata_dir.join("auth_state.json");
+        let session_floor_fence_path = metadata_dir.join("session_floor_fence");
+        let session_floor_fence = match fs::read_to_string(&session_floor_fence_path).await {
+            Ok(text) => text
+                .trim()
+                .parse::<i64>()
+                .map_err(|e| format!("Invalid session floor fence: {e}"))?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => i64::MIN,
+            Err(error) => return Err(format!("Failed to read session floor fence: {error}")),
+        };
         let auth_floor_migration_path = metadata_dir.join("auth_state_legacy_floor_v1");
         let repair_missing_legacy_floors = !auth_floor_migration_path.exists();
 
@@ -109,6 +164,8 @@ impl FilesystemMetadataStore {
             auth_state_path,
             cache: Arc::new(RwLock::new(accounts)),
             auth_state: Arc::new(RwLock::new(auth_state)),
+            session_floor_fence_path,
+            session_floor_fence: Arc::new(AtomicI64::new(session_floor_fence)),
         };
 
         if keys_present {
@@ -363,6 +420,22 @@ impl MetadataStore for FilesystemMetadataStore {
         Ok(cache.keys().cloned().collect())
     }
 
+    async fn count(&self) -> Result<u64, String> {
+        Ok(self.cache.read().await.len() as u64)
+    }
+
+    async fn get_for_read_at(
+        &self,
+        account_id: &str,
+        _auth_version: i64,
+    ) -> Result<Option<crate::metadata::AccountMetadata>, String> {
+        self.get(account_id).await
+    }
+
+    async fn get_for_read(&self, account_id: &str) -> Result<Option<AccountMetadata>, String> {
+        self.get(account_id).await
+    }
+
     async fn list_paged(
         &self,
         limit: u32,
@@ -462,43 +535,62 @@ impl MetadataStore for FilesystemMetadataStore {
             }
         }
 
-        let key = auth_state_key(account_id, signer_commitment);
-        let legacy_key = auth_state_key(account_id, LEGACY_ACCOUNT_AUTH_FLOOR);
         let mut auth_state = self.auth_state.write().await;
-
-        let signer_floor = auth_state.get(&key).copied();
-        let legacy_floor = auth_state.get(&legacy_key).copied();
-        if signer_floor
-            .into_iter()
-            .chain(legacy_floor)
-            .max()
-            .is_some_and(|floor| new_timestamp <= floor)
-        {
-            return Ok(false);
-        }
-
-        // One probe covers the replay check, the swap, and the prior value the
-        // rollback below needs; only a first-ever record allocates a key.
-        let previous = match auth_state.get_mut(&key) {
-            Some(current) => Some(std::mem::replace(current, new_timestamp)),
-            None => {
-                auth_state.insert(key.clone(), new_timestamp);
-                None
-            }
-        };
-
-        if let Err(persist_error) = self.persist_auth_state(&auth_state).await {
-            match previous {
-                Some(prior) => auth_state.insert(key, prior),
-                None => auth_state.remove(&key),
-            };
-            return Err(persist_error);
-        }
-        Ok(true)
+        self.advance_floor_locked(
+            &mut auth_state,
+            account_id,
+            signer_commitment,
+            new_timestamp,
+        )
+        .await
     }
 
-    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
+    async fn advance_session_floor(
+        &self,
+        account_id: &str,
+        floor_key: &str,
+        timestamp: i64,
+        skew_ms: i64,
+        clock: &dyn crate::builder::clock::Clock,
+    ) -> Result<SessionFloorOutcome, String> {
+        {
+            let cache = self.cache.read().await;
+            if !cache.contains_key(account_id) {
+                return Err(format!("Account not found: {account_id}"));
+            }
+        }
         let mut auth_state = self.auth_state.write().await;
+        let now_ms = clock.now().timestamp_millis();
+        if now_ms.abs_diff(timestamp) > skew_ms as u64 {
+            return Ok(SessionFloorOutcome::OutsideWindow);
+        }
+        if timestamp <= self.session_floor_fence.load(Ordering::SeqCst) {
+            return Ok(SessionFloorOutcome::Stale);
+        }
+        let advanced = self
+            .advance_floor_locked(&mut auth_state, account_id, floor_key, timestamp)
+            .await?;
+        Ok(if advanced {
+            SessionFloorOutcome::Advanced
+        } else {
+            SessionFloorOutcome::Replay
+        })
+    }
+
+    async fn purge_session_floors(
+        &self,
+        max_age_ms: i64,
+        clock: &dyn crate::builder::clock::Clock,
+    ) -> Result<u64, String> {
+        let mut auth_state = self.auth_state.write().await;
+        let before_ms = clock.now().timestamp_millis().saturating_sub(max_age_ms);
+        let fence = before_ms.saturating_sub(1);
+        if fence > self.session_floor_fence.load(Ordering::SeqCst) {
+            write_atomic(&self.session_floor_fence_path, &fence.to_string())
+                .await
+                .map_err(|e| format!("Failed to write session floor fence: {e}"))?;
+            self.session_floor_fence.store(fence, Ordering::SeqCst);
+        }
         let stale: Vec<String> = auth_state
             .iter()
             .filter(|(key, timestamp)| {
@@ -1104,6 +1196,100 @@ mod auth_state_tests {
         serde_json::from_str(&content).unwrap()
     }
 
+    const SESSION_FLOOR: &str =
+        "session-0000000000000000000000000000000000000000000000000000000000000000";
+    const SKEW: i64 = 300_000;
+    const NOW: i64 = 1_800_000_000_000;
+
+    fn at(ms: i64) -> crate::builder::clock::test::MockClock {
+        crate::builder::clock::test::MockClock::new(
+            chrono::DateTime::from_timestamp_millis(ms).unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_session_write_waiting_for_the_lock_past_its_window_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(store_with_account(&dir).await);
+        let clock = std::sync::Arc::new(at(NOW));
+        let held = store.auth_state.write().await;
+        let waiting = tokio::spawn({
+            let (store, clock) = (store.clone(), clock.clone());
+            async move {
+                store
+                    .advance_session_floor("acct", SESSION_FLOOR, NOW, SKEW, clock.as_ref())
+                    .await
+                    .unwrap()
+            }
+        });
+        tokio::task::yield_now().await;
+        clock.advance_secs(SKEW / 1_000 + 1);
+        drop(held);
+        assert_eq!(waiting.await.unwrap(), SessionFloorOutcome::OutsideWindow);
+    }
+
+    #[tokio::test]
+    async fn a_session_write_delayed_past_its_window_is_refused_without_any_purge() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+        assert_eq!(
+            store
+                .advance_session_floor("acct", SESSION_FLOOR, NOW - SKEW - 1, SKEW, &at(NOW))
+                .await
+                .unwrap(),
+            SessionFloorOutcome::OutsideWindow
+        );
+        assert_eq!(
+            store
+                .advance_session_floor("acct", SESSION_FLOOR, NOW, SKEW, &at(NOW))
+                .await
+                .unwrap(),
+            SessionFloorOutcome::Advanced
+        );
+        assert_eq!(
+            store
+                .advance_session_floor("acct", SESSION_FLOOR, NOW, SKEW, &at(NOW))
+                .await
+                .unwrap(),
+            SessionFloorOutcome::Replay
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_write_whose_floor_was_purged_is_never_admitted_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_with_account(&dir).await;
+        let any_window = i64::MAX / 4;
+        assert_eq!(
+            store
+                .advance_session_floor("acct", SESSION_FLOOR, NOW, any_window, &at(NOW))
+                .await
+                .unwrap(),
+            SessionFloorOutcome::Advanced
+        );
+        assert_eq!(store.purge_session_floors(-1, &at(NOW)).await.unwrap(), 1);
+        assert_eq!(
+            store
+                .advance_session_floor("acct", SESSION_FLOOR, NOW, any_window, &at(NOW))
+                .await
+                .unwrap(),
+            SessionFloorOutcome::Stale,
+            "the floor is gone, but the fence still refuses its timestamp"
+        );
+
+        let restarted = FilesystemMetadataStore::new(dir.path().to_path_buf())
+            .await
+            .unwrap();
+        assert_eq!(
+            restarted
+                .advance_session_floor("acct", SESSION_FLOOR, NOW, any_window, &at(NOW))
+                .await
+                .unwrap(),
+            SessionFloorOutcome::Stale,
+            "the fence survives a restart"
+        );
+    }
+
     #[tokio::test]
     async fn cas_records_only_strictly_increasing_timestamps() {
         let dir = tempfile::tempdir().unwrap();
@@ -1358,11 +1544,30 @@ mod auth_state_tests {
         }
 
         assert_eq!(
-            store.purge_session_floors(100).await.unwrap(),
+            store
+                .purge_session_floors(
+                    0,
+                    &crate::builder::clock::test::MockClock::new(
+                        chrono::DateTime::from_timestamp_millis(100).unwrap(),
+                    )
+                )
+                .await
+                .unwrap(),
             0,
             "not stale yet"
         );
-        assert_eq!(store.purge_session_floors(101).await.unwrap(), 1);
+        assert_eq!(
+            store
+                .purge_session_floors(
+                    0,
+                    &crate::builder::clock::test::MockClock::new(
+                        chrono::DateTime::from_timestamp_millis(101).unwrap(),
+                    )
+                )
+                .await
+                .unwrap(),
+            1
+        );
         let persisted = persisted_auth_state(&dir);
         assert!(!persisted.contains_key(&auth_state_key("acct", &session_floor())));
         assert_eq!(persisted.get(&auth_state_key("acct", SIGNER_A)), Some(&100));

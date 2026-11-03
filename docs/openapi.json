@@ -260,7 +260,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -1726,7 +1726,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -1806,7 +1806,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -1919,7 +1919,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2039,7 +2039,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2137,7 +2137,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2237,7 +2237,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2307,7 +2307,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2417,7 +2417,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2535,7 +2535,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2616,7 +2616,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2744,7 +2744,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -2844,7 +2844,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -3781,7 +3781,7 @@
           "client"
         ],
         "summary": "Register a wallet-authorized P-256 delegated signer.",
-        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session`. Wallet-only\nroutes (`/delta/candidate/abandon`, `/configure`, `/state/lookup`,\n`/session/revoke-all`, and `POST /delta` onto an account without the\nmultisig auth) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
+        "description": "The wallet signs a session grant once; afterwards the delegated signer\nsigns per-account requests with `x-auth-format: session-v2`. Wallet-only\nroutes (`/delta/candidate/abandon`, `/configure`, `/state/lookup`,\n`/session/revoke-all`, and `POST /delta` onto an account without the\nmultisig auth) reject session credentials with\n`wallet_signature_required`. Re-submitting the grant of a live session\nsucceeds.",
         "operationId": "create_session",
         "requestBody": {
           "content": {
@@ -4054,7 +4054,7 @@
           {
             "name": "x-auth-format",
             "in": "header",
-            "description": "Optional ECDSA request format: eip712; omitted for raw signatures",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
             "required": false,
             "schema": {
               "type": [
@@ -4943,20 +4943,27 @@
         }
       },
       "CreateSessionResponse": {
-        "type": "object",
-        "required": [
-          "signer_commitment",
-          "expires_at"
-        ],
-        "properties": {
-          "expires_at": {
-            "type": "string",
-            "description": "RFC 3339 UTC."
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionRequestPolicy"
           },
-          "signer_commitment": {
-            "type": "string"
+          {
+            "type": "object",
+            "required": [
+              "signer_commitment",
+              "expires_at"
+            ],
+            "properties": {
+              "expires_at": {
+                "type": "string",
+                "description": "RFC 3339 UTC."
+              },
+              "signer_commitment": {
+                "type": "string"
+              }
+            }
           }
-        }
+        ]
       },
       "CurrentExecutionResponse": {
         "type": "object",
@@ -8125,20 +8132,43 @@
           }
         }
       },
-      "SessionsStatus": {
+      "SessionRequestPolicy": {
         "type": "object",
-        "description": "Session parameters a client needs before it builds a grant.",
+        "description": "What session request signing this server accepts, reported at session\ncreation (for that session) and in `GET /status` (for sessions started\nfrom now on) so clients sign in a format it verifies.",
         "required": [
-          "max_ttl_seconds"
+          "request_auth_version"
         ],
         "properties": {
-          "max_ttl_seconds": {
+          "request_auth_version": {
             "type": "integer",
-            "format": "int64",
-            "description": "Grants may expire at most this many seconds after registration.",
+            "format": "int32",
+            "description": "The session request envelope version requests must be signed with.\nVersion 2 also fixes how they are judged: each signed session read is\nadmitted once, in any order, within 60 s of server time; session\nwrites advance a per-key timestamp floor within 5 minutes.",
             "minimum": 0
           }
         }
+      },
+      "SessionsStatus": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SessionRequestPolicy",
+            "description": "How session requests must be signed."
+          },
+          {
+            "type": "object",
+            "required": [
+              "max_ttl_seconds"
+            ],
+            "properties": {
+              "max_ttl_seconds": {
+                "type": "integer",
+                "format": "int64",
+                "description": "Grants may expire at most this many seconds after registration.",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "Session parameters a client needs before it builds a grant."
       },
       "SignProposalRequest": {
         "type": "object",

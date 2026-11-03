@@ -8,10 +8,10 @@ crates/server/src/jobs/canonicalization/worker.rs spawn_renewal 25b5e60b3124269f
 crates/server/src/jobs/canonicalization/processor.rs fence 11f1f21956cd0313
 crates/server/src/storage/postgres.rs lease_fence_is_current 951aa94931bd4c54
 crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
-crates/server/src/storage/postgres.rs promote_candidate 7723aa1795b4c94a
-crates/server/src/storage/postgres.rs discard_candidate 96eb99645d435499
-crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7
+crates/server/src/storage/postgres.rs promote_candidate 6685d4b2108225d8
+crates/server/src/storage/postgres.rs discard_candidate d45ece5c5a02b8cc
+crates/server/src/storage/postgres.rs update_candidate_status e320deb79b175ec9
 crates/server/src/coordination/postgres/stats_store.rs lease_is_current 3a5be33e2177bd20
 crates/server/src/coordination/postgres/stats_store.rs publish fd112c099bd159c1
 crates/server/src/builder/canonicalization.rs lease_ttl 7b41638acbeb0bf0
-crates/server/src/builder/storage.rs build 4ebc25b29f093d12
+crates/server/src/builder/storage.rs build 192144a50de0929e

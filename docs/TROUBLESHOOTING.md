@@ -316,15 +316,30 @@ The two 401 codes mean different things (issue #367 split them):
   process (background poller, second tab, another host) signing with
   the same key. Replay state is scoped per `(account, signer)`, so
   other cosigners of a multisig never cause this for you.
+  Session reads are not ordered (the `unique` read replay policy): a
+  session read gets `authentication_replay` only when the exact
+  same signed request is sent twice, or arrives after its 60 s window.
+  Session writes keep the ordered check above.
+- **Session reads fail with `storage_error` (500) while writes work.** Under
+  `unique`, each session read is recorded in a time bucket the session sweep
+  creates an hour ahead; a read whose bucket does not exist is refused rather
+  than admitted unrecorded. Check the
+  `<stack>-session-read-maintenance-stale` alarm and the server log for
+  `Session read record maintenance failed` (target `session.sweep`): usually
+  the database refused the partition DDL (permissions, lock timeout) or the
+  sweep is not running. Restoring maintenance recovers reads within a minute.
+- **`timestamp_out_of_window`** (`meta.retryable: false`). Clock skew:
+  timestamps must be within ±5 minutes of server time, or ±60 s for
+  session-signed reads
+  ([`metadata/auth/credentials.rs`](../crates/server/src/metadata/auth/credentials.rs)).
+  Sync the client clock (NTP) or check for container time drift. The SDKs
+  keep their session on this code; it succeeds once the clock is right.
 - **`authentication_failed`** (`meta.retryable: false`, terminal) for
-  three reasons:
-  1. **Clock skew.** Timestamps must be within ±5 minutes of server time
-     ([`metadata/auth/credentials.rs:6`](../crates/server/src/metadata/auth/credentials.rs#L6)).
-     Sync the client clock (NTP) or check for container time drift.
-  2. **Invalid or unauthorized signature.** The signer's public-key
+  two reasons:
+  1. **Invalid or unauthorized signature.** The signer's public-key
      commitment is not in the account's authorized set, or the signature
      does not verify.
-  3. **Modified payload after signing.** The signature covers the
+  2. **Modified payload after signing.** The signature covers the
      request body hash. Mutating the body (proxy reformatting, JSON
      re-serialise) invalidates the signature. Sign-then-send; do not
      transform between.
@@ -813,13 +828,15 @@ come from
 
 | Code | HTTP | First check |
 |---|---|---|
-| `authentication_failed` | 401 | Clock skew, invalid/unauthorized signature, modified payload, missing headers. Terminal; never retried. |
+| `authentication_failed` | 401 | Invalid/unauthorized signature, modified payload, missing headers. Terminal; never retried. |
+| `timestamp_out_of_window` | 401 | The request timestamp is outside its window (5 minutes; 60 s for session reads): the client clock is off. Not retried; SDKs keep the session. |
 | `authentication_replay` | 401 | Correctly signed but the timestamp lost the per-signer replay CAS. `retryable: true`; SDK clients retry it automatically with a fresh timestamp and signature. See [the auth-layer section](#signed-requests-are-rejected-at-the-auth-layer). |
 | `authorization_failed` | 403 | Account credentials don't authorize the operation. |
 | `signer_not_authorized` | 403 | Signer isn't on the proposal's allowed signer set. |
 | `wallet_signature_required` | 403 | A wallet-only route (candidate abandon, configure, lookup, revoke-all, or a delta push onto an account without the multisig auth) was called with session (delegated-signer) credentials. Sign it with the wallet. Both SDKs do so for a delta push: an older server, or an account without the multisig auth, gets the push signed again by the wallet. |
 | `session_expired` | 401 | The delegated signer's session reached its expiry. Start a new session. |
 | `session_revoked` | 401 | The delegated signer's session was ended by logout or a wallet revoke-all. Start a new session (with a new key). |
+| `unsupported_auth_version` | 400 | A session request in a format this Guardian no longer accepts (`x-auth-format: session`, the version 1 format). Upgrade the SDK to one that signs `session-v2`; the session itself is still valid. |
 | `signature_scheme_not_allowed` | 403 | `/configure` for a **new** account, or a reconfiguration adding a scheme the account does not use yet, used a signature scheme the operator excluded with `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES`. Every scheme the account uses counts: each cosigner's and the GUARDIAN's, so a mixed Falcon + ECDSA account needs both allowed. `meta.scheme` is the rejected scheme, `meta.allowed_schemes` the accepted set; create the account with an allowed scheme (usually `ecdsa`). Re-configuring an account under the schemes it already uses is never rejected this way, except the retry of a first `/configure` that failed before storing the account's state, which counts as new; a Falcon account re-onboarding after a metadata restore or via `SwitchGuardian` counts as new and needs `falcon` allowed for the migration. `retryable: false`. |
 | `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION` | 403 | Operator dashboard call requires a permission the operator doesn't have. Response body carries `missing_permissions: string[]` (lex-sorted, deduplicated) and `retryable: false`. See [`DASHBOARD.md`](./DASHBOARD.md#permission-vocabulary). |
 
@@ -914,7 +931,7 @@ fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 
 | Code | HTTP | First check |
 |---|---|---|
-| `storage_error` | 500 | Persistence backend rejected the write. Check disk (filesystem) or DB (Postgres) health. |
+| `storage_error` | 500 | Persistence backend rejected the write. Check disk (filesystem) or DB (Postgres) health. A short burst right after a database failover or network drop is expected: pooled connections are reused without a test query, so each one that died silently fails one request and is then replaced. |
 | `signing_error` | 500 | ACK signer failed. Check the keystore mount and Secrets Manager IAM. |
 | `configuration_error` | 500 | Server misconfiguration. Usually a startup-time env var. On the dashboard routes it can also mean the operator allowlist source was unreadable: it is re-read per request and retried three times over 100ms, so this code means it stayed unreadable, not that a writer caught it mid-update. |
 

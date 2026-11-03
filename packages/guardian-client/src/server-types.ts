@@ -206,6 +206,7 @@ export interface ServerStatusResponse {
   execution?: ServerExecutionCapabilityWire | null;
   sessions?: {
     max_ttl_seconds: number;
+    request_auth_version?: number;
   };
 }
 
@@ -228,6 +229,7 @@ export interface ServerCreateSessionRequest {
 export interface ServerCreateSessionResponse {
   signer_commitment: string;
   expires_at: string;
+  request_auth_version?: number;
 }
 
 export interface ServerRevokeSessionResponse {

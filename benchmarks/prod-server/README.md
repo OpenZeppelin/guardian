@@ -28,6 +28,39 @@ Current scaffold status:
 Profiles live in `profiles/`.
 Run artifacts live under `reports/<run-id>/`.
 
+A write (`push_delta` in the report) is what a multisig client does: store
+the proposal, approve it with the user's key (accounts are 1-of-N), then push
+the delta, since GUARDIAN admits a multisig push only against a pending
+proposal holding the threshold of verified approvals. Its latency covers all
+three calls. Accounts are built with the signers' scheme, so ECDSA users get
+ECDSA accounts.
+
+Every profile names its `[credential]`: `kind = "wallet"`, or
+`kind = "session"` with the Guardian's `network`, in which case every
+active user starts a session before warmup and signs reads and pushes with
+it. Session runs must fit in one session (run duration plus 30 minutes, at
+most 8 hours). The report records the credential: compare wallet and
+session runs separately, since they exercise different replay protection
+(sessions read under the `unique` read replay policy).
+A user whose session ended mid-run (expired, revoked, or forgotten by the
+server) keeps going signed by its wallet; the report counts those measured
+operations (a write once, for its three requests) as
+`wallet_signed_operations` and the summary warns when it is not
+zero, since such a run is not a clean session run. Both fields are required
+in every profile: a profile without `[credential]` (or, with `[roles]`,
+without `cosigners_per_writer`) fails to load.
+
+Profiles with `[roles]` set `cosigners_per_writer`: that many readers per
+writer are seeded as extra cosigners of the writer's account and poll it,
+so their nonce polls see new state; the remaining readers poll accounts of
+their own, which never change, so their polls stay nonce-only. In the
+`target-317-*` profiles that is 300 of 20,000 readers (3 per writer, 100
+writers): most read traffic is the cheap nonce poll, and only the watching
+readers fetch state after each push. Raise `cosigners_per_writer` to put
+more of the read load on changing accounts. Readers only watch writers run by the same worker shard, and take
+their writer's signature scheme. `target-317-mix` (session) and
+`target-317-mix-wallet` are the same load under the two credentials.
+
 ## Rate limiting applies to gRPC
 
 The harness speaks gRPC, and the server now meters it (the gRPC surface used

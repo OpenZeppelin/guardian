@@ -1,6 +1,6 @@
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::resolve_account_allowing_session;
+use crate::services::resolve_account_for_read;
 use crate::state::AppState;
 use crate::state_object::StateObject;
 
@@ -23,8 +23,13 @@ pub struct GetStateResult {
 pub async fn get_state(state: &AppState, params: GetStateParams) -> Result<GetStateResult> {
     tracing::debug!("Getting state");
 
-    let resolved =
-        resolve_account_allowing_session(state, &params.account_id, &params.credentials).await?;
+    let resolved = resolve_account_for_read(
+        state,
+        &params.account_id,
+        &params.credentials,
+        guardian_shared::session_request::SessionOperation::GetState,
+    )
+    .await?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),

@@ -584,7 +584,7 @@ variable "guardian_release_sweep_rotation_seconds" {
 }
 
 variable "guardian_release_sweep_max_rate_per_second" {
-  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 5)"
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 10)"
   type        = number
   default     = null
   validation {

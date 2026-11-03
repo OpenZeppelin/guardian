@@ -59,7 +59,9 @@ export const GUARDIAN_ERROR_CODES = [
   'state_not_found',
   'state_not_on_chain',
   'storage_error',
+  'timestamp_out_of_window',
   'unsupported_evm_chain',
+  'unsupported_auth_version',
   'unsupported_for_network',
   'wallet_signature_required',
 ] as const;

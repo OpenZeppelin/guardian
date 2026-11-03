@@ -9,16 +9,17 @@
   - Per-signer-scheme (`Miden`) accounts use either scheme's serialized public key or its commitment.
 - On a per-signer-scheme (`Miden`) account each request is verified under the scheme its signer is registered with, against only the cosigners registered under that scheme: a raw signature of exactly 1524 bytes is Falcon and one of exactly 65 bytes (`r || s || v`) is ECDSA, any other length is rejected, and `x-auth-format: eip712` is ECDSA.
 - EVM HTTP requests under `/evm/*` use a `guardian_evm_session` cookie. The session EOA is recovered from a wallet signature and is checked against the configured account signer set or proposal signer snapshot.
-- Miden per-account requests MAY instead be signed by a delegated signer registered through `POST /session` (`x-auth-format: session`, see [Session Authentication](#session-authentication)).
+- Miden per-account requests MAY instead be signed by a delegated signer registered through `POST /session` (`x-auth-format: session-v2`, see [Session Authentication](#session-authentication)).
 - Replay protection applies to every Miden signed request. EVM challenge nonces are single-use and time-limited, and EVM sessions expire.
 
 ### Replay Protection
 
 - The signed payload includes a Unix timestamp in milliseconds.
-- The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes).
-- The server tracks `last_auth_timestamp` per `(account, signer commitment)`; a request whose timestamp is not strictly greater than the last accepted timestamp from the same signer is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same signer always loses: every accepted request advances that signer's own record.
-- All other authentication failures (clock skew, invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
-- `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds.
+- The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes), and **60,000 milliseconds** for session-signed reads. A timestamp outside its window is refused with the stable code `timestamp_out_of_window` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: false`): the client's clock is off, and the credentials are not in question, so clients keep their session.
+- Wallet requests and session writes use a timestamp floor: the server tracks `last_auth_timestamp` per `(account, signer commitment)` for wallet requests and per `(account, session-<hex SHA-256 of the session key>)` for session writes, and a request whose timestamp is not strictly greater than the last accepted one under the same key is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same key always loses: every accepted request advances that key's own record.
+- Session reads are not ordered: each signed session read is admitted once, fleet-wide, keyed on SHA-256 of the session public key and the signed envelope, so reads with equal or reordered timestamps are all accepted and only an exact copy is refused with `authentication_replay`. Details are under [Session Authentication](#session-authentication).
+- All other authentication failures (invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
+- `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds; a session read's record is inserted atomically the same way.
 - `POST /configure` enforces the same timestamp skew and replay CAS, and every
   configuration consumes its timestamp before it writes any state. A first-time
   configuration first claims the account: it creates the metadata row only if
@@ -108,9 +109,14 @@ replay-protected: requests are still signed over the same `AuthRequestMessage`,
 only the signing key is delegated. Sessions remove request prompts, not
 approval prompts: the wallet still signs every transaction summary.
 
-- Every Guardian that accepts grants advertises `sessions: { max_ttl_seconds }`
-  on `GET /status`; an older Guardian omits it, and SDKs fail early instead of
-  falling back silently.
+- Every Guardian that accepts grants advertises `sessions: { max_ttl_seconds,
+  request_auth_version }` on `GET /status`; an older Guardian omits it, and
+  SDKs fail early instead of falling back silently. `request_auth_version` is
+  the session request envelope version requests must be signed with (2).
+  Version 2 also fixes how session requests are judged: each signed session
+  read is admitted once, in any order, within 60 s of server time; session
+  writes advance a per-key timestamp floor, and wallet requests and session
+  writes keep a 5-minute window. A change to these rules is a new version.
 - **Grant.** The wallet signs, in the clear:
   - `signer_commitment`: the commitment of the wallet key that signs;
   - `session_public_key`: the delegated signer's SEC1-compressed P-256 key (33 bytes; the 65-byte uncompressed form is rejected);
@@ -143,6 +149,11 @@ approval prompts: the wallet still signs every transaction summary.
   - carry a wallet signature that does not verify, or a signer commitment that does not match the signing key;
   - come from a key that is not a cosigner of any account on this Guardian (`authorization_failed`, HTTP 403).
 
+  It returns the signer commitment, `expires_at` (RFC 3339), and
+  `request_auth_version` for the session. SDKs refuse a Guardian that does
+  not report version 2, both when starting a session and when resuming a
+  stored one.
+
   Checks that need no cryptography run before signature verification; the
   cosigner check runs after it, so only the key's holder learns whether it
   cosigns anything. Guardian records the session as issued at the earlier of
@@ -160,8 +171,33 @@ approval prompts: the wallet still signs every transaction summary.
   revoked session cannot be revived.
 - **Requests.** `x-pubkey` is the compressed session public key, `x-signature`
   the delegated signer's ECDSA P-256/SHA-256 signature (raw `r || s`, 64
-  bytes) over the 32 bytes of `AuthRequestMessage`, plus
-  `x-auth-format: session`. On every request Guardian, in this order, verifies
+  bytes) over the 62-byte version 2 session request envelope, plus
+  `x-auth-format: session-v2`:
+
+  ```text
+  "GUARDIAN_SESSION_REQUEST" 0x00 || u16be(2) || u8(transport)
+      || u16be(operation) || AuthRequestMessage word (32 bytes)
+  ```
+
+  `transport` is 1 for HTTP and 2 for gRPC, so equivalent HTTP and gRPC
+  requests carry different signatures. `operation` is the route's permanent
+  id: 1 `GET /state`, 2 `GET /state/nonce`, 3 `GET /delta`,
+  4 `GET /delta/since`, 5 `GET /delta/history`, 6 `GET /delta/proposal`,
+  7 `GET /delta/proposal/single`, 8 `POST /delta`, 9 `POST /delta/proposal`,
+  10 `PUT /delta/proposal`, 11 `POST /delta/proposal/execution`,
+  12 `GET /delta/proposal/execution`, 13 `GET /delta/execution/current` (the
+  gRPC twins share the ids). Guardian derives both from the request it
+  received, never from a header, so a signature made for one route or
+  transport never verifies on another, even when the payloads serialize to
+  the same bytes. Test vectors:
+  `crates/shared/tests/fixtures/session_request_vectors.json`. The version 1
+  format (`x-auth-format: session`, signed over the bare word) is refused on
+  every per-account route with `unsupported_auth_version` (HTTP 400, gRPC
+  `INVALID_ARGUMENT`, not retryable); SDKs keep the session and do not fall
+  back to the wallet. On wallet-only routes Guardian still checks a session
+  credential over the bare request word, so it only ever answers
+  `wallet_signature_required` or an authentication error there. On every
+  request Guardian, in this order, verifies
   the signature, resolves the session to its grant (ended or unknown sessions
   fail here, see below), applies the route allow-list (see Routes), re-checks
   that the grant names this Guardian's current ACK key for the account's
@@ -179,9 +215,24 @@ approval prompts: the wallet still signs every transaction summary.
   signal is the wallet's own indicator of the requesting site (e.g.
   MetaMask's); hardware-wallet users have no verified origin in v1. The read
   exposure to a page the user wrongly approves is an accepted risk.
-- **Replay protection.** Session requests advance their own timestamp floor
+- **Replay protection.** Session writes advance their own timestamp floor
   per (account, delegated key); wallet requests keep the floor per (account,
-  signer). A stolen session that stamps requests at the edge of the skew window
+  signer). Every session read, including reads of sessions stored by an
+  earlier release, records its
+  signed request (SHA-256 of the session key and the envelope) and is
+  admitted once, fleet-wide: reads with equal or reordered timestamps are all
+  accepted, a copy of any one is refused with `authentication_replay`. At
+  admission the timestamp is checked again against the store's clock, and a
+  purge first raises a fence that admission refuses timestamps at or below,
+  so a delayed or purged request is never admitted again. A session read's
+  timestamp must be within 60 s of server time; wallet requests and session
+  writes keep 5 minutes. A record that
+  cannot be written fails the read closed. The record is written at admission,
+  before the request is served, so a read that fails afterwards (for example
+  with a storage error) has still consumed its signature; clients sign a new request rather than resending the old one.
+  SDKs give each session request a
+  strictly increasing timestamp per account, never more than a second ahead
+  of the local clock, so two identical reads from one client never collide. A stolen session that stamps requests at the edge of the skew window
   therefore cannot lock the wallet out. Parallel requests on the same floor can
   still lose the race with `authentication_replay`; SDKs re-sign with a new
   timestamp and retry. Session floors are stored next to wallet floors, keyed
@@ -800,6 +851,7 @@ Stable error codes include:
 - `signer_not_authorized`
 - `wallet_signature_required` (session credentials on a wallet-only route; HTTP 403 / gRPC `PermissionDenied`)
 - `session_expired`, `session_revoked` (the delegated signer's session ended; HTTP 401 / gRPC `Unauthenticated`)
+- `unsupported_auth_version` (a session request in a format Guardian no longer accepts, the version 1 `x-auth-format: session`; HTTP 400 / gRPC `InvalidArgument`, not retryable)
 - `invalid_evm_proposal`
 - `insufficient_signatures`
 - `rate_limit_exceeded`

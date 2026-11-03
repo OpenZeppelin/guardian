@@ -1,9 +1,10 @@
 use crate::metadata::{
     AccountListCursor, AccountMetadata, Auth, ClearTransition, LEGACY_ACCOUNT_AUTH_FLOOR,
-    MetadataStore, NetworkConfig, ReleaseTransition,
+    MetadataStore, NetworkConfig, ReleaseTransition, SessionFloorOutcome,
 };
 use crate::schema::{account_metadata, states};
 use crate::services::account_status::{AccountStatus, PauseTransition};
+use crate::storage::postgres::TimedCheckout;
 use crate::storage::postgres::build_postgres_pool;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -12,6 +13,7 @@ use diesel::sql_types::Text;
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
+use std::sync::Arc;
 
 /// The rows the release sweep (issue #434) walks and counts: unreleased
 /// Miden accounts with no candidate in flight. One definition, so the
@@ -27,18 +29,87 @@ fn release_sweepable_rows<'a>() -> account_metadata::BoxedQuery<'a, diesel::pg::
         .into_boxed()
 }
 
+/// Default memory bound of the read-authorization metadata cache.
+pub const DEFAULT_READ_CACHE_MAX_BYTES: u64 = 256 * 1024 * 1024;
+
+enum ReadLoadError {
+    Missing,
+    Failed(String),
+}
+
+/// A metadata row as of its `auth_version`.
+struct CachedMetadata {
+    auth_version: i64,
+    metadata: AccountMetadata,
+}
+
 pub struct PostgresMetadataStore {
     pool: Pool<AsyncPgConnection>,
+    read_cache: moka::future::Cache<String, Arc<CachedMetadata>>,
 }
 
 impl PostgresMetadataStore {
     pub async fn new(database_url: &str, pool_max_size: usize) -> Result<Self, String> {
         let pool = build_postgres_pool(database_url, pool_max_size).await?;
-        Ok(Self { pool })
+        Ok(Self::from_pool(pool, DEFAULT_READ_CACHE_MAX_BYTES))
     }
 
     pub async fn with_pool(pool: Pool<AsyncPgConnection>) -> Self {
-        Self { pool }
+        Self::from_pool(pool, DEFAULT_READ_CACHE_MAX_BYTES)
+    }
+
+    pub fn with_read_cache_max_bytes(self, max_bytes: u64) -> Self {
+        Self::from_pool(self.pool, max_bytes)
+    }
+
+    fn from_pool(pool: Pool<AsyncPgConnection>, read_cache_max_bytes: u64) -> Self {
+        let read_cache = moka::future::Cache::builder()
+            .max_capacity(read_cache_max_bytes)
+            .weigher(|account_id: &String, cached: &Arc<CachedMetadata>| {
+                let metadata_bytes = serde_json::to_vec(&cached.metadata)
+                    .map(|bytes| bytes.len())
+                    .unwrap_or(4096);
+                u32::try_from(account_id.len() + metadata_bytes).unwrap_or(u32::MAX)
+            })
+            .build();
+        Self { pool, read_cache }
+    }
+
+    async fn current_auth_version(&self, account_id: &str) -> Result<Option<i64>, String> {
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        account_metadata::table
+            .filter(account_metadata::account_id.eq(account_id))
+            .select(account_metadata::auth_version)
+            .first::<i64>(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| format!("Failed to read auth version: {e}"))
+    }
+
+    async fn load_versioned(&self, account_id: &str) -> Result<Option<CachedMetadata>, String> {
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let row: Option<(MetadataRow, i64)> = account_metadata::table
+            .filter(account_metadata::account_id.eq(account_id))
+            .select((MetadataRow::as_select(), account_metadata::auth_version))
+            .first(&mut conn)
+            .await
+            .optional()
+            .map_err(|e| format!("Failed to get metadata: {e}"))?;
+        row.map(|(row, auth_version)| {
+            row.try_into().map(|metadata| CachedMetadata {
+                auth_version,
+                metadata,
+            })
+        })
+        .transpose()
     }
 
     /// Clone of the underlying connection pool. Used by the
@@ -140,7 +211,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn get(&self, account_id: &str) -> Result<Option<AccountMetadata>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -161,7 +232,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn set(&self, metadata: AccountMetadata) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -212,7 +283,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn create(&self, metadata: AccountMetadata) -> Result<bool, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -253,7 +324,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn list(&self) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -266,6 +337,79 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(rows)
     }
 
+    async fn get_for_read(&self, account_id: &str) -> Result<Option<AccountMetadata>, String> {
+        use crate::metrics::names::READ_AUTH_LOOKUP_DURATION_SECONDS;
+        let started = std::time::Instant::now();
+        let current = self.current_auth_version(account_id).await;
+        metrics::histogram!(READ_AUTH_LOOKUP_DURATION_SECONDS)
+            .record(started.elapsed().as_secs_f64());
+        let Some(auth_version) = current? else {
+            self.read_cache.invalidate(account_id).await;
+            return Ok(None);
+        };
+
+        self.get_for_read_at(account_id, auth_version).await
+    }
+
+    /// A load coalesced onto one that started before `auth_version` was
+    /// committed can return an older copy; the row is then read again.
+    async fn get_for_read_at(
+        &self,
+        account_id: &str,
+        auth_version: i64,
+    ) -> Result<Option<AccountMetadata>, String> {
+        use crate::metrics::names::{LABEL_OUTCOME, METADATA_CACHE_REQUESTS_TOTAL};
+        let cached = self.read_cache.get(account_id).await;
+        if let Some(cached) = &cached
+            && cached.auth_version >= auth_version
+        {
+            metrics::counter!(METADATA_CACHE_REQUESTS_TOTAL, LABEL_OUTCOME => "hit").increment(1);
+            return Ok(Some(cached.metadata.clone()));
+        }
+        let outcome = if cached.is_some() { "reload" } else { "miss" };
+        metrics::counter!(METADATA_CACHE_REQUESTS_TOTAL, LABEL_OUTCOME => outcome).increment(1);
+
+        self.read_cache.invalidate(account_id).await;
+        let loaded = self
+            .read_cache
+            .try_get_with_by_ref(account_id, async {
+                match self.load_versioned(account_id).await {
+                    Ok(Some(loaded)) => Ok(Arc::new(loaded)),
+                    Ok(None) => Err(ReadLoadError::Missing),
+                    Err(error) => Err(ReadLoadError::Failed(error)),
+                }
+            })
+            .await;
+        match loaded {
+            Ok(entry) if entry.auth_version >= auth_version => Ok(Some(entry.metadata.clone())),
+            Ok(_) => {
+                self.read_cache.invalidate(account_id).await;
+                Ok(self
+                    .load_versioned(account_id)
+                    .await?
+                    .map(|loaded| loaded.metadata))
+            }
+            Err(error) => match error.as_ref() {
+                ReadLoadError::Missing => Ok(None),
+                ReadLoadError::Failed(message) => Err(message.clone()),
+            },
+        }
+    }
+
+    async fn count(&self) -> Result<u64, String> {
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        let count: i64 = account_metadata::table
+            .count()
+            .get_result(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to count accounts: {e}"))?;
+        Ok(count as u64)
+    }
+
     async fn list_paged(
         &self,
         limit: u32,
@@ -274,7 +418,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<Vec<AccountMetadata>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -315,7 +459,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn list_with_pending_candidates(&self) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -336,7 +480,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -364,7 +508,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<bool, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -393,22 +537,70 @@ impl MetadataStore for PostgresMetadataStore {
         Ok(rows_updated > 0)
     }
 
-    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
+    async fn advance_session_floor(
+        &self,
+        account_id: &str,
+        floor_key: &str,
+        timestamp: i64,
+        skew_ms: i64,
+        _clock: &dyn crate::builder::clock::Clock,
+    ) -> Result<SessionFloorOutcome, String> {
+        #[derive(QueryableByName)]
+        struct Outcome {
+            #[diesel(sql_type = Text)]
+            outcome: String,
+        }
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
-        let deleted = diesel::sql_query(
-            "DELETE FROM account_auth_state \
-             WHERE signer_commitment LIKE $1 AND last_auth_timestamp < $2",
+        let row: Outcome = diesel::sql_query(
+            "SELECT guardian_advance_session_floor($1, $2, $3, $4, $5) AS outcome",
         )
-        .bind::<diesel::sql_types::Text, _>(format!("{}%", crate::session::SESSION_FLOOR_PREFIX))
-        .bind::<diesel::sql_types::BigInt, _>(before_ms)
-        .execute(&mut conn)
+        .bind::<Text, _>(account_id)
+        .bind::<Text, _>(floor_key)
+        .bind::<diesel::sql_types::BigInt, _>(timestamp)
+        .bind::<diesel::sql_types::BigInt, _>(skew_ms)
+        .bind::<Text, _>(LEGACY_ACCOUNT_AUTH_FLOOR)
+        .get_result(&mut conn)
         .await
-        .map_err(|e| format!("Failed to purge session replay floors: {e}"))?;
-        Ok(deleted as u64)
+        .map_err(|e| format!("Failed to advance session floor: {e}"))?;
+        match row.outcome.as_str() {
+            "advanced" => Ok(SessionFloorOutcome::Advanced),
+            "replay" => Ok(SessionFloorOutcome::Replay),
+            "outside_window" => Ok(SessionFloorOutcome::OutsideWindow),
+            "stale" => Ok(SessionFloorOutcome::Stale),
+            other => Err(format!("Unexpected session floor outcome '{other}'")),
+        }
+    }
+
+    async fn purge_session_floors(
+        &self,
+        max_age_ms: i64,
+        _clock: &dyn crate::builder::clock::Clock,
+    ) -> Result<u64, String> {
+        #[derive(QueryableByName)]
+        struct Deleted {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            deleted: i64,
+        }
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        diesel::sql_query("SELECT guardian_raise_session_floor_fence($1)")
+            .bind::<diesel::sql_types::BigInt, _>(max_age_ms)
+            .execute(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to raise the session floor fence: {e}"))?;
+        let row: Deleted =
+            diesel::sql_query("SELECT guardian_delete_fenced_session_floors() AS deleted")
+                .get_result(&mut conn)
+                .await
+                .map_err(|e| format!("Failed to purge session replay floors: {e}"))?;
+        Ok(row.deleted as u64)
     }
 
     async fn set_has_pending_candidate(
@@ -419,7 +611,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
         let updated_at: DateTime<Utc> = now
@@ -458,7 +650,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -513,7 +705,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<PauseTransition, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -584,7 +776,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn clear_pause(&self, account_id: &str) -> Result<PauseTransition, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -638,7 +830,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<ReleaseTransition, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -698,7 +890,7 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> Result<ClearTransition, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -746,7 +938,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn count_release_sweep_accounts(&self) -> Result<usize, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -761,7 +953,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1117,7 +1309,11 @@ mod tests {
     }
 
     async fn insert_account_row(store: &PostgresMetadataStore, account_id: &str) {
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -1138,7 +1334,11 @@ mod tests {
         account_id: &str,
         signer_commitment: &str,
     ) -> i64 {
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         account_auth_state::table
             .filter(account_auth_state::account_id.eq(account_id))
             .filter(account_auth_state::signer_commitment.eq(signer_commitment))
@@ -1149,7 +1349,11 @@ mod tests {
     }
 
     async fn metadata_updated_at(store: &PostgresMetadataStore, account_id: &str) -> DateTime<Utc> {
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         account_metadata::table
             .filter(account_metadata::account_id.eq(account_id))
             .select(account_metadata::updated_at)
@@ -1159,7 +1363,11 @@ mod tests {
     }
 
     async fn insert_unreleased_miden_row(store: &PostgresMetadataStore, account_id: &str) {
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -1176,7 +1384,11 @@ mod tests {
     }
 
     async fn upsert_state_row(store: &PostgresMetadataStore, account_id: &str, commitment: &str) {
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO states (account_id, state_json, commitment, created_at, updated_at) \
              VALUES ($1, '{}'::jsonb, $2, now(), now()) \
@@ -1195,6 +1407,260 @@ mod tests {
         crate::testing::mocks::MockStorageBackend::new()
     }
 
+    fn falcon_metadata(account_id: &str, cosigner: &str) -> AccountMetadata {
+        let now = Utc::now().to_rfc3339();
+        AccountMetadata {
+            account_id: account_id.to_string(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![cosigner.to_string()],
+            },
+            network_config: NetworkConfig::miden_default(),
+            created_at: now.clone(),
+            updated_at: now,
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        }
+    }
+
+    async fn db_now_ms(store: &PostgresMetadataStore) -> i64 {
+        #[derive(QueryableByName)]
+        struct Now {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            now: i64,
+        }
+        let mut conn = store.pool.get().await.expect("conn");
+        diesel::sql_query("SELECT guardian_db_now_ms() AS now")
+            .get_result::<Now>(&mut conn)
+            .await
+            .expect("db clock")
+            .now
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn fenced_session_floors_refuse_delayed_resent_and_purged_writes() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let first = PostgresMetadataStore::new(&url, 2).await.expect("first");
+        let second = PostgresMetadataStore::new(&url, 2).await.expect("second");
+        let stamp = Utc::now().timestamp_micros();
+        let account_id = format!("0xfloor{stamp}");
+        let floor_key = format!("session-{:0>64x}", stamp);
+        assert!(
+            first
+                .create(falcon_metadata(&account_id, "0x1"))
+                .await
+                .unwrap()
+        );
+        let now = db_now_ms(&first).await;
+        let skew = 300_000;
+        async fn advance(
+            store: &PostgresMetadataStore,
+            account_id: &str,
+            floor_key: &str,
+            timestamp: i64,
+            skew: i64,
+        ) -> SessionFloorOutcome {
+            store
+                .advance_session_floor(
+                    account_id,
+                    floor_key,
+                    timestamp,
+                    skew,
+                    &crate::builder::clock::test::MockClock::default(),
+                )
+                .await
+                .unwrap()
+        }
+
+        assert_eq!(
+            advance(&first, &account_id, &floor_key, now - skew - 5_000, skew).await,
+            SessionFloorOutcome::OutsideWindow
+        );
+        assert_eq!(
+            advance(&first, &account_id, &floor_key, now, skew).await,
+            SessionFloorOutcome::Advanced
+        );
+        assert_eq!(
+            advance(&second, &account_id, &floor_key, now, skew).await,
+            SessionFloorOutcome::Replay,
+            "a resent write on another replica"
+        );
+
+        let any_window = i64::MAX / 4;
+        first
+            .purge_session_floors(-1_000, &crate::builder::clock::test::MockClock::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            advance(&second, &account_id, &floor_key, now, any_window).await,
+            SessionFloorOutcome::Stale,
+            "the floor was purged, the fence still refuses the write"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn every_metadata_update_raises_the_auth_version() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xversion{}", Utc::now().timestamp_micros());
+        assert!(
+            store
+                .create(falcon_metadata(&account_id, "0x1"))
+                .await
+                .unwrap()
+        );
+        let version = || async {
+            store
+                .current_auth_version(&account_id)
+                .await
+                .unwrap()
+                .expect("account")
+        };
+        let mut previous = version().await;
+        let mut assert_raised = |current: i64, update: &str| {
+            assert!(current > previous, "{update} raised the version");
+            previous = current;
+        };
+
+        store
+            .set(falcon_metadata(&account_id, "0x2"))
+            .await
+            .unwrap();
+        assert_raised(version().await, "set");
+        store
+            .set_has_pending_candidate(&account_id, true, &Utc::now().to_rfc3339())
+            .await
+            .unwrap();
+        assert_raised(version().await, "set_has_pending_candidate");
+        store
+            .set_pause(&account_id, Utc::now(), "test")
+            .await
+            .unwrap();
+        assert_raised(version().await, "set_pause");
+        assert_eq!(store.current_auth_version("0xmissing").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn cached_read_metadata_reflects_a_write_through_another_replica() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let reader = PostgresMetadataStore::new(&url, 2).await.expect("reader");
+        let writer = PostgresMetadataStore::new(&url, 2).await.expect("writer");
+        let account_id = format!("0xcached{}", Utc::now().timestamp_micros());
+        let cosigners = |metadata: Option<AccountMetadata>| match metadata.expect("account").auth {
+            Auth::MidenFalconRpo {
+                cosigner_commitments,
+            } => cosigner_commitments,
+            other => panic!("unexpected auth {other:?}"),
+        };
+
+        assert!(reader.get_for_read(&account_id).await.unwrap().is_none());
+        assert!(
+            writer
+                .create(falcon_metadata(&account_id, "0xold"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            cosigners(reader.get_for_read(&account_id).await.unwrap()),
+            ["0xold"]
+        );
+        assert_eq!(
+            cosigners(reader.get_for_read(&account_id).await.unwrap()),
+            ["0xold"]
+        );
+
+        writer
+            .set(falcon_metadata(&account_id, "0xnew"))
+            .await
+            .unwrap();
+        assert_eq!(
+            cosigners(reader.get_for_read(&account_id).await.unwrap()),
+            ["0xnew"],
+            "a signer change through another replica is honored on the next read"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn an_account_registered_again_is_not_served_from_an_older_cached_copy() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let reader = PostgresMetadataStore::new(&url, 2).await.expect("reader");
+        let writer = PostgresMetadataStore::new(&url, 2).await.expect("writer");
+        let account_id = format!("0xrecreated{}", Utc::now().timestamp_micros());
+        let cosigners = |metadata: Option<AccountMetadata>| match metadata.expect("account").auth {
+            Auth::MidenFalconRpo {
+                cosigner_commitments,
+            } => cosigner_commitments,
+            other => panic!("unexpected auth {other:?}"),
+        };
+
+        assert!(
+            writer
+                .create(falcon_metadata(&account_id, "0xfirst"))
+                .await
+                .unwrap()
+        );
+        for _ in 0..3 {
+            writer
+                .set(falcon_metadata(&account_id, "0xold"))
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            cosigners(reader.get_for_read(&account_id).await.unwrap()),
+            ["0xold"]
+        );
+
+        let mut conn = writer.pool.get().await.unwrap();
+        diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
+            .bind::<Text, _>(&account_id)
+            .execute(&mut conn)
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(
+            writer
+                .create(falcon_metadata(&account_id, "0xnew"))
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            cosigners(reader.get_for_read(&account_id).await.unwrap()),
+            ["0xnew"],
+            "a row registered again outranks the copy another replica cached"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn cached_read_fails_closed_when_the_database_is_unreachable() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xclosed{}", Utc::now().timestamp_micros());
+        assert!(
+            store
+                .create(falcon_metadata(&account_id, "0x1"))
+                .await
+                .unwrap()
+        );
+        assert!(store.get_for_read(&account_id).await.unwrap().is_some());
+
+        store.pool.close();
+        assert!(
+            store.get_for_read(&account_id).await.is_err(),
+            "a cached copy is never served without validating it"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn list_release_sweep_ids_walks_in_order_and_skips_released() {
@@ -1209,9 +1675,14 @@ mod tests {
             .map(|suffix| format!("{prefix}-{suffix}"))
             .collect();
         let count_before = store.count_release_sweep_accounts().await.unwrap();
+        let accounts_before = store.count().await.unwrap();
         for id in &ids {
             insert_unreleased_miden_row(&store, id).await;
         }
+        assert_eq!(
+            store.count().await.unwrap(),
+            accounts_before + ids.len() as u64
+        );
         let released_id = format!("{prefix}-b");
         upsert_state_row(&store, &released_id, "0xbase").await;
         assert_eq!(
@@ -1230,7 +1701,11 @@ mod tests {
             .expect("flag the busy row");
         let evm_id = format!("{prefix}-ac-evm");
         {
-            let mut conn = store.pool.get().await.expect("conn");
+            let mut conn = store
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Metadata)
+                .await
+                .expect("conn");
             diesel::sql_query(
                 "INSERT INTO account_metadata \
                  (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -1469,6 +1944,87 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_replica_clock_far_ahead_cannot_fence_session_writes() {
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xahead{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+        let floor_key = crate::session::replay_floor_key(&[4; 33]);
+        let far_ahead =
+            crate::builder::clock::test::MockClock::new(Utc::now() + chrono::Duration::days(30));
+
+        store
+            .purge_session_floors(3_600_000, &far_ahead)
+            .await
+            .unwrap();
+
+        let now = Utc::now().timestamp_millis();
+        assert_eq!(
+            store
+                .advance_session_floor(
+                    &account_id,
+                    &floor_key,
+                    now,
+                    300_000,
+                    &crate::builder::clock::test::MockClock::default(),
+                )
+                .await
+                .unwrap(),
+            SessionFloorOutcome::Advanced,
+            "the fence follows the database clock, not the replica's"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_missing_floor_fence_row_fails_closed() {
+        #[derive(diesel::QueryableByName)]
+        struct Fence {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            watermark_ms: i64,
+        }
+        let url = test_database_url().await;
+        let _guard = pg_serial_lock().lock().await;
+        let store = PostgresMetadataStore::new(&url, 2).await.expect("store");
+        let account_id = format!("0xnofence{}", Utc::now().timestamp_micros());
+        insert_account_row(&store, &account_id).await;
+        let mut conn = store.pool.get().await.expect("conn");
+        let fence: Fence = diesel::sql_query(
+            "DELETE FROM replay_fence WHERE fence = 'session_floor' RETURNING watermark_ms",
+        )
+        .get_result(&mut conn)
+        .await
+        .unwrap();
+
+        let outcome = store
+            .advance_session_floor(
+                &account_id,
+                &crate::session::replay_floor_key(&[6; 33]),
+                Utc::now().timestamp_millis(),
+                300_000,
+                &crate::builder::clock::test::MockClock::default(),
+            )
+            .await;
+
+        diesel::sql_query(format!(
+            "INSERT INTO replay_fence (fence, watermark_ms) VALUES ('session_floor', {})",
+            fence.watermark_ms
+        ))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+        assert!(
+            outcome.is_err(),
+            "no fence row: the write fails closed, got {outcome:?}"
+        );
+    }
+
+    /// Timestamps are relative to now: the fence is shared by every test and
+    /// only rises, so a live floor must sit above anything an earlier test
+    /// raised it to.
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn purge_removes_only_stale_session_floors() {
         let url = test_database_url().await;
         let _guard = pg_serial_lock().lock().await;
@@ -1477,7 +2033,15 @@ mod tests {
         insert_account_row(&store, &account_id).await;
         let stale = crate::session::replay_floor_key(&[2; 33]);
         let live = crate::session::replay_floor_key(&[3; 33]);
-        for (floor, timestamp) in [("0xaa", 100), (stale.as_str(), 100), (live.as_str(), 300)] {
+        let now = Utc::now().timestamp_millis();
+        let hour_ms = 3_600_000;
+        let old = now - 10 * hour_ms;
+        let recent = now + 60_000;
+        for (floor, timestamp) in [
+            ("0xaa", old),
+            (stale.as_str(), old),
+            (live.as_str(), recent),
+        ] {
             assert!(
                 store
                     .update_last_auth_timestamp_cas(&account_id, floor, timestamp)
@@ -1486,17 +2050,23 @@ mod tests {
             );
         }
 
-        store.purge_session_floors(200).await.unwrap();
+        store
+            .purge_session_floors(hour_ms, &crate::builder::clock::test::MockClock::default())
+            .await
+            .unwrap();
 
         assert_eq!(
             stored_auth_timestamp(&store, &account_id, "0xaa").await,
-            100,
+            old,
             "wallet floors are never purged"
         );
-        assert_eq!(stored_auth_timestamp(&store, &account_id, &live).await, 300);
+        assert_eq!(
+            stored_auth_timestamp(&store, &account_id, &live).await,
+            recent
+        );
         assert!(
             store
-                .update_last_auth_timestamp_cas(&account_id, &stale, 50)
+                .update_last_auth_timestamp_cas(&account_id, &stale, old - 1)
                 .await
                 .unwrap(),
             "the stale session floor is gone"
@@ -1818,7 +2388,11 @@ mod tests {
             "the losing create must leave the first one's row untouched"
         );
 
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -1912,7 +2486,11 @@ mod tests {
         // With sequential scans priced out the planner must answer from the
         // two lookup indexes, which it can only do while each arm of the
         // query matches its index expression.
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query("SET enable_seqscan TO off")
             .execute(&mut conn)
             .await
@@ -2023,7 +2601,11 @@ mod tests {
     /// Poll `pg_stat_activity` until another backend is waiting on a lock in
     /// a statement against `account_metadata`, panicking after 10 seconds.
     async fn wait_until_blocked_on_account_metadata(store: &PostgresMetadataStore) {
-        let mut conn = store.pool.get().await.expect("observer conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("observer conn");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let blocked: i64 = diesel::select(diesel::dsl::sql::<diesel::sql_types::BigInt>(
@@ -2048,7 +2630,11 @@ mod tests {
     }
 
     async fn flag(store: &PostgresMetadataStore, account_id: &str) -> bool {
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         account_metadata::table
             .filter(account_metadata::account_id.eq(account_id))
             .select(account_metadata::has_pending_candidate)
@@ -2065,7 +2651,11 @@ mod tests {
         let account_id = format!("0xsetrace{}", Utc::now().timestamp_micros());
         let now = Utc::now().to_rfc3339();
 
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -2100,7 +2690,11 @@ mod tests {
             "generic metadata upsert must not clear candidate ownership",
         );
 
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -2116,7 +2710,11 @@ mod tests {
         let account_id = format!("0xwedge{}", Utc::now().timestamp_micros());
         let now = Utc::now().to_rfc3339();
 
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -2148,7 +2746,11 @@ mod tests {
             "flag must stay set while a candidate-status delta exists",
         );
 
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -2165,7 +2767,11 @@ mod tests {
             "flag must clear once no candidate-status delta remains",
         );
 
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query("DELETE FROM account_metadata WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -2183,7 +2789,11 @@ mod tests {
 
         // The state a retained candidate leaves behind: flag still set, no
         // candidate row.
-        let mut conn = store.pool.get().await.expect("conn");
+        let mut conn = store
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \

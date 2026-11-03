@@ -54,7 +54,9 @@ async fn main() {
                 .with_reconcile_interval_seconds_from_env()
                 .expect("Invalid reconcile interval configuration")
                 .with_max_pending_candidates_per_account_from_env()
-                .expect("Invalid pending-candidate queue depth configuration"),
+                .expect("Invalid pending-candidate queue depth configuration")
+                .with_rebuild_admission_from_env()
+                .expect("Invalid canonicalization rebuild admission configuration"),
         ))
         .with_execution(
             server::config::execution::ExecutionConfig::from_env()

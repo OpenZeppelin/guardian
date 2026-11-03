@@ -1,5 +1,11 @@
 import { p256 } from '@noble/curves/nist.js';
-import { RequestAuthPayload } from '@openzeppelin/guardian-client';
+import {
+  RequestAuthPayload,
+  SessionOperation,
+  SessionTransport,
+  UnsupportedAuthVersionError,
+  sessionRequestEnvelope,
+} from '@openzeppelin/guardian-client';
 import type { GuardianHttpClient, Signer } from '@openzeppelin/guardian-client';
 import type { MidenClient } from '@miden-sdk/miden-sdk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -42,7 +48,10 @@ function fakeGuardian(maxTtlSeconds = 28800) {
     getStatus: vi.fn().mockResolvedValue({
       status: 'ok',
       environment: 'devnet',
-      sessions: { maxTtlSeconds },
+      sessions: {
+        maxTtlSeconds,
+        requestAuthVersion: 2,
+      },
     }),
     getPubkey: vi.fn().mockResolvedValue({ commitment: GUARDIAN_COMMITMENT }),
     createSession: vi.fn().mockResolvedValue({ signerCommitment: SIGNER_COMMITMENT, expiresAt: '' }),
@@ -98,19 +107,30 @@ describe('WebCryptoSessionKey', () => {
 });
 
 describe('GuardianSession', () => {
-  it('signs requests over the same digest a wallet signs', async () => {
+  it('signs the version 2 envelope of the request a wallet would sign', async () => {
     const key = await WebCryptoSessionKey.generate();
     const session = new GuardianSession(key, SIGNER_COMMITMENT, 2_000_000_000, 'store-id');
     const payload = RequestAuthPayload.fromRequest({ account_id: ACCOUNT_ID });
 
-    const signature = await session.signRequest(ACCOUNT_ID, 1_791_280_800_000, payload);
-
-    const digest = wordToBytes(AuthDigest.fromRequest(ACCOUNT_ID, 1_791_280_800_000, payload));
-    expect(verifies(session.publicKey, digest, signature)).toBe(true);
-    const otherDigest = wordToBytes(
-      AuthDigest.fromRequest(ACCOUNT_ID, 1_791_280_800_001, payload),
+    const signature = await session.signRequest(
+      SessionOperation.GetState,
+      ACCOUNT_ID,
+      1_791_280_800_000,
+      payload,
     );
-    expect(verifies(session.publicKey, otherDigest, signature)).toBe(false);
+
+    const envelope = (operation: SessionOperation, timestamp: number) =>
+      sessionRequestEnvelope(
+        SessionTransport.Http,
+        operation,
+        new Uint8Array(wordToBytes(AuthDigest.fromRequest(ACCOUNT_ID, timestamp, payload))),
+      );
+    expect(verifies(session.publicKey, envelope(SessionOperation.GetState, 1_791_280_800_000), signature)).toBe(true);
+    expect(
+      verifies(session.publicKey, envelope(SessionOperation.GetCanonicalNonce, 1_791_280_800_000), signature),
+      'same payload, another operation',
+    ).toBe(false);
+    expect(verifies(session.publicKey, envelope(SessionOperation.GetState, 1_791_280_800_001), signature)).toBe(false);
   });
 
   it('signs the account-less logout message', async () => {
@@ -388,6 +408,44 @@ describe('resume and end', () => {
     expect(store.records.size).toBe(0);
   });
 
+  it('refuses a Guardian with another session request version before registering anything', async () => {
+    const guardian = fakeGuardian();
+    guardian.getStatus.mockResolvedValue({
+      status: 'ok',
+      environment: 'devnet',
+      sessions: {
+        maxTtlSeconds: 28800,
+        requestAuthVersion: 3,
+      },
+    });
+    const signer = fakeSigner();
+
+    await expect(
+      startGuardianSession(guardian as unknown as GuardianHttpClient, signer, approve),
+    ).rejects.toBeInstanceOf(UnsupportedAuthVersionError);
+    expect(signer.signSessionGrant).not.toHaveBeenCalled();
+    expect(guardian.createSession).not.toHaveBeenCalled();
+  });
+
+  it('does not resume a stored session against a Guardian without session request version 2', async () => {
+    const store = memoryStore();
+    await startGuardianSession(fakeGuardian() as unknown as GuardianHttpClient, fakeSigner(), {
+      store,
+      ...approve,
+    });
+    const older = fakeGuardian();
+    older.getStatus.mockResolvedValue({
+      status: 'ok',
+      environment: 'devnet',
+      sessions: { maxTtlSeconds: 28800 },
+    });
+
+    await expect(
+      resumeGuardianSession(older as unknown as GuardianHttpClient, fakeSigner(), store),
+    ).rejects.toBeInstanceOf(UnsupportedAuthVersionError);
+    expect(older.setSession).not.toHaveBeenCalled();
+  });
+
   it('forgets the stored key when the session ends, but not a newer key', async () => {
     const store = memoryStore();
     const onEnded = vi.fn();
@@ -546,7 +604,10 @@ describe('MultisigClient sessions', () => {
     status: 'ok',
     environment: 'devnet',
     execution: { enabled: true },
-    sessions: { max_ttl_seconds: 28800 },
+    sessions: {
+      max_ttl_seconds: 28800,
+      request_auth_version: 2,
+    },
   };
 
   /** A Guardian that accepts every session call and answers reads with `readError`. */
@@ -566,7 +627,11 @@ describe('MultisigClient sessions', () => {
       const bodies: Record<string, unknown> = {
         '/status': status,
         '/pubkey': { commitment: GUARDIAN_COMMITMENT },
-        '/session': { signer_commitment: SIGNER_COMMITMENT, expires_at: '' },
+        '/session': {
+          signer_commitment: SIGNER_COMMITMENT,
+          expires_at: '',
+          request_auth_version: 2,
+        },
         '/session/logout': { revoked: true },
       };
       return { ok: true, status: 200, headers: new Headers(), json: async () => bodies[path], init };

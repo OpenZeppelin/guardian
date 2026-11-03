@@ -15,6 +15,12 @@ pub struct BenchmarkRunReport {
     pub measurement_seconds: f64,
     pub guardian_endpoint: String,
     pub deployment_shape: Option<String>,
+    /// `wallet` or `session`: what signed the requests.
+    pub credential: String,
+    /// Measured operations of a session run the wallet signed because the
+    /// user had lost its session (a write counts once for its proposal,
+    /// approval and push). Non-zero means the run is not a clean session run.
+    pub wallet_signed_operations: u64,
     pub scheme_distribution: SchemeDistributionReport,
     pub operations: Vec<OperationReport>,
     pub canonicalization: Option<CanonicalizationReport>,

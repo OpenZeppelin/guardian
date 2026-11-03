@@ -3,6 +3,7 @@ pub mod execution_leases;
 pub mod leader;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod read_records;
 pub mod session_store;
 pub mod stats_store;
 
@@ -15,6 +16,7 @@ pub use execution_leases::{
     ExecutionLeases, InMemoryExecutionLeases, Renewal, lease_deadline, release_quietly,
 };
 pub use leader::{AlwaysLeader, LeaderElector, Lease};
+pub use read_records::{FileReadRecords, InMemoryReadRecords, ReadRecordOutcome, ReadRecordStore};
 pub use session_store::{
     InMemorySessionStore, SessionKey, SessionStore, SessionSubject, StoredSession,
 };
@@ -71,6 +73,8 @@ pub struct CoordinationHandles {
     pub stats_store: Arc<dyn StatsStore>,
     /// Miden account sessions.
     pub miden_sessions: Arc<dyn SessionStore>,
+    /// Record of accepted session reads (`unique` read replay policy).
+    pub read_records: Arc<dyn ReadRecordStore>,
     #[cfg(feature = "evm")]
     pub evm_sessions: Arc<dyn SessionStore>,
     #[cfg(feature = "evm")]
@@ -92,6 +96,7 @@ impl CoordinationHandles {
             execution_leases: Arc::new(InMemoryExecutionLeases::new()),
             stats_store: Arc::new(InMemoryStatsStore::new()),
             miden_sessions: Arc::new(InMemorySessionStore::new()),
+            read_records: Arc::new(InMemoryReadRecords::new()),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(InMemorySessionStore::new()),
             #[cfg(feature = "evm")]
@@ -109,7 +114,9 @@ impl CoordinationHandles {
         holder_id: String,
         cipher: Option<Arc<dyn crate::storage::encryption::cipher::StorageCipher>>,
     ) -> Self {
-        use postgres::{PgChallengeStore, PgLeaseElector, PgSessionStore, PgStatsStore};
+        use postgres::{
+            PgChallengeStore, PgLeaseElector, PgReadRecords, PgSessionStore, PgStatsStore,
+        };
         Self {
             mode: CoordinationMode::Shared,
             operator_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Operator)),
@@ -131,6 +138,7 @@ impl CoordinationHandles {
             )),
             execution_leases: Arc::new(PgExecutionLeases::new(pool.clone())),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),
+            read_records: Arc::new(PgReadRecords::new(pool.clone())),
             miden_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Miden)),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),

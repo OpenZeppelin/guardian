@@ -21,12 +21,14 @@ CONSTANTS
     Skew,         \* MAX_TIMESTAMP_SKEW, in clock units
     Ttl,          \* session max TTL, in clock units
     SignKeys,     \* keys clients sign with: subset of {"s1", "s2", "sess"}
-    Kinds,        \* request kinds clients send: subset of {"configure", "push"}
+    Kinds,        \* request kinds clients send: subset of {"configure", "push", "read"}
     MaxStall,     \* longest a handler may sit between its skew check and its
                   \* last step, in clock units (MaxTime or more = unbounded)
-    Scenario      \* "fresh": account not configured yet;
+    Scenario,     \* "fresh": account not configured yet;
                   \* "existing": account configured, no legacy floor;
                   \* "migrated": account exists with a legacy account floor
+    FloorChecks   \* the session floor's freshness and fence checks (the code:
+                  \* TRUE; FALSE reproduces F2)
 
 VARIABLES
     now,       \* server clock (all replicas read the same clock)
@@ -38,9 +40,15 @@ VARIABLES
     sent,      \* every request a client ever signed (a replay can resend any)
     acc,       \* acc[id]: how many times request id won the CAS
     wrote,     \* wrote[id]: how many handler runs of request id wrote
+    floorFence, \* replay_fence 'session_floor': floors at or below it are refused
+    readFence,  \* replay_fence 'session_read'
+    seen,       \* session_read_seen: the session reads admitted
     hpc, hreq, hexist, hwrote, hstart
 
-vars == <<now, exists, floors, version, session, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+vars == <<now, exists, floors, version, session, sent, acc, wrote, floorFence, readFence, seen,
+          hpc, hreq, hexist, hwrote, hstart>>
+
+FenceVars == <<floorFence, readFence, seen>>
 
 Wallets == {"s1", "s2"}
 FloorKeys == Wallets \cup {"sess"}
@@ -54,7 +62,7 @@ PreMigration == [id |-> 0, kind |-> "push", key |-> "s2", ts |-> 1]
 Max(a, b) == IF a > b THEN a ELSE b
 Abs(x) == IF x < 0 THEN -x ELSE x
 
-(* session.rs stale_floor_cutoff_ms *)
+(* session.rs stale_floor_age_ms *)
 PurgeCutoff == now - (Ttl + 2 * Skew)
 
 Init ==
@@ -71,11 +79,14 @@ Init ==
     /\ hexist = [h \in Handlers |-> FALSE]
     /\ hwrote = [h \in Handlers |-> FALSE]
     /\ hstart = [h \in Handlers |-> 0]
+    /\ floorFence = None
+    /\ readFence = None
+    /\ seen = {}
 
 -----------------------------------------------------------------------------
 (* Environment *)
 
-PastSkew == {"p_find", "p_cas", "p_write", "c_existing", "c_claim", "c_cas_first", "c_state", "c_meta"}
+PastSkew == {"p_find", "p_cas", "p_record", "p_write", "c_existing", "c_claim", "c_cas_first", "c_state", "c_meta"}
 
 (* Time only passes while no handler would exceed MaxStall since its skew *)
 (* check. Nothing in the server bounds this today: there is no request    *)
@@ -85,6 +96,7 @@ Tick ==
     /\ \A h \in Handlers : hpc[h] \in PastSkew => now + 1 - hstart[h] <= MaxStall
     /\ now' = now + 1
     /\ UNCHANGED <<exists, floors, version, session, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+    /\ UNCHANGED FenceVars
 
 (* A client signs a new request; its clock may sit anywhere in the skew    *)
 (* window around the server's. Ids start at 1 (0 is the pre-migration      *)
@@ -97,6 +109,7 @@ Sign ==
          /\ sent' = sent \cup {[id |-> Cardinality({r \in sent : r.id > 0}) + 1,
                                 kind |-> kind, key |-> key, ts |-> ts]}
     /\ UNCHANGED <<now, exists, floors, version, session, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+    /\ UNCHANGED FenceVars
 
 (* session.rs grant (POST /session) and revoke; one session, for s1. *)
 Grant ==
@@ -104,34 +117,55 @@ Grant ==
     /\ session.st = "none"
     /\ session' = [st |-> "live", at |-> now]
     /\ UNCHANGED <<now, exists, floors, version, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+    /\ UNCHANGED FenceVars
 
 Revoke ==
     /\ session.st = "live"
     /\ session' = [session EXCEPT !.st = "revoked"]
     /\ UNCHANGED <<now, exists, floors, version, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+    /\ UNCHANGED FenceVars
 
 SessionLive == session.st = "live" /\ now < session.at + Ttl
 
 (* builder/handle.rs start_session_sweep_worker -> purge_session_floors   *)
-(* (metadata/postgres.rs one DELETE; metadata/filesystem.rs under the     *)
-(* auth_state write lock).                                                 *)
+(* (metadata/postgres.rs guardian_purge_session_floors, one call under the *)
+(* exclusive fence lock; metadata/filesystem.rs under the auth_state write *)
+(* lock): raise the floor fence to just below the cutoff, then delete.     *)
+FloorDeletable == floors["sess"] # None /\ floors["sess"] < PurgeCutoff
+FenceBehind == FloorChecks /\ PurgeCutoff - 1 > floorFence
+
 Purge ==
-    /\ floors["sess"] # None
-    /\ floors["sess"] < PurgeCutoff
-    /\ floors' = [floors EXCEPT !["sess"] = None]
+    /\ FloorDeletable \/ FenceBehind
+    /\ floors' = IF FloorDeletable THEN [floors EXCEPT !["sess"] = None] ELSE floors
+    /\ floorFence' = IF FenceBehind THEN PurgeCutoff - 1 ELSE floorFence
     /\ UNCHANGED <<now, exists, version, session, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+    /\ UNCHANGED <<readFence, seen>>
+
+(* coordination/read_records.rs maintain (guardian_advance_session_read_fence *)
+(* under the exclusive fence lock): raise the read fence to the retention  *)
+(* cutoff, then drop the reads at or below it. Retention is the skew window *)
+(* plus a margin (session.rs READ_RECORD_RETAIN_MS), here one unit.        *)
+ReadCutoff == now - (Skew + 1)
+
+PurgeReads ==
+    /\ "read" \in Kinds
+    /\ ReadCutoff > readFence
+    /\ readFence' = ReadCutoff
+    /\ seen' = {s \in seen : s.ts > ReadCutoff}
+    /\ UNCHANGED <<now, exists, floors, version, session, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
+    /\ UNCHANGED floorFence
 
 -----------------------------------------------------------------------------
 (* Request handlers. A handler serves any request ever sent: the first     *)
 (* run of a request is the honest one, any later run is a replay.          *)
 
-HUnchanged == UNCHANGED <<now, session, sent>>
+HUnchanged == UNCHANGED <<now, session, sent, floorFence, readFence, seen>>
 
 Start(h) ==
     /\ hpc[h] = "idle"
     /\ \E r \in sent :
          /\ hreq' = [hreq EXCEPT ![h] = r]
-         /\ hpc' = [hpc EXCEPT ![h] = IF r.kind = "push" THEN "p_meta" ELSE "c_skew"]
+         /\ hpc' = [hpc EXCEPT ![h] = IF r.kind = "configure" THEN "c_skew" ELSE "p_meta"]
     /\ hwrote' = [hwrote EXCEPT ![h] = FALSE]
     /\ HUnchanged
     /\ UNCHANGED <<exists, floors, version, acc, wrote, hexist, hstart>>
@@ -141,8 +175,15 @@ Done(h) == hpc' = [hpc EXCEPT ![h] = "idle"]
 (* services/mod.rs consume_auth_timestamp -> update_last_auth_timestamp_cas *)
 (* (metadata/postgres.rs: INSERT ... WHERE NOT EXISTS (legacy >= ts) ON    *)
 (* CONFLICT DO UPDATE ... WHERE last < ts; metadata/filesystem.rs: check   *)
-(* max(signer, legacy) and swap under the auth_state write lock).          *)
-CasWins(r) == r.ts > Max(floors[r.key], LegacyFloor)
+(* max(signer, legacy) and swap under the auth_state write lock). A        *)
+(* session floor goes through advance_session_floor instead, which first   *)
+(* re-checks the timestamp window and the floor fence in the same step.    *)
+FloorAdmits(r) ==
+    \/ r.key # "sess"
+    \/ ~FloorChecks
+    \/ (Abs(now - r.ts) <= Skew /\ r.ts > floorFence)
+
+CasWins(r) == r.ts > Max(floors[r.key], LegacyFloor) /\ FloorAdmits(r)
 
 CasStep(h, onWin) ==
     LET r == hreq[h] IN
@@ -159,7 +200,7 @@ Write(h) ==
     /\ wrote' = IF hwrote[h] THEN wrote ELSE [wrote EXCEPT ![hreq[h].id] = @ + 1]
 
 (* --- push_delta and every other account route: services/mod.rs          *)
-(* resolve_account_with -> consume_auth_timestamp, then the route's write. *)
+(* resolve_account_with_head -> consume_auth_timestamp, then the route's write. *)
 
 PMeta(h) ==
     /\ hpc[h] = "p_meta"
@@ -176,18 +217,38 @@ PSkew(h) ==
     /\ HUnchanged
     /\ UNCHANGED <<exists, floors, version, acc, wrote, hreq, hexist, hwrote>>
 
-(* services/mod.rs verify_session_request -> session.rs find *)
+(* services/mod.rs verify_session_request -> session.rs find, and the     *)
+(* replay check resolve_account_with_head or resolve_unique_session_read picks: *)
+(* a session read is admitted once, every other request advances the floor. *)
 PFind(h) ==
     /\ hpc[h] = "p_find"
-    /\ IF SessionLive THEN hpc' = [hpc EXCEPT ![h] = "p_cas"] ELSE Done(h)
+    /\ IF SessionLive
+       THEN hpc' = [hpc EXCEPT ![h] =
+                IF hreq[h].kind = "read" THEN "p_record" ELSE "p_cas"]
+       ELSE Done(h)
     /\ HUnchanged
     /\ UNCHANGED <<exists, floors, version, acc, wrote, hreq, hexist, hwrote, hstart>>
 
 PCas(h) ==
     /\ hpc[h] = "p_cas"
-    /\ CasStep(h, "p_write")
+    /\ CasStep(h, IF hreq[h].kind = "read" THEN "idle" ELSE "p_write")
     /\ HUnchanged
     /\ UNCHANGED <<exists, version, wrote, hreq, hexist, hwrote, hstart>>
+
+(* services/mod.rs record_session_read -> ReadRecordStore::record          *)
+(* (guardian_record_session_read: shared fence lock, window re-check, fence *)
+(* check, insert, in one call): a session read is admitted               *)
+(* once instead of advancing a floor.                                       *)
+PRecord(h) ==
+    LET r == hreq[h] IN
+    /\ hpc[h] = "p_record"
+    /\ IF Abs(now - r.ts) <= Skew /\ r.ts > readFence /\ r.id \notin {s.id : s \in seen}
+       THEN /\ seen' = seen \cup {[id |-> r.id, ts |-> r.ts]}
+            /\ acc' = [acc EXCEPT ![r.id] = @ + 1]
+       ELSE UNCHANGED <<seen, acc>>
+    /\ Done(h)
+    /\ UNCHANGED <<now, session, sent, floorFence, readFence>>
+    /\ UNCHANGED <<exists, floors, version, wrote, hreq, hexist, hwrote, hstart>>
 
 (* services/push_delta.rs: the delta advances the stored state. *)
 PWrite(h) ==
@@ -261,10 +322,10 @@ CMeta(h) ==
 -----------------------------------------------------------------------------
 
 Next ==
-    \/ Tick \/ Sign \/ Grant \/ Revoke \/ Purge
+    \/ Tick \/ Sign \/ Grant \/ Revoke \/ Purge \/ PurgeReads
     \/ \E h \in Handlers :
          \/ Start(h)
-         \/ PMeta(h) \/ PSkew(h) \/ PFind(h) \/ PCas(h) \/ PWrite(h)
+         \/ PMeta(h) \/ PSkew(h) \/ PFind(h) \/ PCas(h) \/ PRecord(h) \/ PWrite(h)
          \/ CSkew(h) \/ CExisting(h) \/ CClaim(h) \/ CCasFirst(h) \/ CState(h) \/ CMeta(h)
 
 Spec == Init /\ [][Next]_vars

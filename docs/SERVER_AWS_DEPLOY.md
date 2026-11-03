@@ -1002,6 +1002,27 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
 
+#### Canonicalization leader size
+
+Canonicalization runs on one replica at a time (the lease holder), and its
+state rebuilds share the task's reconstruction slots (half its vCPU) with
+`push_delta`. With the default `GUARDIAN_CANONICALIZATION_REBUILD_ADMISSION=auto`
+the worker uses every slot but one, so draining `N` concurrent candidates
+takes about `N x rebuild time / (vCPU / 2 - 1)` (at least one slot), before
+Miden RPC and block inclusion. On 2 and 4 vCPU tasks that is one rebuild at a
+time. For 100 concurrent candidates within the 30 s target:
+
+| Rebuild time | 2 or 4 vCPU | 8 vCPU | 16 vCPU |
+|---:|---:|---:|---:|
+| 50 ms | 5 s | 1.7 s | 0.7 s |
+| 300 ms | 30 s | 10 s | 4.3 s |
+| 1 s | 100 s | 33 s | 14 s |
+
+Set `server_cpu` accordingly (Fargate CPU units: 4096 = 4 vCPU, 8192 = 8,
+16384 = 16). Every replica gets the same size, since any of them may hold the
+lease. Measured scheduling:
+[`benchmarks/prod-server/results/2026-10-30-rebuild-admission-local.md`](../benchmarks/prod-server/results/2026-10-30-rebuild-admission-local.md).
+
 #### Horizontal scaling (multiple replicas)
 
 The prod profile runs 2–6 tasks behind the ALB. Because it sets `GUARDIAN_ENV=prod`

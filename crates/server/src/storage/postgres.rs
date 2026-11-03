@@ -18,8 +18,8 @@ use diesel::ConnectionError;
 use diesel::pg::PgConnection;
 use diesel::prelude::*;
 use diesel_async::pooled_connection::AsyncDieselConnectionManager;
-use diesel_async::pooled_connection::ManagerConfig;
-use diesel_async::pooled_connection::deadpool::Pool;
+use diesel_async::pooled_connection::deadpool::{Object, Pool, PoolError};
+use diesel_async::pooled_connection::{ManagerConfig, RecyclingMethod};
 use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
@@ -501,24 +501,50 @@ pub(crate) async fn connect_test_postgres_client(
     Ok(client)
 }
 
+/// Pooled connections are reused without a test query: the default `SELECT 1`
+/// on every checkout was half of all statements under read load. A
+/// connection the server closed is still discarded at checkout.
 fn make_connection_manager(
     database_url: &str,
 ) -> Result<AsyncDieselConnectionManager<AsyncPgConnection>, String> {
     let plan = parse_tls_plan(database_url)?;
     let connect_url = sanitized_async_url(database_url, &plan)?;
-    let manager = match build_tls_client_config(&plan)? {
-        None => AsyncDieselConnectionManager::<AsyncPgConnection>::new(connect_url),
-        Some(config) => {
-            let mut manager_config = ManagerConfig::default();
-            manager_config.custom_setup =
-                Box::new(move |url| establish_tls_connection(url, config.clone()).boxed());
-            AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
-                connect_url,
-                manager_config,
-            )
-        }
-    };
-    Ok(manager)
+    let mut manager_config = ManagerConfig::default();
+    manager_config.recycling_method = RecyclingMethod::Fast;
+    if let Some(config) = build_tls_client_config(&plan)? {
+        manager_config.custom_setup =
+            Box::new(move |url| establish_tls_connection(url, config.clone()).boxed());
+    }
+    Ok(
+        AsyncDieselConnectionManager::<AsyncPgConnection>::new_with_config(
+            connect_url,
+            manager_config,
+        ),
+    )
+}
+
+/// Connection checkout that records how long the caller waited for the pool.
+pub(crate) trait TimedCheckout {
+    async fn get_timed(
+        &self,
+        pool: crate::metrics::labels::PoolKind,
+    ) -> Result<Object<AsyncPgConnection>, PoolError>;
+}
+
+impl TimedCheckout for Pool<AsyncPgConnection> {
+    async fn get_timed(
+        &self,
+        pool: crate::metrics::labels::PoolKind,
+    ) -> Result<Object<AsyncPgConnection>, PoolError> {
+        let started = std::time::Instant::now();
+        let connection = self.get().await;
+        metrics::histogram!(
+            crate::metrics::names::DB_POOL_ACQUIRE_DURATION_SECONDS,
+            crate::metrics::names::LABEL_POOL => pool.as_str()
+        )
+        .record(started.elapsed().as_secs_f64());
+        connection
+    }
 }
 
 pub(crate) async fn build_postgres_pool(
@@ -834,7 +860,7 @@ impl MarkerStore for PostgresService {
     async fn read_encryption_marker(&self) -> Result<Option<EncryptionMarker>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
         let row: Option<MarkerRow> = storage_encryption_marker::table
@@ -861,7 +887,7 @@ impl MarkerStore for PostgresService {
     async fn write_encryption_marker(&self, marker: &EncryptionMarker) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
         let row = MarkerRow {
@@ -886,7 +912,7 @@ impl MarkerStore for PostgresService {
     async fn has_payload_records(&self) -> Result<bool, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
         diesel::select(
@@ -1146,7 +1172,7 @@ impl StorageBackend for PostgresService {
     async fn submit_state(&self, state: &StateObject) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1196,7 +1222,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<StateReplace, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1233,7 +1259,7 @@ impl StorageBackend for PostgresService {
     async fn submit_delta(&self, delta: &DeltaObject) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1287,7 +1313,7 @@ impl StorageBackend for PostgresService {
     async fn pull_state(&self, account_id: &str) -> Result<StateObject, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1304,7 +1330,7 @@ impl StorageBackend for PostgresService {
     async fn pull_state_commitment(&self, account_id: &str) -> Result<String, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1321,7 +1347,7 @@ impl StorageBackend for PostgresService {
     async fn pull_state_head(&self, account_id: &str) -> Result<StateHead, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1348,7 +1374,7 @@ impl StorageBackend for PostgresService {
         };
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1374,7 +1400,7 @@ impl StorageBackend for PostgresService {
         }
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1395,10 +1421,45 @@ impl StorageBackend for PostgresService {
             .collect())
     }
 
+    async fn pull_state_heads_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, StateHead>, String> {
+        if account_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let mut conn = self
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+
+        let owned: Vec<String> = account_ids.iter().map(|s| (*s).to_string()).collect();
+        let rows: Vec<(String, String, Option<i64>)> = states::table
+            .filter(states::account_id.eq_any(&owned))
+            .select((states::account_id, states::commitment, states::nonce))
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to batch-pull state heads: {e}"))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(account_id, commitment, nonce)| {
+                (
+                    account_id,
+                    StateHead {
+                        commitment,
+                        nonce: state_nonce(nonce),
+                    },
+                )
+            })
+            .collect())
+    }
+
     async fn pull_delta(&self, account_id: &str, nonce: u64) -> Result<DeltaObject, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1420,7 +1481,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1439,7 +1500,7 @@ impl StorageBackend for PostgresService {
     async fn has_pending_candidate(&self, account_id: &str) -> Result<bool, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1464,7 +1525,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1486,7 +1547,7 @@ impl StorageBackend for PostgresService {
     async fn pull_candidate_deltas(&self, account_id: &str) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1510,7 +1571,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1558,7 +1619,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1585,7 +1646,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<String>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1620,7 +1681,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<crate::storage::SupersededDelta>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1645,7 +1706,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<u64, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1665,7 +1726,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1704,7 +1765,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<ProposalWrite, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
         let status_json = serde_json::to_value(&admission.proposal.status)
@@ -1792,7 +1853,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<DeltaObject, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1813,7 +1874,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<ProposalRecord>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1834,7 +1895,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<ProposalRecord>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1859,7 +1920,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1895,7 +1956,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<bool, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1936,7 +1997,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1953,7 +2014,7 @@ impl StorageBackend for PostgresService {
     async fn delete_delta(&self, account_id: &str, nonce: u64) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -1978,7 +2039,7 @@ impl StorageBackend for PostgresService {
 
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2050,7 +2111,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<(), String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2082,7 +2143,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<CandidateSubmission, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2255,7 +2316,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<PromoteWrite, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2436,7 +2497,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<CanonicalWrite, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2488,7 +2549,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<CanonicalWrite, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2680,7 +2741,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2713,7 +2774,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<DeltaObject>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2745,7 +2806,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<ProposalRecord>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2798,7 +2859,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<GlobalDeltaRow>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2861,7 +2922,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Vec<ProposalRecord>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2918,7 +2979,7 @@ impl StorageBackend for PostgresService {
     async fn count_deltas_by_status(&self) -> Result<DeltaStatusCounts, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2959,7 +3020,7 @@ impl StorageBackend for PostgresService {
     async fn count_in_flight_proposals(&self) -> Result<u64, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -2978,7 +3039,7 @@ impl StorageBackend for PostgresService {
     ) -> Result<Option<chrono::DateTime<chrono::Utc>>, String> {
         let mut conn = self
             .pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
@@ -3641,7 +3702,11 @@ mod tests {
         let url = crate::testing::pg::test_database_url().await;
         let service = PostgresService::new(&url, 4).await.expect("storage");
         let account_id = format!("0xack{}", chrono::Utc::now().timestamp_micros());
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -3834,6 +3899,12 @@ mod tests {
 
         // A missing account: the head read is not-found, the backfill a no-op.
         let missing = format!("{account_id}missing");
+        let heads = service
+            .pull_state_heads_batch(&[account_id.as_str(), missing.as_str()])
+            .await
+            .unwrap();
+        assert_eq!(heads.len(), 1, "missing accounts are absent from the batch");
+        assert_eq!(heads[&account_id], head("0xlegacy", Some(7)));
         let err = service.pull_state_head(&missing).await.unwrap_err();
         assert!(crate::storage::is_storage_not_found(&err), "got {err}");
         assert!(
@@ -3870,7 +3941,11 @@ mod tests {
              ON CONFLICT (account_id) DO UPDATE SET \
              state_json = EXCLUDED.state_json, commitment = EXCLUDED.commitment, \
              updated_at = EXCLUDED.updated_at";
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(previous_upsert)
             .bind::<Text, _>(&account_id)
             .bind::<Text, _>("0xc2")
@@ -3940,7 +4015,11 @@ mod tests {
         let account_id = format!("0xpromotenonce{stamp}");
         let now = chrono::Utc::now().to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -4021,7 +4100,11 @@ mod tests {
         let account_id = format!("0xhist{stamp}");
         let now = chrono::Utc::now().to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -4080,7 +4163,11 @@ mod tests {
 
         // Suite hygiene: the database is shared across tests in this
         // run, so remove this test's rows once assertions pass.
-        let mut conn = service.pool.get().await.expect("cleanup conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("cleanup conn");
         diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -4107,7 +4194,11 @@ mod tests {
         let now_at = chrono::Utc::now();
         let now = now_at.to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -4207,7 +4298,7 @@ mod tests {
         let measurement_result: Result<_, String> = async {
             let mut conn = service
                 .pool
-                .get()
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
                 .await
                 .map_err(|error| error.to_string())?;
             diesel::sql_query(
@@ -4277,7 +4368,7 @@ mod tests {
         let cleanup_result: Result<(), String> = async {
             let mut conn = service
                 .pool
-                .get()
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
                 .await
                 .map_err(|error| error.to_string())?;
             diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
@@ -4344,7 +4435,11 @@ mod tests {
         let now_dt = chrono::Utc::now();
         let now = now_dt.to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -4609,7 +4704,11 @@ mod tests {
         );
 
         // Best-effort cleanup.
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         let _ = diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -4656,7 +4755,11 @@ mod tests {
         let now = now_dt.to_rfc3339();
         let cutoff = now_dt - chrono::Duration::days(1);
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -4855,7 +4958,11 @@ mod tests {
                 .is_empty()
         );
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         for table in ["deltas", "states", "account_metadata"] {
             let _ = diesel::sql_query(format!("DELETE FROM {table} WHERE account_id = $1"))
                 .bind::<Text, _>(&account_id)
@@ -4884,7 +4991,11 @@ mod tests {
         let account_id = format!("0xpaused{stamp}");
         let now = chrono::Utc::now().to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -5015,7 +5126,11 @@ mod tests {
         let account_id = format!("0xqueue{stamp}");
         let now = chrono::Utc::now().to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -5172,7 +5287,11 @@ mod tests {
             3
         );
         let flag = {
-            let mut conn = service.pool.get().await.expect("conn");
+            let mut conn = service
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .expect("conn");
             account_metadata::table
                 .filter(account_metadata::account_id.eq(&account_id))
                 .select(account_metadata::has_pending_candidate)
@@ -5182,7 +5301,11 @@ mod tests {
         };
         assert!(flag, "queued candidates keep the pending flag set");
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         for table in ["deltas", "states", "account_metadata"] {
             let _ = diesel::sql_query(format!("DELETE FROM {table} WHERE account_id = $1"))
                 .bind::<Text, _>(&account_id)
@@ -5215,7 +5338,11 @@ mod tests {
         let lease_name = format!("canon-fence-{stamp}");
         let now = chrono::Utc::now().to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -5500,7 +5627,11 @@ mod tests {
         assert!(service.pull_delta(&account_id, 1).await.is_ok());
 
         elector_b.release(lease_b).await.expect("release");
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query("DELETE FROM deltas WHERE account_id = $1")
             .bind::<Text, _>(&account_id)
             .execute(&mut conn)
@@ -5552,7 +5683,11 @@ mod tests {
         let lease_name = format!("canon-overlap-{stamp}");
         let now = chrono::Utc::now().to_rfc3339();
 
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         diesel::sql_query(
             "INSERT INTO account_metadata \
              (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
@@ -5705,7 +5840,11 @@ mod tests {
         );
 
         elector_b.release(lease_b).await.expect("cleanup lease");
-        let mut conn = service.pool.get().await.expect("conn");
+        let mut conn = service
+            .pool
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
+            .await
+            .expect("conn");
         for stmt in [
             "DELETE FROM deltas WHERE account_id = $1",
             "DELETE FROM states WHERE account_id = $1",

@@ -911,6 +911,26 @@ pub trait StorageBackend: Send + Sync {
         }
         Ok(out)
     }
+    /// Batch counterpart of [`StorageBackend::pull_state_head`]: commitment
+    /// and nonce without the state payload. Missing accounts are absent
+    /// from the map; any other failure is an `Err`.
+    async fn pull_state_heads_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, StateHead>, String> {
+        let mut out = std::collections::HashMap::with_capacity(account_ids.len());
+        for id in account_ids {
+            match self.pull_state_head(id).await {
+                Ok(head) => {
+                    out.insert((*id).to_string(), head);
+                }
+                Err(e) if is_storage_not_found(&e) => {}
+                Err(e) => return Err(format!("pull_state_heads_batch: account '{id}': {e}")),
+            }
+        }
+        Ok(out)
+    }
+
     async fn pull_delta(&self, account_id: &str, nonce: u64) -> Result<DeltaObject, String>;
     async fn pull_deltas_after(
         &self,

@@ -358,8 +358,12 @@ Two distinct auth domains:
    [`miden_ecdsa.rs`](../../crates/server/src/metadata/auth/miden_ecdsa.rs)).
    Session-eligible reads and proposal requests may instead be signed by a
    delegated P-256 key the wallet authorized with a session grant
-   (`x-auth-format: session`, issue #219). Services opt in through
-   `resolve_account_allowing_session`; every other route uses
+   (`x-auth-format: session-v2`, issues #219 and #317). The key signs a
+   version 2 envelope that binds the transport and the route's
+   `SessionOperation` ([`crates/shared/src/session_request.rs`](../../crates/shared/src/session_request.rs)).
+   Services opt in through `resolve_account_allowing_session` (writes) or
+   `resolve_account_for_read` (reads, which may use the metadata store's
+   version-checked copy), each naming its operation; every other route uses
    `resolve_account`, which rejects session credentials. Grants live in
    [`session.rs`](../../crates/server/src/session.rs) (`MidenSessions`, swept
    with the other sessions); the wire format is in

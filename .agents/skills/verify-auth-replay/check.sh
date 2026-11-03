@@ -2,7 +2,8 @@
 # Model-check Guardian's signed-request replay protection (model/AuthReplay.tla).
 #
 #   check.sh                 quick tier, under a minute
-#   check.sh --deep          adds a wallet-plus-session cell, about 6 more min
+#   check.sh --deep          adds the wallet-plus-session cell and the session
+#                            read cells, over an hour more
 #   check.sh --cell <cell> <group>
 #                            run one cell, print TLC's full output and trace
 #   check.sh --drift-only    only compare the mirrored code with fingerprints.txt,
@@ -100,17 +101,23 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/auth-replay-tlc.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # Cell parameters: scenario, signing keys, request kinds, MaxRequests,
-# MaxTime, MaxStall. Skew = 1 and Ttl = 2 clock units throughout, so a
-# MaxStall of 3 is "a handler finishes within max TTL plus skew" and 99 is
-# unbounded (the code today).
+# MaxTime, MaxStall, FloorChecks. Skew = 1 and Ttl = 2 clock
+# units throughout, so a MaxStall of 3 is "a handler finishes within max TTL
+# plus skew" and 99 is unbounded (the code today: nothing bounds a handler).
+# FloorChecks FALSE removes the session floor's freshness and fence checks,
+# which reproduces F2.
 cell_params() {
   case "$1" in
-    configure-fresh)     echo 'fresh|{"s1", "s2"}|{"configure", "push"}|2|4|3' ;;
-    configure-existing)  echo 'existing|{"s1", "s2"}|{"configure", "push"}|2|4|3' ;;
-    migrated)            echo 'migrated|{"s1", "s2"}|{"configure", "push"}|2|4|3' ;;
-    session-bounded)     echo 'existing|{"sess"}|{"push"}|1|6|3' ;;
-    session-unbounded)   echo 'existing|{"sess"}|{"push"}|1|6|99' ;;
-    session-mixed)       echo 'existing|{"s1", "sess"}|{"configure", "push"}|2|6|3' ;;
+    configure-fresh)     echo 'fresh|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
+    configure-existing)  echo 'existing|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
+    migrated)            echo 'migrated|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
+    session-bounded)     echo 'existing|{"sess"}|{"push"}|1|6|3|TRUE' ;;
+    session-unbounded)   echo 'existing|{"sess"}|{"push"}|1|6|99|TRUE' ;;
+    session-unbounded-unfenced) echo 'existing|{"sess"}|{"push"}|1|6|99|FALSE' ;;
+    session-mixed)       echo 'existing|{"s1", "sess"}|{"configure", "push"}|2|6|3|TRUE' ;;
+    session-reads-writes) echo 'existing|{"sess"}|{"read", "push"}|2|6|3|TRUE' ;;
+    session-reads)       echo 'existing|{"sess"}|{"read"}|2|6|99|TRUE' ;;
+    session-reads-quick) echo 'existing|{"sess"}|{"read"}|1|4|3|TRUE' ;;
     *) echo "unknown cell $1" >&2; return 2 ;;
   esac
 }
@@ -131,7 +138,7 @@ run_cell() {
   local cell="$1" group="$2" out="$3"
   local dir="$WORK/$cell-$group" params checks
   params="$(cell_params "$cell")"
-  IFS='|' read -r scenario keys kinds max_requests max_time max_stall <<< "$params"
+  IFS='|' read -r scenario keys kinds max_requests max_time max_stall floor_checks <<< "$params"
   case "$group" in
     accept) checks=$'INVARIANT AcceptedAtMostOnce\nPROPERTY FloorsOnlyRise' ;;
     writes) checks='INVARIANT WritesAtMostOnce' ;;
@@ -152,6 +159,7 @@ CONSTANTS
     Kinds = $kinds
     MaxStall = $max_stall
     Scenario = "$scenario"
+    FloorChecks = $floor_checks
 SYMMETRY Perms
 SPECIFICATION Spec
 $checks

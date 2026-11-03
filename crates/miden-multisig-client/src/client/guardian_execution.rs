@@ -120,9 +120,10 @@ fn is_transport(error: &ClientError) -> bool {
                     tonic::Code::Unavailable | tonic::Code::DeadlineExceeded
                 )
         }
-        ClientError::ServerError(_) | ClientError::Json(_) | ClientError::InvalidResponse(_) => {
-            false
-        }
+        ClientError::ServerError(_)
+        | ClientError::Json(_)
+        | ClientError::InvalidResponse(_)
+        | ClientError::UnsupportedAuthVersion(_) => false,
     }
 }
 

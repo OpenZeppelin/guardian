@@ -1,7 +1,8 @@
-import type {
-  GuardianHttpClient,
-  SessionGrantFields,
-  Signer,
+import {
+  type GuardianHttpClient,
+  type SessionGrantFields,
+  type Signer,
+  assertSupportedSessionPolicy,
 } from '@openzeppelin/guardian-client';
 import {
   GuardianSession,
@@ -115,6 +116,7 @@ export async function startGuardianSession(
   if (!status.sessions) {
     throw new GuardianSessionsUnsupportedError();
   }
+  assertSupportedSessionPolicy(status.sessions);
   const maxTtl = status.sessions.maxTtlSeconds - MAX_TTL_MARGIN_SECONDS;
   const ttl = Math.min(options.ttlSeconds ?? maxTtl, maxTtl);
   if (!Number.isInteger(ttl) || ttl <= GRANT_WINDOW_SECONDS) {
@@ -207,6 +209,8 @@ export async function resumeGuardianSession(
     await store.remove(id, record.publicKey);
     return null;
   }
+  const { sessions } = await guardian.getStatus();
+  assertSupportedSessionPolicy(sessions ?? {});
   const session = new GuardianSession(
     new WebCryptoSessionKey(record.privateKey, record.publicKey),
     signer.commitment,

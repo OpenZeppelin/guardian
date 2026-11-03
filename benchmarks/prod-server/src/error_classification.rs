@@ -3,6 +3,16 @@ use anyhow::Error;
 pub fn classify(error: &Error) -> String {
     let message = error.to_string().to_ascii_lowercase();
 
+    if message.contains("authentication_replay") || message.contains("replay") {
+        return "auth_replay".to_string();
+    }
+    if message.contains("resource_exhausted")
+        || message.contains("rate limit")
+        || message.contains("too many requests")
+    {
+        return "rate_limited".to_string();
+    }
+
     if message.contains("permission_denied")
         || message.contains("unauthenticated")
         || message.contains("invalid signature")
@@ -50,5 +60,21 @@ mod tests {
         let error =
             anyhow!("Cannot push new delta: there is already a non-canonical delta pending");
         assert_eq!(classify(&error), "state_conflict");
+    }
+
+    #[test]
+    fn separates_replay_and_rate_limit_rejections_from_other_auth_failures() {
+        assert_eq!(
+            classify(&anyhow!("Unauthenticated: authentication_replay")),
+            "auth_replay"
+        );
+        assert_eq!(
+            classify(&anyhow!("ResourceExhausted: rate limit exceeded")),
+            "rate_limited"
+        );
+        assert_eq!(
+            classify(&anyhow!("Unauthenticated: invalid signature")),
+            "auth"
+        );
     }
 }

@@ -1,9 +1,16 @@
+use crate::coordination::read_records::{HeadRead, PrefetchedHead};
 use crate::error::{GuardianError, Result};
-use crate::metadata::auth::{Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat};
+use crate::metadata::SessionFloorOutcome;
+use crate::metadata::auth::{
+    Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat, SESSION_READ_SKEW_MS,
+};
 use crate::metadata::{AccountMetadata, LEGACY_ACCOUNT_AUTH_FLOOR};
+use crate::metrics::labels::{AuthCredential, AuthRejectionReason, record_auth_rejection};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use base64::Engine;
+use guardian_shared::auth_request_message::AuthRequestMessage;
+use guardian_shared::session_request::{ReplayPolicy, SessionOperation, SessionRequestEnvelope};
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -145,7 +152,14 @@ pub async fn resolve_account(
     account_id: &str,
     creds: &Credentials,
 ) -> Result<ResolvedAccount> {
-    resolve_account_with(state, account_id, creds, false).await
+    resolve_account_with(
+        state,
+        account_id,
+        creds,
+        RouteAccess::WalletOnly,
+        MetadataRead::Authoritative,
+    )
+    .await
 }
 
 /// Resolves an account and authenticates a request on a session-eligible
@@ -155,8 +169,272 @@ pub async fn resolve_account_allowing_session(
     state: &AppState,
     account_id: &str,
     creds: &Credentials,
+    operation: SessionOperation,
 ) -> Result<ResolvedAccount> {
-    resolve_account_with(state, account_id, creds, true).await
+    resolve_account_with(
+        state,
+        account_id,
+        creds,
+        RouteAccess::Session(operation),
+        MetadataRead::Authoritative,
+    )
+    .await
+}
+
+/// [`resolve_account_allowing_session`] for read routes: the account's
+/// metadata may come from a copy the metadata store has just confirmed is
+/// current, so a signer removal or other change is honored on the next
+/// request. Routes that write must use [`resolve_account_allowing_session`].
+pub async fn resolve_account_for_read(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+    operation: SessionOperation,
+) -> Result<ResolvedAccount> {
+    debug_assert_eq!(operation.replay_policy(), ReplayPolicy::Read);
+    resolve_account_with(
+        state,
+        account_id,
+        creds,
+        RouteAccess::Session(operation),
+        MetadataRead::ValidatedCopy,
+    )
+    .await
+}
+
+/// [`resolve_account_for_read`] for the canonical nonce poll: a session read
+/// admitted in one database call also brings the canonical state head.
+pub async fn resolve_account_for_head_read(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<(ResolvedAccount, PrefetchedHead)> {
+    resolve_account_with_head(
+        state,
+        account_id,
+        creds,
+        RouteAccess::Session(SessionOperation::GetCanonicalNonce),
+        MetadataRead::ValidatedCopy,
+        HeadRead::Include,
+    )
+    .await
+}
+
+/// A session read on a replica whose read replay policy is `unique`: the
+/// window and the signature over the request's envelope are checked without
+/// the database, then one call looks up the account's metadata version and
+/// the session and admits the read once. The metadata comes from the store's
+/// copy at that version, and the grant is checked as for every session
+/// request. A read admitted before an ownership check refuses it stays recorded; it
+/// was not a request its signer could use anyway.
+async fn resolve_unique_session_read(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+    operation: SessionOperation,
+    head: HeadRead,
+) -> Result<(ResolvedAccount, PrefetchedHead)> {
+    use crate::coordination::read_records::{
+        InactiveSession, SessionReadAdmission, SessionReadRequest,
+    };
+
+    let request_timestamp =
+        validate_request_timestamp(state, account_id, creds, SESSION_READ_SKEW_MS).inspect_err(
+            |_| {
+                record_auth_rejection(
+                    AuthCredential::Session,
+                    AuthRejectionReason::TimestampWindow,
+                )
+            },
+        )?;
+    let (pubkey_hex, signature_hex, _) = creds.as_signature().ok_or_else(|| {
+        GuardianError::AuthenticationFailed("Session requests require signature credentials".into())
+    })?;
+    let session_public_key = crate::session::credential_public_key(pubkey_hex)?;
+    let message = AuthRequestMessage::from_account_id_hex(
+        account_id,
+        request_timestamp,
+        creds.request_payload().clone(),
+    )
+    .map_err(GuardianError::AuthenticationFailed)?;
+    let envelope = SessionRequestEnvelope::new(creds.transport(), operation, &message);
+    crate::session::verify_signature_bytes(
+        &session_public_key,
+        signature_hex,
+        &envelope.to_bytes(),
+    )
+    .inspect_err(|_| {
+        record_auth_rejection(
+            AuthCredential::Session,
+            AuthRejectionReason::InvalidSignature,
+        )
+    })?;
+
+    let admission = state
+        .miden_sessions
+        .read_records()
+        .admit_session_read(
+            &StateSessionReadLookups { state },
+            SessionReadRequest {
+                account_id,
+                session_key: crate::session::store_key(&session_public_key),
+                record_key: envelope.record_key(&session_public_key),
+                timestamp_ms: request_timestamp,
+                skew_ms: SESSION_READ_SKEW_MS,
+                clock: state.clock.as_ref(),
+                head,
+            },
+        )
+        .await
+        .map_err(|e| read_record_error(account_id, e))?;
+    let (metadata_version, subject, outcome, prefetched_head) = match admission {
+        SessionReadAdmission::AccountNotFound => {
+            return Err(GuardianError::AccountNotFound(account_id.to_string()));
+        }
+        SessionReadAdmission::Inactive(status) => {
+            record_auth_rejection(AuthCredential::Session, AuthRejectionReason::SessionInvalid);
+            return Err(match status {
+                InactiveSession::Revoked => GuardianError::SessionRevoked,
+                InactiveSession::Expired => GuardianError::SessionExpired,
+                InactiveSession::Unknown => {
+                    GuardianError::AuthenticationFailed("Unknown session key".to_string())
+                }
+            });
+        }
+        SessionReadAdmission::Live {
+            metadata_version,
+            subject,
+            outcome,
+            head,
+        } => (metadata_version, subject, outcome, head),
+    };
+    let session = crate::session::MidenSession::from_subject(subject).ok_or_else(|| {
+        record_auth_rejection(AuthCredential::Session, AuthRejectionReason::SessionInvalid);
+        GuardianError::AuthenticationFailed("Unknown session key".to_string())
+    })?;
+
+    let metadata = match metadata_version {
+        Some(version) => state.metadata.get_for_read_at(account_id, version).await,
+        None => state.metadata.get_for_read(account_id).await,
+    }
+    .map_err(|e| GuardianError::StorageError(format!("Failed to check account: {e}")))?
+    .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
+    if metadata.network_config.is_evm()
+        || matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. })
+    {
+        return Err(GuardianError::UnsupportedForNetwork {
+            network: "evm".to_string(),
+            operation: "delta_api".to_string(),
+        });
+    }
+    let signer_commitment = check_session_grant(state, account_id, &metadata, session)?;
+    admit_read_record(state, account_id, request_timestamp, outcome)?;
+    Ok((
+        ResolvedAccount {
+            metadata,
+            storage: state.storage.clone(),
+            signer_commitment,
+        },
+        prefetched_head,
+    ))
+}
+
+fn read_record_error(account_id: &str, error: String) -> GuardianError {
+    tracing::error!(account_id = %account_id, error = %error, "Failed to admit session read");
+    GuardianError::StorageError(format!("Failed to admit session read: {error}"))
+}
+
+/// Accepts a session read its record admitted. A copy of one already
+/// admitted, or one at or below the fence, is a replay; one that left its
+/// window while it waited is `timestamp_out_of_window`.
+fn admit_read_record(
+    state: &AppState,
+    account_id: &str,
+    request_timestamp: i64,
+    outcome: crate::coordination::ReadRecordOutcome,
+) -> Result<()> {
+    use crate::coordination::ReadRecordOutcome;
+    let reason = match outcome {
+        ReadRecordOutcome::Recorded => return Ok(()),
+        ReadRecordOutcome::OutsideWindow => {
+            record_auth_rejection(
+                AuthCredential::Session,
+                AuthRejectionReason::TimestampWindow,
+            );
+            return Err(late_request(state, request_timestamp, SESSION_READ_SKEW_MS));
+        }
+        ReadRecordOutcome::Duplicate => AuthRejectionReason::Replay,
+        ReadRecordOutcome::Stale => AuthRejectionReason::Stale,
+    };
+    record_auth_rejection(AuthCredential::Session, reason);
+    tracing::warn!(
+        account_id = %account_id,
+        request_timestamp = %request_timestamp,
+        outcome = ?outcome,
+        "Replay rejected: session read already admitted or outside its window at admission"
+    );
+    Err(GuardianError::AuthenticationReplay)
+}
+
+/// Account and session lookups for stores that admit session reads locally.
+struct StateSessionReadLookups<'a> {
+    state: &'a AppState,
+}
+
+#[async_trait::async_trait]
+impl crate::coordination::read_records::SessionReadLookups for StateSessionReadLookups<'_> {
+    async fn account_exists(&self, account_id: &str) -> std::result::Result<bool, String> {
+        Ok(self
+            .state
+            .metadata
+            .get_for_read(account_id)
+            .await?
+            .is_some())
+    }
+
+    async fn session(
+        &self,
+        key: &crate::coordination::SessionKey,
+    ) -> std::result::Result<crate::coordination::read_records::SessionStatus, String> {
+        self.state
+            .miden_sessions
+            .status(key, self.state.clock.now())
+            .await
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Whether a per-account route accepts session credentials, and as which
+/// signed operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RouteAccess {
+    WalletOnly,
+    Session(SessionOperation),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MetadataRead {
+    Authoritative,
+    ValidatedCopy,
+}
+
+async fn resolve_account_with(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+    access: RouteAccess,
+    metadata_read: MetadataRead,
+) -> Result<ResolvedAccount> {
+    resolve_account_with_head(
+        state,
+        account_id,
+        creds,
+        access,
+        metadata_read,
+        HeadRead::Skip,
+    )
+    .await
+    .map(|(resolved, _)| resolved)
 }
 
 #[tracing::instrument(
@@ -164,16 +442,29 @@ pub async fn resolve_account_allowing_session(
     skip(state, creds),
     fields(account_id = %account_id)
 )]
-async fn resolve_account_with(
+async fn resolve_account_with_head(
     state: &AppState,
     account_id: &str,
     creds: &Credentials,
-    session_eligible: bool,
-) -> Result<ResolvedAccount> {
-    let metadata = state
-        .metadata
-        .get(account_id)
-        .await
+    access: RouteAccess,
+    metadata_read: MetadataRead,
+    head: HeadRead,
+) -> Result<(ResolvedAccount, PrefetchedHead)> {
+    if creds.auth_format() == RequestAuthFormat::LegacySession {
+        return Err(GuardianError::UnsupportedAuthVersion);
+    }
+    if creds.auth_format() == RequestAuthFormat::Session
+        && let RouteAccess::Session(operation) = access
+        && operation.replay_policy() == ReplayPolicy::Read
+    {
+        return resolve_unique_session_read(state, account_id, creds, operation, head).await;
+    }
+
+    let metadata = match metadata_read {
+        MetadataRead::Authoritative => state.metadata.get(account_id).await,
+        MetadataRead::ValidatedCopy => state.metadata.get_for_read(account_id).await,
+    };
+    let metadata = metadata
         .map_err(|e| {
             tracing::error!(
                 account_id = %account_id,
@@ -184,7 +475,14 @@ async fn resolve_account_with(
         })?
         .ok_or_else(|| GuardianError::AccountNotFound(account_id.to_string()))?;
 
-    let request_timestamp = validate_request_timestamp(state, account_id, creds)?;
+    let credential = if creds.auth_format() == RequestAuthFormat::Session {
+        AuthCredential::Session
+    } else {
+        AuthCredential::Wallet
+    };
+    let window_ms = MAX_TIMESTAMP_SKEW_MS;
+    let request_timestamp = validate_request_timestamp(state, account_id, creds, window_ms)
+        .inspect_err(|_| record_auth_rejection(credential, AuthRejectionReason::TimestampWindow))?;
 
     if metadata.network_config.is_evm()
         || matches!(metadata.auth, crate::metadata::Auth::EvmEcdsa { .. })
@@ -195,15 +493,20 @@ async fn resolve_account_with(
         });
     }
 
-    let (signer_commitment, replay_floor) = if creds.auth_format() == RequestAuthFormat::Session {
-        let (signer_commitment, session_public_key) =
-            verify_session_request(state, account_id, &metadata, creds, session_eligible).await?;
+    let (signer_commitment, floor_key) = if creds.auth_format() == RequestAuthFormat::Session {
+        let RouteAccess::Session(operation) = access else {
+            let message = auth_request_word(account_id, creds)?;
+            return Err(reject_session_credentials(state, creds, message).await);
+        };
+        let verified =
+            verify_session_request(state, account_id, &metadata, creds, operation).await?;
         (
-            signer_commitment,
-            crate::session::replay_floor_key(&session_public_key),
+            verified.signer_commitment,
+            crate::session::replay_floor_key(&verified.session_public_key),
         )
     } else {
         let signer_commitment = metadata.auth.verify(account_id, creds).map_err(|e| {
+            record_auth_rejection(credential, AuthRejectionReason::InvalidSignature);
             tracing::warn!(
                 account_id = %account_id,
                 error = %e,
@@ -214,15 +517,18 @@ async fn resolve_account_with(
         (signer_commitment.clone(), signer_commitment)
     };
 
-    consume_auth_timestamp(state, account_id, &replay_floor, request_timestamp).await?;
+    consume_auth_timestamp(state, account_id, &floor_key, request_timestamp, window_ms).await?;
 
     let storage = state.storage.clone();
 
-    Ok(ResolvedAccount {
-        metadata,
-        storage,
-        signer_commitment,
-    })
+    Ok((
+        ResolvedAccount {
+            metadata,
+            storage,
+            signer_commitment,
+        },
+        PrefetchedHead::NotRead,
+    ))
 }
 
 /// Authenticates delegated-signer credentials on a wallet-only route that
@@ -236,7 +542,7 @@ pub(crate) async fn reject_session_credentials(
     creds: &Credentials,
     message: miden_protocol::Word,
 ) -> GuardianError {
-    match authenticate_delegated_signer(state, creds, message).await {
+    match authenticate_delegated_signer(state, creds, &message.as_bytes()).await {
         Ok(_) => GuardianError::WalletSignatureRequired,
         Err(error) => error,
     }
@@ -250,7 +556,7 @@ pub(crate) async fn reject_session_credentials(
 async fn authenticate_delegated_signer(
     state: &AppState,
     creds: &Credentials,
-    message: miden_protocol::Word,
+    message: &[u8],
 ) -> Result<(
     [u8; guardian_shared::session_grant::SESSION_PUBLIC_KEY_LEN],
     crate::session::MidenSession,
@@ -259,25 +565,31 @@ async fn authenticate_delegated_signer(
         GuardianError::AuthenticationFailed("Session requests require signature credentials".into())
     })?;
     let session_public_key = crate::session::credential_public_key(pubkey_hex)?;
-    crate::session::verify_signature(&session_public_key, signature_hex, message)?;
+    crate::session::verify_signature_bytes(&session_public_key, signature_hex, message)
+        .inspect_err(|_| {
+            record_auth_rejection(
+                AuthCredential::Session,
+                AuthRejectionReason::InvalidSignature,
+            )
+        })?;
     let session = state
         .miden_sessions
         .find(&session_public_key, state.clock.now())
-        .await?;
+        .await
+        .inspect_err(|_| {
+            record_auth_rejection(AuthCredential::Session, AuthRejectionReason::SessionInvalid)
+        })?;
     Ok((session_public_key, session))
 }
 
-/// Authenticates a request signed by a delegated signer, in the order the
-/// spec fixes (FR-007): verifies the P-256 signature over the same
-/// `AuthRequestMessage` a wallet would sign, resolves the session to its
-/// grant, rejects a wallet-only route, re-checks that the grant still names
+/// Authenticates a request signed by a delegated signer: verifies the P-256
+/// signature over the version 2 envelope of this request (its transport, the
+/// route's operation, and the `AuthRequestMessage` a wallet would sign),
+/// resolves the session to its grant, re-checks that the grant still names
 /// this Guardian and its network, and that its signer cosigns the account.
-/// Returns the signer commitment and the session public key, whose own replay
-/// floor the request advances.
 ///
-/// The route is rejected only after the session resolves, so an
-/// unauthenticated caller cannot probe which routes accept sessions and an
-/// ended session is reported as ended. A rotated ACK key or another network
+/// A signature made for another operation or transport does not verify, so
+/// it never reaches the session store. A rotated ACK key or another network
 /// ends every session granted before it (`authentication_failed`). A grant
 /// for this Guardian's key of the other scheme, or a signer that does not
 /// cosign the account, is `authorization_failed`: the session stays valid
@@ -287,17 +599,39 @@ async fn verify_session_request(
     account_id: &str,
     metadata: &AccountMetadata,
     creds: &Credentials,
-    session_eligible: bool,
-) -> Result<(
-    String,
-    [u8; guardian_shared::session_grant::SESSION_PUBLIC_KEY_LEN],
-)> {
-    let message = auth_request_word(account_id, creds)?;
+    operation: SessionOperation,
+) -> Result<VerifiedSessionRequest> {
+    let message = AuthRequestMessage::from_account_id_hex(
+        account_id,
+        creds.timestamp(),
+        creds.request_payload().clone(),
+    )
+    .map_err(GuardianError::AuthenticationFailed)?;
+    let envelope = SessionRequestEnvelope::new(creds.transport(), operation, &message);
     let (session_public_key, session) =
-        authenticate_delegated_signer(state, creds, message).await?;
-    if !session_eligible {
-        return Err(GuardianError::WalletSignatureRequired);
-    }
+        authenticate_delegated_signer(state, creds, &envelope.to_bytes()).await?;
+    let signer_commitment = check_session_grant(state, account_id, metadata, session)?;
+    Ok(VerifiedSessionRequest {
+        signer_commitment,
+        session_public_key,
+    })
+}
+
+/// A session request whose signature and grant check out.
+struct VerifiedSessionRequest {
+    signer_commitment: String,
+    session_public_key: [u8; guardian_shared::session_grant::SESSION_PUBLIC_KEY_LEN],
+}
+
+/// Re-checks a live session's grant for this request: it must name this
+/// Guardian's current ACK key and network, and its signer must cosign the
+/// account under the scheme of that key. Returns the signer commitment.
+fn check_session_grant(
+    state: &AppState,
+    account_id: &str,
+    metadata: &AccountMetadata,
+    session: crate::session::MidenSession,
+) -> Result<String> {
     let names_ack_key = |scheme: &guardian_shared::SignatureScheme| {
         session
             .guardian_commitment
@@ -315,6 +649,7 @@ async fn verify_session_request(
             signer_commitment = %session.signer_commitment,
             "Session grant names another Guardian key or network"
         );
+        record_auth_rejection(AuthCredential::Session, AuthRejectionReason::SessionInvalid);
         return Err(GuardianError::AuthenticationFailed(
             "Session grant names another Guardian key or network".to_string(),
         ));
@@ -329,11 +664,28 @@ async fn verify_session_request(
             signer_commitment = %signer_commitment,
             "Session signer is not an authorized cosigner"
         );
+        record_auth_rejection(AuthCredential::Session, AuthRejectionReason::NotCosigner);
         return Err(GuardianError::AuthorizationFailed(
             "Session signer is not an authorized cosigner of this account".to_string(),
         ));
     }
-    Ok((signer_commitment, session_public_key))
+    Ok(signer_commitment)
+}
+
+/// The `AuthRequestMessage` word of a request. On a wallet-only route a
+/// session key is checked against this word, so the request is refused as
+/// `wallet_signature_required` only when its session is genuine and live.
+pub(crate) fn auth_request_word(
+    account_id: &str,
+    creds: &Credentials,
+) -> Result<miden_protocol::Word> {
+    AuthRequestMessage::from_account_id_hex(
+        account_id,
+        creds.timestamp(),
+        creds.request_payload().clone(),
+    )
+    .map(|message| message.to_word())
+    .map_err(GuardianError::AuthenticationFailed)
 }
 
 /// Longest wallet signature a session route accepts: a Falcon signature with
@@ -356,20 +708,6 @@ pub(crate) fn check_wallet_signature_hex(signature: &str) -> Result<()> {
     Ok(())
 }
 
-/// The `AuthRequestMessage` word a request's credentials sign.
-pub(crate) fn auth_request_word(
-    account_id: &str,
-    creds: &Credentials,
-) -> Result<miden_protocol::Word> {
-    guardian_shared::auth_request_message::AuthRequestMessage::from_account_id_hex(
-        account_id,
-        creds.timestamp(),
-        creds.request_payload().clone(),
-    )
-    .map(|message| message.to_word())
-    .map_err(GuardianError::AuthenticationFailed)
-}
-
 /// Rejects a session-route request timestamp (ms) outside the allowed clock
 /// skew window. Account requests use [`validate_request_timestamp`].
 pub(crate) fn validate_timestamp_skew(state: &AppState, timestamp_ms: i64) -> Result<()> {
@@ -383,72 +721,121 @@ pub(crate) fn validate_timestamp_skew(state: &AppState, timestamp_ms: i64) -> Re
             max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
             "Request timestamp outside allowed skew window"
         );
-        return Err(GuardianError::AuthenticationFailed(format!(
-            "Request timestamp outside allowed window: {time_diff_ms}ms drift (max {MAX_TIMESTAMP_SKEW_MS}ms)"
-        )));
+        return Err(GuardianError::TimestampOutOfWindow {
+            drift_ms: time_diff_ms,
+            window_ms: MAX_TIMESTAMP_SKEW_MS as u64,
+        });
     }
     Ok(())
 }
 
+/// A request that was inside its window when it arrived but outside it by the
+/// time its replay check ran: the same answer as a late arrival.
+fn late_request(state: &AppState, request_timestamp: i64, window_ms: i64) -> GuardianError {
+    GuardianError::TimestampOutOfWindow {
+        drift_ms: state
+            .clock
+            .now()
+            .timestamp_millis()
+            .abs_diff(request_timestamp),
+        window_ms: window_ms as u64,
+    }
+}
+
+/// Rejects an account request whose timestamp is more than `window_ms` from
+/// server time: [`SESSION_READ_SKEW_MS`] for session reads,
+/// [`MAX_TIMESTAMP_SKEW_MS`] for everything else.
 pub(crate) fn validate_request_timestamp(
     state: &AppState,
     account_id: &str,
     creds: &Credentials,
+    window_ms: i64,
 ) -> Result<i64> {
     let request_timestamp = creds.timestamp();
     let server_now_ms = state.clock.now().timestamp_millis();
-    let time_diff_ms = (server_now_ms - request_timestamp).abs();
-    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS {
+    let time_diff_ms = server_now_ms.abs_diff(request_timestamp);
+    if time_diff_ms > window_ms as u64 {
         tracing::warn!(
             account_id = %account_id,
             request_timestamp = %request_timestamp,
             server_now_ms = %server_now_ms,
             time_diff_ms = %time_diff_ms,
-            max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
+            max_skew_ms = %window_ms,
             "Request timestamp outside allowed skew window"
         );
-        return Err(GuardianError::AuthenticationFailed(format!(
-            "Request timestamp outside allowed window: {}ms drift (max {}ms)",
-            time_diff_ms, MAX_TIMESTAMP_SKEW_MS
-        )));
+        return Err(GuardianError::TimestampOutOfWindow {
+            drift_ms: time_diff_ms,
+            window_ms: window_ms as u64,
+        });
     }
     Ok(request_timestamp)
 }
 
 /// Advances the replay floor of (`account_id`, `signer_commitment`). For a
 /// session request `signer_commitment` is the delegated key's floor key
-/// (`session-…`), so a session never advances its wallet's floor.
+/// (`session-…`), so a session never advances its wallet's floor; its floor
+/// update re-checks the timestamp against `window_ms`, the request's window.
 pub(crate) async fn consume_auth_timestamp(
     state: &AppState,
     account_id: &str,
     signer_commitment: &str,
     request_timestamp: i64,
+    window_ms: i64,
 ) -> Result<()> {
     debug_assert_ne!(signer_commitment, LEGACY_ACCOUNT_AUTH_FLOOR);
-    let updated = state
-        .metadata
-        .update_last_auth_timestamp_cas(account_id, signer_commitment, request_timestamp)
-        .await
-        .map_err(|e| {
-            tracing::error!(
-                account_id = %account_id,
-                error = %e,
-                "Failed to update last auth timestamp"
-            );
-            GuardianError::StorageError(format!("Failed to update last auth timestamp: {e}"))
-        })?;
-
-    if !updated {
-        tracing::warn!(
+    let storage_error = |e: String| {
+        tracing::error!(
             account_id = %account_id,
-            signer_commitment = %signer_commitment,
-            request_timestamp = %request_timestamp,
-            "Replay rejected: timestamp not greater than last seen for signer (CAS failed)"
+            error = %e,
+            "Failed to update last auth timestamp"
         );
-        return Err(GuardianError::AuthenticationReplay);
-    }
+        GuardianError::StorageError(format!("Failed to update last auth timestamp: {e}"))
+    };
+    let (credential, outcome) = if crate::session::is_replay_floor_key(signer_commitment) {
+        let outcome = state
+            .metadata
+            .advance_session_floor(
+                account_id,
+                signer_commitment,
+                request_timestamp,
+                window_ms,
+                state.clock.as_ref(),
+            )
+            .await
+            .map_err(storage_error)?;
+        (AuthCredential::Session, outcome)
+    } else {
+        let advanced = state
+            .metadata
+            .update_last_auth_timestamp_cas(account_id, signer_commitment, request_timestamp)
+            .await
+            .map_err(storage_error)?;
+        let outcome = if advanced {
+            SessionFloorOutcome::Advanced
+        } else {
+            SessionFloorOutcome::Replay
+        };
+        (AuthCredential::Wallet, outcome)
+    };
 
-    Ok(())
+    let reason = match outcome {
+        SessionFloorOutcome::Advanced => return Ok(()),
+        SessionFloorOutcome::OutsideWindow => {
+            record_auth_rejection(credential, AuthRejectionReason::TimestampWindow);
+            return Err(late_request(state, request_timestamp, window_ms));
+        }
+        SessionFloorOutcome::Replay => AuthRejectionReason::Replay,
+        SessionFloorOutcome::Stale => AuthRejectionReason::Stale,
+    };
+    record_auth_rejection(credential, reason);
+    tracing::warn!(
+        account_id = %account_id,
+        signer_commitment = %signer_commitment,
+        request_timestamp = %request_timestamp,
+        outcome = ?outcome,
+        "Replay rejected: timestamp not above the floor, or outside its window at the update"
+    );
+    Err(GuardianError::AuthenticationReplay)
 }
 
 pub fn normalize_payload(payload: Value) -> Result<Value> {
@@ -754,10 +1141,10 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            GuardianError::AuthenticationFailed(msg) => {
-                assert!(msg.contains("outside allowed window"));
+            GuardianError::TimestampOutOfWindow { window_ms, .. } => {
+                assert_eq!(window_ms, MAX_TIMESTAMP_SKEW_MS as u64);
             }
-            e => panic!("Expected AuthenticationFailed, got: {:?}", e),
+            e => panic!("Expected TimestampOutOfWindow, got: {:?}", e),
         }
     }
 
@@ -787,10 +1174,10 @@ mod tests {
 
         assert!(result.is_err());
         match result.unwrap_err() {
-            GuardianError::AuthenticationFailed(msg) => {
-                assert!(msg.contains("outside allowed window"));
+            GuardianError::TimestampOutOfWindow { window_ms, .. } => {
+                assert_eq!(window_ms, MAX_TIMESTAMP_SKEW_MS as u64);
             }
-            e => panic!("Expected AuthenticationFailed, got: {:?}", e),
+            e => panic!("Expected TimestampOutOfWindow, got: {:?}", e),
         }
     }
 
@@ -961,6 +1348,61 @@ mod replay_protection_tests {
             .await
             .expect("first request accepted");
         assert_replay_rejected(resolve_account(&state, ACCOUNT_ID, &creds).await);
+    }
+
+    fn auth_rejection_lines(run: impl std::future::Future<Output = ()>) -> Vec<String> {
+        let recorder = crate::metrics::recorder::build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(run)
+        });
+        handle
+            .render()
+            .lines()
+            .filter(|line| line.starts_with("guardian_auth_rejections_total{"))
+            .map(str::to_string)
+            .collect()
+    }
+
+    #[test]
+    fn wallet_rejections_are_counted_by_reason() {
+        let lines = auth_rejection_lines(async {
+            let signer = TestSigner::new();
+            let state = app_state_with_account(Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer.commitment_hex.clone()],
+            })
+            .await;
+            let now = chrono::Utc::now().timestamp_millis();
+
+            let (signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, now);
+            let creds = Credentials::signature(signer.pubkey_hex.clone(), signature, now);
+            resolve_account(&state, ACCOUNT_ID, &creds).await.unwrap();
+            let _ = resolve_account(&state, ACCOUNT_ID, &creds).await;
+
+            let stale = now - MAX_TIMESTAMP_SKEW_MS - 1_000;
+            let (signature, _) = signer.sign_with_timestamp(ACCOUNT_ID, stale);
+            let creds = Credentials::signature(signer.pubkey_hex.clone(), signature, stale);
+            let _ = resolve_account(&state, ACCOUNT_ID, &creds).await;
+
+            let (signature, _) = TestSigner::new().sign_with_timestamp(ACCOUNT_ID, now + 1);
+            let creds = Credentials::signature(signer.pubkey_hex.clone(), signature, now + 1);
+            let _ = resolve_account(&state, ACCOUNT_ID, &creds).await;
+        });
+
+        for reason in ["replay", "timestamp_window", "invalid_signature"] {
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| line.contains("credential=\"wallet\"")
+                        && line.contains(&format!("reason=\"{reason}\""))
+                        && line.ends_with(" 1")),
+                "missing {reason} in {lines:?}"
+            );
+        }
     }
 
     #[tokio::test]

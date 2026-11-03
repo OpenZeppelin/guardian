@@ -1,3 +1,5 @@
+#[cfg(feature = "postgres")]
+use crate::storage::postgres::TimedCheckout;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -2075,6 +2077,22 @@ mod filesystem {
         async fn list(&self) -> Result<Vec<String>, String> {
             self.0.list().await
         }
+        async fn count(&self) -> Result<u64, String> {
+            self.0.count().await
+        }
+        async fn get_for_read_at(
+            &self,
+            account_id: &str,
+            auth_version: i64,
+        ) -> Result<Option<crate::metadata::AccountMetadata>, String> {
+            self.0.get_for_read_at(account_id, auth_version).await
+        }
+        async fn get_for_read(
+            &self,
+            account_id: &str,
+        ) -> Result<Option<crate::metadata::AccountMetadata>, String> {
+            self.0.get_for_read(account_id).await
+        }
         async fn list_paged(
             &self,
             limit: u32,
@@ -2103,8 +2121,24 @@ mod filesystem {
                 .update_last_auth_timestamp_cas(account_id, signer_commitment, new_timestamp)
                 .await
         }
-        async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String> {
-            self.0.purge_session_floors(before_ms).await
+        async fn purge_session_floors(
+            &self,
+            max_age_ms: i64,
+            clock: &dyn crate::builder::clock::Clock,
+        ) -> Result<u64, String> {
+            self.0.purge_session_floors(max_age_ms, clock).await
+        }
+        async fn advance_session_floor(
+            &self,
+            account_id: &str,
+            floor_key: &str,
+            timestamp: i64,
+            skew_ms: i64,
+            clock: &dyn crate::builder::clock::Clock,
+        ) -> Result<crate::metadata::SessionFloorOutcome, String> {
+            self.0
+                .advance_session_floor(account_id, floor_key, timestamp, skew_ms, clock)
+                .await
         }
         async fn find_by_cosigner_commitment(
             &self,
@@ -2527,7 +2561,11 @@ mod postgres {
         }
 
         async fn remove(self) {
-            let mut conn = self.pool.get().await.unwrap();
+            let mut conn = self
+                .pool
+                .get_timed(crate::metrics::labels::PoolKind::Storage)
+                .await
+                .unwrap();
             diesel::sql_query(format!("DROP TRIGGER {} ON {}", self.trigger, self.table))
                 .execute(&mut conn)
                 .await

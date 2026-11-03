@@ -2,6 +2,12 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GuardianHttpClient, GuardianHttpError } from './http.js';
 import { RequestAuthPayload } from './auth-request.js';
+import {
+  SessionOperation,
+  SessionTimestamps,
+  UnsupportedAuthVersionError,
+  WriteSequencer,
+} from './session-request.js';
 import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse, SessionRequestSigner } from './types.js';
 
 // Mock fetch globally
@@ -1993,8 +1999,13 @@ describe('GuardianHttpClient sessions', () => {
   let session: SessionRequestSigner;
 
   function sessionExpiringIn(seconds: number): SessionRequestSigner {
+    const timestamps = new SessionTimestamps();
     return {
       publicKey: sessionPublicKey,
+      nextTimestamp: vi.fn((accountId: string, afterReplay: boolean) =>
+        timestamps.next(accountId, afterReplay)
+      ),
+      writeSequencer: new WriteSequencer(),
       signerCommitment: mockSigner.commitment,
       expiresAt: Math.floor(Date.now() / 1000) + seconds,
       signRequest: vi.fn().mockReturnValue('0x' + 'd'.repeat(128)),
@@ -2065,10 +2076,25 @@ describe('GuardianHttpClient sessions', () => {
       // Only the request headers matter; the empty body may fail to parse.
       mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({}) });
       await call().catch(() => undefined);
-      expect(lastHeaders()['x-auth-format'], name).toBe('session');
+      expect(lastHeaders()['x-auth-format'], name).toBe('session-v2');
       expect(lastHeaders()['x-pubkey'], name).toBe(sessionPublicKey);
     }
     expect(session.signRequest).toHaveBeenCalledTimes(calls.length);
+    expect(session.nextTimestamp).toHaveBeenCalledTimes(calls.length);
+    expect(vi.mocked(session.nextTimestamp).mock.calls.every(([id]) => id === accountId)).toBe(true);
+    expect(vi.mocked(session.signRequest).mock.calls.map(([operation]) => operation)).toEqual([
+      SessionOperation.GetState,
+      SessionOperation.GetCanonicalNonce,
+      SessionOperation.GetDelta,
+      SessionOperation.GetDeltaSince,
+      SessionOperation.GetDeltaHistory,
+      SessionOperation.GetDeltaProposals,
+      SessionOperation.GetDeltaProposal,
+      SessionOperation.GetDeltaProposalExecution,
+      SessionOperation.GetCurrentExecution,
+      SessionOperation.PushDeltaProposal,
+      SessionOperation.SignDeltaProposal,
+    ]);
     expect(mockSigner.signRequest).not.toHaveBeenCalled();
   });
 
@@ -2098,7 +2124,7 @@ describe('GuardianHttpClient sessions', () => {
 
     expect(mockFetch).toHaveBeenCalledTimes(2);
     const [first, second] = mockFetch.mock.calls.map(([, init]) => init.headers);
-    expect(second['x-auth-format']).toBe('session');
+    expect(second['x-auth-format']).toBe('session-v2');
     expect(second['x-timestamp']).not.toBe(first['x-timestamp']);
     expect(session.signRequest).toHaveBeenCalledTimes(2);
     expect(client.getSession()).toBe(session);
@@ -2127,7 +2153,7 @@ describe('GuardianHttpClient sessions', () => {
 
     expect(result.ackSig).toBe('0x' + 'f'.repeat(128));
     const [first, second] = mockFetch.mock.calls.map(([, init]) => init.headers);
-    expect(first['x-auth-format']).toBe('session');
+    expect(first['x-auth-format']).toBe('session-v2');
     expect(second['x-pubkey']).toBe(mockSigner.publicKey);
     expect(client.getSession()).toBe(session);
     expect(session.onEnded).not.toHaveBeenCalled();
@@ -2154,7 +2180,7 @@ describe('GuardianHttpClient sessions', () => {
     expect(lastHeaders()).toMatchObject({
       'x-pubkey': sessionPublicKey,
       'x-signature': '0x' + 'd'.repeat(128),
-      'x-auth-format': 'session',
+      'x-auth-format': 'session-v2',
     });
     expect(session.signRequest).toHaveBeenCalledOnce();
     expect(mockSigner.signRequest).not.toHaveBeenCalled();
@@ -2195,8 +2221,11 @@ describe('GuardianHttpClient sessions', () => {
       .mockResolvedValueOnce({ ok: true, json: async () => ({ execution }) });
 
     await client.executeDeltaProposal('0xabc', '0xproposal');
-    expect(lastHeaders()['x-auth-format']).toBe('session');
-    expect(vi.mocked(session.signRequest).mock.calls[0][2].toBytes()).toEqual(
+    expect(lastHeaders()['x-auth-format']).toBe('session-v2');
+    expect(vi.mocked(session.signRequest).mock.calls[0][0]).toBe(
+      SessionOperation.ExecuteDeltaProposal
+    );
+    expect(vi.mocked(session.signRequest).mock.calls[0][3].toBytes()).toEqual(
       RequestAuthPayload.forOperation('ExecuteDeltaProposal', {
         account_id: '0xabc',
         proposal_id: '0xproposal',
@@ -2204,9 +2233,9 @@ describe('GuardianHttpClient sessions', () => {
     );
 
     await client.getDeltaProposalExecution('0xabc', '0xproposal');
-    expect(lastHeaders()['x-auth-format']).toBe('session');
+    expect(lastHeaders()['x-auth-format']).toBe('session-v2');
     await client.getCurrentExecution('0xabc');
-    expect(lastHeaders()['x-auth-format']).toBe('session');
+    expect(lastHeaders()['x-auth-format']).toBe('session-v2');
 
     expect(mockSigner.signRequest).not.toHaveBeenCalled();
     expect(session.signRequest).toHaveBeenCalledTimes(3);
@@ -2240,7 +2269,7 @@ describe('GuardianHttpClient sessions', () => {
     });
     expect(lastHeaders()).toMatchObject({
       'x-pubkey': sessionPublicKey,
-      'x-auth-format': 'session',
+      'x-auth-format': 'session-v2',
     });
     expect(session.signRequest).toHaveBeenCalledOnce();
 
@@ -2357,6 +2386,18 @@ describe('GuardianHttpClient sessions', () => {
     expect(session.onEnded).not.toHaveBeenCalled();
   });
 
+  it('keeps the session when the device clock is outside the timestamp window', async () => {
+    client.setSession(session);
+    rejectWith('timestamp_out_of_window');
+
+    await expect(client.getState('0xabc')).rejects.toMatchObject({
+      code: 'timestamp_out_of_window',
+    });
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
   it('a late rejection of an old session ends it but leaves the new one in use', async () => {
     client.setSession(session);
     let respond!: (value: unknown) => void;
@@ -2405,10 +2446,143 @@ describe('GuardianHttpClient sessions', () => {
     expect(lastHeaders()['x-auth-format']).toBeUndefined();
   });
 
+  it('sends a session write to an account only after the previous one finished', async () => {
+    client.setSession(session);
+    let releaseFirst!: () => void;
+    const delta = {
+      account_id: '0xabc',
+      nonce: 1,
+      status: { status: 'pending', timestamp: '2026-01-01T00:00:00Z', proposer_id: '0x1', cosigner_sigs: [] },
+      delta_payload: {},
+      prev_commitment: '0x00',
+    };
+    mockFetch
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            releaseFirst = () => resolve({ ok: true, json: async () => ({ delta, commitment: '0x1' }) });
+          })
+      )
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ delta, commitment: '0x2' }) });
+    const proposal = { accountId: '0xabc', nonce: 1, deltaPayload: { txSummary: { data: 'AAAA' }, signatures: [] } };
+
+    const first = client.pushDeltaProposal(proposal).catch(() => undefined);
+    const second = client.pushDeltaProposal(proposal).catch(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const [firstTimestamp, secondTimestamp] = mockFetch.mock.calls.map(
+      ([, init]) => Number(init.headers['x-timestamp'])
+    );
+    expect(secondTimestamp).toBeGreaterThan(firstTimestamp);
+  });
+
+  it('moves a write queued on a replaced session into the new session\'s turn', async () => {
+    const replacement = { ...sessionExpiringIn(3600), publicKey: '0x03' + 'f'.repeat(64) };
+    client.setSession(session);
+    const delta = {
+      account_id: '0xabc',
+      nonce: 1,
+      status: { status: 'pending', timestamp: '2026-01-01T00:00:00Z', proposer_id: '0x1', cosigner_sigs: [] },
+      delta_payload: {},
+      prev_commitment: '0x00',
+    };
+    const done = { ok: true, json: async () => ({ delta, commitment: '0x1' }) };
+    const releases: Array<() => void> = [];
+    mockFetch.mockImplementation(
+      () => new Promise((resolve) => releases.push(() => resolve(done)))
+    );
+    const proposal = { accountId: '0xabc', nonce: 1, deltaPayload: { txSummary: { data: 'AAAA' }, signatures: [] } };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+    const first = client.pushDeltaProposal(proposal).catch(() => undefined);
+    const queued = client.pushDeltaProposal(proposal).catch(() => undefined);
+    await settle();
+    client.setSession(replacement);
+    const onReplacement = client.pushDeltaProposal(proposal).catch(() => undefined);
+    await settle();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    releases[0]();
+    await settle();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+
+    releases[1]();
+    await settle();
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    releases[2]();
+    await Promise.all([first, queued, onReplacement]);
+    expect(mockFetch.mock.calls.map(([, init]) => init.headers['x-pubkey'])).toEqual([
+      sessionPublicKey,
+      replacement.publicKey,
+      replacement.publicKey,
+    ]);
+    expect(session.signRequest).toHaveBeenCalledTimes(1);
+    mockFetch.mockReset();
+  });
+
+  it('does not order session reads', async () => {
+    client.setSession(session);
+    mockFetch.mockImplementation(() => new Promise(() => undefined));
+    void client.getState('0xabc');
+    void client.getState('0xabc');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    mockFetch.mockReset();
+  });
+
+  it('refuses a Guardian that does not report session request version 2', async () => {
+    for (const body of [
+      { signer_commitment: '0x11', expires_at: '2026-10-06T18:00:00+00:00' },
+      {
+        signer_commitment: '0x11',
+        expires_at: '2026-10-06T18:00:00+00:00',
+        request_auth_version: 3,
+      },
+    ]) {
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => body });
+      await expect(
+        client.createSession({
+          scheme: 'falcon',
+          signature: '0x00',
+          grant: {
+            signerCommitment: '0x11',
+            sessionPublicKey: sessionPublicKey,
+            origin: '',
+            issuedAt: 0,
+            expiresAt: 1,
+            guardianCommitment: '0x22',
+            network: 'devnet',
+          },
+        })
+      ).rejects.toBeInstanceOf(UnsupportedAuthVersionError);
+    }
+  });
+
+  it('keeps the session and does not retry when Guardian refuses its request format', async () => {
+    client.setSession(session);
+    rejectWith('unsupported_auth_version', 400);
+
+    const error = await client.getState('0xabc').catch((err: unknown) => err);
+
+    expect(error).toBeInstanceOf(GuardianHttpError);
+    expect((error as GuardianHttpError).code).toBe('unsupported_auth_version');
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(client.getSession()).toBe(session);
+    expect(session.onEnded).not.toHaveBeenCalled();
+  });
+
   it('posts a session grant in the server shape', async () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ signer_commitment: '0x11', expires_at: '2026-10-06T18:00:00+00:00' }),
+      json: async () => ({
+        signer_commitment: '0x11',
+        expires_at: '2026-10-06T18:00:00+00:00',
+        request_auth_version: 2,
+      }),
     });
 
     const created = await client.createSession({
@@ -2427,7 +2601,11 @@ describe('GuardianHttpClient sessions', () => {
       },
     });
 
-    expect(created).toEqual({ signerCommitment: '0x11', expiresAt: '2026-10-06T18:00:00+00:00' });
+    expect(created).toEqual({
+      signerCommitment: '0x11',
+      expiresAt: '2026-10-06T18:00:00+00:00',
+      requestAuthVersion: 2,
+    });
     const [url, init] = mockFetch.mock.calls[0];
     expect(url).toBe('http://localhost:3000/session');
     expect(init.method).toBe('POST');

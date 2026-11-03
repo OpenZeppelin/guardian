@@ -133,6 +133,7 @@ impl StartupInfo {
                 submission_grace_period_seconds = config.submission_grace_period_seconds,
                 max_concurrent_accounts = config.max_concurrent_accounts,
                 max_pending_candidates_per_account = config.max_pending_candidates_per_account,
+                rebuild_admission = ?config.rebuild_admission,
                 retained_ttl_seconds = config.retained_ttl_seconds,
                 reconcile_interval_seconds = config.reconcile_interval_seconds,
                 "canonicalization"
@@ -223,6 +224,7 @@ mod tests {
                 reconcile_interval_seconds: 60,
                 reconcile_page_size: 100,
                 max_pending_candidates_per_account: 4,
+                rebuild_admission: crate::canonicalization::RebuildAdmission::LeaveOneForPushes,
             }),
             Some(ReleaseSweepConfig::default()),
             3,

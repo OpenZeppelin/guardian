@@ -76,6 +76,17 @@ including `configure`, `abandonCandidate`, account lookup and
 `revokeAllSessions`; the server rejects session credentials there with
 `wallet_signature_required`, as an older Guardian does for `pushDelta`.
 
+Session requests carry `x-auth-format: session-v2`. A `SessionRequestSigner`
+receives the route's `SessionOperation` as the first argument of
+`signRequest(operation, accountId, timestamp, payload)` and signs
+`sessionRequestEnvelope(SessionTransport.Http, operation, requestWord)` (62
+bytes, P-256 over SHA-256), where `requestWord` is the 32-byte
+`AuthRequestMessage` word a wallet would sign. `createSession` throws
+`UnsupportedAuthVersionError` when the Guardian does not report
+`requestAuthVersion: 2`, and requests in the old format are answered with
+`unsupported_auth_version`; neither ends the session or falls back to the
+wallet.
+
 A session is used only while the wallet that granted it
 (`session.signerCommitment`) is the client's signer. It is dropped 30 seconds
 before it expires (`expired`), or as soon as Guardian answers

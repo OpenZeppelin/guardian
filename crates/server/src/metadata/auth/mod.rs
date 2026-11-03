@@ -16,7 +16,7 @@ mod miden_falcon_rpo;
 
 pub use credentials::{
     AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP_SKEW_MS, MAX_TIMESTAMP_SKEW_SECS,
-    RequestAuthFormat,
+    RequestAuthFormat, SESSION_READ_SKEW_MS,
 };
 
 /// Session-signed requests are resolved by `services::resolve_account`, and
@@ -357,7 +357,10 @@ impl Auth {
     /// * `account_id` - The account ID
     /// * `credentials` - The credentials to verify (includes timestamp)
     pub fn verify(&self, account_id: &str, credentials: &Credentials) -> Result<String, String> {
-        if credentials.auth_format() == RequestAuthFormat::Session {
+        if matches!(
+            credentials.auth_format(),
+            RequestAuthFormat::Session | RequestAuthFormat::LegacySession
+        ) {
             return Err(SESSION_NOT_ACCEPTED.to_string());
         }
         match self {
@@ -415,7 +418,9 @@ impl Auth {
                         pubkey,
                         credentials.request_payload(),
                     ),
-                    RequestAuthFormat::Session => Err(SESSION_NOT_ACCEPTED.to_string()),
+                    RequestAuthFormat::Session | RequestAuthFormat::LegacySession => {
+                        Err(SESSION_NOT_ACCEPTED.to_string())
+                    }
                 }
             }
             Auth::Miden { cosigners, .. } => {
@@ -435,7 +440,9 @@ impl Auth {
                 let scheme = match credentials.auth_format() {
                     RequestAuthFormat::Raw => raw_request_signature_scheme(signature)?,
                     RequestAuthFormat::Eip712 => SignatureScheme::Ecdsa,
-                    RequestAuthFormat::Session => return Err(SESSION_NOT_ACCEPTED.to_string()),
+                    RequestAuthFormat::Session | RequestAuthFormat::LegacySession => {
+                        return Err(SESSION_NOT_ACCEPTED.to_string());
+                    }
                 };
                 let authorized = cosigners
                     .iter()
@@ -533,7 +540,7 @@ pub fn verify_session_grant(
         (SignatureScheme::Falcon, RequestAuthFormat::Eip712) => {
             Err("EIP-712 session grants require an ECDSA wallet".to_string())
         }
-        (_, RequestAuthFormat::Session) => {
+        (_, RequestAuthFormat::Session | RequestAuthFormat::LegacySession) => {
             Err("A session grant must be signed by the wallet key".to_string())
         }
     }

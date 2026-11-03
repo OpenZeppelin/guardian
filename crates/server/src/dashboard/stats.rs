@@ -43,10 +43,11 @@
 //!    aborts the walk and leaves the previous snapshot published.
 //! 3. Vaults are decoded on the blocking pool, once per commitment: an
 //!    account whose state commitment matches the previous snapshot
-//!    reuses its decoded vault (every state blob is still read and
-//!    decrypted each walk; only the `Account` deserialization is
-//!    skipped). Only successful decodes are reused, so a repaired blob
-//!    is picked up on the next walk.
+//!    reuses its decoded vault without its state being read: the walk
+//!    reads commitments first and fetches (and decrypts) full state only
+//!    for accounts whose commitment changed or that have nothing to
+//!    reuse. Only successful decodes are reused, so a repaired blob is
+//!    picked up on the next walk.
 //! 4. Inventory aggregates (`delta_status_counts`,
 //!    `in_flight_proposal_count`, `latest_activity`) are read through
 //!    the storage aggregate methods; each is marked degraded on failure
@@ -877,7 +878,8 @@ pub async fn build_payload(
 
     // Only successful decodes are carried over: a corrupt or missing
     // row is re-read every walk so a repair is picked up without any
-    // commitment change.
+    // commitment change. The first account of every chunk is always read,
+    // so a storage key that stops decrypting still shows up as failures.
     let reusable: HashMap<&str, (&str, &VaultSummary)> = previous
         .map(|p| {
             p.records
@@ -905,9 +907,50 @@ pub async fn build_payload(
         if cancel.is_cancelled() {
             return Err("dashboard stats walk cancelled: lease lost".to_string());
         }
-        let mut states = read_states_chunk(storage, chunk, &mut vault_outcomes).await?;
+        let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        let heads = match storage.pull_state_heads_batch(&refs).await {
+            Ok(heads) => Some(heads),
+            Err(error) => {
+                tracing::warn!(
+                    target: "dashboard.stats",
+                    %error,
+                    accounts = chunk.len(),
+                    "dashboard stats: batched state heads failed; reading every state in the chunk"
+                );
+                None
+            }
+        };
+        let sample = chunk.first().map(String::as_str);
+        let unchanged = |id: &str| -> Option<(&str, &VaultSummary)> {
+            if Some(id) == sample {
+                return None;
+            }
+            let (commitment, vault) = reusable.get(id)?;
+            let head = heads.as_ref()?.get(id)?;
+            (head.commitment == *commitment).then_some((*commitment, *vault))
+        };
+        let changed: Vec<String> = chunk
+            .iter()
+            .filter(|id| unchanged(id).is_none())
+            .cloned()
+            .collect();
+        let mut states = if changed.is_empty() {
+            HashMap::new()
+        } else {
+            read_states_chunk(storage, &changed, &mut vault_outcomes).await?
+        };
         let mut to_decode = Vec::new();
         for id in chunk {
+            if let Some((commitment, vault)) = unchanged(id) {
+                vault_outcomes.insert(
+                    id.clone(),
+                    VaultOutcome::Decoded {
+                        vault: vault.clone(),
+                    },
+                );
+                commitments.insert(id.clone(), commitment.to_string());
+                continue;
+            }
             let Some(state) = states.remove(id) else {
                 continue;
             };
@@ -1916,6 +1959,57 @@ mod tests {
         assert_eq!(payload.inventory.delta_status_counts, None);
         // Account and asset records are still complete above the threshold.
         assert_eq!(payload.records.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn build_payload_does_not_read_state_of_accounts_whose_commitment_is_unchanged() {
+        let state = create_test_app_state().await;
+        for id in ["acc-0", "acc-a"] {
+            state
+                .metadata
+                .set(metadata(
+                    id,
+                    falcon(&["0x1"]),
+                    NetworkConfig::miden_default(),
+                    "2026-09-10T00:00:00Z",
+                ))
+                .await
+                .unwrap();
+        }
+        let storage: Arc<dyn StorageBackend> = Arc::new(
+            MockStorageBackend::new().with_pull_state_head(crate::state_object::StateHead {
+                commitment: "0xunchanged".to_string(),
+                nonce: Some(1),
+            }),
+        );
+        let sentinel = decoded(&[("0xsentinel", 7)], &[]);
+        let mut prev_a = record(
+            "acc-a",
+            Some("2026-09-10T00:00:00Z"),
+            "miden_falcon",
+            1,
+            AccountLifecycle::Active,
+            sentinel.clone(),
+        );
+        prev_a.state_commitment = Some("0xunchanged".to_string());
+        let previous = snapshot(ts("2026-09-11T00:00:00Z"), vec![prev_a]);
+
+        let (_, payload) = build_payload(
+            &storage,
+            &state.metadata,
+            &state.clock,
+            Some(&previous),
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(by_id(&payload)["acc-a"].vault, sentinel);
+        assert!(
+            !matches!(by_id(&payload)["acc-0"].vault, VaultOutcome::Decoded { .. }),
+            "the first account of the chunk is read, and this mock has no state for it"
+        );
     }
 
     #[tokio::test]
