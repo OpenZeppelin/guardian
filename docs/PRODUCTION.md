@@ -388,7 +388,7 @@ Full configuration and a dev walkthrough are in
 > account data. EVM accounts are unaffected.** Stored 0.16 Miden states, deltas,
 > proposals, and metadata can no longer be deserialized or recomputed, and cannot
 > be migrated. For what changed on the Miden side and why none of it survives, see
-> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017).
+> [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017).
 > Guardian 0.18.x is the release that adopts Miden 0.17; Guardian 0.17.x runs on
 > Miden 0.16. Upgrade only once the network you serve runs a stable Miden 0.17 node (0.17.0 or later): which
 > public networks do, and the upstream items still open, are tracked in
@@ -420,7 +420,7 @@ plus:
   account's vault, including on the transaction that deploys the account, so an
   unfunded account cannot transact. Fund each account before its first
   proposal (on devnet, through the node's `RegisterAccount` RPC; see
-  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017)).
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 - **Review the defaults that are new in 0.18.x**: `GUARDIAN_ENV=prod` now
   applies the production runtime defaults inside the server, the release sweep
   runs by default, and `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` is available. The
@@ -432,12 +432,12 @@ plus:
   apply the release's Terraform, which adds the alarm notification, release
   sweep, and account-scheme variables, before rolling the image.
 
-## Upgrading within 0.18.x
+## Upgrading within the Miden 0.17 line
 
-Patch releases on the Miden 0.17 line keep stored data, the `auth_tx` procedure
+Releases after 0.18.0 on the Miden 0.17 line (0.18.x patches and 0.19.x) keep stored data, the `auth_tx` procedure
 root, and existing accounts; no reset runs. Each one still has operator-visible
 changes. The SDK and Miden-side ones are in
-[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-on-miden-017),
+[`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017),
 and each release's notes on GitHub carry the full list, including server
 behavior:
 
@@ -470,7 +470,7 @@ behavior:
   restarting a container from an older image keeps the old trust store. No
   data reset, and no SDK upgrade is needed
   ([release notes](https://github.com/OpenZeppelin/guardian/releases/tag/v0.18.3)).
-- **The release after 0.18.3** gates multisig pushes on stored approvals,
+- **0.19.0** gates multisig pushes on stored approvals,
   lets sessions sign delta pushes, registers only guarded multisig accounts,
   and adds the retryable `409 state_not_on_chain` for reconfigurations that
   must use the chain's state (a first registration of an account that already
@@ -481,7 +481,30 @@ behavior:
   registers again. Release the SDKs first: multisig pushes need them, and on an
   older server the new SDKs sign a refused session push again with the wallet;
   see
-  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-after-0183).
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#session-signed-delta-pushes-0190).
+  One exception to SDKs-first: a new SDK's `abandon_candidate` /
+  `abandonCandidate` sends `proposal_id`, which a server up to 0.18.3 refuses
+  as unauthenticated, so abandons fail until the server is upgraded. The
+  release also brings:
+  - **Guardian execution, enabled in two deploys.** An older replica still
+    running during a rolling update can leave an executing account reserved
+    with nothing able to release it. Roll out 0.19.0 with
+    `GUARDIAN_TX_PROVER_URL` unset, then set it in a second deploy once no
+    older replica runs. To roll back, set `GUARDIAN_PROVING_ENABLED=false`
+    first, wait until `guardian_execution_oldest_reservation_age_seconds` reads
+    `0` (no active execution), and only then deploy the older image (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#upgrading-and-rolling-back)).
+    On AWS, the `Deploy AWS` workflow (`aws-deploy.yml`) only swaps the image:
+    turning execution on, and creating its alarms, needs a Terraform apply of
+    this release's `infra/` with `guardian_tx_prover_url` (or
+    `guardian_tx_prover_url_secret_arn`) set.
+  - **Mixed-scheme accounts (Falcon and ECDSA cosigners), with no rollback
+    once one is stored.** Servers up to 0.18.3 cannot read the stored `Miden`
+    auth, so finish the server rollout before clients register mixed
+    accounts, and do not roll back to 0.18.x afterwards: older replicas fail
+    every request for such an account, and a filesystem metadata store fails
+    to load as a whole (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
 
 ## Upgrading to Miden 0.16
 

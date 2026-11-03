@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.19.0-rc.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
@@ -32,6 +33,12 @@ elsewhere and link here:
 | 0.12.x | 0.12 | n/a | `0.12.5` | `^0.12.5` |
 
 0.18.2 and 0.18.3 keep the 0.18.1 pins.
+
+0.19.0-rc.1 keeps the 0.18.1 pins as well; it is the first release candidate of 0.19.0
+and stays on Miden 0.17, so accounts and stores carry over. It changes server and SDK
+contracts (see the 0.19.0 upgrade notes below). The release candidates are published
+to npm under the `rc` dist-tag, so `npm install` without an explicit version still
+resolves the 0.18.x line.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the
@@ -125,7 +132,7 @@ Execute or cancel every pending proposal on the rc version, have GUARDIAN drop a
 cannot be executed, then recreate the account on 0.17.0. Recreating the account does not
 clear proposals served for the old one.
 
-**Moving past 0.18.3: accounts that mix Falcon and ECDSA cosigners (issue #563).**
+**Upgrading from 0.18.3 to 0.19.0: accounts that mix Falcon and ECDSA cosigners (issue #563).**
 GUARDIAN can now register and operate a guarded multisig whose approvers use
 different schemes, for example an ECDSA wallet or hardware signer next to a
 locally held Falcon key. Existing stored data needs no migration, and
@@ -321,7 +328,7 @@ empty storage and metadata directories, preserving the keystore directory.
 A deployment upgrading across more than one line runs every pending reset in the
 same startup; the newer reset subsumes the older ones.
 
-## Guardian 0.18.x on Miden 0.17
+## Guardian 0.18.x and 0.19.x on Miden 0.17
 
 Nothing stored under Miden 0.16 survives:
 
@@ -362,7 +369,7 @@ Nothing stored under Miden 0.16 survives:
 
 ### Guardian execution
 
-Guardian releases after 0.18.3 add server-side execution of Guardian-executable proposals on this line. A
+Guardian 0.19.0 adds server-side execution of Guardian-executable proposals on this line. A
 stored request declaring a protocol line other than `0.17` is refused before it is decoded.
 Within the line, `TransactionRequest` serialization carries no version tag and the 0.17
 release candidates changed it, so the SDK that created a proposal and the server should run the
@@ -541,9 +548,9 @@ breaking SDK change and needs no server change.
   `AuthArgErrorCode` values `bound_block_mismatch` and
   `transaction_summary_layout_unsupported`.
 
-### Multisig pushes need stored approvals (after 0.18.3)
+### Multisig pushes need stored approvals (0.19.0)
 
-The release after 0.18.3 makes the server refuse to acknowledge a multisig
+0.19.0 makes the server refuse to acknowledge a multisig
 delta unless the proposal it stores for that delta carries verified cosigner
 approvals, at least as many as the lowest threshold the account permits (its
 default threshold, or a lower override on one of its non-auth procedures; an
@@ -589,9 +596,9 @@ fails with `insufficient_signatures` (400). It is a breaking change for released
   P2ID proposal asks for. Earlier SDKs asked for the `send_asset` override
   alone, and the chain refused such a transfer.
 
-### Session-signed delta pushes (after 0.18.3)
+### Session-signed delta pushes (0.19.0)
 
-The release after 0.18.3 lets a Guardian session sign delta pushes
+0.19.0 lets a Guardian session sign delta pushes
 (`POST /delta`, `PushDelta`), which a 0.18.1, 0.18.2 or 0.18.3 server keeps
 wallet-only. The new SDKs sign a push with the session whenever one is active.
 
@@ -604,7 +611,7 @@ wallet-only. The new SDKs sign a push with the session whenever one is active.
 - **A push onto an account without the multisig auth stays wallet-only**
   (`wallet_signature_required`); see the previous section.
 
-### Registration and reconfiguration (after 0.18.3)
+### Registration and reconfiguration (0.19.0)
 
 - **`/configure` registers only guarded multisig accounts.** A state without
   the multisig threshold slot is refused with `invalid_input`.
