@@ -212,8 +212,9 @@ process(block):
 `worker.rs` `hold_lease` turn order: due re-check → due observation →
 rotation turn (when its turn is due), alternating so no source starves,
 never closer than `min_spacing`. Observations are taken with
-`block_watch.next_due_observation(now)` (oldest `block_num` first among
-`next_attempt_at <= now`).
+`block_watch.next_due_observation(now)` (the one due longest first, then
+the lowest `block_num`, among `next_attempt_at <= now`; PR #586 review:
+block order let observations that keep coming back hold newer ones back).
 
 `ReleaseSweeper::visit_observed(account_id, on_chain, block_num) ->
 VisitOutcome`:
@@ -483,3 +484,33 @@ Where the code differs from the design above, and why:
   waiting observation older than `LONG_WAIT_BLOCKS` (28,800) is
   reported and visited hourly; an observation whose drop cannot record
   its walk is kept (`block_watch_observation_kept`).
+- **PR #586 review, round 3.** (1) The partial-walk write-off is gone:
+  a requested walk that could not check every account stays owed, and
+  only the accounts it could not check are visited again (`Retry` in
+  the worker), after `recheck_seconds` doubling to 1 h, between the
+  rotation's own visits (with the rotation on, walks run back to back),
+  until each is checked; `release_sweep_walk_unchecked` warns once,
+  after five rounds. More than `MAX_RETRIED_ACCOUNTS` (10,000)
+  unchecked, or no known request sequence, walks the fleet again whole.
+  A walk that completes covers the retry's request too (it started
+  after it). (2) Polling reads at most `poll_max_rate_per_second`
+  (`GUARDIAN_BLOCK_WATCH_POLL_MAX_RATE_PER_SECOND`, default 10) blocks
+  per second while behind. (3) A block the node does not serve (a
+  poll's missing block at or below the tip, or the stream's `INTERNAL`)
+  is skipped only once it has stayed unserved for
+  `GONE_BLOCK_CONFIRM_FOR` (30 s), asked again (tip, then block) at
+  each reopen: a balancer that alternates replicas per request gives an
+  immediate re-ask the same answer. (4) A delivered block ends a node-behind
+  episode (`block_watch_node_caught_up`). (5)
+  `guardian_block_watch_walk_requests_total{reason}` and the
+  `<stack>-block-watch-walk-requests` alarm (> 10 an hour); no spacing
+  between requests (a request delayed is coverage delayed; the alarm
+  surfaces a lasting cause instead). (6) Own-history and candidate
+  post-states are matched pair by pair (`unnest` join) on a new
+  `idx_deltas_account_new_commitment` index. (7) Due observations are
+  served oldest due first off `block_watch_observations_due_idx`
+  `(next_attempt_at, block_num, account_id COLLATE "C")`, bytewise like
+  the in-memory store. (8) `auto` keeps the stream's failure count
+  across the polling cooldown. (9) The long wait is logged once per
+  observation and holder; `guardian_block_watch_observations_long_waiting`
+  counts them. Both indexes are in the unshipped block watch migration.

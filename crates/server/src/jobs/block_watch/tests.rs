@@ -835,6 +835,46 @@ async fn repeated_stream_failures_back_off_and_then_fall_back_to_polling() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_stream_still_broken_after_the_cooldown_hands_back_to_polling_at_once() {
+    // Five failures send the feed polling; when the cooldown (300 s) ends
+    // the stream is tried once, fails, and polling resumes right away
+    // rather than after four more backoffs with no blocks (PR #586
+    // review).
+    let failures: Vec<Open> = (0..10)
+        .map(|_| Open::Refuse(status(tonic::Code::Unavailable)))
+        .collect();
+    let factory = ScriptedBlockSourceFactory::new().with_streams(failures);
+    factory.chain.push_empty(1, 2);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.set_cursor(0).await;
+    let (cancel, task) = rig.spawn();
+    rig.wait_for_cursor(2).await;
+    tokio::time::sleep(Duration::from_secs(400)).await;
+    cancel.cancel();
+    task.await.unwrap();
+    let opens = rig.factory.opens();
+    let mut expected = vec![(Transport::Stream, 1); 5];
+    expected.extend([
+        (Transport::Poll, 1),
+        (Transport::Stream, 3),
+        (Transport::Poll, 3),
+    ]);
+    assert_eq!(opens, expected);
+    let times = rig.factory.open_times();
+    assert!(times[6] - times[5] >= Duration::from_secs(300));
+    assert!(
+        times[7] - times[6] < Duration::from_millis(10),
+        "back to polling at the first failure: {:?}",
+        times[7] - times[6]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_block_out_of_sequence_reopens_from_the_cursor_without_skipping() {
     let factory = ScriptedBlockSourceFactory::new().with_streams(vec![Open::then_fail(
         1,
@@ -896,11 +936,37 @@ async fn a_block_the_node_no_longer_serves_jumps_to_the_tip_and_asks_for_a_rotat
     cancel.cancel();
     task.await.unwrap();
     assert!(rig.signals.take_rotation_request());
-    assert_eq!(
-        rig.factory.opens(),
-        vec![(Transport::Stream, 3), (Transport::Stream, 12)]
-    );
+    assert_skipped_after_confirming(&rig.factory, 3, 12);
     assert_eq!(rig.store.cursor_writes(), vec![12]);
+}
+
+/// The feed asked for `missing` again and again for at least
+/// `GONE_BLOCK_CONFIRM_FOR` before it skipped to `resumed`.
+fn assert_skipped_after_confirming(
+    factory: &ScriptedBlockSourceFactory,
+    missing: u32,
+    resumed: u32,
+) {
+    let opens = factory.opens();
+    let times = factory.open_times();
+    let (_, last) = *opens.last().expect("opened");
+    assert_eq!(opens[0].1, missing, "{opens:?}");
+    assert_eq!(last, resumed, "{opens:?}");
+    assert!(
+        opens[..opens.len() - 1]
+            .iter()
+            .all(|(_, from)| *from == missing),
+        "{opens:?}"
+    );
+    assert!(
+        opens.len() > 2,
+        "asked more than once before skipping: {opens:?}"
+    );
+    assert!(
+        times[times.len() - 1] - times[0] >= super::consumer::GONE_BLOCK_CONFIRM_FOR,
+        "skipped after {:?}",
+        times[times.len() - 1] - times[0]
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -1441,6 +1507,95 @@ async fn a_pruned_block_is_skipped_on_the_stream_alone_too() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_block_one_poll_did_not_find_is_asked_for_again_not_skipped() {
+    // A poll found no block 2 although the tip it read was past it: behind
+    // a load balancer, a replica lagging the one that reported the tip.
+    // The node still serves block 2 when asked again, so nothing is
+    // skipped and no walk is asked for (PR #586 review).
+    let factory = ScriptedBlockSourceFactory::new().with_polls(vec![Open::then_fail(
+        1,
+        BlockSourceError::Unavailable { block_num: 2 },
+    )]);
+    factory.chain.push_empty(1, 5);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config().with_transport(TransportMode::Poll),
+    );
+    rig.set_cursor(0).await;
+    let (cancel, task) = rig.spawn();
+    rig.wait_for_cursor(5).await;
+    cancel.cancel();
+    task.await.unwrap();
+    assert_eq!(rig.store.cursor_writes(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(
+        rig.factory.opens(),
+        vec![(Transport::Poll, 1), (Transport::Poll, 2)],
+        "the poll is reopened at the block it missed"
+    );
+    assert!(!rig.signals.take_rotation_request(), "nothing was skipped");
+    assert!(rig.store.resets.lock().unwrap().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pruned_block_is_skipped_on_polling_once_it_stays_unserved() {
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 12);
+    factory.chain.prune_below(10);
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config().with_transport(TransportMode::Poll),
+    );
+    rig.set_cursor(2).await;
+    let (cancel, task) = rig.spawn();
+    rig.wait_for_cursor(12).await;
+    cancel.cancel();
+    task.await.unwrap();
+    assert!(rig.signals.take_rotation_request());
+    assert_skipped_after_confirming(&rig.factory, 3, 12);
+    assert!(
+        rig.factory
+            .opens()
+            .iter()
+            .all(|(transport, _)| *transport == Transport::Poll)
+    );
+    assert_eq!(rig.store.cursor_writes(), vec![12]);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_replica_lagging_behind_a_balancer_never_makes_the_feed_skip() {
+    // Every tip read reaches a replica at block 10, every block read one
+    // still at 4, for 20 s: the poll and the confirming read both find no
+    // block 5 below the tip, on every ask. That is not taken for a block
+    // the node no longer keeps; once the replica catches up the feed
+    // resumes at 5 with nothing skipped and no walk (PR #586 review).
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 10);
+    factory.chain.lag_from(Some(5));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config().with_transport(TransportMode::Poll),
+    );
+    rig.set_cursor(0).await;
+    let (cancel, task) = rig.spawn();
+    rig.wait_for_cursor(4).await;
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    assert_eq!(rig.cursor().await, Some(4));
+    assert!(rig.factory.opens().len() > 2, "asked again meanwhile");
+    rig.factory.chain.lag_from(None);
+    rig.wait_for_cursor(10).await;
+    cancel.cancel();
+    task.await.unwrap();
+    assert_eq!(rig.store.cursor_writes(), (1..=10).collect::<Vec<_>>());
+    assert!(!rig.signals.take_rotation_request(), "nothing was skipped");
+}
+
+#[tokio::test(start_paused = true)]
 async fn an_open_that_never_returns_still_stops_with_the_lease() {
     // A node that takes the subscription and never answers it holds the
     // open; the lease's cancel must still stop the consumer, or the
@@ -1869,4 +2024,53 @@ async fn a_node_behind_on_the_same_chain_is_waited_for_an_hour_at_most() {
     assert_eq!(consumer.start_position_for_test().await, Ok(100));
     assert_eq!(rig.store.resets.lock().unwrap().clone(), vec![99]);
     assert!(rig.signals.take_rotation_request());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_node_that_caught_up_starts_the_next_wait_afresh() {
+    // The node falls far behind the cursor on the same chain, catches up,
+    // and hours later falls behind again. The second wait has its own
+    // hour: it is not counted from the first episode, which would reset
+    // the cursor and ask for a walk at once (PR #586 review).
+    let factory = ScriptedBlockSourceFactory::new();
+    factory.chain.push_empty(1, 100);
+    factory.set_genesis(Some("0xsame"));
+    let rig = Rig::new(
+        MockMetadataStore::new(),
+        MockStorageBackend::new(),
+        factory,
+        config(),
+    );
+    rig.store
+        .inner
+        .set_cursor(NETWORK, 500, Some("0xsame"), &fence())
+        .await
+        .unwrap();
+    let (cancel, task) = rig.spawn();
+
+    // First episode: refused from the cursor (OUT_OF_RANGE) for ten
+    // minutes, then the node catches up and the feed resumes.
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert_eq!(rig.cursor().await, Some(500));
+    rig.factory.chain.push_empty(101, 505);
+    rig.wait_for_cursor(505).await;
+
+    // Hours of an idle chain later, the node is far behind again.
+    tokio::time::sleep(Duration::from_secs(2 * 3_600)).await;
+    rig.factory.reset_chain(100, Some("0xsame"));
+    tokio::time::sleep(Duration::from_secs(600)).await;
+    assert!(
+        rig.store.resets.lock().unwrap().is_empty(),
+        "the second wait started its own clock"
+    );
+    assert_eq!(rig.cursor().await, Some(505));
+    assert!(!rig.signals.take_rotation_request());
+
+    // It too is bounded: an hour into it, the cursor is taken for another
+    // chain's.
+    tokio::time::sleep(super::consumer::NODE_BEHIND_LIMIT).await;
+    assert_eq!(rig.store.resets.lock().unwrap().clone(), vec![99]);
+    assert!(rig.signals.take_rotation_request());
+    cancel.cancel();
+    task.await.unwrap();
 }

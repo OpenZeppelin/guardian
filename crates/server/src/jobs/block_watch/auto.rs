@@ -10,9 +10,12 @@
 //! minutes after a lag disconnect), sends it to polling for the ban
 //! cooldown. Anything else reopens the stream after an exponential backoff
 //! (1 s doubling to 60 s), and five such failures in a row without a block
-//! in between send it to polling for the stream retry cooldown. A failed
-//! poll is retried with the same backoff. `stream` and `poll` modes never
-//! switch.
+//! in between send it to polling for the stream retry cooldown. The count
+//! outlives the cooldown (only a block from the stream resets it), so a
+//! stream that still fails when it is tried again goes back to polling at
+//! its first failure instead of after another round of backoffs with no
+//! blocks. A failed poll is retried with the same backoff. `stream` and
+//! `poll` modes never switch.
 
 use std::time::Duration;
 
@@ -173,8 +176,9 @@ impl TransportPolicy {
         }
     }
 
+    /// Poll until `at`. The stream's failure count is kept: the cooldown
+    /// delivered no block over it.
     fn poll_until(&mut self, at: Instant) -> Decision {
-        self.stream_failures = 0;
         self.stream_retry_at = Some(at);
         Decision {
             transport: Transport::Poll,
@@ -305,6 +309,43 @@ mod tests {
         assert_eq!(
             policy.stream_retry_at(),
             Some(now + Duration::from_secs(300))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_stream_still_failing_after_the_cooldown_goes_back_to_polling_at_once() {
+        // The five failures that sent the feed polling are not forgotten by
+        // the cooldown: the stream's first failure when it is tried again
+        // returns to polling, without four more backoffs (about 15 s) with
+        // no blocks on every cycle (PR #586 review).
+        let mut policy = policy(TransportMode::Auto);
+        let now = Instant::now();
+        for _ in 0..5 {
+            policy.on_failure(Transport::Stream, FailureKind::Other, now);
+        }
+        let retry = now + Duration::from_secs(300);
+        assert_eq!(policy.transport(retry), Transport::Stream);
+        assert_eq!(
+            policy.on_failure(Transport::Stream, FailureKind::Other, retry),
+            Decision {
+                transport: Transport::Poll,
+                wait: Duration::ZERO
+            }
+        );
+        assert_eq!(
+            policy.stream_retry_at(),
+            Some(retry + Duration::from_secs(300))
+        );
+
+        // A stream that delivers a block after the cooldown starts over.
+        let later = retry + Duration::from_secs(300);
+        policy.on_block(Transport::Stream);
+        assert_eq!(
+            policy.on_failure(Transport::Stream, FailureKind::Other, later),
+            Decision {
+                transport: Transport::Stream,
+                wait: Duration::from_secs(1)
+            }
         );
     }
 

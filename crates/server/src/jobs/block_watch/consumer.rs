@@ -110,6 +110,43 @@ impl MalformedStreak {
     }
 }
 
+/// How long a block the node does not serve has to stay unserved before
+/// it is skipped, one walk covering it. Each reopen asks again, the
+/// failure backoff spacing the asks out. One answer is no proof: behind a
+/// load balancer the tip and the block can come from two replicas, one
+/// lagging the other, and a balancer that alternates per request gives the
+/// same pair on every ask. A lagging replica catches up within seconds; a
+/// node that no longer keeps a block never serves it again.
+pub const GONE_BLOCK_CONFIRM_FOR: Duration = Duration::from_secs(30);
+
+/// The next block, while the node says it no longer serves it: since when.
+#[derive(Debug, Default)]
+struct GoneBlock {
+    since: Option<(u32, Instant)>,
+}
+
+impl GoneBlock {
+    /// The node, asked again, does not serve `block`: whether it has not
+    /// for [`GONE_BLOCK_CONFIRM_FOR`].
+    fn confirmed(&mut self, block: u32, now: Instant) -> bool {
+        match self.since {
+            Some((seen, since)) if seen == block => {
+                now.saturating_duration_since(since) >= GONE_BLOCK_CONFIRM_FOR
+            }
+            _ => {
+                tracing::info!(
+                    event = "block_watch_block_not_served",
+                    block_num = block,
+                    confirm_seconds = GONE_BLOCK_CONFIRM_FOR.as_secs(),
+                    "The node does not serve the next block; asking again before skipping it"
+                );
+                self.since = Some((block, now));
+                false
+            }
+        }
+    }
+}
+
 /// How long a node far behind the cursor on the same chain is waited for
 /// before the cursor is taken for another chain's (see `start_position`).
 pub const NODE_BEHIND_LIMIT: Duration = Duration::from_secs(3_600);
@@ -172,7 +209,9 @@ impl Consumer {
 
     /// How long the node has been far behind the cursor on the same
     /// chain (`behind`), counted from the first start that saw it; zero,
-    /// and forgotten, once it is not.
+    /// and forgotten, once it is not. A delivered block also ends the
+    /// episode (see [`Self::caught_up`]): a node that catches up is
+    /// usually attached to again without another start.
     fn behind_for(&self, behind: bool) -> Duration {
         let mut since = self
             .behind_since
@@ -183,6 +222,21 @@ impl Consumer {
             return Duration::ZERO;
         }
         since.get_or_insert_with(Instant::now).elapsed()
+    }
+
+    /// A block was delivered: the node serves past the cursor, so a wait
+    /// for it to catch up is over, and the next one starts its own clock.
+    fn caught_up(&self) {
+        let mut since = self
+            .behind_since
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if since.take().is_some() {
+            tracing::info!(
+                event = "block_watch_node_caught_up",
+                "The node caught up with the cursor"
+            );
+        }
     }
 
     fn factory(&self) -> &Arc<dyn BlockSourceFactory> {
@@ -217,6 +271,7 @@ impl Consumer {
         let mut previous_transport: Option<Transport> = None;
         let mut first_open = true;
         let mut malformed = MalformedStreak::default();
+        let mut gone = GoneBlock::default();
         // Consecutive refusals to stream from the cursor (OUT_OF_RANGE).
         let mut refused_from_cursor = 0;
 
@@ -250,10 +305,6 @@ impl Consumer {
                         previous_transport = Some(transport);
                         source = Some(opened);
                     }
-                    Err(BlockSourceError::Unavailable { block_num }) => {
-                        next = self.jump_past_unavailable(block_num, cancel).await;
-                        continue;
-                    }
                     // The cursor is too far past the node's tip.
                     Err(error) if error.code() == Some(tonic::Code::OutOfRange) => {
                         metrics::counter!(
@@ -280,7 +331,9 @@ impl Consumer {
                         continue;
                     }
                     Err(error) => {
-                        if self.next_block_is_gone(&error, next).await {
+                        if self.next_block_is_gone(&error, next).await
+                            && gone.confirmed(next, Instant::now())
+                        {
                             next = self.jump_past_unavailable(next, cancel).await;
                             continue;
                         }
@@ -323,14 +376,11 @@ impl Consumer {
             match received {
                 Ok(Ok(block)) => {
                     policy.on_block(transport);
+                    self.caught_up();
                     match self.process_until_done(&block, transport, cancel).await {
                         Ok(()) => next = block.block_num.saturating_add(1),
                         Err(stopped) => return stopped,
                     }
-                }
-                Ok(Err(BlockSourceError::Unavailable { block_num })) => {
-                    source = None;
-                    next = self.jump_past_unavailable(block_num, cancel).await;
                 }
                 Ok(Err(error)) => {
                     source = None;
@@ -341,7 +391,9 @@ impl Consumer {
                         open_at = Instant::now();
                         continue;
                     }
-                    if self.next_block_is_gone(&error, next).await {
+                    if self.next_block_is_gone(&error, next).await
+                        && gone.confirmed(next, Instant::now())
+                    {
                         next = self.jump_past_unavailable(next, cancel).await;
                         continue;
                     }
@@ -496,7 +548,7 @@ impl Consumer {
             );
             // The walk first: once the cursor moved to the new tip, a retry
             // of this start would no longer see the reset.
-            self.request_walk().await.map_err(|e| e.to_string())?;
+            self.request_walk(reason).await.map_err(|e| e.to_string())?;
             match self
                 .handle
                 .store
@@ -527,7 +579,9 @@ impl Consumer {
                     "Block watch has no cursor yet: starting at the chain tip and \
                      requesting one release sweep rotation"
                 );
-                self.request_walk().await.map_err(|e| e.to_string())?;
+                self.request_walk("cursor_init")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 tip
             }
             Some(cursor) if tip.saturating_sub(cursor) > config.max_catchup_blocks => {
@@ -540,7 +594,9 @@ impl Consumer {
                     "Block watch is too far behind to replay: starting at the chain tip and \
                      requesting one release sweep rotation to cover the skipped blocks"
                 );
-                self.request_walk().await.map_err(|e| e.to_string())?;
+                self.request_walk("cursor_jump")
+                    .await
+                    .map_err(|e| e.to_string())?;
                 tip
             }
             Some(cursor) => {
@@ -551,7 +607,7 @@ impl Consumer {
                         "Observations do not survive a restart on this backend; requesting \
                          one release sweep rotation"
                     );
-                    if let Err(error) = self.request_walk().await {
+                    if let Err(error) = self.request_walk("observations_lost").await {
                         self.request_rotation_on_start.store(true, Ordering::SeqCst);
                         return Err(error.to_string());
                     }
@@ -563,12 +619,13 @@ impl Consumer {
     }
 
     /// Ask the release sweep for one walk of the fleet covering blocks
-    /// this consumer skipped. Recorded in the store first (fenced), so the
-    /// walk is still owed if the lease moves, or the process restarts,
-    /// before it completes; then the signal starts it here at once. A
-    /// caller that could not record it does not move past what the walk
-    /// covers: it retries.
-    async fn request_walk(&self) -> Result<(), WalkRequestError> {
+    /// this consumer skipped, for `reason` (the `reason` label of
+    /// `guardian_block_watch_walk_requests_total`). Recorded in the store
+    /// first (fenced), so the walk is still owed if the lease moves, or the
+    /// process restarts, before it completes; then the signal starts it
+    /// here at once. A caller that could not record it does not move past
+    /// what the walk covers: it retries.
+    async fn request_walk(&self, reason: &'static str) -> Result<(), WalkRequestError> {
         match self
             .handle
             .store
@@ -576,6 +633,7 @@ impl Consumer {
             .await
         {
             Ok(FencedWrite::Written) => {
+                count_walk_request(reason);
                 self.signals.request_rotation();
                 Ok(())
             }
@@ -594,10 +652,14 @@ impl Consumer {
     /// [`Self::request_walk`], retried until recorded. `false` when
     /// cancelled first. A lost lease counts as done: the next cursor write
     /// stops this consumer, and the successor resumes before the skip.
-    async fn request_walk_until_recorded(&self, cancel: &CancellationToken) -> bool {
+    async fn request_walk_until_recorded(
+        &self,
+        reason: &'static str,
+        cancel: &CancellationToken,
+    ) -> bool {
         let mut failures = 0;
         loop {
-            match self.request_walk().await {
+            match self.request_walk(reason).await {
                 Ok(()) | Err(WalkRequestError::LostLease) => return true,
                 Err(WalkRequestError::Store(_)) => {
                     failures += 1;
@@ -630,7 +692,10 @@ impl Consumer {
             names::LABEL_REASON => "skipped_malformed_block"
         )
         .increment(1);
-        if !self.request_walk_until_recorded(cancel).await {
+        if !self
+            .request_walk_until_recorded("skipped_malformed_block", cancel)
+            .await
+        {
             return block_num;
         }
         block_num.saturating_add(1)
@@ -655,10 +720,13 @@ impl Consumer {
                     );
                     metrics::counter!(
                         names::BLOCK_WATCH_RECONNECTS_TOTAL,
-                        names::LABEL_REASON => "unavailable_block"
+                        names::LABEL_REASON => "skipped_unavailable_block"
                     )
                     .increment(1);
-                    if !self.request_walk_until_recorded(cancel).await {
+                    if !self
+                        .request_walk_until_recorded("skipped_unavailable_block", cancel)
+                        .await
+                    {
                         return block_num;
                     }
                     return from;
@@ -749,11 +817,18 @@ impl Consumer {
         }
     }
 
-    /// A stream that fails with `INTERNAL` may be a node that cannot load
-    /// the next block (it no longer has it): asked directly, a block at or
-    /// below the tip the node does not serve cannot be replayed.
+    /// Whether the node does not serve block `next`, after `error` hinted
+    /// so: a stream that fails with `INTERNAL` may be a node that cannot
+    /// load it, a poll that found no block at or below the tip it read one
+    /// that no longer keeps it. The node is asked directly, the tip and
+    /// then the block: one at or below the tip it does not serve cannot be
+    /// replayed, once that has lasted (see [`GONE_BLOCK_CONFIRM_FOR`]).
     async fn next_block_is_gone(&self, error: &BlockSourceError, next: u32) -> bool {
-        if error.code() != Some(tonic::Code::Internal) {
+        let suspect = match error {
+            BlockSourceError::Unavailable { block_num } => *block_num == next,
+            other => other.code() == Some(tonic::Code::Internal),
+        };
+        if !suspect {
             return false;
         }
         let Ok(tip) = self.factory().chain_tip().await else {
@@ -1049,12 +1124,14 @@ impl Consumer {
                 "A block carries account updates this server cannot read; requesting \
                  one release sweep rotation to cover them"
             );
-            self.request_walk().await.map_err(|error| match error {
-                WalkRequestError::LostLease => ProcessError::LostLease,
-                WalkRequestError::Store(error) => {
-                    ProcessError::Store(format!("walk request: {error}"))
-                }
-            })?;
+            self.request_walk("undecodable_updates")
+                .await
+                .map_err(|error| match error {
+                    WalkRequestError::LostLease => ProcessError::LostLease,
+                    WalkRequestError::Store(error) => {
+                        ProcessError::Store(format!("walk request: {error}"))
+                    }
+                })?;
         }
 
         if !observations.is_empty() {
@@ -1145,6 +1222,15 @@ fn policy_retry_in(
         (Transport::Poll, _) => Some(config.stream_retry_seconds),
         (Transport::Stream, _) => None,
     }
+}
+
+/// One walk request recorded, for `reason`.
+pub(crate) fn count_walk_request(reason: &'static str) {
+    metrics::counter!(
+        names::BLOCK_WATCH_WALK_REQUESTS_TOTAL,
+        names::LABEL_REASON => reason
+    )
+    .increment(1);
 }
 
 fn set_transport_gauge(active: Option<Transport>) {

@@ -165,6 +165,7 @@ impl StartupInfo {
             Some(config) => tracing::info!(
                 transport = config.transport.as_str(),
                 poll_seconds = config.poll_seconds,
+                poll_max_rate_per_second = config.poll_max_rate_per_second,
                 stall_seconds = config.stall_seconds,
                 max_catchup_blocks = config.max_catchup_blocks,
                 ban_cooldown_seconds = config.ban_cooldown_seconds,

@@ -32,8 +32,11 @@ CREATE TABLE block_watch_observations (
     PRIMARY KEY (account_id, block_num)
 );
 
+-- The visitor's order: the observation due longest first, so ones that
+-- keep coming back (waiting on a candidate or a confirmation) never hold a
+-- newer one back; account ids bytewise, as the in-memory store orders them.
 CREATE INDEX block_watch_observations_due_idx
-    ON block_watch_observations (next_attempt_at, block_num);
+    ON block_watch_observations (next_attempt_at, block_num, account_id COLLATE "C");
 
 -- Walks of the release sweep rotation that block watch owes the fleet: it
 -- skipped blocks (a first start, a gap too large to replay, a block the
@@ -52,3 +55,10 @@ CREATE TABLE block_watch_walks (
     holder_id     TEXT        NOT NULL,
     fence_token   BIGINT      NOT NULL
 );
+
+-- Block watch matches a moved account's new commitment against the
+-- account's own deltas (its history, its candidates) pair by pair; without
+-- this, each match reads the account's whole delta history, which grows
+-- with every transaction and is read for every moved account of a replay.
+CREATE INDEX idx_deltas_account_new_commitment
+    ON deltas (account_id, new_commitment);

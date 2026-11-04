@@ -797,8 +797,9 @@ proof.
 - **Transports.** `BlockSubscription` (the node's server stream: it
   replays committed blocks from `block_from`, then streams each new one)
   over a channel of its own with no request deadline and HTTP/2
-  keep-alive; or `GetBlockByNumber` for each block up to the tip, read
-  every `poll_seconds` once caught up. In `auto` mode a stream the node
+  keep-alive; or `GetBlockByNumber` for each block up to the tip, at most
+  `poll_max_rate_per_second` while behind (a replay is spread out), the
+  tip read every `poll_seconds` once caught up. In `auto` mode a stream the node
   does not serve to this caller (`UNIMPLEMENTED`, `PERMISSION_DENIED`,
   `UNAUTHENTICATED`) switches to polling for `stream_retry_seconds`; a
   stream closed for lag or refused for lack of a slot
@@ -806,7 +807,9 @@ proof.
   switches to polling for `ban_cooldown_seconds`; any other failure
   reopens the stream after an exponential, jittered backoff (1 s
   doubling to 60 s), and five such failures in a row without a block
-  switch to polling for `stream_retry_seconds`. `stream` and `poll`
+  switch to polling for `stream_retry_seconds`; the count outlives the
+  cooldown, so a stream still failing when retried goes back to polling
+  at its first failure. `stream` and `poll`
   modes never switch. The node must answer a subscription within
   `GUARDIAN_MIDEN_RPC_TIMEOUT_MS` or the open counts as a failure, and
   losing the lease stops an open still waiting. A task of its own drains
@@ -868,10 +871,18 @@ proof.
   (a chain rebuilt from the same genesis looks the same), instead of
   rewinding the cursor to a lagging node's tip. A stream that fails with
   `INTERNAL` is asked about the next block directly: one at or below the
-  tip the node no longer serves is skipped like an unavailable block.
+  tip the node no longer serves is skipped like an unavailable block. A
+  poll that finds no block at or below the tip it read is asked about
+  the same way. Either is skipped only once the node has not served the
+  block for 30 s, asked again at each reopen: behind a load balancer the
+  tip and the block can come from two replicas, one lagging the other,
+  and an immediate second ask gets the same pair. A node far behind the
+  cursor that catches up ends the wait: the next one starts its own
+  hour.
 - **Observation visits.** The release sweep's paced loop takes turns
-  between due confirmation re-checks, due observations (lowest block
-  first) and the rotation, never faster than `max_rate_per_second` in
+  between due confirmation re-checks, due observations (the one due
+  longest first, then the lowest block, so ones that keep coming back
+  never hold a newer one back) and the rotation, never faster than `max_rate_per_second` in
   total. A visit re-reads the metadata row (a released or EVM row is
   done; one with a candidate in flight waits for the push path) and the
   stored commitment: equal to the observed one means
@@ -889,15 +900,20 @@ proof.
   foreign key awaiting confirmation, whose streak lives in the holder's
   memory) comes back after `recheck_seconds` and spends no attempt,
   however long the wait lasts (after about a day of blocks it is
-  reported, and visited hourly). One whose visit could not check the
+  reported once, counted by `guardian_block_watch_observations_long_waiting`,
+  and visited hourly). One whose visit could not check the
   account (a chain read failed or came from before the observed block,
   the store moved between two reads, or a release write found the
   stored state replaced) is retried after `recheck_seconds` doubling per
   attempt (at most 1 h), and after `max_attempts` dropped with a
   warning once one walk is recorded to cover the account. A requested
-  walk that could not check every account runs again after
-  `recheck_seconds`, doubling, at most five times, then counts as done
-  with a warning.
+  walk that could not check every account stays owed: the accounts it
+  could not check are visited again on their own, between the
+  rotation's visits, after `recheck_seconds` doubling to 1 h, until each
+  is checked, which completes the walk (a warning after five rounds).
+  One that left more than 10,000 unchecked is walked again whole. Every
+  walk request is counted by reason
+  (`guardian_block_watch_walk_requests_total`).
 - **Cluster state.** The cursor (`block_watch_cursor`, one row per
   network) and the observations (`block_watch_observations`) are shared
   Postgres tables. The cursor is written forward-only, in the same

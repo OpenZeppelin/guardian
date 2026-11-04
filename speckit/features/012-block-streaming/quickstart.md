@@ -150,8 +150,8 @@ The original plan for this section:
 
 ## 4. Devnet
 
-Point one Guardian at `https://rpc.devnet.miden.io` (`GUARDIAN_NETWORK`
-devnet). Expect `transport=stream` and 3 s cadence. Leave it 24 h and
+Point one Guardian at `https://rpc.devnet.miden.io`
+(`GUARDIAN_NETWORK_TYPE=MidenDevnet`). Expect `transport=stream` and 3 s cadence. Leave it 24 h and
 confirm zero `guardian_block_watch_reconnects_total{reason=
 status_resource_exhausted}` (SC-004) and `lag_blocks` staying at 0–1. Only
 then enable in testnet and, with sign-off, prod.

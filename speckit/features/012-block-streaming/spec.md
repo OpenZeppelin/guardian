@@ -295,7 +295,8 @@ Rust client suites are unaffected (no contract change).
   observation MUST be idempotent (upsert) so a replayed block never
   duplicates work.
 - **FR-006**: A separate paced **visitor** loop (same lease holder) MUST
-  consume observations in block order, at most `max_rate_per_second` visits
+  consume observations oldest due first (then in block order), so ones that
+  keep coming back never hold a newer one back, at most `max_rate_per_second` visits
   per second (shared with the legacy rotation and the confirmation
   re-checks, as today), and run the existing per-account detectors with the
   observed commitment standing in for the head probe: stored-state check,
@@ -352,6 +353,7 @@ Rust client suites are unaffected (no contract change).
 - **FR-015**: Configuration: `GUARDIAN_BLOCK_WATCH_ENABLED` (default `true`),
   `GUARDIAN_BLOCK_WATCH_TRANSPORT` (`auto` | `stream` | `poll`, default
   `auto`), `GUARDIAN_BLOCK_WATCH_POLL_SECONDS` (default 3),
+  `GUARDIAN_BLOCK_WATCH_POLL_MAX_RATE_PER_SECOND` (default 10),
   `GUARDIAN_BLOCK_WATCH_STALL_SECONDS` (default 60),
   `GUARDIAN_BLOCK_WATCH_MAX_CATCHUP_BLOCKS` (default 10000),
   `GUARDIAN_BLOCK_WATCH_BAN_COOLDOWN_SECONDS` (default 600),

@@ -15,7 +15,8 @@ pub trait BlockWatchStore: Send + Sync {
     async fn set_cursor(&self, network: NetworkType, block: u32, fence: &LeaseFence) -> Result<CursorWrite>;
     /// Idempotent per (account_id, block_num); due at `now`.
     async fn record_observations(&self, observations: &[NewObservation], now: DateTime<Utc>) -> Result<()>;
-    /// Due observation of the lowest block (then account id).
+    /// The observation due longest (earliest `next_attempt_at`, then the
+    /// lowest block, then account id bytewise).
     async fn next_due_observation(&self, now: DateTime<Utc>) -> Result<Option<Observation>>;
     /// Earliest `next_attempt_at`, due or not (the visit loop's wake-up).
     async fn next_observation_due_at(&self) -> Result<Option<DateTime<Utc>>>;

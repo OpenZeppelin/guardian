@@ -49,6 +49,15 @@ fn postgres_timestamp_precision(timestamp: DateTime<Utc>) -> Result<DateTime<Utc
 const MIGRATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const MIGRATION_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// One matched post-state of [`PostgresService::filter_post_states_of_kind`].
+#[derive(diesel::QueryableByName)]
+struct PostStateRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    account_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    new_commitment: String,
+}
+
 #[derive(diesel::QueryableByName)]
 struct AdvisoryLockAcquired {
     #[diesel(sql_type = diesel::sql_types::Bool)]
@@ -127,7 +136,6 @@ impl PostgresService {
         if pairs.is_empty() {
             return Ok(found);
         }
-        let wanted: std::collections::HashSet<(&str, &str)> = pairs.iter().copied().collect();
         let mut conn = self
             .pool
             .get()
@@ -136,21 +144,27 @@ impl PostgresService {
         for chunk in pairs.chunks(crate::metadata::MEMBERSHIP_CHUNK) {
             let accounts: Vec<String> = chunk.iter().map(|(id, _)| (*id).to_string()).collect();
             let commitments: Vec<String> = chunk.iter().map(|(_, c)| (*c).to_string()).collect();
-            let rows: Vec<(String, Option<String>)> = deltas::table
-                .filter(deltas::status_kind.eq(kind))
-                .filter(deltas::account_id.eq_any(&accounts))
-                .filter(deltas::new_commitment.eq_any(&commitments))
-                .select((deltas::account_id, deltas::new_commitment))
-                .load(&mut conn)
-                .await
-                .map_err(|e| format!("Failed to match {kind} post-states: {e}"))?;
-            for (account_id, commitment) in rows {
-                if let Some(commitment) = commitment
-                    && wanted.contains(&(account_id.as_str(), commitment.as_str()))
-                {
-                    found.insert((account_id, commitment));
-                }
-            }
+            // Joined pair by pair, so each is one probe of
+            // `idx_deltas_account_new_commitment`: an account's history can
+            // be long, and filtering both columns by lists reads all of it.
+            let rows: Vec<PostStateRow> = diesel::sql_query(
+                "SELECT d.account_id, d.new_commitment \
+                 FROM unnest($1::text[], $2::text[]) AS wanted(account_id, new_commitment) \
+                 JOIN deltas d \
+                   ON d.account_id = wanted.account_id \
+                  AND d.new_commitment = wanted.new_commitment \
+                 WHERE d.status_kind = $3",
+            )
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(accounts)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(commitments)
+            .bind::<diesel::sql_types::Text, _>(kind)
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to match {kind} post-states: {e}"))?;
+            found.extend(
+                rows.into_iter()
+                    .map(|row| (row.account_id, row.new_commitment)),
+            );
         }
         Ok(found)
     }

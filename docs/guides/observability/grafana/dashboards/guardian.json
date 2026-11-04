@@ -1659,7 +1659,7 @@
     {
       "type": "timeseries",
       "title": "Lag behind the chain tip & observations pending",
-      "description": "Blocks between the node's committed tip and the last block block watch processed (near 0 when healthy; only the release_sweep lease holder runs the feed), and observations (guarded accounts that moved on chain to a state this server does not hold) waiting for a release-detector visit. A growing backlog means the detectors visit more slowly than accounts move: see GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND.",
+      "description": "Blocks between the node's committed tip and the last block block watch processed (near 0 when healthy; only the release_sweep lease holder runs the feed), and observations (guarded accounts that moved on chain to a state this server does not hold) waiting for a release-detector visit. A growing backlog means the detectors visit more slowly than accounts move: see GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND. Waiting a day or more counts observations held for about a day by this server's own candidate or an open confirmation (block_watch_observation_waiting in the log names them).",
       "datasource": {
         "type": "prometheus",
         "uid": "guardian-prometheus"
@@ -1713,13 +1713,22 @@
           "expr": "max(guardian_block_watch_observations_pending{instance=~\"$instance\"})",
           "refId": "B",
           "legendFormat": "observations pending"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max(guardian_block_watch_observations_long_waiting{instance=~\"$instance\"})",
+          "refId": "C",
+          "legendFormat": "waiting a day or more"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Reconnects by reason",
-      "description": "Block sources block watch had to reopen. status_resource_exhausted means the node cut the stream for lag (it then refuses the caller for 10 minutes and block watch polls meanwhile); status_unimplemented means the node does not serve the stream; stall means no block arrived within GUARDIAN_BLOCK_WATCH_STALL_SECONDS while the chain moved on.",
+      "title": "Reconnects & walk requests by reason",
+      "description": "Block sources block watch had to reopen. status_resource_exhausted means the node cut the stream for lag (it then refuses the caller for 10 minutes and block watch polls meanwhile); status_unimplemented means the node does not serve the stream; stall means no block arrived within GUARDIAN_BLOCK_WATCH_STALL_SECONDS while the chain moved on. Walk requests are the walks of the fleet block watch asked for to cover what it could not see; a steady stream of them (one reason, every few blocks) turns the release sweep into a continuous walk.",
       "datasource": {
         "type": "prometheus",
         "uid": "guardian-prometheus"
@@ -1764,6 +1773,15 @@
           "expr": "sum by (reason) (increase(guardian_block_watch_reconnects_total{instance=~\"$instance\"}[$__rate_interval]))",
           "refId": "A",
           "legendFormat": "{{reason}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (reason) (increase(guardian_block_watch_walk_requests_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "B",
+          "legendFormat": "walk requested: {{reason}}"
         }
       ]
     },

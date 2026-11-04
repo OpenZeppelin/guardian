@@ -99,9 +99,12 @@ pub const BLOCK_WATCH_LAST_BLOCK: &str = "guardian_block_watch_last_block";
 pub const BLOCK_WATCH_LAG_BLOCKS: &str = "guardian_block_watch_lag_blocks";
 pub const BLOCK_WATCH_ACCOUNT_UPDATES_TOTAL: &str = "guardian_block_watch_account_updates_total";
 pub const BLOCK_WATCH_OBSERVATIONS_PENDING: &str = "guardian_block_watch_observations_pending";
+pub const BLOCK_WATCH_OBSERVATIONS_LONG_WAITING: &str =
+    "guardian_block_watch_observations_long_waiting";
 pub const BLOCK_WATCH_OBSERVATION_VISITS_TOTAL: &str =
     "guardian_block_watch_observation_visits_total";
 pub const BLOCK_WATCH_RECONNECTS_TOTAL: &str = "guardian_block_watch_reconnects_total";
+pub const BLOCK_WATCH_WALK_REQUESTS_TOTAL: &str = "guardian_block_watch_walk_requests_total";
 pub const BLOCK_WATCH_TRANSPORT: &str = "guardian_block_watch_transport";
 pub const BLOCK_WATCH_BLOCK_PROCESSING_SECONDS: &str =
     "guardian_block_watch_block_processing_seconds";
@@ -509,6 +512,14 @@ pub const REGISTRY: &[MetricDef] = &[
                does not hold) awaiting a release-detector visit.",
     },
     MetricDef {
+        name: BLOCK_WATCH_OBSERVATIONS_LONG_WAITING,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Observations that had waited about a day (28,800 blocks) or more for this \
+               server's own candidate or a confirmation at their last visit; each is \
+               visited hourly until that resolves.",
+    },
+    MetricDef {
         name: BLOCK_WATCH_OBSERVATION_VISITS_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OUTCOME],
@@ -521,7 +532,18 @@ pub const REGISTRY: &[MetricDef] = &[
         labels: &[LABEL_REASON],
         help: "Block sources block watch had to reopen, by reason (status_<grpc code>, \
                transport, ended, out_of_sequence, malformed, unavailable_block, stall, \
-               timeout, skipped_malformed_block).",
+               timeout, skipped_malformed_block, skipped_unavailable_block).",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_WALK_REQUESTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_REASON],
+        help: "Walks of the release sweep rotation block watch asked for to cover what it \
+               did not see, by reason (cursor_init, cursor_jump, genesis_changed, \
+               genesis_unknown, node_behind_too_long, cursor_ahead_of_tip, \
+               observations_lost, undecodable_updates, skipped_malformed_block, \
+               skipped_unavailable_block, observation_dropped). Requests made while a \
+               walk runs fold into one more walk.",
     },
     MetricDef {
         name: BLOCK_WATCH_TRANSPORT,

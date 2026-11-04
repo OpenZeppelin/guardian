@@ -49,8 +49,15 @@ moved on chain to a commitment this server does not hold.
 | `attempts` | `INTEGER NOT NULL DEFAULT 0` | Visits that ended `Deferred`/`Failed`. |
 | `next_attempt_at` | `TIMESTAMPTZ NOT NULL` | Due time; `now()` on insert. |
 
-PK `(account_id, block_num)`; index `(next_attempt_at, block_num)` for
-`next_due_observation`.
+PK `(account_id, block_num)`; index `(next_attempt_at, block_num,
+account_id COLLATE "C")` for `next_due_observation`, which serves the one
+due longest first in exactly that order (account ids bytewise, as the
+in-memory store compares them).
+
+The same migration adds `idx_deltas_account_new_commitment` on `deltas
+(account_id, new_commitment)`: block watch matches moved accounts against
+their own canonical and candidate post-states pair by pair, one probe each,
+instead of reading each account's whole delta history.
 
 Lifecycle:
 

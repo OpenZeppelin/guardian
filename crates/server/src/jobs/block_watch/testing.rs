@@ -34,6 +34,10 @@ pub fn block(block_num: u32, updates: &[(&str, &str)]) -> ObservedBlock {
 pub struct ScriptedChain {
     blocks: Mutex<BTreeMap<u32, ObservedBlock>>,
     added: Notify,
+    /// Blocks from this one on are not served though the tip counts them,
+    /// as behind a load balancer whose replicas disagree: the tip comes
+    /// from one ahead, the blocks from one lagging.
+    lagging_from: Mutex<Option<u32>>,
 }
 
 impl ScriptedChain {
@@ -63,7 +67,24 @@ impl ScriptedChain {
         self.blocks.lock().unwrap().keys().next_back().copied()
     }
 
+    /// Serve no block from `block_num` on (`None`: serve them all again),
+    /// the tip still counting them.
+    pub fn lag_from(&self, block_num: Option<u32>) {
+        *self.lagging_from.lock().unwrap() = block_num;
+        self.added.notify_waiters();
+    }
+
+    fn lagging(&self, block_num: u32) -> bool {
+        self.lagging_from
+            .lock()
+            .unwrap()
+            .is_some_and(|from| block_num >= from)
+    }
+
     fn get(&self, block_num: u32) -> Option<ObservedBlock> {
+        if self.lagging(block_num) {
+            return None;
+        }
         self.blocks.lock().unwrap().get(&block_num).cloned()
     }
 
@@ -153,8 +174,12 @@ impl BlockSource for ScriptedSource {
             }
             // Below the oldest retained block: the node no longer serves it.
             // Its stream ends with INTERNAL (it cannot load the block);
-            // a poll sees no block.
-            if self.chain.first().is_some_and(|first| self.next < first) {
+            // a poll sees no block. A poll past a lagging replica's last
+            // block, below the tip, sees none either.
+            let lagging = self.transport == Transport::Poll
+                && self.chain.lagging(self.next)
+                && self.chain.tip().is_some_and(|tip| self.next <= tip);
+            if lagging || self.chain.first().is_some_and(|first| self.next < first) {
                 return Err(match self.transport {
                     Transport::Stream => status(tonic::Code::Internal),
                     Transport::Poll => BlockSourceError::Unavailable {

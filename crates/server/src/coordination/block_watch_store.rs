@@ -127,7 +127,10 @@ pub trait BlockWatchStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<()>;
 
-    /// The due observation of the lowest block (then account id), if any.
+    /// The observation due longest, if any: earliest `next_attempt_at`,
+    /// then lowest block, then account id (bytewise). An observation that
+    /// keeps coming back (one that waits is due again after each visit)
+    /// thus never holds back one recorded since.
     async fn next_due_observation(&self, now: DateTime<Utc>) -> Result<Option<Observation>>;
 
     /// When the earliest observation not yet due becomes due, if any. The
@@ -390,9 +393,12 @@ impl BlockWatchStore for InMemoryBlockWatchStore {
     }
 
     async fn next_due_observation(&self, now: DateTime<Utc>) -> Result<Option<Observation>> {
+        // Keys are in (block, account id) order, so the first of the
+        // earliest due ones is the right one.
         Ok(locked(&self.observations)
             .iter()
-            .find(|(_, stored)| stored.next_attempt_at <= now)
+            .filter(|(_, stored)| stored.next_attempt_at <= now)
+            .min_by_key(|(_, stored)| stored.next_attempt_at)
             .map(|((block_num, account_id), stored)| Observation {
                 account_id: account_id.clone(),
                 block_num: *block_num,
@@ -696,6 +702,45 @@ mod tests {
                 second.on_chain_commitment.as_str()
             ),
             ("0xa", 12, "0xa12")
+        );
+    }
+
+    #[tokio::test]
+    async fn the_observation_due_longest_comes_first_whatever_its_block() {
+        // See the Postgres store's test of the same name.
+        let store = InMemoryBlockWatchStore::new();
+        let now = Utc::now();
+        let later = |seconds| now + Duration::seconds(seconds);
+        store
+            .record_observations(&[observed("0xwaiting", 5, "0xw5")], now)
+            .await
+            .unwrap();
+        store
+            .postpone_observation("0xwaiting", 5, later(60))
+            .await
+            .unwrap();
+        store
+            .record_observations(
+                &[observed("0xb", 9, "0xb9"), observed("0xB", 9, "0xB9")],
+                later(30),
+            )
+            .await
+            .unwrap();
+        let mut order = Vec::new();
+        while let Some(due) = store.next_due_observation(later(60)).await.unwrap() {
+            store
+                .delete_observation(&due.account_id, due.block_num)
+                .await
+                .unwrap();
+            order.push((due.account_id, due.block_num));
+        }
+        assert_eq!(
+            order,
+            vec![
+                ("0xB".to_string(), 9),
+                ("0xb".to_string(), 9),
+                ("0xwaiting".to_string(), 5),
+            ]
         );
     }
 

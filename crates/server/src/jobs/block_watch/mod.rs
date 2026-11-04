@@ -40,6 +40,7 @@ mod tests;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub(crate) use consumer::count_walk_request;
 pub use consumer::{BlockSummary, Consumer, Stopped};
 pub use source::{
     AccountUpdate, BlockSource, BlockSourceError, BlockSourceFactory, ObservedBlock, Transport,

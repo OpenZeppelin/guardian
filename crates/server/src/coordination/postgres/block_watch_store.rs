@@ -331,11 +331,15 @@ impl BlockWatchStore for PgBlockWatchStore {
 
     async fn next_due_observation(&self, now: DateTime<Utc>) -> Result<Option<Observation>> {
         let mut conn = super::checkout(&self.pool, "block watch").await?;
+        // The order of `block_watch_observations_due_idx`, so the first row
+        // is read off the index rather than sorted out of every due one.
+        // Account ids compare bytewise (`COLLATE "C"`), as the in-memory
+        // store compares them.
         let row = diesel::sql_query(
             "SELECT account_id, block_num, on_chain_commitment, attempts \
              FROM block_watch_observations \
              WHERE next_attempt_at <= $1 \
-             ORDER BY block_num, account_id \
+             ORDER BY next_attempt_at, block_num, account_id COLLATE \"C\" \
              LIMIT 1",
         )
         .bind::<Timestamptz, _>(now)
@@ -765,5 +769,59 @@ mod postgres_tests {
         store.delete_observation("0xa", 12).await.unwrap();
         assert_eq!(store.count_pending_observations().await.unwrap(), 0);
         assert_eq!(store.next_observation_due_at().await.unwrap(), None);
+        reset(&pool).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn the_observation_due_longest_comes_first_whatever_its_block() {
+        // An observation that keeps coming back (one that waits) is due
+        // again after each visit; one recorded since is due from then.
+        // Serving the oldest due first keeps the returning ones from
+        // holding a newer one back (PR #586 review), like the in-memory
+        // store, account ids compared bytewise.
+        let url = test_database_url().await;
+        let pool = build_postgres_pool_lazy(&url, 4).unwrap();
+        reset(&pool).await;
+        let store = PgBlockWatchStore::new(pool.clone());
+        let now = DateTime::<Utc>::from_timestamp_micros(Utc::now().timestamp_micros()).unwrap();
+        let later = |seconds| now + chrono::Duration::seconds(seconds);
+
+        store
+            .record_observations(&[observed("0xwaiting", 5, "0xw5")], now)
+            .await
+            .unwrap();
+        store
+            .postpone_observation("0xwaiting", 5, later(60))
+            .await
+            .unwrap();
+        store
+            .record_observations(
+                &[observed("0xb", 9, "0xb9"), observed("0xB", 9, "0xB9")],
+                later(30),
+            )
+            .await
+            .unwrap();
+
+        let order: Vec<(String, u32)> = {
+            let mut order = Vec::new();
+            while let Some(due) = store.next_due_observation(later(60)).await.unwrap() {
+                store
+                    .delete_observation(&due.account_id, due.block_num)
+                    .await
+                    .unwrap();
+                order.push((due.account_id, due.block_num));
+            }
+            order
+        };
+        assert_eq!(
+            order,
+            vec![
+                ("0xB".to_string(), 9),
+                ("0xb".to_string(), 9),
+                ("0xwaiting".to_string(), 5),
+            ]
+        );
+        reset(&pool).await;
     }
 }

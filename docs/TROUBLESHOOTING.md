@@ -543,7 +543,14 @@ Operator checks:
   - `block_watch_cursor_init` (info, with `start_block`) and
     `block_watch_cursor_jump` (warn, with `cursor`, `tip`, `gap`,
     `max_catchup_blocks` or `reason=block_unavailable`): the feed starts
-    at the tip instead of replaying and requests one rotation;
+    at the tip instead of replaying and requests one rotation. A block
+    counts as unavailable only once the node, asked directly (the tip,
+    then the block), has not served it for 30 s
+    (`block_watch_block_not_served`, info, when that starts): behind a
+    load balancer the tip and the block can come from two replicas, one
+    lagging the other. Meanwhile the source is reopened with the usual
+    backoff (`reason=unavailable_block` for a poll, `status_internal` for
+    the stream);
     `block_watch_observations_lost` (filesystem backend) does the same
     after a restart. The request is recorded (Postgres:
     `block_watch_walks`) until a walk completes, so a successor holder,
@@ -570,10 +577,19 @@ Operator checks:
     (`block_watch_observation_kept`, warn, when that record fails).
     `outcome=waiting` (its own candidate in flight, or a confirmation
     streak open) spends no attempt; `block_watch_observation_waiting`
-    (warn) reports one that has waited about a day of blocks, then
-    visited hourly. `release_sweep_walk_unchecked` (warn): a requested
-    walk still could not check every account after five retries (the
-    re-check delay doubling) and counts as done.
+    (warn) reports one once it has waited about a day of blocks (the
+    `guardian_block_watch_observations_long_waiting` gauge counts it from
+    then on), and it is visited hourly.
+  - `release_sweep_walk_partial` (info, with `unchecked_accounts`): a
+    walk block watch asked for could not check every account (a node
+    outage, an account that never answers). It stays owed, and those
+    accounts alone are visited again after
+    `GUARDIAN_RELEASE_SWEEP_RECHECK_SECONDS`, doubling up to an hour,
+    between the rotation's own visits, until each is checked
+    (`release_sweep_walk_retried`, info: the walk is complete).
+    `release_sweep_walk_unchecked` (warn, with `unchecked_accounts`,
+    `rounds`) after five rounds that still left some. A walk that left
+    more than 10,000 accounts unchecked is walked again whole instead.
   - `block_watch_block_failed` (warn) and `block_watch_start_failed`
     (warn): a storage or node read failed; the same block (or the start)
     is retried.
@@ -590,12 +606,17 @@ Operator checks:
   `guardian_block_watch_reconnects_total{reason}`,
   `guardian_block_watch_account_updates_total{outcome=not_guarded|skipped_pending_candidate|at_stored|own_history|unfinished_configuration|observed|undecodable}`,
   `guardian_block_watch_observations_pending`,
-  `guardian_block_watch_observation_visits_total{outcome=checked|deferred|waiting|failed|dropped}`
+  `guardian_block_watch_observations_long_waiting`,
+  `guardian_block_watch_observation_visits_total{outcome=checked|deferred|waiting|failed|dropped}`,
+  `guardian_block_watch_walk_requests_total{reason}` (walks of the fleet
+  block watch asked for, by why)
   and `guardian_block_watch_block_processing_seconds` describe the feed.
   `GET /dashboard/info` reports it under `backend.block_watch`.
 - `guardian_release_sweep_rotations_total{outcome=...}` counts walks of
   the fleet (`completed`, or `partial` when at least one account could
-  not be checked and waits for the next rotation) and
+  not be checked: it waits for the next rotation or, in a walk block
+  watch asked for, is visited again on its own; those visits are not
+  walks and are not counted here) and
   `guardian_release_sweep_rotation_duration_seconds` times them;
   `guardian_release_sweep_accounts_total{outcome=...}` counts
   per-account findings (`released`, `confirming`, `still_bound`,
@@ -1059,7 +1080,7 @@ ack signers falcon="enabled" falcon_commitment=0x… ecdsa_backend="aws-kms" ecd
 dashboard operators=0 cursor_secret="ephemeral"
 canonicalization check_interval_seconds=10 fast_promotion_enabled=true fast_promotion_interval_seconds=3 fast_promotion_window_seconds=30 max_retries=48 submission_grace_period_seconds=600 max_concurrent_accounts=10 max_pending_candidates_per_account=1 retained_ttl_seconds=86400 reconcile_interval_seconds=60
 release sweep rotation_seconds=21600 max_rate_per_second=5 page_size=100 recheck_seconds=60 confirmations=2
-block watch transport="auto" poll_seconds=3 stall_seconds=60 max_catchup_blocks=10000 ban_cooldown_seconds=600 stream_retry_seconds=600 max_attempts=20
+block watch transport="auto" poll_seconds=3 poll_max_rate_per_second=10 stall_seconds=60 max_catchup_blocks=10000 ban_cooldown_seconds=600 stream_retry_seconds=600 max_attempts=20
 listeners http=3000 grpc=50051
 compiled features features=["postgres"]
 =========================================
@@ -1145,6 +1166,22 @@ ECS Exec requires the task role's `ssmmessages:*` actions
   (they share `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND` with the
   rotation), or their chain reads keep failing
   (`guardian_block_watch_observation_visits_total{outcome="deferred"}`).
+- **`guardian_block_watch_walk_requests_total` rising steadily** (alarm
+  `<stack>-block-watch-walk-requests`, more than 10 in an hour) —
+  something keeps block watch from seeing what blocks do to the guarded
+  accounts, and each time it asks for a walk of the fleet: requests made
+  during a walk fold into one more walk, so the rotation runs
+  continuously (within `GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND`).
+  The `reason` dimension names the cause: `undecodable_updates` or
+  `skipped_malformed_block` mean this server is older than the node's
+  protocol (upgrade it); `cursor_jump` / `skipped_unavailable_block`, a
+  feed that keeps falling out of reach of the node; `observation_dropped`,
+  observations whose chain reads keep failing.
+- **`guardian_block_watch_observations_long_waiting` above 0** — accounts
+  whose observation has waited about a day for this server's own
+  candidate or an open confirmation; `block_watch_observation_waiting`
+  names them. A candidate canonicalization cannot settle, or re-checks
+  that keep failing, hold the account unjudged.
 - **`guardian_release_sweep_rotations_total` not advancing** for twice
   `GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS` — no replica holds the
   `release_sweep` lease, or the walk keeps failing (see the rotation

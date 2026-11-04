@@ -281,6 +281,7 @@ locals {
               "^guardian_block_watch_last_block$",
               "^guardian_block_watch_lag_blocks$",
               "^guardian_block_watch_observations_pending$",
+              "^guardian_block_watch_observations_long_waiting$",
               "^guardian_block_watch_block_processing_seconds$",
             ]
             dimensions = [[]]
@@ -302,6 +303,11 @@ locals {
           {
             metric_name_selectors = ["^guardian_block_watch_reconnects_total$"]
             dimensions            = [["reason"]]
+          },
+          {
+            # The total feeds the walk-requests alarm.
+            metric_name_selectors = ["^guardian_block_watch_walk_requests_total$"]
+            dimensions            = [[], ["reason"]]
           },
           {
             metric_name_selectors = [
@@ -658,6 +664,7 @@ resource "aws_cloudwatch_dashboard" "server" {
           metrics = [
             ["${local.metrics_namespace}", "guardian_block_watch_lag_blocks", { stat = "Maximum", label = "lag behind tip" }],
             ["${local.metrics_namespace}", "guardian_block_watch_observations_pending", { stat = "Maximum", label = "observations pending" }],
+            ["${local.metrics_namespace}", "guardian_block_watch_observations_long_waiting", { stat = "Maximum", label = "waiting a day or more" }],
           ]
         }
       },
@@ -669,6 +676,7 @@ resource "aws_cloudwatch_dashboard" "server" {
           metrics = [
             [{ expression = "SEARCH('{\"${local.metrics_namespace}\",transport} MetricName=\"guardian_block_watch_blocks_total\"', 'Sum', 300)", id = "e1", label = "blocks" }],
             [{ expression = "SEARCH('{\"${local.metrics_namespace}\",reason} MetricName=\"guardian_block_watch_reconnects_total\"', 'Sum', 300)", id = "e2", label = "reconnects" }],
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",reason} MetricName=\"guardian_block_watch_walk_requests_total\"', 'Sum', 300)", id = "e3", label = "walk requests" }],
           ]
         }
       },
@@ -1131,6 +1139,31 @@ resource "aws_cloudwatch_metric_alarm" "block_watch_stalled" {
       period      = 300
     }
   }
+}
+
+# Block watch asks for a walk of the fleet whenever it could not see what
+# a block did to the guarded accounts (a first start, a gap too large to
+# replay, a reset chain, a block or an entry it cannot read). Each is rare;
+# requests made during a walk fold into one more walk, so a cause that
+# lasts (a node upgrade adding an update format this server cannot decode
+# asks once per block) quietly turns the rotation into a continuous one,
+# within the visit rate but without any other sign. More than 10 in an
+# hour is such a cause; the `reason` dimension names it.
+resource "aws_cloudwatch_metric_alarm" "block_watch_walk_requests" {
+  count = local.cloudwatch_metrics_enabled && local.effective_guardian_block_watch_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-block-watch-walk-requests"
+  alarm_description   = "Guardian block watch asked for more than 10 walks of the fleet in an hour; something keeps it from reading blocks, and the release sweep walks the fleet continuously (see guardian_block_watch_walk_requests_total by reason and block_watch_* events in the server log)${local.alarm_description_links}"
+  namespace           = local.metrics_namespace
+  metric_name         = "guardian_block_watch_walk_requests_total"
+  statistic           = "Sum"
+  period              = 3600
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 10
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {

@@ -12,6 +12,8 @@ pub const ENV_ENABLED: &str = "GUARDIAN_BLOCK_WATCH_ENABLED";
 pub const ENV_TRANSPORT: &str = "GUARDIAN_BLOCK_WATCH_TRANSPORT";
 /// Environment override for [`BlockWatchConfig::poll_seconds`].
 pub const ENV_POLL_SECONDS: &str = "GUARDIAN_BLOCK_WATCH_POLL_SECONDS";
+/// Environment override for [`BlockWatchConfig::poll_max_rate_per_second`].
+pub const ENV_POLL_MAX_RATE_PER_SECOND: &str = "GUARDIAN_BLOCK_WATCH_POLL_MAX_RATE_PER_SECOND";
 /// Environment override for [`BlockWatchConfig::stall_seconds`].
 pub const ENV_STALL_SECONDS: &str = "GUARDIAN_BLOCK_WATCH_STALL_SECONDS";
 /// Environment override for [`BlockWatchConfig::max_catchup_blocks`].
@@ -24,6 +26,7 @@ pub const ENV_STREAM_RETRY_SECONDS: &str = "GUARDIAN_BLOCK_WATCH_STREAM_RETRY_SE
 pub const ENV_MAX_ATTEMPTS: &str = "GUARDIAN_BLOCK_WATCH_MAX_ATTEMPTS";
 
 pub const MAX_POLL_SECONDS: u64 = 300;
+pub const MAX_POLL_RATE_PER_SECOND: u32 = 1_000;
 pub const MIN_STALL_SECONDS: u64 = 5;
 pub const MAX_STALL_SECONDS: u64 = 3_600;
 pub const MAX_CATCHUP_BLOCKS: u32 = 1_000_000;
@@ -62,8 +65,18 @@ pub struct BlockWatchConfig {
 
     /// Chain-tip read interval on the polling transport once caught up
     /// (Miden commits a block every 3 s). Behind the tip, blocks are read
-    /// back to back.
+    /// at `poll_max_rate_per_second`.
     pub poll_seconds: u64,
+
+    /// Most blocks read per second on the polling transport while behind
+    /// the tip (a replay after downtime or a lease failover, up to
+    /// `max_catchup_blocks`): each is one `GetBlockByNumber` and one cursor
+    /// write. Block watch polls when the node refused or banned the
+    /// stream, so a replay is spread out rather than sent as fast as the
+    /// node answers. Any rate above one block per 3 s catches up; the
+    /// default replays a full 10,000-block catch-up in about 17 minutes.
+    /// The stream replays at the node's own pace.
+    pub poll_max_rate_per_second: u32,
 
     /// No block for this long triggers a chain-tip read; a tip ahead of
     /// the cursor means the feed stalled, and it is reopened.
@@ -99,6 +112,7 @@ impl Default for BlockWatchConfig {
             enabled: true,
             transport: TransportMode::Auto,
             poll_seconds: 3,
+            poll_max_rate_per_second: 10,
             stall_seconds: 60,
             max_catchup_blocks: 10_000, // ~8 h of blocks at 3 s
             ban_cooldown_seconds: 600,  // the node's ban is 10 min
@@ -111,6 +125,11 @@ impl Default for BlockWatchConfig {
 impl BlockWatchConfig {
     pub fn poll_interval(&self) -> Duration {
         Duration::from_secs(self.poll_seconds)
+    }
+
+    /// Shortest gap between two block reads on the polling transport.
+    pub fn poll_block_spacing(&self) -> Duration {
+        Duration::from_secs_f64(1.0 / f64::from(self.poll_max_rate_per_second.max(1)))
     }
 
     pub fn stall(&self) -> Duration {
@@ -141,6 +160,16 @@ impl BlockWatchConfig {
             "block watch poll interval must be between 1 and {MAX_POLL_SECONDS} seconds"
         );
         self.poll_seconds = seconds;
+        self
+    }
+
+    pub fn with_poll_max_rate_per_second(mut self, rate: u32) -> Self {
+        assert!(
+            (1..=MAX_POLL_RATE_PER_SECOND).contains(&rate),
+            "block watch poll rate must be between 1 and {MAX_POLL_RATE_PER_SECOND} blocks per \
+             second"
+        );
+        self.poll_max_rate_per_second = rate;
         self
     }
 
@@ -235,6 +264,7 @@ const ENV_VARS: EnvVars<'static> = EnvVars {
     enabled: ENV_ENABLED,
     transport: ENV_TRANSPORT,
     poll_seconds: ENV_POLL_SECONDS,
+    poll_max_rate_per_second: ENV_POLL_MAX_RATE_PER_SECOND,
     stall_seconds: ENV_STALL_SECONDS,
     max_catchup_blocks: ENV_MAX_CATCHUP_BLOCKS,
     ban_cooldown_seconds: ENV_BAN_COOLDOWN_SECONDS,
@@ -253,6 +283,13 @@ impl BlockWatchConfig {
         }
         if let Some(seconds) = bounded_from_var(vars.poll_seconds, 1, MAX_POLL_SECONDS)? {
             config = config.with_poll_seconds(seconds);
+        }
+        if let Some(rate) = bounded_from_var(
+            vars.poll_max_rate_per_second,
+            1,
+            u64::from(MAX_POLL_RATE_PER_SECOND),
+        )? {
+            config = config.with_poll_max_rate_per_second(to_u32(rate));
         }
         if let Some(seconds) =
             bounded_from_var(vars.stall_seconds, MIN_STALL_SECONDS, MAX_STALL_SECONDS)?
@@ -285,6 +322,7 @@ struct EnvVars<'a> {
     enabled: &'a str,
     transport: &'a str,
     poll_seconds: &'a str,
+    poll_max_rate_per_second: &'a str,
     stall_seconds: &'a str,
     max_catchup_blocks: &'a str,
     ban_cooldown_seconds: &'a str,
@@ -352,6 +390,7 @@ mod tests {
         enabled: "GUARDIAN_BW_TEST_ENABLED",
         transport: "GUARDIAN_BW_TEST_TRANSPORT",
         poll_seconds: "GUARDIAN_BW_TEST_POLL",
+        poll_max_rate_per_second: "GUARDIAN_BW_TEST_POLL_RATE",
         stall_seconds: "GUARDIAN_BW_TEST_STALL",
         max_catchup_blocks: "GUARDIAN_BW_TEST_CATCHUP",
         ban_cooldown_seconds: "GUARDIAN_BW_TEST_BAN",
@@ -359,11 +398,12 @@ mod tests {
         max_attempts: "GUARDIAN_BW_TEST_ATTEMPTS",
     };
 
-    fn all_vars() -> [&'static str; 8] {
+    fn all_vars() -> [&'static str; 9] {
         [
             VARS.enabled,
             VARS.transport,
             VARS.poll_seconds,
+            VARS.poll_max_rate_per_second,
             VARS.stall_seconds,
             VARS.max_catchup_blocks,
             VARS.ban_cooldown_seconds,
@@ -388,6 +428,8 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.transport, TransportMode::Auto);
         assert_eq!(config.poll_seconds, 3);
+        assert_eq!(config.poll_max_rate_per_second, 10);
+        assert_eq!(config.poll_block_spacing(), Duration::from_millis(100));
         assert_eq!(config.stall_seconds, 60);
         assert_eq!(config.max_catchup_blocks, 10_000);
         assert_eq!(
@@ -408,6 +450,7 @@ mod tests {
             std::env::set_var(VARS.enabled, "false");
             std::env::set_var(VARS.transport, "poll");
             std::env::set_var(VARS.poll_seconds, "5");
+            std::env::set_var(VARS.poll_max_rate_per_second, "50");
             std::env::set_var(VARS.stall_seconds, "30");
             std::env::set_var(VARS.max_catchup_blocks, "0");
             std::env::set_var(VARS.ban_cooldown_seconds, "900");
@@ -418,6 +461,7 @@ mod tests {
         assert!(!config.enabled);
         assert_eq!(config.transport, TransportMode::Poll);
         assert_eq!(config.poll_seconds, 5);
+        assert_eq!(config.poll_max_rate_per_second, 50);
         assert_eq!(config.stall_seconds, 30);
         assert_eq!(config.max_catchup_blocks, 0, "0 always starts at the tip");
         assert_eq!(config.ban_cooldown_seconds, 900);
@@ -436,6 +480,9 @@ mod tests {
             (VARS.transport, "Stream"),
             (VARS.poll_seconds, "0"),
             (VARS.poll_seconds, "301"),
+            (VARS.poll_max_rate_per_second, "0"),
+            (VARS.poll_max_rate_per_second, "1001"),
+            (VARS.poll_max_rate_per_second, "2.5"),
             (VARS.stall_seconds, "4"),
             (VARS.stall_seconds, "3601"),
             (VARS.max_catchup_blocks, "-1"),
@@ -508,6 +555,7 @@ mod tests {
             std::env::set_var(VARS.enabled, " true ");
             std::env::set_var(VARS.transport, " stream\n");
             std::env::set_var(VARS.poll_seconds, "1");
+            std::env::set_var(VARS.poll_max_rate_per_second, "1000");
             std::env::set_var(VARS.stall_seconds, " 5");
             std::env::set_var(VARS.max_catchup_blocks, "1000000");
             std::env::set_var(VARS.ban_cooldown_seconds, "86400");
@@ -517,6 +565,7 @@ mod tests {
         assert!(config.enabled);
         assert_eq!(config.transport, TransportMode::Stream);
         assert_eq!(config.poll_seconds, 1);
+        assert_eq!(config.poll_max_rate_per_second, MAX_POLL_RATE_PER_SECOND);
         assert_eq!(config.stall_seconds, MIN_STALL_SECONDS);
         // The largest poll interval with the largest stall timeout.
         unsafe {

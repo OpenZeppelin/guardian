@@ -673,7 +673,7 @@ impl ServerBuilder {
             config.validate()?;
         }
         let block_watch = self.block_watch.clone().map(|config| {
-            let factory = rpc_settings.block_source_factory(config.poll_interval());
+            let factory = rpc_settings.block_source_factory(&config);
             let (store, durable_observations) = match coordination.as_ref() {
                 Some(handles) => (
                     handles.block_watch_store.clone(),

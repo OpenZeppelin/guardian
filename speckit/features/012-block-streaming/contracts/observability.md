@@ -11,8 +11,10 @@
 | `guardian_block_watch_lag_blocks` | gauge | — | `committed_chain_tip - last_block` as of the last block (poll: tip read − last block). |
 | `guardian_block_watch_account_updates_total` | counter | `outcome=not_guarded\|skipped_pending_candidate\|at_stored\|own_history\|unfinished_configuration\|observed\|undecodable` | Every `updated_accounts` entry, by what the filter and the commitment comparison decided. |
 | `guardian_block_watch_observations_pending` | gauge | — | Rows awaiting a visit (store count, refreshed per block and per visit). |
+| `guardian_block_watch_observations_long_waiting` | gauge | — | Observations the holder found waiting `LONG_WAIT_BLOCKS` (28,800) or more at their last visit; 0 on step-down (PR #586 review). |
 | `guardian_block_watch_observation_visits_total` | counter | `outcome=checked\|deferred\|waiting\|failed\|dropped` | Visitor outcomes. |
-| `guardian_block_watch_reconnects_total` | counter | `reason=status_<code>\|transport\|ended\|out_of_sequence\|stall\|malformed\|unavailable_block\|timeout\|skipped_malformed_block` | Source reopen events. |
+| `guardian_block_watch_reconnects_total` | counter | `reason=status_<code>\|transport\|ended\|out_of_sequence\|stall\|malformed\|unavailable_block\|timeout\|skipped_malformed_block\|skipped_unavailable_block` | Source reopen events (`unavailable_block`: a poll's missing block the node then served; `skipped_unavailable_block`: confirmed gone, skipped). |
+| `guardian_block_watch_walk_requests_total` | counter | `reason=cursor_init\|cursor_jump\|genesis_changed\|genesis_unknown\|node_behind_too_long\|cursor_ahead_of_tip\|observations_lost\|undecodable_updates\|skipped_malformed_block\|skipped_unavailable_block\|observation_dropped` | Walks of the fleet block watch recorded a request for (PR #586 review). |
 | `guardian_block_watch_transport` | gauge | `transport=stream\|poll` | 1 for the active transport, 0 for the other. |
 | `guardian_block_watch_block_processing_seconds` | histogram | — | `process(block)` duration (SC-003). |
 
@@ -32,7 +34,11 @@ routing as the other server alarms (issue #443). `guardian-block-watch-stalled`:
 from the stored cursor before the node is reached, and reset to 0 when a
 replica steps down (PR #586 review, M1/M2/M7). Treat `reconnects_total{reason=
 status_resource_exhausted}` increments as a dashboard panel, not an alarm
-(the fallback covers them).
+(the fallback covers them). `guardian-block-watch-walk-requests`: more than
+10 walk requests (`guardian_block_watch_walk_requests_total`, all reasons)
+in one hour, i.e. a lasting cause (an undecodable update format asks once
+per block) that quietly turns the rotation into a continuous walk (PR #586
+review).
 
 ## Log events (stable `event=` keys; list in `docs/TROUBLESHOOTING.md`)
 
@@ -54,6 +60,12 @@ status_resource_exhausted}` increments as a dashboard panel, not an alarm
 | `block_watch_undecodable_updates` | warn | `block_num`, `undecodable` |
 | `block_watch_block_skipped` | warn | `block_num`, `attempts`, `error` |
 | `block_watch_node_behind` | warn | `cursor`, `tip` |
+| `block_watch_node_caught_up` | info | — |
+| `block_watch_block_not_served` | info | `block_num`, `confirm_seconds` (the block is skipped if it stays unserved that long) |
+| `block_watch_observation_waiting` | warn | `account_id`, `block_num`, `waited_blocks` (once per observation and holder) |
+| `release_sweep_walk_partial` | info | `unchecked_accounts`, `retry_in_seconds` |
+| `release_sweep_walk_retried` | info | `rounds` |
+| `release_sweep_walk_unchecked` | warn | `unchecked_accounts`, `rounds` (once, after five rounds) |
 
 Release events keep `release_sweep_released` with `detected_by`, plus
 `source=block_watch` and `observed_block_num` when applicable.

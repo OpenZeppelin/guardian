@@ -67,6 +67,7 @@ pub struct MidenBlockSourceFactory {
     endpoint: CredentialUrl,
     settings: RpcClientSettings,
     poll_interval: Duration,
+    poll_block_spacing: Duration,
     unary: OnceCell<Arc<MidenRpcClient>>,
 }
 
@@ -75,11 +76,13 @@ impl MidenBlockSourceFactory {
         endpoint: CredentialUrl,
         settings: RpcClientSettings,
         poll_interval: Duration,
+        poll_block_spacing: Duration,
     ) -> Self {
         Self {
             endpoint,
             settings,
             poll_interval,
+            poll_block_spacing,
             unary: OnceCell::new(),
         }
     }
@@ -114,6 +117,7 @@ impl BlockSourceFactory for MidenBlockSourceFactory {
             self.unary().await?,
             from,
             self.poll_interval,
+            self.poll_block_spacing,
         )))
     }
 

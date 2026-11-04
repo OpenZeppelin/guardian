@@ -11,9 +11,10 @@ per variable in the existing table.
 
 | Variable | Default | Range | Meaning |
 |---|---|---|---|
-| `GUARDIAN_BLOCK_WATCH_ENABLED` | `true` | bool | Runs block watch (the committed-block feed that drives switch detection). `false` leaves detection to the push path and the rotation. |
+| `GUARDIAN_BLOCK_WATCH_ENABLED` | follows `GUARDIAN_RELEASE_SWEEP_ENABLED` (`true`) | bool | Runs block watch (the committed-block feed that drives switch detection). `false` leaves detection to the push path and the rotation. Unset, it follows `GUARDIAN_RELEASE_SWEEP_ENABLED`, so a deployment that turned the release sweep off keeps block watch off on upgrade. |
 | `GUARDIAN_BLOCK_WATCH_TRANSPORT` | `auto` | `auto` \| `stream` \| `poll` | `auto` tries the node's `BlockSubscription` stream and falls back to `GetBlockByNumber` polling (with cooldowns) when the stream is unavailable, refused, or closed for lag; `stream` never polls (reconnects only); `poll` never subscribes. |
 | `GUARDIAN_BLOCK_WATCH_POLL_SECONDS` | `3` | 1–300 | Tip read interval on the polling transport (Miden blocks every 3 s). |
+| `GUARDIAN_BLOCK_WATCH_POLL_MAX_RATE_PER_SECOND` | `10` | 1–1000 | Most blocks read per second on the polling transport while behind the tip, so a replay (up to `max_catchup_blocks`) is spread out (PR #586 review). |
 | `GUARDIAN_BLOCK_WATCH_STALL_SECONDS` | `60` | 5–3600 | No block for this long triggers a tip read; a tip ahead of the cursor reopens the source. |
 | `GUARDIAN_BLOCK_WATCH_MAX_CATCHUP_BLOCKS` | `10000` | 0–1000000 | Largest gap between the cursor and the tip that is replayed on (re)start; a larger gap (or no cursor) starts at the tip and requests one rotation. `0` always starts at the tip. |
 | `GUARDIAN_BLOCK_WATCH_BAN_COOLDOWN_SECONDS` | `600` | 1–86400 | After the node closed the stream as too slow (`RESOURCE_EXHAUSTED`; the node bans the IP for 10 min) block watch polls and does not retry the stream for this long. |
@@ -39,10 +40,12 @@ variable "guardian_block_watch_enabled" {
   description = <<-EOT
     Whether block watch runs (GUARDIAN_BLOCK_WATCH_ENABLED): the committed-block
     feed that detects guardian switches at block cadence. false leaves
-    detection to the push path and the release sweep rotation.
+    detection to the push path and the release sweep rotation. Unset (null)
+    follows guardian_release_sweep_enabled, so a stack that turned the
+    release sweep off does not start block watch by upgrading.
   EOT
   type    = bool
-  default = true
+  default = null
 }
 
 variable "guardian_block_watch_transport" {
