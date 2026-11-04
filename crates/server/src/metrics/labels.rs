@@ -210,8 +210,9 @@ pub enum ReleaseSweepOutcome {
     ChainBehindStored,
     /// The commitment probe or the storage read failed, or the
     /// transaction history search failed for an account whose storage is
-    /// private (a public account falls through to the storage read);
-    /// deferred to a later visit.
+    /// private (a public account falls through to the storage read), or,
+    /// on a block watch visit, the storage read came from a block before
+    /// the observed one; deferred to a later visit.
     ProbeFailed,
 }
 
@@ -226,6 +227,81 @@ impl ReleaseSweepOutcome {
             Self::NoBinding => "no_binding",
             Self::ChainBehindStored => "chain_behind_stored",
             Self::ProbeFailed => "probe_failed",
+        }
+    }
+}
+
+/// What block watch made of one account update in a block
+/// (`guardian_block_watch_account_updates_total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockWatchUpdateOutcome {
+    /// Not an account this server guards (unknown, released, or EVM).
+    NotGuarded,
+    /// Guarded, with a candidate in flight, and the account moved to that
+    /// candidate's post-state (its own transaction landed ahead of
+    /// promotion): left to the push path. A move no candidate explains is
+    /// an observation like any other.
+    SkippedPendingCandidate,
+    /// The account moved to the state this server holds (its own
+    /// transaction landed): nothing to do.
+    AtStored,
+    /// The account moved to an earlier state of its own (the post-state of
+    /// one of its canonical deltas): an old transaction of the account's,
+    /// replayed or behind an optimistic commit. Nothing to do.
+    OwnHistory,
+    /// Guarded but no state is stored yet (a first configuration that has
+    /// not finished).
+    UnfinishedConfiguration,
+    /// The account moved to a state this server does not hold: an
+    /// observation was recorded for the release detectors.
+    Observed,
+    /// The entry could not be read (an account ID or commitment this
+    /// server does not understand): one walk of the release sweep
+    /// rotation was requested to cover it.
+    Undecodable,
+}
+
+impl BlockWatchUpdateOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotGuarded => "not_guarded",
+            Self::SkippedPendingCandidate => "skipped_pending_candidate",
+            Self::AtStored => "at_stored",
+            Self::OwnHistory => "own_history",
+            Self::UnfinishedConfiguration => "unfinished_configuration",
+            Self::Observed => "observed",
+            Self::Undecodable => "undecodable",
+        }
+    }
+}
+
+/// Outcome of one visit of a block watch observation
+/// (`guardian_block_watch_observation_visits_total`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockWatchVisitOutcome {
+    /// The account was checked; the observation is done.
+    Checked,
+    /// A chain read failed; the observation is retried later.
+    Deferred,
+    /// The account cannot be judged yet (its own candidate in flight, or a
+    /// confirmation streak open); the observation waits without spending
+    /// an attempt.
+    Waiting,
+    /// The visit failed (storage error, failed release write); retried.
+    Failed,
+    /// The observation ran out of attempts and was dropped, with one walk
+    /// of the release sweep rotation recorded to cover the account.
+    Dropped,
+}
+
+impl BlockWatchVisitOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Checked => "checked",
+            Self::Deferred => "deferred",
+            Self::Waiting => "waiting",
+            Self::Failed => "failed",
+            Self::Dropped => "dropped",
         }
     }
 }

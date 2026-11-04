@@ -14,4 +14,4 @@ crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7
 crates/server/src/coordination/postgres/stats_store.rs lease_is_current 3a5be33e2177bd20
 crates/server/src/coordination/postgres/stats_store.rs publish fd112c099bd159c1
 crates/server/src/builder/canonicalization.rs lease_ttl 7b41638acbeb0bf0
-crates/server/src/builder/storage.rs build 4ebc25b29f093d12
+crates/server/src/builder/storage.rs build bd0730a18e51e4a0

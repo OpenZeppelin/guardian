@@ -617,6 +617,23 @@ impl RpcSettings {
         }
     }
 
+    /// Opens committed-block sources on the configured node for block watch
+    /// (issue #585), polling as `config` says when it falls back to
+    /// polling. Nothing is connected until a source is opened.
+    pub(crate) fn block_source_factory(
+        &self,
+        config: &crate::block_watch::BlockWatchConfig,
+    ) -> Arc<dyn crate::jobs::block_watch::BlockSourceFactory> {
+        match self {
+            Self::Miden(settings) => Arc::new(miden::block_feed::MidenBlockSourceFactory::new(
+                settings.endpoint().clone(),
+                settings.client_settings(),
+                config.poll_interval(),
+                config.poll_block_spacing(),
+            )),
+        }
+    }
+
     /// Connects the network client for these settings. An endpoint override
     /// pointed at a public network identity warns: legitimate for a mirror,
     /// a mistake otherwise.

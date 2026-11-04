@@ -92,6 +92,23 @@ pub const RELEASE_SWEEP_ROTATION_DURATION_SECONDS: &str =
     "guardian_release_sweep_rotation_duration_seconds";
 pub const RELEASE_SWEEP_ACCOUNTS_TOTAL: &str = "guardian_release_sweep_accounts_total";
 
+// --- Block watch (issue #585) ---------------------------------------------
+
+pub const BLOCK_WATCH_BLOCKS_TOTAL: &str = "guardian_block_watch_blocks_total";
+pub const BLOCK_WATCH_LAST_BLOCK: &str = "guardian_block_watch_last_block";
+pub const BLOCK_WATCH_LAG_BLOCKS: &str = "guardian_block_watch_lag_blocks";
+pub const BLOCK_WATCH_ACCOUNT_UPDATES_TOTAL: &str = "guardian_block_watch_account_updates_total";
+pub const BLOCK_WATCH_OBSERVATIONS_PENDING: &str = "guardian_block_watch_observations_pending";
+pub const BLOCK_WATCH_OBSERVATIONS_LONG_WAITING: &str =
+    "guardian_block_watch_observations_long_waiting";
+pub const BLOCK_WATCH_OBSERVATION_VISITS_TOTAL: &str =
+    "guardian_block_watch_observation_visits_total";
+pub const BLOCK_WATCH_RECONNECTS_TOTAL: &str = "guardian_block_watch_reconnects_total";
+pub const BLOCK_WATCH_WALK_REQUESTS_TOTAL: &str = "guardian_block_watch_walk_requests_total";
+pub const BLOCK_WATCH_TRANSPORT: &str = "guardian_block_watch_transport";
+pub const BLOCK_WATCH_BLOCK_PROCESSING_SECONDS: &str =
+    "guardian_block_watch_block_processing_seconds";
+
 // --- Delta / proposal lifecycle ------------------------------------------
 
 pub const DELTAS_SUBMITTED_TOTAL: &str = "guardian_deltas_submitted_total";
@@ -144,8 +161,10 @@ pub const LABEL_VERSION: &str = "version";
 pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
 pub const LABEL_PHASE: &str = "phase";
+pub const LABEL_REASON: &str = "reason";
 
-/// The closed value set for `LABEL_TRANSPORT`.
+/// The closed value set for `LABEL_TRANSPORT`: the request transports,
+/// and the block transports of block watch (`stream`, `poll`).
 pub const TRANSPORT_HTTP: &str = "http";
 pub const TRANSPORT_GRPC: &str = "grpc";
 
@@ -169,6 +188,7 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_GIT_COMMIT,
     LABEL_PROFILE,
     LABEL_PHASE,
+    LABEL_REASON,
 ];
 
 /// Metric type, mirroring the Prometheus instrument kinds in use.
@@ -455,6 +475,89 @@ pub const REGISTRY: &[MetricDef] = &[
                own_key_mismatch, storage_opaque, no_binding, chain_behind_stored, \
                probe_failed). Accounts at their stored base are counted only when that \
                state's guardian key is not this server's.",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_BLOCKS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_TRANSPORT],
+        help: "Committed blocks processed by block watch (issue #585), by the transport \
+               that delivered them (stream, poll).",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_LAST_BLOCK,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "The last block block watch fully processed (its cursor).",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_LAG_BLOCKS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Blocks between the node's committed tip and the last block block watch \
+               processed; near 0 when healthy.",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_ACCOUNT_UPDATES_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Account updates in processed blocks, by what block watch made of them \
+               (not_guarded, skipped_pending_candidate, at_stored, own_history, \
+               unfinished_configuration, observed, undecodable).",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_OBSERVATIONS_PENDING,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Observations (guarded accounts that moved on chain to a state this server \
+               does not hold) awaiting a release-detector visit.",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_OBSERVATIONS_LONG_WAITING,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Observations that had waited about a day (28,800 blocks) or more for this \
+               server's own candidate or a confirmation at their last visit; each is \
+               visited hourly until that resolves.",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_OBSERVATION_VISITS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Release-detector visits of block watch observations, by outcome (checked, \
+               deferred, waiting, failed, dropped).",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_RECONNECTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_REASON],
+        help: "Block sources block watch had to reopen, by reason (status_<grpc code>, \
+               transport, ended, out_of_sequence, malformed, unavailable_block, stall, \
+               timeout, skipped_malformed_block, skipped_unavailable_block).",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_WALK_REQUESTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_REASON],
+        help: "Walks of the release sweep rotation block watch asked for to cover what it \
+               did not see, by reason (cursor_init, cursor_jump, genesis_changed, \
+               genesis_unknown, node_behind_too_long, cursor_ahead_of_tip, \
+               observations_lost, undecodable_updates, skipped_malformed_block, \
+               skipped_unavailable_block, observation_dropped). Requests made while a \
+               walk runs fold into one more walk.",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_TRANSPORT,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_TRANSPORT],
+        help: "1 for the transport block watch reads blocks over (stream, poll), 0 for the \
+               other; both 0 while no source is open.",
+    },
+    MetricDef {
+        name: BLOCK_WATCH_BLOCK_PROCESSING_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Time block watch spent processing one block (membership query, stored \
+               commitments, observations, cursor), in seconds.",
     },
     MetricDef {
         name: DELTAS_SUBMITTED_TOTAL,
@@ -755,6 +858,33 @@ mod tests {
         assert_eq!(grpc_code_label(16), "unauthenticated");
         assert_eq!(grpc_code_label(17), "unknown");
         assert_eq!(grpc_code_label(-1), "unknown");
+    }
+
+    /// The CloudWatch export re-lists the metric inventory by hand
+    /// (`infra/observability.tf`); a block watch metric missing there
+    /// would never reach CloudWatch, and its histogram would be exported
+    /// with lifetime totals unless it is delta-converted too.
+    #[test]
+    fn block_watch_metrics_are_exported_to_cloudwatch() {
+        let terraform = include_str!("../../../../infra/observability.tf");
+        for def in REGISTRY
+            .iter()
+            .filter(|def| def.name.starts_with("guardian_block_watch_"))
+        {
+            assert!(
+                terraform.contains(&format!("\"^{}$\"", def.name)),
+                "{} is not selected by an ADOT metric declaration",
+                def.name
+            );
+            if def.kind == MetricKind::Histogram {
+                assert!(
+                    terraform.contains(&format!("    \"{}\",\n", def.name)),
+                    "{} is not in local.histogram_metrics",
+                    def.name
+                );
+            }
+        }
+        assert!(terraform.contains("guardian_block_watch_lag_blocks"));
     }
 
     /// Label allowlist enforcement: every declared metric follows the

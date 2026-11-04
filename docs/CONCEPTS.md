@@ -270,9 +270,11 @@ proposal before the push. A switch the old operator never stored (one
 created offline) has nothing to relay to, so the push is refused, and so
 is the Rust SDK's offline execution path, which does not push at all. Both
 fall to the sweep: a switch whose proposal is pending on the old operator
-is released within one rotation (`GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS`,
-6 h by default), and a private account switched offline stays active there
-until it re-onboards (see the table above).
+is released within a few blocks of the switch, as soon as block watch sees
+the account move (or within one rotation,
+`GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS`, 6 h by default, with block watch
+off), and a private account switched offline stays active there until it
+re-onboards (see the table above).
 
 ## What Guardian is *not*
 

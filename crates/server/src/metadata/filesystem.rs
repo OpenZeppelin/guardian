@@ -145,9 +145,13 @@ const AUTH_STATE_KEY_SEPARATOR: char = ':';
 /// The rows the release sweep (issue #434) walks: unreleased Miden
 /// accounts with no candidate in flight.
 fn is_release_sweepable(metadata: &AccountMetadata) -> bool {
-    metadata.released_at.is_none()
-        && !metadata.has_pending_candidate
-        && metadata.network_config.is_miden()
+    is_guarded_miden(metadata) && !metadata.has_pending_candidate
+}
+
+/// Unreleased Miden accounts, with or without a candidate in flight: the
+/// accounts block watch (issue #585) sorts a block's updates into.
+fn is_guarded_miden(metadata: &AccountMetadata) -> bool {
+    metadata.released_at.is_none() && metadata.network_config.is_miden()
 }
 
 fn auth_state_key(account_id: &str, signer_commitment: &str) -> String {
@@ -649,6 +653,25 @@ impl MetadataStore for FilesystemMetadataStore {
         Ok(cache.values().filter(|m| is_release_sweepable(m)).count())
     }
 
+    async fn filter_release_sweep_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<crate::metadata::ReleaseSweepMembership, String> {
+        let cache = self.cache.read().await;
+        let mut membership = crate::metadata::ReleaseSweepMembership::default();
+        for id in ids {
+            let Some(metadata) = cache.get(id).filter(|m| is_guarded_miden(m)) else {
+                continue;
+            };
+            if metadata.has_pending_candidate {
+                membership.pending_candidate.push(id.clone());
+            } else {
+                membership.sweepable.push(id.clone());
+            }
+        }
+        Ok(membership)
+    }
+
     async fn find_by_cosigner_commitment(&self, commitment: &str) -> Result<Vec<String>, String> {
         let cache = self.cache.read().await;
         let mut matches = Vec::new();
@@ -946,6 +969,55 @@ mod pause_tests {
             store.count_release_sweep_accounts().await.unwrap(),
             4,
             "the pacing count uses the page filter"
+        );
+    }
+
+    #[tokio::test]
+    async fn filter_release_sweep_ids_sorts_a_blocks_accounts_like_the_rotation() {
+        // Block watch (issue #585): the ids a block updated, sorted into
+        // what the sweep can act on and what the push path owns; released,
+        // EVM and unknown accounts are in neither list.
+        let (store, _dir) = fresh_store().await;
+        let ts = Utc.with_ymd_and_hms(2026, 11, 2, 10, 0, 0).unwrap();
+        for id in ["acct-a", "acct-released"] {
+            let mut metadata = store.get("acct").await.unwrap().unwrap();
+            metadata.account_id = id.into();
+            store.set(metadata).await.unwrap();
+        }
+        let (storage, _states) = states_at(&[("acct-released", "0xbase")]).await;
+        store
+            .set_released_if_state("acct-released", ts, "0xbase", &storage)
+            .await
+            .unwrap();
+        let mut busy = store.get("acct").await.unwrap().unwrap();
+        busy.account_id = "acct-busy".into();
+        busy.has_pending_candidate = true;
+        store.set(busy).await.unwrap();
+        let mut evm = store.get("acct").await.unwrap().unwrap();
+        evm.account_id = "acct-evm".into();
+        evm.network_config = NetworkConfig::Evm {
+            chain_id: 1,
+            account_address: "0xabc".into(),
+            multisig_validator_address: "0xdef".into(),
+        };
+        store.set(evm).await.unwrap();
+
+        let ids: Vec<String> = [
+            "acct-unknown",
+            "acct-a",
+            "acct-busy",
+            "acct-released",
+            "acct-evm",
+            "acct",
+        ]
+        .map(String::from)
+        .to_vec();
+        let membership = store.filter_release_sweep_ids(&ids).await.unwrap();
+        assert_eq!(membership.sweepable, vec!["acct-a", "acct"]);
+        assert_eq!(membership.pending_candidate, vec!["acct-busy"]);
+        assert_eq!(
+            store.filter_release_sweep_ids(&[]).await.unwrap(),
+            crate::metadata::ReleaseSweepMembership::default()
         );
     }
 

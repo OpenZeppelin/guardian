@@ -129,9 +129,11 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_metadata_db_pool_max_size = 32
 # guardian_canonicalization_fast_promotion_enabled = false
 # guardian_max_pending_candidates_per_account = 4 # opt in to queueing chained candidates per account (server default 1, max 16)
-# guardian_release_sweep_enabled = false         # kill switch for the chain-driven release sweep
-# guardian_release_sweep_rotation_seconds = 21600
+# guardian_release_sweep_enabled = false         # turns the release sweep's walk of the fleet off
+# guardian_release_sweep_rotation_seconds = 21600 # 604800 (weekly) once block watch is healthy
 # guardian_release_sweep_max_rate_per_second = 5
+# guardian_block_watch_enabled = false            # kill switch for the committed-block feed (issue #585); unset follows guardian_release_sweep_enabled
+# guardian_block_watch_transport = "auto"         # auto, stream, or poll
 
 # Optional: Log format (text, json, compact) — json for CloudWatch Logs Insights
 # guardian_log_format = "json"

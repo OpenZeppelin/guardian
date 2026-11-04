@@ -607,6 +607,23 @@ pub struct MockStorageBackend {
     pub backfill_state_nonce_calls: Arc<StdMutex<Vec<(String, String, u64)>>>,
     /// Makes `admit_delta_proposal` report the proposal as already stored.
     pub admit_already_stored: Arc<std::sync::atomic::AtomicBool>,
+    /// Stored commitments by account id, served by
+    /// `pull_state_commitments_batch` (accounts not listed have no state).
+    pub state_commitments: Arc<StdMutex<std::collections::HashMap<String, String>>>,
+    /// Served by `pull_state_commitment` instead of the peeked stored
+    /// state: a commitment read that sees another state than the full
+    /// read after it.
+    pub pull_state_commitment_override: Arc<StdMutex<Option<String>>>,
+    /// Scripted `pull_state_commitments_batch` failures, popped last first.
+    pub state_commitments_errors: Arc<StdMutex<Vec<String>>>,
+    /// The ids of every `pull_state_commitments_batch` call, in order.
+    pub state_commitments_calls: Arc<StdMutex<Vec<Vec<String>>>>,
+    /// `(account_id, commitment)` pairs that are canonical delta
+    /// post-states, served by `filter_canonical_post_states`.
+    pub canonical_post_states: Arc<StdMutex<std::collections::HashSet<(String, String)>>>,
+    /// `(account_id, commitment)` pairs that are candidate delta
+    /// post-states, served by `filter_candidate_post_states`.
+    pub candidate_post_states: Arc<StdMutex<std::collections::HashSet<(String, String)>>>,
 }
 
 impl MockStorageBackend {
@@ -641,6 +658,56 @@ impl MockStorageBackend {
                 .clone()
                 .ok_or_else(|| "State not found".to_string()),
         }
+    }
+
+    /// Serve `commitment` as `account_id`'s stored commitment in
+    /// `pull_state_commitments_batch`.
+    pub fn with_state_commitment(self, account_id: &str, commitment: &str) -> Self {
+        self.state_commitments
+            .lock()
+            .unwrap()
+            .insert(account_id.to_string(), commitment.to_string());
+        self
+    }
+
+    /// Serve `commitment` from `pull_state_commitment` whatever the stored
+    /// state.
+    pub fn with_pull_state_commitment(self, commitment: &str) -> Self {
+        *self.pull_state_commitment_override.lock().unwrap() = Some(commitment.to_string());
+        self
+    }
+
+    /// Record `commitment` as the post-state of one of `account_id`'s
+    /// canonical deltas, for `filter_canonical_post_states`.
+    pub fn with_canonical_post_state(self, account_id: &str, commitment: &str) -> Self {
+        self.canonical_post_states
+            .lock()
+            .unwrap()
+            .insert((account_id.to_string(), commitment.to_string()));
+        self
+    }
+
+    /// Record `commitment` as the post-state of one of `account_id`'s
+    /// candidate deltas, for `filter_candidate_post_states`.
+    pub fn with_candidate_post_state(self, account_id: &str, commitment: &str) -> Self {
+        self.candidate_post_states
+            .lock()
+            .unwrap()
+            .insert((account_id.to_string(), commitment.to_string()));
+        self
+    }
+
+    /// Fail the next `pull_state_commitments_batch` with `error`.
+    pub fn with_state_commitments_error(self, error: &str) -> Self {
+        self.state_commitments_errors
+            .lock()
+            .unwrap()
+            .push(error.to_string());
+        self
+    }
+
+    pub fn get_state_commitments_calls(&self) -> Vec<Vec<String>> {
+        self.state_commitments_calls.lock().unwrap().clone()
     }
 
     pub fn with_kind(mut self, kind: crate::storage::StorageType) -> Self {
@@ -1199,7 +1266,52 @@ impl StorageBackend for MockStorageBackend {
     /// The commitment of the stored state, without consuming a response:
     /// see [`Self::peek_stored_state`].
     async fn pull_state_commitment(&self, _account_id: &str) -> StdResult<String, String> {
+        if let Some(commitment) = self.pull_state_commitment_override.lock().unwrap().clone() {
+            return Ok(commitment);
+        }
         self.peek_stored_state().map(|state| state.commitment)
+    }
+
+    async fn filter_canonical_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> StdResult<std::collections::HashSet<(String, String)>, String> {
+        let known = self.canonical_post_states.lock().unwrap();
+        Ok(pairs
+            .iter()
+            .map(|(id, c)| ((*id).to_string(), (*c).to_string()))
+            .filter(|pair| known.contains(pair))
+            .collect())
+    }
+
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> StdResult<std::collections::HashSet<(String, String)>, String> {
+        let known = self.candidate_post_states.lock().unwrap();
+        Ok(pairs
+            .iter()
+            .map(|(id, c)| ((*id).to_string(), (*c).to_string()))
+            .filter(|pair| known.contains(pair))
+            .collect())
+    }
+
+    async fn pull_state_commitments_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> StdResult<std::collections::HashMap<String, String>, String> {
+        self.state_commitments_calls
+            .lock()
+            .unwrap()
+            .push(account_ids.iter().map(|id| (*id).to_string()).collect());
+        if let Some(error) = self.state_commitments_errors.lock().unwrap().pop() {
+            return Err(error);
+        }
+        let stored = self.state_commitments.lock().unwrap();
+        Ok(account_ids
+            .iter()
+            .filter_map(|id| stored.get(*id).map(|c| ((*id).to_string(), c.clone())))
+            .collect())
     }
 
     /// The head of the stored state, without consuming a response: see
@@ -1858,6 +1970,12 @@ pub struct MockMetadataStore {
     pub clear_released_responses:
         Arc<StdMutex<Vec<StdResult<crate::metadata::ClearTransition, String>>>>,
     pub count_release_sweep_accounts_responses: Arc<StdMutex<Vec<StdResult<usize, String>>>>,
+    /// Scripted `filter_release_sweep_ids` answers, popped last first;
+    /// when empty the membership is computed from `rows_by_id`.
+    pub filter_release_sweep_ids_responses:
+        Arc<StdMutex<Vec<StdResult<crate::metadata::ReleaseSweepMembership, String>>>>,
+    /// The ids of every `filter_release_sweep_ids` call, in order.
+    pub filter_release_sweep_ids_calls: Arc<StdMutex<Vec<Vec<String>>>>,
     /// Reported by [`MetadataStore::pool_status`]. Defaults to `None`;
     /// set via [`Self::with_pool_status`].
     pub pool_status: Option<crate::storage::PoolStatus>,
@@ -1946,6 +2064,23 @@ impl MockMetadataStore {
     ) -> Self {
         self.set_released_responses.lock().unwrap().push(response);
         self
+    }
+
+    /// Queue one `filter_release_sweep_ids` answer, ahead of the
+    /// membership computed from the rows.
+    pub fn with_filter_release_sweep_ids(
+        self,
+        response: StdResult<crate::metadata::ReleaseSweepMembership, String>,
+    ) -> Self {
+        self.filter_release_sweep_ids_responses
+            .lock()
+            .unwrap()
+            .push(response);
+        self
+    }
+
+    pub fn get_filter_release_sweep_ids_calls(&self) -> Vec<Vec<String>> {
+        self.filter_release_sweep_ids_calls.lock().unwrap().clone()
     }
 
     /// Queue one `count_release_sweep_accounts` answer; the default with
@@ -2203,5 +2338,38 @@ impl MetadataStore for MockMetadataStore {
             .unwrap()
             .pop()
             .unwrap_or(Ok(0))
+    }
+
+    async fn filter_release_sweep_ids(
+        &self,
+        ids: &[String],
+    ) -> StdResult<crate::metadata::ReleaseSweepMembership, String> {
+        self.filter_release_sweep_ids_calls
+            .lock()
+            .unwrap()
+            .push(ids.to_vec());
+        if let Some(response) = self
+            .filter_release_sweep_ids_responses
+            .lock()
+            .unwrap()
+            .pop()
+        {
+            return response;
+        }
+        let rows = self.rows_by_id.lock().unwrap();
+        let mut membership = crate::metadata::ReleaseSweepMembership::default();
+        for id in ids {
+            match rows.get(id) {
+                Some(row) if row.released_at.is_none() && row.network_config.is_miden() => {
+                    if row.has_pending_candidate {
+                        membership.pending_candidate.push(id.clone());
+                    } else {
+                        membership.sweepable.push(id.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(membership)
     }
 }

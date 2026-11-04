@@ -561,12 +561,35 @@ variable "guardian_max_pending_candidates_per_account" {
 
 variable "guardian_release_sweep_enabled" {
   description = <<-EOT
-    Whether the chain-driven release sweep runs (GUARDIAN_RELEASE_SWEEP_ENABLED).
-    false is the kill switch: release detection then relies on the push path
-    alone.
+    Whether the release sweep rotation walks the fleet
+    (GUARDIAN_RELEASE_SWEEP_ENABLED). false turns the walk off, and block
+    watch with it unless guardian_block_watch_enabled is set; with both off,
+    release detection relies on the push path alone.
   EOT
   type        = bool
   default     = true
+}
+
+variable "guardian_block_watch_enabled" {
+  description = <<-EOT
+    Whether block watch runs (GUARDIAN_BLOCK_WATCH_ENABLED): the committed-block
+    feed that detects guardian switches at block cadence. false leaves
+    detection to the push path and the release sweep rotation. Unset (null)
+    follows guardian_release_sweep_enabled, so a stack that turned the
+    release sweep off does not start block watch by upgrading.
+  EOT
+  type        = bool
+  default     = null
+}
+
+variable "guardian_block_watch_transport" {
+  description = "GUARDIAN_BLOCK_WATCH_TRANSPORT: auto (the node's block stream, polling when it is unavailable), stream, or poll"
+  type        = string
+  default     = "auto"
+  validation {
+    condition     = contains(["auto", "stream", "poll"], var.guardian_block_watch_transport)
+    error_message = "guardian_block_watch_transport must be auto, stream, or poll."
+  }
 }
 
 variable "guardian_release_sweep_rotation_seconds" {

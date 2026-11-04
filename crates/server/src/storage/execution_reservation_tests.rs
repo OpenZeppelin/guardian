@@ -2150,6 +2150,12 @@ mod filesystem {
         async fn count_release_sweep_accounts(&self) -> Result<usize, String> {
             self.0.count_release_sweep_accounts().await
         }
+        async fn filter_release_sweep_ids(
+            &self,
+            ids: &[String],
+        ) -> Result<crate::metadata::ReleaseSweepMembership, String> {
+            self.0.filter_release_sweep_ids(ids).await
+        }
     }
 
     #[tokio::test]

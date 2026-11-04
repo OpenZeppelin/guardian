@@ -76,6 +76,10 @@ use crate::testing::helpers::{
     CapturingAuditor, IntegrationMockNetworkClient, create_test_app_state,
 };
 
+// Block watch (issue #585) scenarios over this suite's fixtures.
+#[path = "block_watch.rs"]
+mod block_watch;
+
 fn commitment_hex(account: &Account) -> String {
     format!("0x{}", hex::encode(account.to_commitment().as_bytes()))
 }

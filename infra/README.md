@@ -115,7 +115,8 @@ server_image_uri = "123456789012.dkr.ecr.us-east-1.amazonaws.com/guardian-server
 # guardian_metadata_db_pool_max_size = 32
 # guardian_canonicalization_fast_promotion_enabled = false
 # guardian_max_pending_candidates_per_account = 4  # opt in to queueing chained candidates (server default 1, max 16; upgrade TS clients first, see docs/CONFIGURATION.md)
-# guardian_release_sweep_enabled = false         # kill switch for the chain-driven release sweep
+# guardian_release_sweep_enabled = false         # turns the release sweep's walk of the fleet off
+# guardian_block_watch_enabled = false            # kill switch for the committed-block feed
 
 # Optional: dashboard operator Falcon public keys managed by Terraform
 # guardian_operator_public_keys = [
@@ -301,8 +302,10 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_metadata_db_pool_max_size` | matches storage by default | Guardian metadata DB pool size |
 | `guardian_canonicalization_fast_promotion_enabled` | `true` | Enables the recent-candidate promotion-only pass in the ECS task definition |
 | `guardian_max_pending_candidates_per_account` | server default (`1`) | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`: chained candidate deltas one account may hold in flight (issue #17). `1` keeps one in-flight candidate per account; `2` to `16` opts in to queueing back-to-back transactions, after TypeScript clients are upgraded (see [`docs/CONFIGURATION.md`](../docs/CONFIGURATION.md)) |
-| `guardian_release_sweep_enabled` | `true` | Runs the chain-driven release sweep; `false` is its kill switch |
-| `guardian_release_sweep_rotation_seconds` | server default (`21600`) | Target time for one release sweep walk of the fleet |
+| `guardian_release_sweep_enabled` | `true` | Runs the release sweep's walk of the fleet (the rotation); `false` turns the walk off, and block watch too unless `guardian_block_watch_enabled` is set |
+| `guardian_release_sweep_rotation_seconds` | server default (`21600`) | Target time for one release sweep walk of the fleet; `604800` (weekly) is enough once block watch is healthy |
+| `guardian_block_watch_enabled` | unset (follows `guardian_release_sweep_enabled`) | Runs block watch (issue #585): switch detection from the node's committed-block feed; `false` is its kill switch, `true` runs it even with the release sweep's walk turned off |
+| `guardian_block_watch_transport` | `auto` | `GUARDIAN_BLOCK_WATCH_TRANSPORT`: `auto` (the block stream, polling when it is unavailable), `stream`, or `poll` |
 | `guardian_release_sweep_max_rate_per_second` | server default (`5`) | Cap on release sweep account visits per second (its share of chain-node RPC capacity) |
 | `guardian_log_format` | `json` | Log format for `GUARDIAN_LOG_FORMAT` (`text`, `json`, `compact`) |
 | `log_retention_days` | `7` | CloudWatch log retention in days for the cluster and server groups (prod pins them to 365) and for the EMF metrics group |
