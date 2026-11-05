@@ -17,7 +17,7 @@ async fn test_fetch_account_commitment_from_devnet() {
 
     // Also perform a direct RPC call to assert connectivity
     let endpoint = NetworkType::MidenDevnet.rpc_endpoint();
-    let mut rpc_client = miden_rpc_client::MidenRpcClient::connect(endpoint)
+    let rpc_client = miden_rpc_client::MidenRpcClient::connect(endpoint)
         .await
         .expect("Failed to connect RPC client");
     rpc_client

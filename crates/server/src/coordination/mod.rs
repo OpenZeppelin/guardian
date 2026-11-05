@@ -1,3 +1,4 @@
+pub mod block_watch_store;
 pub mod challenge_store;
 pub mod execution_leases;
 pub mod leader;
@@ -7,6 +8,10 @@ pub mod read_records;
 pub mod session_store;
 pub mod stats_store;
 
+pub use block_watch_store::{
+    BlockWatchStore, Cursor, CursorWrite, FencedWrite, InMemoryBlockWatchStore, NewObservation,
+    Observation, WalkRequests,
+};
 pub use challenge_store::{
     ChallengePayload, ChallengeStore, InMemoryChallengeStore, StoredChallenge,
 };
@@ -71,6 +76,9 @@ pub struct CoordinationHandles {
     pub execution_leases: Arc<dyn ExecutionLeases>,
     /// Shared publication store for the `/dashboard/stats` aggregate.
     pub stats_store: Arc<dyn StatsStore>,
+    /// Block watch cursor and observations (issue #585), written by the
+    /// release sweep lease holder.
+    pub block_watch_store: Arc<dyn BlockWatchStore>,
     /// Miden account sessions.
     pub miden_sessions: Arc<dyn SessionStore>,
     /// Record of accepted session reads (`unique` read replay policy).
@@ -82,6 +90,17 @@ pub struct CoordinationHandles {
 }
 
 impl CoordinationHandles {
+    /// Single-process handles whose block watch cursor survives restarts
+    /// in `<block_watch_dir>/cursor.json` (the filesystem backend).
+    pub fn in_memory_with_block_watch_dir(
+        block_watch_dir: std::path::PathBuf,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            block_watch_store: Arc::new(InMemoryBlockWatchStore::persistent(block_watch_dir)?),
+            ..Self::in_memory()
+        })
+    }
+
     pub fn in_memory() -> Self {
         Self {
             mode: CoordinationMode::SingleProcess,
@@ -95,6 +114,7 @@ impl CoordinationHandles {
             )),
             execution_leases: Arc::new(InMemoryExecutionLeases::new()),
             stats_store: Arc::new(InMemoryStatsStore::new()),
+            block_watch_store: Arc::new(InMemoryBlockWatchStore::new()),
             miden_sessions: Arc::new(InMemorySessionStore::new()),
             read_records: Arc::new(InMemoryReadRecords::new()),
             #[cfg(feature = "evm")]
@@ -115,7 +135,8 @@ impl CoordinationHandles {
         cipher: Option<Arc<dyn crate::storage::encryption::cipher::StorageCipher>>,
     ) -> Self {
         use postgres::{
-            PgChallengeStore, PgLeaseElector, PgReadRecords, PgSessionStore, PgStatsStore,
+            PgBlockWatchStore, PgChallengeStore, PgLeaseElector, PgReadRecords, PgSessionStore,
+            PgStatsStore,
         };
         Self {
             mode: CoordinationMode::Shared,
@@ -139,6 +160,7 @@ impl CoordinationHandles {
             execution_leases: Arc::new(PgExecutionLeases::new(pool.clone())),
             stats_store: Arc::new(PgStatsStore::new(pool.clone(), cipher)),
             read_records: Arc::new(PgReadRecords::new(pool.clone())),
+            block_watch_store: Arc::new(PgBlockWatchStore::new(pool.clone())),
             miden_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Miden)),
             #[cfg(feature = "evm")]
             evm_sessions: Arc::new(PgSessionStore::new(pool.clone(), Realm::Evm)),

@@ -19,9 +19,14 @@ pub struct AppState {
     pub network_client: Arc<dyn NetworkClient>,
     pub ack: AckRegistry,
     pub canonicalization: Option<CanonicalizationConfig>,
-    /// Chain-driven release sweep settings (issue #434); `None` when
-    /// the sweep task is not running.
+    /// Chain-driven release sweep settings (issue #434). `enabled` says
+    /// whether the rotation walks the fleet; the pacing and confirmation
+    /// settings also govern block watch's observation visits. `None` when
+    /// the sweep task is not configured at all.
     pub release_sweep: Option<ReleaseSweepConfig>,
+    /// Block watch (issue #585): the committed-block feed that drives
+    /// switch detection; `None` when it is disabled.
+    pub block_watch: Option<crate::jobs::block_watch::BlockWatchHandle>,
     pub clock: Arc<dyn Clock>,
     pub dashboard: Arc<DashboardState>,
     /// Always-on audit writer (feature 006-operator-authz). On

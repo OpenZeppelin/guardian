@@ -371,6 +371,7 @@ mod tests {
             ack,
             canonicalization: None,
             release_sweep: None,
+            block_watch: None,
             clock: Arc::new(MockClock::fixed("2026-09-11T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

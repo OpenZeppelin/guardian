@@ -119,6 +119,39 @@ pub struct DashboardReleaseSweepConfig {
     pub confirmations: u32,
 }
 
+/// Block watch (issue #585): the committed-block feed that drives switch
+/// detection. The feed runs on the release sweep lease holder only; every
+/// replica reports the shared cursor and backlog, and only the holder the
+/// live transport, tip and lag.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct DashboardBlockWatchInfo {
+    /// Configured transport: `"auto"` (the stream, polling when it is
+    /// unavailable), `"stream"` or `"poll"`.
+    pub transport_mode: &'static str,
+    /// Transport of this replica's open block source (`"stream"` or
+    /// `"poll"`); `null` on a replica that does not hold the feed, or
+    /// between reconnect attempts.
+    pub transport: Option<&'static str>,
+    /// The last block block watch fully processed (the shared cursor);
+    /// `null` before the first block, or when the store could not be read.
+    pub last_block: Option<u32>,
+    /// The node's committed tip as this replica's feed last saw it; `null`
+    /// without a feed.
+    pub chain_tip: Option<u32>,
+    /// `chain_tip - last_block` on the feed's holder; `null` elsewhere.
+    pub lag_blocks: Option<u32>,
+    /// Observations awaiting a release-detector visit; `null` when the
+    /// store could not be read.
+    pub pending_observations: Option<u64>,
+    /// Tip read interval of the polling transport, in seconds.
+    pub poll_seconds: u64,
+    /// No block for this long reopens the source, in seconds.
+    pub stall_seconds: u64,
+    /// Largest gap replayed on (re)start; a larger one starts at the tip
+    /// and requests one rotation.
+    pub max_catchup_blocks: u32,
+}
+
 /// Backend configuration snapshot. Stable for the lifetime of the
 /// process; lets operators distinguish a filesystem dev box from a
 /// postgres-backed prod replica without inspecting environment.
@@ -126,8 +159,11 @@ pub struct DashboardReleaseSweepConfig {
 pub struct DashboardBackendInfo {
     /// `"filesystem"` or `"postgres"` from the cargo feature flag.
     pub storage: &'static str,
-    /// Release sweep settings; `None` when the sweep is disabled.
+    /// Release sweep rotation settings; `None` when the rotation is
+    /// disabled.
     pub release_sweep: Option<DashboardReleaseSweepConfig>,
+    /// Block watch state; `None` when block watch is disabled.
+    pub block_watch: Option<DashboardBlockWatchInfo>,
     /// Acknowledgement signature schemes wired into the server's
     /// `AckRegistry`. Stable order (alphabetic) so clients can rely on
     /// the listing.
@@ -173,6 +209,39 @@ pub struct DashboardInfoResponse {
     /// response. Stable strings — clients branch on these to decide
     /// whether to retry or rely on the partial value.
     pub degraded_aggregates: Vec<String>,
+}
+
+/// The block watch section: config, the shared cursor and backlog from
+/// the store, and this replica's live feed. A store that cannot be read
+/// leaves its fields `null` rather than failing the overview.
+async fn block_watch_info(state: &AppState) -> Option<DashboardBlockWatchInfo> {
+    let handle = state.block_watch.as_ref()?;
+    let live = handle.status.snapshot();
+    let last_block = match handle.store.cursor(handle.network).await {
+        Ok(cursor) => cursor.map(|cursor| cursor.last_block),
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to read the block watch cursor");
+            None
+        }
+    };
+    let pending_observations = match handle.store.count_pending_observations().await {
+        Ok(count) => Some(count),
+        Err(error) => {
+            tracing::warn!(error = %error, "Failed to count block watch observations");
+            None
+        }
+    };
+    Some(DashboardBlockWatchInfo {
+        transport_mode: handle.config.transport.as_str(),
+        transport: live.transport.map(|transport| transport.as_str()),
+        last_block,
+        chain_tip: live.chain_tip,
+        lag_blocks: live.lag_blocks(),
+        pending_observations,
+        poll_seconds: handle.config.poll_seconds,
+        stall_seconds: handle.config.stall_seconds,
+        max_catchup_blocks: handle.config.max_catchup_blocks,
+    })
 }
 
 /// Compute the dashboard info snapshot.
@@ -230,6 +299,7 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
                 confirmations: c.confirmations,
             }
         }),
+        block_watch: block_watch_info(state).await,
     };
 
     let build = DashboardBuildInfo {
@@ -342,6 +412,7 @@ mod tests {
             ack,
             canonicalization: None,
             release_sweep: None,
+            block_watch: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -415,6 +486,7 @@ mod tests {
             ack,
             canonicalization: None,
             release_sweep: None,
+            block_watch: None,
             clock: Arc::new(MockClock::fixed("2026-09-15T12:00:00Z")),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -594,6 +666,89 @@ mod tests {
         assert_eq!(canon.check_interval_seconds, 30);
         assert_eq!(canon.max_retries, 5);
         assert_eq!(canon.submission_grace_period_seconds, 120);
+    }
+
+    fn block_watch_handle(
+        store: std::sync::Arc<dyn crate::coordination::BlockWatchStore>,
+    ) -> crate::jobs::block_watch::BlockWatchHandle {
+        crate::jobs::block_watch::BlockWatchHandle {
+            config: crate::block_watch::BlockWatchConfig::default(),
+            network: crate::network::NetworkType::MidenDevnet,
+            store,
+            factory: std::sync::Arc::new(
+                crate::jobs::block_watch::testing::ScriptedBlockSourceFactory::new(),
+            ),
+            status: std::sync::Arc::default(),
+            durable_observations: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn block_watch_is_null_when_disabled() {
+        let state = build_state(Vec::new(), MockStorageBackend::new()).await;
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert!(info.backend.block_watch.is_none());
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json["backend"]["block_watch"].is_null());
+    }
+
+    #[tokio::test]
+    async fn block_watch_reports_the_shared_cursor_on_every_replica_and_the_feed_on_its_holder() {
+        use crate::coordination::BlockWatchStore;
+        let store = std::sync::Arc::new(crate::coordination::InMemoryBlockWatchStore::new());
+        let fence = crate::storage::LeaseFence {
+            lease_name: "release_sweep".into(),
+            holder_id: "single-process".into(),
+            fence_token: 0,
+        };
+        store
+            .set_cursor(
+                crate::network::NetworkType::MidenDevnet,
+                574_040,
+                None,
+                &fence,
+            )
+            .await
+            .unwrap();
+        store
+            .record_observations(
+                &[crate::coordination::NewObservation {
+                    account_id: "0xa".into(),
+                    block_num: 574_040,
+                    on_chain_commitment: "0xc".into(),
+                }],
+                chrono::Utc::now(),
+            )
+            .await
+            .unwrap();
+        let mut state = build_state(Vec::new(), MockStorageBackend::new()).await;
+        let handle = block_watch_handle(store);
+        state.block_watch = Some(handle.clone());
+
+        // A replica without the feed: shared state only.
+        let info = get_dashboard_info(&state).await.unwrap();
+        let watch = info.backend.block_watch.clone().expect("enabled");
+        assert_eq!(watch.transport_mode, "auto");
+        assert_eq!(watch.transport, None);
+        assert_eq!(watch.last_block, Some(574_040));
+        assert_eq!(watch.chain_tip, None);
+        assert_eq!(watch.lag_blocks, None);
+        assert_eq!(watch.pending_observations, Some(1));
+        assert_eq!(watch.poll_seconds, 3);
+        assert_eq!(watch.stall_seconds, 60);
+        assert_eq!(watch.max_catchup_blocks, 10_000);
+
+        // The holder: its live feed too.
+        handle
+            .status
+            .set_transport(crate::jobs::block_watch::Transport::Stream);
+        handle.status.set_last_block(574_040);
+        handle.status.set_chain_tip(574_041);
+        let info = get_dashboard_info(&state).await.unwrap();
+        let watch = info.backend.block_watch.expect("enabled");
+        assert_eq!(watch.transport, Some("stream"));
+        assert_eq!(watch.chain_tip, Some(574_041));
+        assert_eq!(watch.lag_blocks, Some(1));
     }
 
     #[tokio::test]

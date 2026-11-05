@@ -49,6 +49,15 @@ fn postgres_timestamp_precision(timestamp: DateTime<Utc>) -> Result<DateTime<Utc
 const MIGRATION_LOCK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 const MIGRATION_LOCK_POLL: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// One matched post-state of [`PostgresService::filter_post_states_of_kind`].
+#[derive(diesel::QueryableByName)]
+struct PostStateRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    account_id: String,
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    new_commitment: String,
+}
+
 #[derive(diesel::QueryableByName)]
 struct AdvisoryLockAcquired {
     #[diesel(sql_type = diesel::sql_types::Bool)]
@@ -114,6 +123,52 @@ pub struct PostgresService {
 }
 
 impl PostgresService {
+    /// Which of `pairs` (`(account_id, commitment)`) are the post-state of
+    /// one of that account's deltas whose status is `kind`, in one bounded
+    /// statement per chunk: block watch's own-history and candidate-landing
+    /// filters (issue #585).
+    async fn filter_post_states_of_kind(
+        &self,
+        pairs: &[(&str, &str)],
+        kind: &'static str,
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        let mut found = std::collections::HashSet::new();
+        if pairs.is_empty() {
+            return Ok(found);
+        }
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        for chunk in pairs.chunks(crate::metadata::MEMBERSHIP_CHUNK) {
+            let accounts: Vec<String> = chunk.iter().map(|(id, _)| (*id).to_string()).collect();
+            let commitments: Vec<String> = chunk.iter().map(|(_, c)| (*c).to_string()).collect();
+            // Joined pair by pair, so each is one probe of
+            // `idx_deltas_account_new_commitment`: an account's history can
+            // be long, and filtering both columns by lists reads all of it.
+            let rows: Vec<PostStateRow> = diesel::sql_query(
+                "SELECT d.account_id, d.new_commitment \
+                 FROM unnest($1::text[], $2::text[]) AS wanted(account_id, new_commitment) \
+                 JOIN deltas d \
+                   ON d.account_id = wanted.account_id \
+                  AND d.new_commitment = wanted.new_commitment \
+                 WHERE d.status_kind = $3",
+            )
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(accounts)
+            .bind::<diesel::sql_types::Array<diesel::sql_types::Text>, _>(commitments)
+            .bind::<diesel::sql_types::Text, _>(kind)
+            .load(&mut conn)
+            .await
+            .map_err(|e| format!("Failed to match {kind} post-states: {e}"))?;
+            found.extend(
+                rows.into_iter()
+                    .map(|row| (row.account_id, row.new_commitment)),
+            );
+        }
+        Ok(found)
+    }
+
     pub async fn new(database_url: &str, pool_max_size: usize) -> Result<Self, String> {
         let pool = build_postgres_pool(database_url, pool_max_size).await?;
         Ok(Self { pool })
@@ -1340,6 +1395,51 @@ impl StorageBackend for PostgresService {
             .first::<String>(&mut conn)
             .await
             .map_err(|e| format!("Failed to pull state commitment: {e}"))
+    }
+
+    // Two columns per canonical delta of the given accounts whose post-state
+    // is one of the given commitments, in bounded chunks; payloads are never
+    // read.
+    async fn filter_canonical_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        self.filter_post_states_of_kind(pairs, "canonical").await
+    }
+
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        self.filter_post_states_of_kind(pairs, "candidate").await
+    }
+
+    // Two columns per row, looked up by primary key in bounded chunks:
+    // `state_json` is never read.
+    async fn pull_state_commitments_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, String>, String> {
+        let mut out = std::collections::HashMap::with_capacity(account_ids.len());
+        if account_ids.is_empty() {
+            return Ok(out);
+        }
+        let mut conn = self
+            .pool
+            .get()
+            .await
+            .map_err(|e| format!("Failed to get connection: {e}"))?;
+        for chunk in account_ids.chunks(crate::metadata::MEMBERSHIP_CHUNK) {
+            let owned: Vec<String> = chunk.iter().map(|id| (*id).to_string()).collect();
+            let rows: Vec<(String, String)> = states::table
+                .filter(states::account_id.eq_any(&owned))
+                .select((states::account_id, states::commitment))
+                .load(&mut conn)
+                .await
+                .map_err(|e| format!("Failed to batch-pull state commitments: {e}"))?;
+            out.extend(rows);
+        }
+        Ok(out)
     }
 
     // Two columns of one row, looked up by primary key: `state_json` is
@@ -3828,6 +3928,128 @@ mod tests {
         assert_eq!(
             service.pull_state_head(&account_id).await.unwrap(),
             head("0xolder", Some(1))
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn canonical_post_states_are_matched_in_sql_for_canonical_deltas_only() {
+        use crate::delta_object::DeltaStatus;
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xownhist{}", chrono::Utc::now().timestamp_micros());
+        let other = format!("{account_id}-other");
+        for nonce in 1..=3 {
+            let mut delta = create_test_delta(&account_id, nonce);
+            delta.new_commitment = Some(format!("0xpost{nonce}"));
+            service.submit_delta(&delta).await.expect("canonical delta");
+        }
+        let mut candidate = create_test_delta(&account_id, 4);
+        candidate.new_commitment = Some("0xpost4".to_string());
+        candidate.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        service.submit_delta(&candidate).await.expect("candidate");
+
+        let found = service
+            .filter_canonical_post_states(&[
+                (account_id.as_str(), "0xpost1"),
+                (account_id.as_str(), "0xpost3"),
+                (account_id.as_str(), "0xpost4"),
+                (account_id.as_str(), "0xunknown"),
+                // Another account's commitment never matches this one's.
+                (other.as_str(), "0xpost2"),
+            ])
+            .await
+            .expect("lookup");
+        let mut found: Vec<(String, String)> = found.into_iter().collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                (account_id.clone(), "0xpost1".to_string()),
+                (account_id.clone(), "0xpost3".to_string()),
+            ]
+        );
+        assert!(
+            service
+                .filter_canonical_post_states(&[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn candidate_post_states_are_matched_in_sql_for_candidates_only() {
+        use crate::delta_object::DeltaStatus;
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let account_id = format!("0xcandpost{}", chrono::Utc::now().timestamp_micros());
+        let other = format!("{account_id}-other");
+        let mut canonical = create_test_delta(&account_id, 1);
+        canonical.new_commitment = Some("0xpost1".to_string());
+        service.submit_delta(&canonical).await.expect("canonical");
+        for nonce in 2..=3 {
+            let mut candidate = create_test_delta(&account_id, nonce);
+            candidate.new_commitment = Some(format!("0xpost{nonce}"));
+            candidate.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+            service.submit_delta(&candidate).await.expect("candidate");
+        }
+
+        let found = service
+            .filter_candidate_post_states(&[
+                (account_id.as_str(), "0xpost1"),
+                (account_id.as_str(), "0xpost3"),
+                (account_id.as_str(), "0xunknown"),
+                (other.as_str(), "0xpost2"),
+            ])
+            .await
+            .expect("lookup");
+        assert_eq!(
+            found.into_iter().collect::<Vec<_>>(),
+            vec![(account_id.clone(), "0xpost3".to_string())],
+            "candidates only, of the account asked about"
+        );
+        assert!(
+            service
+                .filter_candidate_post_states(&[])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn state_commitments_are_batch_read_across_chunks_and_missing_rows_omitted() {
+        // Block watch (issue #585) reads the stored commitment of every
+        // guarded account a block updated, in chunks of 1,000 ids.
+        let url = crate::testing::pg::test_database_url().await;
+        let service = PostgresService::new(&url, 4).await.expect("storage");
+        let prefix = format!("0xbatch{}", chrono::Utc::now().timestamp_micros());
+        let id = |n: usize| format!("{prefix}-{n:05}");
+        let stored = [0, 999, 1_000, 1_500];
+        for n in stored {
+            let mut state = create_test_state(&id(n));
+            state.commitment = format!("0xc{n}");
+            service.submit_state(&state).await.expect("submit");
+        }
+        let ids: Vec<String> = (0..1_501).map(id).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let commitments = service
+            .pull_state_commitments_batch(&refs)
+            .await
+            .expect("batch read");
+        assert_eq!(commitments.len(), stored.len(), "missing rows are omitted");
+        for n in stored {
+            assert_eq!(commitments[&id(n)], format!("0xc{n}"));
+        }
+        assert!(
+            service
+                .pull_state_commitments_batch(&[])
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 

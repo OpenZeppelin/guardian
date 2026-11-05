@@ -2585,6 +2585,81 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn canonical_post_states_are_found_among_canonical_deltas_only() {
+        // Block watch's own-history check (issue #585), through the trait's
+        // default over the canonical delta history (paged).
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        for nonce in 1..=3 {
+            let mut delta = create_test_delta(account_id, nonce);
+            delta.new_commitment = Some(format!("0xpost{nonce}"));
+            storage.submit_delta(&delta).await.expect("canonical delta");
+        }
+        let mut candidate = create_test_delta(account_id, 4);
+        candidate.new_commitment = Some("0xpost4".to_string());
+        candidate.status = DeltaStatus::candidate("2024-11-14T12:00:00Z".to_string());
+        storage.submit_delta(&candidate).await.expect("candidate");
+
+        let found = storage
+            .filter_canonical_post_states(&[
+                (account_id, "0xpost1"),
+                (account_id, "0xpost3"),
+                (account_id, "0xpost4"),
+                (account_id, "0xunknown"),
+                ("0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d", "0xpost1"),
+            ])
+            .await
+            .expect("lookup");
+        let mut found: Vec<(String, String)> = found.into_iter().collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                (account_id.to_string(), "0xpost1".to_string()),
+                (account_id.to_string(), "0xpost3".to_string()),
+            ],
+            "a candidate's post-state is not a state this server held"
+        );
+        let found = storage
+            .filter_candidate_post_states(&[
+                (account_id, "0xpost1"),
+                (account_id, "0xpost4"),
+                ("0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d", "0xpost4"),
+            ])
+            .await
+            .expect("candidate lookup");
+        assert_eq!(
+            found.into_iter().collect::<Vec<_>>(),
+            vec![(account_id.to_string(), "0xpost4".to_string())],
+            "only the candidate's post-state, of its own account"
+        );
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn state_commitments_batch_omits_accounts_without_a_state() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let storage = FilesystemService::new(temp_dir.clone())
+            .await
+            .expect("Failed to create storage");
+        let stored = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let mut state = create_test_state(stored);
+        state.commitment = "0xstored".to_string();
+        storage.submit_state(&state).await.expect("state seed");
+
+        let commitments = storage
+            .pull_state_commitments_batch(&[stored, "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d"])
+            .await
+            .expect("batch read");
+        assert_eq!(commitments.len(), 1);
+        assert_eq!(commitments[stored], "0xstored");
+        let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
     async fn test_pull_recoverable_deltas_filters_and_orders() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
         let storage = FilesystemService::new(temp_dir.clone())

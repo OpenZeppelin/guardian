@@ -12,6 +12,7 @@ pub mod middleware;
 
 #[cfg(feature = "postgres")]
 mod schema;
+pub use builder::block_watch;
 pub use builder::canonicalization;
 pub use builder::clock;
 pub use builder::logging;

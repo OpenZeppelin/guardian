@@ -37,6 +37,8 @@ async fn main() {
 
     let stage = Stage::from_env().expect("Invalid GUARDIAN_ENV");
 
+    let release_sweep = server::release_sweep::ReleaseSweepConfig::from_env()
+        .expect("Invalid release sweep configuration");
     ServerBuilder::new()
         .with_logging(LoggingConfig::default())
         .network(network_type)
@@ -62,9 +64,10 @@ async fn main() {
             server::config::execution::ExecutionConfig::from_env()
                 .expect("Invalid Guardian execution configuration"),
         )
-        .with_release_sweep(Some(
-            server::release_sweep::ReleaseSweepConfig::from_env()
-                .expect("Invalid release sweep configuration"),
+        .with_release_sweep(Some(release_sweep.clone()))
+        .with_block_watch(Some(
+            server::block_watch::BlockWatchConfig::from_env_following(release_sweep.enabled)
+                .expect("Invalid block watch configuration"),
         ))
         .with_rate_limit(RateLimitConfig::from_env())
         .with_body_limit(BodyLimitConfig::from_env())

@@ -73,6 +73,11 @@ pub fn build_recorder() -> PrometheusRecorder {
             DURATION_BUCKETS,
         )
         .expect("static duration buckets are non-empty")
+        .set_buckets_for_metric(
+            Matcher::Full(names::BLOCK_WATCH_BLOCK_PROCESSING_SECONDS.to_string()),
+            DURATION_BUCKETS,
+        )
+        .expect("static duration buckets are non-empty")
         // Full-name matchers take precedence over suffix matchers, so
         // this overrides the request-scale rule for the run histogram.
         .set_buckets_for_metric(

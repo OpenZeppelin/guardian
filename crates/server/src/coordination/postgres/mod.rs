@@ -1,9 +1,11 @@
+pub mod block_watch_store;
 pub mod challenge_store;
 pub mod lease;
 pub mod read_records;
 pub mod session_store;
 pub mod stats_store;
 
+pub use block_watch_store::PgBlockWatchStore;
 pub use challenge_store::PgChallengeStore;
 pub use lease::PgLeaseElector;
 pub use read_records::PgReadRecords;
