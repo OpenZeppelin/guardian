@@ -28,6 +28,7 @@ services:
     ports:
       - "3000:3000"
       - "50051:50051"
+      - "127.0.0.1:9464:9464"
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,6 +41,10 @@ services:
       - DATABASE_URL=postgres://guardian:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/guardian
       - GUARDIAN_KEYSTORE_PATH=/var/guardian/keystore
       - GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=/etc/guardian/operators.json
+      - GUARDIAN_METRICS_ENABLED=true
+      - GUARDIAN_METRICS_ADDR=0.0.0.0:9464
+      - GUARDIAN_METRICS_BEARER_TOKEN=devtoken
+      - GUARDIAN_METRICS_REFRESH_INTERVAL_SECS=15
 
   postgres:
     image: postgres:16-alpine
