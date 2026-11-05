@@ -33,8 +33,8 @@ resource "aws_ecs_task_definition" "server" {
   family                   = local.server_task_family
   network_mode             = "awsvpc"
   requires_compatibilities = ["FARGATE"]
-  cpu                      = var.server_cpu
-  memory                   = var.server_memory
+  cpu                      = local.effective_server_cpu
+  memory                   = local.effective_server_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn            = aws_iam_role.ecs_task.arn
 
@@ -44,6 +44,11 @@ resource "aws_ecs_task_definition" "server" {
   }
 
   lifecycle {
+    precondition {
+      condition     = local.server_task_size_supported
+      error_message = "server_cpu = ${local.effective_server_cpu} with server_memory = ${local.effective_server_memory} MiB is not a Fargate task size. Set both together (for example 512 / 1024, 1024 / 2048, 2048 / 4096, 4096 / 8192); leaving server_cpu unset uses the stage default (2048 in prod, 512 otherwise) and server_memory defaults to twice the CPU units."
+    }
+
     precondition {
       condition     = var.guardian_execution_enabled != true || local.tx_prover_configured
       error_message = "guardian_execution_enabled = true needs a prover: set GUARDIAN_TX_PROVER_URL (guardian_tx_prover_url) or GUARDIAN_TX_PROVER_URL_SECRET_ARN (guardian_tx_prover_url_secret_arn)."

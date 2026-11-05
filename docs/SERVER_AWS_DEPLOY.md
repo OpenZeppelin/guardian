@@ -4,7 +4,7 @@ This guide covers the current AWS deployment for Guardian. The AWS stack now use
 
 The deployment surface supports two stage profiles:
 - `DEPLOY_STAGE=dev` keeps the current low-cost, fixed-capacity behavior
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, 2 vCPU / 4 GiB server tasks, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
 
 ## Published Docker images
 
@@ -998,6 +998,8 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 - higher ECS desired count
 - ECS service autoscaling
 - larger default RDS instance class and base storage
+- 2 vCPU / 4 GiB server tasks (`server_cpu = 2048`, `server_memory = 4096`; 512 / 1024 in dev)
+  (raised from 512 / 1024 for session-read load, see [Sizing for session reads](#sizing-for-session-reads)). An existing prod stack that never set `server_cpu` rolls its tasks to the new size on the next apply, about four times the Fargate cost per task; set `server_cpu = 512` and `server_memory = 1024` to keep the previous size. Set the two together: `server_memory` defaults to twice `server_cpu`, and a plan stops with an error when the pair is not a Fargate size (for example a stack that set only `server_memory = 2048` now needs `server_cpu = 512` as well, or to drop the override).
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
@@ -1057,15 +1059,14 @@ The last row is not yet qualified for latency: at 10,000 polls/s on
 seconds. 6 to 8 tasks allows for that uneven spread; a perfectly even spread
 would fit in about 4.
 
-Set `rds_instance_class`, `server_cpu = 2048`, `server_memory = 4096`, and
-`server_desired_count` / `server_autoscaling_max_capacity` to match. The prod
-profile's defaults (`db.r6g.large`, 512 CPU units per task) are far below
-these sizes; `db.r6g` (Graviton2, memory-optimized) was not measured, and
-memory is not the constraint here, so prefer the general-purpose Graviton3
-class. Every row assumes a direct database route: the measurements did not
-go through RDS Proxy, which adds a round trip to every poll
-(`rds_proxy_route_database_url = false`). Pool sizes of 32 per pool per task
-fit comfortably: 4 tasks held 241 connections. Rate limits were off in the
+Set `rds_instance_class` and `server_desired_count` /
+`server_autoscaling_max_capacity` to match; the prod profile already runs
+2 vCPU / 4 GiB tasks (`server_cpu = 2048`, `server_memory = 4096`). Its
+default database class, `db.r6g.large` (Graviton2, memory-optimized), was not
+measured, and memory is not the constraint here, so prefer the
+general-purpose Graviton3 class. The measurements connected the servers to
+the database directly. Pool sizes of 32 per pool per task fit comfortably:
+4 tasks held 241 connections. Rate limits were off in the
 benchmark; size `guardian_rate_per_min` for the number of users behind each
 client IP before relying on these numbers.
 
@@ -1074,6 +1075,57 @@ with canonicalization off; size the leader with the table above), full
 `get_state` on every poll instead of the nonce poll, and more than about
 15,000 accounts. Writes at the benchmark mix (one push per writer every
 10 s) added little load.
+
+##### Recommended production settings
+
+The prod profile runs two 2 vCPU / 4 GiB tasks (`server_cpu = 2048`,
+`server_memory = 4096`) with autoscaling to 6, and `db.r6g.large`. Two tasks
+serve about 8,000 active users polling every 2 s at the 65% autoscaling
+target. For a production deployment that serves session users:
+
+1. **Set the autoscaling maximum** (`server_autoscaling_max_capacity`) from
+   the table above for the expected peak, keeping at least 2 tasks.
+2. **Choose the database class from the expected peak of active users**, not
+   from the largest target, since each size up doubles its cost:
+   - up to about 10,000 users (5,000 polls/s): `db.m7g.large` (measured at
+     53% CPU); prefer it over the default `db.r6g.large` (memory-optimized,
+     Graviton2, not measured), at about the same price;
+   - about 10,000 to 14,000 users (up to 7,000 polls/s): `db.m7g.large` runs
+     at roughly 60 to 80% CPU (78% measured at 7,500 polls/s); move to
+     `db.m7g.xlarge` for headroom as the peak approaches 14,000;
+   - more than about 14,000, up to 20,000 users: `db.m7g.xlarge` (51% CPU
+     measured at 10,000 polls/s; `db.m7g.large` saturates).
+
+   Watch `CPUUtilization` and Performance Insights after the change and size
+   up before peak database CPU passes about 70%.
+3. **Check connections against `max_connections`.** Each task opens up to two
+   pools of `GUARDIAN_DB_POOL_MAX_SIZE` (32 in prod), so 6 tasks can hold about
+   400 connections. The RDS default `max_connections` scales with instance
+   memory (roughly 900 on an 8 GiB class, roughly 1,700 on 16 GiB), which
+   leaves room; recheck it before raising the pool size or the task count.
+4. **Size the rate limit for shared IPs.** `guardian_rate_per_min` is per
+   client IP across HTTP and gRPC; one polling user makes about 30 nonce
+   polls a minute per account, so many users behind one NAT need a
+   correspondingly larger budget.
+
+For example, a deployment expecting up to about 20,000 active users:
+
+```bash
+export TF_VAR_rds_instance_class=db.m7g.xlarge
+export TF_VAR_server_desired_count=4
+export TF_VAR_server_autoscaling_max_capacity=8
+./scripts/aws-deploy.sh plan
+```
+
+Changing `rds_instance_class` interrupts the database either way: a
+single-AZ instance restarts (several minutes of downtime), and a Multi-AZ
+instance fails over to the resized standby (typically one to two minutes
+while connections are re-established). `infra/rds.tf` sets
+`apply_immediately = true`, so the change happens during the apply; run it in
+a maintenance window.
+A development stack with occasional traffic can keep a burstable class
+(`db.t4g`), which runs at full speed only while it has CPU credits; do not
+benchmark against one.
 
 #### Horizontal scaling (multiple replicas)
 

@@ -69,10 +69,7 @@ optional there.
    line by default; at 4,000 polls/s that cost about 15% of server CPU and
    2 to 3 times the p99. Hot handlers instrument at `debug`
    (`services/get_canonical_nonce.rs`).
-10. **Connect directly.** RDS Proxy pins every session and adds about 13 ms per
-    request; the measured sizing assumes the direct route
-    (`rds_proxy_route_database_url = false`).
-11. **Migrations.** A new or changed SQL function goes in a migration. Never
+10. **Migrations.** A new or changed SQL function goes in a migration. Never
     edit a migration that any database has applied (released or deployed);
     use a new dated migration with `CREATE OR REPLACE FUNCTION`.
 

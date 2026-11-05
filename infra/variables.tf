@@ -160,15 +160,15 @@ variable "log_retention_days" {
 }
 
 variable "server_cpu" {
-  description = "Server task CPU units"
+  description = "Optional override for the server task CPU units (default 2048 in prod, 512 otherwise)"
   type        = number
-  default     = 512
+  default     = null
 }
 
 variable "server_memory" {
-  description = "Server task memory (MB)"
+  description = "Optional override for the server task memory in MiB (default twice the CPU units: 4096 in prod, 1024 otherwise); must be a Fargate size for the CPU"
   type        = number
-  default     = 1024
+  default     = null
 }
 
 variable "server_desired_count" {

@@ -189,13 +189,13 @@ Before treating a deployment as production-ready:
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
 - Size the database and server tasks for the expected number of active
-  session users before relying on the stage defaults, which are small (a
-  2 vCPU database, 0.5 vCPU tasks). Each 1,000 canonical nonce polls/s (about
+  session users before relying on the stage defaults (a 2 vCPU database, 2 vCPU tasks
+  autoscaling to 6). Each 1,000 canonical nonce polls/s (about
   2,000 users polling every 2 s) costs about 0.2 vCPU of database and 0.5 vCPU
   of server. With 20,000 polling users a 4 vCPU Graviton3 database ran at
   about 51% CPU; the server side at that load is not yet qualified (uneven
-  per-task CPU, a slow write tail), so plan extra server tasks. Keep peak database CPU at or below about 70% and connect to the
-  database directly rather than through RDS Proxy. Table and caveats:
+  per-task CPU, a slow write tail), so plan extra server tasks. Keep peak
+  database CPU at or below about 70%. Table and caveats:
   [`SERVER_AWS_DEPLOY.md` → Sizing for session reads](./SERVER_AWS_DEPLOY.md#sizing-for-session-reads);
   the per-vCPU figures apply to self-managed deployments too.
 - Size `GUARDIAN_RATE_PER_MIN` for the combined HTTP **and** gRPC volume:
