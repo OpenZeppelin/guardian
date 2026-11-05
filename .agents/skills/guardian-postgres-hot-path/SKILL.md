@@ -93,7 +93,8 @@ Work from cheap to expensive, and stop when the answer is clear.
    ramp with Postgres and servers CPU-capped (`benchmarks/prod-server/results/2026-11-02-local-317-ramp.md`
    describes the setup). Alternate legs; a single round can mislead. The
    laptop saturates around 10,000 polls/s in total, before Postgres does.
-4. **AWS.** `scripts/guardian-bench-env.sh` and `run-guardian-prod-benchmarks`.
+4. **AWS.** The devnet bench environment (`scripts/guardian-bench-env.sh`,
+   #BENCHPR) and `run-guardian-prod-benchmarks`.
    Read database CPU and Performance Insights per run, and server CPU per
    task, not only the average.
 
