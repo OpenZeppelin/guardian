@@ -1031,7 +1031,7 @@ Most traffic from session-v2 clients is the canonical nonce poll: a client
 polls each account's nonce (one poll every 2 s per active user in the
 benchmark profiles) and fetches full state only when it changes. Measured
 on AWS with the window-only nonce poll (`benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md`,
-"Deployed runs of the window-only nonce poll"), each 1,000 nonce polls/s
+"Window-only nonce poll on AWS"), each 1,000 nonce polls/s
 cost about:
 
 - **0.2 vCPU of database** on Graviton3 (`db.m7g`), one call per poll;

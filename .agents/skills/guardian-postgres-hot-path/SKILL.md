@@ -6,8 +6,8 @@ description: Write, review and measure Guardian server Postgres code on hot requ
 # Guardian Postgres hot path
 
 Rules learned from measuring issue #317 on AWS and locally. The evidence is in
-`benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md` and
-`benchmarks/prod-server/results/2026-11-02-local-317-ramp.md`.
+`benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md`; the earlier
+local Docker ramps are archived on issue #317.
 
 ## What counts as hot
 
@@ -89,10 +89,26 @@ Work from cheap to expensive, and stop when the answer is clear.
    edges). Seed with the server's own migrations: let one Postgres test
    migrate `guardian_test`, then `CREATE DATABASE x TEMPLATE guardian_test`
    (some migrations do not apply through plain `psql`).
-3. **Server A/B, locally.** Two images that differ only in the change, Docker
-   ramp with Postgres and servers CPU-capped (`benchmarks/prod-server/results/2026-11-02-local-317-ramp.md`
-   describes the setup). Alternate legs; a single round can mislead. The
-   laptop saturates around 10,000 polls/s in total, before Postgres does.
+3. **Server A/B, locally.** Two server images that differ only in the change
+   (`docker build --target server-runner --build-arg GUARDIAN_SERVER_FEATURES=postgres`,
+   with `.with_canonicalization(Some(` in `crates/server/src/main.rs` patched
+   to skip canonicalization when `GUARDIAN_BENCH_NO_CANONICALIZATION` is set,
+   as `scripts/guardian-bench-env.sh` does), one Docker network, and:
+   - Postgres 17 with `--cpus 2 --memory 2g`, `max_connections=300`,
+     `shared_buffers=512MB`, a fresh database per leg;
+   - one or two servers with `--cpus 2 --memory 2g`,
+     `GUARDIAN_DB_POOL_MAX_SIZE=32`, rate limits raised out of the way,
+     `GUARDIAN_METRICS_ENABLED=true`, fixed ACK keys from `ack-keygen`;
+   - the load generator (`--target benchmark-runner`) as two
+     `worker-run --shard-index i --shard-count 2` containers, then
+     `aggregate` over their artifacts;
+   - `docker stats` sampled every 5 s for CPU, and each server's `/metrics`
+     scraped at the end (per-poll server time, pool acquire wait).
+
+   Alternate legs; a single round can mislead. The laptop saturates around
+   10,000 polls/s in total, before Postgres does. The release images use fat
+   LTO: on an 8 GB Docker VM stop idle containers and cap the build at a few
+   jobs or it runs out of memory.
 4. **AWS.** The devnet bench environment (`scripts/guardian-bench-env.sh`,
    #588) and `run-guardian-prod-benchmarks`.
    Read database CPU and Performance Insights per run, and server CPU per
