@@ -256,5 +256,5 @@ the session after the record and removes the record when refusing; local
 stores re-check the session after recording; the counter is exported and
 on the dashboard; a wallet nonce replay test; the spec's FR-008, US1 and
 SC-002 name the exception; the model checks the serving call's session and
-window checks with negative controls. The external security review (T098)
-is still open.
+window checks with negative controls. The external security review is
+still open.

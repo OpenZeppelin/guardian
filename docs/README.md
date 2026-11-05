@@ -103,9 +103,6 @@ You are a contributor.
 **Architecture**
 - [Service architecture](./architecture/services.md)
 - [AWS deployment architecture](./architecture/infra.md)
-- [Session-auth RFC](./architecture/scalability/session-auth-rfc.md) -
-  operation binding and concurrent reads for Miden sessions (shipped in
-  part; see its status line).
 
 **Reference**
 - [Configuration (env vars)](./CONFIGURATION.md)

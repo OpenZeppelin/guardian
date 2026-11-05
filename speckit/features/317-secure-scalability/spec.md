@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: User description: "Based on gap-analysis.md and on session-auth-rfc.md start working on specification for perf improvements. We should go with options that are okay for security."
 **Tracking issue**: [#317](https://github.com/OpenZeppelin/guardian/issues/317)
-**Design inputs**: [gap analysis](../../../docs/architecture/scalability/gap-analysis.md), [session-auth RFC](../../../docs/architecture/scalability/session-auth-rfc.md), [session replay design model](../../../docs/architecture/scalability/tla/README.md)
+**Design inputs** (archived on #317): [gap analysis](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667740111), [session-auth RFC](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667740923), [session replay design model](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667741734)
 
 ## Context
 

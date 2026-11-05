@@ -60,7 +60,6 @@ Check:
 .claude/skills/verify-auth-replay/check.sh --deep
 .claude/skills/verify-candidate-queue/check.sh
 .claude/skills/verify-worker-lease/check.sh
-docs/architecture/scalability/tla/run.sh
 ```
 
 Expect: `expected.txt` updated so every cell passes, including the former

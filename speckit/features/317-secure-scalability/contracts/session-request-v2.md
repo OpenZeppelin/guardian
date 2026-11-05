@@ -1,7 +1,7 @@
 # Contract: Session Request Authentication v2
 
 Applies to every session-signed per-account request on HTTP and gRPC.
-Normative byte layout from the [RFC](../../../../docs/architecture/scalability/session-auth-rfc.md#version-2-signed-message);
+Normative byte layout as in `spec/api.md` (Session Authentication; design rationale in the [session-auth RFC](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667740923), archived on #317);
 operation table extended in [data-model.md](../data-model.md#sessionoperation-shared-rust-and-typescript).
 
 ## Headers / metadata

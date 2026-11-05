@@ -1,6 +1,6 @@
 # Data Model: Security-Preserving Scalability (317)
 
-**Date**: 2026-10-30 | **Research**: [research.md](./research.md)
+**Date**: 2026-10-30 | **Spec**: [spec.md](./spec.md)
 
 ## SessionOperation (shared, Rust and TypeScript)
 
