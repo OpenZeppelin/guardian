@@ -721,6 +721,26 @@ mod admission_tests {
                 conn
             }
         };
+        let blocked = |waiters: i64| {
+            let store = &store;
+            async move {
+                for _ in 0..200 {
+                    let mut conn = store.pool.get().await.expect("conn");
+                    let waiting = diesel::sql_query(
+                        "SELECT count(*) AS watermark FROM pg_locks WHERE NOT granted",
+                    )
+                    .get_result::<Watermark>(&mut conn)
+                    .await
+                    .unwrap()
+                    .watermark;
+                    if waiting >= waiters {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                panic!("{waiters} admission(s) never blocked on the held lock");
+            }
+        };
         let expiring = "clock_timestamp() + interval '2 seconds'";
         let window_only = ReadRule::WindowOnly(TimestampWindow {
             past_ms: 60_000,
@@ -746,6 +766,7 @@ mod admission_tests {
         assert_live(session).await;
         let mut lock = hold("LOCK TABLE account_metadata IN ACCESS EXCLUSIVE MODE").await;
         let release = async {
+            blocked(1).await;
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             diesel::sql_query("COMMIT")
                 .execute(&mut lock)
@@ -766,7 +787,7 @@ mod admission_tests {
             (rand::random(), rand::random());
         let mut fence = hold("SELECT pg_advisory_xact_lock(7310317001)").await;
         let revoke_then_release = async {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            blocked(2).await;
             exec(
                 &store,
                 &format!(
@@ -798,12 +819,59 @@ mod admission_tests {
             after_revoke,
             SessionReadAdmission::Inactive(InactiveSession::Revoked)
         );
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO states (account_id, state_json, commitment, created_at, updated_at, nonce) \
+                 VALUES ('{account_id}', '{{}}', '0xhead', now(), now(), 7)"
+            ),
+        )
+        .await;
+        let served_session = new_session("now() + interval '1 hour'").await;
+        let recorded_session = new_session("now() + interval '1 hour'").await;
+        assert_live(served_session).await;
+        assert_live(recorded_session).await;
+        let head_key: ReadRecordKey = rand::random();
+        let mut head_lock = hold("LOCK TABLE states IN ACCESS EXCLUSIVE MODE").await;
+        let revoke_both_then_release = async {
+            blocked(2).await;
+            for session in [served_session, recorded_session] {
+                exec(
+                    &store,
+                    &format!(
+                        "UPDATE auth_sessions SET revoked_at = now() WHERE token_digest = '\\x{}'",
+                        hex::encode(session)
+                    ),
+                )
+                .await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            diesel::sql_query("COMMIT")
+                .execute(&mut head_lock)
+                .await
+                .expect("COMMIT");
+        };
+        let (served_after_head_wait, recorded_after_head_wait, ()) = tokio::join!(
+            admit(served_session, window_only),
+            admit(recorded_session, record(head_key)),
+            revoke_both_then_release,
+        );
+        assert_eq!(
+            served_after_head_wait,
+            SessionReadAdmission::Inactive(InactiveSession::Revoked)
+        );
+        assert_eq!(
+            recorded_after_head_wait,
+            SessionReadAdmission::Inactive(InactiveSession::Revoked)
+        );
+
         let mut conn = store.pool.get().await.expect("conn");
         let left = diesel::sql_query(format!(
             "SELECT count(*) AS watermark FROM session_read_seen \
-             WHERE record_key IN ('\\x{}', '\\x{}')",
+             WHERE record_key IN ('\\x{}', '\\x{}', '\\x{}')",
             hex::encode(expired_key),
-            hex::encode(revoked_key)
+            hex::encode(revoked_key),
+            hex::encode(head_key)
         ))
         .get_result::<Watermark>(&mut conn)
         .await

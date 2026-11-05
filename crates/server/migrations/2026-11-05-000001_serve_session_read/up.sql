@@ -8,6 +8,10 @@
 -- database clock, p_past_ms behind it and p_future_ms ahead. A session is live
 -- as `guardian_admit_session_read` defines it; expiry and the window are
 -- checked against one reading of the current clock, not the transaction start.
+-- The state head is read first, then the account and the session, then the
+-- clock: a wait on any of these reads (a lock on `states`, `account_metadata`
+-- or `auth_sessions`) ends before the session row is read and the clock is
+-- read, so it never falls between the checks and the answer.
 CREATE FUNCTION guardian_serve_session_read(
     p_account_id   TEXT,
     p_realm        TEXT,
@@ -34,7 +38,15 @@ DECLARE
     v_now_ms       BIGINT;
     v_commitment   TEXT;
     v_nonce        BIGINT;
+    v_head_found   BOOLEAN := FALSE;
 BEGIN
+    IF p_with_head THEN
+        SELECT st.commitment, st.nonce INTO v_commitment, v_nonce
+          FROM states st
+         WHERE st.account_id = p_account_id;
+        v_head_found := FOUND;
+    END IF;
+
     SELECT m.auth_version INTO v_auth_version
       FROM account_metadata m
      WHERE m.account_id = p_account_id;
@@ -70,15 +82,7 @@ BEGIN
             FALSE, NULL::TEXT, NULL::BIGINT;
         RETURN;
     END IF;
-    IF p_with_head THEN
-        SELECT st.commitment, st.nonce INTO v_commitment, v_nonce
-          FROM states st
-         WHERE st.account_id = p_account_id;
-        RETURN QUERY SELECT 'served'::TEXT, v_auth_version, v_subject,
-            FOUND, v_commitment, v_nonce;
-        RETURN;
-    END IF;
     RETURN QUERY SELECT 'served'::TEXT, v_auth_version, v_subject,
-        FALSE, NULL::TEXT, NULL::BIGINT;
+        v_head_found, v_commitment, v_nonce;
 END;
 $$;

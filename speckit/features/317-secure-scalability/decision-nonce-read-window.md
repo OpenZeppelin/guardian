@@ -1,9 +1,9 @@
 # Decision: window-only session nonce polls
 
-Status: **Proposed**, for security review. Implemented on the feature branch
-(uncommitted) so review can read the code; the "Security posture of this
-feature" section of [spec.md](./spec.md) names it as a pending exception. If
-review rejects it, the change is reverted before merge.
+Status: **Proposed**, for security review. Implemented in #587 so review can
+read the code; the "Security posture of this feature" section of
+[spec.md](./spec.md) names it as a pending exception. If review rejects it,
+the change is reverted before merge.
 
 Date: 2026-11-04. Evidence:
 [deployed benchmark](../../../benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md).

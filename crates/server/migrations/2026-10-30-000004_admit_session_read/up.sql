@@ -14,11 +14,12 @@
 -- read and the caller discards it if a later check refuses the request.
 -- A session is live as `PgSessionStore::get` defines it: not revoked and
 -- not expired; a revoked session reads as revoked even if expired. Expiry is
--- compared with the current clock, not the transaction start. The record may
--- wait (fence lock, partition maintenance), so a recorded read re-reads the
--- session afterwards; if it was revoked or expired meanwhile, the record is
--- removed in the same transaction and the read is refused, so a refused read
--- leaves nothing recorded.
+-- compared with the current clock, not the transaction start. The record and
+-- the state head read may wait (fence lock, partition maintenance, a lock on
+-- `states`), so a recorded read reads the head and then re-reads the session;
+-- if it was revoked or expired meanwhile, the record is removed in the same
+-- transaction and the read is refused, so a refused read leaves nothing
+-- recorded.
 CREATE FUNCTION guardian_admit_session_read(
     p_account_id   TEXT,
     p_realm        TEXT,
@@ -44,6 +45,7 @@ DECLARE
     v_revoked_at   TIMESTAMPTZ;
     v_outcome      TEXT;
     v_refusal      TEXT;
+    v_head_found   BOOLEAN := FALSE;
     v_commitment   TEXT;
     v_nonce        BIGINT;
 BEGIN
@@ -78,6 +80,12 @@ BEGIN
 
     v_outcome := guardian_record_session_read(p_record_key, p_ts, p_skew_ms);
     IF v_outcome = 'recorded' THEN
+        IF p_with_head THEN
+            SELECT st.commitment, st.nonce INTO v_commitment, v_nonce
+              FROM states st
+             WHERE st.account_id = p_account_id;
+            v_head_found := FOUND;
+        END IF;
         SELECT s.expires_at, s.revoked_at
           INTO v_expires_at, v_revoked_at
           FROM auth_sessions s
@@ -95,15 +103,7 @@ BEGIN
             RETURN;
         END IF;
     END IF;
-    IF p_with_head AND v_outcome = 'recorded' THEN
-        SELECT st.commitment, st.nonce INTO v_commitment, v_nonce
-          FROM states st
-         WHERE st.account_id = p_account_id;
-        RETURN QUERY SELECT v_outcome, v_auth_version, v_subject,
-            FOUND, v_commitment, v_nonce;
-        RETURN;
-    END IF;
     RETURN QUERY SELECT v_outcome, v_auth_version, v_subject,
-        FALSE, NULL::TEXT, NULL::BIGINT;
+        v_head_found, v_commitment, v_nonce;
 END;
 $$;
