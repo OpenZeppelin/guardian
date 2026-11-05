@@ -879,4 +879,117 @@ mod admission_tests {
         .watermark;
         assert_eq!(left, 0, "a refused read leaves no record");
     }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_signer_change_while_admission_waits_returns_the_new_metadata_version() {
+        let url = test_database_url().await;
+        let store = PgReadRecords::new(build_postgres_pool_lazy(&url, 4).expect("pool"));
+        store.maintain(0, 600_000, 3_600_000).await.unwrap();
+        let account_id = format!("0xsigners{}", chrono::Utc::now().timestamp_micros());
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ('{account_id}', '{{\"MidenFalconRpo\":{{\"cosigner_commitments\":[\"0x1\"]}}}}', \
+                 '{{\"kind\":\"miden\"}}', now(), now(), false)"
+            ),
+        )
+        .await;
+        let subject = serde_json::to_string(&SessionSubject::Miden {
+            signer_commitment: "0x1".to_string(),
+            origin: String::new(),
+            guardian_commitment: "0x2".to_string(),
+            network: "devnet".to_string(),
+        })
+        .unwrap();
+        let session: [u8; 32] = rand::random();
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO auth_sessions (realm, token_digest, subject, issued_at, expires_at, revoked_at) \
+                 VALUES ('miden', '\\x{}', '{subject}', now(), now() + interval '1 hour', NULL)",
+                hex::encode(session)
+            ),
+        )
+        .await;
+        let scalar = |sql: String| {
+            let store = &store;
+            async move {
+                let mut conn = store.pool.get().await.expect("conn");
+                diesel::sql_query(sql)
+                    .get_result::<Watermark>(&mut conn)
+                    .await
+                    .unwrap()
+                    .watermark
+            }
+        };
+        let version_sql = format!(
+            "SELECT auth_version AS watermark FROM account_metadata WHERE account_id = '{account_id}'"
+        );
+        let before = scalar(version_sql.clone()).await;
+        let now = scalar("SELECT guardian_db_now_ms() AS watermark".to_string()).await;
+
+        let mut fence = store.pool.get().await.expect("conn");
+        for sql in ["BEGIN", "SELECT pg_advisory_xact_lock(7310317001)"] {
+            diesel::sql_query(sql).execute(&mut fence).await.expect(sql);
+        }
+        let remove_signer_then_release = async {
+            for _ in 0..200 {
+                if scalar(
+                    "SELECT count(*) AS watermark FROM pg_locks WHERE NOT granted".to_string(),
+                )
+                .await
+                    >= 1
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            exec(
+                &store,
+                &format!(
+                    "UPDATE account_metadata SET auth = \
+                     '{{\"MidenFalconRpo\":{{\"cosigner_commitments\":[\"0x3\"]}}}}' \
+                     WHERE account_id = '{account_id}'"
+                ),
+            )
+            .await;
+            diesel::sql_query("COMMIT")
+                .execute(&mut fence)
+                .await
+                .expect("COMMIT");
+        };
+        let clock = MockClock::default();
+        let admit = store.admit_session_read(
+            &NoLookups,
+            SessionReadRequest {
+                account_id: &account_id,
+                session_key: session,
+                rule: ReadRule::Record {
+                    key: rand::random(),
+                    skew_ms: 300_000,
+                },
+                timestamp_ms: now,
+                clock: &clock,
+                head: HeadRead::Include,
+            },
+        );
+        let (admission, ()) = tokio::join!(admit, remove_signer_then_release);
+        let after = scalar(version_sql).await;
+        assert!(after > before, "the signer change bumps the version");
+        match admission.unwrap() {
+            SessionReadAdmission::Live {
+                metadata_version,
+                outcome: ReadRecordOutcome::Recorded,
+                ..
+            } => assert_eq!(
+                metadata_version,
+                Some(after),
+                "the grant is checked against the signer set after the wait"
+            ),
+            other => panic!("expected a recorded read, got {other:?}"),
+        }
+    }
 }

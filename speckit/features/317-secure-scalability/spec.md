@@ -44,13 +44,15 @@ security properties**. In particular:
   capture.
   One exception, recorded in
   [decision-nonce-read-window.md](./decision-nonce-read-window.md) and
-  pending security review: the session-signed canonical nonce poll is
+  accepted in security review: the session-signed canonical nonce poll is
   accepted every time inside a window of 60 s behind and 30 s ahead of server
   time. A copy reveals only the account's current nonce and commitment, never
   state, and is never accepted for another operation.
 - Authorization is always decided against current, authoritative data.
   Signer removal, session revocation and expiry take effect on the next
-  request on every replica.
+  request on every replica. A session read checks the session and the
+  signer set after its last database wait, so a change committed while the
+  read waits refuses it.
 - Decrypted account state is never held in long-lived memory.
 - Every request is bound to the operation it was signed for, closing the
   latent hazard where reads (and potentially writes) share signed payloads.

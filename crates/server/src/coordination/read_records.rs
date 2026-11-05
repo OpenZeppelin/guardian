@@ -13,7 +13,7 @@
 //! inside a narrow window and records nothing.
 
 use std::collections::{BTreeMap, HashSet};
-use std::io::{BufRead, Write};
+use std::io::{Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -354,49 +354,54 @@ pub struct FileReadRecords {
 }
 
 impl FileReadRecords {
+    /// Opens the record, failing closed: a missing fence while records exist,
+    /// or a corrupt record line, refuses to start rather than forget a read.
+    /// Only a torn last line (a write that never returned, so its read was
+    /// never admitted) is cut off.
     pub fn open(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("Failed to create {}: {e}", dir.display()))?;
-        let watermark = match std::fs::read_to_string(dir.join("fence")) {
+        let mut buckets = Vec::new();
+        for entry in
+            std::fs::read_dir(dir).map_err(|e| format!("Failed to list {}: {e}", dir.display()))?
+        {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if let Some(start) = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|_| path.extension().is_some_and(|ext| ext == "log"))
+                .and_then(|stem| stem.parse::<i64>().ok())
+            {
+                buckets.push((start, path));
+            }
+        }
+        let watermark = match std::fs::read_to_string(dir.join(FENCE_FILE)) {
             Ok(text) => text
                 .trim()
                 .parse::<i64>()
                 .map_err(|e| format!("Invalid read record fence: {e}"))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => i64::MIN,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && buckets.is_empty() => {
+                write_fence(dir, i64::MIN)?;
+                i64::MIN
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(format!(
+                    "Read record fence is missing in {} while records exist; refusing to start",
+                    dir.display()
+                ));
+            }
             Err(error) => return Err(format!("Failed to read read record fence: {error}")),
         };
         let mut state = LocalState {
             watermark,
             seen: BTreeMap::new(),
         };
-        for entry in
-            std::fs::read_dir(dir).map_err(|e| format!("Failed to list {}: {e}", dir.display()))?
-        {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            let Some(start) = path
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .filter(|_| path.extension().is_some_and(|ext| ext == "log"))
-                .and_then(|stem| stem.parse::<i64>().ok())
-            else {
-                continue;
-            };
+        for (start, path) in buckets {
             if start + READ_RECORD_BUCKET_MS <= watermark + 1 {
                 let _ = std::fs::remove_file(&path);
                 continue;
             }
-            let file = std::fs::File::open(&path)
-                .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
-            let bucket = state.seen.entry(start).or_default();
-            for line in std::io::BufReader::new(file).lines() {
-                let line = line.map_err(|e| e.to_string())?;
-                let Ok(bytes) = hex::decode(line.trim()) else {
-                    continue;
-                };
-                if let Ok(key) = ReadRecordKey::try_from(bytes.as_slice()) {
-                    bucket.insert(key);
-                }
-            }
+            load_bucket(&path, state.seen.entry(start).or_default())?;
         }
         Ok(Self {
             dir: dir.to_path_buf(),
@@ -410,6 +415,7 @@ impl FileReadRecords {
 
     fn append(&self, start: i64, key: &ReadRecordKey) -> Result<(), String> {
         let path = self.bucket_path(start);
+        let created = !path.exists();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -417,8 +423,72 @@ impl FileReadRecords {
             .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
         writeln!(file, "{}", hex::encode(key))
             .and_then(|()| file.sync_data())
-            .map_err(|e| format!("Failed to write {}: {e}", path.display()))
+            .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
+        if created {
+            sync_dir(&self.dir)?;
+        }
+        Ok(())
     }
+}
+
+const FENCE_FILE: &str = "fence";
+
+fn parse_record(line: &str) -> Option<ReadRecordKey> {
+    let bytes = hex::decode(line.trim()).ok()?;
+    ReadRecordKey::try_from(bytes.as_slice()).ok()
+}
+
+fn load_bucket(path: &Path, bucket: &mut HashSet<ReadRecordKey>) -> Result<(), String> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let complete = text.rfind('\n').map_or(0, |end| end + 1);
+    for line in text[..complete].lines() {
+        let key = parse_record(line).ok_or_else(|| {
+            format!(
+                "Corrupt read record in {}: {line:?}; refusing to start",
+                path.display()
+            )
+        })?;
+        bucket.insert(key);
+    }
+    let torn = &text[complete..];
+    if torn.is_empty() {
+        return Ok(());
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
+    match parse_record(torn) {
+        Some(key) => {
+            bucket.insert(key);
+            file.seek(std::io::SeekFrom::End(0))
+                .and_then(|_| file.write_all(b"\n"))
+        }
+        None => file.set_len(complete as u64),
+    }
+    .and_then(|()| file.sync_data())
+    .map_err(|e| format!("Failed to repair {}: {e}", path.display()))
+}
+
+fn sync_dir(dir: &Path) -> Result<(), String> {
+    std::fs::File::open(dir)
+        .and_then(|handle| handle.sync_all())
+        .map_err(|e| format!("Failed to sync {}: {e}", dir.display()))
+}
+
+/// Replaces the fence durably (temp file, sync, rename, directory sync), so
+/// buckets are only unlinked once the raised fence is on disk.
+fn write_fence(dir: &Path, watermark: i64) -> Result<(), String> {
+    let temp = dir.join(format!("{FENCE_FILE}.tmp"));
+    let mut file = std::fs::File::create(&temp)
+        .map_err(|e| format!("Failed to create {}: {e}", temp.display()))?;
+    file.write_all(watermark.to_string().as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("Failed to write {}: {e}", temp.display()))?;
+    std::fs::rename(&temp, dir.join(FENCE_FILE))
+        .map_err(|e| format!("Failed to replace the read record fence: {e}"))?;
+    sync_dir(dir)
 }
 
 #[async_trait]
@@ -455,9 +525,9 @@ impl ReadRecordStore for FileReadRecords {
     async fn maintain(&self, now_ms: i64, retain_ms: i64, _ahead_ms: i64) -> Result<i64, String> {
         let mut state = self.state.lock().map_err(|_| "read record lock poisoned")?;
         let watermark = fence_watermark(now_ms, retain_ms).max(state.watermark);
-        let fence = self.dir.join("fence");
-        std::fs::write(&fence, watermark.to_string())
-            .map_err(|e| format!("Failed to write {}: {e}", fence.display()))?;
+        if watermark > state.watermark {
+            write_fence(&self.dir, watermark)?;
+        }
         for start in state.advance(watermark) {
             let _ = std::fs::remove_file(self.bucket_path(start));
         }
@@ -767,6 +837,65 @@ mod tests {
                 .await
                 .unwrap(),
             ReadRecordOutcome::Stale
+        );
+    }
+
+    #[tokio::test]
+    async fn the_file_store_refuses_to_start_without_its_fence_while_records_exist() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = FileReadRecords::open(dir.path()).unwrap();
+            store.record(key(1), NOW, SKEW, &at(NOW)).await.unwrap();
+        }
+        std::fs::remove_file(dir.path().join(FENCE_FILE)).unwrap();
+        assert!(FileReadRecords::open(dir.path()).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_file_store_refuses_to_start_on_a_corrupt_record() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = FileReadRecords::open(dir.path()).unwrap();
+            store.record(key(1), NOW, SKEW, &at(NOW)).await.unwrap();
+        }
+        let bucket = dir.path().join(format!("{}.log", bucket_of(NOW)));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&bucket)
+            .unwrap();
+        writeln!(file, "not-a-record").unwrap();
+        assert!(FileReadRecords::open(dir.path()).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_file_store_cuts_a_torn_last_record_and_keeps_appending() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = FileReadRecords::open(dir.path()).unwrap();
+            store.record(key(1), NOW, SKEW, &at(NOW)).await.unwrap();
+        }
+        let bucket = dir.path().join(format!("{}.log", bucket_of(NOW)));
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&bucket)
+            .unwrap();
+        write!(file, "{}", &hex::encode(key(2))[..10]).unwrap();
+        drop(file);
+        {
+            let restarted = FileReadRecords::open(dir.path()).unwrap();
+            assert_eq!(
+                restarted.record(key(1), NOW, SKEW, &at(NOW)).await.unwrap(),
+                ReadRecordOutcome::Duplicate
+            );
+            assert_eq!(
+                restarted.record(key(2), NOW, SKEW, &at(NOW)).await.unwrap(),
+                ReadRecordOutcome::Recorded
+            );
+        }
+        let again = FileReadRecords::open(dir.path()).unwrap();
+        assert_eq!(
+            again.record(key(2), NOW, SKEW, &at(NOW)).await.unwrap(),
+            ReadRecordOutcome::Duplicate
         );
     }
 }

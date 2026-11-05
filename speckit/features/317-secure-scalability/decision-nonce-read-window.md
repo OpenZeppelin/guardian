@@ -1,9 +1,10 @@
 # Decision: window-only session nonce polls
 
-Status: **Proposed**, for security review. Implemented in #587 so review can
-read the code; the "Security posture of this feature" section of
-[spec.md](./spec.md) names it as a pending exception. If review rejects it,
-the change is reverted before merge.
+Status: **Accepted** (2026-11-05), after independent security review of
+#587. The review accepted the window-only nonce poll as specified and
+rejected extending it to any other session read. The "Security posture of
+this feature" section of [spec.md](./spec.md) records it as the one
+exception.
 
 Date: 2026-11-04. Evidence:
 [deployed benchmark](../../../benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md).
@@ -30,7 +31,7 @@ Locally, the same admission without the insert costs 81 us of database CPU
 per read against 132 us with it (39% less, Postgres 17 on two CPUs; ratio,
 not an AWS capacity prediction).
 
-## Proposed decision
+## Decision
 
 Session-v2 `GetCanonicalNonce` (gRPC and `GET /state/nonce`) becomes
 **window-only**: a valid request is accepted every time it is presented
@@ -51,7 +52,9 @@ What the nonce path still does on every request:
 - checks the timestamp window;
 - looks up the session in the database on every request (unknown, revoked or
   expired sessions are refused), and the account's current metadata version;
-- checks the grant: account, network, Guardian key, current signer set;
+- checks the grant: account, network, Guardian key, and the signer set at
+  the metadata version read after the call's last wait (recorded reads
+  re-read it, with the session, after the record and the head);
 - fails closed on any database error.
 
 What it stops doing: inserting the read record, and the read fence's shared

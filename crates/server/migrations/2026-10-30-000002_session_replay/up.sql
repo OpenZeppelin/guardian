@@ -294,8 +294,11 @@ $$;
 -- not expired; a revoked session reads as revoked even if expired. Expiry is
 -- compared with the current clock, not the transaction start. The record and
 -- the state head read may wait (fence lock, partition maintenance, a lock on
--- `states`), so a recorded read reads the head and then re-reads the session;
--- if it was revoked or expired meanwhile, the record is removed in the same
+-- `states`), so a recorded read reads the head and then re-reads the account's
+-- metadata version and the session. The version returned is the one read
+-- after every wait, so the caller checks the grant against the signer set
+-- current at that point, not the one before the wait. If the session was
+-- revoked or expired meanwhile, the record is removed in the same
 -- transaction and the read is refused, so a refused read leaves nothing
 -- recorded.
 CREATE FUNCTION guardian_admit_session_read(
@@ -364,15 +367,22 @@ BEGIN
              WHERE st.account_id = p_account_id;
             v_head_found := FOUND;
         END IF;
-        SELECT s.expires_at, s.revoked_at
-          INTO v_expires_at, v_revoked_at
-          FROM auth_sessions s
-         WHERE s.realm = p_realm AND s.token_digest = p_token_digest;
-        v_refusal := CASE
-            WHEN NOT FOUND THEN 'session_unknown'
-            WHEN v_revoked_at IS NOT NULL THEN 'session_revoked'
-            WHEN v_expires_at <= clock_timestamp() THEN 'session_expired'
-        END;
+        SELECT m.auth_version INTO v_auth_version
+          FROM account_metadata m
+         WHERE m.account_id = p_account_id;
+        IF NOT FOUND THEN
+            v_refusal := 'account_not_found';
+        ELSE
+            SELECT s.expires_at, s.revoked_at
+              INTO v_expires_at, v_revoked_at
+              FROM auth_sessions s
+             WHERE s.realm = p_realm AND s.token_digest = p_token_digest;
+            v_refusal := CASE
+                WHEN NOT FOUND THEN 'session_unknown'
+                WHEN v_revoked_at IS NOT NULL THEN 'session_revoked'
+                WHEN v_expires_at <= clock_timestamp() THEN 'session_expired'
+            END;
+        END IF;
         IF v_refusal IS NOT NULL THEN
             DELETE FROM session_read_seen
              WHERE record_key = p_record_key AND request_ts_ms = p_ts;

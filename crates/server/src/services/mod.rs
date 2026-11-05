@@ -185,9 +185,11 @@ pub async fn resolve_account_allowing_session(
 }
 
 /// [`resolve_account_allowing_session`] for read routes: the account's
-/// metadata may come from a copy the metadata store has just confirmed is
-/// current, so a signer removal or other change is honored on the next
-/// request. Routes that write must use [`resolve_account_allowing_session`].
+/// metadata may come from a cached copy at or above the version the database
+/// reported after the request's last wait (a session read re-reads it with
+/// the session), so a signer removal committed before that point refuses the
+/// request and one committed after it is honored on the next request. Routes
+/// that write must use [`resolve_account_allowing_session`].
 pub async fn resolve_account_for_read(
     state: &AppState,
     account_id: &str,
