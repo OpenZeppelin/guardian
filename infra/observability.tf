@@ -212,6 +212,10 @@ locals {
             dimensions            = [["credential", "reason"]]
           },
           {
+            metric_name_selectors = ["^guardian_session_reads_total$"]
+            dimensions            = [["kind", "outcome"]]
+          },
+          {
             metric_name_selectors = ["^guardian_rate_limit_lock_wait_duration_seconds$"]
             dimensions            = [[]]
           },

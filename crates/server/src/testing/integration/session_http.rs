@@ -675,6 +675,103 @@ async fn test_unique_reads_accept_equal_and_reversed_timestamps_and_refuse_copie
 }
 
 #[tokio::test]
+async fn test_nonce_polls_are_accepted_repeatedly_inside_their_window() {
+    use crate::metadata::auth::{SESSION_NONCE_FUTURE_MS, SESSION_READ_SKEW_MS};
+
+    let mut state = with_max_ttl(create_test_app_state().await);
+    state.clock = Arc::new(MockClock::new(chrono::Utc::now()));
+    let (app, state, signer, account_id_hex) = configured_account_with(state).await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+    let now = state.clock.now().timestamp_millis();
+
+    let poll =
+        |timestamp| session_read_request(&session_key, "/state/nonce", &account_id_hex, timestamp);
+    for attempt in 0..3 {
+        let (status, body) = send(&app, poll(now)).await;
+        assert_eq!(status, StatusCode::OK, "copy {attempt} of one poll: {body}");
+    }
+    for timestamp in [now - SESSION_READ_SKEW_MS, now + SESSION_NONCE_FUTURE_MS] {
+        let (status, body) = send(&app, poll(timestamp)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "at the window edge {timestamp}: {body}"
+        );
+    }
+    for timestamp in [
+        now - SESSION_READ_SKEW_MS - 1,
+        now + SESSION_NONCE_FUTURE_MS + 1,
+    ] {
+        assert_error(
+            &send(&app, poll(timestamp)).await,
+            StatusCode::UNAUTHORIZED,
+            "timestamp_out_of_window",
+            "outside the nonce poll window",
+        );
+    }
+
+    let ahead = now + SESSION_NONCE_FUTURE_MS + 1;
+    let (status, body) = send(
+        &app,
+        session_read_request(&session_key, "/state", &account_id_hex, ahead),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "other reads keep their window: {body}"
+    );
+    assert_error(
+        &send(
+            &app,
+            session_read_request(&session_key, "/state", &account_id_hex, ahead),
+        )
+        .await,
+        StatusCode::UNAUTHORIZED,
+        "authentication_replay",
+        "other reads are still admitted once",
+    );
+
+    let message = request_word(
+        &account_id_hex,
+        now,
+        &json!({ "account_id": account_id_hex }),
+    );
+    let signed_for_nonce = session_key.sign_bytes_hex(
+        &SessionRequestEnvelope::from_request_word(
+            SessionTransport::Http,
+            SessionOperation::GetCanonicalNonce,
+            message,
+        )
+        .to_bytes(),
+    );
+    let nonce_signature_on_state = Request::builder()
+        .uri(format!("/state?account_id={account_id_hex}"))
+        .method("GET")
+        .header("x-pubkey", session_key.public_key_hex())
+        .header("x-signature", &signed_for_nonce)
+        .header("x-timestamp", now.to_string())
+        .header("x-auth-format", "session-v2")
+        .body(Body::empty())
+        .unwrap();
+    assert_error(
+        &send(&app, nonce_signature_on_state).await,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a nonce poll signature on /state",
+    );
+
+    let (status, _) = logout(&app, &session_key).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_error(
+        &send(&app, poll(now)).await,
+        StatusCode::UNAUTHORIZED,
+        "session_revoked",
+        "a copy of a poll after logout",
+    );
+}
+
+#[tokio::test]
 async fn test_unregistered_session_key_is_rejected() {
     let (app, _state, _signer, account_id_hex) = configured_account().await;
     let response = session_get(&app, &SessionKey::generate(), &account_id_hex).await;

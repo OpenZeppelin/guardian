@@ -320,10 +320,10 @@ Session read replay protection is not configurable. Session reads must carry
 a timestamp within 60 s of server time (wallet requests and session writes:
 5 minutes); the SDKs sign reads at send time, so only clock difference counts,
 and a client outside the window gets `timestamp_out_of_window` and keeps its
-session. Each signed read is admitted once, in any order,
-through a record of accepted reads: on Postgres the table `session_read_seen`,
+session. Each signed read except the canonical nonce poll is admitted once,
+in any order, through a record of accepted reads: on Postgres the table `session_read_seen`,
 partitioned by 5 minutes, at one database call per read and about 550 MB of
-records at 10,000 reads/s; on the filesystem backend (development only)
+records at 10,000 recorded reads/s; on the filesystem backend (development only)
 `<GUARDIAN_METADATA_PATH>/session_read_seen`. The
 session sweep keeps partitions an hour ahead and drops them once older than
 the read window plus a minute; if no replica maintains them for an hour,
@@ -334,6 +334,11 @@ briefly locks the parent table: session reads can wait for it, bounded by a
 2 s lock timeout, about once every 5 minutes. Session writes always use the
 per-key timestamp floor. Sessions stored by an earlier release keep working:
 their reads are admitted by the record like any other session's.
+The canonical nonce poll, by far the most frequent session read, writes no
+record: it is accepted every time inside a window of 60 s behind and 30 s
+ahead of server time (one read-only database call, no record and no fence
+lock). Counter `guardian_session_reads_total` splits session reads by `kind`
+(`recorded`, `window_only`) and `outcome`.
 
 ## Runtime — dashboard
 
@@ -402,7 +407,7 @@ separate variable.
 
 | Variable | Default | Notes |
 |---|---|---|
-| `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. Hot-path request *events* (`get_state`, `get_delta`, `push_delta`, proposal create/sign, `lookup_account`) are `debug`; use `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug` to see them. At `info` each request instead emits a single span-close line carrying the span's fields (account ID, nonce, commitment, signer/match counts) plus `time.busy` / `time.idle`. That line is emitted on the success *and* the error path, which is what correlates the centralized 5xx log (see below) back to an account. |
+| `RUST_LOG` | `info` | Standard `tracing-subscriber` filter. Module-scoped filters work: `RUST_LOG=server::jobs::canonicalization=debug`. Hot-path request *events* (`get_state`, `get_delta`, `push_delta`, proposal create/sign, `lookup_account`) are `debug`; use `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug` to see them. At `info` each request instead emits a single span-close line carrying the span's fields (account ID, nonce, commitment, signer/match counts) plus `time.busy` / `time.idle`. That line is emitted on the success *and* the error path, which is what correlates the centralized 5xx log (see below) back to an account. The canonical nonce poll (`GET /state/nonce`, `GetCanonicalNonce`) is the exception: its span is `debug`, since clients poll it continuously and the line cost about 15% of server CPU at 4,000 polls/s. |
 | `GUARDIAN_LOG_FORMAT` | `text`; `json` when `GUARDIAN_ENV=prod` | Log output format. `text`: human-readable (ANSI when TTY, plain otherwise). `json`: flattened JSON with span context for CloudWatch Logs Insights. `compact`: single-line text. Value is trimmed and case-insensitive; unknown values fall back to `text` with a stderr warn (emitted before the tracing subscriber is installed). Unset follows the stage default; ECS sets it explicitly (see `infra/variables.tf` `guardian_log_format`). |
 
 The 5xx and 4xx lines emitted from `GuardianError`'s HTTP `IntoResponse` and

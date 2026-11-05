@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use diesel::QueryableByName;
-use diesel::sql_types::{BigInt, Bool, Bytea, Nullable, Text};
+use diesel::sql_types::{BigInt, Bool, Bytea, Jsonb, Nullable, Record, Text};
 use diesel_async::pooled_connection::deadpool::Pool;
 use diesel_async::{AsyncPgConnection, RunQueryDsl};
 
@@ -8,7 +8,7 @@ use crate::builder::clock::Clock;
 use crate::coordination::Realm;
 use crate::coordination::read_records::{
     HeadRead, InactiveSession, PrefetchedHead, ReadRecordKey, ReadRecordOutcome, ReadRecordStore,
-    SessionReadAdmission, SessionReadLookups, SessionReadRequest,
+    ReadRule, SessionReadAdmission, SessionReadLookups, SessionReadRequest,
 };
 use crate::coordination::session_store::SessionSubject;
 use crate::metrics::labels::PoolKind;
@@ -34,33 +34,78 @@ struct Outcome {
     outcome: String,
 }
 
-#[derive(QueryableByName)]
+diesel::define_sql_function! {
+    /// Typed so the statement is prepared once per connection and reused;
+    /// a raw `sql_query` is prepared again on every call, which costs a
+    /// round trip and a transaction of its own.
+    fn guardian_admit_session_read(
+        account_id: Text,
+        realm: Text,
+        token_digest: Bytea,
+        record_key: Bytea,
+        ts: BigInt,
+        skew_ms: BigInt,
+        with_head: Bool,
+    ) -> Record<(Text, Nullable<BigInt>, Nullable<Jsonb>, Bool, Nullable<Text>, Nullable<BigInt>)>;
+}
+
+diesel::define_sql_function! {
+    fn guardian_serve_session_read(
+        account_id: Text,
+        realm: Text,
+        token_digest: Bytea,
+        ts: BigInt,
+        past_ms: BigInt,
+        future_ms: BigInt,
+        with_head: Bool,
+    ) -> Record<(Text, Nullable<BigInt>, Nullable<Jsonb>, Bool, Nullable<Text>, Nullable<BigInt>)>;
+}
+
+type AdmissionRow = (
+    String,
+    Option<i64>,
+    Option<serde_json::Value>,
+    bool,
+    Option<String>,
+    Option<i64>,
+);
+
 struct Admission {
-    #[diesel(sql_type = Text)]
     outcome: String,
-    #[diesel(sql_type = Nullable<BigInt>)]
     auth_version: Option<i64>,
-    #[diesel(sql_type = Nullable<diesel::sql_types::Jsonb>)]
     subject: Option<serde_json::Value>,
-    #[diesel(sql_type = Bool)]
     head_found: bool,
-    #[diesel(sql_type = Nullable<Text>)]
     head_commitment: Option<String>,
-    #[diesel(sql_type = Nullable<BigInt>)]
     head_nonce: Option<i64>,
+}
+
+impl From<AdmissionRow> for Admission {
+    fn from(
+        (outcome, auth_version, subject, head_found, head_commitment, head_nonce): AdmissionRow,
+    ) -> Self {
+        Self {
+            outcome,
+            auth_version,
+            subject,
+            head_found,
+            head_commitment,
+            head_nonce,
+        }
+    }
 }
 
 impl Admission {
     fn head(&self, requested: HeadRead) -> Result<PrefetchedHead, String> {
-        match (requested, self.outcome.as_str(), self.head_found) {
-            (HeadRead::Include, "recorded", true) => Ok(PrefetchedHead::Found(StateHead {
+        let accepted = matches!(self.outcome.as_str(), "recorded" | "served");
+        match (requested, accepted, self.head_found) {
+            (HeadRead::Include, true, true) => Ok(PrefetchedHead::Found(StateHead {
                 commitment: self
                     .head_commitment
                     .clone()
                     .ok_or("Admitted session read returned a head without a commitment")?,
                 nonce: self.head_nonce.and_then(|nonce| u64::try_from(nonce).ok()),
             })),
-            (HeadRead::Include, "recorded", false) => Ok(PrefetchedHead::Missing),
+            (HeadRead::Include, true, false) => Ok(PrefetchedHead::Missing),
             _ => Ok(PrefetchedHead::NotRead),
         }
     }
@@ -72,6 +117,7 @@ fn record_outcome(outcome: &str) -> Result<ReadRecordOutcome, String> {
         "duplicate" => Ok(ReadRecordOutcome::Duplicate),
         "outside_window" => Ok(ReadRecordOutcome::OutsideWindow),
         "stale" => Ok(ReadRecordOutcome::Stale),
+        "served" => Ok(ReadRecordOutcome::Served),
         other => Err(format!("Unexpected session read outcome '{other}'")),
     }
 }
@@ -94,20 +140,37 @@ impl ReadRecordStore for PgReadRecords {
             .get_timed(PoolKind::Metadata)
             .await
             .map_err(|e| format!("read record pool: {e}"))?;
-        let row: Admission = diesel::sql_query(
-            "SELECT outcome, auth_version, subject, head_found, head_commitment, head_nonce \
-             FROM guardian_admit_session_read($1, $2, $3, $4, $5, $6, $7)",
-        )
-        .bind::<Text, _>(request.account_id)
-        .bind::<Text, _>(Realm::Miden.as_str())
-        .bind::<Bytea, _>(request.session_key.to_vec())
-        .bind::<Bytea, _>(request.record_key.to_vec())
-        .bind::<BigInt, _>(request.timestamp_ms)
-        .bind::<BigInt, _>(request.skew_ms)
-        .bind::<Bool, _>(request.head == HeadRead::Include)
-        .get_result(&mut conn)
-        .await
-        .map_err(|e| format!("Failed to admit session read: {e}"))?;
+        let with_head = request.head == HeadRead::Include;
+        let row: Admission = match request.rule {
+            ReadRule::Record { key, skew_ms } => {
+                diesel::select(guardian_admit_session_read(
+                    request.account_id,
+                    Realm::Miden.as_str(),
+                    request.session_key.to_vec(),
+                    key.to_vec(),
+                    request.timestamp_ms,
+                    skew_ms,
+                    with_head,
+                ))
+                .get_result::<AdmissionRow>(&mut conn)
+                .await
+            }
+            ReadRule::WindowOnly(window) => {
+                diesel::select(guardian_serve_session_read(
+                    request.account_id,
+                    Realm::Miden.as_str(),
+                    request.session_key.to_vec(),
+                    request.timestamp_ms,
+                    window.past_ms,
+                    window.future_ms,
+                    with_head,
+                ))
+                .get_result::<AdmissionRow>(&mut conn)
+                .await
+            }
+        }
+        .map_err(|e| format!("Failed to admit session read: {e}"))?
+        .into();
         let subject = |subject: Option<serde_json::Value>| -> Result<SessionSubject, String> {
             serde_json::from_value(
                 subject.ok_or("Admitted session read without a session subject")?,
@@ -325,6 +388,7 @@ mod tests {
 mod admission_tests {
     use super::*;
     use crate::builder::clock::test::MockClock;
+    use crate::metadata::auth::TimestampWindow;
     use crate::storage::postgres::build_postgres_pool_lazy;
     use crate::testing::pg::test_database_url;
     use async_trait::async_trait;
@@ -415,9 +479,11 @@ mod admission_tests {
                         SessionReadRequest {
                             account_id: &account,
                             session_key: key,
-                            record_key: record,
+                            rule: ReadRule::Record {
+                                key: record,
+                                skew_ms: 300_000,
+                            },
                             timestamp_ms: now,
-                            skew_ms: 300_000,
                             clock: &MockClock::default(),
                             head,
                         },
@@ -502,5 +568,247 @@ mod admission_tests {
                 ..
             }
         ));
+
+        let window = TimestampWindow {
+            past_ms: 60_000,
+            future_ms: 30_000,
+        };
+        let serve = |account: String, key: [u8; 32], timestamp_ms: i64| {
+            let store = &store;
+            async move {
+                store
+                    .admit_session_read(
+                        &NoLookups,
+                        SessionReadRequest {
+                            account_id: &account,
+                            session_key: key,
+                            rule: ReadRule::WindowOnly(window),
+                            timestamp_ms,
+                            clock: &MockClock::default(),
+                            head: HeadRead::Include,
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let recorded = || async {
+            let mut conn = store.pool.get().await.expect("conn");
+            diesel::sql_query("SELECT count(*) AS watermark FROM session_read_seen")
+                .get_result::<Watermark>(&mut conn)
+                .await
+                .unwrap()
+                .watermark
+        };
+        let before = recorded().await;
+        assert_eq!(
+            serve(format!("{account_id}missing"), session(0xa1), now).await,
+            SessionReadAdmission::AccountNotFound
+        );
+        for (key, status) in [
+            (0xa9, InactiveSession::Unknown),
+            (0xa2, InactiveSession::Revoked),
+            (0xa3, InactiveSession::Expired),
+        ] {
+            assert_eq!(
+                serve(account_id.clone(), session(key), now).await,
+                SessionReadAdmission::Inactive(status)
+            );
+        }
+        for _ in 0..3 {
+            assert!(matches!(
+                serve(account_id.clone(), session(0xa1), now).await,
+                SessionReadAdmission::Live {
+                    outcome: ReadRecordOutcome::Served,
+                    head: PrefetchedHead::Found(StateHead { ref commitment, nonce: Some(7) }),
+                    ..
+                } if commitment == "0xhead"
+            ));
+        }
+        for timestamp_ms in [now - 120_000, now + 120_000] {
+            assert!(matches!(
+                serve(account_id.clone(), session(0xa1), timestamp_ms).await,
+                SessionReadAdmission::Live {
+                    outcome: ReadRecordOutcome::OutsideWindow,
+                    head: PrefetchedHead::NotRead,
+                    ..
+                }
+            ));
+        }
+        assert_eq!(
+            recorded().await,
+            before,
+            "a window-only read records nothing"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_session_ending_while_admission_waits_is_refused_and_leaves_no_record() {
+        let url = test_database_url().await;
+        let store = PgReadRecords::new(build_postgres_pool_lazy(&url, 6).expect("pool"));
+        store.maintain(0, 600_000, 3_600_000).await.unwrap();
+        let account_id = format!("0xending{}", chrono::Utc::now().timestamp_micros());
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ('{account_id}', '{{\"MidenFalconRpo\":{{\"cosigner_commitments\":[]}}}}', \
+                 '{{\"kind\":\"miden\"}}', now(), now(), false)"
+            ),
+        )
+        .await;
+        let subject = serde_json::to_string(&SessionSubject::Miden {
+            signer_commitment: "0x1".to_string(),
+            origin: String::new(),
+            guardian_commitment: "0x2".to_string(),
+            network: "devnet".to_string(),
+        })
+        .unwrap();
+        let new_session = |expires: &'static str| {
+            let store = &store;
+            let subject = &subject;
+            async move {
+                let session: [u8; 32] = rand::random();
+                exec(
+                    store,
+                    &format!(
+                        "INSERT INTO auth_sessions (realm, token_digest, subject, issued_at, expires_at, revoked_at) \
+                         VALUES ('miden', '\\x{}', '{subject}', now(), {expires}, NULL)",
+                        hex::encode(session)
+                    ),
+                )
+                .await;
+                session
+            }
+        };
+        let now = {
+            let mut conn = store.pool.get().await.expect("conn");
+            diesel::sql_query("SELECT guardian_db_now_ms() AS watermark")
+                .get_result::<Watermark>(&mut conn)
+                .await
+                .unwrap()
+                .watermark
+        };
+        let admit = |session: [u8; 32], rule: ReadRule| {
+            let store = &store;
+            let account_id = &account_id;
+            async move {
+                store
+                    .admit_session_read(
+                        &NoLookups,
+                        SessionReadRequest {
+                            account_id,
+                            session_key: session,
+                            rule,
+                            timestamp_ms: now,
+                            clock: &MockClock::default(),
+                            head: HeadRead::Include,
+                        },
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let hold = |lock_sql: &'static str| {
+            let store = &store;
+            async move {
+                let mut conn = store.pool.get().await.expect("conn");
+                for sql in ["BEGIN", lock_sql] {
+                    diesel::sql_query(sql).execute(&mut conn).await.expect(sql);
+                }
+                conn
+            }
+        };
+        let expiring = "clock_timestamp() + interval '2 seconds'";
+        let window_only = ReadRule::WindowOnly(TimestampWindow {
+            past_ms: 60_000,
+            future_ms: 30_000,
+        });
+        let assert_live = |session: [u8; 32]| {
+            let admit = &admit;
+            async move {
+                assert!(
+                    matches!(
+                        admit(session, window_only).await,
+                        SessionReadAdmission::Live {
+                            outcome: ReadRecordOutcome::Served,
+                            ..
+                        }
+                    ),
+                    "the session is live before the wait"
+                );
+            }
+        };
+
+        let session = new_session(expiring).await;
+        assert_live(session).await;
+        let mut lock = hold("LOCK TABLE account_metadata IN ACCESS EXCLUSIVE MODE").await;
+        let release = async {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            diesel::sql_query("COMMIT")
+                .execute(&mut lock)
+                .await
+                .expect("COMMIT");
+        };
+        let (served, ()) = tokio::join!(admit(session, window_only), release);
+        assert_eq!(
+            served,
+            SessionReadAdmission::Inactive(InactiveSession::Expired)
+        );
+
+        let expired = new_session(expiring).await;
+        let revoked = new_session("now() + interval '1 hour'").await;
+        assert_live(expired).await;
+        assert_live(revoked).await;
+        let (expired_key, revoked_key): (ReadRecordKey, ReadRecordKey) =
+            (rand::random(), rand::random());
+        let mut fence = hold("SELECT pg_advisory_xact_lock(7310317001)").await;
+        let revoke_then_release = async {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            exec(
+                &store,
+                &format!(
+                    "UPDATE auth_sessions SET revoked_at = now() WHERE token_digest = '\\x{}'",
+                    hex::encode(revoked)
+                ),
+            )
+            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+            diesel::sql_query("COMMIT")
+                .execute(&mut fence)
+                .await
+                .expect("COMMIT");
+        };
+        let record = |key| ReadRule::Record {
+            key,
+            skew_ms: 300_000,
+        };
+        let (after_expiry, after_revoke, ()) = tokio::join!(
+            admit(expired, record(expired_key)),
+            admit(revoked, record(revoked_key)),
+            revoke_then_release,
+        );
+        assert_eq!(
+            after_expiry,
+            SessionReadAdmission::Inactive(InactiveSession::Expired)
+        );
+        assert_eq!(
+            after_revoke,
+            SessionReadAdmission::Inactive(InactiveSession::Revoked)
+        );
+        let mut conn = store.pool.get().await.expect("conn");
+        let left = diesel::sql_query(format!(
+            "SELECT count(*) AS watermark FROM session_read_seen \
+             WHERE record_key IN ('\\x{}', '\\x{}')",
+            hex::encode(expired_key),
+            hex::encode(revoked_key)
+        ))
+        .get_result::<Watermark>(&mut conn)
+        .await
+        .unwrap()
+        .watermark;
+        assert_eq!(left, 0, "a refused read leaves no record");
     }
 }

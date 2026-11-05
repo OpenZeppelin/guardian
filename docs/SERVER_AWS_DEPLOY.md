@@ -1051,6 +1051,28 @@ When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP
 
 On Apple Silicon hosts, `CPU_ARCHITECTURE=X86_64` builds are slower because Docker builds `linux/amd64` images under emulation. Switching to `ARM64` avoids that local emulation cost, but it also changes the ECS task runtime architecture.
 
+## Cutting Over To Session-v2 (0.19.0)
+
+Guardian 0.19.0 accepts session requests only in the version 2 format, and earlier releases accept only version 1 (see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#operation-bound-session-requests-0190)). A replica of each version behind one endpoint refuses the other's session requests, so keep the time both run together short. Wallet-signed requests work on both throughout.
+
+The stack deploys with ECS rolling updates (`deployment_minimum_healthy_percent = 100`, ceiling `server_deployment_maximum_percent`), not a blue/green controller, so old and new tasks overlap until the old ones drain. To cut over:
+
+1. Ship the 0.19 SDKs in your apps first, or accept that apps on older SDKs lose session requests (`unsupported_auth_version`) from the moment the first new task serves traffic until they upgrade. Neither SDK falls back to the other format.
+2. Deploy as usual:
+   ```bash
+   ./scripts/aws-deploy.sh deploy
+   ```
+   The embedded migrations run on the first new task and are additive; old tasks keep working against them during the overlap.
+3. Wait for the rollout to finish: `aws ecs describe-services` lists a single `PRIMARY` deployment with `rolloutState` `COMPLETED`. Until then a session request can be refused depending on which task serves it; clients see it as a failed request and retry.
+4. Confirm the new version is serving:
+   ```bash
+   curl -s https://<host>/status | jq '.sessions'
+   ```
+   It reports `request_auth_version: 2`.
+5. Watch `guardian_auth_rejections_total` by `reason` and `guardian_session_reads_total` by `kind` and `outcome` in Grafana. A rise in `timestamp_window` rejections points at client clocks more than 60 s off; `outside_window` on the `window_only` kind is the canonical nonce poll.
+
+To roll back, redeploy the previous image digest. The rollback is explicit, not silent: upgraded SDKs refuse to start or resume a session against the older server, and sessions already running have their requests refused until they are started again after the server is upgraded once more. Plan a rollback window accordingly.
+
 ## Migrating An Existing ECS-Postgres Stack
 
 The current Terraform configuration is RDS-only. There is no supported dual-mode deployment that keeps the old ECS Postgres service alive after apply.

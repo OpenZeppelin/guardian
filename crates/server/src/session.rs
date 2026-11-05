@@ -397,8 +397,10 @@ impl SessionRequestPolicy {
 pub struct SessionRequestPolicy {
     /// The session request envelope version requests must be signed with.
     /// Version 2 also fixes how they are judged: each signed session read is
-    /// admitted once, in any order, within 60 s of server time; session
-    /// writes advance a per-key timestamp floor within 5 minutes.
+    /// admitted once, in any order, within 60 s of server time, except the
+    /// canonical nonce poll, accepted every time within 60 s behind and 30 s
+    /// ahead; session writes advance a per-key timestamp floor within 5
+    /// minutes.
     pub request_auth_version: u16,
 }
 

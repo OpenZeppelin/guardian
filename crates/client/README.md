@@ -305,7 +305,8 @@ logs the new session out when the Guardian does not report
 the old format with `unsupported_auth_version`. Neither ends the session or
 falls back to the wallet, so upgrade the Guardian and the SDK together. Each
 signed session read is admitted once and must be within 60 s of server time
-(5 minutes for writes); outside it the request fails with
+(5 minutes for writes), except the canonical nonce poll, which is accepted
+every time within 60 s behind and 30 s ahead of server time; outside it the request fails with
 `timestamp_out_of_window` and the session is kept. See
 [`docs/MIDEN_COMPATIBILITY.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
 

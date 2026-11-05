@@ -3677,7 +3677,7 @@
           "request_auth_version": {
             "type": "integer",
             "format": "int32",
-            "description": "The session request envelope version requests must be signed with.\nVersion 2 also fixes how they are judged: each signed session read is\nadmitted once, in any order, within 60 s of server time; session\nwrites advance a per-key timestamp floor within 5 minutes.",
+            "description": "The session request envelope version requests must be signed with.\nVersion 2 also fixes how they are judged: each signed session read is\nadmitted once, in any order, within 60 s of server time, except the\ncanonical nonce poll, accepted every time within 60 s behind and 30 s\nahead; session writes advance a per-key timestamp floor within 5\nminutes.",
             "minimum": 0
           }
         }

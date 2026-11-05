@@ -35,7 +35,7 @@ pub struct CanonicalNonceResponse {
 }
 
 #[tracing::instrument(
-    level = "info",
+    level = "debug",
     skip(state, params),
     fields(account_id = %params.account_id)
 )]

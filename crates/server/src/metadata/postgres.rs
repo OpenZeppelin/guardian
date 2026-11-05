@@ -15,6 +15,25 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 use std::sync::Arc;
 
+diesel::define_sql_function! {
+    fn guardian_advance_wallet_floor(
+        account_id: Text,
+        signer: Text,
+        ts: diesel::sql_types::BigInt,
+        legacy_key: Text,
+    ) -> diesel::sql_types::Bool;
+}
+
+diesel::define_sql_function! {
+    fn guardian_advance_session_floor(
+        account_id: Text,
+        floor_key: Text,
+        ts: diesel::sql_types::BigInt,
+        skew_ms: diesel::sql_types::BigInt,
+        legacy_key: Text,
+    ) -> Text;
+}
+
 /// The rows the release sweep (issue #434) walks and counts: unreleased
 /// Miden accounts with no candidate in flight. One definition, so the
 /// pacing count always matches the walk. The network predicate reads the
@@ -512,29 +531,17 @@ impl MetadataStore for PostgresMetadataStore {
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
-        let rows_updated = diesel::sql_query(
-            "INSERT INTO account_auth_state (account_id, signer_commitment, last_auth_timestamp) \
-             SELECT $1, $2, $3 \
-             WHERE NOT EXISTS ( \
-                 SELECT 1 \
-                   FROM account_auth_state legacy \
-                  WHERE legacy.account_id = $1 \
-                    AND legacy.signer_commitment = $4 \
-                    AND legacy.last_auth_timestamp >= $3 \
-             ) \
-             ON CONFLICT (account_id, signer_commitment) DO UPDATE \
-             SET last_auth_timestamp = EXCLUDED.last_auth_timestamp \
-             WHERE account_auth_state.last_auth_timestamp < EXCLUDED.last_auth_timestamp",
-        )
-        .bind::<Text, _>(account_id)
-        .bind::<Text, _>(signer_commitment)
-        .bind::<diesel::sql_types::BigInt, _>(new_timestamp)
-        .bind::<Text, _>(LEGACY_ACCOUNT_AUTH_FLOOR)
-        .execute(&mut conn)
+        let advanced: bool = diesel::select(guardian_advance_wallet_floor(
+            account_id,
+            signer_commitment,
+            new_timestamp,
+            LEGACY_ACCOUNT_AUTH_FLOOR,
+        ))
+        .get_result(&mut conn)
         .await
         .map_err(|e| format!("Failed to update last_auth_timestamp: {e}"))?;
 
-        Ok(rows_updated > 0)
+        Ok(advanced)
     }
 
     async fn advance_session_floor(
@@ -545,28 +552,22 @@ impl MetadataStore for PostgresMetadataStore {
         skew_ms: i64,
         _clock: &dyn crate::builder::clock::Clock,
     ) -> Result<SessionFloorOutcome, String> {
-        #[derive(QueryableByName)]
-        struct Outcome {
-            #[diesel(sql_type = Text)]
-            outcome: String,
-        }
         let mut conn = self
             .pool
             .get_timed(crate::metrics::labels::PoolKind::Metadata)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
-        let row: Outcome = diesel::sql_query(
-            "SELECT guardian_advance_session_floor($1, $2, $3, $4, $5) AS outcome",
-        )
-        .bind::<Text, _>(account_id)
-        .bind::<Text, _>(floor_key)
-        .bind::<diesel::sql_types::BigInt, _>(timestamp)
-        .bind::<diesel::sql_types::BigInt, _>(skew_ms)
-        .bind::<Text, _>(LEGACY_ACCOUNT_AUTH_FLOOR)
+        let outcome: String = diesel::select(guardian_advance_session_floor(
+            account_id,
+            floor_key,
+            timestamp,
+            skew_ms,
+            LEGACY_ACCOUNT_AUTH_FLOOR,
+        ))
         .get_result(&mut conn)
         .await
         .map_err(|e| format!("Failed to advance session floor: {e}"))?;
-        match row.outcome.as_str() {
+        match outcome.as_str() {
             "advanced" => Ok(SessionFloorOutcome::Advanced),
             "replay" => Ok(SessionFloorOutcome::Replay),
             "outside_window" => Ok(SessionFloorOutcome::OutsideWindow),
@@ -2264,14 +2265,20 @@ mod tests {
         // Step forward only to the per-signer backfill, not through the newer
         // Miden 0.16 reset, which would delete the fixtures seeded above. The
         // `RevertedMigration` guard re-applies the remainder on drop, so it is
-        // deliberately not defused here.
+        // deliberately not defused here. The wallet floor function the store
+        // calls is installed alongside; its migration is idempotent.
         {
             let url = url.clone();
             tokio::task::spawn_blocking(move || {
                 use diesel::Connection;
+                use diesel::connection::SimpleConnection;
                 let mut conn =
                     diesel::PgConnection::establish(&url).expect("sync connection for migrate");
                 apply_per_signer_migration(&mut conn);
+                conn.batch_execute(include_str!(
+                    "../../migrations/2026-11-04-000001_advance_wallet_floor/up.sql"
+                ))
+                .expect("install the wallet floor function");
             })
             .await
             .expect("blocking migrate task");

@@ -42,6 +42,12 @@ security properties**. In particular:
   window-only session reads, under which a captured read could be replayed
   repeatedly for its whole window and return private state created after
   capture.
+  One exception, recorded in
+  [decision-nonce-read-window.md](./decision-nonce-read-window.md) and
+  pending security review: the session-signed canonical nonce poll is
+  accepted every time inside a window of 60 s behind and 30 s ahead of server
+  time. A copy reveals only the account's current nonce and commitment, never
+  state, and is never accepted for another operation.
 - Authorization is always decided against current, authoritative data.
   Signer removal, session revocation and expiry take effect on the next
   request on every replica.
@@ -126,7 +132,10 @@ captured request (expect rejection) on the same and on another replica.
    signing order on different replicas, **Then** all succeed.
 3. **Given** a session read that was accepted, **When** the exact same
    signed request is sent again to any replica within its time window,
-   **Then** it is rejected as a replay and returns no account data.
+   **Then** it is rejected as a replay and returns no account data. The
+   canonical nonce poll is the one exception (see Security posture): a copy
+   of it inside its window returns the nonce and commitment again, and is
+   refused once the session is revoked or expired or the window has passed.
 4. **Given** a session read whose signature is re-encoded in its alternate
    valid form (high-S/low-S), **When** it is sent after the original was
    accepted, **Then** it is rejected as a replay.
@@ -400,7 +409,13 @@ job's duration and its effect on concurrent request latency.
 - **FR-008**: Session reads MUST be accepted only if the timestamp is
   within 60 seconds of server time (wallet requests and session writes keep
   5 minutes) and the request's signed message digest
-  has not been accepted before by any replica for that session.
+  has not been accepted before by any replica for that session. Exception:
+  the session-signed canonical nonce poll MUST be accepted only while its
+  session is live and its timestamp is at most 60 seconds behind and 30
+  seconds ahead of server time, checked against the store's clock in the
+  same call as the session lookup; it is not recorded and MAY be accepted
+  more than once inside that window. A wallet-signed nonce poll keeps its
+  floor.
 - **FR-009**: The duplicate record MUST be keyed on the signed message
   digest together with the signer identity, never on signature bytes, so
   alternate encodings of one signature are the same request.
@@ -552,8 +567,10 @@ job's duration and its effect on concurrent request latency.
   requests during the target-shaped benchmark (first attempt, not hidden
   by retries).
 - **SC-002**: 100% of resent captured requests (reads and writes, either
-  signature encoding, any replica) are rejected, and 100% of requests
-  presented on a different operation or transport fail.
+  signature encoding, any replica) are rejected, except session-signed
+  canonical nonce polls inside their window (FR-008), and 100% of requests
+  presented on a different operation or transport fail, nonce polls
+  included.
 - **SC-003**: Two legs, each with p95 <= 1 s at a sustained rate of at
   least 8,000 requests/s (design target 10,000/s, one poll every 2 s from
   20,000 readers): (a) the realistic mix, nonce poll with full state fetched

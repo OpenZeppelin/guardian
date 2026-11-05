@@ -1,0 +1,1 @@
+DROP FUNCTION guardian_serve_session_read(TEXT, TEXT, BYTEA, BIGINT, BIGINT, BIGINT, BOOLEAN);

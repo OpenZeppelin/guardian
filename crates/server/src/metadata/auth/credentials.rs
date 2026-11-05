@@ -10,6 +10,44 @@ pub const MAX_TIMESTAMP_SKEW_MS: i64 = 300_000; // 5 minutes in milliseconds
 /// sent, with no wallet prompt in between, so only clock difference counts,
 /// and the record of accepted reads lives only this long plus a margin.
 pub const SESSION_READ_SKEW_MS: i64 = 60_000;
+/// How far ahead of server time a session canonical nonce poll may be
+/// stamped. The poll is accepted every time it is presented inside its
+/// window, and a captured poll stays usable for [`SESSION_READ_SKEW_MS`] plus
+/// this, so the future side is narrower than the past side; it still leaves
+/// a client whose clock runs fast room to poll, since an SDK cannot fall back
+/// when its polls are refused.
+pub const SESSION_NONCE_FUTURE_MS: i64 = 30_000;
+
+/// The timestamps a request is accepted with, relative to server time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimestampWindow {
+    pub past_ms: i64,
+    pub future_ms: i64,
+}
+
+impl TimestampWindow {
+    pub const fn symmetric(skew_ms: i64) -> Self {
+        Self {
+            past_ms: skew_ms,
+            future_ms: skew_ms,
+        }
+    }
+
+    pub fn contains(self, timestamp_ms: i64, now_ms: i64) -> bool {
+        now_ms.saturating_sub(timestamp_ms) <= self.past_ms
+            && timestamp_ms.saturating_sub(now_ms) <= self.future_ms
+    }
+
+    /// The bound `timestamp_ms` is measured against: the past side for a
+    /// timestamp at or behind `now_ms`, the future side otherwise.
+    pub fn bound_ms(self, timestamp_ms: i64, now_ms: i64) -> i64 {
+        if timestamp_ms <= now_ms {
+            self.past_ms
+        } else {
+            self.future_ms
+        }
+    }
+}
 /// [`MAX_TIMESTAMP_SKEW_MS`] in seconds, for values carried in Unix seconds.
 pub const MAX_TIMESTAMP_SKEW_SECS: u64 = MAX_TIMESTAMP_SKEW_MS as u64 / 1000;
 

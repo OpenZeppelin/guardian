@@ -21,14 +21,21 @@ CONSTANTS
     Skew,         \* MAX_TIMESTAMP_SKEW, in clock units
     Ttl,          \* session max TTL, in clock units
     SignKeys,     \* keys clients sign with: subset of {"s1", "s2", "sess"}
-    Kinds,        \* request kinds clients send: subset of {"configure", "push", "read"}
+    Kinds,        \* request kinds clients send: subset of
+                  \* {"configure", "push", "read", "nonce"}
     MaxStall,     \* longest a handler may sit between its skew check and its
                   \* last step, in clock units (MaxTime or more = unbounded)
     Scenario,     \* "fresh": account not configured yet;
                   \* "existing": account configured, no legacy floor;
                   \* "migrated": account exists with a legacy account floor
-    FloorChecks   \* the session floor's freshness and fence checks (the code:
+    FloorChecks,  \* the session floor's freshness and fence checks (the code:
                   \* TRUE; FALSE reproduces F2)
+    NonceFuture,  \* how far ahead of the server clock a session nonce poll may
+                  \* be stamped (the code: 30 s against the 60 s past window)
+    NonceRecheck, \* the nonce serving step re-checks the window against the
+                  \* database clock (the code: TRUE)
+    NonceLiveCheck \* the nonce serving step looks the session up in the same
+                  \* call (the code: TRUE)
 
 VARIABLES
     now,       \* server clock (all replicas read the same clock)
@@ -43,12 +50,13 @@ VARIABLES
     floorFence, \* replay_fence 'session_floor': floors at or below it are refused
     readFence,  \* replay_fence 'session_read'
     seen,       \* session_read_seen: the session reads admitted
+    nbad,       \* a session nonce poll was served outside a live session or its window
     hpc, hreq, hexist, hwrote, hstart
 
 vars == <<now, exists, floors, version, session, sent, acc, wrote, floorFence, readFence, seen,
-          hpc, hreq, hexist, hwrote, hstart>>
+          nbad, hpc, hreq, hexist, hwrote, hstart>>
 
-FenceVars == <<floorFence, readFence, seen>>
+FenceVars == <<floorFence, readFence, seen, nbad>>
 
 Wallets == {"s1", "s2"}
 FloorKeys == Wallets \cup {"sess"}
@@ -61,6 +69,18 @@ PreMigration == [id |-> 0, kind |-> "push", key |-> "s2", ts |-> 1]
 
 Max(a, b) == IF a > b THEN a ELSE b
 Abs(x) == IF x < 0 THEN -x ELSE x
+
+(* Proposed window-only session nonce polls (decision-nonce-read-window.md *)
+(* in speckit/features/317-secure-scalability): a session-signed nonce     *)
+(* poll is served every time it arrives inside its window, which reaches   *)
+(* Skew into the past and only NonceFuture ahead. Every other request keeps *)
+(* the symmetric window. A wallet-signed nonce stays a floor request.      *)
+NonceReq(r) == r.kind = "nonce" /\ r.key = "sess"
+
+InWindow(r) ==
+    IF NonceReq(r)
+    THEN now - r.ts <= Skew /\ r.ts - now <= NonceFuture
+    ELSE Abs(now - r.ts) <= Skew
 
 (* session.rs stale_floor_age_ms *)
 PurgeCutoff == now - (Ttl + 2 * Skew)
@@ -82,6 +102,7 @@ Init ==
     /\ floorFence = None
     /\ readFence = None
     /\ seen = {}
+    /\ nbad = FALSE
 
 -----------------------------------------------------------------------------
 (* Environment *)
@@ -140,7 +161,7 @@ Purge ==
     /\ floors' = IF FloorDeletable THEN [floors EXCEPT !["sess"] = None] ELSE floors
     /\ floorFence' = IF FenceBehind THEN PurgeCutoff - 1 ELSE floorFence
     /\ UNCHANGED <<now, exists, version, session, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
-    /\ UNCHANGED <<readFence, seen>>
+    /\ UNCHANGED <<readFence, seen, nbad>>
 
 (* coordination/read_records.rs maintain (guardian_advance_session_read_fence *)
 (* under the exclusive fence lock): raise the read fence to the retention  *)
@@ -154,13 +175,13 @@ PurgeReads ==
     /\ readFence' = ReadCutoff
     /\ seen' = {s \in seen : s.ts > ReadCutoff}
     /\ UNCHANGED <<now, exists, floors, version, session, sent, acc, wrote, hpc, hreq, hexist, hwrote, hstart>>
-    /\ UNCHANGED floorFence
+    /\ UNCHANGED <<floorFence, nbad>>
 
 -----------------------------------------------------------------------------
 (* Request handlers. A handler serves any request ever sent: the first     *)
 (* run of a request is the honest one, any later run is a replay.          *)
 
-HUnchanged == UNCHANGED <<now, session, sent, floorFence, readFence, seen>>
+HUnchanged == UNCHANGED <<now, session, sent, floorFence, readFence, seen, nbad>>
 
 Start(h) ==
     /\ hpc[h] = "idle"
@@ -212,7 +233,7 @@ PMeta(h) ==
 (* services/mod.rs validate_request_timestamp *)
 PSkew(h) ==
     /\ hpc[h] = "p_skew"
-    /\ IF Abs(now - hreq[h].ts) > Skew THEN Done(h)
+    /\ IF ~InWindow(hreq[h]) THEN Done(h)
        ELSE hpc' = [hpc EXCEPT ![h] = IF hreq[h].key = "sess" THEN "p_find" ELSE "p_cas"]
     /\ hstart' = [hstart EXCEPT ![h] = now]
     /\ HUnchanged
@@ -223,6 +244,7 @@ PSkew(h) ==
 (* a session read is admitted once, every other request advances the floor. *)
 PFind(h) ==
     /\ hpc[h] = "p_find"
+    /\ ~NonceReq(hreq[h])
     /\ IF SessionLive
        THEN hpc' = [hpc EXCEPT ![h] =
                 IF hreq[h].kind = "read" THEN "p_record" ELSE "p_cas"]
@@ -232,24 +254,48 @@ PFind(h) ==
 
 PCas(h) ==
     /\ hpc[h] = "p_cas"
-    /\ CasStep(h, IF hreq[h].kind = "read" THEN "idle" ELSE "p_write")
+    /\ CasStep(h, IF hreq[h].kind \in {"read", "nonce"} THEN "idle" ELSE "p_write")
     /\ HUnchanged
     /\ UNCHANGED <<exists, version, wrote, hreq, hexist, hwrote, hstart>>
 
 (* services/mod.rs resolve_unique_session_read -> admit_read_record       *)
 (* (guardian_record_session_read: shared fence lock, window re-check, fence *)
 (* check, insert, in one call): a session read is admitted               *)
-(* once instead of advancing a floor.                                       *)
+(* once instead of advancing a floor. The record may wait, so the session   *)
+(* is looked up again after it; a read whose session ended meanwhile is    *)
+(* refused and its record removed in the same transaction (Postgres). The  *)
+(* local stores keep that record, which only refuses more.                 *)
 PRecord(h) ==
     LET r == hreq[h] IN
     /\ hpc[h] = "p_record"
     /\ IF Abs(now - r.ts) <= Skew /\ r.ts > readFence /\ r.id \notin {s.id : s \in seen}
+            /\ SessionLive
        THEN /\ seen' = seen \cup {[id |-> r.id, ts |-> r.ts]}
             /\ acc' = [acc EXCEPT ![r.id] = @ + 1]
        ELSE UNCHANGED <<seen, acc>>
     /\ Done(h)
-    /\ UNCHANGED <<now, session, sent, floorFence, readFence>>
+    /\ UNCHANGED <<now, session, sent, floorFence, readFence, nbad>>
     /\ UNCHANGED <<exists, floors, version, wrote, hreq, hexist, hwrote, hstart>>
+
+(* A session nonce poll is served by one read-only call                  *)
+(* (guardian_serve_session_read) that looks up the session and re-checks *)
+(* the window against one reading of the database clock, then reads the  *)
+(* state head. Nothing is recorded and no floor moves. NonceServes is what *)
+(* the call returns data for; NonceLiveCheck and NonceRecheck switch off  *)
+(* its two checks, so the property is checked against what is served, not *)
+(* assumed by it.                                                          *)
+NonceServes(r) ==
+    /\ (~NonceLiveCheck \/ SessionLive)
+    /\ (~NonceRecheck \/ InWindow(r))
+
+PNonce(h) ==
+    LET r == hreq[h] IN
+    /\ hpc[h] = "p_find"
+    /\ NonceReq(r)
+    /\ nbad' = (nbad \/ (NonceServes(r) /\ ~(SessionLive /\ InWindow(r))))
+    /\ Done(h)
+    /\ UNCHANGED <<now, session, sent, floorFence, readFence, seen>>
+    /\ UNCHANGED <<exists, floors, version, acc, wrote, hreq, hexist, hwrote, hstart>>
 
 (* services/push_delta.rs: the delta advances the stored state. *)
 PWrite(h) ==
@@ -326,7 +372,7 @@ Next ==
     \/ Tick \/ Sign \/ Grant \/ Revoke \/ Purge \/ PurgeReads
     \/ \E h \in Handlers :
          \/ Start(h)
-         \/ PMeta(h) \/ PSkew(h) \/ PFind(h) \/ PCas(h) \/ PRecord(h) \/ PWrite(h)
+         \/ PMeta(h) \/ PSkew(h) \/ PFind(h) \/ PNonce(h) \/ PCas(h) \/ PRecord(h) \/ PWrite(h)
          \/ CSkew(h) \/ CExisting(h) \/ CClaim(h) \/ CCasFirst(h) \/ CState(h) \/ CMeta(h)
 
 Spec == Init /\ [][Next]_vars
@@ -344,6 +390,15 @@ AcceptedAtMostOnce == \A i \in Ids : acc[i] <= 1
 (* succeeds only where no row exists, so it can never land over data the  *)
 (* account has moved to.                                                   *)
 WritesAtMostOnce == \A i \in Ids : wrote[i] <= 1
+
+(* Proposed nonce polls: served only while the session is live and the    *)
+(* request is inside its window, however long a handler stalled; and they  *)
+(* never take part in replay state, so they cannot consume a floor or a    *)
+(* read record another request relies on.                                  *)
+NonceServedOnlyLiveInWindow == ~nbad
+
+NonceLeavesReplayState ==
+    \A r \in sent : NonceReq(r) => (acc[r.id] = 0 /\ r.id \notin {s.id : s \in seen})
 
 (* A replay floor never moves back while it exists (the purge may delete  *)
 (* a stale session floor outright).                                        *)

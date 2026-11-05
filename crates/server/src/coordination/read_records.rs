@@ -8,7 +8,9 @@
 //! admission refuses timestamps at or below (fence), so a purged request is
 //! never admitted again. Postgres keeps the record fleet-wide
 //! (`coordination::postgres::read_records`); the file store here keeps it for
-//! one process across restarts.
+//! one process across restarts. The canonical nonce poll is the exception
+//! ([`ReadRule::WindowOnly`]): it is accepted every time it is presented
+//! inside a narrow window and records nothing.
 
 use std::collections::{BTreeMap, HashSet};
 use std::io::{BufRead, Write};
@@ -19,6 +21,7 @@ use async_trait::async_trait;
 
 use super::session_store::{SessionKey, SessionSubject};
 use crate::builder::clock::Clock;
+use crate::metadata::auth::TimestampWindow;
 use crate::state_object::StateHead;
 
 /// Width of one record bucket (a Postgres partition, a file here).
@@ -37,6 +40,48 @@ pub enum ReadRecordOutcome {
     OutsideWindow,
     /// At or below the fence: its record may have been purged.
     Stale,
+    /// Inside its window under [`ReadRule::WindowOnly`]: accepted, nothing
+    /// recorded.
+    Served,
+}
+
+impl ReadRecordOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Recorded => "recorded",
+            Self::Duplicate => "duplicate",
+            Self::OutsideWindow => "outside_window",
+            Self::Stale => "stale",
+            Self::Served => "served",
+        }
+    }
+}
+
+/// How a session read is admitted once its session is found live.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReadRule {
+    /// Admitted at most once: `key` is recorded, inside a window of
+    /// `skew_ms` either side of the store's clock and above the fence.
+    Record { key: ReadRecordKey, skew_ms: i64 },
+    /// Accepted every time it is presented inside `window` by the store's
+    /// clock. Nothing is recorded.
+    WindowOnly(TimestampWindow),
+}
+
+impl ReadRule {
+    pub fn window(self) -> TimestampWindow {
+        match self {
+            Self::Record { skew_ms, .. } => TimestampWindow::symmetric(skew_ms),
+            Self::WindowOnly(window) => window,
+        }
+    }
+
+    pub fn kind(self) -> &'static str {
+        match self {
+            Self::Record { .. } => "recorded",
+            Self::WindowOnly(_) => "window_only",
+        }
+    }
 }
 
 /// What a session store says about a session key.
@@ -46,6 +91,17 @@ pub enum SessionStatus {
     Unknown,
     Revoked,
     Expired,
+}
+
+impl SessionStatus {
+    fn live(self) -> Result<SessionSubject, InactiveSession> {
+        match self {
+            Self::Live(subject) => Ok(subject),
+            Self::Unknown => Err(InactiveSession::Unknown),
+            Self::Revoked => Err(InactiveSession::Revoked),
+            Self::Expired => Err(InactiveSession::Expired),
+        }
+    }
 }
 
 /// The account and session lookups a store without its own access to them
@@ -60,9 +116,8 @@ pub trait SessionReadLookups: Send + Sync {
 pub struct SessionReadRequest<'a> {
     pub account_id: &'a str,
     pub session_key: SessionKey,
-    pub record_key: ReadRecordKey,
+    pub rule: ReadRule,
     pub timestamp_ms: i64,
-    pub skew_ms: i64,
     pub clock: &'a dyn Clock,
     pub head: HeadRead,
 }
@@ -75,7 +130,7 @@ pub enum HeadRead {
     Include,
 }
 
-/// The canonical state head read together with a recorded admission.
+/// The canonical state head read together with an accepted admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PrefetchedHead {
     /// Not read with the admission; the caller reads it from storage.
@@ -113,8 +168,9 @@ pub enum SessionReadAdmission {
 #[async_trait]
 pub trait ReadRecordStore: Send + Sync {
     /// Look up the account and the session and, when both are there and the
-    /// session is live, admit the read: one database call on Postgres,
-    /// `lookups` then [`Self::record`] elsewhere.
+    /// session is live, admit the read by its [`ReadRule`]: one database call
+    /// on Postgres, `lookups` then [`Self::record`] or the window check
+    /// elsewhere.
     async fn admit_session_read(
         &self,
         lookups: &dyn SessionReadLookups,
@@ -147,26 +203,30 @@ async fn admit_with_lookups(
     if !lookups.account_exists(request.account_id).await? {
         return Ok(SessionReadAdmission::AccountNotFound);
     }
-    let subject = match lookups.session(&request.session_key).await? {
-        SessionStatus::Live(subject) => subject,
-        SessionStatus::Unknown => {
-            return Ok(SessionReadAdmission::Inactive(InactiveSession::Unknown));
+    let subject = match lookups.session(&request.session_key).await?.live() {
+        Ok(subject) => subject,
+        Err(inactive) => return Ok(SessionReadAdmission::Inactive(inactive)),
+    };
+    let outcome = match request.rule {
+        ReadRule::Record { key, skew_ms } => {
+            let outcome = store
+                .record(key, request.timestamp_ms, skew_ms, request.clock)
+                .await?;
+            if outcome == ReadRecordOutcome::Recorded
+                && let Err(inactive) = lookups.session(&request.session_key).await?.live()
+            {
+                return Ok(SessionReadAdmission::Inactive(inactive));
+            }
+            outcome
         }
-        SessionStatus::Revoked => {
-            return Ok(SessionReadAdmission::Inactive(InactiveSession::Revoked));
-        }
-        SessionStatus::Expired => {
-            return Ok(SessionReadAdmission::Inactive(InactiveSession::Expired));
+        ReadRule::WindowOnly(window) => {
+            if window.contains(request.timestamp_ms, request.clock.now().timestamp_millis()) {
+                ReadRecordOutcome::Served
+            } else {
+                ReadRecordOutcome::OutsideWindow
+            }
         }
     };
-    let outcome = store
-        .record(
-            request.record_key,
-            request.timestamp_ms,
-            request.skew_ms,
-            request.clock,
-        )
-        .await?;
     Ok(SessionReadAdmission::Live {
         metadata_version: None,
         subject,
@@ -475,9 +535,11 @@ mod tests {
                 SessionReadRequest {
                     account_id: "0xaccount",
                     session_key: key(7),
-                    record_key: key(8),
+                    rule: ReadRule::Record {
+                        key: key(8),
+                        skew_ms: SKEW,
+                    },
                     timestamp_ms: NOW,
-                    skew_ms: SKEW,
                     clock: &clock,
                     head: HeadRead::Include,
                 },
@@ -499,6 +561,136 @@ mod tests {
         checks_the_window_at_admission(&InMemoryReadRecords::new()).await;
         let dir = tempfile::tempdir().unwrap();
         checks_the_window_at_admission(&FileReadRecords::open(dir.path()).unwrap()).await;
+    }
+
+    struct LiveLookups;
+
+    #[async_trait]
+    impl SessionReadLookups for LiveLookups {
+        async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        async fn session(&self, _key: &SessionKey) -> Result<SessionStatus, String> {
+            Ok(SessionStatus::Live(SessionSubject::Miden {
+                signer_commitment: "0x1".to_string(),
+                origin: String::new(),
+                guardian_commitment: "0x2".to_string(),
+                network: "devnet".to_string(),
+            }))
+        }
+    }
+
+    async fn window_only(store: &dyn ReadRecordStore, timestamp_ms: i64) -> ReadRecordOutcome {
+        let clock = at(NOW);
+        match store
+            .admit_session_read(
+                &LiveLookups,
+                SessionReadRequest {
+                    account_id: "0xaccount",
+                    session_key: key(7),
+                    rule: ReadRule::WindowOnly(TimestampWindow {
+                        past_ms: 60_000,
+                        future_ms: 30_000,
+                    }),
+                    timestamp_ms,
+                    clock: &clock,
+                    head: HeadRead::Include,
+                },
+            )
+            .await
+            .unwrap()
+        {
+            SessionReadAdmission::Live { outcome, .. } => outcome,
+            other => panic!("expected a live session, got {other:?}"),
+        }
+    }
+
+    async fn serves_window_only_reads_repeatedly_inside_their_window(store: &dyn ReadRecordStore) {
+        for _ in 0..3 {
+            assert_eq!(window_only(store, NOW).await, ReadRecordOutcome::Served);
+        }
+        assert_eq!(
+            window_only(store, NOW - 60_000).await,
+            ReadRecordOutcome::Served
+        );
+        assert_eq!(
+            window_only(store, NOW + 30_000).await,
+            ReadRecordOutcome::Served
+        );
+        assert_eq!(
+            window_only(store, NOW - 60_001).await,
+            ReadRecordOutcome::OutsideWindow
+        );
+        assert_eq!(
+            window_only(store, NOW + 30_001).await,
+            ReadRecordOutcome::OutsideWindow
+        );
+    }
+
+    #[tokio::test]
+    async fn window_only_reads_are_served_repeatedly_inside_their_window() {
+        serves_window_only_reads_repeatedly_inside_their_window(&InMemoryReadRecords::new()).await;
+        let dir = tempfile::tempdir().unwrap();
+        serves_window_only_reads_repeatedly_inside_their_window(
+            &FileReadRecords::open(dir.path()).unwrap(),
+        )
+        .await;
+    }
+
+    struct ExpiresAfterFirstLookup(std::sync::atomic::AtomicBool);
+
+    #[async_trait]
+    impl SessionReadLookups for ExpiresAfterFirstLookup {
+        async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        async fn session(&self, key: &SessionKey) -> Result<SessionStatus, String> {
+            if self.0.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                Ok(SessionStatus::Expired)
+            } else {
+                LiveLookups.session(key).await
+            }
+        }
+    }
+
+    async fn refuses_a_read_whose_session_expired_while_it_was_recorded(
+        store: &dyn ReadRecordStore,
+    ) {
+        let clock = at(NOW);
+        let admission = store
+            .admit_session_read(
+                &ExpiresAfterFirstLookup(Default::default()),
+                SessionReadRequest {
+                    account_id: "0xaccount",
+                    session_key: key(7),
+                    rule: ReadRule::Record {
+                        key: key(9),
+                        skew_ms: SKEW,
+                    },
+                    timestamp_ms: NOW,
+                    clock: &clock,
+                    head: HeadRead::Include,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            admission,
+            SessionReadAdmission::Inactive(InactiveSession::Expired)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_expiring_while_its_read_is_recorded_is_refused() {
+        refuses_a_read_whose_session_expired_while_it_was_recorded(&InMemoryReadRecords::new())
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        refuses_a_read_whose_session_expired_while_it_was_recorded(
+            &FileReadRecords::open(dir.path()).unwrap(),
+        )
+        .await;
     }
 
     #[tokio::test]

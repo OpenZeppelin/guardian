@@ -7,6 +7,11 @@ quick session-bounded all PASS
 quick session-unbounded accept PASS [F2 closed: freshness re-check and floor fence at the update]
 quick session-unbounded-unfenced accept FAIL:AcceptedAtMostOnce [F2 reproduced: without the floor checks a handler stalled past max TTL + skew outlives its session floor]
 quick session-reads-quick accept PASS [session reads admitted once each]
+quick session-nonce-quick nonce PASS [window-only session nonce polls: served only live and in window, no replay state]
+quick session-nonce-unchecked nonce FAIL:NonceServedOnlyLiveInWindow [without the window re-check in the serving call a stalled handler serves a nonce poll after its window]
+quick session-nonce-future nonce PASS [future-stamped nonce polls (NonceFuture 1 of Skew 2): served only live and in the asymmetric window]
+quick session-nonce-unlive nonce FAIL:NonceServedOnlyLiveInWindow [without the session lookup in the serving call a copied poll is served after revocation or expiry]
 deep session-reads-writes all PASS [session reads and writes from one session]
 deep session-reads accept PASS [session reads admitted once each even with unbounded stalls]
 deep session-mixed all PASS
+deep session-nonce-mixed nonce PASS [wallet nonce stays once; session reads stay once next to window-only nonce polls, unbounded stalls]

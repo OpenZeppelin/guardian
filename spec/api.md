@@ -15,9 +15,9 @@
 ### Replay Protection
 
 - The signed payload includes a Unix timestamp in milliseconds.
-- The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes), and **60,000 milliseconds** for session-signed reads. A timestamp outside its window is refused with the stable code `timestamp_out_of_window` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: false`): the client's clock is off, and the credentials are not in question, so clients keep their session.
+- The server enforces a maximum clock skew window of **300,000 milliseconds** (5 minutes), and **60,000 milliseconds** for session-signed reads, except the session-signed canonical nonce poll, which may be at most 60,000 ms behind and 30,000 ms ahead of server time. A timestamp outside its window is refused with the stable code `timestamp_out_of_window` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: false`): the client's clock is off, and the credentials are not in question, so clients keep their session.
 - Wallet requests and session writes use a timestamp floor: the server tracks `last_auth_timestamp` per `(account, signer commitment)` for wallet requests and per `(account, session-<hex SHA-256 of the session key>)` for session writes, and a request whose timestamp is not strictly greater than the last accepted one under the same key is rejected with the dedicated stable code `authentication_replay` (HTTP 401 / gRPC `Unauthenticated`, `meta.retryable: true`). Independent authorized signers never contend on one timestamp, while a replayed request from the same key always loses: every accepted request advances that key's own record.
-- Session reads are not ordered: each signed session read is admitted once, fleet-wide, keyed on SHA-256 of the session public key and the signed envelope, so reads with equal or reordered timestamps are all accepted and only an exact copy is refused with `authentication_replay`. Details are under [Session Authentication](#session-authentication).
+- Session reads are not ordered: each signed session read is admitted once, fleet-wide, keyed on SHA-256 of the session public key and the signed envelope, so reads with equal or reordered timestamps are all accepted and only an exact copy is refused with `authentication_replay`. The session-signed canonical nonce poll (`GET /state/nonce`, `GetCanonicalNonce`) is the exception: it is accepted every time it is presented inside its window and is never refused as a replay. Details are under [Session Authentication](#session-authentication).
 - All other authentication failures (invalid or unauthorized signature, malformed credentials) share the terminal code `authentication_failed` (`meta.retryable: false`). Clients MUST branch on the stable code, never on message text.
 - `last_auth_timestamp` is updated atomically (compare-and-swap) when authentication succeeds; a session read's record is inserted atomically the same way.
 - `POST /configure` enforces the same timestamp skew and replay CAS, and every
@@ -114,8 +114,9 @@ approval prompts: the wallet still signs every transaction summary.
   SDKs fail early instead of falling back silently. `request_auth_version` is
   the session request envelope version requests must be signed with (2).
   Version 2 also fixes how session requests are judged: each signed session
-  read is admitted once, in any order, within 60 s of server time; session
-  writes advance a per-key timestamp floor, and wallet requests and session
+  read is admitted once, in any order, within 60 s of server time, except the
+  canonical nonce poll, accepted every time within 60 s behind and 30 s ahead
+  of server time; session writes advance a per-key timestamp floor, and wallet requests and session
   writes keep a 5-minute window. A change to these rules is a new version.
 - **Grant.** The wallet signs, in the clear:
   - `signer_commitment`: the commitment of the wallet key that signs;
@@ -228,7 +229,15 @@ approval prompts: the wallet still signs every transaction summary.
   purge first raises a fence that admission refuses timestamps at or below,
   so a delayed or purged request is never admitted again. A session read's
   timestamp must be within 60 s of server time; wallet requests and session
-  writes keep 5 minutes. A record that
+  writes keep 5 minutes. The canonical nonce poll records nothing: it is
+  accepted every time it is presented while its session is live and its
+  timestamp is at most 60 s behind and 30 s ahead of server time, checked
+  again against the store's clock when it is served. A copy of one reveals
+  only the account's current nonce and commitment, for at most about 90 s
+  after it was signed; its signature binds the operation, so it is never
+  accepted for any other read. Wallet-signed nonce polls keep the floor:
+  a wallet signature does not bind the operation, so it would also be a
+  `GET /state` signature. A record that
   cannot be written fails the read closed. The record is written at admission,
   before the request is served, so a read that fails afterwards (for example
   with a storage error) has still consumed its signature; clients sign a new request rather than resending the old one.

@@ -147,7 +147,9 @@ export interface CreateSessionRequest {
 export interface SessionRequestPolicy {
   /**
    * The session request envelope version; this client signs 2, under which
-   * each signed session read is admitted once, within 60 s of server time.
+   * each signed session read is admitted once, within 60 s of server time,
+   * except the canonical nonce poll, accepted every time within 60 s behind
+   * and 30 s ahead.
    */
   requestAuthVersion: number;
 }

@@ -27,3 +27,4 @@ crates/server/src/coordination/read_records.rs admit
 crates/server/src/coordination/read_records.rs advance
 crates/server/src/services/mod.rs admit_read_record
 crates/server/src/session.rs register
+crates/server/src/services/mod.rs validate_request_timestamp_in

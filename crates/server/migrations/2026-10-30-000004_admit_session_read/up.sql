@@ -13,7 +13,12 @@
 -- a nonce poll needs no second call. The head is read only for a recorded
 -- read and the caller discards it if a later check refuses the request.
 -- A session is live as `PgSessionStore::get` defines it: not revoked and
--- `expires_at > now()`; a revoked session reads as revoked even if expired.
+-- not expired; a revoked session reads as revoked even if expired. Expiry is
+-- compared with the current clock, not the transaction start. The record may
+-- wait (fence lock, partition maintenance), so a recorded read re-reads the
+-- session afterwards; if it was revoked or expired meanwhile, the record is
+-- removed in the same transaction and the read is refused, so a refused read
+-- leaves nothing recorded.
 CREATE FUNCTION guardian_admit_session_read(
     p_account_id   TEXT,
     p_realm        TEXT,
@@ -38,6 +43,7 @@ DECLARE
     v_expires_at   TIMESTAMPTZ;
     v_revoked_at   TIMESTAMPTZ;
     v_outcome      TEXT;
+    v_refusal      TEXT;
     v_commitment   TEXT;
     v_nonce        BIGINT;
 BEGIN
@@ -64,13 +70,31 @@ BEGIN
             FALSE, NULL::TEXT, NULL::BIGINT;
         RETURN;
     END IF;
-    IF v_expires_at <= now() THEN
+    IF v_expires_at <= clock_timestamp() THEN
         RETURN QUERY SELECT 'session_expired'::TEXT, v_auth_version, NULL::JSONB,
             FALSE, NULL::TEXT, NULL::BIGINT;
         RETURN;
     END IF;
 
     v_outcome := guardian_record_session_read(p_record_key, p_ts, p_skew_ms);
+    IF v_outcome = 'recorded' THEN
+        SELECT s.expires_at, s.revoked_at
+          INTO v_expires_at, v_revoked_at
+          FROM auth_sessions s
+         WHERE s.realm = p_realm AND s.token_digest = p_token_digest;
+        v_refusal := CASE
+            WHEN NOT FOUND THEN 'session_unknown'
+            WHEN v_revoked_at IS NOT NULL THEN 'session_revoked'
+            WHEN v_expires_at <= clock_timestamp() THEN 'session_expired'
+        END;
+        IF v_refusal IS NOT NULL THEN
+            DELETE FROM session_read_seen
+             WHERE record_key = p_record_key AND request_ts_ms = p_ts;
+            RETURN QUERY SELECT v_refusal, v_auth_version, NULL::JSONB,
+                FALSE, NULL::TEXT, NULL::BIGINT;
+            RETURN;
+        END IF;
+    END IF;
     IF p_with_head AND v_outcome = 'recorded' THEN
         SELECT st.commitment, st.nonce INTO v_commitment, v_nonce
           FROM states st

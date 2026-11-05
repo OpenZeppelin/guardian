@@ -31,10 +31,13 @@ backends are one atomic step and the model has no backend switch.
 | `AcceptedAtMostOnce` | A signed request passes the replay check at most once, however often and wherever it is resent. | A captured request is replayed: a push, a proposal signature, or a configure runs twice. |
 | `WritesAtMostOnce` | A signed request overwrites stored data at most once, even a resend that the replay check later rejects. Creating an absent account row in the configure claim is not an overwrite: it cannot land over data the account has moved to. | A rejected replay still overwrites state (see F1). |
 | `FloorsOnlyRise` | A replay floor never moves back while it exists. The purge may delete a stale session floor outright. | A lowered floor re-opens timestamps that were already used. |
+| `NonceServedOnlyLiveInWindow` | A session canonical nonce poll is served only while its session is live and its timestamp is inside the nonce window (`NonceFuture` ahead), however long its handler stalled. | A copied poll is served after revocation, expiry or its window. |
+| `NonceLeavesReplayState` | A nonce poll never wins a floor or takes a read record. | A poll consumes replay state another request relies on. |
 
 Groups in `check.sh`: `accept` checks `AcceptedAtMostOnce` and
-`FloorsOnlyRise`, `writes` checks `WritesAtMostOnce`, and `all` checks
-all three in one run.
+`FloorsOnlyRise`, `writes` checks `WritesAtMostOnce`, `all` checks
+all three in one run, and `nonce` adds the two nonce properties to
+`accept`.
 
 Cells (parameters live in `check.sh` `cell_params`):
 
@@ -49,6 +52,11 @@ Cells (parameters live in `check.sh` `cell_params`):
 | `session-mixed` (`--deep`) | a wallet and a session together |
 | `session-reads-writes` (`--deep`) | session reads and writes from one session |
 | `session-reads` (`--deep`) | two session reads, with no bound on stalls |
+| `session-nonce-quick` | one window-only nonce poll, resent at will, bounded stalls |
+| `session-nonce-future` | nonce polls stamped ahead of the server clock: `Skew` 2 and `NonceFuture` 1, so the future bound is narrower than the past one, as in the code |
+| `session-nonce-unchecked` | the same as `session-nonce-quick` with no window re-check when the poll is served: must fail `NonceServedOnlyLiveInWindow` |
+| `session-nonce-unlive` | the same with no session lookup when the poll is served: must fail `NonceServedOnlyLiveInWindow` |
+| `session-nonce-mixed` (`--deep`) | a wallet and a session, nonce polls and recorded reads together, unbounded stalls |
 
 ## Does my change touch this?
 
@@ -75,7 +83,7 @@ depends on these orderings, which must stay true in the code:
 From the repo root:
 
 ```bash
-.agents/skills/verify-auth-replay/check.sh          # quick tier, about 1 min
+.agents/skills/verify-auth-replay/check.sh          # quick tier, about 2 min
 .agents/skills/verify-auth-replay/check.sh --deep   # adds session-mixed and the session read cells, over an hour
 ```
 
@@ -97,8 +105,15 @@ every cell matched and nothing drifted, 1 means a cell changed verdict,
 changed. The baseline is not all-PASS: `session-unbounded-unfenced
 accept` fails on purpose. It turns off the session floor's freshness and
 fence checks and must reproduce finding F2 below; if it ever passes, the
-model no longer notices F2. F1, F2 and F3 are fixed: `configure-fresh
-writes FAIL` or `session-unbounded accept FAIL` means one is back.
+model no longer notices F2. `session-nonce-unchecked nonce` fails on
+purpose too: it serves a poll without re-checking its window, and a stalled
+handler then serves it after the window closed. `session-nonce-unlive nonce`
+fails on purpose: without the session lookup in the serving call a copied
+poll is served after revocation or expiry. Together they show the nonce
+property is checked against what the serving call returns, not assumed by
+it. F1, F2 and F3 are fixed:
+`configure-fresh writes FAIL` or `session-unbounded accept FAIL` means one
+is back.
 
 For a full counterexample:
 
@@ -142,7 +157,8 @@ Paths are relative to `crates/server/src/`.
 | `FloorAdmits` (in `CasWins` for `sess`) | `advance_session_floor`: Postgres `guardian_advance_session_floor` (migration `2026-10-30-000003_session_floor_fence`: shared fence lock, window re-check against the database clock, fence check, compare-and-set in one call); filesystem the same under the `auth_state` write lock (`advance_floor_locked`) |
 | `Purge`, `PurgeCutoff`, `floorFence` | `builder/handle.rs` `start_session_sweep_worker` → `session.rs` `stale_floor_age_ms` → `purge_session_floors` (Postgres: `guardian_raise_session_floor_fence` raises the fence under the exclusive lock and commits, then `guardian_delete_fenced_session_floors` deletes at or below it in a separate transaction. The model takes both in one step; the code's intermediate state only refuses more, since the fence is already raised while the floors still exist. Filesystem: both under the `auth_state` write lock, fence in `.metadata/session_floor_fence`) |
 | `Grant`, `Revoke` | `session.rs` `register` and `revoke`. Every session, including one stored by an earlier release, reads under the record of accepted reads |
-| `PFind` then `PRecord`, `seen`, `readFence` | session reads: `services/mod.rs` `resolve_account_with_head` sends every session read to `resolve_unique_session_read` → `ReadRecordStore::admit_session_read`; session writes take `verify_session_request` and the floor. Postgres does the session lookup and the record in one call (`guardian_admit_session_read`, migration `2026-10-30-000004_admit_session_read`, which calls `guardian_record_session_read`), a refinement of the two model steps (with the head flag set, a recorded read also returns the state head, a read with no effect on admission); the in-memory and file stores do them in sequence (`admit_with_lookups`, then `LocalState::admit`), as modeled |
+| `PFind` then `PRecord`, `seen`, `readFence` | session reads: `services/mod.rs` `resolve_account_with_head` sends every session read to `resolve_unique_session_read` → `ReadRecordStore::admit_session_read`; session writes take `verify_session_request` and the floor. Postgres does the session lookup and the record in one call (`guardian_admit_session_read`, migration `2026-10-30-000004_admit_session_read`, which calls `guardian_record_session_read`), a refinement of the two model steps (with the head flag set, a recorded read also returns the state head, a read with no effect on admission); the in-memory and file stores do them in sequence (`admit_with_lookups`, then `LocalState::admit`), as modeled. `PRecord` admits only while the session is live: after a recorded read both backends look the session up again, and Postgres removes the record of a read it then refuses (the local stores keep it, which only refuses more) |
+| `PNonce`, `NonceServes`, `NonceFuture`, `NonceRecheck`, `NonceLiveCheck` | the session canonical nonce poll: `services/mod.rs` `SessionReadKind::WindowOnly` → `ReadRecordStore::admit_session_read` with `ReadRule::WindowOnly` (Postgres `guardian_serve_session_read`, migration `2026-11-05-000001_serve_session_read`: session lookup, expiry and window checked against one reading of the database clock in one read-only call; local stores `admit_with_lookups`). Nothing is recorded and no floor moves |
 | `PurgeReads`, `ReadCutoff` | `start_session_sweep_worker` → `ReadRecordStore::maintain` (Postgres `guardian_advance_session_read_fence`, committed, then `guardian_drop_fenced_session_read_partitions` in a separate transaction, refining the model's one step the same way; local stores `LocalState::advance`), retention `session.rs` `READ_RECORD_RETAIN_MS` |
 | `Grant`, `Revoke`, `SessionLive` | `session.rs` session store (`find` treats expired or revoked as not live) |
 | `Sign` | a client signing an `AuthRequestMessage` with its own clock |

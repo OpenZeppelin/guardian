@@ -941,7 +941,7 @@ fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 
 The server emits `tracing` logs — `text` by default, `json` when `GUARDIAN_LOG_FORMAT=json` (see [`CONFIGURATION.md`](./CONFIGURATION.md#logging)). `text` uses ANSI colors only when stdout is a TTY; `json` emits flattened JSON with span context for CloudWatch Logs Insights.
 
-Hot-path service handlers emit request events at `debug` — enable them with `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. At the default `info` filter each request emits one span-close line instead, carrying the span's fields (account ID, nonce, commitment, signer/match counts) and `time.busy` / `time.idle`:
+Hot-path service handlers emit request events at `debug`: enable them with `RUST_LOG=server=debug` or `RUST_LOG=server::services=debug`. At the default `info` filter each request except the canonical nonce poll (whose span is `debug`) emits one span-close line instead, carrying the span's fields (account ID, nonce, commitment, signer/match counts) and `time.busy` / `time.idle`:
 
 ```
 2026-08-19T11:53:31.172132Z  INFO push_delta_proposal{account_id="0x1234…" nonce=7 commitment="0xabcd…" signer_count=2}: server::services::push_delta_proposal: close time.busy=4.1ms time.idle=112µs

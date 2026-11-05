@@ -1,11 +1,14 @@
-use crate::coordination::read_records::{HeadRead, PrefetchedHead};
+use crate::coordination::read_records::{HeadRead, PrefetchedHead, ReadRule};
 use crate::error::{GuardianError, Result};
 use crate::metadata::SessionFloorOutcome;
 use crate::metadata::auth::{
-    Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat, SESSION_READ_SKEW_MS,
+    Credentials, MAX_TIMESTAMP_SKEW_MS, RequestAuthFormat, SESSION_NONCE_FUTURE_MS,
+    SESSION_READ_SKEW_MS, TimestampWindow,
 };
 use crate::metadata::{AccountMetadata, LEGACY_ACCOUNT_AUTH_FLOOR};
-use crate::metrics::labels::{AuthCredential, AuthRejectionReason, record_auth_rejection};
+use crate::metrics::labels::{
+    AuthCredential, AuthRejectionReason, record_auth_rejection, record_session_read,
+};
 use crate::state::AppState;
 use crate::storage::StorageBackend;
 use base64::Engine;
@@ -220,10 +223,10 @@ pub async fn resolve_account_for_head_read(
     .await
 }
 
-/// A session read on a replica whose read replay policy is `unique`: the
-/// window and the signature over the request's envelope are checked without
-/// the database, then one call looks up the account's metadata version and
-/// the session and admits the read once. The metadata comes from the store's
+/// A session read: the window and the signature over the request's envelope
+/// are checked without the database, then one call looks up the account's
+/// metadata version and the session and admits the read by its rule
+/// ([`SessionReadKind`]): once, or every time inside its window. The metadata comes from the store's
 /// copy at that version, and the grant is checked as for every session
 /// request. A read admitted before an ownership check refuses it stays recorded; it
 /// was not a request its signer could use anyway.
@@ -238,15 +241,14 @@ async fn resolve_unique_session_read(
         InactiveSession, SessionReadAdmission, SessionReadRequest,
     };
 
-    let request_timestamp =
-        validate_request_timestamp(state, account_id, creds, SESSION_READ_SKEW_MS).inspect_err(
-            |_| {
-                record_auth_rejection(
-                    AuthCredential::Session,
-                    AuthRejectionReason::TimestampWindow,
-                )
-            },
-        )?;
+    let kind = SessionReadKind::of(operation);
+    let request_timestamp = validate_request_timestamp_in(state, account_id, creds, kind.window())
+        .inspect_err(|_| {
+            record_auth_rejection(
+                AuthCredential::Session,
+                AuthRejectionReason::TimestampWindow,
+            )
+        })?;
     let (pubkey_hex, signature_hex, _) = creds.as_signature().ok_or_else(|| {
         GuardianError::AuthenticationFailed("Session requests require signature credentials".into())
     })?;
@@ -270,6 +272,7 @@ async fn resolve_unique_session_read(
         )
     })?;
 
+    let rule = kind.rule(&envelope, &session_public_key);
     let admission = state
         .miden_sessions
         .read_records()
@@ -278,9 +281,8 @@ async fn resolve_unique_session_read(
             SessionReadRequest {
                 account_id,
                 session_key: crate::session::store_key(&session_public_key),
-                record_key: envelope.record_key(&session_public_key),
+                rule,
                 timestamp_ms: request_timestamp,
-                skew_ms: SESSION_READ_SKEW_MS,
                 clock: state.clock.as_ref(),
                 head,
             },
@@ -328,7 +330,7 @@ async fn resolve_unique_session_read(
         });
     }
     let signer_commitment = check_session_grant(state, account_id, &metadata, session)?;
-    admit_read_record(state, account_id, request_timestamp, outcome)?;
+    admit_read_record(state, account_id, request_timestamp, rule, outcome)?;
     Ok((
         ResolvedAccount {
             metadata,
@@ -339,29 +341,83 @@ async fn resolve_unique_session_read(
     ))
 }
 
+/// How a session read is admitted. The canonical nonce poll is accepted every
+/// time it is presented inside a window of [`SESSION_READ_SKEW_MS`] behind and
+/// [`SESSION_NONCE_FUTURE_MS`] ahead of server time: a copy reveals only when
+/// the account changes, and recording every poll would make the most frequent
+/// request a durable write. Every other session read is admitted once,
+/// fleet-wide, inside [`SESSION_READ_SKEW_MS`] either side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionReadKind {
+    Recorded,
+    WindowOnly,
+}
+
+impl SessionReadKind {
+    fn of(operation: SessionOperation) -> Self {
+        match operation {
+            SessionOperation::GetCanonicalNonce => Self::WindowOnly,
+            SessionOperation::GetState
+            | SessionOperation::GetDelta
+            | SessionOperation::GetDeltaSince
+            | SessionOperation::GetDeltaHistory
+            | SessionOperation::GetDeltaProposals
+            | SessionOperation::GetDeltaProposal
+            | SessionOperation::GetDeltaProposalExecution
+            | SessionOperation::GetCurrentExecution
+            | SessionOperation::PushDelta
+            | SessionOperation::PushDeltaProposal
+            | SessionOperation::SignDeltaProposal
+            | SessionOperation::ExecuteDeltaProposal => Self::Recorded,
+        }
+    }
+
+    fn window(self) -> TimestampWindow {
+        match self {
+            Self::Recorded => TimestampWindow::symmetric(SESSION_READ_SKEW_MS),
+            Self::WindowOnly => TimestampWindow {
+                past_ms: SESSION_READ_SKEW_MS,
+                future_ms: SESSION_NONCE_FUTURE_MS,
+            },
+        }
+    }
+
+    fn rule(self, envelope: &SessionRequestEnvelope, session_public_key: &[u8]) -> ReadRule {
+        match self {
+            Self::Recorded => ReadRule::Record {
+                key: envelope.record_key(session_public_key),
+                skew_ms: SESSION_READ_SKEW_MS,
+            },
+            Self::WindowOnly => ReadRule::WindowOnly(self.window()),
+        }
+    }
+}
+
 fn read_record_error(account_id: &str, error: String) -> GuardianError {
     tracing::error!(account_id = %account_id, error = %error, "Failed to admit session read");
     GuardianError::StorageError(format!("Failed to admit session read: {error}"))
 }
 
-/// Accepts a session read its record admitted. A copy of one already
+/// Accepts a session read its rule admitted. A copy of one already
 /// admitted, or one at or below the fence, is a replay; one that left its
 /// window while it waited is `timestamp_out_of_window`.
 fn admit_read_record(
     state: &AppState,
     account_id: &str,
     request_timestamp: i64,
+    rule: ReadRule,
     outcome: crate::coordination::ReadRecordOutcome,
 ) -> Result<()> {
     use crate::coordination::ReadRecordOutcome;
+    record_session_read(rule.kind(), outcome.as_str());
     let reason = match outcome {
-        ReadRecordOutcome::Recorded => return Ok(()),
+        ReadRecordOutcome::Recorded | ReadRecordOutcome::Served => return Ok(()),
         ReadRecordOutcome::OutsideWindow => {
             record_auth_rejection(
                 AuthCredential::Session,
                 AuthRejectionReason::TimestampWindow,
             );
-            return Err(late_request(state, request_timestamp, SESSION_READ_SKEW_MS));
+            return Err(late_request(state, request_timestamp, rule.window()));
         }
         ReadRecordOutcome::Duplicate => AuthRejectionReason::Replay,
         ReadRecordOutcome::Stale => AuthRejectionReason::Stale,
@@ -731,14 +787,15 @@ pub(crate) fn validate_timestamp_skew(state: &AppState, timestamp_ms: i64) -> Re
 
 /// A request that was inside its window when it arrived but outside it by the
 /// time its replay check ran: the same answer as a late arrival.
-fn late_request(state: &AppState, request_timestamp: i64, window_ms: i64) -> GuardianError {
+fn late_request(
+    state: &AppState,
+    request_timestamp: i64,
+    window: TimestampWindow,
+) -> GuardianError {
+    let now_ms = state.clock.now().timestamp_millis();
     GuardianError::TimestampOutOfWindow {
-        drift_ms: state
-            .clock
-            .now()
-            .timestamp_millis()
-            .abs_diff(request_timestamp),
-        window_ms: window_ms as u64,
+        drift_ms: now_ms.abs_diff(request_timestamp),
+        window_ms: window.bound_ms(request_timestamp, now_ms) as u64,
     }
 }
 
@@ -751,10 +808,27 @@ pub(crate) fn validate_request_timestamp(
     creds: &Credentials,
     window_ms: i64,
 ) -> Result<i64> {
+    validate_request_timestamp_in(
+        state,
+        account_id,
+        creds,
+        TimestampWindow::symmetric(window_ms),
+    )
+}
+
+/// [`validate_request_timestamp`] for a window whose past and future sides
+/// differ.
+fn validate_request_timestamp_in(
+    state: &AppState,
+    account_id: &str,
+    creds: &Credentials,
+    window: TimestampWindow,
+) -> Result<i64> {
     let request_timestamp = creds.timestamp();
     let server_now_ms = state.clock.now().timestamp_millis();
     let time_diff_ms = server_now_ms.abs_diff(request_timestamp);
-    if time_diff_ms > window_ms as u64 {
+    let window_ms = window.bound_ms(request_timestamp, server_now_ms);
+    if !window.contains(request_timestamp, server_now_ms) {
         tracing::warn!(
             account_id = %account_id,
             request_timestamp = %request_timestamp,
@@ -822,7 +896,11 @@ pub(crate) async fn consume_auth_timestamp(
         SessionFloorOutcome::Advanced => return Ok(()),
         SessionFloorOutcome::OutsideWindow => {
             record_auth_rejection(credential, AuthRejectionReason::TimestampWindow);
-            return Err(late_request(state, request_timestamp, window_ms));
+            return Err(late_request(
+                state,
+                request_timestamp,
+                TimestampWindow::symmetric(window_ms),
+            ));
         }
         SessionFloorOutcome::Replay => AuthRejectionReason::Replay,
         SessionFloorOutcome::Stale => AuthRejectionReason::Stale,

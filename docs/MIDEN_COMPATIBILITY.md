@@ -631,15 +631,27 @@ only; wallet-signed requests, session grants and logout are unchanged.
 - Cut a server fleet over as a whole (drained or blue/green). Replicas of
   both versions behind one endpoint would refuse each other's session
   requests intermittently.
+- Rolling the server back to an earlier release fails explicitly rather
+  than silently: upgraded SDKs refuse to start or resume a session against
+  it (`UnsupportedAuthVersion`), and a session already running has its
+  requests refused until it is started again after the server is upgraded.
+  Wallet-signed requests keep working across the rollback.
 - Each signed session read is accepted
   once, in any order, so parallel and reordered reads no longer fail with
   `authentication_replay`. Session writes keep the strict timestamp floor.
   A replica of an earlier release never accepts a version 2 session request.
+- The session-signed canonical nonce poll (`GET /state/nonce`,
+  `GetCanonicalNonce`) is the one exception: it is accepted every time
+  inside its timestamp window and leaves no record, so polling it costs no
+  database write. A copy of a poll returns only the nonce and state head the
+  session could read anyway, and stops working once the session is revoked
+  or expires.
 - Existing sessions keep working: an upgraded SDK signs version 2 with the
   same session key, and its reads are admitted by the record like any other
   session's. No new wallet prompt is needed.
 - Session reads must carry a timestamp within 60 s of server time (5 minutes
-  before); wallet requests and session writes keep 5 minutes. A client whose
+  before), and the canonical nonce poll at most 60 s behind and 30 s ahead;
+  wallet requests and session writes keep 5 minutes. A client whose
   clock is more than a minute off gets `timestamp_out_of_window` on session
   reads and keeps its session: sync its clock.
 - SDK API changes:

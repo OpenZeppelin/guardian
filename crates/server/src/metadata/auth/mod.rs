@@ -16,7 +16,7 @@ mod miden_falcon_rpo;
 
 pub use credentials::{
     AuthHeader, Credentials, ExtractCredentials, MAX_TIMESTAMP_SKEW_MS, MAX_TIMESTAMP_SKEW_SECS,
-    RequestAuthFormat, SESSION_READ_SKEW_MS,
+    RequestAuthFormat, SESSION_NONCE_FUTURE_MS, SESSION_READ_SKEW_MS, TimestampWindow,
 };
 
 /// Session-signed requests are resolved by `services::resolve_account`, and

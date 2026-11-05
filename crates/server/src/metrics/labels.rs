@@ -209,6 +209,17 @@ pub fn record_auth_rejection(credential: AuthCredential, reason: AuthRejectionRe
     .increment(1);
 }
 
+/// Counts one session read from a live session by its admission `kind` and
+/// `outcome`, both from closed sets in `coordination::read_records`.
+pub fn record_session_read(kind: &'static str, outcome: &'static str) {
+    metrics::counter!(
+        super::names::SESSION_READS_TOTAL,
+        super::names::LABEL_KIND => kind,
+        super::names::LABEL_OUTCOME => outcome
+    )
+    .increment(1);
+}
+
 /// Which connection pool a `guardian_db_pool_*` gauge describes. The
 /// server runs two independent Postgres pools with separately-tunable
 /// sizes: `storage` (delta/state, canonicalization) and `metadata`

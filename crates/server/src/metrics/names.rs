@@ -60,6 +60,7 @@ pub const STATE_RECONSTRUCTION_DURATION_SECONDS: &str =
 
 pub const SESSION_READ_MAINTENANCE_TIMESTAMP_SECONDS: &str =
     "guardian_session_read_maintenance_timestamp_seconds";
+pub const SESSION_READS_TOTAL: &str = "guardian_session_reads_total";
 
 // --- Canonicalization jobs ----------------------------------------------
 
@@ -285,6 +286,15 @@ pub const REGISTRY: &[MetricDef] = &[
                session read records (buckets created ahead, purged ones \
                dropped). Session reads under the `unique` policy are refused \
                once no bucket exists for them, an hour after the last success.",
+    },
+    MetricDef {
+        name: SESSION_READS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_KIND, LABEL_OUTCOME],
+        help: "Session reads from live sessions by admission kind (recorded: \
+               admitted once and recorded; window_only: the canonical nonce \
+               poll, accepted every time inside its window) and outcome \
+               (recorded, served, duplicate, stale, outside_window).",
     },
     MetricDef {
         name: MIDEN_RPC_RETRIES_TOTAL,

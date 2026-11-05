@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Model-check Guardian's signed-request replay protection (model/AuthReplay.tla).
 #
-#   check.sh                 quick tier, under a minute
+#   check.sh                 quick tier, about 2 minutes
 #   check.sh --deep          adds the wallet-plus-session cell and the session
 #                            read cells, over an hour more
 #   check.sh --cell <cell> <group>
@@ -105,7 +105,9 @@ trap 'rm -rf "$WORK"' EXIT
 # units throughout, so a MaxStall of 3 is "a handler finishes within max TTL
 # plus skew" and 99 is unbounded (the code today: nothing bounds a handler).
 # FloorChecks FALSE removes the session floor's freshness and fence checks,
-# which reproduces F2.
+# which reproduces F2. Nonce cells add NonceRecheck, NonceLiveCheck, Skew and
+# NonceFuture (defaults TRUE, TRUE, 1, 0); FALSE switches the serving call's
+# window or session check off.
 cell_params() {
   case "$1" in
     configure-fresh)     echo 'fresh|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
@@ -118,6 +120,11 @@ cell_params() {
     session-reads-writes) echo 'existing|{"sess"}|{"read", "push"}|2|6|3|TRUE' ;;
     session-reads)       echo 'existing|{"sess"}|{"read"}|2|6|99|TRUE' ;;
     session-reads-quick) echo 'existing|{"sess"}|{"read"}|1|4|3|TRUE' ;;
+    session-nonce-quick) echo 'existing|{"sess"}|{"nonce"}|2|4|3|TRUE|TRUE' ;;
+    session-nonce-future) echo 'existing|{"sess"}|{"nonce"}|2|5|99|TRUE|TRUE|TRUE|2|1' ;;
+    session-nonce-unchecked) echo 'existing|{"sess"}|{"nonce"}|1|5|99|TRUE|FALSE' ;;
+    session-nonce-unlive) echo 'existing|{"sess"}|{"nonce"}|1|5|99|TRUE|TRUE|FALSE' ;;
+    session-nonce-mixed) echo 'existing|{"s1", "sess"}|{"nonce", "read"}|2|5|99|TRUE|TRUE' ;;
     *) echo "unknown cell $1" >&2; return 2 ;;
   esac
 }
@@ -138,11 +145,12 @@ run_cell() {
   local cell="$1" group="$2" out="$3"
   local dir="$WORK/$cell-$group" params checks
   params="$(cell_params "$cell")"
-  IFS='|' read -r scenario keys kinds max_requests max_time max_stall floor_checks <<< "$params"
+  IFS='|' read -r scenario keys kinds max_requests max_time max_stall floor_checks nonce_recheck nonce_live skew nonce_future <<< "$params"
   case "$group" in
     accept) checks=$'INVARIANT AcceptedAtMostOnce\nPROPERTY FloorsOnlyRise' ;;
     writes) checks='INVARIANT WritesAtMostOnce' ;;
     all) checks=$'INVARIANT AcceptedAtMostOnce WritesAtMostOnce\nPROPERTY FloorsOnlyRise' ;;
+    nonce) checks=$'INVARIANT AcceptedAtMostOnce NonceLeavesReplayState NonceServedOnlyLiveInWindow\nPROPERTY FloorsOnlyRise' ;;
     *) echo "unknown group $group" >&2; return 2 ;;
   esac
   mkdir -p "$dir"
@@ -153,13 +161,16 @@ CONSTANTS
     Handlers = {h1, h2}
     MaxRequests = $max_requests
     MaxTime = $max_time
-    Skew = 1
+    Skew = ${skew:-1}
     Ttl = 2
     SignKeys = $keys
     Kinds = $kinds
     MaxStall = $max_stall
     Scenario = "$scenario"
     FloorChecks = $floor_checks
+    NonceFuture = ${nonce_future:-0}
+    NonceRecheck = ${nonce_recheck:-TRUE}
+    NonceLiveCheck = ${nonce_live:-TRUE}
 SYMMETRY Perms
 SPECIFICATION Spec
 $checks

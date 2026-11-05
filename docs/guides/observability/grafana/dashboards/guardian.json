@@ -2895,6 +2895,57 @@
           "legendFormat": "seconds since last success"
         }
       ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Session reads by kind and outcome",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 194
+      },
+      "id": 63,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (kind, outcome) (rate(guardian_session_reads_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{kind}} {{outcome}}"
+        }
+      ],
+      "description": "Admitted session reads per second. kind=recorded: admitted once through the read record (served once, duplicates and stale copies refused); kind=window_only: the canonical nonce poll, served every time inside its window and never recorded. A recorded rate approaching about 1,000/s is the signal to revisit the nonce decision (speckit/features/317-secure-scalability/decision-nonce-read-window.md)."
     }
   ]
 }
