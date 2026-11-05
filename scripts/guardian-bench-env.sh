@@ -14,7 +14,8 @@
 # Every resource is tagged purpose=guardian-bench. The bench signs with its own
 # ACK identity (generated once, kept in a state directory per AWS account,
 # region and BENCH_NAME), never devnet's
-# Secrets Manager keys or KMS key. The bench task gets no task role, no
+# Secrets Manager keys or KMS key, and encrypts stored state with its own
+# storage key (kept beside the ACK identity). The bench task gets no task role, no
 # inherited container secrets and no ECS exec, so nothing running in it can
 # reach devnet's secrets or KMS key. BENCH_NAME must contain "bench" and must
 # not share a prefix with the source service.
@@ -74,6 +75,7 @@ require_tools() {
   STATE_DIR="${STATE_ROOT}/${account}-${AWS_REGION_NAME}-${NAME}"
   PASSWORD_FILE="${STATE_DIR}/db-password"
   ACK_KEYS_FILE="${STATE_DIR}/ack-keys.json"
+  STORAGE_KEY_FILE="${STATE_DIR}/storage-key"
 }
 
 source_service_json() {
@@ -351,6 +353,14 @@ create_discovery() {
     --query 'Service.Arn' --output text)"
 }
 
+storage_key() {
+  if [ ! -s "$STORAGE_KEY_FILE" ]; then
+    mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR"
+    (umask 077 && openssl rand -base64 32 > "$STORAGE_KEY_FILE")
+  fi
+  tr -d '\n' < "$STORAGE_KEY_FILE"
+}
+
 register_task_definition() {
   local source_td="$1" image="$2" url="$3" file
   file="$(mktemp)"
@@ -359,7 +369,8 @@ register_task_definition() {
     --arg container "$SOURCE_CONTAINER" --arg cpu "$TASK_CPU" --arg memory "$TASK_MEMORY" \
     --arg pool "$POOL_SIZE" --arg replicas "$TASKS" --arg tag "$NAME" --arg log_group "$LOG_GROUP" \
     --arg ack_falcon "$(jq -r .falcon_secret_key "$ACK_KEYS_FILE")" \
-    --arg ack_ecdsa "$(jq -r .ecdsa_secret_key "$ACK_KEYS_FILE")" '
+    --arg ack_ecdsa "$(jq -r .ecdsa_secret_key "$ACK_KEYS_FILE")" \
+    --arg storage_key "$(storage_key)" '
     .taskDefinition as $td
     | ($td.containerDefinitions[] | select(.name == $container)) as $c
     | {
@@ -375,10 +386,13 @@ register_task_definition() {
         "GUARDIAN_ACK_FALCON_SECRET_PATH": "/tmp/ack/ack-falcon-secret-key",
         "GUARDIAN_ACK_ECDSA_SECRET_PATH": "/tmp/ack/ack-ecdsa-secret-key",
         "BENCH_ACK_FALCON_SECRET_KEY": $ack_falcon,
-        "BENCH_ACK_ECDSA_SECRET_KEY": $ack_ecdsa
+        "BENCH_ACK_ECDSA_SECRET_KEY": $ack_ecdsa,
+        "GUARDIAN_STORAGE_ENCRYPTION_KEY": $storage_key
       } as $overrides
     | ["GUARDIAN_ACK_ECDSA_BACKEND", "GUARDIAN_ACK_ECDSA_KMS_KEY_ID",
-       "GUARDIAN_ACK_FALCON_SECRET_ID", "GUARDIAN_ACK_ECDSA_SECRET_ID"] as $dropped
+       "GUARDIAN_ACK_FALCON_SECRET_ID", "GUARDIAN_ACK_ECDSA_SECRET_ID",
+       "GUARDIAN_STORAGE_ENCRYPTION_KEY_SECRET_ID", "GUARDIAN_STORAGE_ENCRYPTION_KEY_FILE",
+       "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"] as $dropped
     | {
         family: $family,
         networkMode: "awsvpc",
@@ -511,7 +525,7 @@ down_plan() {
       done
     fi
   done
-  for file in "$PASSWORD_FILE" "$ACK_KEYS_FILE"; do
+  for file in "$PASSWORD_FILE" "$ACK_KEYS_FILE" "$STORAGE_KEY_FILE"; do
     [ -e "$file" ] || continue
     if [ "$(purpose_of database)" = "$NAME" ] || [ "$(purpose_of database)" = absent ]; then
       printf '  %-7s local file %s\n' "DELETE" "$file"
@@ -586,7 +600,7 @@ down() {
     aws_cmd logs delete-log-group --log-group-name "$LOG_GROUP"
   fi
   if [ "$(purpose_of database)" = absent ]; then
-    rm -f "$PASSWORD_FILE" "$ACK_KEYS_FILE"
+    rm -f "$PASSWORD_FILE" "$ACK_KEYS_FILE" "$STORAGE_KEY_FILE"
     rmdir "$STATE_DIR" 2>/dev/null || true
   else
     log "keeping ${STATE_DIR}: database ${DB_ID} still exists"

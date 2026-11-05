@@ -1023,6 +1023,58 @@ Set `server_cpu` accordingly (Fargate CPU units: 4096 = 4 vCPU, 8192 = 8,
 lease. Measured scheduling:
 [`benchmarks/prod-server/results/2026-10-30-rebuild-admission-local.md`](../benchmarks/prod-server/results/2026-10-30-rebuild-admission-local.md).
 
+#### Sizing for session reads
+
+Most traffic from session-v2 clients is the canonical nonce poll: a client
+polls each account's nonce (one poll every 2 s per active user in the
+benchmark profiles) and fetches full state only when it changes. Measured
+on AWS with the window-only nonce poll (`benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md`,
+"Deployed runs of the window-only nonce poll"), each 1,000 nonce polls/s
+cost about:
+
+- **0.2 vCPU of database** on Graviton3 (`db.m7g`), one call per poll;
+- **0.5 vCPU of Guardian server**, mostly session signature verification and
+  request handling. One 2 vCPU task saturates at about 3,000 to 3,500
+  polls/s.
+
+Latency stays low while database CPU is under about 80% (7,500 polls/s on
+`db.m7g.large`: 78% CPU, every load-generator worker's p95 under 150 ms)
+and turns into seconds of queueing at saturation (about 10,000/s on the
+same class: 99.5% CPU, p95 about 2 s). Plan for peak database CPU at or
+below about 70%, and server tasks at the 65% autoscaling target. These are
+7-minute runs and the latencies are per-worker figures, not fleet
+percentiles, so treat the table as preliminary sizing.
+
+| Active users polling (every 2 s) | Nonce polls/s | Database | Server tasks (2 vCPU each) |
+|---:|---:|---|---|
+| up to 8,000 | up to 4,000 | `db.m7g.large` | 2 to 3 |
+| up to 14,000 | up to 7,000 | `db.m7g.large` (tight) or `db.m7g.xlarge` | 4 to 5 |
+| 20,000 (issue #317 target) | 10,000 | `db.m7g.xlarge` (51% CPU measured) | 6 to 8 (not yet qualified) |
+
+The last row is not yet qualified for latency: at 10,000 polls/s on
+`db.m7g.xlarge` the database had headroom, but with 4 tasks one ran at 96 to
+98% CPU while the average was 61%, and the write tail reached several
+seconds. 6 to 8 tasks allows for that uneven spread; a perfectly even spread
+would fit in about 4.
+
+Set `rds_instance_class`, `server_cpu = 2048`, `server_memory = 4096`, and
+`server_desired_count` / `server_autoscaling_max_capacity` to match. The prod
+profile's defaults (`db.r6g.large`, 512 CPU units per task) are far below
+these sizes; `db.r6g` (Graviton2, memory-optimized) was not measured, and
+memory is not the constraint here, so prefer the general-purpose Graviton3
+class. Every row assumes a direct database route: the measurements did not
+go through RDS Proxy, which adds a round trip to every poll
+(`rds_proxy_route_database_url = false`). Pool sizes of 32 per pool per task
+fit comfortably: 4 tasks held 241 connections. Rate limits were off in the
+benchmark; size `guardian_rate_per_min` for the number of users behind each
+client IP before relying on these numbers.
+
+Not covered by these figures: canonicalization and proving (the benchmark ran
+with canonicalization off; size the leader with the table above), full
+`get_state` on every poll instead of the nonce poll, and more than about
+15,000 accounts. Writes at the benchmark mix (one push per writer every
+10 s) added little load.
+
 #### Horizontal scaling (multiple replicas)
 
 The prod profile runs 2–6 tasks behind the ALB. Because it sets `GUARDIAN_ENV=prod`

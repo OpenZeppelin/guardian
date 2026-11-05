@@ -209,6 +209,18 @@ query fix). Revisit if the recorded-read rate is sustained above roughly
    typed queries plus this change) with stepped load, recording missed polls
    and achieved writes, not only completed requests.
 
+Status (2026-11-05): 1 done (`session-nonce-*` cells, with liveness and
+future-bound negative controls). 2 done over HTTP in the server's
+integration tests (gRPC shares the resolver; two-replica acceptance follows
+from the read-only call and is not a separate test). 3 done: locally the
+nonce path costs about a third less Postgres CPU per poll; on AWS
+(`db.m7g.large`) the Nov 4 ceiling of about 4,850 polls/s (p95 2.2 s) became
+5,000/s (every worker's p95 under 10 ms) and 7,500/s (under 150 ms), with
+writes no longer starved, and the database saturates near 10,000/s; on
+`db.m7g.xlarge` the database runs 10,000/s at 51% CPU, but that run is not
+qualified for latency (one server task saturated). The harness reports
+weighted per-worker percentiles, not fleet percentiles. Results: `benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md`.
+
 ## Questions for reviewers
 
 1. Is "an attacker holding a copied nonce request learns the account's nonce

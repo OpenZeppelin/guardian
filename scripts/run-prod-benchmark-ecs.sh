@@ -309,7 +309,7 @@ fi
 
 TASK_DEF_JSON="$(aws_cmd ecs describe-task-definition --task-definition "$SERVER_TASK_DEFINITION_ARN" --output json)"
 TASK_EXECUTION_ROLE_ARN="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.executionRoleArn')"
-TASK_ROLE_ARN="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.taskRoleArn')"
+TASK_ROLE_ARN="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.taskRoleArn // empty')"
 CPU_ARCHITECTURE_NAME="${CPU_ARCHITECTURE:-$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.runtimePlatform.cpuArchitecture // empty')}"
 SERVER_LOG_GROUP="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.containerDefinitions[0].logConfiguration.options["awslogs-group"]')"
 
@@ -400,7 +400,7 @@ TASK_DEF_FILE="$(mktemp)"
         }
       }
     ]
-  }' > "$TASK_DEF_FILE"
+  } | if $task_role_arn == "" then del(.taskRoleArn) else . end' > "$TASK_DEF_FILE"
 
 BENCH_TASK_DEFINITION_ARN="$(aws_cmd ecs register-task-definition --cli-input-json "file://${TASK_DEF_FILE}" --query 'taskDefinition.taskDefinitionArn' --output text)"
 rm -f "$TASK_DEF_FILE"
