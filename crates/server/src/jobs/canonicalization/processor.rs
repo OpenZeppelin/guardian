@@ -2682,6 +2682,15 @@ mod tests {
             unreachable!()
         }
 
+        fn verify_and_apply_delta_to_account(
+            &self,
+            _prev_proof: &str,
+            _prev_account: miden_protocol::account::Account,
+            _delta_payload: &serde_json::Value,
+        ) -> std::result::Result<AppliedState, String> {
+            unreachable!()
+        }
+
         fn merge_deltas(
             &self,
             _delta_payloads: Vec<serde_json::Value>,
