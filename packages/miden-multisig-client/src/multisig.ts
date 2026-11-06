@@ -380,6 +380,12 @@ const PRE_SWITCH_SETTLE_GRACE_MS = 5_000;
 /** A `Word` is four field elements: 64 hex digits. Anything longer is not a salt. */
 const MAX_SALT_HEX_DIGITS = 64;
 
+/**
+ * How long an executed switch waits for the GUARDIAN it leaves to log the
+ * session out. Best effort: the switch never waits longer or fails on it.
+ */
+const LEAVE_GUARDIAN_TIMEOUT_MS = 5_000;
+
 /** Block numbers are `u32` on chain. */
 const MAX_BLOCK_NUM = 0xffff_ffff;
 
@@ -817,6 +823,26 @@ export class Multisig {
    *
    * @param guardianClient - The new GUARDIAN HTTP client
    */
+  /**
+   * Logs the session this GUARDIAN client uses out on the GUARDIAN the account
+   * is leaving, so the delegated key stops working there. Best effort and
+   * bounded by {@link LEAVE_GUARDIAN_TIMEOUT_MS}: it never throws, so an
+   * unreachable old GUARDIAN cannot hold up or fail a switch.
+   */
+  private async leaveGuardianSession(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, LEAVE_GUARDIAN_TIMEOUT_MS);
+    });
+    try {
+      await Promise.race([this.guardian.revokeSession().then(() => undefined), timedOut]);
+    } catch (error) {
+      console.warn('Logging the session out on the pre-switch GUARDIAN failed', error);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   setGuardianClient(guardianClient: GuardianHttpClient): void {
     this.guardian = guardianClient;
     this.guardian.setSigner(this.signer);
@@ -2655,6 +2681,7 @@ export class Multisig {
         }
 
         const updatedStateBase64 = uint8ArrayToBase64(updatedAccount.serialize());
+        await this.leaveGuardianSession();
         const nextGuardian = new GuardianHttpClient(metadata.newGuardianEndpoint);
         this.setGuardianClient(nextGuardian);
         this.guardianPublicKey = metadata.newGuardianPubkey;
