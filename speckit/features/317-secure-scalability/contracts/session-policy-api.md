@@ -45,9 +45,9 @@ per-key timestamp floor within 5 minutes. The session-signed canonical nonce
 poll (`GetCanonicalNonce`, `GET /state/nonce`) is accepted every time while
 its session is live and its timestamp is at most 60 s behind and 30 s ahead
 of server time, and leaves no record, so version 2 is not an at-most-once
-guarantee for that operation. This exception is proposed and pending
-security review ([decision](../decision-nonce-read-window.md)); if review
-rejects it, the nonce poll is recorded like every other session read. A wallet-signed nonce poll
+guarantee for that operation. This exception was accepted in security
+review on 2026-11-05 ([decision](../decision-nonce-read-window.md)) and
+applies to no other session read. A wallet-signed nonce poll
 keeps its floor. (Earlier drafts also advertised `read_replay_policy` and
 `read_timestamp_skew_ms`; with one fixed policy they told clients nothing the
 version does not, and they were removed before release.)

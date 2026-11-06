@@ -362,10 +362,12 @@ job's duration and its effect on concurrent request latency.
 - **Duplicate store unavailable**: reads fail closed rather than skipping
   the duplicate check.
 - **Mixed fleet during cutover**: v1 and v2 servers behind one endpoint
-  would cause intermittent failures; cutover is homogeneous (drained or
-  blue/green).
-- **Rollback to a v1 server**: the v2 SDK fails explicitly and does not
-  downgrade signatures.
+  refuse each other's session requests. A drained or blue/green cutover
+  avoids it; on a rolling update, a session started during the overlap may
+  end (TypeScript falls back to the wallet) and is started again.
+- **Rollback to a v1 server**: the v2 SDK refuses to start a session and
+  does not downgrade signatures; running TypeScript sessions end and fall
+  back to the wallet, running Rust sessions have their requests refused.
 - **Legacy nonce backfill on a read**: remains an internal guarded repair
   and is measured separately from replay writes.
 - **Metadata version bumped mid-request**: a request authorized before a

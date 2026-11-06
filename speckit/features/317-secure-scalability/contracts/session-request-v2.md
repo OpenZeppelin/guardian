@@ -41,7 +41,7 @@ query/body; gRPC protobuf encoding of the request message;
 | Signature invalid for the derived operation and transport | existing `authentication_failed` |
 | Session expired / revoked / not a cosigner / Guardian or network mismatch | existing codes, unchanged |
 | Recorded read (every session read except the nonce poll): digest already recorded for this session, or `ts <= read watermark` | `authentication_replay` (retryable with a fresh signature) |
-| Session nonce poll (`GetCanonicalNonce`), proposed exception pending security review | no replay check: a copy inside its window is served again while the session is live; it is still refused on any other operation and after revocation or expiry |
+| Session nonce poll (`GetCanonicalNonce`), the one exception, accepted in security review | no replay check: a copy inside its window is served again while the session is live; it is still refused on any other operation and after revocation or expiry |
 | Write: `ts <= floor` or `ts <= floor watermark` | `authentication_replay` |
 | Duplicate record or floor store error | fail closed (`internal`), no data returned |
 
