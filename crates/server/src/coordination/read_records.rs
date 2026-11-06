@@ -104,10 +104,12 @@ impl SessionStatus {
     }
 }
 
-/// The account and session lookups a store without its own access to them
-/// uses for [`ReadRecordStore::admit_session_read`].
+/// The state head, account and session lookups a store without its own
+/// access to them uses for [`ReadRecordStore::admit_session_read`].
 #[async_trait]
 pub trait SessionReadLookups: Send + Sync {
+    /// The canonical state head, `None` when the account has no state.
+    async fn head(&self, account_id: &str) -> Result<Option<StateHead>, String>;
     async fn account_exists(&self, account_id: &str) -> Result<bool, String>;
     async fn session(&self, key: &SessionKey) -> Result<SessionStatus, String>;
 }
@@ -195,11 +197,22 @@ pub trait ReadRecordStore: Send + Sync {
 }
 
 /// [`ReadRecordStore::admit_session_read`] for stores that record locally.
+/// Admission for stores that look up the account and session separately, in
+/// the order Postgres uses: the state head first, then the account, the
+/// session and the window, so a wait on the head read never falls between the
+/// checks and the answer.
 async fn admit_with_lookups(
     store: &dyn ReadRecordStore,
     lookups: &dyn SessionReadLookups,
     request: SessionReadRequest<'_>,
 ) -> Result<SessionReadAdmission, String> {
+    let head = match request.head {
+        HeadRead::Include => match lookups.head(request.account_id).await? {
+            Some(head) => PrefetchedHead::Found(head),
+            None => PrefetchedHead::Missing,
+        },
+        HeadRead::Skip => PrefetchedHead::NotRead,
+    };
     if !lookups.account_exists(request.account_id).await? {
         return Ok(SessionReadAdmission::AccountNotFound);
     }
@@ -231,7 +244,7 @@ async fn admit_with_lookups(
         metadata_version: None,
         subject,
         outcome,
-        head: PrefetchedHead::NotRead,
+        head,
     })
 }
 
@@ -599,6 +612,10 @@ mod tests {
 
     #[async_trait]
     impl SessionReadLookups for SlowLookups<'_> {
+        async fn head(&self, _account_id: &str) -> Result<Option<StateHead>, String> {
+            Ok(None)
+        }
+
         async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
             Ok(true)
         }
@@ -637,7 +654,7 @@ mod tests {
             admission,
             SessionReadAdmission::Live {
                 outcome: ReadRecordOutcome::OutsideWindow,
-                head: PrefetchedHead::NotRead,
+                head: PrefetchedHead::Missing,
                 ..
             }
         ));
@@ -654,6 +671,10 @@ mod tests {
 
     #[async_trait]
     impl SessionReadLookups for LiveLookups {
+        async fn head(&self, _account_id: &str) -> Result<Option<StateHead>, String> {
+            Ok(None)
+        }
+
         async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
             Ok(true)
         }
@@ -729,6 +750,10 @@ mod tests {
 
     #[async_trait]
     impl SessionReadLookups for ExpiresAfterFirstLookup {
+        async fn head(&self, _account_id: &str) -> Result<Option<StateHead>, String> {
+            Ok(None)
+        }
+
         async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
             Ok(true)
         }
@@ -914,5 +939,105 @@ mod tests {
             again.record(key(2), NOW, SKEW, &at(NOW)).await.unwrap(),
             ReadRecordOutcome::Duplicate
         );
+    }
+
+    /// A head read that stalls: it revokes the session, or moves the clock
+    /// past the window, before it returns.
+    struct StallingHead<'a> {
+        clock: &'a MockClock,
+        revoked: std::sync::atomic::AtomicBool,
+        revoke: bool,
+    }
+
+    #[async_trait]
+    impl SessionReadLookups for StallingHead<'_> {
+        async fn head(&self, _account_id: &str) -> Result<Option<StateHead>, String> {
+            if self.revoke {
+                self.revoked
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            } else {
+                self.clock.advance_secs(120);
+            }
+            Ok(Some(StateHead {
+                commitment: "0xhead".to_string(),
+                nonce: Some(7),
+            }))
+        }
+
+        async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
+            Ok(true)
+        }
+
+        async fn session(&self, key: &SessionKey) -> Result<SessionStatus, String> {
+            if self.revoked.load(std::sync::atomic::Ordering::SeqCst) {
+                Ok(SessionStatus::Revoked)
+            } else {
+                LiveLookups.session(key).await
+            }
+        }
+    }
+
+    async fn checks_after_the_head_read(store: &dyn ReadRecordStore) {
+        let window = ReadRule::WindowOnly(TimestampWindow {
+            past_ms: 60_000,
+            future_ms: 30_000,
+        });
+        for (revoke, rule) in [
+            (true, window),
+            (
+                true,
+                ReadRule::Record {
+                    key: key(11),
+                    skew_ms: SKEW,
+                },
+            ),
+            (false, window),
+        ] {
+            let clock = at(NOW);
+            let lookups = StallingHead {
+                clock: &clock,
+                revoked: Default::default(),
+                revoke,
+            };
+            let admission = store
+                .admit_session_read(
+                    &lookups,
+                    SessionReadRequest {
+                        account_id: "0xaccount",
+                        session_key: key(7),
+                        rule,
+                        timestamp_ms: NOW,
+                        clock: &clock,
+                        head: HeadRead::Include,
+                    },
+                )
+                .await
+                .unwrap();
+            if revoke {
+                assert_eq!(
+                    admission,
+                    SessionReadAdmission::Inactive(InactiveSession::Revoked),
+                    "a session revoked while the head is read is refused"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        admission,
+                        SessionReadAdmission::Live {
+                            outcome: ReadRecordOutcome::OutsideWindow,
+                            ..
+                        }
+                    ),
+                    "a poll whose window closed while the head is read is refused, got {admission:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn local_stores_check_the_session_and_window_after_reading_the_head() {
+        checks_after_the_head_read(&InMemoryReadRecords::new()).await;
+        let dir = tempfile::tempdir().unwrap();
+        checks_after_the_head_read(&FileReadRecords::open(dir.path()).unwrap()).await;
     }
 }

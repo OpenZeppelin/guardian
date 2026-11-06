@@ -434,13 +434,25 @@ fn admit_read_record(
     Err(GuardianError::AuthenticationReplay)
 }
 
-/// Account and session lookups for stores that admit session reads locally.
+/// State head, account and session lookups for stores that admit session
+/// reads locally.
 struct StateSessionReadLookups<'a> {
     state: &'a AppState,
 }
 
 #[async_trait::async_trait]
 impl crate::coordination::read_records::SessionReadLookups for StateSessionReadLookups<'_> {
+    async fn head(
+        &self,
+        account_id: &str,
+    ) -> std::result::Result<Option<crate::state_object::StateHead>, String> {
+        match self.state.storage.pull_state_head(account_id).await {
+            Ok(head) => Ok(Some(head)),
+            Err(error) if crate::storage::is_storage_not_found(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn account_exists(&self, account_id: &str) -> std::result::Result<bool, String> {
         Ok(self
             .state

@@ -19,7 +19,7 @@ crates/server/src/metadata/filesystem.rs advance_floor_locked 7fa81354d2c3d04e
 crates/server/src/services/mod.rs resolve_unique_session_read 96bae147ce318ef1
 crates/server/src/services/mod.rs check_session_grant 6959b87d4183d754
 crates/server/src/coordination/postgres/read_records.rs admit_session_read 904555a427977cc0
-crates/server/src/coordination/read_records.rs admit_with_lookups 7ed449d0e8ce479f
+crates/server/src/coordination/read_records.rs admit_with_lookups c90d071e6602f671
 crates/server/src/coordination/postgres/read_records.rs record 78518968688480b9
 crates/server/src/coordination/postgres/read_records.rs maintain c566923d6ed68235
 crates/server/src/coordination/read_records.rs admit 5ec0e77f66ec014a

@@ -397,6 +397,12 @@ mod admission_tests {
 
     #[async_trait]
     impl SessionReadLookups for NoLookups {
+        async fn head(
+            &self,
+            _account_id: &str,
+        ) -> Result<Option<crate::state_object::StateHead>, String> {
+            unreachable!("Postgres admits session reads in one call")
+        }
         async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
             unreachable!("Postgres admits session reads in one call")
         }
