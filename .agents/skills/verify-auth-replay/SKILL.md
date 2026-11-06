@@ -60,8 +60,11 @@ Cells (parameters live in `check.sh` `cell_params`):
 
 ## Does my change touch this?
 
-Yes if the diff changes any function in `mirrored.txt`. The drift check
-in `check.sh` hashes each one and lists any that changed. The model also
+Yes if the diff changes any function in `mirrored.txt`: Rust functions and
+the SQL functions the replay migrations define. The drift check in
+`check.sh` hashes each one and lists any that changed; a SQL function is
+hashed across every migration, so a later migration that redefines it is
+drift too. The model also
 depends on these orderings, which must stay true in the code:
 
 - An account route validates the timestamp
@@ -101,7 +104,7 @@ It needs `java` and `python3`. TLC 1.7.4 is downloaded to
 
 Each cell prints `ok` or `DIFF` against `expected.txt`. Exit 0 means
 every cell matched and nothing drifted, 1 means a cell changed verdict,
-2 is a setup error, and 3 means the cells matched but mirrored Rust
+2 is a setup error, and 3 means the cells matched but mirrored code
 changed. The baseline is not all-PASS: `session-unbounded-unfenced
 accept` fails on purpose. It turns off the session floor's freshness and
 fence checks and must reproduce finding F2 below; if it ever passes, the
@@ -159,7 +162,7 @@ Paths are relative to `crates/server/src/`.
 | `Grant`, `Revoke` | `session.rs` `register` and `revoke`. Every session, including one stored by an earlier release, reads under the record of accepted reads |
 | `PFind` then `PRecord`, `seen`, `readFence` | session reads: `services/mod.rs` `resolve_account_with_head` sends every session read to `resolve_unique_session_read` → `ReadRecordStore::admit_session_read`; session writes take `verify_session_request` and the floor. Postgres does the session lookup and the record in one call (`guardian_admit_session_read`, migration `2026-10-30-000002_session_replay`, which calls `guardian_record_session_read`), a refinement of the two model steps (with the head flag set, a recorded read also returns the state head, a read with no effect on admission); the in-memory and file stores do them in sequence (`admit_with_lookups`, then `LocalState::admit`), as modeled. `PRecord` admits only while the session is live: after a recorded read both backends look the session up again, and Postgres removes the record of a read it then refuses (the local stores keep it, which only refuses more) |
 | `PNonce`, `NonceServes`, `NonceFuture`, `NonceRecheck`, `NonceLiveCheck` | the session canonical nonce poll: `services/mod.rs` `SessionReadKind::WindowOnly` → `ReadRecordStore::admit_session_read` with `ReadRule::WindowOnly` (Postgres `guardian_serve_session_read`, migration `2026-10-30-000002_session_replay`: session lookup, expiry and window checked against one reading of the database clock in one read-only call; local stores `admit_with_lookups`, which reads the state head before the account, session and window checks, as Postgres does). Nothing is recorded and no floor moves |
-| `PurgeReads`, `ReadCutoff` | `start_session_sweep_worker` → `ReadRecordStore::maintain` (Postgres `guardian_advance_session_read_fence`, committed, then `guardian_drop_fenced_session_read_partitions` in a separate transaction, refining the model's one step the same way; local stores `LocalState::advance`), retention `session.rs` `READ_RECORD_RETAIN_MS` |
+| `PurgeReads`, `ReadCutoff` | `start_session_sweep_worker` → `ReadRecordStore::maintain` (Postgres `guardian_advance_session_read_fence`, committed, then `guardian_drop_fenced_session_read_partitions` in a separate transaction under the partition maintenance lock, refining the model's one step the same way; local stores `LocalState::advance`), retention `session.rs` `READ_RECORD_RETAIN_MS` |
 | `Grant`, `Revoke`, `SessionLive` | `session.rs` session store (`find` treats expired or revoked as not live) |
 | `Sign` | a client signing an `AuthRequestMessage` with its own clock |
 | `PMeta`, `PSkew`, `PFind`, `PCas` | `services/mod.rs` `resolve_account_with_head`: `metadata.get`, `validate_request_timestamp`, `verify_session_request`, `consume_auth_timestamp` |

@@ -9,13 +9,13 @@
 #   check.sh --drift-only    only compare the mirrored code with fingerprints.txt,
 #                            without running TLC (exit 0 no drift, 3 drift)
 #   check.sh --accept-drift  re-record fingerprints.txt once the model has
-#                            been reviewed against the changed Rust
+#                            been reviewed against the changed code
 #
 # Groups: "accept" checks AcceptedAtMostOnce and FloorsOnlyRise; "writes"
 # checks WritesAtMostOnce; "all" checks all three in one run.
 #
 # Exit codes: 0 every cell matches expected.txt and no drift; 1 a cell
-# differs from expected.txt; 2 setup error; 3 cells match but Rust the
+# differs from expected.txt; 2 setup error; 3 cells match but code the
 # model mirrors changed since fingerprints.txt was recorded.
 set -euo pipefail
 
@@ -39,7 +39,7 @@ if [[ "${1:-}" == "--drift-only" ]]; then
     echo "No drift: $(wc -l < "$SKILL_DIR/fingerprints.txt" | tr -d ' ') mirrored functions match fingerprints.txt."
     exit 0
   fi
-  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
+  echo "DRIFT: code that the model mirrors changed since fingerprints.txt was recorded:"
   { grep -E '^[-+][^-+]' <<< "$drift" || true; } | sed 's/^/  /'
   echo "Review the matching actions in model/AuthReplay.tla, then run check.sh --accept-drift."
   exit 3
@@ -234,7 +234,7 @@ done < "$SKILL_DIR/expected.txt"
 
 if ! diff -u "$SKILL_DIR/fingerprints.txt" <(fingerprints) > "$WORK/drift.diff"; then
   echo
-  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
+  echo "DRIFT: code that the model mirrors changed since fingerprints.txt was recorded:"
   { grep -E '^[-+][^-+]' "$WORK/drift.diff" || true; } | sed 's/^/  /'
   echo "Review the matching actions in model/AuthReplay.tla, then run check.sh --accept-drift."
   [[ $status -eq 0 ]] && status=3
