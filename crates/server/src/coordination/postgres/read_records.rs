@@ -354,6 +354,73 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn two_replicas_dropping_fenced_partitions_at_once_both_succeed() {
+        let (first, second) = (store().await, store().await);
+        first.maintain(0, 600_000, 3_600_000).await.unwrap();
+        let mut held = first.pool.get().await.expect("conn");
+        #[derive(QueryableByName)]
+        struct Ddl {
+            #[diesel(sql_type = Text)]
+            sql: String,
+        }
+        let fenced_partition: Ddl = diesel::sql_query(
+            "SELECT format('CREATE TABLE IF NOT EXISTS session_read_seen_%s PARTITION OF \
+             session_read_seen FOR VALUES FROM (%s) TO (%s)', s, s, s + w) AS sql \
+             FROM (SELECT (f.watermark_ms / p.w) * p.w - p.w AS s, p.w FROM replay_fence f, \
+             (SELECT guardian_session_read_partition_ms() AS w) p \
+             WHERE f.fence = 'session_read') b",
+        )
+        .get_result(&mut held)
+        .await
+        .unwrap();
+        for sql in [
+            &fenced_partition.sql,
+            "BEGIN",
+            "SELECT guardian_drop_fenced_session_read_partitions()",
+        ] {
+            diesel::sql_query(sql).execute(&mut held).await.expect(sql);
+        }
+
+        let second_drop = async {
+            let mut conn = second.pool.get().await.expect("conn");
+            diesel::sql_query("SELECT guardian_drop_fenced_session_read_partitions()")
+                .execute(&mut conn)
+                .await
+        };
+        let release_after_the_second_waits = async {
+            let waiters = "SELECT count(*) AS watermark FROM pg_locks WHERE NOT granted \
+                 AND (locktype = 'relation' OR (locktype = 'advisory' \
+                 AND ((classid::bigint << 32) | objid::bigint) = 7310317003))";
+            let mut waited = false;
+            for _ in 0..80 {
+                let mut conn = first.pool.get().await.expect("conn");
+                let count = diesel::sql_query(waiters)
+                    .get_result::<Watermark>(&mut conn)
+                    .await
+                    .unwrap()
+                    .watermark;
+                if count >= 1 {
+                    waited = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            diesel::sql_query("COMMIT")
+                .execute(&mut held)
+                .await
+                .expect("COMMIT");
+            waited
+        };
+        let (dropped, waited) = tokio::join!(second_drop, release_after_the_second_waits);
+        assert!(waited, "the second drop never waited on the first");
+        assert!(
+            dropped.is_ok(),
+            "the second replica's drop failed: {dropped:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn a_missing_fence_row_fails_closed() {
         let store = store().await;
         store.maintain(0, 600_000, 3_600_000).await.unwrap();

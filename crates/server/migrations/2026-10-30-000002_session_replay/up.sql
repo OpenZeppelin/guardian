@@ -149,6 +149,7 @@ DECLARE
     part      RECORD;
 BEGIN
     PERFORM set_config('lock_timeout', '2s', true);
+    PERFORM pg_advisory_xact_lock(7310317003);
     SELECT f.watermark_ms INTO watermark FROM replay_fence f WHERE f.fence = 'session_read';
     FOR part IN
         SELECT c.oid::regclass AS partition
@@ -157,7 +158,7 @@ BEGIN
          WHERE i.inhparent = 'session_read_seen'::regclass
            AND substring(c.relname FROM 'session_read_seen_([0-9]+)$')::BIGINT + width <= watermark + 1
     LOOP
-        EXECUTE format('DROP TABLE %s', part.partition);
+        EXECUTE format('DROP TABLE IF EXISTS %s', part.partition);
         dropped := dropped + 1;
     END LOOP;
     RETURN dropped;
