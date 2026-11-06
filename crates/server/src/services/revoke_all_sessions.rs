@@ -77,6 +77,7 @@ pub async fn revoke_all_sessions(
         RequestAuthFormat::Eip712 => revoke_all_digest(&message).and_then(|digest| {
             verify_eip712_signature("revoke-all", signature_hex, pubkey_hex, digest)
         }),
+        RequestAuthFormat::LegacySession => return Err(GuardianError::UnsupportedAuthVersion),
         RequestAuthFormat::Session => {
             return Err(super::reject_session_credentials(
                 state,

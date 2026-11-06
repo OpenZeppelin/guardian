@@ -5178,6 +5178,156 @@ describe('Multisig', () => {
           .map(([, init]) => JSON.parse((init as RequestInit).body as string));
         expect(registration.auth).toEqual({ MidenEcdsa: { cosigner_commitments: [A] } });
       });
+it('logs the session out on the GUARDIAN it leaves before registering on the new one', async () => {
+        // A Falcon executor on an all-ECDSA account.
+        const config = {
+          threshold: 1,
+          signerCommitments: [A],
+          guardianCommitment: GUARDIAN,
+          signatureScheme: 'ecdsa' as const,
+        };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({ ...config, signers: [ecdsaSpec(A)], guardianScheme: 'ecdsa' });
+        (multisig as any).proposals.set(PROPOSAL_ID, {
+          id: PROPOSAL_ID,
+          accountId: multisig.accountId,
+          nonce: 1,
+          status: 'ready',
+          txSummary: 'AQID',
+          signatures: [
+            {
+              signerId: A,
+              signature: { scheme: 'ecdsa', signature: '0x' + '5'.repeat(130), publicKey: '0x' + '3'.repeat(66) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'switch_guardian',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            newGuardianPubkey,
+            newGuardianEndpoint: NEW_GUARDIAN,
+            description: '',
+          },
+        });
+        // Pinned base, new endpoint key, relay, push back, then the
+        // registration on the new GUARDIAN.
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ commitment: newGuardianPubkey }) });
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ account_id: multisig.accountId, nonce: 1, ack_sig: '0x' + '6'.repeat(130) }),
+        });
+        mockFetch.mockResolvedValueOnce(configureOk());
+        vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+        mockImportNotesFromProposals.mockReset();
+        mockImportNotesFromProposals.mockResolvedValue([]);
+        mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+        mockWebClient.accounts.get.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
+        });
+
+        const revoke = vi.spyOn(guardian, 'revokeSession').mockResolvedValue(true);
+
+        await expect(multisig.executeProposal(PROPOSAL_ID)).resolves.toBeUndefined();
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          `${NEW_GUARDIAN}/pubkey?scheme=ecdsa`,
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(buildUpdateGuardianTransactionRequest).toHaveBeenLastCalledWith(
+          mockWebClient,
+          newGuardianPubkey,
+          expect.objectContaining({ signatureScheme: 'ecdsa' }),
+        );
+        expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+        const [registration] = mockFetch.mock.calls
+          .filter(([url]) => String(url) === `${NEW_GUARDIAN}/configure`)
+          .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(registration.auth).toEqual({ MidenEcdsa: { cosigner_commitments: [A] } });
+        expect(revoke).toHaveBeenCalledTimes(1);
+        const configureCall = mockFetch.mock.calls.findIndex(
+          ([url]) => String(url) === `${NEW_GUARDIAN}/configure`,
+        );
+        expect(revoke.mock.invocationCallOrder[0]).toBeLessThan(
+          mockFetch.mock.invocationCallOrder[configureCall],
+        );
+      });
+it('completes a switch when the GUARDIAN it leaves cannot log the session out', async () => {
+        // A Falcon executor on an all-ECDSA account.
+        const config = {
+          threshold: 1,
+          signerCommitments: [A],
+          guardianCommitment: GUARDIAN,
+          signatureScheme: 'ecdsa' as const,
+        };
+        const multisig = createTestMultisig(config);
+        storeHoldsConfig({ ...config, signers: [ecdsaSpec(A)], guardianScheme: 'ecdsa' });
+        (multisig as any).proposals.set(PROPOSAL_ID, {
+          id: PROPOSAL_ID,
+          accountId: multisig.accountId,
+          nonce: 1,
+          status: 'ready',
+          txSummary: 'AQID',
+          signatures: [
+            {
+              signerId: A,
+              signature: { scheme: 'ecdsa', signature: '0x' + '5'.repeat(130), publicKey: '0x' + '3'.repeat(66) },
+              timestamp: '2024-01-01T00:00:00Z',
+            },
+          ],
+          metadata: {
+            proposalType: 'switch_guardian',
+            boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+            saltHex: MOCK_SALT_HEX,
+            newGuardianPubkey,
+            newGuardianEndpoint: NEW_GUARDIAN,
+            description: '',
+          },
+        });
+        // Pinned base, new endpoint key, relay, push back, then the
+        // registration on the new GUARDIAN.
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ commitment: newGuardianPubkey }) });
+        mockFetch.mockResolvedValueOnce(servedProposal());
+        mockFetch.mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({ account_id: multisig.accountId, nonce: 1, ack_sig: '0x' + '6'.repeat(130) }),
+        });
+        mockFetch.mockResolvedValueOnce(configureOk());
+        vi.spyOn(guardian, 'getDeltaProposals').mockResolvedValue([]);
+        mockImportNotesFromProposals.mockReset();
+        mockImportNotesFromProposals.mockResolvedValue([]);
+        mockWebClient.accounts.get.mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT));
+        mockWebClient.accounts.get.mockResolvedValueOnce({
+          serialize: () => new Uint8Array([1, 2, 3]),
+          to_commitment: () => ({ toHex: () => LOCAL_ACCOUNT_COMMITMENT }),
+        });
+
+        vi.spyOn(guardian, 'revokeSession').mockRejectedValue(new Error('connection refused'));
+
+        await expect(multisig.executeProposal(PROPOSAL_ID)).resolves.toBeUndefined();
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          `${NEW_GUARDIAN}/pubkey?scheme=ecdsa`,
+          expect.objectContaining({ method: 'GET' }),
+        );
+        expect(buildUpdateGuardianTransactionRequest).toHaveBeenLastCalledWith(
+          mockWebClient,
+          newGuardianPubkey,
+          expect.objectContaining({ signatureScheme: 'ecdsa' }),
+        );
+        expect(mockWebClient.executeTransaction).toHaveBeenCalledTimes(1);
+        const [registration] = mockFetch.mock.calls
+          .filter(([url]) => String(url) === `${NEW_GUARDIAN}/configure`)
+          .map(([, init]) => JSON.parse((init as RequestInit).body as string));
+        expect(registration.auth).toEqual({ MidenEcdsa: { cosigner_commitments: [A] } });
+        expect(
+          mockFetch.mock.calls.some(([url]) => String(url) === `${NEW_GUARDIAN}/configure`),
+        ).toBe(true);
+      });
       it('keeps a new GUARDIAN refusing a mixed-scheme account reachable as the cause', async () => {
         const config = {
           threshold: 1,

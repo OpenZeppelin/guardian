@@ -1002,7 +1002,7 @@ async fn test_start_session_signs_grant_with_wallet_and_signs_requests_with_sess
     client.get_state(&create_test_account_id()).await.unwrap();
     assert_eq!(
         request_auth.lock().unwrap().last().unwrap(),
-        &("session".to_string(), info.session_public_key.clone())
+        &("session-v2".to_string(), info.session_public_key.clone())
     );
 }
 
@@ -1056,7 +1056,7 @@ async fn test_push_delta_uses_the_session_and_abandon_the_wallet() {
     assert_eq!(
         formats.lock().unwrap().as_slice(),
         [
-            ("push_delta".to_string(), "session".to_string()),
+            ("push_delta".to_string(), "session-v2".to_string()),
             ("abandon_delta_candidate".to_string(), String::new()),
         ]
     );
@@ -1086,7 +1086,7 @@ async fn test_a_push_guardian_takes_only_from_the_wallet_is_re_signed_by_the_wal
     assert_eq!(
         formats.lock().unwrap().as_slice(),
         [
-            ("push_delta".to_string(), "session".to_string()),
+            ("push_delta".to_string(), "session-v2".to_string()),
             ("push_delta".to_string(), String::new()),
         ]
     );
@@ -1131,9 +1131,200 @@ async fn test_execute_delta_proposal_uses_the_session() {
     assert_eq!(
         formats.lock().unwrap().as_slice(),
         [
-            ("execute_delta_proposal".to_string(), "session".to_string()),
-            ("execute_delta_proposal".to_string(), "session".to_string()),
+            (
+                "execute_delta_proposal".to_string(),
+                "session-v2".to_string()
+            ),
+            (
+                "execute_delta_proposal".to_string(),
+                "session-v2".to_string()
+            ),
         ]
+    );
+}
+
+#[tokio::test]
+async fn test_session_signs_the_grpc_envelope_of_the_operation() {
+    let envelope = crate::ExecutionEnvelope {
+        account_id: create_test_account_id().to_string(),
+        proposal_id: "0x2222".to_string(),
+        state: "pending".to_string(),
+        error: None,
+        delta_nonce: None,
+        newly_accepted: true,
+        proposal_exists: true,
+        ignored_signatures: 0,
+        updated_at: "2026-09-30T12:00:00Z".to_string(),
+    };
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_execution(Ok(envelope));
+    let handle = service.handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+    let info = client.start_session(session_options()).await.unwrap();
+    let account_id = create_test_account_id();
+    client
+        .execute_delta_proposal(&account_id, "0x2222")
+        .await
+        .unwrap();
+
+    let signed = handle.execute_requests().pop().expect("execute recorded");
+    let message = guardian_shared::auth_request_message::AuthRequestMessage::new(
+        account_id,
+        signed.timestamp,
+        guardian_shared::auth_request_payload::AuthRequestPayload::for_operation(
+            guardian_shared::auth_request_payload::SignedOperation::ExecuteDeltaProposal,
+            &prost::Message::encode_to_vec(&signed.request),
+        ),
+    );
+    let public_key = hex::decode(info.session_public_key.trim_start_matches("0x")).unwrap();
+    let signature = hex::decode(signed.signature_hex.trim_start_matches("0x")).unwrap();
+    let verifies_as = |transport, operation| {
+        let envelope = guardian_shared::session_request::SessionRequestEnvelope::new(
+            transport, operation, &message,
+        );
+        guardian_shared::session_key::verify_bytes(&public_key, &envelope.to_bytes(), &signature)
+            .is_ok()
+    };
+    use guardian_shared::session_request::{SessionOperation, SessionTransport};
+    assert!(verifies_as(
+        SessionTransport::Grpc,
+        SessionOperation::ExecuteDeltaProposal
+    ));
+    assert!(!verifies_as(
+        SessionTransport::Http,
+        SessionOperation::ExecuteDeltaProposal
+    ));
+    assert!(!verifies_as(
+        SessionTransport::Grpc,
+        SessionOperation::PushDelta
+    ));
+}
+
+#[tokio::test]
+async fn test_session_writes_to_one_account_take_turns_across_clients_sharing_the_session() {
+    let service =
+        MockGuardianService::default().with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()));
+    let endpoint = start_mock_server(service).await.unwrap();
+    let wallet = create_test_signer();
+    let mut first = GuardianClient::connect(endpoint.clone())
+        .await
+        .unwrap()
+        .with_signer(wallet.clone());
+    first.start_session(session_options()).await.unwrap();
+    let slot = first.session_slot();
+    let second = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(wallet)
+        .with_session_slot(slot);
+    let account = create_test_account_id();
+    let other_account = AccountId::from_hex("0x7c7c7c7c7c7c7c017c7c7c7c7c7c7c").unwrap();
+
+    let turn = first
+        .session_write_turn(&account)
+        .await
+        .expect("active session");
+    let waiting = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        second.session_write_turn(&account),
+    )
+    .await;
+    assert!(waiting.is_err(), "the second write waits for the first");
+    let other_turn = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        second.session_write_turn(&other_account),
+    )
+    .await;
+    assert!(
+        matches!(other_turn, Ok(Some(_))),
+        "another account is not held up"
+    );
+    drop(other_turn);
+    drop(turn);
+    assert!(
+        matches!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(50),
+                second.session_write_turn(&account)
+            )
+            .await,
+            Ok(Some(_))
+        ),
+        "its turn comes once the first write is done"
+    );
+}
+
+#[tokio::test]
+async fn test_a_write_queued_on_a_replaced_session_waits_for_the_new_session_turn() {
+    let service = MockGuardianService::default();
+    let handle = service.handle();
+    handle.set_persistent_get_pubkey(TEST_GUARDIAN_COMMITMENT);
+    let endpoint = start_mock_server(service).await.unwrap();
+    let wallet = create_test_signer();
+    let mut first = GuardianClient::connect(endpoint.clone())
+        .await
+        .unwrap()
+        .with_signer(wallet.clone());
+    first.start_session(session_options()).await.unwrap();
+    let mut second = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(wallet)
+        .with_session_slot(first.session_slot());
+    let account = create_test_account_id();
+    let pushes = || {
+        handle
+            .calls()
+            .iter()
+            .filter(|call| *call == "push_delta_proposal")
+            .count()
+    };
+
+    let replaced_turn = first.session_write_turn(&account).await.unwrap();
+    let queued = tokio::spawn(async move {
+        second
+            .push_delta_proposal(&account, 1, serde_json::json!({}))
+            .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    first.start_session(session_options()).await.unwrap();
+    let current_turn = first.session_write_turn(&account).await.unwrap();
+    drop(replaced_turn);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(pushes(), 0, "the write waits for the new session's turn");
+
+    drop(current_turn);
+    queued.await.unwrap().unwrap();
+    assert_eq!(pushes(), 1);
+}
+
+#[tokio::test]
+async fn test_start_session_refuses_a_server_without_session_request_version_2() {
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_session_request_auth_version(0);
+    let logouts = service.revoke_session_auth_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let error = client
+        .start_session(session_options())
+        .await
+        .expect_err("a server that signs no version 2 requests is refused");
+    assert!(error.is_unsupported_auth_version(), "{error}");
+    assert!(client.session().is_none(), "no session is kept");
+    assert_eq!(
+        logouts.lock().unwrap().len(),
+        1,
+        "the session it registered is logged out"
     );
 }
 

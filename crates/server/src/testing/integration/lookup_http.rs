@@ -451,7 +451,7 @@ async fn lookup_rejects_timestamp_outside_skew_window() {
     assert_eq!(status, StatusCode::UNAUTHORIZED, "body: {body}");
     assert_eq!(
         body.get("code").and_then(Value::as_str),
-        Some("authentication_failed"),
+        Some("timestamp_out_of_window"),
         "body: {body}"
     );
 }

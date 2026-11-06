@@ -188,6 +188,16 @@ Before treating a deployment as production-ready:
   environment.
 - Validate `/`, `/pubkey`, and the relevant SDK or dashboard smoke path after
   deploy.
+- Size the database and server tasks for the expected number of active
+  session users before relying on the stage defaults (a 2 vCPU database, 2 vCPU tasks
+  autoscaling to 6). Each 1,000 canonical nonce polls/s (about
+  2,000 users polling every 2 s) costs about 0.2 vCPU of database and 0.5 vCPU
+  of server. With 20,000 polling users a 4 vCPU Graviton3 database ran at
+  about 51% CPU; the server side at that load is not yet qualified (uneven
+  per-task CPU, a slow write tail), so plan extra server tasks. Keep peak
+  database CPU at or below about 70%. Table and caveats:
+  [`SERVER_AWS_DEPLOY.md` → Sizing for session reads](./SERVER_AWS_DEPLOY.md#sizing-for-session-reads);
+  the per-vCPU figures apply to self-managed deployments too.
 - Size `GUARDIAN_RATE_PER_MIN` for the combined HTTP **and** gRPC volume:
   the sustained limit is keyed per IP alone, so gRPC traffic (the Rust
   SDK's and benchmark harness's default transport) draws on the same
@@ -586,6 +596,7 @@ and metadata directories, and preserve the keystore directory.
 | Match a Guardian release to a Miden version | [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md) |
 | Step-by-step setup for a specific run mode | [`guides/`](./guides/README.md) |
 | Deploy or update the AWS stack | [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md) |
+| Size the database and server tasks for a read load | [`SERVER_AWS_DEPLOY.md` → Sizing for session reads](./SERVER_AWS_DEPLOY.md#sizing-for-session-reads) |
 | Route CloudWatch alarms to Slack or SNS | [`SERVER_AWS_DEPLOY.md` → Alarm notifications](./SERVER_AWS_DEPLOY.md#alarm-notifications) |
 | Set up the IAM roles behind the AWS Deploy workflow | [`runbooks/github-oidc-deploy-roles.md`](./runbooks/github-oidc-deploy-roles.md) |
 | Understand the AWS topology and Terraform ownership | [`architecture/infra.md`](./architecture/infra.md) |

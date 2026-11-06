@@ -2,7 +2,7 @@
 //!
 //! A wallet signs a session grant once to authorize a client-held P-256
 //! delegated signer; afterwards that key signs ordinary per-account requests
-//! (`x-auth-format: session`). This module owns the session configuration,
+//! (`x-auth-format: session-v2`). This module owns the session configuration,
 //! the realm-scoped session store, and the delegated-signer key and signature
 //! checks. Grant, request, logout and revoke-all flows live in
 //! `services::{create_session, resolve_account, revoke_session,
@@ -14,12 +14,24 @@ use chrono::{DateTime, Utc};
 use guardian_shared::session_grant::SESSION_PUBLIC_KEY_LEN;
 use miden_protocol::Word;
 
-use crate::coordination::{InMemorySessionStore, SessionStore, SessionSubject, StoredSession};
+use crate::coordination::{
+    InMemoryReadRecords, InMemorySessionStore, ReadRecordStore, SessionStore, SessionSubject,
+    StoredSession,
+};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::MAX_TIMESTAMP_SKEW_SECS;
 
 /// Env var capping how long after registration a session may expire.
 pub const SESSION_MAX_TTL_ENV: &str = "GUARDIAN_SESSION_MAX_TTL_SECONDS";
+
+/// How long accepted session reads are kept: the session read window plus a
+/// margin, so the purge fence never reaches a timestamp still in its window.
+pub const READ_RECORD_RETAIN_MS: i64 = crate::metadata::auth::SESSION_READ_SKEW_MS + 60_000;
+
+/// How far ahead read record buckets are created. Session reads fail closed
+/// when theirs does not exist, so this is well beyond the sweep interval.
+pub const READ_RECORD_AHEAD_MS: i64 = 60 * 60 * 1_000;
+
 /// Default and upper bound of the maximum lifetime: 8 hours, as for operator
 /// and EVM sessions. Operators may only shorten it.
 pub const DEFAULT_SESSION_MAX_TTL_SECONDS: u32 = 8 * 60 * 60;
@@ -97,6 +109,24 @@ pub struct MidenSession {
 }
 
 impl MidenSession {
+    /// The Miden session a stored subject describes; `None` for another realm.
+    pub(crate) fn from_subject(subject: SessionSubject) -> Option<Self> {
+        match subject {
+            SessionSubject::Miden {
+                signer_commitment,
+                origin,
+                guardian_commitment,
+                network,
+            } => Some(Self {
+                signer_commitment,
+                origin,
+                guardian_commitment,
+                network,
+            }),
+            SessionSubject::Operator { .. } | SessionSubject::Evm { .. } => None,
+        }
+    }
+
     fn subject(&self) -> SessionSubject {
         SessionSubject::Miden {
             signer_commitment: self.signer_commitment.clone(),
@@ -105,11 +135,20 @@ impl MidenSession {
             network: self.network.clone(),
         }
     }
+
+    /// Whether `other` is the same grant.
+    fn same_grant(&self, other: &Self) -> bool {
+        self.signer_commitment == other.signer_commitment
+            && self.origin == other.origin
+            && self.guardian_commitment == other.guardian_commitment
+            && self.network == other.network
+    }
 }
 
 pub struct MidenSessions {
     config: SessionConfig,
     store: Arc<dyn SessionStore>,
+    read_records: Arc<dyn ReadRecordStore>,
 }
 
 impl Default for MidenSessions {
@@ -123,11 +162,49 @@ impl Default for MidenSessions {
 
 impl MidenSessions {
     pub fn new(config: SessionConfig, store: Arc<dyn SessionStore>) -> Self {
-        Self { config, store }
+        Self {
+            config,
+            store,
+            read_records: Arc::new(InMemoryReadRecords::new()),
+        }
+    }
+
+    /// Keep the record of accepted reads in `read_records` (fleet-wide on
+    /// Postgres) instead of process memory.
+    pub fn with_read_records(mut self, read_records: Arc<dyn ReadRecordStore>) -> Self {
+        self.read_records = read_records;
+        self
     }
 
     pub fn config(&self) -> &SessionConfig {
         &self.config
+    }
+
+    pub fn read_records(&self) -> &Arc<dyn ReadRecordStore> {
+        &self.read_records
+    }
+
+    /// Whether the session stored under `key` is live, ended or unknown, as
+    /// [`Self::find`] decides it.
+    pub(crate) async fn status(
+        &self,
+        key: &crate::coordination::SessionKey,
+        now: DateTime<Utc>,
+    ) -> Result<crate::coordination::read_records::SessionStatus> {
+        use crate::coordination::read_records::SessionStatus;
+        if let Some(session) = self.store.get(key, now).await? {
+            return Ok(SessionStatus::Live(session.subject));
+        }
+        Ok(match self.store.inactive_reason(key).await? {
+            Some(true) => SessionStatus::Revoked,
+            Some(false) => SessionStatus::Expired,
+            None => SessionStatus::Unknown,
+        })
+    }
+
+    /// The signing format this Guardian reports to clients.
+    pub fn request_policy(&self) -> SessionRequestPolicy {
+        SessionRequestPolicy::current()
     }
 
     /// Stores a verified grant and returns the session expiry. `issued_at`
@@ -139,7 +216,8 @@ impl MidenSessions {
     /// revoke-all signed after it was registered.
     ///
     /// Re-submitting the grant of a live session succeeds and returns the
-    /// same expiry, so a client that lost the first response can retry. A key
+    /// same expiry, so a client that lost the first response can
+    /// retry, on any replica. A key
     /// already bound to a different grant, or whose session was revoked or
     /// has expired but is not swept yet, is refused: a revoked session can
     /// never be revived and a key can never be re-bound to another signer.
@@ -165,9 +243,15 @@ impl MidenSessions {
         if self.store.insert_new(key, stored.clone()).await? {
             return Ok(expires_at);
         }
-        match self.store.get(&key, now).await? {
-            Some(existing)
-                if existing.subject == stored.subject && existing.expires_at == expires_at =>
+        let existing = self.store.get(&key, now).await?.map(|existing| {
+            (
+                existing.expires_at,
+                MidenSession::from_subject(existing.subject),
+            )
+        });
+        match existing {
+            Some((existing_expiry, Some(existing)))
+                if existing_expiry == expires_at && existing.same_grant(&session) =>
             {
                 Ok(expires_at)
             }
@@ -191,20 +275,7 @@ impl MidenSessions {
     ) -> Result<MidenSession> {
         let key = store_key(session_public_key);
         if let Some(session) = self.store.get(&key, now).await? {
-            return match session.subject {
-                SessionSubject::Miden {
-                    signer_commitment,
-                    origin,
-                    guardian_commitment,
-                    network,
-                } => Ok(MidenSession {
-                    signer_commitment,
-                    origin,
-                    guardian_commitment,
-                    network,
-                }),
-                _ => Err(unknown_session()),
-            };
+            return MidenSession::from_subject(session.subject).ok_or_else(unknown_session);
         }
         Err(match self.store.inactive_reason(&key).await? {
             Some(true) => GuardianError::SessionRevoked,
@@ -233,7 +304,7 @@ impl MidenSessions {
                 SessionSubject::Miden {
                     signer_commitment, ..
                 } => Some(signer_commitment),
-                _ => None,
+                SessionSubject::Operator { .. } | SessionSubject::Evm { .. } => None,
             }))
     }
 
@@ -287,13 +358,12 @@ pub(crate) fn is_replay_floor_key(key: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-/// Last request timestamp (ms) a still-live session can have advanced its
-/// floor to before `now_ms`: older floors belong to ended sessions and can be
-/// deleted. A session's requests are stamped within the skew window of its
-/// lifetime, which is at most `max_ttl_seconds` after its grant.
-pub(crate) fn stale_floor_cutoff_ms(now_ms: i64, max_ttl_seconds: u64) -> i64 {
-    let window_ms = (max_ttl_seconds + 2 * MAX_TIMESTAMP_SKEW_SECS) as i64 * 1000;
-    now_ms.saturating_sub(window_ms)
+/// How old (ms) a session floor must be before no live session can advance
+/// it again: older floors belong to ended sessions and can be deleted. A
+/// session's requests are stamped within the skew window of its lifetime,
+/// which is at most `max_ttl_seconds` after its grant.
+pub(crate) fn stale_floor_age_ms(max_ttl_seconds: u64) -> i64 {
+    (max_ttl_seconds + 2 * MAX_TIMESTAMP_SKEW_SECS) as i64 * 1000
 }
 
 fn decode_public_key(value: &str) -> std::result::Result<[u8; SESSION_PUBLIC_KEY_LEN], String> {
@@ -312,21 +382,56 @@ pub(crate) fn credential_public_key(value: &str) -> Result<[u8; SESSION_PUBLIC_K
     decode_public_key(value).map_err(GuardianError::AuthenticationFailed)
 }
 
-/// Verifies a session-key signature from request credentials.
+impl SessionRequestPolicy {
+    pub fn current() -> Self {
+        Self {
+            request_auth_version: guardian_shared::session_request::SESSION_REQUEST_VERSION,
+        }
+    }
+}
+
+/// What session request signing this server accepts, reported at session
+/// creation (for that session) and in `GET /status` (for sessions started
+/// from now on) so clients sign in a format it verifies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct SessionRequestPolicy {
+    /// The session request envelope version requests must be signed with.
+    /// Version 2 also fixes how they are judged: each signed session read is
+    /// admitted once, in any order, within 60 s of server time, except the
+    /// canonical nonce poll, accepted every time within 60 s behind and 30 s
+    /// ahead; session writes advance a per-key timestamp floor within 5
+    /// minutes.
+    pub request_auth_version: u16,
+}
+
+/// Verifies a session-key signature from request credentials over the 32
+/// bytes of `message`.
 pub(crate) fn verify_signature(
     public_key: &[u8; SESSION_PUBLIC_KEY_LEN],
     signature_hex: &str,
     message: Word,
 ) -> Result<()> {
+    verify_signature_bytes(public_key, signature_hex, &message.as_bytes())
+}
+
+/// Verifies a session-key signature from request credentials over `message`
+/// bytes.
+pub(crate) fn verify_signature_bytes(
+    public_key: &[u8; SESSION_PUBLIC_KEY_LEN],
+    signature_hex: &str,
+    message: &[u8],
+) -> Result<()> {
     let signature = hex::decode(signature_hex.trim_start_matches("0x")).map_err(|_| {
         GuardianError::AuthenticationFailed("Invalid session signature hex".to_string())
     })?;
-    guardian_shared::session_key::verify(public_key, message, &signature)
+    guardian_shared::session_key::verify_bytes(public_key, message, &signature)
         .map_err(GuardianError::AuthenticationFailed)
 }
 
 /// The session record's key: SHA-256 of the 33-byte compressed public key.
-fn store_key(public_key: &[u8; SESSION_PUBLIC_KEY_LEN]) -> crate::coordination::SessionKey {
+pub(crate) fn store_key(
+    public_key: &[u8; SESSION_PUBLIC_KEY_LEN],
+) -> crate::coordination::SessionKey {
     use sha2::{Digest, Sha256};
     Sha256::digest(public_key).into()
 }
@@ -391,7 +496,11 @@ mod tests {
 
         assert_eq!(config.unwrap().max_ttl_seconds(), 600);
         assert!(invalid.is_err());
-        assert_eq!(default.unwrap(), SessionConfig::default());
+        let default = default.unwrap();
+        assert_eq!(
+            default.max_ttl_seconds(),
+            u64::from(DEFAULT_SESSION_MAX_TTL_SECONDS)
+        );
     }
 
     #[tokio::test]
@@ -604,17 +713,9 @@ mod tests {
     }
 
     #[test]
-    fn stale_floor_cutoff_outlasts_every_live_session() {
-        let hour_ms = 3_600_000;
-        assert_eq!(
-            stale_floor_cutoff_ms(10 * hour_ms, 3600),
-            10 * hour_ms - hour_ms - 600_000
-        );
-        assert_eq!(
-            stale_floor_cutoff_ms(i64::MIN, 28_800),
-            i64::MIN,
-            "saturates"
-        );
+    fn stale_floor_age_outlasts_every_live_session() {
+        assert_eq!(stale_floor_age_ms(3600), 3_600_000 + 600_000);
+        assert_eq!(stale_floor_age_ms(28_800), 28_800_000 + 600_000);
     }
 
     #[test]

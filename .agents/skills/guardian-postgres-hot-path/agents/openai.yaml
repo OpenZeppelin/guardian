@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Postgres Hot Path"
+  short_description: "Write and measure hot-path Postgres queries in the Guardian server"
+  default_prompt: "Use $guardian-postgres-hot-path to check this server change against the hot-path database rules and measure it if it can move the cost."

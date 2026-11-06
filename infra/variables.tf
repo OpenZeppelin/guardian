@@ -160,15 +160,15 @@ variable "log_retention_days" {
 }
 
 variable "server_cpu" {
-  description = "Server task CPU units"
+  description = "Optional override for the server task CPU units (default 2048 in prod, 512 otherwise)"
   type        = number
-  default     = 512
+  default     = null
 }
 
 variable "server_memory" {
-  description = "Server task memory (MB)"
+  description = "Optional override for the server task memory in MiB (default twice the CPU units: 4096 in prod, 1024 otherwise); must be a Fargate size for the CPU"
   type        = number
-  default     = 1024
+  default     = null
 }
 
 variable "server_desired_count" {
@@ -607,7 +607,7 @@ variable "guardian_release_sweep_rotation_seconds" {
 }
 
 variable "guardian_release_sweep_max_rate_per_second" {
-  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 5)"
+  description = "Optional override for GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND, the cap on sweep account visits per second, i.e. its share of chain-node RPC capacity (server default 10)"
   type        = number
   default     = null
   validation {

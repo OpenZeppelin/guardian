@@ -145,6 +145,9 @@ pub struct MockGuardianService {
     execution_responses: Arc<StdMutex<Vec<Result<ExecutionEnvelope, Status>>>>,
     current_execution_response: Arc<StdMutex<Option<CurrentExecutionResult>>>,
     create_session_requests: Arc<StdMutex<Vec<CreateSessionRequest>>>,
+    /// Session request version the CreateSession response reports; `None`
+    /// reports 2, the version this client signs.
+    session_request_auth_version: Option<u32>,
     /// (x-pubkey, x-signature, x-timestamp) of each RevokeSession call.
     revoke_session_auth: Arc<StdMutex<Vec<(String, String, i64)>>>,
     /// Each RevokeAllSessions call.
@@ -189,6 +192,11 @@ impl MockGuardianService {
 
     pub fn configure_requests_handle(&self) -> Arc<StdMutex<Vec<ConfigureRequest>>> {
         self.configure_requests.clone()
+    }
+
+    pub fn with_session_request_auth_version(mut self, version: u32) -> Self {
+        self.session_request_auth_version = Some(version);
+        self
     }
 
     pub fn with_get_pubkey(self, response: Result<String, Status>) -> Self {
@@ -815,6 +823,7 @@ impl Guardian for MockGuardianService {
         Ok(Response::new(CreateSessionResponse {
             signer_commitment,
             expires_at: String::new(),
+            request_auth_version: self.session_request_auth_version.unwrap_or(2),
         }))
     }
 

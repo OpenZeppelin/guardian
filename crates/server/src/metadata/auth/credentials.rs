@@ -1,9 +1,53 @@
 use crate::error::GuardianError;
 use axum::{extract::FromRequestParts, http::request::Parts};
 use guardian_shared::auth_request_payload::AuthRequestPayload;
+use guardian_shared::session_request::{SESSION_REQUEST_AUTH_FORMAT, SessionTransport};
 
 /// Maximum allowed clock skew in milliseconds between client and server timestamps
 pub const MAX_TIMESTAMP_SKEW_MS: i64 = 300_000; // 5 minutes in milliseconds
+/// How far a session read's timestamp may be from server time. Narrower than
+/// [`MAX_TIMESTAMP_SKEW_MS`]: the session key signs a read the moment it is
+/// sent, with no wallet prompt in between, so only clock difference counts,
+/// and the record of accepted reads lives only this long plus a margin.
+pub const SESSION_READ_SKEW_MS: i64 = 60_000;
+/// How far ahead of server time a session canonical nonce poll may be
+/// stamped. The poll is accepted every time it is presented inside its
+/// window, and a captured poll stays usable for [`SESSION_READ_SKEW_MS`] plus
+/// this, so the future side is narrower than the past side; it still leaves
+/// a client whose clock runs fast room to poll, since an SDK cannot fall back
+/// when its polls are refused.
+pub const SESSION_NONCE_FUTURE_MS: i64 = 30_000;
+
+/// The timestamps a request is accepted with, relative to server time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TimestampWindow {
+    pub past_ms: i64,
+    pub future_ms: i64,
+}
+
+impl TimestampWindow {
+    pub const fn symmetric(skew_ms: i64) -> Self {
+        Self {
+            past_ms: skew_ms,
+            future_ms: skew_ms,
+        }
+    }
+
+    pub fn contains(self, timestamp_ms: i64, now_ms: i64) -> bool {
+        now_ms.saturating_sub(timestamp_ms) <= self.past_ms
+            && timestamp_ms.saturating_sub(now_ms) <= self.future_ms
+    }
+
+    /// The bound `timestamp_ms` is measured against: the past side for a
+    /// timestamp at or behind `now_ms`, the future side otherwise.
+    pub fn bound_ms(self, timestamp_ms: i64, now_ms: i64) -> i64 {
+        if timestamp_ms <= now_ms {
+            self.past_ms
+        } else {
+            self.future_ms
+        }
+    }
+}
 /// [`MAX_TIMESTAMP_SKEW_MS`] in seconds, for values carried in Unix seconds.
 pub const MAX_TIMESTAMP_SKEW_SECS: u64 = MAX_TIMESTAMP_SKEW_MS as u64 / 1000;
 
@@ -11,9 +55,13 @@ pub const MAX_TIMESTAMP_SKEW_SECS: u64 = MAX_TIMESTAMP_SKEW_MS as u64 / 1000;
 pub enum RequestAuthFormat {
     Raw,
     Eip712,
-    /// Signed by a P-256 session key registered through `POST /session`;
+    /// Signed by a P-256 session key registered through `POST /session`, over
+    /// a version 2 session request envelope (`x-auth-format: session-v2`);
     /// `x-pubkey` carries the session public key.
     Session,
+    /// The version 1 session format (`x-auth-format: session`), refused on
+    /// every per-account route with `unsupported_auth_version`.
+    LegacySession,
 }
 
 impl RequestAuthFormat {
@@ -21,7 +69,8 @@ impl RequestAuthFormat {
         match value {
             None | Some("raw") => Ok(Self::Raw),
             Some("eip712") => Ok(Self::Eip712),
-            Some("session") => Ok(Self::Session),
+            Some(SESSION_REQUEST_AUTH_FORMAT) => Ok(Self::Session),
+            Some("session") => Ok(Self::LegacySession),
             Some(other) => Err(format!("Unsupported x-auth-format: {other}")),
         }
     }
@@ -46,6 +95,7 @@ pub enum Credentials {
         signature: String,
         timestamp: i64,
         auth_format: RequestAuthFormat,
+        transport: SessionTransport,
         request_payload: AuthRequestPayload,
         request_payload_bytes: Vec<u8>,
     },
@@ -58,9 +108,24 @@ impl Credentials {
             signature,
             timestamp,
             auth_format: RequestAuthFormat::Raw,
+            transport: SessionTransport::Http,
             request_payload: AuthRequestPayload::empty(),
             request_payload_bytes: Vec::new(),
         }
+    }
+
+    /// The transport the request arrived on; part of what a session signs.
+    pub fn transport(&self) -> SessionTransport {
+        match self {
+            Self::Signature { transport, .. } => *transport,
+        }
+    }
+
+    pub fn with_transport(mut self, request_transport: SessionTransport) -> Self {
+        match &mut self {
+            Self::Signature { transport, .. } => *transport = request_transport,
+        }
+        self
     }
 
     pub fn as_signature(&self) -> Option<(&str, &str, i64)> {
@@ -188,7 +253,9 @@ impl ExtractCredentials for axum::http::HeaderMap {
                 .transpose()?,
         )?;
 
-        Ok(Credentials::signature(pubkey, signature, timestamp).with_auth_format(auth_format))
+        Ok(Credentials::signature(pubkey, signature, timestamp)
+            .with_auth_format(auth_format)
+            .with_transport(SessionTransport::Http))
     }
 }
 
@@ -229,7 +296,9 @@ impl ExtractCredentials for tonic::metadata::MetadataMap {
         )
         .map_err(tonic::Status::invalid_argument)?;
 
-        Ok(Credentials::signature(pubkey, signature, timestamp).with_auth_format(auth_format))
+        Ok(Credentials::signature(pubkey, signature, timestamp)
+            .with_auth_format(auth_format)
+            .with_transport(SessionTransport::Grpc))
     }
 }
 
@@ -243,6 +312,14 @@ mod tests {
         assert_eq!(
             RequestAuthFormat::parse(Some("eip712")),
             Ok(RequestAuthFormat::Eip712)
+        );
+        assert_eq!(
+            RequestAuthFormat::parse(Some("session-v2")),
+            Ok(RequestAuthFormat::Session)
+        );
+        assert_eq!(
+            RequestAuthFormat::parse(Some("session")),
+            Ok(RequestAuthFormat::LegacySession)
         );
         assert!(RequestAuthFormat::parse(Some("unknown")).is_err());
     }
@@ -258,9 +335,11 @@ mod tests {
                 signature,
                 timestamp,
                 auth_format,
+                transport,
                 request_payload,
                 request_payload_bytes,
             } => {
+                assert_eq!(transport, SessionTransport::Http);
                 assert_eq!(pubkey, "pubkey123");
                 assert_eq!(signature, "sig456");
                 assert_eq!(timestamp, 1700000000000);

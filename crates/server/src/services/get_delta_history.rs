@@ -19,7 +19,7 @@ use crate::delta_summary::{DecodeWarning, DecodedNote, decode_full, decode_trans
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
 use crate::services::dashboard_pagination::PagedResult;
-use crate::services::resolve_account_allowing_session;
+use crate::services::resolve_account_for_read;
 use crate::state::AppState;
 use crate::storage::AccountDeltaCursor;
 
@@ -113,7 +113,7 @@ impl HistoryEntry {
 ///
 /// Errors:
 ///   - [`GuardianError::AccountNotFound`] / `AuthenticationFailed` /
-///     `UnsupportedForNetwork` from [`resolve_account_allowing_session`].
+///     `UnsupportedForNetwork` from [`resolve_account_for_read`].
 ///   - [`GuardianError::InvalidCursor`] when the cursor is not an
 ///     `AccountDeltaHistory` cursor (parse failures surface at the
 ///     transport layer).
@@ -142,8 +142,13 @@ pub async fn get_delta_history(
         ));
     }
 
-    let resolved =
-        resolve_account_allowing_session(state, &params.account_id, &params.credentials).await?;
+    let resolved = resolve_account_for_read(
+        state,
+        &params.account_id,
+        &params.credentials,
+        guardian_shared::session_request::SessionOperation::GetDeltaHistory,
+    )
+    .await?;
 
     // Fetch one extra row so `next_cursor` is emitted only when more
     // rows actually exist.

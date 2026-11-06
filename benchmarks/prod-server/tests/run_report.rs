@@ -17,6 +17,8 @@ fn report_should_include_all_and_scheme_scopes() {
         measurement_seconds: 10.0,
         guardian_endpoint: "https://guardian-testnet.openzeppelin.com:443".to_string(),
         deployment_shape: Some("prod-single-task-arm64-rds-proxy".to_string()),
+        credential: "wallet".to_string(),
+        wallet_signed_operations: 0,
         scheme_distribution: SchemeDistributionReport {
             falcon_percent: 50,
             ecdsa_percent: 50,

@@ -23,6 +23,10 @@ use guardian_shared::hex::{FromHex, IntoHex};
 use guardian_shared::lookup_auth_message::LookupAuthMessage;
 use guardian_shared::session_grant::{SessionGrant, SessionLogoutMessage, SessionRevokeAllMessage};
 use guardian_shared::session_key::SessionKey;
+use guardian_shared::session_request::{
+    ReplayPolicy, SESSION_REQUEST_AUTH_FORMAT, SESSION_REQUEST_VERSION, SessionOperation,
+    SessionRequestEnvelope, SessionTransport,
+};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -83,6 +87,75 @@ pub struct SessionInfo {
 struct ActiveSession {
     key: SessionKey,
     info: SessionInfo,
+    timestamps: SessionTimestamps,
+    /// One lock per account, held by a session write from minting its
+    /// timestamp through its last replay retry, so this client's writes to an
+    /// account reach Guardian in timestamp order and never lose the strict
+    /// write floor to each other. Reads do not take it.
+    writes: std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>,
+}
+
+/// A session write's turn on one account. A write is only sent signed by the
+/// session whose turn it holds: when that session was replaced while the
+/// write waited, it takes the new session's turn instead. A write whose
+/// session ended while it waited is signed once by the wallet and sent
+/// without a turn.
+pub(crate) struct WriteTurn {
+    session_public_key: String,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl WriteTurn {
+    fn session_public_key(&self) -> &str {
+        &self.session_public_key
+    }
+}
+
+/// How far a session request timestamp may run ahead of the local clock.
+const SESSION_TIMESTAMP_MAX_AHEAD_MS: i64 = 1_000;
+
+/// A next timestamp this far ahead of the local clock means the clock stepped
+/// back, so reservation restarts from the clock instead of waiting the step out.
+const SESSION_CLOCK_STEP_BACK_MS: i64 = 5_000;
+
+/// After a replay rejection the next timestamp jumps to within this much below
+/// the ahead limit, at random, so it clears a floor another client of the same
+/// session left, and two of them stop colliding.
+const SESSION_REPLAY_JUMP_SPREAD_MS: u64 = 200;
+
+/// Strictly increasing request timestamps per account, shared by every client
+/// using the session, so two otherwise identical requests are never the same
+/// signed bytes. Accounts are independent: a burst on one does not push
+/// another's timestamps ahead of the clock.
+#[derive(Default)]
+struct SessionTimestamps(std::collections::HashMap<String, i64>);
+
+impl SessionTimestamps {
+    /// The next timestamp for `account_id`, or how long to wait when it would
+    /// run more than [`SESSION_TIMESTAMP_MAX_AHEAD_MS`] ahead of `now_ms`.
+    /// Moves `account_id`'s next timestamp to `now_ms` plus the ahead limit,
+    /// less `offset_ms`, unless it is already past that.
+    fn jump(&mut self, account_id: &str, now_ms: i64, offset_ms: i64) {
+        let target = now_ms + SESSION_TIMESTAMP_MAX_AHEAD_MS - offset_ms - 1;
+        let last = self.0.entry(account_id.to_string()).or_insert(i64::MIN);
+        *last = (*last).max(target);
+    }
+
+    fn reserve(&mut self, account_id: &str, now_ms: i64) -> Result<i64, Duration> {
+        let mut last = self.0.get(account_id).copied().unwrap_or(i64::MIN);
+        if last.saturating_sub(now_ms) > SESSION_CLOCK_STEP_BACK_MS {
+            last = now_ms - 1;
+        }
+        let next = now_ms.max(last.saturating_add(1));
+        let ahead = next - now_ms;
+        if ahead > SESSION_TIMESTAMP_MAX_AHEAD_MS {
+            return Err(Duration::from_millis(
+                (ahead - SESSION_TIMESTAMP_MAX_AHEAD_MS) as u64,
+            ));
+        }
+        self.0.insert(account_id.to_string(), next);
+        Ok(next)
+    }
 }
 
 /// Holds a client's session. Clones share it: clients created per operation
@@ -130,8 +203,8 @@ const SESSION_EXPIRY_MARGIN_SECS: u64 = 30;
 enum AuthMode {
     /// The delegated signer when a session is active, the wallet otherwise:
     /// reads, proposal list/get, proposal create/sign and delta pushes
-    /// (issue #219).
-    Session,
+    /// (issue #219). The session signs the request as this operation.
+    Session(SessionOperation),
     /// Always the wallet.
     Wallet,
 }
@@ -191,32 +264,28 @@ impl GuardianClient {
 
     /// Signs `request` and returns the session public key when the delegated
     /// signer signed it.
-    fn add_auth_metadata(
+    async fn add_auth_metadata(
         &self,
         request: &mut tonic::Request<impl prost::Message + std::fmt::Debug>,
         account_id: &AccountId,
         request_payload: AuthRequestPayload,
         mode: AuthMode,
+        after_replay: bool,
     ) -> ClientResult<Option<String>> {
-        let timestamp = self.next_timestamp();
-
-        if mode == AuthMode::Session {
-            let digest =
-                AuthRequestMessage::new(*account_id, timestamp, request_payload.clone()).to_word();
-            if let Some((session_public_key, signature_hex)) = self.with_active_session(|session| {
-                (
-                    session.info.session_public_key.clone(),
-                    session.key.sign_hex(digest),
-                )
-            }) {
-                attach_auth_headers(request, &session_public_key, &signature_hex, timestamp)?;
-                request
-                    .metadata_mut()
-                    .insert("x-auth-format", MetadataValue::from_static("session"));
-                return Ok(Some(session_public_key));
-            }
+        if let AuthMode::Session(operation) = mode
+            && let Some((session_public_key, signature_hex, timestamp)) = self
+                .sign_with_session(account_id, operation, &request_payload, after_replay)
+                .await
+        {
+            attach_auth_headers(request, &session_public_key, &signature_hex, timestamp)?;
+            request.metadata_mut().insert(
+                "x-auth-format",
+                MetadataValue::from_static(SESSION_REQUEST_AUTH_FORMAT),
+            );
+            return Ok(Some(session_public_key));
         }
 
+        let timestamp = self.next_timestamp();
         let (pubkey_hex, signature_hex) = if let Some(auth) = &self.auth {
             let pubkey_hex = auth.public_key_hex();
             let signature_hex = auth.sign_request_message(account_id, timestamp, request_payload);
@@ -293,6 +362,7 @@ impl GuardianClient {
     async fn send_allowing_session<Req, Resp, F>(
         &mut self,
         account_id: &AccountId,
+        operation: SessionOperation,
         message: Req,
         send: F,
     ) -> ClientResult<Resp>
@@ -304,8 +374,14 @@ impl GuardianClient {
         ) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
         let payload = AuthRequestPayload::from_protobuf_message(&message);
-        self.send_with_replay_retry_as(account_id, message, payload, AuthMode::Session, send)
-            .await
+        self.send_with_replay_retry_as(
+            account_id,
+            message,
+            payload,
+            AuthMode::Session(operation),
+            send,
+        )
+        .await
     }
 
     /// Sends with `mode`, signing over `payload` and retrying
@@ -329,11 +405,34 @@ impl GuardianClient {
         ) -> Result<tonic::Response<Resp>, tonic::Status>,
     {
         self.discard_expired_session();
+        let session_write = match mode {
+            AuthMode::Session(operation) => operation.replay_policy() == ReplayPolicy::Write,
+            AuthMode::Wallet => false,
+        };
+        let mut write_turn = None;
         let mut retries_left = REPLAY_RETRY_LIMIT;
         loop {
+            if session_write && write_turn.is_none() {
+                write_turn = self.session_write_turn(account_id).await;
+            }
             let mut request = tonic::Request::new(message.clone());
-            let session_key =
-                self.add_auth_metadata(&mut request, account_id, payload.clone(), mode)?;
+            let session_key = self
+                .add_auth_metadata(
+                    &mut request,
+                    account_id,
+                    payload.clone(),
+                    mode,
+                    retries_left < REPLAY_RETRY_LIMIT,
+                )
+                .await?;
+            if session_write
+                && session_key.as_deref() != write_turn.as_ref().map(WriteTurn::session_public_key)
+            {
+                write_turn = None;
+                if session_key.is_some() {
+                    continue;
+                }
+            }
             match send(&mut self.client, request).await {
                 Ok(response) => return Ok(response.into_inner()),
                 Err(status) => {
@@ -413,6 +512,10 @@ impl GuardianClient {
             .create_session(tonic::Request::new(request))
             .await?
             .into_inner();
+        if let Err(error) = check_session_request_policy(&response) {
+            self.log_out_unused_session(&key).await;
+            return Err(error);
+        }
 
         let info = SessionInfo {
             signer_commitment: response.signer_commitment,
@@ -420,6 +523,8 @@ impl GuardianClient {
             expires_at,
         };
         *self.session.lock() = Some(ActiveSession {
+            timestamps: SessionTimestamps::default(),
+            writes: Default::default(),
             key,
             info: info.clone(),
         });
@@ -472,6 +577,25 @@ impl GuardianClient {
         Ok(revoked)
     }
 
+    /// Logs out a session this client registered but will not use, so it does
+    /// not stay live on the server until it expires. Best effort: the caller
+    /// is already failing.
+    async fn log_out_unused_session(&mut self, key: &SessionKey) {
+        let timestamp = self.next_timestamp();
+        let digest = SessionLogoutMessage::new(&key.public_key(), timestamp).to_word();
+        let mut request = tonic::Request::new(RevokeSessionRequest {});
+        if attach_auth_headers(
+            &mut request,
+            &key.public_key_hex(),
+            &key.sign_hex(digest),
+            timestamp,
+        )
+        .is_ok()
+        {
+            let _ = self.client.revoke_session(request).await;
+        }
+    }
+
     /// Revokes every session of the configured wallet on this Guardian,
     /// including sessions started elsewhere, and stops using the session
     /// held when the call was made if that wallet granted it. A session a
@@ -519,6 +643,92 @@ impl GuardianClient {
         let now = Utc::now().timestamp().max(0) as u64;
         self.session
             .clear_if(|session| now + SESSION_EXPIRY_MARGIN_SECS >= session.info.expires_at);
+    }
+
+    /// Reserves the active session's next timestamp for `account_id` and signs
+    /// the request with that same session, in one step, so a session replaced
+    /// meanwhile cannot sign with a timestamp the other one reserved. Waits
+    /// while the timestamp would run too far ahead of the clock; `after_replay`
+    /// jumps it near that limit first. Returns the session public key,
+    /// signature and timestamp; `None` without an active session.
+    async fn sign_with_session(
+        &self,
+        account_id: &AccountId,
+        operation: SessionOperation,
+        request_payload: &AuthRequestPayload,
+        after_replay: bool,
+    ) -> Option<(String, String, i64)> {
+        let account_key = account_id.to_string();
+        if after_replay {
+            let offset_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| {
+                    u64::from(elapsed.subsec_nanos()) % SESSION_REPLAY_JUMP_SPREAD_MS
+                });
+            let now_ms = Utc::now().timestamp_millis();
+            self.with_active_session_mut(|session| {
+                session
+                    .timestamps
+                    .jump(&account_key, now_ms, offset_ms as i64)
+            })?;
+        }
+        loop {
+            let now_ms = Utc::now().timestamp_millis();
+            let signed = self.with_active_session_mut(|session| {
+                session
+                    .timestamps
+                    .reserve(&account_key, now_ms)
+                    .map(|timestamp| {
+                        let envelope = SessionRequestEnvelope::new(
+                            SessionTransport::Grpc,
+                            operation,
+                            &AuthRequestMessage::new(
+                                *account_id,
+                                timestamp,
+                                request_payload.clone(),
+                            ),
+                        );
+                        (
+                            session.info.session_public_key.clone(),
+                            session.key.sign_bytes_hex(&envelope.to_bytes()),
+                            timestamp,
+                        )
+                    })
+            })?;
+            match signed {
+                Ok(signed) => return Some(signed),
+                Err(wait) => tokio::time::sleep(wait).await,
+            }
+        }
+    }
+
+    /// Waits for the active session's previous write to `account_id` to
+    /// finish; `None` without an active session.
+    pub(crate) async fn session_write_turn(&self, account_id: &AccountId) -> Option<WriteTurn> {
+        let account_id = account_id.to_string();
+        let (session_public_key, lock) = self.with_active_session_mut(|session| {
+            (
+                session.info.session_public_key.clone(),
+                session.writes.entry(account_id).or_default().clone(),
+            )
+        })?;
+        Some(WriteTurn {
+            session_public_key,
+            _guard: lock.lock_owned().await,
+        })
+    }
+
+    fn with_active_session_mut<T>(&self, f: impl FnOnce(&mut ActiveSession) -> T) -> Option<T> {
+        let now = Utc::now().timestamp().max(0) as u64;
+        let wallet = self.wallet().ok()?.commitment_hex();
+        self.session
+            .lock()
+            .as_mut()
+            .filter(|session| {
+                now + SESSION_EXPIRY_MARGIN_SECS < session.info.expires_at
+                    && session.info.signer_commitment.eq_ignore_ascii_case(&wallet)
+            })
+            .map(f)
     }
 
     /// Runs `f` on the active session: registered, not about to expire, and
@@ -605,9 +815,12 @@ impl GuardianClient {
         };
 
         let inner = match self
-            .send_allowing_session(account_id, message.clone(), async |client, request| {
-                client.push_delta(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::PushDelta,
+                message.clone(),
+                async |client, request| client.push_delta(request).await,
+            )
             .await
         {
             Err(error) if error.is_wallet_signature_required() => {
@@ -638,9 +851,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_delta(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetDelta,
+                message,
+                async |client, request| client.get_delta(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -662,9 +878,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_delta_since(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetDeltaSince,
+                message,
+                async |client, request| client.get_delta_since(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -695,9 +914,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_delta_history(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetDeltaHistory,
+                message,
+                async |client, request| client.get_delta_history(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -714,9 +936,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_state(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetState,
+                message,
+                async |client, request| client.get_state(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -742,9 +967,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_canonical_nonce(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetCanonicalNonce,
+                message,
+                async |client, request| client.get_canonical_nonce(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -815,9 +1043,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.push_delta_proposal(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::PushDeltaProposal,
+                message,
+                async |client, request| client.push_delta_proposal(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -837,9 +1068,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_delta_proposals(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetDeltaProposals,
+                message,
+                async |client, request| client.get_delta_proposals(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -861,9 +1095,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_delta_proposal(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetDeltaProposal,
+                message,
+                async |client, request| client.get_delta_proposal(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -889,9 +1126,12 @@ impl GuardianClient {
         };
 
         let inner = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.sign_delta_proposal(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::SignDeltaProposal,
+                message,
+                async |client, request| client.sign_delta_proposal(request).await,
+            )
             .await?;
 
         if !inner.success {
@@ -969,7 +1209,7 @@ impl GuardianClient {
                 account_id,
                 message,
                 payload,
-                AuthMode::Session,
+                AuthMode::Session(SessionOperation::ExecuteDeltaProposal),
                 async |client, request| client.execute_delta_proposal(request).await,
             )
             .await?;
@@ -987,9 +1227,12 @@ impl GuardianClient {
             proposal_id: proposal_id.to_string(),
         };
         let response = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_delta_proposal_execution(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetDeltaProposalExecution,
+                message,
+                async |client, request| client.get_delta_proposal_execution(request).await,
+            )
             .await?;
         crate::execution::required(response.execution)
     }
@@ -1003,15 +1246,33 @@ impl GuardianClient {
             account_id: account_id.to_string(),
         };
         let response = self
-            .send_allowing_session(account_id, message, async |client, request| {
-                client.get_current_execution(request).await
-            })
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetCurrentExecution,
+                message,
+                async |client, request| client.get_current_execution(request).await,
+            )
             .await?;
         response
             .execution
             .map(ProposalExecution::try_from)
             .transpose()
     }
+}
+
+/// Refuses a server whose session creation response does not report the
+/// session request version this client signs. Such a server would reject
+/// every session request.
+fn check_session_request_policy(
+    response: &crate::proto::CreateSessionResponse,
+) -> ClientResult<()> {
+    if response.request_auth_version != u32::from(SESSION_REQUEST_VERSION) {
+        return Err(ClientError::UnsupportedAuthVersion(format!(
+            "Guardian reports session request version {}, this client signs version {}",
+            response.request_auth_version, SESSION_REQUEST_VERSION
+        )));
+    }
+    Ok(())
 }
 
 /// `max(now_ms, last + 1)`: the wall clock when it is ahead, otherwise one
@@ -1129,6 +1390,82 @@ mod tests {
             minted.len(),
             count,
             "timestamps must be unique across threads"
+        );
+    }
+}
+
+#[cfg(test)]
+mod session_timestamp_tests {
+    use super::*;
+
+    const NOW: i64 = 1_800_000_000_000;
+
+    #[test]
+    fn equal_clock_readings_still_give_distinct_timestamps() {
+        let mut timestamps = SessionTimestamps::default();
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW));
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW + 1));
+        assert_eq!(timestamps.reserve("0xa", NOW + 10), Ok(NOW + 10));
+    }
+
+    #[test]
+    fn accounts_do_not_push_each_other_ahead() {
+        let mut timestamps = SessionTimestamps::default();
+        for _ in 0..500 {
+            timestamps.reserve("0xa", NOW).unwrap();
+        }
+        assert_eq!(timestamps.reserve("0xb", NOW), Ok(NOW));
+    }
+
+    #[test]
+    fn a_burst_waits_instead_of_running_ahead_of_the_clock() {
+        let mut timestamps = SessionTimestamps::default();
+        for offset in 0..=SESSION_TIMESTAMP_MAX_AHEAD_MS {
+            assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW + offset));
+        }
+        assert_eq!(
+            timestamps.reserve("0xa", NOW),
+            Err(Duration::from_millis(1)),
+            "the next one would be more than a second ahead"
+        );
+        assert_eq!(
+            timestamps.reserve("0xa", NOW + 1),
+            Ok(NOW + SESSION_TIMESTAMP_MAX_AHEAD_MS + 1)
+        );
+    }
+
+    #[test]
+    fn a_clock_stepping_back_restarts_from_the_clock_instead_of_waiting() {
+        let mut timestamps = SessionTimestamps::default();
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW));
+        let corrected = NOW - 10 * 60 * 1000;
+        assert_eq!(timestamps.reserve("0xa", corrected), Ok(corrected));
+        assert_eq!(timestamps.reserve("0xa", corrected), Ok(corrected + 1));
+    }
+
+    #[test]
+    fn a_small_clock_step_back_is_waited_out() {
+        let mut timestamps = SessionTimestamps::default();
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW));
+        assert_eq!(
+            timestamps.reserve("0xa", NOW - 2_000),
+            Err(Duration::from_millis(1_001))
+        );
+    }
+
+    #[test]
+    fn a_replay_rejection_jumps_the_next_timestamp_near_the_ahead_limit() {
+        let mut timestamps = SessionTimestamps::default();
+        assert_eq!(timestamps.reserve("0xa", NOW), Ok(NOW));
+        timestamps.jump("0xa", NOW, 150);
+        assert_eq!(
+            timestamps.reserve("0xa", NOW),
+            Ok(NOW + SESSION_TIMESTAMP_MAX_AHEAD_MS - 150)
+        );
+        assert_eq!(
+            timestamps.reserve("0xb", NOW),
+            Ok(NOW),
+            "other accounts unchanged"
         );
     }
 }

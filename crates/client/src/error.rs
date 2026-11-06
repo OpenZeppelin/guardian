@@ -15,6 +15,8 @@ pub const SESSION_EXPIRED_CODE: &str = "session_expired";
 pub const SESSION_REVOKED_CODE: &str = "session_revoked";
 /// Guardian takes the request only signed by the wallet, not by a session.
 pub const WALLET_SIGNATURE_REQUIRED_CODE: &str = "wallet_signature_required";
+/// Guardian no longer accepts the session request format the client used.
+pub const UNSUPPORTED_AUTH_VERSION_CODE: &str = "unsupported_auth_version";
 const AUTHENTICATION_FAILED_CODE: &str = "authentication_failed";
 
 /// Errors that can occur when using the GUARDIAN client.
@@ -39,6 +41,11 @@ pub enum ClientError {
     /// The server response was invalid or unexpected.
     #[error("Invalid response: {0}")]
     InvalidResponse(String),
+
+    /// Guardian does not support the session request format this client
+    /// signs with. Terminal: neither retry nor fall back to the wallet.
+    #[error("Unsupported session request format: {0}")]
+    UnsupportedAuthVersion(String),
 }
 
 impl From<tonic::Status> for ClientError {
@@ -115,6 +122,14 @@ impl ClientError {
     /// that route only from the wallet ([`WALLET_SIGNATURE_REQUIRED_CODE`]).
     pub fn is_wallet_signature_required(&self) -> bool {
         self.guardian_code().as_deref() == Some(WALLET_SIGNATURE_REQUIRED_CODE)
+    }
+
+    /// Whether Guardian refused a session request because it no longer
+    /// accepts the format it was signed in ([`UNSUPPORTED_AUTH_VERSION_CODE`]),
+    /// or this client found the server does not support its format.
+    pub fn is_unsupported_auth_version(&self) -> bool {
+        matches!(self, ClientError::UnsupportedAuthVersion(_))
+            || self.guardian_code().as_deref() == Some(UNSUPPORTED_AUTH_VERSION_CODE)
     }
 
     /// Whether Guardian reported the delegated signer's session as expired
@@ -205,6 +220,47 @@ mod tests {
             tonic::Status::new(tonic::Code::Unavailable, "raw internal detail").into();
         assert_eq!(err.guardian_code(), None);
         assert_eq!(err.user_message(), None);
+    }
+
+    #[test]
+    fn a_timestamp_outside_the_window_keeps_the_session() {
+        let details = serde_json::json!({
+            "code": "timestamp_out_of_window",
+            "message": "Your device's clock is off. Please set it to the correct time and try again.",
+            "meta": { "retryable": false }
+        })
+        .to_string()
+        .into_bytes();
+        let error: ClientError = tonic::Status::with_details(
+            tonic::Code::Unauthenticated,
+            "Request timestamp outside allowed window",
+            details.into(),
+        )
+        .into();
+        assert!(!error.is_replay_rejection(), "never retried");
+        assert!(!error.is_rejected_session(), "the session is kept");
+        assert!(!error.is_retryable());
+    }
+
+    #[test]
+    fn unsupported_auth_version_is_terminal_and_keeps_the_session() {
+        let details = serde_json::json!({
+            "code": "unsupported_auth_version",
+            "message": "This app's Guardian client is out of date. Please update it.",
+            "meta": { "retryable": false }
+        })
+        .to_string()
+        .into_bytes();
+        let error: ClientError = tonic::Status::with_details(
+            tonic::Code::InvalidArgument,
+            "Unsupported session request format",
+            details.into(),
+        )
+        .into();
+        assert!(error.is_unsupported_auth_version());
+        assert!(!error.is_replay_rejection(), "never retried");
+        assert!(!error.is_rejected_session(), "the grant is kept");
+        assert!(!error.is_retryable());
     }
 
     #[test]

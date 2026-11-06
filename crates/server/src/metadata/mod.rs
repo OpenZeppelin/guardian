@@ -57,6 +57,18 @@ pub struct AccountListCursor {
     pub last_account_id: String,
 }
 
+/// What advancing a delegated signer's replay floor found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionFloorOutcome {
+    Advanced,
+    /// Not above the floor: a replay or a lost race.
+    Replay,
+    /// Outside the timestamp window by the store's clock at the update.
+    OutsideWindow,
+    /// At or below the fence: the floor may have been purged.
+    Stale,
+}
+
 /// Metadata store trait for managing account metadata
 #[async_trait]
 pub trait MetadataStore: Send + Sync {
@@ -99,6 +111,23 @@ pub trait MetadataStore: Send + Sync {
 
     /// List all account IDs
     async fn list(&self) -> Result<Vec<String>, String>;
+
+    /// Number of accounts, without listing them.
+    async fn count(&self) -> Result<u64, String>;
+
+    /// Account metadata for authorizing a read route. The store may serve a
+    /// copy it holds, but only after confirming against the authoritative
+    /// row that the copy is current. Write paths must use [`Self::get`].
+    async fn get_for_read(&self, account_id: &str) -> Result<Option<AccountMetadata>, String>;
+
+    /// [`Self::get_for_read`] when the caller has just read the account's
+    /// current metadata version `auth_version` from the authoritative store:
+    /// a cached copy at that version is served without another query.
+    async fn get_for_read_at(
+        &self,
+        account_id: &str,
+        auth_version: i64,
+    ) -> Result<Option<AccountMetadata>, String>;
 
     /// Paginated list of account metadata sorted newest-first by
     /// `(updated_at DESC, account_id ASC)`. Returns up to `limit`
@@ -265,11 +294,36 @@ pub trait MetadataStore: Send + Sync {
         new_timestamp: i64,
     ) -> Result<bool, String>;
 
-    /// Delete delegated-signer replay floors (issue #219) last advanced
-    /// before `before_ms`. Every session key gets its own floor per account
-    /// it touches, and an ended session can no longer authenticate, so its
-    /// floors can go. Returns how many were deleted.
-    async fn purge_session_floors(&self, before_ms: i64) -> Result<u64, String>;
+    /// Advance the replay floor `floor_key` of a delegated signer (a
+    /// `session-` key) to `timestamp`, like
+    /// [`Self::update_last_auth_timestamp_cas`], after two more checks: the
+    /// timestamp must still be within `skew_ms` of the store's clock at this
+    /// point (the database clock on Postgres, `clock` read under the store's
+    /// lock elsewhere), and above
+    /// the fence [`Self::purge_session_floors`] raises before deleting. A
+    /// handler that stalled past its window, or past the purge of its floor,
+    /// is refused instead of being admitted again.
+    async fn advance_session_floor(
+        &self,
+        account_id: &str,
+        floor_key: &str,
+        timestamp: i64,
+        skew_ms: i64,
+        clock: &dyn crate::builder::clock::Clock,
+    ) -> Result<SessionFloorOutcome, String>;
+
+    /// Delete delegated-signer replay floors (issue #219) last advanced more
+    /// than `max_age_ms` ago, after raising the session floor fence to just
+    /// below that cutoff. The cutoff is taken from the store's clock (the
+    /// database clock on Postgres, `clock` elsewhere), so a replica whose
+    /// clock runs ahead cannot fence the others. Every session key gets its
+    /// own floor per account it touches, and an ended session can no longer
+    /// authenticate, so its floors can go. Returns how many were deleted.
+    async fn purge_session_floors(
+        &self,
+        max_age_ms: i64,
+        clock: &dyn crate::builder::clock::Clock,
+    ) -> Result<u64, String>;
 
     /// Find every account whose Miden cosigner-commitment authorization set
     /// contains the given commitment. Used by the `/state/lookup` endpoint.

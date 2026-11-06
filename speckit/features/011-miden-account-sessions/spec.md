@@ -5,6 +5,7 @@
 **Status**: Draft (review round 2, 2026-10-07)
 **Input**: User description: "Let a wallet authorize a session once so routine Guardian requests stop prompting the wallet (issue #219)"
 **Tracking issue**: [#219](https://github.com/OpenZeppelin/guardian/issues/219)
+**Superseded in part**: the session request format and replay rules below are replaced by session-v2 in [`317-secure-scalability`](../317-secure-scalability/spec.md) (operation-bound envelope, reads admitted once, writes on a per-key floor). Grants, key storage and revocation are unchanged. The current wire contract is `spec/api.md`, Session Authentication.
 
 ## Context
 

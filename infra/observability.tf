@@ -52,6 +52,9 @@ locals {
     "guardian_execution_chain_view_duration_seconds",
     "guardian_execution_proving_duration_seconds",
     "guardian_execution_phase_duration_seconds",
+    "guardian_db_pool_acquire_duration_seconds",
+    "guardian_rate_limit_lock_wait_duration_seconds",
+    "guardian_state_reconstruction_duration_seconds",
     "guardian_block_watch_block_processing_seconds",
   ]
 
@@ -186,6 +189,40 @@ locals {
               "^guardian_grpc_requests_in_flight$",
             ]
             dimensions = [[]]
+          },
+          {
+            # Per-route request latency for the per-account API, excluding
+            # the ALB health checks (HTTP `/`, gRPC GetPubkey) so they do not
+            # dilute the averages. Average only: percentiles are read from
+            # the Prometheus histograms (Grafana) and the benchmark report.
+            metric_name_selectors = ["^guardian_http_request_duration_seconds$"]
+            label_matchers = [
+              { label_names = ["route"], regex = "^/.+$" }
+            ]
+            dimensions = [["route"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_grpc_request_duration_seconds$"]
+            label_matchers = [
+              { label_names = ["method"], regex = "^(Configure|PushDelta|GetDelta|GetDeltaSince|GetState|PushDeltaProposal|GetDeltaProposals|GetDeltaProposal|SignDeltaProposal|AbandonDeltaCandidate|GetAccountByKeyCommitment|GetDeltaHistory|ExecuteDeltaProposal|GetDeltaProposalExecution|GetCurrentExecution|GetCanonicalNonce|CreateSession|RevokeSession|RevokeAllSessions)$" }
+            ]
+            dimensions = [["method"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_auth_rejections_total$"]
+            dimensions            = [["credential", "reason"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_session_reads_total$"]
+            dimensions            = [["kind", "outcome"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_rate_limit_lock_wait_duration_seconds$"]
+            dimensions            = [[]]
+          },
+          {
+            metric_name_selectors = ["^guardian_state_reconstruction_duration_seconds$"]
+            dimensions            = [["kind"]]
           },
           {
             metric_name_selectors = [
@@ -331,6 +368,7 @@ locals {
               "^guardian_operator_sessions_started_total$",
               "^guardian_metrics_refresh_failures_total$",
               "^guardian_metrics_refresh_timestamp_seconds$",
+              "^guardian_session_read_maintenance_timestamp_seconds$",
             ]
             dimensions = [[]]
           },
@@ -1060,6 +1098,43 @@ resource "aws_cloudwatch_metric_alarm" "metrics_refresh_stale" {
     metric {
       namespace   = local.metrics_namespace
       metric_name = "guardian_metrics_refresh_timestamp_seconds"
+      stat        = "Maximum"
+      period      = 300
+    }
+  }
+}
+
+# Session reads under the `unique` read policy are recorded in buckets the
+# session sweep creates an hour ahead, and are refused once theirs does not
+# exist. Every replica runs the sweep each minute and sets this timestamp on
+# success; the per-period Maximum stops advancing only when no replica
+# maintains the records. Two periods without progress leave about 50 minutes
+# before session reads start failing.
+resource "aws_cloudwatch_metric_alarm" "session_read_maintenance_stale" {
+  count = local.cloudwatch_metrics_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-session-read-maintenance-stale"
+  alarm_description   = "No replica has maintained the session read records for 10 minutes; session reads under the unique policy fail about an hour after the last success${local.alarm_description_links}"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  threshold           = 0
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  treat_missing_data  = "breaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "progress"
+    expression  = "DIFF(ts)"
+    label       = "maintenance timestamp advance per period (s)"
+    return_data = true
+  }
+
+  metric_query {
+    id = "ts"
+    metric {
+      namespace   = local.metrics_namespace
+      metric_name = "guardian_session_read_maintenance_timestamp_seconds"
       stat        = "Maximum"
       period      = 300
     }

@@ -4,7 +4,7 @@ pub use guardian_shared::execution::ExecutionState;
 
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::resolve_account_allowing_session;
+use crate::services::resolve_account_for_read;
 use crate::state::AppState;
 use crate::storage::{ExecutionFailure, ExecutionPhase, ExecutionRecord, ExecutionTerminal};
 
@@ -120,7 +120,13 @@ pub async fn get_execution(
     proposal_id: &str,
     credentials: &Credentials,
 ) -> Result<ExecutionEnvelope> {
-    resolve_account_allowing_session(state, account_id, credentials).await?;
+    resolve_account_for_read(
+        state,
+        account_id,
+        credentials,
+        guardian_shared::session_request::SessionOperation::GetDeltaProposalExecution,
+    )
+    .await?;
     let exists = proposal_exists(state, account_id, proposal_id).await?;
     let record = state
         .storage
@@ -146,7 +152,13 @@ pub async fn current_execution(
     account_id: &str,
     credentials: &Credentials,
 ) -> Result<Option<ExecutionEnvelope>> {
-    resolve_account_allowing_session(state, account_id, credentials).await?;
+    resolve_account_for_read(
+        state,
+        account_id,
+        credentials,
+        guardian_shared::session_request::SessionOperation::GetCurrentExecution,
+    )
+    .await?;
     let Some(record) = state
         .storage
         .load_active_execution(account_id)

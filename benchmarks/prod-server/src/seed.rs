@@ -2,19 +2,15 @@ use anyhow::{Context, Result, anyhow};
 use base64::Engine;
 use guardian_client::{
     Auth, AuthConfig, EcdsaSigner, FalconRpoSigner, GuardianClient, MidenEcdsaAuth,
-    MidenFalconRpoAuth, auth_config::AuthType,
+    MidenFalconRpoAuth, Signer, auth_config::AuthType,
 };
 use miden_confidential_contracts::multisig_guardian::{
     MultisigGuardianBuilder, MultisigGuardianConfig,
 };
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
-use miden_protocol::crypto::dsa::ecdsa_k256_keccak::{
-    PublicKey as EcdsaPublicKey, SigningKey as EcdsaSecretKey,
-};
-use miden_protocol::crypto::dsa::falcon512_poseidon2::{
-    PublicKey as FalconPublicKey, SecretKey as FalconSecretKey,
-};
+use miden_protocol::crypto::dsa::ecdsa_k256_keccak::SigningKey as EcdsaSecretKey;
+use miden_protocol::crypto::dsa::falcon512_poseidon2::SecretKey as FalconSecretKey;
 use miden_protocol::utils::serde::{Deserializable, Serializable};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -22,10 +18,13 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
-use crate::config::RunConfig;
+use crate::config::{Credential, RunConfig, SESSION_TTL_MARGIN_SECONDS};
 use crate::distributed::ExecutionShard;
 use crate::model::AuthScheme;
 use crate::schemes::build_scheme_plan;
+use crate::workload::{Role, role_for_user, watched_writer};
+use guardian_client::StartSessionOptions;
+use std::time::Duration;
 
 const ACCOUNT_CONFIGURE_CONCURRENCY: usize = 32;
 const SEED_GENERATION_CONCURRENCY: usize = 8;
@@ -35,22 +34,31 @@ pub struct SeededUser {
     pub auth_scheme: AuthScheme,
     pub signer_pubkey: String,
     pub client: GuardianClient,
+    /// The same key the client signs requests with, to approve proposals.
+    pub signer: Auth,
     pub account_id: AccountId,
     pub commitment: String,
     pub next_nonce: u64,
     pub created_delta_nonces: Vec<u64>,
+    /// The writer whose account this user polls as a cosigner; `None` when
+    /// the account is its own.
+    pub watches: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
 struct UserPlanEntry {
     user_id: u32,
     auth_scheme: AuthScheme,
+    active: bool,
+    watches: Option<u32>,
 }
 
+#[derive(Clone)]
 struct AccountSeed {
     account_id: AccountId,
     initial_state: Value,
     commitment: String,
+    cosigner_commitments: Vec<String>,
 }
 
 struct AuthBundle {
@@ -65,52 +73,157 @@ struct GuardianCommitments {
     ecdsa: String,
 }
 
-#[derive(Clone)]
-struct SeedEntry {
-    auth_scheme: AuthScheme,
-    secret_key_hex: String,
-    signer_pubkey: String,
-    signer_commitment: String,
-    account_id: String,
-    account_commitment: String,
-    initial_state: Value,
+impl GuardianCommitments {
+    fn for_scheme(&self, scheme: AuthScheme) -> &str {
+        match scheme {
+            AuthScheme::Falcon => &self.falcon,
+            AuthScheme::Ecdsa => &self.ecdsa,
+        }
+    }
 }
 
+/// Seeds this shard's users: an account per user that does not watch a
+/// writer, with the readers watching it as extra cosigners, then a client per
+/// user, holding a session when the run is signed by sessions.
 pub async fn seed_users(config: &RunConfig, shard: ExecutionShard) -> Result<Vec<SeededUser>> {
     let guardian_endpoint = config.normalized_guardian_endpoint();
-    let assigned_users = shard_user_plan(config, shard)?;
+    let plan = shard_user_plan(config, shard)?;
     let commitments = GuardianCommitments {
         falcon: fetch_guardian_commitment_hex(&guardian_endpoint, AuthScheme::Falcon).await?,
         ecdsa: fetch_guardian_commitment_hex(&guardian_endpoint, AuthScheme::Ecdsa).await?,
     };
-    let required_counts = count_required_entries(&assigned_users);
-    let entries = generate_seed_entries(&commitments, &required_counts).await?;
-    let assignments = assign_seed_entries(&assigned_users, entries)?;
-    let assignment_count = assignments.len();
-    let concurrency_limit = ACCOUNT_CONFIGURE_CONCURRENCY
-        .max(1)
-        .min(assignment_count.max(1));
-    let semaphore = Arc::new(Semaphore::new(concurrency_limit));
-    let mut tasks = JoinSet::new();
+    let bundles = generate_auth_bundles(&plan).await?;
+    let mut cosigners: BTreeMap<u32, Vec<String>> = plan
+        .iter()
+        .filter(|user| user.watches.is_none())
+        .map(|user| {
+            (
+                user.user_id,
+                vec![bundles[&user.user_id].signer_commitment.clone()],
+            )
+        })
+        .collect();
+    for user in &plan {
+        if let Some(writer) = user.watches {
+            cosigners
+                .get_mut(&writer)
+                .ok_or_else(|| anyhow!("user {} watches unseeded writer {writer}", user.user_id))?
+                .push(bundles[&user.user_id].signer_commitment.clone());
+        }
+    }
+    let accounts = generate_accounts(&plan, cosigners, &commitments).await?;
 
-    for (user_id, entry) in assignments {
-        let endpoint = guardian_endpoint.clone();
-        let semaphore = Arc::clone(&semaphore);
+    let semaphore = Arc::new(Semaphore::new(ACCOUNT_CONFIGURE_CONCURRENCY.max(1)));
+    let bundles = Arc::new(bundles);
+    let accounts = Arc::new(accounts);
+    let mut tasks = JoinSet::new();
+    for user in plan.iter().copied().filter(|user| user.watches.is_none()) {
+        let (endpoint, semaphore) = (guardian_endpoint.clone(), Arc::clone(&semaphore));
+        let (bundles, accounts) = (Arc::clone(&bundles), Arc::clone(&accounts));
+        let credential = config.credential.clone();
+        let ttl = session_ttl(config);
         tasks.spawn(async move {
             let _permit = semaphore
                 .acquire_owned()
                 .await
                 .expect("seed semaphore should remain available");
-            configure_seeded_user(endpoint, user_id, entry).await
+            let account = &accounts[&user.user_id];
+            let mut seeded =
+                connect_user(&endpoint, user, &bundles[&user.user_id], account).await?;
+            seeded
+                .client
+                .configure(
+                    &account.account_id,
+                    build_auth_config(account.cosigner_commitments.clone(), user.auth_scheme),
+                    account.initial_state.clone(),
+                )
+                .await
+                .with_context(|| format!("failed to configure account {}", account.account_id))?;
+            start_session(&mut seeded, user, &credential, ttl).await?;
+            Ok::<_, anyhow::Error>(seeded)
         });
     }
+    let mut users = Vec::with_capacity(plan.len());
+    while let Some(joined) = tasks.join_next().await {
+        users.push(joined.map_err(|error| anyhow!("seed task failed: {error}"))??);
+    }
 
-    let mut users = Vec::with_capacity(assignment_count);
+    let mut tasks = JoinSet::new();
+    for user in plan.iter().copied() {
+        let Some(writer) = user.watches else {
+            continue;
+        };
+        let (endpoint, semaphore) = (guardian_endpoint.clone(), Arc::clone(&semaphore));
+        let (bundles, accounts) = (Arc::clone(&bundles), Arc::clone(&accounts));
+        let credential = config.credential.clone();
+        let ttl = session_ttl(config);
+        tasks.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("seed semaphore should remain available");
+            let mut seeded =
+                connect_user(&endpoint, user, &bundles[&user.user_id], &accounts[&writer]).await?;
+            start_session(&mut seeded, user, &credential, ttl).await?;
+            Ok::<_, anyhow::Error>(seeded)
+        });
+    }
     while let Some(joined) = tasks.join_next().await {
         users.push(joined.map_err(|error| anyhow!("seed task failed: {error}"))??);
     }
     users.sort_by_key(|user| user.user_id);
     Ok(users)
+}
+
+fn session_ttl(config: &RunConfig) -> Duration {
+    Duration::from_secs(config.duration_seconds + SESSION_TTL_MARGIN_SECONDS)
+}
+
+async fn connect_user(
+    endpoint: &str,
+    user: UserPlanEntry,
+    bundle: &AuthBundle,
+    account: &AccountSeed,
+) -> Result<SeededUser> {
+    let client = GuardianClient::connect(endpoint.to_string())
+        .await
+        .with_context(|| format!("failed to connect to {endpoint}"))?
+        .with_auth(build_auth(user.auth_scheme, &bundle.secret_key_hex)?);
+    Ok(SeededUser {
+        user_id: user.user_id,
+        auth_scheme: user.auth_scheme,
+        signer_pubkey: bundle.signer_pubkey.clone(),
+        client,
+        signer: build_auth(user.auth_scheme, &bundle.secret_key_hex)?,
+        account_id: account.account_id,
+        commitment: account.commitment.clone(),
+        next_nonce: 1,
+        created_delta_nonces: Vec::new(),
+        watches: user.watches,
+    })
+}
+
+async fn start_session(
+    seeded: &mut SeededUser,
+    user: UserPlanEntry,
+    credential: &Credential,
+    ttl: Duration,
+) -> Result<()> {
+    let Credential::Session { network } = credential else {
+        return Ok(());
+    };
+    if !user.active {
+        return Ok(());
+    }
+    seeded
+        .client
+        .start_session(StartSessionOptions {
+            network: network.clone(),
+            ttl,
+        })
+        .await
+        .with_context(|| format!("failed to start a session for user {}", user.user_id))?;
+    Ok(())
 }
 
 async fn fetch_guardian_commitment_hex(endpoint: &str, scheme: AuthScheme) -> Result<String> {
@@ -129,33 +242,32 @@ async fn fetch_guardian_commitment_hex(endpoint: &str, scheme: AuthScheme) -> Re
     Ok(commitment_hex)
 }
 
+/// A fresh signer of `scheme`. The commitment is the signer's own, as the
+/// server derives it, rather than recomputed from the public key bytes.
 fn build_auth_bundle(scheme: AuthScheme) -> Result<AuthBundle> {
-    match scheme {
+    let (auth, secret_key_hex) = match scheme {
         AuthScheme::Falcon => {
             let secret_key = FalconSecretKey::new();
             let secret_key_hex = hex::encode(secret_key.to_bytes());
-            let signer = FalconRpoSigner::new(secret_key);
-            let signer_pubkey = signer.public_key_hex();
-            let signer_commitment = commitment_hex_from_pubkey_hex(&signer_pubkey, scheme)?;
-            Ok(AuthBundle {
-                signer_pubkey,
-                signer_commitment,
+            (
+                Auth::FalconRpoSigner(FalconRpoSigner::new(secret_key)),
                 secret_key_hex,
-            })
+            )
         }
         AuthScheme::Ecdsa => {
             let secret_key = EcdsaSecretKey::new();
             let secret_key_hex = hex::encode(secret_key.to_bytes());
-            let signer = EcdsaSigner::new(secret_key);
-            let signer_pubkey = signer.public_key_hex();
-            let signer_commitment = commitment_hex_from_pubkey_hex(&signer_pubkey, scheme)?;
-            Ok(AuthBundle {
-                signer_pubkey,
-                signer_commitment,
+            (
+                Auth::EcdsaSigner(EcdsaSigner::new(secret_key)),
                 secret_key_hex,
-            })
+            )
         }
-    }
+    };
+    Ok(AuthBundle {
+        signer_pubkey: auth.public_key_hex(),
+        signer_commitment: auth.commitment_hex(),
+        secret_key_hex,
+    })
 }
 
 fn build_auth_config(cosigner_commitments: Vec<String>, auth_scheme: AuthScheme) -> AuthConfig {
@@ -172,21 +284,24 @@ fn build_auth_config(cosigner_commitments: Vec<String>, auth_scheme: AuthScheme)
 }
 
 fn create_account_seed(
-    owner_signer_commitment: &str,
+    cosigner_commitments: Vec<String>,
+    auth_scheme: AuthScheme,
     guardian_commitment: Word,
     seed: [u8; 32],
 ) -> Result<AccountSeed> {
-    let signer_commitments = [owner_signer_commitment.to_string()];
-    let signer_words = signer_commitments
+    let signer_words = cosigner_commitments
         .iter()
         .map(|commitment| word_from_hex(commitment))
         .collect::<Result<Vec<_>>>()?;
 
-    let account = MultisigGuardianBuilder::new(MultisigGuardianConfig::new(
-        1,
-        signer_words,
-        guardian_commitment,
-    ))
+    let signature_scheme = match auth_scheme {
+        AuthScheme::Falcon => guardian_shared::SignatureScheme::Falcon,
+        AuthScheme::Ecdsa => guardian_shared::SignatureScheme::Ecdsa,
+    };
+    let account = MultisigGuardianBuilder::new(
+        MultisigGuardianConfig::new(1, signer_words, guardian_commitment)
+            .with_signature_scheme(signature_scheme),
+    )
     .with_seed(seed)
     .build()?;
 
@@ -202,168 +317,130 @@ fn create_account_seed(
         account_id,
         initial_state,
         commitment,
+        cosigner_commitments,
     })
 }
 
-async fn generate_seed_entries(
-    commitments: &GuardianCommitments,
-    required_counts: &BTreeMap<AuthScheme, usize>,
-) -> Result<BTreeMap<AuthScheme, Vec<SeedEntry>>> {
-    let mut tasks = JoinSet::new();
+async fn generate_auth_bundles(plan: &[UserPlanEntry]) -> Result<BTreeMap<u32, AuthBundle>> {
     let semaphore = Arc::new(Semaphore::new(SEED_GENERATION_CONCURRENCY.max(1)));
-
-    for scheme in [AuthScheme::Falcon, AuthScheme::Ecdsa] {
-        let required = required_counts.get(&scheme).copied().unwrap_or_default();
-        if required == 0 {
-            continue;
-        }
-
-        let guardian_commitment = match scheme {
-            AuthScheme::Falcon => commitments.falcon.clone(),
-            AuthScheme::Ecdsa => commitments.ecdsa.clone(),
-        };
-        for _ in 0..required {
-            let semaphore = Arc::clone(&semaphore);
-            let guardian_commitment = guardian_commitment.clone();
-            tasks.spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
-                    .await
-                    .expect("seed generation semaphore should remain available");
-                tokio::task::spawn_blocking(move || {
-                    generate_seed_entry(scheme, &guardian_commitment)
-                })
+    let mut tasks = JoinSet::new();
+    for user in plan.iter().copied() {
+        let semaphore = Arc::clone(&semaphore);
+        tasks.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
                 .await
-                .map_err(|error| anyhow!("seed generation task failed: {error}"))?
-            });
-        }
+                .expect("seed generation semaphore should remain available");
+            let bundle = tokio::task::spawn_blocking(move || build_auth_bundle(user.auth_scheme))
+                .await
+                .map_err(|error| anyhow!("seed generation task failed: {error}"))??;
+            Ok::<_, anyhow::Error>((user.user_id, bundle))
+        });
     }
-
-    let mut entries_by_scheme = BTreeMap::new();
-    entries_by_scheme.insert(AuthScheme::Falcon, Vec::new());
-    entries_by_scheme.insert(AuthScheme::Ecdsa, Vec::new());
-
+    let mut bundles = BTreeMap::new();
     while let Some(joined) = tasks.join_next().await {
-        let entry = joined.map_err(|error| anyhow!("seed task failed: {error}"))??;
-        entries_by_scheme
-            .entry(entry.auth_scheme)
-            .or_insert_with(Vec::new)
-            .push(entry);
+        let (user_id, bundle) = joined.map_err(|error| anyhow!("seed task failed: {error}"))??;
+        bundles.insert(user_id, bundle);
     }
-
-    Ok(entries_by_scheme)
+    Ok(bundles)
 }
 
-fn generate_seed_entry(scheme: AuthScheme, guardian_commitment_hex: &str) -> Result<SeedEntry> {
-    let auth_bundle = build_auth_bundle(scheme)?;
-    let account_seed = create_account_seed(
-        &auth_bundle.signer_commitment,
-        word_from_hex(guardian_commitment_hex)?,
-        rand::random::<[u8; 32]>(),
-    )?;
-
-    Ok(SeedEntry {
-        auth_scheme: scheme,
-        secret_key_hex: auth_bundle.secret_key_hex,
-        signer_pubkey: auth_bundle.signer_pubkey,
-        signer_commitment: auth_bundle.signer_commitment,
-        account_id: account_seed.account_id.to_string(),
-        account_commitment: account_seed.commitment,
-        initial_state: account_seed.initial_state,
-    })
-}
-
-fn assign_seed_entries(
-    user_plan: &[UserPlanEntry],
-    entries_by_scheme: BTreeMap<AuthScheme, Vec<SeedEntry>>,
-) -> Result<Vec<(u32, SeedEntry)>> {
-    let mut entries_by_scheme = entries_by_scheme
-        .into_iter()
-        .map(|(scheme, entries)| (scheme, entries.into_iter()))
-        .collect::<BTreeMap<_, _>>();
-    let mut assignments = Vec::with_capacity(user_plan.len());
-
-    for user in user_plan {
-        let entry = entries_by_scheme
-            .get_mut(&user.auth_scheme)
-            .and_then(|entries| entries.next())
-            .ok_or_else(|| {
-                anyhow!(
-                    "missing generated seed entry for {}",
-                    user.auth_scheme.as_str()
+async fn generate_accounts(
+    plan: &[UserPlanEntry],
+    cosigners: BTreeMap<u32, Vec<String>>,
+    commitments: &GuardianCommitments,
+) -> Result<BTreeMap<u32, AccountSeed>> {
+    let semaphore = Arc::new(Semaphore::new(SEED_GENERATION_CONCURRENCY.max(1)));
+    let schemes: BTreeMap<u32, AuthScheme> = plan
+        .iter()
+        .map(|user| (user.user_id, user.auth_scheme))
+        .collect();
+    let mut tasks = JoinSet::new();
+    for (user_id, cosigner_commitments) in cosigners {
+        let semaphore = Arc::clone(&semaphore);
+        let auth_scheme = schemes[&user_id];
+        let guardian_commitment = word_from_hex(commitments.for_scheme(auth_scheme))?;
+        tasks.spawn(async move {
+            let _permit = semaphore
+                .acquire_owned()
+                .await
+                .expect("seed generation semaphore should remain available");
+            let account = tokio::task::spawn_blocking(move || {
+                create_account_seed(
+                    cosigner_commitments,
+                    auth_scheme,
+                    guardian_commitment,
+                    rand::random::<[u8; 32]>(),
                 )
-            })?;
-        assignments.push((user.user_id, entry));
+            })
+            .await
+            .map_err(|error| anyhow!("seed generation task failed: {error}"))??;
+            Ok::<_, anyhow::Error>((user_id, account))
+        });
     }
-
-    Ok(assignments)
+    let mut accounts = BTreeMap::new();
+    while let Some(joined) = tasks.join_next().await {
+        let (user_id, account) = joined.map_err(|error| anyhow!("seed task failed: {error}"))??;
+        accounts.insert(user_id, account);
+    }
+    Ok(accounts)
 }
 
-fn count_required_entries(user_plan: &[UserPlanEntry]) -> BTreeMap<AuthScheme, usize> {
-    let mut counts = BTreeMap::new();
-    for entry in user_plan {
-        *counts.entry(entry.auth_scheme).or_default() += 1;
-    }
-    counts
-}
-
+/// This shard's users with their schemes and roles. A reader that watches a
+/// writer takes that writer's scheme: an account registers one scheme.
 fn shard_user_plan(config: &RunConfig, shard: ExecutionShard) -> Result<Vec<UserPlanEntry>> {
     let scheme_plan = build_scheme_plan(config.users, &config.scheme_distribution);
     let assigned_user_ids = shard.assigned_user_ids(config.users);
+    let scheme_of = |user_id: u32| {
+        scheme_plan
+            .get(user_id as usize)
+            .copied()
+            .ok_or_else(|| anyhow!("missing scheme assignment for user {user_id}"))
+    };
+    let Some(roles) = &config.roles else {
+        return assigned_user_ids
+            .into_iter()
+            .map(|user_id| {
+                Ok(UserPlanEntry {
+                    user_id,
+                    auth_scheme: scheme_of(user_id)?,
+                    active: true,
+                    watches: None,
+                })
+            })
+            .collect();
+    };
+    let writers: Vec<u32> = assigned_user_ids
+        .iter()
+        .copied()
+        .filter(|user_id| role_for_user(roles, *user_id) == Role::Writer)
+        .collect();
+    let mut reader_rank = 0;
     let mut plan = Vec::with_capacity(assigned_user_ids.len());
     for user_id in assigned_user_ids {
-        let auth_scheme = *scheme_plan
-            .get(user_id as usize)
-            .ok_or_else(|| anyhow!("missing scheme assignment for user {user_id}"))?;
+        let role = role_for_user(roles, user_id);
+        let watches = match role {
+            Role::Reader => {
+                let watches = watched_writer(roles, &writers, reader_rank);
+                reader_rank += 1;
+                watches
+            }
+            Role::Writer | Role::Idle => None,
+        };
         plan.push(UserPlanEntry {
             user_id,
-            auth_scheme,
+            auth_scheme: scheme_of(watches.unwrap_or(user_id))?,
+            active: role != Role::Idle,
+            watches,
         });
     }
     Ok(plan)
 }
 
-async fn configure_seeded_user(
-    guardian_endpoint: String,
-    user_id: u32,
-    entry: SeedEntry,
-) -> Result<SeededUser> {
-    let auth = build_auth_from_seed_entry(&entry)?;
-    let account_id = AccountId::from_hex(&entry.account_id)
-        .with_context(|| format!("failed to parse seeded account id {}", entry.account_id))?;
-    let mut client = GuardianClient::connect(guardian_endpoint.clone())
-        .await
-        .with_context(|| format!("failed to connect to {}", guardian_endpoint))?
-        .with_auth(auth);
-    client
-        .configure(
-            &account_id,
-            build_auth_config(vec![entry.signer_commitment.clone()], entry.auth_scheme),
-            entry.initial_state.clone(),
-        )
-        .await
-        .with_context(|| format!("failed to configure account {}", entry.account_id))?;
-
-    Ok(SeededUser {
-        user_id,
-        auth_scheme: entry.auth_scheme,
-        signer_pubkey: entry.signer_pubkey,
-        client,
-        account_id,
-        commitment: entry.account_commitment,
-        next_nonce: 1,
-        created_delta_nonces: Vec::new(),
-    })
-}
-
-fn build_auth_from_seed_entry(entry: &SeedEntry) -> Result<Auth> {
-    let secret_key_bytes = hex::decode(&entry.secret_key_hex).with_context(|| {
-        format!(
-            "failed to decode seeded secret key for {}",
-            entry.account_id
-        )
-    })?;
-    match entry.auth_scheme {
+fn build_auth(scheme: AuthScheme, secret_key_hex: &str) -> Result<Auth> {
+    let secret_key_bytes =
+        hex::decode(secret_key_hex).context("failed to decode seeded secret key")?;
+    match scheme {
         AuthScheme::Falcon => {
             let secret_key = FalconSecretKey::read_from_bytes(&secret_key_bytes)
                 .context("failed to parse seeded Falcon secret key")?;
@@ -375,24 +452,6 @@ fn build_auth_from_seed_entry(entry: &SeedEntry) -> Result<Auth> {
             Ok(Auth::EcdsaSigner(EcdsaSigner::new(secret_key)))
         }
     }
-}
-
-fn commitment_hex_from_pubkey_hex(pubkey_hex: &str, auth_scheme: AuthScheme) -> Result<String> {
-    let hex = pubkey_hex.trim_start_matches("0x");
-    let bytes = hex::decode(hex).context("failed to decode public key hex")?;
-    let commitment_bytes = match auth_scheme {
-        AuthScheme::Falcon => {
-            let pubkey = FalconPublicKey::read_from_bytes(&bytes)
-                .context("failed to parse Falcon public key bytes")?;
-            pubkey.to_commitment().to_bytes()
-        }
-        AuthScheme::Ecdsa => {
-            let pubkey = EcdsaPublicKey::read_from_bytes(&bytes)
-                .context("failed to parse ECDSA public key bytes")?;
-            pubkey.to_commitment().to_bytes()
-        }
-    };
-    Ok(format!("0x{}", hex::encode(commitment_bytes)))
 }
 
 fn word_from_hex(input: &str) -> Result<Word> {
