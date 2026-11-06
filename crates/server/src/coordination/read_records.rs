@@ -351,6 +351,7 @@ impl ReadRecordStore for InMemoryReadRecords {
 pub struct FileReadRecords {
     dir: PathBuf,
     state: Mutex<LocalState>,
+    durable_buckets: Mutex<HashSet<i64>>,
 }
 
 impl FileReadRecords {
@@ -403,9 +404,12 @@ impl FileReadRecords {
             }
             load_bucket(&path, state.seen.entry(start).or_default())?;
         }
+        sync_dir(dir)?;
+        let durable_buckets = state.seen.keys().copied().collect();
         Ok(Self {
             dir: dir.to_path_buf(),
             state: Mutex::new(state),
+            durable_buckets: Mutex::new(durable_buckets),
         })
     }
 
@@ -413,19 +417,32 @@ impl FileReadRecords {
         self.dir.join(format!("{start}.log"))
     }
 
+    /// Appends one record and makes it durable. A failed write is cut back
+    /// to the file's previous length, so a later append never lands on a
+    /// fragment; the directory is synced until it succeeds once per bucket,
+    /// so the bucket's entry survives a crash.
     fn append(&self, start: i64, key: &ReadRecordKey) -> Result<(), String> {
         let path = self.bucket_path(start);
-        let created = !path.exists();
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .map_err(|e| format!("Failed to open {}: {e}", path.display()))?;
-        writeln!(file, "{}", hex::encode(key))
-            .and_then(|()| file.sync_data())
-            .map_err(|e| format!("Failed to write {}: {e}", path.display()))?;
-        if created {
+        let length = file
+            .metadata()
+            .map_err(|e| format!("Failed to stat {}: {e}", path.display()))?
+            .len();
+        if let Err(error) = writeln!(file, "{}", hex::encode(key)).and_then(|()| file.sync_data()) {
+            let _ = file.set_len(length).and_then(|()| file.sync_data());
+            return Err(format!("Failed to write {}: {error}", path.display()));
+        }
+        let mut durable = self
+            .durable_buckets
+            .lock()
+            .map_err(|_| "read record lock poisoned")?;
+        if !durable.contains(&start) {
             sync_dir(&self.dir)?;
+            durable.insert(start);
         }
         Ok(())
     }

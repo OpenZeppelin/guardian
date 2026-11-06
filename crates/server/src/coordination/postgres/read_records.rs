@@ -936,17 +936,18 @@ mod admission_tests {
             diesel::sql_query(sql).execute(&mut fence).await.expect(sql);
         }
         let remove_signer_then_release = async {
+            let fence_waiters = "SELECT count(*) AS watermark FROM pg_locks \
+                 WHERE locktype = 'advisory' AND NOT granted \
+                 AND ((classid::bigint << 32) | objid::bigint) = 7310317001";
+            let mut waited = false;
             for _ in 0..200 {
-                if scalar(
-                    "SELECT count(*) AS watermark FROM pg_locks WHERE NOT granted".to_string(),
-                )
-                .await
-                    >= 1
-                {
+                if scalar(fence_waiters.to_string()).await >= 1 {
+                    waited = true;
                     break;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
+            assert!(waited, "the admission never waited on the read fence");
             exec(
                 &store,
                 &format!(
