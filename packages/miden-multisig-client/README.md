@@ -549,6 +549,19 @@ the executing party cannot change it. Omitted, the approval never expires,
 which is the Miden default, except on a `guardian_executable` client (see
 [Execute Through Guardian](#execute-through-guardian)).
 
+All methods also accept `signOnCreate` (default `false`). Set, the proposer
+signs the summary while creating the proposal and the approval is pushed with
+it, as the Rust SDK always does: no separate `signProposal` call is needed, so
+the chain sync, the re-execution and the GUARDIAN round trip of signing are
+skipped, and a proposal that needs one approval comes back `ready`. Leave it
+unset to create the proposal unsigned and approve it later, for example when
+the signer is a wallet that prompts for each signature.
+`createSwitchGuardianProposalOffline` always signs and ignores it, and the
+raw `createProposal` takes no options and always creates the proposal unsigned.
+A typed `create*Proposal` returns its proposal `unchecked`, as the Rust SDK
+does: the client does not re-execute the summary it has just derived, and
+executing the proposal verifies it first.
+
 > **Breaking change (issue #387):** these methods previously took `nonce` (and
 > `newThreshold`) as positional parameters. Passing the old positional form
 > now throws at runtime instead of silently applying defaults.
@@ -660,8 +673,8 @@ summary and records the outcome in `proposal.verification`:
 `{ status: 'unchecked' }`, `{ status: 'verified' }`, or
 `{ status: 'failed', retryable, message }`. A proposal that fails the
 check is still returned, so one stale or corrupt proposal cannot hide the
-others; only the check itself writes `verified`, and a freshly parsed or
-imported proposal is `unchecked`. `retryable: true` means the
+others; only the check itself writes `verified`, and a freshly parsed,
+imported or created proposal is `unchecked`. `retryable: true` means the
 re-execution hit a transient node error and the proposal may verify on
 the next sync; `retryable: false` means it cannot be reproduced (tampered
 metadata, for example) and has to be re-proposed. Verification is deliberately not part of `status`: a fully
