@@ -27,20 +27,33 @@ pub(crate) struct MultisigAccount {
     account: Account,
 }
 
-impl MultisigAccount {
-    pub(crate) fn from_state(state_json: &Value) -> Option<Self> {
-        // A state that does not parse is treated as single-key here:
-        // `verify_delta` parses the same state right after this gate, so
-        // such a push fails there and is never acknowledged.
-        let Ok(account) = Account::from_json(state_json) else {
-            tracing::warn!("Tail account state did not parse during multisig admission");
-            return None;
-        };
-        if MidenAccountInspector::new(&account).has_multisig_auth() {
-            Some(Self { account })
-        } else {
-            None
+/// A push's tail account, decoded and classified by its auth: a multisig is
+/// gated on cosigner approvals, a single-key account is not, and a state
+/// that does not decode is left to the verify-and-apply to refuse.
+pub(crate) enum TailAccount {
+    Multisig(MultisigAccount),
+    SingleKey(Account),
+    Undecodable,
+}
+
+impl TailAccount {
+    pub(crate) fn decode(state_json: &Value) -> Self {
+        match Account::from_json(state_json) {
+            Ok(account) if MidenAccountInspector::new(&account).has_multisig_auth() => {
+                Self::Multisig(MultisigAccount { account })
+            }
+            Ok(account) => Self::SingleKey(account),
+            Err(error) => {
+                tracing::warn!(%error, "Tail account state did not parse during multisig admission");
+                Self::Undecodable
+            }
         }
+    }
+}
+
+impl MultisigAccount {
+    pub(crate) fn into_account(self) -> Account {
+        self.account
     }
 
     /// Refuse the push unless `proposal` is the pending record for

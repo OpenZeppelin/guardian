@@ -339,6 +339,16 @@ pub trait NetworkClient: Send + Sync {
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;
 
+    /// [`Self::verify_and_apply_delta`] on a previous state the caller has
+    /// already decoded, so a request that reads the decoded account for its
+    /// own checks does not rebuild it a second time.
+    fn verify_and_apply_delta_to_account(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String>;
+
     /// Merge multiple deltas
     fn merge_deltas(
         &self,

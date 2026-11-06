@@ -1383,6 +1383,14 @@ mod tests {
         ) -> std::result::Result<crate::network::AppliedState, String> {
             unimplemented!()
         }
+        fn verify_and_apply_delta_to_account(
+            &self,
+            _: &str,
+            _: miden_protocol::account::Account,
+            _: &serde_json::Value,
+        ) -> std::result::Result<crate::network::AppliedState, String> {
+            unimplemented!()
+        }
         fn merge_deltas(
             &self,
             _: Vec<serde_json::Value>,
