@@ -131,7 +131,7 @@
 - [X] T033 [US4] Request size cap `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (default 2 MiB) in `crates/server/src/modules/request.rs`: an oversized request is a module failure without the call
 - [X] T034 [US4] Module metrics in a new `crates/server/src/modules/metrics.rs` with names in `crates/server/src/metrics/names.rs`: `guardian_module_evaluate_duration_seconds{module, outcome}` (`allow`, `deny`, `error`, `skipped`), `guardian_module_fail_open_total{module}`, availability, circuit state, disabled state, configuration drift, catalog fingerprint, orphaned and over-budget assignment counts
 - [X] T035 [US4] Catalog fingerprint in `GET /dashboard/info` (`crates/server/src/services/dashboard_info.rs`) and the `circuit` field in `GET /dashboard/modules` (`crates/server/src/modules/admin.rs`); regenerate `docs/openapi*.json` with `cargo run --features evm --bin gen-openapi -- docs`
-- [ ] T036 [US4] Document the budget, size cap and breaker variables in `docs/CONFIGURATION.md` ("Runtime: policy modules") and the metrics in `docs/guides/observability/`; add the `guardian_module_*` metrics to the CloudWatch export allowlist in `infra/observability.tf` and the Grafana dashboard in `docs/guides/observability/grafana/dashboards/guardian.json`, which re-list the metric inventory
+- [X] T036 [US4] Document the budget, size cap and breaker variables in `docs/CONFIGURATION.md` ("Runtime: policy modules") and the metrics in `docs/guides/observability/`; the metric rows in the taxonomy of `spec/api.md` ("Metrics Endpoint")
 
 **Checkpoint**: US4 acceptance scenarios 1 to 7 pass and SC-007 holds.
 
@@ -199,6 +199,7 @@
 - [ ] T060 SC-004 run: enable `basic-policy` on all accounts with the official image and the guides only, timed, gaps fixed in `docs/guides/policy-modules/`
 - [ ] T061 Re-check the TLA+ models whose fingerprints the modules work moved (`verify-auth-replay`, `verify-candidate-queue`, `verify-client-sync`, `verify-guardian-switch`, `verify-module-counting`, `verify-multisig-push-gate`, `verify-proposal-lifecycle` under `.agents/skills/`) with each `check.sh`, then `--accept-drift` once the model still mirrors the code
 - [ ] T062 Validation matrix of `speckit/features/251-guardian-modules/quickstart.md` section 5 (M2a rows) run end to end, including `cargo test -p guardian-server --features postgres` for module stores and proposal storage, and `gen-openapi --check`
+- [ ] T063 Export the `guardian_module_*` metrics: add them to the CloudWatch export allowlist in `infra/observability.tf` (selector groups by label dimensions) and a "Policy modules" section of panels in `docs/guides/observability/grafana/dashboards/guardian.json`, listed in `docs/guides/observability/README.md`; validate with `terraform validate` and the local Prometheus and Grafana stack
 
 ---
 

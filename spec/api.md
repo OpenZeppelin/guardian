@@ -938,6 +938,15 @@ behavior.
 | `guardian_block_watch_walk_requests_total` | counter | `reason` (`cursor_init`/`cursor_jump`/`genesis_changed`/`genesis_unknown`/`node_behind_too_long`/`cursor_ahead_of_tip`/`observations_lost`/`undecodable_updates`/`skipped_malformed_block`/`skipped_unavailable_block`/`observation_dropped`) |
 | `guardian_block_watch_transport` | gauge | `transport` (`stream`/`poll`; 1 for the active one) |
 | `guardian_block_watch_block_processing_seconds` | histogram | — |
+| `guardian_module_evaluate_duration_seconds` | histogram | `module` (catalog instance id), `outcome` (`allow`/`deny`/`error`/`skipped`) |
+| `guardian_module_fail_open_total` | counter | `module` |
+| `guardian_module_up` | gauge | `module` (1 when the last health probe succeeded) |
+| `guardian_module_circuit_open` | gauge | `module` (1 while the replica's breaker is open) |
+| `guardian_module_enabled` | gauge | `module` |
+| `guardian_module_config_drift` | gauge | `module` (1 when the catalog's `enabled` or params differ from the stored values) |
+| `guardian_module_catalog_info` | gauge | `catalog_hash` (constant 1) |
+| `guardian_module_over_budget_accounts` | gauge | none |
+| `guardian_module_orphaned_assignments` | gauge | none |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`orphaned`/`abandoned`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |
