@@ -150,7 +150,7 @@
 
 ### Implementation for User Story 5
 
-- [ ] T039 [US5] Write `default` instances into the assignment together with the claim in `crates/server/src/services/configure_account.rs` and `crates/server/src/modules/postgres_store.rs` (same transaction as `metadata.create`), with the evaluated params from the same snapshot (P0 T085)
+- [ ] T039 [US5] Add the `default` scope, which the prototype never built (`Scope` in `crates/server/src/modules/catalog.rs` has only `all` and `assigned`): parse `scope = "default"`, plan it as an account-owned assignment like `assigned`, count it in `ModulePipeline::worst_case` and the startup budget check, and allow removing it per account; then write `default` instances into the assignment together with the claim in `crates/server/src/services/configure_account.rs` and `crates/server/src/modules/postgres_store.rs` (same transaction as `metadata.create`), with the evaluated params from the same snapshot (P0 T085)
 - [ ] T040 [US5] Filesystem registration copy in `crates/server/src/modules/store.rs`: written before the claim as one atomic replace, replacing a copy an earlier unclaimed attempt left; an unfinished claim with no assignment history repeats it (P0 T094)
 - [ ] T041 [US5] `params_drift` against `seeded_params`, `GUARDIAN_MODULE_PARAMS_MAX_BYTES` on every params write, and paginated history (`?before=&limit=`) in `crates/server/src/modules/admin.rs`, `store.rs` and `postgres_store.rs` (P0 T090)
 - [ ] T042 [US5] `declared` (stored flag the catalog no longer declares) and `orphaned` (assignment naming a removed instance) in the views of `crates/server/src/modules/admin.rs`; orphaned entries are skipped at evaluation and reported, active again when the instance returns
