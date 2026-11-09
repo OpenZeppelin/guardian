@@ -547,7 +547,7 @@ impl ModulePipeline {
     ) -> Result<(Vec<Plan<'_>>, bool), GuardianError> {
         let (_, rows) = self.versioned_rows().await?;
         let complete = !self.instances.iter().any(|instance| {
-            Self::enabled_in(&rows, &instance)
+            Self::enabled_in(&rows, instance)
                 && !instance.config.dry_run
                 && (instance
                     .config
