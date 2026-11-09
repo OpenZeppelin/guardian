@@ -666,6 +666,7 @@ mod tests {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
                 }),
+                modules: None,
             }),
             ..Default::default()
         };
@@ -710,6 +711,7 @@ mod tests {
                     proposal_type: "p2id".to_string(),
                     ..ProposalMetadata::default()
                 }),
+                modules: None,
             }),
             delta_payload: serde_json::json!({
                 "metadata": { "proposal_type": "add_signer" }

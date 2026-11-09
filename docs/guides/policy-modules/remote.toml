@@ -1,0 +1,26 @@
+# Remote module: the same basic-policy served by a separate process over gRPC.
+# Copy to .guardian/remote.toml, put the bearer token in .guardian/caps.token,
+# and start the module before the Guardian (see remote.md).
+
+[[module]]
+id = "caps"
+kind = "basic-policy"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 50
+on_error = "deny"
+operator_can_disable = true
+params = { max_amount_per_tx = { "0xREPLACE_WITH_FAUCET_ID" = "5" } }
+
+# A tighter cap (3) than the in-process one (5), so refusals show which module decided.
+[[module]]
+id = "caps-remote"
+kind = "grpc"
+endpoint = "grpc+insecure://127.0.0.1:7443"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 200
+on_error = "deny"
+operator_can_disable = true
+auth = { token_file = "caps.token" }
+params = { max_amount_per_tx = { "0xREPLACE_WITH_FAUCET_ID" = "3" } }

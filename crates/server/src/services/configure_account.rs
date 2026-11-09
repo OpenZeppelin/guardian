@@ -747,6 +747,7 @@ mod tests {
 
         AppState {
             execution: Default::default(),
+            modules: None,
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage,
             metadata: Arc::new(metadata_store),

@@ -1,6 +1,7 @@
 pub mod account_inspector;
 pub mod block_feed;
 pub mod execution;
+pub mod module_views;
 
 use crate::metadata::auth::{Auth, Credentials};
 use crate::network::miden::account_inspector::{
@@ -896,6 +897,20 @@ impl NetworkClient for MidenNetworkClient {
     ) -> Result<Option<crate::network::AuthBinding>, String> {
         let account = Account::from_json(state_json)?;
         Ok(Some(MidenAccountInspector::new(&account).auth_binding()))
+    }
+
+    fn module_account_view(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<guardian_module_sdk::AccountView, String> {
+        module_views::account_view(state_json)
+    }
+
+    fn module_transaction(
+        &self,
+        tx_summary: &serde_json::Value,
+    ) -> Result<crate::network::ModuleTransaction, String> {
+        module_views::module_transaction(tx_summary)
     }
 
     async fn should_update_auth(

@@ -2664,6 +2664,17 @@
               }
             ]
           },
+          "modules": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModuleApproval",
+                "description": "The policy module configuration that approved this delta. Absent when no module ran."
+              }
+            ]
+          },
           "note_counts": {
             "$ref": "#/components/schemas/NoteCounts"
           },
@@ -3080,6 +3091,26 @@
           "canonicalization_disabled"
         ]
       },
+      "FailedOpen": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "layer",
+          "failure"
+        ],
+        "properties": {
+          "failure": {
+            "type": "string",
+            "description": "`timeout`, `error`, `invalid_decision` or `request_unavailable`; the detail is logged."
+          },
+          "layer": {
+            "type": "string"
+          },
+          "module_id": {
+            "type": "string"
+          }
+        }
+      },
       "HistoryEntry": {
         "type": "object",
         "description": "One canonical transaction in the history feed wire shape.\n`account_id` is omitted — the authenticated query scopes it.",
@@ -3191,6 +3222,31 @@
           "cedar",
           "mainnet"
         ]
+      },
+      "ModuleApproval": {
+        "type": "object",
+        "description": "What the policy modules ran with. Allowed evaluations are not listed: the catalog, params\nversion and account determine which modules ran, so only failures let through by\n`on_error = allow` are kept.",
+        "required": [
+          "catalog_hash",
+          "params_version"
+        ],
+        "properties": {
+          "catalog_hash": {
+            "type": "string",
+            "description": "SHA-256 of the catalog file the approving replica loaded."
+          },
+          "failed_open": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FailedOpen"
+            }
+          },
+          "params_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
       },
       "NetworkConfig": {
         "oneOf": [

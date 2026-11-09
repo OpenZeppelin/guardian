@@ -55,6 +55,30 @@ pub struct DeltaMetadata {
     /// `push_delta`, EVM deltas, and pushes where no proposal matched.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<ProposalMetadata>,
+
+    /// The policy module configuration that approved this delta. Absent when no module ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modules: Option<ModuleApproval>,
+}
+
+/// What the policy modules ran with. Allowed evaluations are not listed: the catalog, params
+/// version and account determine which modules ran, so only failures let through by
+/// `on_error = allow` are kept.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct ModuleApproval {
+    /// SHA-256 of the catalog file the approving replica loaded.
+    pub catalog_hash: String,
+    pub params_version: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_open: Vec<FailedOpen>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct FailedOpen {
+    pub module_id: String,
+    pub layer: String,
+    /// `timeout`, `error`, `invalid_decision` or `request_unavailable`; the detail is logged.
+    pub failure: String,
 }
 
 /// Closed, stable enumeration of action categories. Adding a value is

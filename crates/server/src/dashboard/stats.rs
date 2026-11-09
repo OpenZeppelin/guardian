@@ -1326,6 +1326,7 @@ mod tests {
         AppState {
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
+            modules: None,
             storage: Arc::new(storage),
             metadata: Arc::new(metadata),
             network_client: Arc::new(MockNetworkClient::new()),
@@ -2661,6 +2662,7 @@ mod postgres_tests {
         std::fs::create_dir_all(&keystore_dir).expect("keystore dir");
         let ack = AckRegistry::new(keystore_dir).await.expect("ack");
         AppState {
+            modules: None,
             execution: Default::default(),
             miden_sessions: std::sync::Arc::new(crate::session::MidenSessions::default()),
             storage: Arc::new(MockStorageBackend::new()),
