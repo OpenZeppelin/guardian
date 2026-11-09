@@ -68,12 +68,13 @@ message HookRequest {
 
 message AccountView {
   string commitment = 1;
-  string auth_scheme = 2;             // "falcon" or "ecdsa", from the registered auth configuration (section 3.2)
+  string auth_scheme = 2;             // the scheme every signer shares, "falcon" or "ecdsa", or "mixed" (section 3.2)
   repeated string signer_commitments = 3;
   optional uint32 default_threshold = 4;  // absent for single-key accounts
   map<string, uint32> procedure_thresholds = 5;  // procedure root -> threshold; only overrides the account's code can apply (section 3.2)
   string code_commitment = 6;         // commitment of the account's code
   repeated string procedure_roots = 7;  // roots of the procedures the account's code exports
+  map<string, string> signer_schemes = 8;  // signer commitment -> "falcon" or "ecdsa"; one entry per signer (section 3.2)
 }
 
 message TransactionSubject {

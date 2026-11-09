@@ -151,5 +151,5 @@ A deny is an answer and resets the failure count. `guardian_module_circuit_open{
 | `TransactionProjection` (Miden variant `MidenTransaction`) | Transaction summary (gate G2) | At least one module will be called; stored when M2b subscribers exist |
 | `pending` | Candidate queue and unacknowledged events in one repeatable-read snapshot (M2b) | Only for modules subscribed to `after_transaction_committed` |
 | `params` | The layer being evaluated: global params, then the account layer of an `all` instance as a second pass, or the account's own params for `default`/`assigned` | Per module and layer |
-| `submitter` | Request authentication (`ResolvedAccount.signer_commitment`) or the execution reservation | Always |
+| `submitter` | Request authentication (`ResolvedAccount.signer_commitment`), on the execution path carried on the execution job from the request that started the attempt | Always |
 | `proposer`, `unverified_metadata` | `ProposalContext` | Transaction hooks |

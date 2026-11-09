@@ -528,12 +528,14 @@ travels as `meta_json`):
 - `state` is one of exactly five values: `pending`, `proving`, `submitted`, `committed`, `failed`.
   They move forward only. `submitted` means the transaction may have been sent and is never
   retried; it resolves only from what the chain shows.
-- `error` is present exactly when `state` is `failed`. Three codes carry `meta`:
+- `error` is present exactly when `state` is `failed`. These codes carry `meta`:
   `GUARDIAN_EXECUTION_REQUEST_INVALID` (`reason`: `bound_block_not_declared`, `auth_args_missing`,
   `approval_expiration_missing`, `input_notes_not_pinned`, `too_many_declared_blocks`),
   `GUARDIAN_EXECUTION_EXPIRATION_REACHED`
   (`bound`: `approval`, `transaction`) and `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`
-  (`reason`: `private`, `unavailable`). The full list is in
+  (`reason`: `private`, `unavailable`); on servers with policy modules,
+  `GUARDIAN_EXECUTION_MODULE_DENIED` (`reason_code`, and `module`, `layer`, `client_message` unless
+  the denial is generic) and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`module`). The full list is in
   [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md#guardian-execution).
 - `delta_nonce` is set once the execution committed to its candidate delta.
 - `newly_accepted` separates the request that started the execution from a repeat that found

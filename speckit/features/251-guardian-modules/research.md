@@ -92,8 +92,8 @@ This research was written before the prototype on `251-modules-prototype` and no
 
 ### D9. Execution requester (after PR #510)
 
-- **Decision**: the authenticated requester is stored on the durable execution reservation when an attempt is created, kept on repeated requests for an active attempt, and carried into `acknowledge_delta` and the stored delta.
-- **Rationale**: spec FR-033; restart safety.
+- **Decision**: the authenticated requester is carried on the execution job from the request that creates the attempt into `acknowledge_delta`; a repeated request for an active attempt joins it and keeps the original requester. It is not stored on the reservation (revised 2026-11-09, RFC revision 26).
+- **Rationale**: spec FR-033. Restart safety holds without storing it: the ack runs before the no-retry boundary, and an attempt interrupted before that boundary is never resumed (the startup reconciliation fails it as `GUARDIAN_EXECUTION_ABANDONED`).
 
 ### Network-tagged projections (2026-10-16)
 

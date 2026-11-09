@@ -982,6 +982,8 @@ Causes of a `failed` execution, in `error.code`:
 | `GUARDIAN_EXECUTION_BINDING_MISMATCH`, `GUARDIAN_EXECUTION_STATE_MISMATCH`, `GUARDIAN_EXECUTION_REQUEST_CODEC`, `GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`, `GUARDIAN_EXECUTION_INSUFFICIENT_FEE`, `GUARDIAN_EXECUTION_EXPIRATION_BEYOND_HORIZON`, `GUARDIAN_EXECUTION_ACCOUNT_INADMISSIBLE` | none | Not until the cause is fixed. |
 | `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` | none | Yes, once more cosigners have signed; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED` | none | Yes; the node refused the send before processing it (a rate limit that outlasted the client's retries, an authentication or permission refusal, an unimplemented call, or inputs sealed against an encryption key the validator no longer holds), so the transaction cannot land and the proposal is kept. Check the node endpoint and its limits if it repeats. |
+| `GUARDIAN_EXECUTION_MODULE_DENIED` | `reason_code`, plus `module`, `layer` and `client_message` unless the instance reports generic denials (`reason_code: policy_denied` only) | Not while the policy holds; the proposal is untouched. Only on servers built with policy modules. |
+| `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` | `module` | Yes, once the fail-closed module answers again; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
 
 `error.message` is a fixed, user-safe sentence for its cause, plus chain facts such as block

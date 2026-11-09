@@ -1,262 +1,274 @@
-# Tasks: Guardian Modules, Phase P0 (Prototype)
+# Tasks: Guardian Modules, Milestone M2a (stateless gates)
 
-**Input**: Design documents from `speckit/features/251-guardian-modules/`
+**Input**: Design documents from `speckit/features/251-guardian-modules/`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md) revision 26, section 7 (M2a scope and the protocol version 1 freeze criteria)
 **Prerequisites**: [plan.md](./plan.md), [spec.md](./spec.md), [research.md](./research.md), [data-model.md](./data-model.md), [contracts/](./contracts/), [quickstart.md](./quickstart.md)
 
-**Scope**: phases 1 to 9 are P0 of the plan: enough of M2a to evaluate the prototype gates G1 to G5 in [research.md](./research.md) and to try the feature end to end. Later phases record the follow-on work done on the prototype since (layered params, storage, review fixes, protocol evolution, disclosure). The remaining M2a, M2b and M2c tasks are generated once the RFC is accepted.
+**Starting point**: the prototype on `251-modules-prototype` (draft PR #554, merged with `main` at `73990a84`, RFC revision 26 work at `1274651c`). Its task record is [tasks-p0.md](./tasks-p0.md); tasks below that finish a prototype task cite it as "P0 Tnnn". Built and kept: the pipeline, catalog, registry, `grpc` and in-process kinds, `basic-policy`, the `serve` harness, all three gate hooks (approval in the shared `ack_delta_internal::acknowledge_applied`, so pushes and Guardian executions are both gated), the operator API routes on `/dashboard/modules` with layered params and history on both backends, policy discovery (`GET /policies`, `POST /delta/proposal/check`, rate limit), protocol negotiation and params migration, network-tagged projections, `signer_schemes`, and typed module errors in the server, both Rust crates and the TypeScript base client.
 
-**Branch**: the code lives on `251-modules-prototype` (draft PR #554, based on the RFC branch); `251-guardian-modules-rfc` (PR #544) stays doc-only.
+**Not in M2a**: M2b (outbox, `notify`, `pending`, resync: P0 T092, T096) and M2c (`ServerBuilder::from_env`: P0 T068). Also excluded, per RFC section 7 future work: the durable decision log and replay command (P0 T063, T064), the protocol deprecation window until a version 2 exists (P0 T072), and `ModuleInfo.networks` until a second network (P0 T083).
 
-**Excluded from P0**: the operator API (Story 5), `default` scope, evaluation budget, circuit breaker and health probe, request size cap, metrics, M2b (Story 7), M2c (Story 8), TypeScript parity, the execution path (PR #510 not merged).
+**Tests**: included. The spec's acceptance scenarios and success criteria are the evidence for each story (constitution principle V), and the RFC freezes protocol version 1 only once its surface is implemented with tests.
 
-**Prototype shortcuts** (not the M2a design): secrets are read from files (`token_file`, `tls.*_file`) instead of the secrets backend; the approval record lives in delta metadata instead of delta columns. Per-account assignments started in the catalog file and moved to the operator API with Phase 10 (T041).
-
-**Tests**: included, because the spec's acceptance scenarios are the evidence that closes the gates (constitution principle V).
+**Code rule**: no spec or task IDs (`FR-`, `SC-`, `US`, `T0nn`) in source comments or test names (AGENTS.md, `speckit-implement`).
 
 ## Format: `[ID] [P?] [Story] Description`
 
-- **[P]**: can run in parallel (different files, no dependency on an incomplete task)
-- **[Story]**: user story from spec.md (US1, US2, US3, US4, US6)
+- **[P]**: can run in parallel (different files, no dependency on an unfinished task)
+- **[Story]**: the spec user story (US1 to US6) the task serves
+- Paths are relative to the repository root
 
 ---
 
 ## Phase 1: Setup
 
-**Purpose**: the SDK crate and the server module skeleton.
+**Purpose**: put the plan on the M2a footing and fix how the work is delivered.
 
-- [X] T001 Create crate `crates/guardian-module-sdk` (`Cargo.toml` with workspace version, edition, rust-version, license; dependencies `tonic`, `tonic-prost`, `prost`, `async-trait`, `thiserror`, `serde_json`, `tokio`; build dependency `tonic-prost-build`) and add it to `members` and `default-members` in the root `Cargo.toml`
-- [X] T002 Copy `speckit/features/251-guardian-modules/contracts/guardian_module_v1.proto` to `crates/guardian-module-sdk/proto/guardian_module_v1.proto` and add `crates/guardian-module-sdk/build.rs` compiling it with client and server stubs, following `crates/server/build.rs`
-- [X] T003 Add `guardian-module-sdk` as a path dependency of `guardian-server` in `crates/server/Cargo.toml`, add the `toml` dependency, and create `crates/server/src/modules/mod.rs` declared from `crates/server/src/lib.rs`
-
----
-
-## Phase 2: Foundational
-
-**Purpose**: everything every story needs: the module interface, catalog, request assembly (gates G1 and G2), the pipeline and the errors.
-
-**Checkpoint**: `cargo test -p guardian-module-sdk` and `cargo test -p guardian-server modules::` pass; a server started without `GUARDIAN_MODULES_CONFIG` behaves exactly as before.
-
-- [X] T004 Define `Module` (`describe`, `validate_params`, `evaluate`, `notify`, `notify_gap` with default no-op), `ModuleFactory`, `ModuleError` and re-exports of the generated `guardian.module.v1` types in `crates/guardian-module-sdk/src/lib.rs`, using `async_trait` so `Arc<dyn Module>` is object safe
-- [X] T005 [P] Implement catalog parsing and validation for `[[module]]` entries (`id`, `kind`, `endpoint`, `scope` limited to `all` and `assigned`, `hooks`, `timeout_ms`, `on_error`, `enabled`, `params`, `account_params`) and the prototype `[[assignment]]` table (`account_id`, ordered `modules` with `params`), with a catalog hash, in `crates/server/src/modules/catalog.rs`; unit tests for unknown kind, empty hooks, `account_params` outside `scope = "all"`, and an assignment naming an `all` instance
-- [X] T006 [P] Implement the kind registry and instance creation (factory per kind, `describe` hook check, `validate_params` on `params` and each merged `account_params` entry, startup failure for an enabled instance) in `crates/server/src/modules/registry.rs`
-- [X] T007 [P] Add `AccountView` extraction (gate G1): a `NetworkClient::account_view(&serde_json::Value) -> Result<AccountView, String>` method in `crates/server/src/network/mod.rs`, implemented in `crates/server/src/network/miden/mod.rs` with new `MidenAccountInspector` readers for the default threshold, the procedure thresholds map and the auth scheme in `crates/server/src/network/miden/account_inspector.rs`, returning an error (never an empty view) for unsupported or undecodable auth state; update test mocks in `crates/server/src/testing/mocks.rs`
-- [X] T008 [P] Implement the `TxProjection` builder (gate G2) in `crates/server/src/modules/projection.rs`, reusing helpers from `crates/server/src/delta_summary/projection.rs` and producing every proto field (`nonce_delta`, `expiration_block`, vault changes, output notes with `partial`, `recipient_digest`, `script_root`, `p2id_target`, input notes, storage changes with create, update and remove); record each field it cannot derive in a `G2` section at the end of `speckit/features/251-guardian-modules/research.md`
-- [X] T009 Implement `ProposalContext { proposer, metadata }` and a lookup returning `Result<Option<ProposalContext>, GuardianError>` that separates absence from storage failure, next to `lookup_matching_proposal_payload`, in `crates/server/src/modules/request.rs`
-- [X] T010 Make filesystem proposal creation create-if-absent and give `update_delta_proposal` its own replace-if-present implementation in `crates/server/src/storage/filesystem.rs`; tests: a duplicate creation keeps the first proposer, and create, sign, reload keeps the cosigner signature
-- [X] T011 Implement `HookRequest` assembly (`submitter`, `before` and `after` views, `TransactionSubject` with projection, raw summary, proposer and `unverified_metadata`, `RegistrationSubject` with `initial_state`; params as RFC 8785 canonical JSON with `account_params` merged), built only when at least one module will be called, in `crates/server/src/modules/request.rs`
-- [X] T012 Implement the pipeline in `crates/server/src/modules/pipeline.rs`: resolve the ordered set for a hook (enabled `all` instances in catalog order, then the account's assignment), call each under its `timeout_ms`, stop on deny or on a failure of an `on_error = "deny"` instance, continue past a failure of an `on_error = "allow"` instance with a WARN log, reject a deny whose `reason_code` does not match `[a-z0-9_]{1,64}` as a failure
-- [X] T013 Add `GuardianError::ModuleDenied { module, reason_code }` (403, `PERMISSION_DENIED`, code `GUARDIAN_MODULE_DENIED`, non-retryable) and `GuardianError::ModuleUnavailable { module }` (503, `UNAVAILABLE`, code `GUARDIAN_MODULE_UNAVAILABLE`, retryable) with `meta` and user messages in `crates/server/src/error.rs`, following `AccountPaused`
-- [X] T014 Load the catalog from `GUARDIAN_MODULES_CONFIG` in `ServerBuilder::build()`, register the first-party kinds, and add `modules: Option<Arc<ModulePipeline>>` to `AppState` in `crates/server/src/builder/mod.rs` and `crates/server/src/builder/state.rs`; `None` when the variable is unset
+- [X] T001 Update `speckit/features/251-guardian-modules/plan.md`: status M2a against RFC revision 26; replace the indicative source tree with the prototype's real paths (`crates/server/src/modules/{catalog,registry,pipeline,request,grpc_kind,admin,store,postgres_store,disclosure,check_limit}.rs`, `crates/server/src/network/miden/module_views.rs`, `crates/server/src/services/ack_delta_internal.rs`, `crates/guardian-module-sdk/src/{basic_policy,serve}.rs`) plus the files this list adds (`breaker.rs`, `budget.rs`, `metrics.rs`, `crates/guardian-module-sdk/src/conformance/`); record the delivery as stacked PRs off `main` per the "Delivery as stacked PRs" section below
+- [ ] T002 Create the M2a integration branch `251-modules-m2a` from `main` and carry the prototype onto it by layer (the stack in "Delivery as stacked PRs"), each layer building and testing on its own; close or retarget draft PR #554 to point at the stack in its description
 
 ---
 
-## Phase 3: User Story 1, enforce a mandatory policy (P1)
+## Phase 2: Foundational (protocol version 1 freeze)
 
-**Goal**: an `all` instance of `basic-policy` refuses over-cap or off-list transactions on every approval path available on `main`.
+**Purpose**: every field a module receives is fixed here. Modules written against version 1 must not change after this phase, so nothing that adds or renumbers request fields may be left for later stories.
 
-**Independent Test**: quickstart steps "Propose a transfer of 500", "Propose one transaction sending 600 and 600", "Export a 5,000 transfer, sign offline, push directly".
+**CRITICAL**: no user story phase starts until this phase is complete.
 
-- [X] T015 [P] [US1] Implement `basic-policy` transaction rules in `crates/server/src/modules/basic_policy.rs`: `max_amount_per_tx` as a map from faucet id to decimal amount over the gross amount sent per faucet across all output notes (inputs do not offset, fee excluded, unlisted faucets uncapped, NFTs ignored), `asset_allowlist`, `recipient_allowlist` denying partial and non-P2ID notes; `validate_params` rejecting unknown params; reason codes `amount_cap_exceeded`, `asset_not_allowed`, `recipient_not_allowed`
-- [X] T016 [P] [US1] Unit tests for `basic-policy` in `crates/server/src/modules/basic_policy.rs`: one note under the cap, two 600 notes against a 1,000 cap, receiving 1,000 and sending 1,500, an uncapped faucet, an NFT, a partial note under a recipient allowlist, forged `unverified_metadata` not changing the decision
-- [X] T017 [US1] Run the `before_transaction_approved` pipeline in `crates/server/src/services/push_delta.rs` after the pause check and before `state.ack.ack_delta`, with `submitter` from `resolved.signer_commitment`, `before` from the base state and `after` from the applied state, and the proposer from the `ProposalContext` lookup (a lookup error applies `on_error`)
-- [X] T018 [US1] Service tests in `crates/server/src/services/push_delta.rs`: a denied push returns `ModuleDenied`, stores no candidate and returns no signature; an allowed push behaves as today; with `modules = None` every existing push test passes unchanged
+- [ ] T003 Regenerate `crates/guardian-module-sdk/proto/guardian_module_v1.proto` from the RFC's renumbered version 1 block (`docs/rfcs/0002-guardian-modules.md`, section 3, matching `speckit/features/251-guardian-modules/contracts/guardian_module_v1.proto`, including `AccountView.signer_schemes = 8`), and update every constructor and test that sets field values in `crates/server/src/modules/request.rs`, `crates/server/src/network/miden/module_views.rs`, `crates/guardian-module-sdk/src/basic_policy.rs`, `crates/guardian-module-sdk/src/serve.rs` and `crates/guardian-module-sdk/tests/` (P0 T084)
+- [ ] T004 [P] Add `network_id` to `HookRequest` (and to `CommitEvent` and `Gap` in the proto only, unused until M2b), filled from the account's `network_config` in `crates/server/src/modules/request.rs`; test that a request for a testnet account names its network (P0 T086)
+- [ ] T005 [P] Add `AccountView.code_commitment` and `procedure_roots` in `crates/server/src/network/miden/module_views.rs`, and filter `procedure_thresholds` to effective overrides (non-zero, on a procedure the code exports, not the auth procedure); fixture tests in the same file with an inert override on a non-exported root and on the auth procedure (P0 T087)
+- [ ] T006 [P] Add `MidenTransaction.reference_block`, optional `expiration_block` (absent when `expiration_delta` is 0) and `new_code_commitment` (from the delta's code patch) in `projection_from_summary`, `crates/server/src/network/miden/module_views.rs`; tests for each, including a summary with no expiration and one that replaces the account's code (P0 T088)
+- [ ] T007 Add `HookRequest.submitter_session` from the resolved credential's auth format: pass it from `ResolvedAccount` through `ack_delta_internal::Submitter` (`crates/server/src/services/ack_delta_internal.rs`), `push_delta_proposal` and `configure_account` into `crates/server/src/modules/request.rs`; on the execution path carry it on `ExecutionJob` (`crates/server/src/services/execute_proposal/worker.rs`, `service.rs`) next to `requester`; tests for a wallet-signed and a session-signed push (P0 T093)
+- [ ] T008 Store `proposer_session` with the proposal when it is created (`crates/server/src/delta_object.rs` pending status, `crates/server/src/services/push_delta_proposal.rs`, both storage backends in `crates/server/src/storage/filesystem.rs` and `crates/server/src/storage/postgres.rs`, with a migration under `crates/server/migrations/` if Postgres stores it in a column) and return it from `request::proposal_context` in `crates/server/src/modules/request.rs` into `ProposalContext`; test that a session-created proposal reports it at approval (P0 T093)
+- [ ] T009 Replace the prototype's `metadata.modules` approval record with the delta fields of `data-model.md` ("Delta additions"): module trace (`catalog_hash`, `params_version`, `failed_open`), `signed_at` (fixed before the pipeline runs and sent as `accounting_time`), `submitter` and `proposer`, written once at signing in `crates/server/src/services/ack_delta_internal.rs`; add them to `crates/server/src/delta_object.rs`, the Postgres `deltas` table through a new migration in `crates/server/migrations/<date>_guardian_module_delta_fields/`, and the filesystem delta JSON; keep the dashboard delta detail showing the trace (`crates/server/src/services/dashboard_account_delta_detail.rs`); regenerate OpenAPI if the delta wire shape changes
+- [ ] T010 [P] Build account views from the single decode the push path already does: carry the view fields on `AppliedState` (`crates/server/src/network/mod.rs`, `crates/server/src/network/miden/mod.rs` `verify_and_apply_delta`) and use them in `crates/server/src/modules/request.rs` instead of a second `Account::from_json`; run proposal creation through `verify_and_apply_delta` when a module will be called (P0 T089)
+- [ ] T011 Measure the frozen extraction against real accounts, not only fixtures: add captured devnet accounts (single-key Falcon, single-key ECDSA, 2-of-3 Falcon, mixed-scheme multisig with a procedure override, an account after a code replacement) under `crates/server/src/testing/fixtures/` and assert the full `AccountView` and `MidenTransaction` for each in `crates/server/src/network/miden/module_views.rs` tests
+- [ ] T012 Mark protocol version 1 frozen: state it in the proto header of `crates/guardian-module-sdk/proto/guardian_module_v1.proto` and the contract copy, and record the freeze (commit and date) in RFC 0002 section 7 and Appendix C (`docs/rfcs/0002-guardian-modules.md`)
 
----
-
-## Phase 4: User Story 2, refusal before anyone signs (P1)
-
-**Goal**: an instance subscribed to `before_proposal_created` refuses a proposal before it is stored.
-
-**Independent Test**: quickstart step "Propose a transfer of 5,000": refused, proposal count unchanged.
-
-- [X] T019 [US2] Run the `before_proposal_created` pipeline in `crates/server/src/services/push_delta_proposal.rs` after the proposer signature check and before `submit_delta_proposal`, with `before` the pinned tail and `after` the tail with the delta applied, `accounting_time` not stored
-- [X] T020 [US2] Service tests in `crates/server/src/services/push_delta_proposal.rs`: a denied creation stores nothing and leaves the pending-proposal count unchanged; an account one below its limit can still create a valid proposal after a denial; an instance subscribed only to `before_transaction_approved` is not called at creation
+**Checkpoint**: requests carry the complete version 1 surface, measured on real accounts. User story phases can start in parallel.
 
 ---
 
-## Phase 5: User Story 3, control which keys may sign (P1)
+## Phase 3: User Story 1, enforce a mandatory policy on every account (P1)
 
-**Goal**: one signer rule enforced at registration, proposal creation and approval through the account views.
+**Goal**: an `all` instance refuses rule-breaking transactions on every path that reaches the ack, and a Guardian without modules is unchanged.
 
-**Independent Test**: register with an unlisted signer, propose adding an unlisted signer, push an offline signer change; each is refused.
+**Independent Test**: one `basic-policy` instance with a per-transaction cap; transfers below and above it through a proposal push, an offline push without a proposal, and a Guardian execution.
 
-- [X] T021 [P] [US3] Add `signer_allowlist`, `signer_denylist` (mutually exclusive) and `signer_check` (`added` default, `all`) to `crates/server/src/modules/basic_policy.rs`, evaluated only from `before` and `after`, reason code `signer_not_allowed`; unit tests for added versus all, absent `before` at registration, and an extraction error applying `on_error`
-- [X] T022 [US3] Run the `before_account_registered` pipeline in `crates/server/src/services/configure_account.rs` after the credential, signer set and commitment checks and before any write, with `submitter` from the verified credential, `after` from `initial_state`, and `before` from a `pull_state` of the stored state only for existing accounts; no pause or release check is added
-- [X] T023 [US3] Service tests in `crates/server/src/services/configure_account.rs`: a denied new registration writes nothing; a denied reconfiguration leaves state, metadata, pause and release unchanged; an allowed reconfiguration of a paused account keeps it paused; an allowed re-onboarding of a released account reactivates it and a denied one leaves it released
+### Tests for User Story 1
 
----
+- [ ] T013 [P] [US1] Acceptance suite in `crates/server/src/modules/acceptance_tests.rs` (registered in `crates/server/src/modules/mod.rs`): with a real `basic-policy` cap instance, a transfer under the cap is acked; over the cap is refused with `GUARDIAN_MODULE_DENIED` naming instance and reason code and stores no candidate, through a stored proposal and through an offline push; a Guardian execution over the cap ends `GUARDIAN_EXECUTION_MODULE_DENIED` with nothing proved; a proposal labelled as a threshold change that moves funds is judged on its effect
+- [ ] T014 [P] [US1] No-modules regression: a test in `crates/server/src/modules/acceptance_tests.rs` that a server built without `GUARDIAN_MODULES_CONFIG` never builds a view or projection (spy on the network client) and acks as before; record the zero-module `push_delta` p99 A/B (filesystem, local) in `speckit/features/251-guardian-modules/research.md`
 
-## Phase 6: User Story 4, choose failure behaviour (P1, partial)
+### Implementation for User Story 1
 
-**Goal**: `on_error` and timeouts behave as specified. Budget, breaker and probe are out of P0.
+- [ ] T015 [US1] `basic-policy` review fixes in `crates/guardian-module-sdk/src/basic_policy.rs`: a fixed `client_message` per reason code; a missing projection is a module error, not a `projection_missing` deny; tests for both (P0 T091)
+- [ ] T016 [US1] Denial log line with the fields of RFC section 2.2 (instance, layer, reason code, `request_id`, account, submitter) in `crates/server/src/modules/pipeline.rs`, with `request_id` defined as in RFC section 3.2; test that a generic denial still logs the full decision (P0 T091)
 
-**Independent Test**: stop a remote module configured fail-closed, then fail-open, and push.
-
-- [X] T024 [US4] Pipeline tests in `crates/server/src/modules/pipeline.rs` with stub modules: a timeout of a fail-closed module returns `ModuleUnavailable`; a timeout of a fail-open module continues; a fail-open module that errors followed by a denying module is refused by the second; a malformed `reason_code` counts as a failure
+**Checkpoint**: SC-002 holds on all three approval paths and SC-001 has its baseline.
 
 ---
 
-## Phase 7: User Story 6, a remote module without rebuilding (P2)
+## Phase 4: User Story 2, learn about a refusal before anyone signs (P1)
 
-**Goal**: `basic-policy` served over gRPC gives the same decisions as in process.
+**Goal**: refusals at creation store nothing and take no slot, and cosigners can check a proposal without storing it, in every client.
 
-**Independent Test**: quickstart section 3.
+**Independent Test**: an instance on `before_proposal_created`; an over-cap proposal from each client is refused, nothing is stored and the slot count is unchanged; the dry-run check answers the same.
 
-- [X] T025 [P] [US6] Implement the `serve` harness in `crates/guardian-module-sdk/src/serve.rs`: wraps any `Module` in the generated gRPC service, binds a bearer token per `instance_id` and rejects a mismatch with `PERMISSION_DENIED`
-- [X] T026 [P] [US6] Implement the `grpc` kind in `crates/server/src/modules/grpc_kind.rs`: tonic client per instance, bearer token from the instance's `auth` (a file path in P0), `describe` and `validate_params` at startup, transport errors and timeouts as module failures
-- [X] T027 [US6] Move the `basic-policy` rule code into `crates/guardian-module-sdk/src/basic_policy.rs` so the server's in-process kind and the remote example share it, keeping `crates/server/src/modules/basic_policy.rs` as the factory
-- [X] T028 [US6] Add the runnable example `crates/guardian-module-sdk/examples/basic-policy-serve.rs` taking `--listen` and `--token-file`
-- [X] T029 [US6] Conformance tests in `crates/guardian-module-sdk/tests/conformance.rs`: the same requests evaluated in process and through the harness over loopback give identical decisions; evaluating a request twice leaves module state unchanged; a request authenticated for one instance and naming another is rejected
+### Tests for User Story 2
 
----
+- [ ] T017 [P] [US2] Creation refusal through the Rust layers: `crates/client/src/testing/client_tests.rs` (typed `module_refusal()` on `push_delta_proposal`) and `crates/miden-multisig-client/src/client/proposals.rs` tests (`MultisigError::ModuleDenied` from proposal creation, slot count unchanged on the server mock)
+- [ ] T018 [P] [US2] Creation refusal through the TypeScript layers: `packages/guardian-client/src/http.test.ts` (`pushDeltaProposal` rejects with `moduleRefusal()` set) and `packages/miden-multisig-client/src/` proposal creation tests (refusal surfaces unchanged to the caller)
 
-## Phase 8: Clients and demo (US1, US2, US3)
+### Implementation for User Story 2
 
-**Goal**: module refusals are typed in Rust and visible in `examples/demo`.
+- [ ] T019 [US2] Dry-run check runs `before_transaction_approved`-only instances after the creation instances, each instance once, every request with `HookRequest.dry_run = true`, in `crates/server/src/modules/pipeline.rs` (`plan_dry_run`) and `crates/server/src/services/push_delta_proposal.rs`; tests that an approval-only cap refuses the check (P0 T095)
+- [ ] T020 [US2] `complete` derived from the catalog, not the account: `false` whenever any enabled gate instance has `dry_run = false`, in `crates/server/src/modules/pipeline.rs`; test that two accounts, one with the hidden instance assigned and one without, get the same `complete` (P0 T090, T095)
+- [ ] T021 [US2] TypeScript multisig `getPolicies` and `checkTransaction` in `packages/miden-multisig-client/src/multisig.ts`, matching the Rust `MultisigClient::get_policies` and `ProposalBuilder::check`, with tests; resolve the dependency first, either a `@openzeppelin/guardian-client` release carrying `checkDeltaProposal` and `getPolicies` or a workspace link, per `packages/miden-multisig-client/package.json` (P0 T078)
+- [ ] T022 [US2] Document the dry-run check and policy listing in `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `crates/client/README.md` and `packages/guardian-client/README.md`
 
-- [X] T030 [P] [US1] Add typed accessors for `GUARDIAN_MODULE_DENIED` (`module`, `reason_code`, not retryable) and `GUARDIAN_MODULE_UNAVAILABLE` (`module`, retryable) to `ClientError` in `crates/client/src/error.rs`, with tests parsing both from gRPC status details
-- [X] T031 [US2] Surface both errors from proposal creation, push and registration in `crates/miden-multisig-client` without wrapping them into generic errors; test that a denied proposal creation exposes `module` and `reason_code`
-- [X] T032 [US3] Print module refusals (instance, reason code, retryable or not) in `examples/demo` where proposal creation, execution and account registration report errors
+**Checkpoint**: SC-003 holds and every client exposes the check.
 
 ---
 
-## Phase 9: Gate closure
+## Phase 5: User Story 3, control which keys may sign and which code may run (P1)
 
-**Purpose**: turn the prototype into findings for RFC revision 20 and the M2a task list.
+**Goal**: signer and code rules hold at registration, at signer or code changes, and offline; registration follows the account claim of #558.
 
-- [ ] T033 Run the quickstart walk-through (sections 1 to 3) against a local server with the filesystem backend and record each step's result in `speckit/features/251-guardian-modules/research.md` under each gate
-- [X] T034 [P] Gate G1: test `account_view` on single-key, multisig and guardian-multisig fixture accounts and on an unsupported layout in `crates/server/src/network/miden/mod.rs`; record decode cost per call and the decision on `procedure_thresholds` in `research.md`
-- [X] T035 [P] Gate G2: test the projection builder on one fixture per transaction kind (P2ID, P2IDE, consume notes, add and remove signer, change threshold, update procedure threshold, switch guardian) in `crates/server/src/modules/projection.rs`; record fields kept and dropped in `research.md`
-- [X] T036 Gate G3: measure p50 and p99 of `push_delta` and `push_delta_proposal` with no catalog, one in-process `basic-policy`, and one remote `basic-policy` over loopback, including the share spent building views and projections, with a script in `crates/guardian-module-sdk/examples/latency_ab.rs` or the existing loadgen in `crates/server/bench/loadgen`; record results against SC-001 and SC-006 in `research.md`; done 2026-10-16 with the loadgen `state-push` scenario and `crates/server/examples/bench_server.rs`, results in `research.md` (G3 end to end); follow-up fixes: account view cache by state commitment and a single proposal read in `push_delta`
-- [X] T037 Gate G4 and G5: record module author findings (trait shape, typed request helpers such as `added_signers()`, branching needed per hook) and pipeline placement on `main` versus `acknowledge_delta` in PR #510 in `research.md`
-- [X] T038 Mark gates G1 to G5 closed or accepted in `research.md`, list the RFC changes they require for revision 20, and update the Status line of `plan.md`
+**Independent Test**: a signer allowlist on all three hooks; register with an unlisted signer, propose adding one, push an offline signer change: each is refused. A code allowlist refuses registration and a code replacement to an unlisted commitment.
+
+### Tests for User Story 3
+
+- [ ] T023 [P] [US3] Registration races in `crates/server/src/services/configure_account.rs` tests: a losing first configuration is evaluated again against the winner's assignment before it consumes anything; a denied first configuration claims nothing; a denied re-onboarding leaves released state, metadata and assignment unchanged; a mixed-scheme account's registration request carries `signer_schemes` for every signer
+
+### Implementation for User Story 3
+
+- [ ] T024 [US3] Registration per RFC section 2.3 "Registration" in `crates/server/src/services/configure_account.rs`: for a lost claim, re-plan and re-run the pipeline against the winning account (unfinished claim or existing account) before `consume_auth_timestamp`; keep the hook before the claim (P0 T085)
+- [ ] T025 [US3] `basic-policy` `allowed_code_commitments` with `code_check` (`changed` or `current`, reason code `code_not_allowed`) in `crates/guardian-module-sdk/src/basic_policy.rs`, reading `AccountView.code_commitment` and `MidenTransaction.new_code_commitment`; params validation and tests at registration and at code replacement (P0 T093)
+- [ ] T026 [US3] Document the code allowlist and signer modes in `docs/guides/policy-modules/built-in.md` and its `built-in.toml`
+
+**Checkpoint**: US3 acceptance scenarios 1 to 5 pass, and the code allowlist is in `basic-policy`.
 
 ---
 
-## Phase 10: Layered parameters (RFC revision 21)
+## Phase 6: User Story 4, choose and observe failure behaviour (P1)
 
-**Goal**: operator-managed params from the dashboard API: global params seeded from the catalog, account layers that only add restrictions, assignments, history and version. The catalog keeps instance registration only.
+**Goal**: a slow or failing module costs at most its budget, an open circuit refuses or proceeds at once, and operators see per-instance health.
 
-**Storage** (research D12): module state lives in its own tables, `module_instances`, `module_account_params` and `module_params_history`, on Postgres through a migration (plus the one-row `module_state_version` lock) and on the filesystem backend as one atomically replaced file, `<GUARDIAN_METADATA_PATH>/modules/module_state.json` (`GUARDIAN_MODULES_STATE` overrides the directory).
+**Independent Test**: one fail-closed and one fail-open instance; stop each module and observe approvals, errors, latency and metrics.
 
-- [X] T039 [US5] Add `recipient_denylist` and `deny_unknown_recipients` to `crates/guardian-module-sdk/src/basic_policy.rs`, reason code `recipient_blocked`, with tests
-- [X] T040 [US5] Implement the params store (global params with the seed rule, account layers, assignments, history, version, file persistence) in `crates/server/src/modules/params.rs`, with tests
-- [X] T041 [US5] Remove `account_params` and the `[[assignment]]` table from `crates/server/src/modules/catalog.rs`; mark params holding secret references as file-managed
-- [X] T042 [US5] Evaluate an `all` instance's account layer as a second pass in `crates/server/src/modules/pipeline.rs`; `layer` on `GuardianError::ModuleDenied` and in `meta`; validate stored global params at startup; tests for extension, no loosening and runtime global changes
-- [X] T043 [US5] Implement the operator operations (validation, history, audit kinds `modules.params.global`, `modules.params.account`, `modules.assignment`) in `crates/server/src/modules/admin.rs`, `GuardianError::ModuleNotFound`, permission `policies:write_global`, with tests
-- [X] T044 [US5] Add the routes in `crates/server/src/api/dashboard_modules.rs` and `crates/server/src/builder/handle.rs`, with a router test for permission gating, global writes, drift and history
-- [X] T045 [US5] Carry `layer` through `ModuleRefusal` in `crates/client` and `MultisigError::ModuleDenied`
-- [X] T046 [US5] Add the operator CLI `crates/server/examples/modules_admin.rs` (keygen, login, call)
-- [X] T048 [US5] Replace the single-file params store with the `ModuleStore` trait over the three tables in `crates/server/src/modules/store.rs` (filesystem: one file per table), make evaluation read the account's rows with one query and cache global params per replica by params version, and fail closed with a storage error when the tables are unreadable
-- [X] T049 [US5] Add the migration `crates/server/migrations/2026-10-15-000001_guardian_modules` and `PgModuleStore` in `crates/server/src/modules/postgres_store.rs` (each write and its history row in one transaction), wired through `CoordinationHandles`, with a Postgres test across two replicas
-- [X] T050 [US5] Runtime enable and disable: `operator_can_disable` in the catalog, `set_enabled` on both stores (recorded in the history so the version moves), the pipeline and startup reading the stored flag, `POST /dashboard/modules/{id}/enable` (`policies:write`, re-runs the startup checks) and `/disable` (`policies:write` or `modules:disable` through a new any-of authz mode; `GUARDIAN_MODULE_NOT_DISABLEABLE` when the catalog forbids it), audit kinds `modules.enable` and `modules.disable`, with tests on every layer
-- [X] T047 [US5] Walk the blocklist scenario against a running server with the CLI (quickstart section 4); confirmed live on 2026-10-15 (Postgres backend, devnet demo): global cap, a stricter account layer refusing with `layer: account`, a looser account layer still refused by the global rule, layer removal, and the params history
+### Tests for User Story 4
 
-## Phase 11: Review fixes (fleet review 2026-10-15)
+- [ ] T027 [P] [US4] Failure acceptance in `crates/server/src/modules/pipeline.rs` tests: fail-closed unreachable refuses retryably; fail-open unreachable proceeds and is counted; consecutive failures open the circuit and later requests do not wait the timeout; combined time over the budget times out the remaining instances; a fail-open failure followed by a deny is refused by the second
 
-- [X] T051 Decode the projection and `raw_tx_summary` (Miden binary) from exactly the summary the Guardian signs: `NetworkClient::module_transaction` takes the bare summary, the proposal path passes `tx_summary`, the decoder refuses wrappers; `decode_transaction_summary` prefers a top-level `data` for the dashboard metadata
-- [X] T052 Move the params version to the one-row `module_state_version` lock in the migration and `crates/server/src/modules/postgres_store.rs`; read the previous assignment inside the write transaction; Postgres test for concurrent replacements
-- [X] T053 Check the effective params (stored global params, else the catalog seed) at startup and before enable, and seed new instances only after every instance passed its checks, in `crates/server/src/modules/pipeline.rs`, `registry.rs` and `admin.rs`
-- [X] T054 Resolve a request's modules once with one version read (`ModulePipeline::plan`, `Plan::run`) and use it in the three services
-- [X] T055 Record `catalog_hash` and `params_version` on the signed delta (`DeltaMetadata.modules`)
-- [X] T056 Report the runtime flag for assigned modules in the account view
-- [X] T057 Persist the filesystem module tables as one file, synced and renamed
-- [X] T058 Single-key accounts: a view without signers and `default_threshold` from the state, the signer and scheme from the registered auth configuration
-- [X] T059 TLS for remote modules: `grpc://` is TLS (system roots or `tls.ca_file`, optional client certificate), plain text only through `grpc+insecure://` to a loopback host, prod stage refuses plain text and requires `auth`
-- [X] T060 Add the four `GUARDIAN_MODULE_*` codes to `packages/guardian-client/src/error-codes.ts`
+### Implementation for User Story 4
 
-## Phase 12: Replayable approvals
+- [ ] T028 [US4] Evaluation budget `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` (default 1000) in a new `crates/server/src/modules/budget.rs`, enforced per hook invocation in `crates/server/src/modules/pipeline.rs` (remaining instances count as timed out and their `on_error` applies)
+- [ ] T029 [US4] Startup budget checks in `crates/server/src/modules/catalog.rs`: in the prod stage refuse to start when, for any hook, the timeouts of `all` and `default` instances (enabled or not) exceed the budget, or the budget is not below the execution reservation lease; report over-budget stored assignments without blocking
+- [ ] T030 [US4] Budget check on operator writes in `crates/server/src/modules/admin.rs`: refuse `PUT /dashboard/accounts/{account_id}/modules` and account-layer writes whose effective set exceeds the budget on any hook (`invalid_input`), with tests
+- [ ] T031 [US4] Circuit breaker per instance in a new `crates/server/src/modules/breaker.rs` (consecutive-failure threshold, open, half-open probe), consulted in `crates/server/src/modules/pipeline.rs`; an open circuit applies `on_error` without calling the module
+- [ ] T032 [US4] Periodic health probe (`Describe`) per instance on each replica in `crates/server/src/modules/breaker.rs`, closing the circuit on success and detecting protocol or hook changes; wire its task in `crates/server/src/builder/mod.rs` with shutdown
+- [ ] T033 [US4] Request size cap `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (default 2 MiB) in `crates/server/src/modules/request.rs`: an oversized request is a module failure without the call
+- [ ] T034 [US4] Module metrics in a new `crates/server/src/modules/metrics.rs` with names in `crates/server/src/metrics/names.rs`: `guardian_module_evaluate_duration_seconds{module, outcome}` (`allow`, `deny`, `error`, `skipped`), `guardian_module_fail_open_total{module}`, availability, circuit state, disabled state, configuration drift, catalog fingerprint, orphaned and over-budget assignment counts
+- [ ] T035 [US4] Catalog fingerprint in `GET /dashboard/info` (`crates/server/src/services/dashboard_info.rs`) and the `circuit` field in `GET /dashboard/modules` (`crates/server/src/modules/admin.rs`); regenerate `docs/openapi*.json` with `cargo run --features evm --bin gen-openapi -- docs`
+- [ ] T036 [US4] Document the budget, size cap and breaker variables in `docs/CONFIGURATION.md` ("Runtime: policy modules") and the metrics in `docs/guides/observability/`
 
-- [X] T061 Module builds (`name version` from `describe`) in the startup log and in `GET /dashboard/modules`
-- [X] T062 Evaluation trace on the signed delta (`DeltaMetadata.modules`): `catalog_hash`, `params_version`, `failed_open`
-- [ ] T063 Replay command: rebuild a delta's request at its `params_version`, re-run the modules and diff against the trace; adds what it needs: configuration snapshots with module builds, the request hash (ordered proto maps), `accounting_time`, `proposer` (M2a)
-- [ ] T064 Decision log for denials and proposal-time evaluations, same trace shape (M2a)
+**Checkpoint**: US4 acceptance scenarios 1 to 7 pass and SC-007 holds.
 
-## Phase 13: In-process custom kinds (M2c, prototyped early)
-
-- [X] T065 `ServerBuilder::with_module_kind` registering a kind the catalog can name; `Registry::register` refuses a taken name, including `basic-policy` and `grpc`; example `crates/server/examples/custom_module_server.rs` with `note-policy` shared with the gRPC example
-- [X] T066 Isolate every module call (`describe`, `validate_params`, `evaluate`) on its own task: a panic is a module failure and `on_error` applies, the timeout holds when a module blocks, a factory panic fails startup with an error
-- [X] T067 Policy modules guide `docs/guides/policy-modules/` (built-in, remote, custom over gRPC and in process) with catalog templates loaded by a test; `CONFIGURATION.md` and `DASHBOARD.md` reference entries
-- [ ] T068 `ServerBuilder::from_env` so a custom build does not copy `main.rs` (M2c)
-
-## Phase 14: Protocol evolution (RFC revision 22)
-
-- [X] T069 Protocol: `DescribeRequest` with the Guardian's protocol range and capabilities, `ModuleInfo.required_capabilities`, `Decision.effect`, `ParamsVerdict.normalized_params` in `crates/guardian-module-sdk/proto/guardian_module_v1.proto`; `Module::describe` takes the request; `capability` constants and `ParamsVerdict::normalized` in the SDK
-- [X] T070 SDK source compatibility: `ModuleInstanceConfig`, `ModuleTls`, `ClientIdentity` and `ModuleError` `#[non_exhaustive]`, with constructors
-- [X] T071 Guardian: supported protocol range (`MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION`, warning below current), required-capability check, `Decision.effect` with unknown effects as failures, normalized params stored on operator writes and migrated at startup and before enable with a history entry by `module:<name> <version>`, with tests on every path
-- [ ] T072 Deprecation window when protocol version 2 exists: build the older request shape for previous-version modules and export `guardian_module_protocol_deprecated{module}` (M2a once a second version exists)
-- [ ] T073 Migrate account layers and assignments that a module normalizes (today they migrate when next written) (M2a)
-
-## Phase 15: Policy discovery and disclosure (RFC revision 22)
-
-- [X] T074 Catalog fields `disclosure`, `description` (required unless `none`, at most 500 characters), `client_reason` and `dry_run` in `crates/server/src/modules/catalog.rs`, shown in the operator view
-- [X] T075 Generic denials (`GuardianError::ModuleDeniedGeneric`, `meta = { reason_code: "policy_denied" }`) and `Decision.client_message` (cleaned, at most 256 characters, forwarded only under full reasons) in the server; `module` and `layer` optional and `client_message` carried in `guardian-client` and `miden-multisig-client`
-- [X] T076 Policy summary `GET /policies` and `GetPolicies`: `ModulePipeline::disclosed` in `crates/server/src/modules/disclosure.rs`, `services::get_policies`, HTTP and gRPC handlers, OpenAPI regenerated
-- [X] T077 Dry-run check `POST /delta/proposal/check` and `CheckDeltaProposal`: proposal creation in a dry-run mode (`services::check_proposal`), `ModulePipeline::plan_dry_run` with the per-account and per-signer limiter (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`), logging; `guardian-client` (Rust and TypeScript) methods; Rust multisig `get_policies` and `check_transaction`
-- [ ] T078 TypeScript multisig `getPolicies` and `checkTransaction` (after a `@openzeppelin/guardian-client` release), and TypeScript parsing of generic denials and `client_message`
-
-
-## Phase 16: Review fixes (concurrency and throttling)
-
-- [X] T079 Consistent policy snapshot: `ModulePipeline::snapshot` reads the version, the global rows and the account's rows, rechecks the version and retries, used by `plan` and `disclosed`; acceptance test reproducing a global change and a layer removal racing an evaluation
-- [X] T080 Conditional migration writes: `ModuleStore::set_global_if` on both backends (filesystem under the write lock, Postgres under the row lock with the version untouched on a miss), used by startup migration and enable; acceptance test reproducing an operator write racing a migration; Postgres test
-- [X] T081 Dry-run limiter independent of the catalog (`crates/server/src/modules/check_limit.rs`), installed at startup, applied to every check before reconstruction; spec FR-041 made conditional on full reasons; FR-028 and FR-029
-
-## Phase 17: Network-tagged projections (RFC revision 22)
-
-- [X] T082 `TransactionProjection`, `AccountStateProjection` (`oneof network`, Miden only) and `RawTransaction` (named `encoding`) replace the Miden-only fields in `TransactionSubject`, `PendingTransaction`, `CommitEvent` and `RegistrationSubject`, with new field numbers and the old ones reserved; `TxProjection` and `AccountProjection` renamed `MidenTransaction` and `MidenAccountState`; SDK accessors (`subject.miden()`), `basic-policy`, `note-policy`, tests and the guide updated
-- [ ] T083 `ModuleInfo.networks` and the Guardian's check that a mandatory instance can judge the account's network, when a second network gets a variant
-
-## Phase 18: Review of revision 23 (RFC revision 24)
-
-Not started. The prototype branch must first merge `main` (#523, #552, #558). T084 to T088, T093 and T095 are the version 1 freeze criteria (RFC 0002 section 7).
-
-- [ ] T084 Regenerate `crates/guardian-module-sdk/proto/guardian_module_v1.proto` from the RFC (renumbered version 1) and update every constructor and test that sets field values
-- [ ] T085 Registration after #558 in `crates/server/src/services/configure_account.rs`: hook before `metadata.create` and `consume_auth_timestamp`; `default` copies written with the claim; unfinished claim runs `all` plus the stored assignment with no `before`; a lost claim re-runs the pipeline before consuming anything; service tests for all three (FR-009)
-- [ ] T086 `network_id` from the account's `network_config` in `HookRequest`, `CommitEvent` and `Gap`; conformance case that a module reads it (FR-039)
-- [ ] T087 `AccountView.code_commitment` and `procedure_roots`; `procedure_thresholds` filtered to effective overrides (non-zero, on an exported procedure, not the auth procedure); fixture tests with an inert override (FR-039)
-- [ ] T088 `MidenTransaction.reference_block`, optional `expiration_block` (absent when `expiration_delta` is 0) and `new_code_commitment` from the delta's code patch (FR-039)
-- [ ] T089 Account views from the single decode in `verify_and_apply_delta` (view fields on `AppliedState`); proposal creation moves to `verify_and_apply_delta` when a module will be called
-- [ ] T090 Dry-run `complete = false` when an approval-only instance applies; `params_drift` against `seeded_params`; `GUARDIAN_MODULE_PARAMS_MAX_BYTES`; paginated params history
-- [ ] T091 `basic-policy` fixed `client_message` per reason code; a missing projection is a module error, not a `projection_missing` deny; `request_id` in the denial log line
-- [ ] T093 `basic-policy` `allowed_code_commitments` with `code_check` (`code_not_allowed`); `HookRequest.submitter_session` from the resolved credential; `proposer_session` stored with the proposal, returned by the `ProposalContext` lookup and sent in `TransactionSubject`, `pending` and `CommitEvent` (FR-039)
-- [ ] T094 Filesystem registration: copy `default` instances before the claim, replacing a copy an earlier unclaimed attempt left; an unfinished claim with no assignment history repeats the copy (FR-009)
-- [ ] T095 Dry-run check runs `before_transaction_approved`-only instances after the creation instances, with `HookRequest.dry_run`; `complete` derived from the catalog, not the account (FR-058)
-- [ ] T096 [M2b] Reassigning a subscribed instance to an account it was unassigned from puts the pair in `resync_required`; extend the counting model to cover unassignment (FR-064)
-- [ ] T092 [M2b] `notify` capability: offered only when the notifier runs; a module requiring it is refused unless its entry lists `after_transaction_committed`; `StatefulModule` declares it (FR-066)
 ---
 
-## Dependencies & Execution Order
+## Phase 7: User Story 5, tune policy per account without a deploy (P2)
 
-- **Setup (T001 to T003)** before everything.
-- **Foundational (T004 to T014)** before any story. T005, T006, T007, T008 are parallel; T009 to T012 build on T004 and T007 to T008; T014 last.
-- **US1 (T015 to T018)** first: it proves the pipeline. **US2 (T019, T020)** and **US3 (T021 to T023)** after T017, parallel with each other. **US4 (T024)** after T012. **US6 (T025 to T029)** after US1; T027 after T015.
-- **Clients and demo (T030 to T032)** after T013; T031 and T032 after T019 and T022.
-- **Gate closure (T033 to T038)** last; T034 and T035 can start as soon as T007 and T008 are done.
+**Goal**: `default` modules reach new accounts with the claim, operator writes are bounded and auditable, and the operator client covers every route.
 
-```text
-T001 → T002 → T003 → T004 ─┬─ T005 ─┐
-                           ├─ T006 ─┤
-                           ├─ T007 ─┼─ T009 → T011 → T012 → T013 → T014
-                           └─ T008 ─┘         T010 (parallel)
-T014 → US1 (T015-T018) ─┬─ US2 (T019-T020) ─┐
-                        ├─ US3 (T021-T023) ─┼─ T030-T032 → T033-T038
-                        ├─ US4 (T024)       │
-                        └─ US6 (T025-T029) ─┘
-```
+**Independent Test**: extend a global blocklist and one account's layer through `guardian-operator-client`, read the history, try to remove a mandatory module, and register a new account with a `default` instance.
+
+### Tests for User Story 5
+
+- [ ] T037 [P] [US5] `default` copy tests in `crates/server/src/services/configure_account.rs`: the copy carries the evaluated params and is written with the claim on Postgres; on the filesystem it replaces an earlier unclaimed attempt's copy; an unfinished claim with no assignment history repeats it, one an operator emptied does not
+- [ ] T038 [P] [US5] Operator client tests in `packages/guardian-operator-client/src/` for every module route, including permission errors for `modules:disable` holders
+
+### Implementation for User Story 5
+
+- [ ] T039 [US5] Write `default` instances into the assignment together with the claim in `crates/server/src/services/configure_account.rs` and `crates/server/src/modules/postgres_store.rs` (same transaction as `metadata.create`), with the evaluated params from the same snapshot (P0 T085)
+- [ ] T040 [US5] Filesystem registration copy in `crates/server/src/modules/store.rs`: written before the claim as one atomic replace, replacing a copy an earlier unclaimed attempt left; an unfinished claim with no assignment history repeats it (P0 T094)
+- [ ] T041 [US5] `params_drift` against `seeded_params`, `GUARDIAN_MODULE_PARAMS_MAX_BYTES` on every params write, and paginated history (`?before=&limit=`) in `crates/server/src/modules/admin.rs`, `store.rs` and `postgres_store.rs` (P0 T090)
+- [ ] T042 [US5] `declared` (stored flag the catalog no longer declares) and `orphaned` (assignment naming a removed instance) in the views of `crates/server/src/modules/admin.rs`; orphaned entries are skipped at evaluation and reported, active again when the instance returns
+- [ ] T043 [US5] Migrate account layers and assignments that a module normalizes when validating params, at startup and before enabling, with a compare-and-set against the read value, in `crates/server/src/modules/registry.rs` and both stores (P0 T073)
+- [ ] T044 [US5] Module routes in `packages/guardian-operator-client/src/` (list, account modules read and replace, global params, account layer set and delete, history, enable, disable) with types matching `speckit/features/251-guardian-modules/contracts/operator-modules-api.md`, and its README
+- [ ] T045 [US5] OpenAPI entries for the `/dashboard/modules` and account module routes (`utoipa` annotations in `crates/server/src/api/dashboard_modules.rs`), regenerated into `docs/openapi-dashboard.json`
+- [ ] T046 [US5] Smoke the operator routes through `examples/operator-smoke-web` with the `smoke-test-operator-dashboard` skill, and document the routes and permissions in `docs/DASHBOARD.md` ("Policy modules")
+
+**Checkpoint**: US5 acceptance scenarios 1 to 16 pass and SC-009, SC-012 hold.
+
+---
+
+## Phase 8: User Story 6, plug in a third-party module without rebuilding (P2)
+
+**Goal**: an operator runs the official image with a remote module that authenticates per instance through the secrets backend, and module authors have an SDK, a conformance suite and an example.
+
+**Independent Test**: run `examples/policy-module` as a service, configure it as a remote instance with credentials from the secrets backend, and run the conformance suite against it and against the in-process kind.
+
+### Tests for User Story 6
+
+- [ ] T047 [P] [US6] Conformance suite: turn the prototype's `crates/guardian-module-sdk/tests/conformance.rs` into a reusable suite in `crates/guardian-module-sdk/src/conformance/` (behind a `conformance` feature) that any module author can run, covering identical decisions in process and over gRPC, `evaluate` purity (the same request repeated leaves module state unchanged), params validation, a request at the size cap, and instance-id isolation between two instances on one service; run it for `basic-policy` from `crates/guardian-module-sdk/tests/conformance.rs`
+
+### Implementation for User Story 6
+
+- [ ] T048 [US6] Secret references through the secrets backend: replace `auth.token_file` and `tls.*_file` in `crates/server/src/modules/catalog.rs` and `crates/server/src/modules/grpc_kind.rs` with secret references resolved when the instance is created, following `docs/runbooks/secrets.md`; resolve `$secret` in in-process params at creation and pass them only to the in-process module, never in a request; keep rejection in remote params, account layers and the operator API; update `speckit/features/251-guardian-modules/contracts/catalog-config.md`
+- [ ] T049 [US6] `examples/policy-module/`: `basic-policy` as a standalone gRPC service through the `serve` harness, with `Cargo.toml`, `README.md` (run, TLS, per-instance token), a `Dockerfile`, and a matching remote catalog entry in `docs/guides/policy-modules/remote.toml`
+- [ ] T050 [US6] Publishable `guardian-module-sdk`: crates.io metadata in `crates/guardian-module-sdk/Cargo.toml`, `crates/guardian-module-sdk/README.md` (module author quick start), and the crate added to the release order of the `release-guardian-sdk-packages` skill
+- [ ] T051 [US6] Remote module author guide in `docs/guides/policy-modules/custom.md` and `remote.md`: protocol version 1, request fields, `reason_code` rules, `client_message`, `dry_run`, conformance suite, credentials; written so SC-011 holds without reading server code
+
+**Checkpoint**: SC-005 and SC-011 hold; US6 acceptance scenarios 1 to 5 pass.
+
+---
+
+## Phase 9: Polish and cross-cutting
+
+**Purpose**: documentation, verification and release readiness across stories.
+
+- [ ] T052 [P] `docs/TROUBLESHOOTING.md`: `GUARDIAN_MODULE_DENIED`, `GUARDIAN_MODULE_UNAVAILABLE`, `GUARDIAN_MODULE_NOT_FOUND`, `GUARDIAN_MODULE_NOT_DISABLEABLE` with their `meta`, and the denial log fields
+- [ ] T053 [P] Break-glass runbook `docs/runbooks/policy-modules.md` (RFC section 4.2): disabling an instance, deploy-only changes, circuit and budget symptoms; link it from `docs/runbooks/` and `CLAUDE.md`'s lookup table
+- [ ] T054 [P] Trust boundary and data protection in `docs/CONCEPTS.md`: what external modules receive (full transaction details, proposals that never execute, proposer descriptions), and the operator and vendor guidance of RFC invariant 5
+- [ ] T055 [P] Protocol spec coverage: module error codes and `meta` on proposal creation, push and registration, `GET /policies` and `POST /delta/proposal/check` in `spec/api.md`, and the gate points in the push, proposal and registration processes of `spec/processes.md`
+- [ ] T056 [P] Client READMEs for module errors and `moduleRefusal()` / `module_refusal()`: `crates/client/README.md`, `packages/guardian-client/README.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`
+- [ ] T057 Rust and TypeScript parity fixture: one shared JSON fixture of module error bodies under `packages/guardian-client/src/` (or the repo's existing shared fixture location) driving both `crates/client` and `packages/guardian-client` tests, so SC-010 is checked by the same cases
+- [ ] T058 End-to-end smokes with a catalog: `smoke-test-rust-multisig-sdk` and `smoke-test-ts-multisig-sdk` skills, refusal at creation, push and registration, and `examples/demo` and `examples/web` with and without a catalog (quickstart section 5)
+- [ ] T059 Quickstart walk-through against a local node with the filesystem backend and the latency A/B (zero, one in-process, one remote module), results in `speckit/features/251-guardian-modules/research.md` (P0 T033; SC-001, SC-006)
+- [ ] T060 SC-004 run: enable `basic-policy` on all accounts with the official image and the guides only, timed, gaps fixed in `docs/guides/policy-modules/`
+- [ ] T061 Re-check the TLA+ models whose fingerprints the modules work moved (`verify-auth-replay`, `verify-candidate-queue`, `verify-client-sync`, `verify-guardian-switch`, `verify-module-counting`, `verify-multisig-push-gate`, `verify-proposal-lifecycle` under `.agents/skills/`) with each `check.sh`, then `--accept-drift` once the model still mirrors the code
+- [ ] T062 Validation matrix of `speckit/features/251-guardian-modules/quickstart.md` section 5 (M2a rows) run end to end, including `cargo test -p guardian-server --features postgres` for module stores and proposal storage, and `gen-openapi --check`
+
+---
+
+## Dependencies and Execution Order
+
+### Phase dependencies
+
+- **Setup (T001, T002)** first.
+- **Foundational (T003 to T012)** blocks every story. T003 first (it renumbers the proto); T004, T005, T006 and T010 then run in parallel; T007 and T008 after T003; T009 after T007 and T008 (it stores `submitter` and `proposer`); T011 after T005 and T006; T012 last.
+- **Stories** start after T012 and are independent of each other, with these exceptions: T030 (budget on writes) needs T028; T039 and T040 (`default` copy) touch `configure_account.rs` after T024, so run US3 before US5 or coordinate the file; T021 needs the `guardian-client` dependency decision.
+- **Polish (T052 to T062)** after the stories it documents; T061 and T062 last.
+
+### User story dependencies
+
+- **US1 (P1)**: needs only Foundational. MVP.
+- **US2 (P1)**: needs Foundational; T021 depends on a TypeScript client release or link.
+- **US3 (P1)**: needs Foundational (T005, T006 for the code allowlist).
+- **US4 (P1)**: needs Foundational; should land before any production enablement, since without the breaker and budget a down fail-closed module costs a full timeout on every request.
+- **US5 (P2)**: needs Foundational; shares `configure_account.rs` with US3.
+- **US6 (P2)**: needs Foundational (T003 for the conformance suite's request shapes).
+
+### Within each story
+
+Tests first and failing, then implementation, then docs for that story.
+
+---
 
 ## Parallel Examples
 
 ```text
-Foundational: T005 catalog.rs | T006 registry.rs | T007 network account_view | T008 projection.rs
-US1:          T015 basic_policy.rs rules | T016 basic_policy.rs tests (same file: run T016 after T015 if editing together)
-US6:          T025 serve.rs | T026 grpc_kind.rs
-Gates:        T034 account_view fixtures | T035 projection fixtures
+# Foundational, after T003:
+T004 network_id            (modules/request.rs)
+T005 code fields in views  (network/miden/module_views.rs, view half)
+T006 projection fields     (network/miden/module_views.rs, projection half; coordinate with T005)
+T010 single decode         (network/mod.rs, network/miden/mod.rs)
+
+# Stories, after T012, one developer each:
+US4  T028 to T036  (modules/budget.rs, breaker.rs, metrics.rs)
+US6  T047 to T051  (guardian-module-sdk, examples/policy-module)
+US2  T019 to T022  (pipeline dry run, TypeScript multisig)
+
+# Polish docs, any time after their story:
+T052, T053, T054, T055, T056
 ```
+
+---
 
 ## Implementation Strategy
 
-1. **MVP**: Setup, Foundational, US1. A mandatory cap refuses an over-cap push on `main`. Stop and run the US1 quickstart steps.
-2. Add US2 and US3: the same instance filters proposals and controls signers at all three hooks.
-3. Add US4 and US6: failure modes and the remote path.
-4. Clients and demo, then gate closure. The findings drive RFC revision 20 and the M2a `tasks.md`.
+### MVP
+
+Foundational, then US1: the frozen protocol and a mandatory policy enforced on every approval path. Before enabling modules in production, also US4: the budget and breaker are what keep a failing fail-closed module from slowing every approval.
+
+### Incremental delivery
+
+1. Foundational: version 1 frozen.
+2. US1 and US4: enforceable and operable.
+3. US3: signer and code control, registration per #558.
+4. US2: creation-time refusal and the check in every client.
+5. US5: operator tuning with the operator client.
+6. US6: remote modules through the secrets backend, conformance suite, example, published SDK.
+7. Polish: docs, smokes, A/B, TLA+ re-check, validation matrix.
+
+### Delivery as stacked PRs
+
+The prototype is one 13,000-line draft (#554). M2a ships as a stack of PRs off `main`, each building and testing on its own, the way the PR #510 review stack was layered by path:
+
+1. **Module SDK and protocol**: `crates/guardian-module-sdk` (proto version 1, `Module`, `serve`, `basic-policy`, conformance), Phase 2 proto tasks, T047, T050.
+2. **Server core**: `crates/server/src/modules/` catalog, registry, pipeline, request assembly, stores and the `2026-10-15` migration, `network/miden/module_views.rs`, budget, breaker, size cap, metrics (US4).
+3. **Hooks**: `ack_delta_internal.rs`, `push_delta_proposal.rs`, `configure_account.rs`, the execution worker, delta fields (T009), US1 and US3.
+4. **Operator surface**: `/dashboard/modules` routes, OpenAPI, `packages/guardian-operator-client` (US5).
+5. **Client surfaces**: module errors and discovery in `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/miden-multisig-client`, examples (US2).
+6. **Docs**: guides, runbook, concepts, spec, troubleshooting (Polish).

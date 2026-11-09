@@ -1,0 +1,17 @@
+# Source modeled in model/ModuleCounting.tla: "<path> <fn name>" for Rust,
+# "<path> <section number>" for the RFC. The notifier, the outbox and
+# `pending` exist only in the RFC until M2b lands; add their functions here
+# when they do (SKILL.md, "When M2b is implemented").
+docs/rfcs/0002-guardian-modules.md 3.3
+docs/rfcs/0002-guardian-modules.md 3.4
+crates/server/src/services/push_delta.rs push_delta
+crates/server/src/storage/mod.rs gate_candidate_submission
+crates/server/src/storage/mod.rs classify_chain_position
+crates/server/src/storage/mod.rs first_unchained_candidate
+crates/server/src/storage/postgres.rs submit_candidate
+crates/server/src/storage/postgres.rs promote_candidate
+crates/server/src/storage/postgres.rs update_candidate_status
+crates/server/src/jobs/canonicalization/processor.rs retain_candidate
+crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_chain_advance
+crates/server/src/jobs/canonicalization/reconciliation.rs reconcile_recoverable_path
+crates/server/src/coordination/postgres/lease.rs try_acquire

@@ -1,8 +1,8 @@
 # Implementation Plan: Guardian Modules, a Hook Pipeline for Pluggable Policy
 
-**Branch**: `251-guardian-modules` (spec and plan on `251-guardian-modules-rfc`, PR #544) | **Date**: 2026-10-13 | **Spec**: [spec.md](./spec.md)
-**Input**: Feature specification from `speckit/features/251-guardian-modules/spec.md`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; the RFC is now at revision 24
-**Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. Still open: the end-to-end walk-through and latency A/B against a local Miden node. M2a `tasks.md` follows.
+**Branch**: M2a on `251-modules-m2a` and its stacked layer branches (see "M2a delivery"); prototype on `251-modules-prototype` (draft PR #554); RFC and speckit merged with PR #544 | **Date**: 2026-10-13, M2a revision 2026-11-09 | **Spec**: [spec.md](./spec.md)
+**Input**: Feature specification from `speckit/features/251-guardian-modules/spec.md`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; M2a follows revision 26
+**Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. Still open: the end-to-end walk-through and latency A/B against a local Miden node. M2a implementation started 2026-11-09 against RFC revision 26: [tasks.md](./tasks.md); the prototype record is [tasks-p0.md](./tasks-p0.md).
 
 ## Summary
 
@@ -59,75 +59,94 @@ speckit/features/251-guardian-modules/
 │   ├── operator-modules-api.md
 │   └── client-errors.md
 ├── checklists/requirements.md
-└── tasks.md                        # P0 prototype tasks and the follow-on phases
+├── tasks-p0.md                     # P0 prototype tasks and the follow-on phases (record)
+└── tasks.md                        # M2a implementation tasks
 ```
 
 ### Source Code (repository root)
 
 ```text
-crates/guardian-module-sdk/              # NEW, published (M2a)
-├── proto/guardian_module_v1.proto
-├── build.rs                             # tonic-prost-build
+crates/guardian-module-sdk/                    # published crate (M2a)
+├── proto/guardian_module_v1.proto             # protocol version 1, frozen at the end of M2a phase 2
+├── build.rs                                   # tonic-prost-build
 ├── src/
-│   ├── lib.rs                           # Module, ModuleFactory, ModuleError, re-exported protocol types
-│   ├── serve.rs                         # gRPC harness, per-instance credentials
-│   ├── stateful.rs                      # watermark helper (M2b)
-│   └── conformance/                     # suite run against in-process and remote modules
-└── examples/basic-policy-serve.rs
+│   ├── lib.rs                                 # Module, ModuleFactory, ModuleError, protocol types, request helpers
+│   ├── serve.rs                               # gRPC harness, per-instance credentials
+│   ├── basic_policy.rs                        # first-party reference kind
+│   ├── conformance/                           # M2a: reusable suite (today tests/conformance.rs)
+│   └── stateful.rs                            # M2b: watermark helper
+├── examples/basic-policy-serve.rs, note-policy-serve.rs
+└── tests/conformance.rs
 
 crates/server/src/
-├── modules/                             # NEW
-│   ├── catalog.rs                       # TOML load, validation, hash, startup checks
-│   ├── registry.rs                      # kind registration, instance creation, secret resolution
-│   ├── pipeline.rs                      # ordered evaluation, budget, first-deny
-│   ├── request.rs                       # HookRequest assembly, ProposalContext, size cap
-│   ├── account_view.rs                  # AccountView extraction (gate G1)
-│   ├── projection.rs                    # MidenTransaction builder (gate G2)
-│   ├── grpc_kind.rs                     # remote kind client, TLS, auth
-│   ├── breaker.rs                       # circuit breaker and health probe
-│   ├── basic_policy.rs                  # first-party reference kind
-│   ├── assignment.rs                    # per-account assignment and flags in the metadata store
-│   └── notify/                          # outbox writer, notifier, delivery, resync (M2b)
-├── services/push_delta.rs               # pipeline before ack (acknowledge_delta after PR #510)
-├── services/push_delta_proposal.rs      # pipeline before submit_delta_proposal
-├── services/configure_account.rs        # pipeline after credential and signer checks; default copy
-├── storage/filesystem.rs                # proposal create-if-absent
-├── network/                             # account_view on NetworkClient
-├── dashboard/                           # module routes, modules:disable permission
-├── error.rs                             # ModuleDenied, ModuleUnavailable
-├── metrics/                             # module metrics
-└── builder/                             # with_module_kind, from_env (M2c), catalog in build()
+├── modules/
+│   ├── mod.rs                                 # loading at startup, wiring into AppState
+│   ├── catalog.rs                             # TOML load, validation, hash, startup checks
+│   ├── registry.rs                            # kinds, instance creation, describe and params checks
+│   ├── pipeline.rs                            # ordered evaluation, layers, first deny, dry run
+│   ├── request.rs                             # HookRequest assembly, views, ProposalContext
+│   ├── grpc_kind.rs                           # remote kind client, TLS, auth
+│   ├── disclosure.rs, check_limit.rs          # policy discovery and the dry-run rate limit
+│   ├── admin.rs                               # operator views and writes
+│   ├── store.rs, postgres_store.rs            # module state on the filesystem and Postgres
+│   ├── testing.rs                             # stub modules and pipelines for tests
+│   ├── budget.rs, breaker.rs, metrics.rs      # M2a: evaluation budget, circuit breaker and probe, metrics
+│   └── notify/                                # M2b: outbox writer, notifier, delivery, resync
+├── network/miden/module_views.rs              # AccountView extraction and MidenTransaction projection
+├── services/ack_delta_internal.rs             # before_transaction_approved, shared by push_delta and the execution worker
+├── services/push_delta_proposal.rs            # before_proposal_created and the dry-run check
+├── services/configure_account.rs              # before_account_registered, before the account claim
+├── services/get_policies.rs                   # policy summary
+├── services/execute_proposal/worker.rs        # requester carried to the ack; module failure codes
+├── api/dashboard_modules.rs                   # operator routes on /dashboard/modules
+├── dashboard/{authz,permissions}.rs           # policies:write, policies:write_global, modules:disable
+├── error.rs                                   # GUARDIAN_MODULE_* errors
+└── builder/                                   # with_module_kind (M2c, prototyped), catalog in build()
 
-crates/server/migrations/<date>_guardian_modules/       # assignments, flags, delta columns (M2a)
-crates/server/migrations/<date>_guardian_module_events/ # outbox and delivery (M2b)
+crates/server/migrations/2026-10-15-000001_guardian_modules/   # module instances, account params, version, history
+crates/server/migrations/<date>_guardian_module_delta_fields/  # M2a: approval trace, signed_at, submitter, proposer
+crates/server/migrations/<date>_guardian_module_events/        # M2b: outbox and delivery
+crates/server/examples/modules_admin.rs, custom_module_server.rs
 
-crates/client/src/                       # typed module errors
-crates/miden-multisig-client/src/        # typed module errors on proposal, push, registration
-packages/guardian-client/src/            # same in TypeScript
-packages/miden-multisig-client/src/
-packages/guardian-operator-client/src/   # module endpoints
-examples/policy-module/                  # basic-policy as a standalone gRPC service
-examples/custom-guardian/                # M2c custom build
-docs/                                    # CONFIGURATION, TROUBLESHOOTING, CONCEPTS trust boundary, module author guide
-docs/openapi*.json                       # regenerated with gen-openapi; CI checks drift
-crates/guardian-module-sdk/README.md     # NEW: crates.io landing page, module author quick start
-crates/client/README.md, packages/guardian-client/README.md            # module error codes
-crates/miden-multisig-client/README.md, packages/miden-multisig-client/README.md  # refusals at creation, push, registration
-packages/guardian-operator-client/README.md                             # module endpoints
+crates/shared/src/execution.rs                 # GUARDIAN_EXECUTION_MODULE_* failure codes
+crates/client/src/error.rs                     # ModuleRefusal, module_refusal()
+crates/miden-multisig-client/src/              # ModuleDenied, ModuleUnavailable; get_policies; ProposalBuilder::check
+packages/guardian-client/src/http.ts           # moduleRefusal(); checkDeltaProposal, getPolicies
+packages/miden-multisig-client/src/            # M2a: getPolicies, checkTransaction
+packages/guardian-operator-client/src/         # M2a: module routes
+examples/policy-module/                        # M2a: basic-policy as a standalone gRPC service
+examples/custom-guardian/                      # M2c custom build
+docs/guides/policy-modules/                    # built-in, remote and custom guides
+docs/, spec/                                   # CONFIGURATION, DASHBOARD, TROUBLESHOOTING, CONCEPTS, runbook, api and processes
+docs/openapi*.json                             # regenerated with gen-openapi; CI checks drift
 ```
 
 Per AGENTS.md, published crates and packages document new public API in their own README in the same PR, OpenAPI is regenerated for every HTTP change, and `examples/demo`, `examples/web` and `examples/operator-smoke-web` are the required smoke checks ([quickstart.md](./quickstart.md), section 4).
 
-**Structure Decision**: one new library crate for everything a module author needs, and one new `modules` subsystem inside `guardian-server`, so module code is isolated from service code and the services gain one call each. Paths under `crates/server/src/modules/` are indicative until gates G1, G2 and G4 close.
+**Structure Decision**: one new library crate for everything a module author needs, and one new `modules` subsystem inside `guardian-server`, so module code is isolated from service code and the services gain one call each. The paths above are the prototype's, carried into M2a; the ones marked M2a, M2b or M2c do not exist yet.
 
 ## Delivery Phases
 
 | Phase | Content | Exit criterion |
 |---|---|---|
 | **P0: Prototype** (branch `251-modules-prototype`, off `main`, not for merge) | SDK skeleton, catalog with `all` and `assigned`, pipeline at push and proposal creation, `basic-policy`, one remote module, account view and projection builders, demo walk-through, latency A/B | Gates G1 to G5 closed or accepted; findings in RFC revision 20 |
-| **P1: M2a** | Everything tagged M2a in the spec, starting after PR #510 merges (gate G5) | Stories 1 to 6 acceptance, SC-001 to SC-007, SC-009 to SC-011 |
+| **P1: M2a** | Everything tagged M2a in the spec, started 2026-11-09 after PR #510 merged (gate G5); tasks in [tasks.md](./tasks.md) | Stories 1 to 6 acceptance, SC-001 to SC-007, SC-009 to SC-011 |
 | **P2: M2b** | Outbox, notifier, `pending`, retention, resync, stateful conformance | Story 7, SC-008 |
 | **P3: M2c** | `ServerBuilder::from_env`, `with_module_kind`, custom-build template | Story 8 |
+
+## M2a delivery
+
+The prototype (#554) is one draft of about 13,000 lines and is not merged as it is. M2a starts from it and ships as a stack of pull requests off `main`, each building and passing its tests on its own, in this order:
+
+| Layer | Branch | Content |
+|---|---|---|
+| 1. Module SDK | `251-m2a-sdk` | `crates/guardian-module-sdk` (protocol, `Module`, `serve`, `basic-policy`, conformance) and the workspace entry |
+| 2. Server core | `251-m2a-server-core` | `crates/server/src/modules/`, `network/miden/module_views.rs`, the modules migration, module errors in `error.rs`, permissions and audit kinds, the operator routes, `AppState` wiring, with no hook calling the pipeline yet |
+| 3. Hooks | `251-m2a-hooks` | The three gate hooks (`ack_delta_internal.rs`, `push_delta_proposal.rs`, `configure_account.rs`), the execution worker and the `guardian-shared` failure codes, policy discovery routes, delta summary trace, OpenAPI |
+| 4. Clients | `251-m2a-clients` | `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/miden-multisig-client`, examples and the qualification driver |
+| 5. Docs | `251-m2a-docs` | `docs/guides/policy-modules/`, `docs/`, `spec/`, the `verify-module-counting` skill |
+
+`251-modules-m2a` is the integration branch at the top of the stack; M2a tasks land on the layer they belong to. The operator client (US5) joins layer 2 or its own PR when it is built.
 
 ## Decisions made during planning
 

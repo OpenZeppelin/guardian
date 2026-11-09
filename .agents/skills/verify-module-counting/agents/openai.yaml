@@ -1,0 +1,4 @@
+interface:
+  display_name: "Verify Module Counting"
+  short_description: "Model-check stateful module counting (RFC 0002 notify, pending, resync) with TLA+"
+  default_prompt: "Use $verify-module-counting to model-check this change to module notify delivery, pending, resync or the candidate lifecycle."

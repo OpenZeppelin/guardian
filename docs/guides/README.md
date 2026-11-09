@@ -26,6 +26,7 @@ storage, or network), not after Compose.
 | [Miden Dashboard UI](./miden-dashboard/README.md) | Self-hosted Compose: Postgres + Guardian server + the Miden Dashboard operator UI |
 | [Observability](./observability/README.md) | Local Compose: server + Prometheus + pre-provisioned Grafana dashboard |
 | [Horizontal scaling](./horizontal-scaling/README.md) | Local Compose: two replicas + round-robin proxy + shared Postgres (sessions, lease failover, fail-closed auth) |
+| [Policy modules](./policy-modules/README.md) | From source (prototype branch): built-in `basic-policy`, a remote module over gRPC, and a custom module written with `guardian-module-sdk` |
 
 ## Adding a guide
 
