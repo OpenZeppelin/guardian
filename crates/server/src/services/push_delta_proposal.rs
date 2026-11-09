@@ -362,12 +362,14 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
         (None, None) => (None, true),
     };
     if let Some(plan) = plan {
-        let after = {
+        let (after, module_views) = {
             let client = state.network_client.clone();
             let tail_state_json = tail.state_json.clone();
             let tx_summary = tx_summary.clone();
             crate::network::reconstructor()
-                .run(move || client.apply_delta(&tail_state_json, &tx_summary))
+                .run(move || {
+                    client.apply_delta_with_module_views(None, &tail_state_json, &tx_summary)
+                })
                 .await?
         };
         let proposal = ProposalContext {
@@ -378,6 +380,8 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                 .unwrap_or(serde_json::Value::Null),
         };
         let views = plan.views();
+        views.seed(&tail.commitment, module_views.before);
+        views.seed(&after.commitment, module_views.after);
         plan.run(|| {
             request::transaction_request(
                 state.network_client.as_ref(),

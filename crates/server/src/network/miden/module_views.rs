@@ -29,7 +29,11 @@ fn felt_u32(felt: miden_protocol::Felt) -> Result<u32, String> {
 /// verified auth configuration. A signer whose scheme entry is missing or names no supported
 /// scheme is an error, never a signer without a scheme.
 pub fn account_view(state_json: &serde_json::Value) -> Result<AccountView, String> {
-    let account = Account::from_json(state_json)?;
+    account_view_of(&Account::from_json(state_json)?)
+}
+
+/// [`account_view`] of an account already decoded.
+pub fn account_view_of(account: &Account) -> Result<AccountView, String> {
     let storage = account.storage();
     let code = account.code();
     let procedure_roots: Vec<String> = code.procedure_roots().map(|root| word_hex(&root)).collect();

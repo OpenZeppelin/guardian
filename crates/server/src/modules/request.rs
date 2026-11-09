@@ -72,13 +72,15 @@ impl ViewCache {
             return Ok(view.clone());
         }
         let view = network.module_account_view(state.json)?;
+        self.insert(state.commitment, view.clone());
+        Ok(view)
+    }
+
+    fn insert(&self, commitment: &str, view: AccountView) {
         if let Ok(mut entries) = self.entries.lock() {
             let (views, order) = &mut *entries;
-            if views
-                .insert(state.commitment.to_string(), view.clone())
-                .is_none()
-            {
-                order.push_back(state.commitment.to_string());
+            if views.insert(commitment.to_string(), view).is_none() {
+                order.push_back(commitment.to_string());
                 if order.len() > VIEW_CACHE_CAPACITY
                     && let Some(oldest) = order.pop_front()
                 {
@@ -86,7 +88,15 @@ impl ViewCache {
                 }
             }
         }
-        Ok(view)
+    }
+
+    /// Keeps `view` for `commitment` when it was built from an account already decoded, so request
+    /// assembly does not decode it again. A failed extraction is not kept: assembly then retries
+    /// it and the failure applies to the modules.
+    pub fn seed(&self, commitment: &str, view: Result<AccountView, String>) {
+        if let Ok(view) = view {
+            self.insert(commitment, view);
+        }
     }
 
     #[cfg(test)]
@@ -376,6 +386,20 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_seeded_view_is_used_without_decoding_and_a_failed_one_is_not_kept() {
+        let network = MockNetworkClient::new();
+        let cache = ViewCache::default();
+        cache.seed("0xc1", Ok(view_with("0xseeded")));
+        assert_eq!(
+            cache.get_or_build(&network, state("0xc1")).unwrap(),
+            view_with("0xseeded")
+        );
+        cache.seed("0xc2", Err("undecodable".into()));
+        assert!(cache.get_or_build(&network, state("0xc2")).is_err());
+        assert_eq!(cache.len(), 1);
     }
 
     #[test]

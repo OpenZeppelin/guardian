@@ -236,6 +236,13 @@ pub struct TransactionSearch {
 /// plus the commitment, nonce, and auth bindings of the account it encodes,
 /// read off the account the method already holds so a caller persisting or
 /// inspecting the state never decodes the blob again (issue #328).
+/// Policy module account views of a delta's base state and of the state it produces.
+#[derive(Debug, Clone)]
+pub struct ModuleViews {
+    pub before: Result<guardian_module_sdk::AccountView, String>,
+    pub after: Result<guardian_module_sdk::AccountView, String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedState {
     pub state_json: serde_json::Value,
@@ -346,6 +353,29 @@ pub trait NetworkClient: Send + Sync {
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;
+
+    /// [`Self::verify_and_apply_delta`] when `prev_commitment` is set, otherwise
+    /// [`Self::apply_delta`], with the policy module views of the base and of the result built
+    /// from the same decode. A view that cannot be extracted is returned as its error, never as
+    /// a failure of the application.
+    fn apply_delta_with_module_views(
+        &self,
+        prev_commitment: Option<&str>,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, ModuleViews), String> {
+        let applied = match prev_commitment {
+            Some(prev_commitment) => {
+                self.verify_and_apply_delta(prev_commitment, prev_state_json, delta_payload)?
+            }
+            None => self.apply_delta(prev_state_json, delta_payload)?,
+        };
+        let views = ModuleViews {
+            before: self.module_account_view(prev_state_json),
+            after: self.module_account_view(&applied.state_json),
+        };
+        Ok((applied, views))
+    }
 
     /// Merge multiple deltas
     fn merge_deltas(

@@ -9,7 +9,7 @@ use crate::error::Result;
 use crate::metadata::AccountMetadata;
 use crate::modules::HookName;
 use crate::modules::request::{self, StateRef, TransactionInput};
-use crate::network::AppliedState;
+use crate::network::{AppliedState, ModuleViews};
 use crate::state::AppState;
 
 /// A delta verified against the account's current state and acknowledged by Guardian, not yet
@@ -56,20 +56,43 @@ pub(crate) async fn acknowledge_delta(
     .await
 }
 
+/// A delta applied to the state it builds on, with the policy module views of both states when
+/// modules are configured, built from the same decode.
+pub(crate) struct Applied {
+    pub state: AppliedState,
+    pub views: Option<ModuleViews>,
+}
+
 /// Verifies `delta` against the state it builds on and applies it, without signing anything.
 pub(crate) async fn apply_to_base(
     state: &AppState,
     base_commitment: &str,
     base_state_json: &serde_json::Value,
     delta: &DeltaObject,
-) -> Result<AppliedState> {
+) -> Result<Applied> {
     let client = state.network_client.clone();
     let prev_commitment = base_commitment.to_string();
     let prev_state_json = base_state_json.clone();
     let delta_payload = Arc::new(delta.delta_payload.clone());
+    let with_views = state.modules.is_some();
     crate::network::reconstructor()
         .run(move || {
-            client.verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
+            if with_views {
+                client
+                    .apply_delta_with_module_views(
+                        Some(&prev_commitment),
+                        &prev_state_json,
+                        &delta_payload,
+                    )
+                    .map(|(state, views)| Applied {
+                        state,
+                        views: Some(views),
+                    })
+            } else {
+                client
+                    .verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
+                    .map(|state| Applied { state, views: None })
+            }
         })
         .await
         .map_err(Into::into)
@@ -84,11 +107,24 @@ pub(crate) async fn acknowledge_applied(
     scheme: &SignatureScheme,
     base: StateRef<'_>,
     delta: &DeltaObject,
-    applied: AppliedState,
+    applied: Applied,
     submitter: Submitter<'_>,
     proposal_match: &ProposalMatch,
 ) -> Result<AcknowledgedDelta> {
-    let approval = approve(state, base, delta, &applied, submitter, proposal_match).await?;
+    let Applied {
+        state: applied,
+        views,
+    } = applied;
+    let approval = approve(
+        state,
+        base,
+        delta,
+        &applied,
+        views,
+        submitter,
+        proposal_match,
+    )
+    .await?;
     let matching_proposal = proposal_match.payload();
     let mut derived_metadata =
         crate::delta_summary::build_metadata(&delta.delta_payload, matching_proposal);
@@ -124,6 +160,7 @@ async fn approve(
     base: StateRef<'_>,
     delta: &DeltaObject,
     applied: &AppliedState,
+    module_views: Option<ModuleViews>,
     submitter: Submitter<'_>,
     proposal_match: &ProposalMatch,
 ) -> Result<Option<ModuleApproval>> {
@@ -149,6 +186,10 @@ async fn approve(
         .unwrap_or_default();
     let signed_at = state.clock.now();
     let views = plan.views();
+    if let Some(module_views) = module_views {
+        views.seed(base.commitment, module_views.before);
+        views.seed(&applied.commitment, module_views.after);
+    }
     plan.run(|| {
         request::transaction_request(
             state.network_client.as_ref(),

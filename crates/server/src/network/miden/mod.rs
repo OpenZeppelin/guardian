@@ -315,6 +315,27 @@ impl MidenNetworkClient {
         prev_account: Result<Account, String>,
         tx_summary: &TransactionSummary,
     ) -> Result<AppliedState, String> {
+        Ok(Self::applied_state(&Self::applied_account(
+            prev_account,
+            tx_summary,
+        )?))
+    }
+
+    fn applied_state(account: &Account) -> AppliedState {
+        let inspector = MidenAccountInspector::new(account);
+        AppliedState {
+            commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
+            nonce: Some(account.nonce().as_canonical_u64()),
+            cosigners: inspector.extract_chain_cosigners(),
+            guardian_commitment: inspector.extract_guardian_public_key(),
+            state_json: account.to_json(),
+        }
+    }
+
+    fn applied_account(
+        prev_account: Result<Account, String>,
+        tx_summary: &TransactionSummary,
+    ) -> Result<Account, String> {
         let account_delta = tx_summary.account_delta();
 
         let is_full_state =
@@ -383,15 +404,7 @@ impl MidenNetworkClient {
             )?;
             account
         };
-
-        let inspector = MidenAccountInspector::new(&account);
-        Ok(AppliedState {
-            commitment: format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
-            nonce: Some(account.nonce().as_canonical_u64()),
-            cosigners: inspector.extract_chain_cosigners(),
-            guardian_commitment: inspector.extract_guardian_public_key(),
-            state_json: account.to_json(),
-        })
+        Ok(account)
     }
 }
 
@@ -535,6 +548,26 @@ impl NetworkClient for MidenNetworkClient {
         let account = Account::from_json(prev_state_json)?;
         Self::ensure_prev_commitment(&account, prev_commitment)?;
         Self::apply_summary(Ok(account), &tx_summary)
+    }
+
+    fn apply_delta_with_module_views(
+        &self,
+        prev_commitment: Option<&str>,
+        prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, crate::network::ModuleViews), String> {
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
+        let account = Account::from_json(prev_state_json)?;
+        if let Some(prev_commitment) = prev_commitment {
+            Self::ensure_prev_commitment(&account, prev_commitment)?;
+        }
+        let before = module_views::account_view_of(&account);
+        let applied = Self::applied_account(Ok(account), &tx_summary)?;
+        let views = crate::network::ModuleViews {
+            before,
+            after: module_views::account_view_of(&applied),
+        };
+        Ok((Self::applied_state(&applied), views))
     }
 
     fn merge_deltas(
@@ -2267,6 +2300,49 @@ mod tests {
     /// The push path and promotion read the post-delta auth bindings off
     /// `AppliedState` instead of decoding the stored blob again (issue
     /// #328), so they must equal what a fresh decode of that blob reads.
+    #[tokio::test]
+    async fn module_views_from_the_apply_decode_match_separate_decodes() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let account_json: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON).unwrap();
+        let delta_fixture: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::DELTA_1_JSON).unwrap();
+        let delta_payload = &delta_fixture["delta_payload"];
+        let prev_commitment = format!(
+            "0x{}",
+            hex::encode(
+                Account::from_json(&account_json)
+                    .unwrap()
+                    .to_commitment()
+                    .as_bytes()
+            )
+        );
+
+        let (applied, views) = client
+            .apply_delta_with_module_views(Some(&prev_commitment), &account_json, delta_payload)
+            .unwrap();
+        assert_eq!(
+            applied,
+            client
+                .verify_and_apply_delta(&prev_commitment, &account_json, delta_payload)
+                .unwrap()
+        );
+        assert!(views.before.is_ok());
+        assert_eq!(views.before, client.module_account_view(&account_json));
+        // The fixture delta adds an approver key without its scheme entry, which the standard
+        // multisig always writes, so both paths must refuse the resulting view alike.
+        assert_eq!(views.after, client.module_account_view(&applied.state_json));
+        let (unverified, _) = client
+            .apply_delta_with_module_views(None, &account_json, delta_payload)
+            .unwrap();
+        assert_eq!(unverified, applied);
+        assert!(
+            client
+                .apply_delta_with_module_views(Some("0xnot_the_base"), &account_json, delta_payload)
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn verify_and_apply_delta_matches_separate_passes() {
         let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);

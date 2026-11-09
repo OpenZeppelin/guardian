@@ -192,7 +192,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
 
     let applied = apply_to_base(state, &tail.commitment, &tail.state_json, &params.delta).await?;
     if !chain.is_empty()
-        && let Some(applied_nonce) = applied.nonce
+        && let Some(applied_nonce) = applied.state.nonce
         && applied_nonce != params.delta.nonce
     {
         tracing::info!(
