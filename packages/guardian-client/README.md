@@ -385,7 +385,10 @@ clientMessage }` (final; a generic denial has only `reasonCode:
 'policy_denied'`) or `{ kind: 'unavailable', module }` (retryable), and `null`
 for any other error. `getPolicies(accountId)` lists the rules the Guardian
 discloses, and `checkDeltaProposal(request)` runs the policy modules on a
-proposal without storing it.
+proposal without storing it. A Guardian execution a module refuses ends
+`failed` with `error.code` `GUARDIAN_EXECUTION_MODULE_DENIED` (the same `meta`
+as a denial) or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`meta.module`), and
+its proposal is kept.
 
 ### Rate limits and retries
 

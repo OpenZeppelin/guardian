@@ -264,7 +264,6 @@ sequenceDiagram
   S-->>C: 200 {delta_with_signatures}
 ```
 
-
 #### evm_accounts_and_proposals
 ```mermaid
 sequenceDiagram
