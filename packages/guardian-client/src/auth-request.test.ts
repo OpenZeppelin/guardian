@@ -20,4 +20,14 @@ describe('RequestAuthPayload', () => {
     expect(Array.from(plain.toBytes())).toEqual([...json]);
     expect(tagged.toCanonicalJson()).toBe(plain.toCanonicalJson());
   });
+
+  it('tags the proposal check apart from proposal creation, which shares its body', () => {
+    const request = { account_id: '0x11', nonce: 1, delta_payload: {} };
+    const check = RequestAuthPayload.forOperation('CheckDeltaProposal', request);
+    const creation = RequestAuthPayload.fromRequest(request);
+
+    const tag = new TextEncoder().encode('guardian.CheckDeltaProposal');
+    expect(Array.from(check.toBytes()).slice(0, tag.length + 1)).toEqual([...tag, 0]);
+    expect(Array.from(check.toBytes())).not.toEqual(Array.from(creation.toBytes()));
+  });
 });

@@ -852,10 +852,18 @@ async fn test_a_proposal_check_is_bound_to_its_own_operation_and_admitted_once()
     let session_key = falcon_session(&app, &state, &signer).await;
     let body = proposal_body(&account_id_hex, &signer);
     let timestamp = now_ms();
-    let message = request_word(&account_id_hex, timestamp, &body);
-    let signed_for = |operation| {
+    let creation = request_word(&account_id_hex, timestamp, &body);
+    let message = AuthRequestMessage::from_account_id_hex(
+        &account_id_hex,
+        timestamp,
+        AuthRequestPayload::for_operation_json_value(SignedOperation::CheckDeltaProposal, &body)
+            .unwrap(),
+    )
+    .unwrap()
+    .to_word();
+    let signed_for = |operation, word| {
         session_key.sign_bytes_hex(
-            &SessionRequestEnvelope::from_request_word(SessionTransport::Http, operation, message)
+            &SessionRequestEnvelope::from_request_word(SessionTransport::Http, operation, word)
                 .to_bytes(),
         )
     };
@@ -874,7 +882,7 @@ async fn test_a_proposal_check_is_bound_to_its_own_operation_and_admitted_once()
 
     let response = send(
         &app,
-        check(&signed_for(SessionOperation::PushDeltaProposal)),
+        check(&signed_for(SessionOperation::PushDeltaProposal, creation)),
     )
     .await;
     assert_error(
@@ -884,7 +892,7 @@ async fn test_a_proposal_check_is_bound_to_its_own_operation_and_admitted_once()
         "a proposal creation signature on the check",
     );
 
-    let signature = signed_for(SessionOperation::CheckDeltaProposal);
+    let signature = signed_for(SessionOperation::CheckDeltaProposal, message);
     let (status, checked) = send(&app, check(&signature)).await;
     assert_eq!(status, StatusCode::OK, "its own operation: {checked}");
     assert_eq!(checked["allowed"], true, "{checked}");
@@ -896,6 +904,61 @@ async fn test_a_proposal_check_is_bound_to_its_own_operation_and_admitted_once()
         "authentication_replay",
         "the same check sent again",
     );
+}
+
+/// A wallet signature binds the payload but not the route, so the check's payload is tagged:
+/// a wallet-signed check is not a valid proposal creation, nor the reverse.
+#[tokio::test]
+async fn test_a_wallet_signed_check_cannot_create_a_proposal_or_the_reverse() {
+    let (app, _state, signer, account_id_hex) = configured_account().await;
+    let body = proposal_body(&account_id_hex, &signer);
+    let wallet_post = |path: &str, payload: AuthRequestPayload, timestamp: i64| {
+        let (signature, _) =
+            signer.sign_with_timestamp_and_request(&account_id_hex, timestamp, &payload);
+        Request::builder()
+            .uri(path)
+            .method("POST")
+            .header("content-type", "application/json")
+            .header("x-pubkey", &signer.pubkey_hex)
+            .header("x-signature", signature)
+            .header("x-timestamp", timestamp.to_string())
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+    let as_check =
+        AuthRequestPayload::for_operation_json_value(SignedOperation::CheckDeltaProposal, &body)
+            .unwrap();
+    let as_creation = AuthRequestPayload::from_json_serializable(&body).unwrap();
+    let start = now_ms();
+
+    let response = send(
+        &app,
+        wallet_post("/delta/proposal", as_check.clone(), start),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a check signature on proposal creation",
+    );
+    let response = send(
+        &app,
+        wallet_post("/delta/proposal/check", as_creation, start + 1),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a creation signature on the check",
+    );
+    let (status, checked) = send(
+        &app,
+        wallet_post("/delta/proposal/check", as_check, start + 2),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{checked}");
 }
 
 #[tokio::test]

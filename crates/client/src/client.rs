@@ -1075,11 +1075,16 @@ impl GuardianClient {
             nonce,
             delta_payload: serde_json::to_string(&delta_payload)?,
         };
+        let payload = AuthRequestPayload::for_operation(
+            SignedOperation::CheckDeltaProposal,
+            &prost::Message::encode_to_vec(&message),
+        );
         let inner = self
-            .send_allowing_session(
+            .send_with_replay_retry_as(
                 account_id,
-                SessionOperation::CheckDeltaProposal,
                 message,
+                payload,
+                AuthMode::Session(SessionOperation::CheckDeltaProposal),
                 async |client, request| client.check_delta_proposal(request).await,
             )
             .await?;

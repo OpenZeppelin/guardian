@@ -10,12 +10,15 @@ use serde_json::Value;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignedOperation {
     ExecuteDeltaProposal,
+    /// The dry-run proposal check, whose body is proposal creation's.
+    CheckDeltaProposal,
 }
 
 impl SignedOperation {
     pub fn tag(&self) -> &'static [u8] {
         match self {
             SignedOperation::ExecuteDeltaProposal => b"guardian.ExecuteDeltaProposal\0",
+            SignedOperation::CheckDeltaProposal => b"guardian.CheckDeltaProposal\0",
         }
     }
 }

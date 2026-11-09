@@ -660,7 +660,7 @@ export class GuardianHttpClient {
     const response = await this.fetchAuthenticated('/delta/proposal/check', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
-    }, request.accountId, serverRequest, SessionOperation.CheckDeltaProposal);
+    }, request.accountId, RequestAuthPayload.forOperation('CheckDeltaProposal', serverRequest), SessionOperation.CheckDeltaProposal);
     const server = (await response.json()) as ServerCheckProposalResponse;
     if (server.allowed !== true) {
       throw new Error('Invalid proposal check response: a passing check must be allowed');

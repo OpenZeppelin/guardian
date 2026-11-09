@@ -11,12 +11,14 @@ type JsonValue =
  * signature over one never authenticates another request with the same body. Mirrors the Rust
  * `SignedOperation`.
  */
-export type SignedOperation = 'ExecuteDeltaProposal';
+export type SignedOperation = 'ExecuteDeltaProposal' | 'CheckDeltaProposal';
 
 function operationTag(operation: SignedOperation): string {
   switch (operation) {
     case 'ExecuteDeltaProposal':
       return 'guardian.ExecuteDeltaProposal\0';
+    case 'CheckDeltaProposal':
+      return 'guardian.CheckDeltaProposal\0';
     default: {
       const unreachable: never = operation;
       throw new Error(`Unknown signed operation: ${JSON.stringify(unreachable)}`);

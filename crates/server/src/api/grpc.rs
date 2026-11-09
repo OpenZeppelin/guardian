@@ -311,7 +311,7 @@ impl Guardian for GuardianService {
         &self,
         request: Request<CheckDeltaProposalRequest>,
     ) -> Result<Response<CheckDeltaProposalResponse>, Status> {
-        let credentials = authenticated_request(&request)?;
+        let credentials = authenticated_operation(&request, SignedOperation::CheckDeltaProposal)?;
         let data = request.into_inner();
         let params = services::PushDeltaProposalParams {
             account_id: data.account_id,

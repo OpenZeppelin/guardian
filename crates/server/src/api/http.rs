@@ -818,8 +818,11 @@ pub async fn check_delta_proposal(
     AuthHeader(credentials): AuthHeader,
     Json(payload): Json<DeltaProposalRequest>,
 ) -> Result<Json<CheckProposalResponse>, GuardianError> {
-    let request_payload =
-        request_payload_from_serializable(&payload).map_err(GuardianError::InvalidInput)?;
+    let request_payload = request_payload_for_operation(
+        &payload,
+        guardian_shared::auth_request_payload::SignedOperation::CheckDeltaProposal,
+    )
+    .map_err(GuardianError::InvalidInput)?;
     let params = PushDeltaProposalParams {
         account_id: payload.account_id,
         nonce: payload.nonce,
