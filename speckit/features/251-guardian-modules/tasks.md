@@ -82,8 +82,8 @@
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Dry-run check runs `before_transaction_approved`-only instances after the creation instances, each instance once, every request with `HookRequest.dry_run = true`, in `crates/server/src/modules/pipeline.rs` (`plan_dry_run`) and `crates/server/src/services/push_delta_proposal.rs`; tests that an approval-only cap refuses the check (P0 T095)
-- [ ] T020 [US2] `complete` derived from the catalog, not the account: `false` whenever any enabled gate instance has `dry_run = false`, in `crates/server/src/modules/pipeline.rs`; test that two accounts, one with the hidden instance assigned and one without, get the same `complete` (P0 T090, T095)
+- [X] T019 [US2] Dry-run check runs `before_transaction_approved`-only instances after the creation instances, each instance once, every request with `HookRequest.dry_run = true`, in `crates/server/src/modules/pipeline.rs` (`plan_dry_run`) and `crates/server/src/services/push_delta_proposal.rs`; tests that an approval-only cap refuses the check (P0 T095)
+- [X] T020 [US2] `complete` derived from the catalog, not the account: `false` whenever any enabled gate instance has `dry_run = false`, in `crates/server/src/modules/pipeline.rs`; test that two accounts, one with the hidden instance assigned and one without, get the same `complete` (P0 T090, T095)
 - [ ] T021 [US2] TypeScript multisig `getPolicies` and `checkTransaction` in `packages/miden-multisig-client/src/multisig.ts`, matching the Rust `MultisigClient::get_policies` and `ProposalBuilder::check`, with tests; resolve the dependency first, either a `@openzeppelin/guardian-client` release carrying `checkDeltaProposal` and `getPolicies` or a workspace link, per `packages/miden-multisig-client/package.json` (P0 T078)
 - [ ] T022 [US2] Document the dry-run check and policy listing in `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`, `crates/client/README.md` and `packages/guardian-client/README.md`
 

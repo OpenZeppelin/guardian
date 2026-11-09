@@ -150,12 +150,8 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
         crate::modules::check_limit::admit(&account_id, &resolved.signer_commitment)?;
     }
     let dry_run = match (mode, state.modules.as_deref()) {
-        (Mode::DryRun, Some(modules)) => Some(
-            modules
-                .plan_dry_run(HookName::BeforeProposalCreated, &account_id)
-                .await?,
-        ),
-        (Mode::DryRun, None) => Some((None, true)),
+        (Mode::DryRun, Some(modules)) => Some(modules.plan_dry_run(&account_id).await?),
+        (Mode::DryRun, None) => Some((Vec::new(), true)),
         (Mode::Create, _) => None,
     };
     if resolved.metadata.network_config.is_evm() {
@@ -351,17 +347,19 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
-    let (plan, complete) = match (dry_run, state.modules.as_deref()) {
+    let (plans, complete) = match (dry_run, state.modules.as_deref()) {
         (Some(planned), _) => planned,
         (None, Some(modules)) => (
             modules
                 .plan(HookName::BeforeProposalCreated, &account_id)
-                .await?,
+                .await?
+                .into_iter()
+                .collect(),
             true,
         ),
-        (None, None) => (None, true),
+        (None, None) => (Vec::new(), true),
     };
-    if let Some(plan) = plan {
+    if !plans.is_empty() {
         let (after, module_views) = {
             let client = state.network_client.clone();
             let tail_state_json = tail.state_json.clone();
@@ -379,34 +377,36 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         };
-        let views = plan.views();
+        let views = plans[0].views();
         views.seed(&tail.commitment, module_views.before);
         views.seed(&after.commitment, module_views.after);
-        plan.run(|| {
-            request::transaction_request(
-                state.network_client.as_ref(),
-                &views,
-                TransactionInput {
-                    account_id: &account_id,
-                    submitter: &proposer_id,
-                    submitter_session: credentials_session,
-                    auth: &resolved.metadata.auth,
-                    network_config: &resolved.metadata.network_config,
-                    before: StateRef {
-                        commitment: &tail.commitment,
-                        json: &tail.state_json,
+        for plan in plans {
+            plan.run(|| {
+                request::transaction_request(
+                    state.network_client.as_ref(),
+                    &views,
+                    TransactionInput {
+                        account_id: &account_id,
+                        submitter: &proposer_id,
+                        submitter_session: credentials_session,
+                        auth: &resolved.metadata.auth,
+                        network_config: &resolved.metadata.network_config,
+                        before: StateRef {
+                            commitment: &tail.commitment,
+                            json: &tail.state_json,
+                        },
+                        after: StateRef {
+                            commitment: &after.commitment,
+                            json: &after.state_json,
+                        },
+                        tx_summary,
+                        proposal: Some(proposal.clone()),
+                        accounting_time: state.clock.now(),
                     },
-                    after: StateRef {
-                        commitment: &after.commitment,
-                        json: &after.state_json,
-                    },
-                    tx_summary,
-                    proposal: Some(proposal),
-                    accounting_time: state.clock.now(),
-                },
-            )
-        })
-        .await?;
+                )
+            })
+            .await?;
+        }
     }
     if mode == Mode::DryRun {
         tracing::info!(
@@ -2454,6 +2454,76 @@ mod tests {
             Err(GuardianError::ModuleDenied { .. })
         ));
         assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_check_runs_approval_only_rules_too_and_marks_every_request_as_a_check() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (state, storage, params, _) =
+            module_setup(module.clone(), HookName::BeforeTransactionApproved, |_| {});
+        assert!(matches!(
+            check_proposal(&state, params).await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        let request = module.last_request().expect("the approval rule ran");
+        assert!(request.dry_run);
+        assert_eq!(
+            request.hook,
+            guardian_module_sdk::Hook::BeforeTransactionApproved as i32
+        );
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_instance_on_both_transaction_hooks_runs_once_in_a_check() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, _, params, _) = module_setup(
+            module.clone(),
+            HookName::BeforeProposalCreated,
+            |instance| {
+                instance.config.hooks = vec![
+                    HookName::BeforeProposalCreated,
+                    HookName::BeforeTransactionApproved,
+                ];
+            },
+        );
+        check_proposal(&state, params).await.unwrap();
+        assert_eq!(module.calls(), 1);
+        assert_eq!(
+            module.last_request().unwrap().hook,
+            guardian_module_sdk::Hook::BeforeProposalCreated as i32
+        );
+    }
+
+    #[tokio::test]
+    async fn an_opted_out_instance_makes_every_check_incomplete_even_where_it_does_not_apply() {
+        let (state, _, params, _) = module_setup(
+            crate::modules::testing::StubModule::allowing(),
+            HookName::BeforeTransactionApproved,
+            |instance| {
+                instance.config.scope = crate::modules::catalog::Scope::Assigned;
+                instance.config.dry_run = false;
+            },
+        );
+        let result = check_proposal(&state, params).await.unwrap();
+        assert!(
+            !result.complete,
+            "the answer must not reveal which accounts carry the hidden instance"
+        );
+    }
+
+    #[tokio::test]
+    async fn creating_a_proposal_is_not_marked_as_a_check() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (state, _, params, _) =
+            module_setup(module.clone(), HookName::BeforeProposalCreated, |_| {});
+        let _ = push_delta_proposal(&state, params).await;
+        assert!(
+            !module
+                .last_request()
+                .expect("the creation rule ran")
+                .dry_run
+        );
     }
 
     #[tokio::test]

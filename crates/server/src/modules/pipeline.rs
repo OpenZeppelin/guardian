@@ -69,6 +69,8 @@ pub struct Plan<'a> {
     views: Arc<ViewCache>,
     limits: Limits,
     breakers: Arc<Breakers>,
+    /// A policy check: every request says so, and nothing is stored whatever the decision.
+    dry_run: bool,
 }
 
 enum Failure {
@@ -529,24 +531,55 @@ impl ModulePipeline {
             views: self.views.clone(),
             limits: self.limits,
             breakers: self.breakers.clone(),
+            dry_run: false,
         }))
     }
 
-    /// The plan for a dry-run check: instances with `dry_run = false` are skipped, and
-    /// `complete` is false when any was.
+    /// The plans for a dry-run check of a proposal: the `before_proposal_created` instances,
+    /// then those subscribed only to `before_transaction_approved`, so an instance on both runs
+    /// once and rules that must hold at approval are checked too. Instances with
+    /// `dry_run = false` are skipped. `complete` is false whenever the catalog has an enabled
+    /// transaction gate instance that opts out, whether or not it applies to this account, so
+    /// the answer reveals nothing about one account's instances.
     pub async fn plan_dry_run(
         &self,
-        hook: HookName,
         account_id: &str,
-    ) -> Result<(Option<Plan<'_>>, bool), GuardianError> {
-        let Some(mut plan) = self.plan(hook, account_id).await? else {
-            return Ok((None, true));
-        };
-        let planned = plan.modules.len();
-        plan.modules
-            .retain(|(instance, _, _)| instance.config.dry_run);
-        let complete = plan.modules.len() == planned;
-        Ok(((!plan.modules.is_empty()).then_some(plan), complete))
+    ) -> Result<(Vec<Plan<'_>>, bool), GuardianError> {
+        let (_, rows) = self.versioned_rows().await?;
+        let complete = !self.instances.iter().any(|instance| {
+            Self::enabled_in(&rows, &instance)
+                && !instance.config.dry_run
+                && (instance
+                    .config
+                    .hooks
+                    .contains(&HookName::BeforeProposalCreated)
+                    || instance
+                        .config
+                        .hooks
+                        .contains(&HookName::BeforeTransactionApproved))
+        });
+        let mut plans = Vec::new();
+        for hook in [
+            HookName::BeforeProposalCreated,
+            HookName::BeforeTransactionApproved,
+        ] {
+            let Some(mut plan) = self.plan(hook, account_id).await? else {
+                continue;
+            };
+            plan.modules.retain(|(instance, _, _)| {
+                instance.config.dry_run
+                    && (hook == HookName::BeforeProposalCreated
+                        || !instance
+                            .config
+                            .hooks
+                            .contains(&HookName::BeforeProposalCreated))
+            });
+            plan.dry_run = true;
+            if !plan.modules.is_empty() {
+                plans.push(plan);
+            }
+        }
+        Ok((plans, complete))
     }
 
     pub async fn applies(&self, hook: HookName, account_id: &str) -> Result<bool, GuardianError> {
@@ -588,6 +621,7 @@ impl Plan<'_> {
             views: _,
             limits,
             breakers,
+            dry_run,
         } = self;
         let account_id = account_id.as_str();
         let mut approval = Evaluation {
@@ -599,6 +633,7 @@ impl Plan<'_> {
         let base = match build() {
             Ok(base) => HookRequest {
                 request_id: request_id.clone(),
+                dry_run,
                 ..base
             },
             Err(error) => {
