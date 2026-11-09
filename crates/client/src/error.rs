@@ -374,6 +374,58 @@ mod tests {
         assert!(!ClientError::ServerError("boom".into()).is_not_found());
     }
 
+    fn refusal_json(refusal: Option<ModuleRefusal>) -> serde_json::Value {
+        match refusal {
+            None => serde_json::Value::Null,
+            Some(ModuleRefusal::Denied {
+                module,
+                reason_code,
+                layer,
+                client_message,
+            }) => serde_json::json!({
+                "kind": "denied",
+                "module": module,
+                "reasonCode": reason_code,
+                "layer": layer,
+                "clientMessage": client_message,
+            }),
+            Some(ModuleRefusal::Unavailable { module }) => {
+                serde_json::json!({ "kind": "unavailable", "module": module })
+            }
+        }
+    }
+
+    #[test]
+    fn module_refusals_match_shared_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../fixtures/guardian-client/module-refusals.json"
+        );
+        let fixture: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let name = case["name"].as_str().unwrap();
+            let code = tonic::Code::from_i32(case["grpc"]["code"].as_i64().unwrap() as i32);
+            let err: ClientError = tonic::Status::with_details(
+                code,
+                "test",
+                case["body"].to_string().into_bytes().into(),
+            )
+            .into();
+            assert_eq!(
+                refusal_json(err.module_refusal()),
+                case["expected"]["refusal"],
+                "refusal mismatch: {name}"
+            );
+            assert_eq!(
+                err.is_retryable(),
+                case["expected"]["retryable"].as_bool().unwrap(),
+                "retryable mismatch: {name}"
+            );
+        }
+    }
+
     #[test]
     fn retry_classification_matches_shared_fixture() {
         let path = concat!(

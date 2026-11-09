@@ -1,0 +1,160 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "denial with a client message",
+      "body": {
+        "code": "GUARDIAN_MODULE_DENIED",
+        "message": "A policy refused this request.",
+        "meta": {
+          "retryable": false,
+          "module": "caps",
+          "reason_code": "amount_cap_exceeded",
+          "layer": "global",
+          "client_message": "Ask your treasury admin."
+        }
+      },
+      "grpc": { "code": 7 },
+      "http": { "status": 403 },
+      "expected": {
+        "retryable": false,
+        "refusal": {
+          "kind": "denied",
+          "module": "caps",
+          "reasonCode": "amount_cap_exceeded",
+          "layer": "global",
+          "clientMessage": "Ask your treasury admin."
+        }
+      }
+    },
+    {
+      "name": "denial in an account layer without a client message",
+      "body": {
+        "code": "GUARDIAN_MODULE_DENIED",
+        "message": "A policy refused this request.",
+        "meta": {
+          "retryable": false,
+          "module": "blocklist",
+          "reason_code": "recipient_denied",
+          "layer": "account"
+        }
+      },
+      "grpc": { "code": 7 },
+      "http": { "status": 403 },
+      "expected": {
+        "retryable": false,
+        "refusal": {
+          "kind": "denied",
+          "module": "blocklist",
+          "reasonCode": "recipient_denied",
+          "layer": "account",
+          "clientMessage": null
+        }
+      }
+    },
+    {
+      "name": "generic denial names no module",
+      "body": {
+        "code": "GUARDIAN_MODULE_DENIED",
+        "message": "A policy refused this request.",
+        "meta": { "retryable": false, "reason_code": "policy_denied" }
+      },
+      "grpc": { "code": 7 },
+      "http": { "status": 403 },
+      "expected": {
+        "retryable": false,
+        "refusal": {
+          "kind": "denied",
+          "module": null,
+          "reasonCode": "policy_denied",
+          "layer": null,
+          "clientMessage": null
+        }
+      }
+    },
+    {
+      "name": "unknown meta fields are ignored",
+      "body": {
+        "code": "GUARDIAN_MODULE_DENIED",
+        "message": "A policy refused this request.",
+        "meta": {
+          "retryable": false,
+          "module": "caps",
+          "reason_code": "amount_cap_exceeded",
+          "layer": "global",
+          "future_field": { "nested": true }
+        }
+      },
+      "grpc": { "code": 7 },
+      "http": { "status": 403 },
+      "expected": {
+        "retryable": false,
+        "refusal": {
+          "kind": "denied",
+          "module": "caps",
+          "reasonCode": "amount_cap_exceeded",
+          "layer": "global",
+          "clientMessage": null
+        }
+      }
+    },
+    {
+      "name": "unavailable module is retryable",
+      "body": {
+        "code": "GUARDIAN_MODULE_UNAVAILABLE",
+        "message": "A policy check is unavailable right now. Please try again shortly.",
+        "meta": { "retryable": true, "module": "risk-vendor" }
+      },
+      "grpc": { "code": 14 },
+      "http": { "status": 503 },
+      "expected": {
+        "retryable": true,
+        "refusal": { "kind": "unavailable", "module": "risk-vendor" }
+      }
+    },
+    {
+      "name": "denial without a reason code is not a refusal",
+      "body": {
+        "code": "GUARDIAN_MODULE_DENIED",
+        "message": "A policy refused this request.",
+        "meta": { "retryable": false, "module": "caps" }
+      },
+      "grpc": { "code": 7 },
+      "http": { "status": 403 },
+      "expected": { "retryable": false, "refusal": null }
+    },
+    {
+      "name": "unavailable without a module is not a refusal",
+      "body": {
+        "code": "GUARDIAN_MODULE_UNAVAILABLE",
+        "message": "A policy check is unavailable right now. Please try again shortly.",
+        "meta": { "retryable": true }
+      },
+      "grpc": { "code": 14 },
+      "http": { "status": 503 },
+      "expected": { "retryable": true, "refusal": null }
+    },
+    {
+      "name": "an operator module error is not a refusal",
+      "body": {
+        "code": "GUARDIAN_MODULE_NOT_FOUND",
+        "message": "That policy module doesn't exist.",
+        "meta": { "retryable": false, "module": "caps" }
+      },
+      "grpc": { "code": 5 },
+      "http": { "status": 404 },
+      "expected": { "retryable": false, "refusal": null }
+    },
+    {
+      "name": "another error is not a refusal",
+      "body": {
+        "code": "pending_proposals_limit",
+        "message": "This account has too many pending proposals.",
+        "meta": { "retryable": false }
+      },
+      "grpc": { "code": 9 },
+      "http": { "status": 409 },
+      "expected": { "retryable": false, "refusal": null }
+    }
+  ]
+}

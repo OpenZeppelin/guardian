@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GuardianHttpClient, GuardianHttpError } from './http.js';
+import { GuardianHttpClient, GuardianHttpError, type ModuleRefusal } from './http.js';
 import { RequestAuthPayload } from './auth-request.js';
 import type { Signer, ConfigureResponse, StateObject, DeltaObject, DeltaProposalResponse, SessionRequestSigner } from './types.js';
 
@@ -1829,6 +1829,29 @@ describe('GuardianHttpError', () => {
 
       expect(error.isRetryable()).toBe(c.expected.retryable);
       expect(error.retryAfterSecs()).toBe(c.expected.retryAfterSecs ?? undefined);
+    });
+  });
+
+  describe('module refusals (shared fixture)', () => {
+    interface FixtureCase {
+      name: string;
+      body: Record<string, unknown>;
+      http: { status: number };
+      expected: { retryable: boolean; refusal: ModuleRefusal | null };
+    }
+
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL('../../../fixtures/guardian-client/module-refusals.json', import.meta.url),
+        'utf-8'
+      )
+    ) as { cases: FixtureCase[] };
+
+    it.each(fixture.cases.map((c) => [c.name, c] as const))('%s', (_name, c) => {
+      const error = new GuardianHttpError(c.http.status, 'error', JSON.stringify(c.body), null);
+
+      expect(error.moduleRefusal()).toEqual(c.expected.refusal);
+      expect(error.isRetryable()).toBe(c.expected.retryable);
     });
   });
 
