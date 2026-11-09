@@ -126,6 +126,10 @@ impl ServerHandle {
             }
         }
 
+        if let Some(modules) = self.app_state.modules.clone() {
+            tasks.push(modules.spawn_probe());
+        }
+
         // Start background jobs based on canonicalization config
         if self.app_state.canonicalization.is_some() {
             tracing::info!("Starting canonicalization worker");

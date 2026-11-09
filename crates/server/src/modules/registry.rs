@@ -244,6 +244,18 @@ pub async fn check(
     module: &Arc<dyn Module>,
     params: &serde_json::Value,
 ) -> Result<Checked, String> {
+    let info = describe_healthy(config, module).await?;
+    let params = validate_params(module, params, config.timeout).await?;
+    Ok(Checked { info, params })
+}
+
+/// `Describe` under the instance's timeout, refused when the module speaks a protocol version
+/// outside the supported range, requires a capability this Guardian lacks, or no longer supports
+/// a configured hook. The startup checks and the periodic health probe share it.
+pub async fn describe_healthy(
+    config: &InstanceConfig,
+    module: &Arc<dyn Module>,
+) -> Result<ModuleInfo, String> {
     let describing = module.clone();
     let info = isolated(config.timeout, async move {
         describing.describe(&describe_request()).await
@@ -273,9 +285,7 @@ pub async fn check(
             return Err(format!("module does not support hook {hook:?}"));
         }
     }
-
-    let params = validate_params(module, params, config.timeout).await?;
-    Ok(Checked { info, params })
+    Ok(info)
 }
 
 /// Asks the module whether `params` are valid; used at startup and for every params write.

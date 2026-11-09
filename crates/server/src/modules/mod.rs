@@ -1,10 +1,12 @@
 //! Policy modules: a hook pipeline the Guardian consults before approving.
 
 pub mod admin;
+pub mod breaker;
 pub mod catalog;
 pub mod check_limit;
 pub mod disclosure;
 pub mod grpc_kind;
+pub mod limits;
 pub mod pipeline;
 #[cfg(feature = "postgres")]
 pub mod postgres_store;
@@ -59,7 +61,8 @@ pub async fn from_env(
         Some(store) => store,
         None => Arc::new(filesystem_store(&catalog_path)?),
     };
-    let pipeline = ModulePipeline::new(catalog, registry, store, now).await?;
+    let pipeline =
+        ModulePipeline::new(catalog, registry, store, now, limits::Limits::from_env()?).await?;
     let version = pipeline.store().version().await?;
     let builds = pipeline
         .instances()

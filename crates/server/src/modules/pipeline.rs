@@ -6,6 +6,8 @@ use super::catalog::{Catalog, ClientReason, HookName, OnError, Scope};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
+use super::breaker::Breakers;
+use super::limits::Limits;
 use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
 use super::store::{AccountParamsRow, ModuleStore, ParamsKind};
@@ -41,6 +43,8 @@ pub struct ModulePipeline {
     store: Arc<dyn ModuleStore>,
     cache: RwLock<Cache>,
     views: Arc<ViewCache>,
+    limits: Limits,
+    breakers: Arc<Breakers>,
     pub catalog_hash: String,
 }
 
@@ -63,6 +67,8 @@ pub struct Plan<'a> {
     catalog_hash: String,
     params_version: u64,
     views: Arc<ViewCache>,
+    limits: Limits,
+    breakers: Arc<Breakers>,
 }
 
 enum Failure {
@@ -72,6 +78,10 @@ enum Failure {
     /// An `effect` value this Guardian does not know: never read as an allow.
     UnknownEffect(i32),
     RequestUnavailable(String),
+    /// The encoded request exceeds the size cap; it is not sent.
+    RequestTooLarge(usize),
+    /// The instance's breaker is open; the module is not called.
+    CircuitOpen,
 }
 
 impl Failure {
@@ -80,7 +90,8 @@ impl Failure {
             Failure::Error(_) => "error",
             Failure::Timeout => "timeout",
             Failure::InvalidDecision(_) | Failure::UnknownEffect(_) => "invalid_decision",
-            Failure::RequestUnavailable(_) => "request_unavailable",
+            Failure::RequestUnavailable(_) | Failure::RequestTooLarge(_) => "request_unavailable",
+            Failure::CircuitOpen => "circuit_open",
         }
     }
 }
@@ -93,6 +104,10 @@ impl std::fmt::Display for Failure {
             Failure::InvalidDecision(code) => write!(f, "invalid reason code {code:?}"),
             Failure::UnknownEffect(value) => write!(f, "unknown decision effect {value}"),
             Failure::RequestUnavailable(message) => write!(f, "request unavailable: {message}"),
+            Failure::RequestTooLarge(bytes) => {
+                write!(f, "request of {bytes} bytes over the size cap")
+            }
+            Failure::CircuitOpen => write!(f, "circuit open"),
         }
     }
 }
@@ -103,6 +118,7 @@ impl ModulePipeline {
         registry: &Registry,
         store: Arc<dyn ModuleStore>,
         now: String,
+        limits: Limits,
     ) -> Result<Self, String> {
         let stored: HashMap<String, (serde_json::Value, bool)> = store
             .instances()
@@ -179,6 +195,8 @@ impl ModulePipeline {
             store,
             cache: RwLock::new(Cache::default()),
             views: Arc::default(),
+            breakers: Arc::new(Breakers::new(limits.breaker_failures)),
+            limits,
             catalog_hash: catalog.hash,
         })
     }
@@ -201,8 +219,55 @@ impl ModulePipeline {
             store,
             cache: RwLock::new(Cache::default()),
             views: Arc::default(),
+            limits: Limits::default(),
+            breakers: Arc::new(Breakers::new(Limits::default().breaker_failures)),
             catalog_hash: String::new(),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.breakers = Arc::new(Breakers::new(limits.breaker_failures));
+        self.limits = limits;
+        self
+    }
+
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    pub fn breakers(&self) -> &Breakers {
+        &self.breakers
+    }
+
+    /// One health probe of every enabled instance: `Describe` under its timeout, with the startup
+    /// checks. A healthy module half-opens an open breaker so the next real call is sent.
+    pub async fn probe(&self) {
+        for instance in &self.instances {
+            if !matches!(self.enabled(instance).await, Ok(true)) {
+                continue;
+            }
+            match super::registry::describe_healthy(&instance.config, &instance.module).await {
+                Ok(_) => self.breakers.probe_succeeded(&instance.config.id),
+                Err(error) => tracing::warn!(
+                    module = %instance.config.id,
+                    %error,
+                    "Policy module health probe failed"
+                ),
+            }
+        }
+    }
+
+    /// Runs [`Self::probe`] every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` for the life of the server.
+    pub fn spawn_probe(self: Arc<Self>) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(self.limits.probe_interval);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                self.probe().await;
+            }
+        })
     }
 
     pub fn instances(&self) -> &[Instance] {
@@ -371,6 +436,8 @@ impl ModulePipeline {
             catalog_hash: self.catalog_hash.clone(),
             params_version,
             views: self.views.clone(),
+            limits: self.limits,
+            breakers: self.breakers.clone(),
         }))
     }
 
@@ -428,6 +495,8 @@ impl Plan<'_> {
             catalog_hash,
             params_version,
             views: _,
+            limits,
+            breakers,
         } = self;
         let account_id = account_id.as_str();
         let mut approval = Evaluation {
@@ -452,22 +521,48 @@ impl Plan<'_> {
             }
         };
 
+        let deadline = tokio::time::Instant::now() + limits.budget;
         for (instance, params, layer) in modules {
+            let id = instance.config.id.as_str();
             let mut request = base.clone();
             request.hook = hook.proto() as i32;
-            request.instance_id = instance.config.id.clone();
+            request.instance_id = id.to_string();
             request.params = serde_json::to_vec(&params).unwrap_or_default();
 
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let size = prost::Message::encoded_len(&request);
+            let unsent = if !breakers.admits(id) {
+                Some(Failure::CircuitOpen)
+            } else if size > limits.request_max_bytes {
+                Some(Failure::RequestTooLarge(size))
+            } else if remaining.is_zero() {
+                Some(Failure::Timeout)
+            } else {
+                None
+            };
+            if let Some(failure) = unsent {
+                approval
+                    .failed_open
+                    .extend(fail(instance, layer, account_id, &failure)?);
+                continue;
+            }
+
+            // A call the budget cuts short counts as a timeout, but is not the module's failure.
+            let cut_by_budget = remaining < instance.config.timeout;
             let module = instance.module.clone();
-            let outcome = isolated(instance.config.timeout, async move {
+            let outcome = isolated(instance.config.timeout.min(remaining), async move {
                 module.evaluate(&request).await
             })
             .await;
             let failure = match outcome.map(|decision| (effect(&decision), decision)) {
-                Ok((Some(Effect::Allow), _)) => continue,
+                Ok((Some(Effect::Allow), _)) => {
+                    breakers.answered(id);
+                    continue;
+                }
                 Ok((Some(Effect::Deny), decision))
                     if is_valid_reason_code(&decision.reason_code) =>
                 {
+                    breakers.answered(id);
                     tracing::info!(
                         request_id = %request_id,
                         module = %instance.config.id,
@@ -500,6 +595,9 @@ impl Plan<'_> {
                 }
                 Err(CallError::Timeout) => Failure::Timeout,
             };
+            if !(cut_by_budget && matches!(failure, Failure::Timeout)) {
+                breakers.failed(id);
+            }
             approval
                 .failed_open
                 .extend(fail(instance, layer, account_id, &failure)?);
@@ -604,15 +702,22 @@ params = {params}
             &registry,
             store.clone(),
             now.clone(),
+            crate::modules::limits::Limits::default(),
         )
         .await;
         assert!(started.is_err());
         assert!(store.instances().await.unwrap().is_empty());
 
         let fixed = caps_catalog(r#"{ max_amount_per_tx = { "0xaa" = "5" } }"#);
-        let started = ModulePipeline::new(fixed, &registry, store.clone(), now)
-            .await
-            .expect("the corrected catalog starts");
+        let started = ModulePipeline::new(
+            fixed,
+            &registry,
+            store.clone(),
+            now,
+            crate::modules::limits::Limits::default(),
+        )
+        .await
+        .expect("the corrected catalog starts");
         assert!(
             started.instances()[0]
                 .build
@@ -641,6 +746,7 @@ params = {params}
             &registry,
             store.clone(),
             now.clone(),
+            crate::modules::limits::Limits::default(),
         )
         .await
         .expect("the stored params apply, so the stale seed is not checked");
@@ -659,9 +765,15 @@ params = {params}
             .unwrap();
         let valid_seed = caps_catalog(r#"{ max_amount_per_tx = {} }"#);
         assert!(
-            ModulePipeline::new(valid_seed, &registry, store, now)
-                .await
-                .is_err()
+            ModulePipeline::new(
+                valid_seed,
+                &registry,
+                store,
+                now,
+                crate::modules::limits::Limits::default()
+            )
+            .await
+            .is_err()
         );
     }
 
@@ -857,9 +969,15 @@ params = { old_name = 5 }
         let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
         let now = "2026-10-16T00:00:00Z".to_string();
 
-        ModulePipeline::new(catalog(), &registry, store.clone(), now.clone())
-            .await
-            .unwrap();
+        ModulePipeline::new(
+            catalog(),
+            &registry,
+            store.clone(),
+            now.clone(),
+            crate::modules::limits::Limits::default(),
+        )
+        .await
+        .unwrap();
         let seeded = store.instances().await.unwrap();
         assert_eq!(
             seeded[0].global_params,
@@ -879,9 +997,15 @@ params = { old_name = 5 }
             )
             .await
             .unwrap();
-        ModulePipeline::new(catalog(), &registry, store.clone(), now)
-            .await
-            .unwrap();
+        ModulePipeline::new(
+            catalog(),
+            &registry,
+            store.clone(),
+            now,
+            crate::modules::limits::Limits::default(),
+        )
+        .await
+        .unwrap();
         assert_eq!(
             store.instances().await.unwrap()[0].global_params,
             serde_json::json!({ "new_name": 5 })
@@ -1031,6 +1155,7 @@ params = { old_name = 1000 }
             &registry,
             store.clone(),
             "2026-10-16T00:00:02Z".into(),
+            crate::modules::limits::Limits::default(),
         )
         .await
         .unwrap();
@@ -1378,5 +1503,176 @@ mod evaluation_trace_tests {
         ] {
             assert!(log.contains(field), "{field} missing from {log}");
         }
+    }
+}
+
+#[cfg(test)]
+mod failure_handling_tests {
+    use std::time::Duration;
+
+    use guardian_module_sdk::HookRequest;
+
+    use super::*;
+    use crate::modules::breaker::CircuitState;
+    use crate::modules::catalog::{HookName, OnError};
+    use crate::modules::testing::{Behaviour, StubModule, instance};
+
+    const HOOK: HookName = HookName::BeforeTransactionApproved;
+
+    fn hanging(id: &str, on_error: OnError, timeout: Duration) -> (Instance, Arc<StubModule>) {
+        let module = StubModule::new(Behaviour::Hang);
+        let mut hung = instance(id, &[HOOK], on_error, module.clone());
+        hung.config.timeout = timeout;
+        (hung, module)
+    }
+
+    async fn run(pipeline: &ModulePipeline) -> Result<(), GuardianError> {
+        pipeline
+            .run(HOOK, "0xacc", || Ok(HookRequest::default()))
+            .await
+    }
+
+    #[tokio::test]
+    async fn a_failing_fail_closed_module_refuses_retryably_and_a_fail_open_one_is_skipped() {
+        let closed = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Fail),
+        )]);
+        let refused = run(&closed).await.unwrap_err();
+        assert!(
+            matches!(&refused, GuardianError::ModuleUnavailable { module } if module == "screening")
+        );
+        assert!(refused.retryable());
+
+        let open = ModulePipeline::from_instances(vec![instance(
+            "scoring",
+            &[HOOK],
+            OnError::Allow,
+            StubModule::new(Behaviour::Fail),
+        )]);
+        assert!(run(&open).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn consecutive_failures_open_the_circuit_so_later_requests_skip_the_timeout() {
+        let (hung, module) = hanging("screening", OnError::Deny, Duration::from_millis(50));
+        let pipeline = ModulePipeline::from_instances(vec![hung]).with_limits(Limits {
+            breaker_failures: 2,
+            ..Limits::default()
+        });
+        for _ in 0..2 {
+            assert!(run(&pipeline).await.is_err());
+        }
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);
+
+        let started = tokio::time::Instant::now();
+        let refused = run(&pipeline).await.unwrap_err();
+        assert!(matches!(refused, GuardianError::ModuleUnavailable { .. }));
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "an open circuit refuses without waiting the timeout"
+        );
+        assert_eq!(module.calls(), 2, "the module is not called while open");
+
+        pipeline.breakers().probe_succeeded("screening");
+        assert!(run(&pipeline).await.is_err());
+        assert_eq!(module.calls(), 3, "half-open sends the next call");
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);
+    }
+
+    #[tokio::test]
+    async fn the_budget_cuts_later_modules_short_without_blaming_them() {
+        let (first, _) = hanging("first", OnError::Allow, Duration::from_millis(80));
+        let (second, second_module) = hanging("second", OnError::Allow, Duration::from_millis(80));
+        let pipeline = ModulePipeline::from_instances(vec![first, second]).with_limits(Limits {
+            budget: Duration::from_millis(100),
+            breaker_failures: 1,
+            ..Limits::default()
+        });
+        let started = tokio::time::Instant::now();
+        assert!(run(&pipeline).await.is_ok(), "both fail open");
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "the second call gets only what is left of the budget"
+        );
+        assert_eq!(second_module.calls(), 1);
+        assert_eq!(pipeline.breakers().state("first"), CircuitState::Open);
+        assert_eq!(
+            pipeline.breakers().state("second"),
+            CircuitState::Closed,
+            "a call cut short by the budget is not the module's failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_request_is_a_module_failure_and_is_not_sent() {
+        let module = StubModule::allowing();
+        let pipeline = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            module.clone(),
+        )])
+        .with_limits(Limits {
+            request_max_bytes: 64,
+            ..Limits::default()
+        });
+        let refused = pipeline
+            .run(HOOK, "0xacc", || {
+                Ok(HookRequest {
+                    submitter: "0x".repeat(64),
+                    ..Default::default()
+                })
+            })
+            .await;
+        assert!(matches!(
+            refused,
+            Err(GuardianError::ModuleUnavailable { .. })
+        ));
+        assert_eq!(module.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_fail_open_failure_does_not_stop_a_later_deny() {
+        let pipeline = ModulePipeline::from_instances(vec![
+            instance(
+                "scoring",
+                &[HOOK],
+                OnError::Allow,
+                StubModule::new(Behaviour::Fail),
+            ),
+            instance(
+                "caps",
+                &[HOOK],
+                OnError::Deny,
+                StubModule::denying("amount_cap_exceeded"),
+            ),
+        ]);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleDenied { module, .. }) if module == "caps"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_healthy_probe_half_opens_and_a_failing_one_leaves_the_circuit_open() {
+        let healthy = crate::modules::testing::instance_with_params(
+            "caps",
+            &[HOOK],
+            Arc::new(guardian_module_sdk::basic_policy::BasicPolicy),
+            serde_json::json!({}),
+        );
+        let (down, _) = hanging("screening", OnError::Deny, Duration::from_millis(20));
+        let pipeline = ModulePipeline::from_instances(vec![healthy, down]).with_limits(Limits {
+            breaker_failures: 1,
+            ..Limits::default()
+        });
+        pipeline.breakers().failed("caps");
+        pipeline.breakers().failed("screening");
+        pipeline.probe().await;
+        assert_eq!(pipeline.breakers().state("caps"), CircuitState::HalfOpen);
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);
     }
 }

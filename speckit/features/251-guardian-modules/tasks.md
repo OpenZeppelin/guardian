@@ -119,16 +119,16 @@
 
 ### Tests for User Story 4
 
-- [ ] T027 [P] [US4] Failure acceptance in `crates/server/src/modules/pipeline.rs` tests: fail-closed unreachable refuses retryably; fail-open unreachable proceeds and is counted; consecutive failures open the circuit and later requests do not wait the timeout; combined time over the budget times out the remaining instances; a fail-open failure followed by a deny is refused by the second
+- [X] T027 [P] [US4] Failure acceptance in `crates/server/src/modules/pipeline.rs` tests: fail-closed unreachable refuses retryably; fail-open unreachable proceeds and is counted; consecutive failures open the circuit and later requests do not wait the timeout; combined time over the budget times out the remaining instances; a fail-open failure followed by a deny is refused by the second
 
 ### Implementation for User Story 4
 
-- [ ] T028 [US4] Evaluation budget `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` (default 1000) in a new `crates/server/src/modules/budget.rs`, enforced per hook invocation in `crates/server/src/modules/pipeline.rs` (remaining instances count as timed out and their `on_error` applies)
+- [X] T028 [US4] Evaluation budget `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` (default 1000) in a new `crates/server/src/modules/budget.rs`, enforced per hook invocation in `crates/server/src/modules/pipeline.rs` (remaining instances count as timed out and their `on_error` applies)
 - [ ] T029 [US4] Startup budget checks in `crates/server/src/modules/catalog.rs`: in the prod stage refuse to start when, for any hook, the timeouts of `all` and `default` instances (enabled or not) exceed the budget, or the budget is not below the execution reservation lease; report over-budget stored assignments without blocking
 - [ ] T030 [US4] Budget check on operator writes in `crates/server/src/modules/admin.rs`: refuse `PUT /dashboard/accounts/{account_id}/modules` and account-layer writes whose effective set exceeds the budget on any hook (`invalid_input`), with tests
-- [ ] T031 [US4] Circuit breaker per instance in a new `crates/server/src/modules/breaker.rs` (consecutive-failure threshold, open, half-open probe), consulted in `crates/server/src/modules/pipeline.rs`; an open circuit applies `on_error` without calling the module
-- [ ] T032 [US4] Periodic health probe (`Describe`) per instance on each replica in `crates/server/src/modules/breaker.rs`, closing the circuit on success and detecting protocol or hook changes; wire its task in `crates/server/src/builder/mod.rs` with shutdown
-- [ ] T033 [US4] Request size cap `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (default 2 MiB) in `crates/server/src/modules/request.rs`: an oversized request is a module failure without the call
+- [X] T031 [US4] Circuit breaker per instance in a new `crates/server/src/modules/breaker.rs` (consecutive-failure threshold, open, half-open probe), consulted in `crates/server/src/modules/pipeline.rs`; an open circuit applies `on_error` without calling the module
+- [X] T032 [US4] Periodic health probe (`Describe`) per instance on each replica in `crates/server/src/modules/breaker.rs`, closing the circuit on success and detecting protocol or hook changes; wire its task in `crates/server/src/builder/mod.rs` with shutdown
+- [X] T033 [US4] Request size cap `GUARDIAN_MODULE_REQUEST_MAX_BYTES` (default 2 MiB) in `crates/server/src/modules/request.rs`: an oversized request is a module failure without the call
 - [ ] T034 [US4] Module metrics in a new `crates/server/src/modules/metrics.rs` with names in `crates/server/src/metrics/names.rs`: `guardian_module_evaluate_duration_seconds{module, outcome}` (`allow`, `deny`, `error`, `skipped`), `guardian_module_fail_open_total{module}`, availability, circuit state, disabled state, configuration drift, catalog fingerprint, orphaned and over-budget assignment counts
 - [ ] T035 [US4] Catalog fingerprint in `GET /dashboard/info` (`crates/server/src/services/dashboard_info.rs`) and the `circuit` field in `GET /dashboard/modules` (`crates/server/src/modules/admin.rs`); regenerate `docs/openapi*.json` with `cargo run --features evm --bin gen-openapi -- docs`
 - [ ] T036 [US4] Document the budget, size cap and breaker variables in `docs/CONFIGURATION.md` ("Runtime: policy modules") and the metrics in `docs/guides/observability/`
