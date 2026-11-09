@@ -137,6 +137,15 @@ Miden is the only network today; read it with `subject.miden()` and return a
 `ModuleError` when it is absent, so a module never judges a transaction it
 does not understand.
 
+## Personal data
+
+Requests can carry personal data: the proposer's free-text `description` in
+`unverified_metadata`, and recipients and amounts that identify people. For a
+remote module the operator treats you as a data processor, so document what
+your module stores, for how long and where it runs. A module that does not
+need a field should not log it, and `message` (logged by the Guardian for
+every denial) should not repeat it.
+
 ## Dry runs
 
 Cosigners can check a transaction before proposing it
