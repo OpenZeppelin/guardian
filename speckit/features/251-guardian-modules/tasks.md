@@ -24,7 +24,7 @@
 **Purpose**: put the plan on the M2a footing and fix how the work is delivered.
 
 - [X] T001 Update `speckit/features/251-guardian-modules/plan.md`: status M2a against RFC revision 26; replace the indicative source tree with the prototype's real paths (`crates/server/src/modules/{catalog,registry,pipeline,request,grpc_kind,admin,store,postgres_store,disclosure,check_limit}.rs`, `crates/server/src/network/miden/module_views.rs`, `crates/server/src/services/ack_delta_internal.rs`, `crates/guardian-module-sdk/src/{basic_policy,serve}.rs`) plus the files this list adds (`breaker.rs`, `budget.rs`, `metrics.rs`, `crates/guardian-module-sdk/src/conformance/`); record the delivery as stacked PRs off `main` per the "Delivery as stacked PRs" section below
-- [ ] T002 Create the M2a integration branch `251-modules-m2a` from `main` and carry the prototype onto it by layer (the stack in "Delivery as stacked PRs"), each layer building and testing on its own; close or retarget draft PR #554 to point at the stack in its description
+- [ ] T002 Create the M2a integration branch `251-modules-m2a` from `main` and carry the prototype onto it by layer (the stack in "Delivery as stacked PRs"), each layer building and testing on its own; close or retarget draft PR #554 to point at the stack in its description. Local stack built 2026-11-09 (layers `251-m2a-sdk` to `251-m2a-docs`, top equal to the prototype tree); remaining: push the branches, open the layer PRs, update #554
 
 ---
 
@@ -264,11 +264,4 @@ Foundational, then US1: the frozen protocol and a mandatory policy enforced on e
 
 ### Delivery as stacked PRs
 
-The prototype is one 13,000-line draft (#554). M2a ships as a stack of PRs off `main`, each building and testing on its own, the way the PR #510 review stack was layered by path:
-
-1. **Module SDK and protocol**: `crates/guardian-module-sdk` (proto version 1, `Module`, `serve`, `basic-policy`, conformance), Phase 2 proto tasks, T047, T050.
-2. **Server core**: `crates/server/src/modules/` catalog, registry, pipeline, request assembly, stores and the `2026-10-15` migration, `network/miden/module_views.rs`, budget, breaker, size cap, metrics (US4).
-3. **Hooks**: `ack_delta_internal.rs`, `push_delta_proposal.rs`, `configure_account.rs`, the execution worker, delta fields (T009), US1 and US3.
-4. **Operator surface**: `/dashboard/modules` routes, OpenAPI, `packages/guardian-operator-client` (US5).
-5. **Client surfaces**: module errors and discovery in `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/miden-multisig-client`, examples (US2).
-6. **Docs**: guides, runbook, concepts, spec, troubleshooting (Polish).
+The prototype is one 13,000-line draft (#554). M2a ships as a stack of five PRs off `main`, each building and testing on its own, the way the PR #510 review stack was layered by path. The layers, their branches and what each contains are in [plan.md](./plan.md), "M2a delivery": module SDK, server core, hooks, clients, docs. New M2a work goes to the layer it belongs to: Phase 2 proto tasks and US6 to the SDK layer; US4 and the operator routes of US5 to server core; US1, US3 and the server half of US2 to hooks; the client halves of US2 and US5 to clients; Polish docs to docs.

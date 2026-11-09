@@ -141,12 +141,12 @@ The prototype (#554) is one draft of about 13,000 lines and is not merged as it 
 | Layer | Branch | Content |
 |---|---|---|
 | 1. Module SDK | `251-m2a-sdk` | `crates/guardian-module-sdk` (protocol, `Module`, `serve`, `basic-policy`, conformance) and the workspace entry |
-| 2. Server core | `251-m2a-server-core` | `crates/server/src/modules/`, `network/miden/module_views.rs`, the modules migration, module errors in `error.rs`, permissions and audit kinds, the operator routes, `AppState` wiring, with no hook calling the pipeline yet |
-| 3. Hooks | `251-m2a-hooks` | The three gate hooks (`ack_delta_internal.rs`, `push_delta_proposal.rs`, `configure_account.rs`), the execution worker and the `guardian-shared` failure codes, policy discovery routes, delta summary trace, OpenAPI |
-| 4. Clients | `251-m2a-clients` | `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client`, `packages/miden-multisig-client`, examples and the qualification driver |
-| 5. Docs | `251-m2a-docs` | `docs/guides/policy-modules/`, `docs/`, `spec/`, the `verify-module-counting` skill |
+| 2. Server core | `251-m2a-server-core` | `crates/server/src/modules/`, `network/miden/module_views.rs`, the modules migration, the `GUARDIAN_MODULE_*` errors, permissions and audit kinds, the `/dashboard/modules` routes, `AppState` wiring and the `modules` field in test initializers; the guide's example catalogs (`docs/guides/policy-modules/*.toml`, parsed by the registry tests) and the TypeScript error-code vocabulary (`packages/guardian-client/src/error-codes.ts`, held to `error.rs` by a drift test); OpenAPI regenerated. No hook calls the pipeline |
+| 3. Hooks | `251-m2a-hooks` | The three gate hooks (`ack_delta_internal.rs`, `push_delta_proposal.rs`, `configure_account.rs`), the execution worker, the discovery routes on both transports, the `guardian-shared` failure codes with the TypeScript execution vocabulary and the browser example that switches over it, and the compile fixes the non-`Copy` failure code needs (qualification driver, demo, one multisig test); OpenAPI regenerated |
+| 4. Clients | `251-m2a-clients` | `crates/client`, `crates/miden-multisig-client`, `packages/guardian-client` (`http.ts` and its types), `packages/miden-multisig-client` |
+| 5. Docs | `251-m2a-docs` | `docs/` (guides, configuration, dashboard, troubleshooting, RFC), `spec/`, the speckit feature, the `verify-module-counting` skill |
 
-`251-modules-m2a` is the integration branch at the top of the stack; M2a tasks land on the layer they belong to. The operator client (US5) joins layer 2 or its own PR when it is built.
+Each layer builds the workspace with `--all-targets`, passes `gen-openapi --check`, the server, client and multisig test suites, and the TypeScript client tests; the top of the stack equals the prototype tree. Rule found while splitting: a TypeScript vocabulary held to a Rust source by a drift test lands in the same layer as that source. `251-modules-m2a` is the integration branch at the top of the stack; M2a tasks land on the layer they belong to. The operator client (US5) joins layer 2 or its own PR when it is built.
 
 ## Decisions made during planning
 
