@@ -53,6 +53,7 @@ locals {
     "guardian_execution_proving_duration_seconds",
     "guardian_execution_phase_duration_seconds",
     "guardian_block_watch_block_processing_seconds",
+    "guardian_module_evaluate_duration_seconds",
   ]
 
   http_error_rate_expression = "100 * (${join(" + ", [for s in local.http_error_statuses : "FILL(h${s}, 0)"])}) / FILL(hall, 1)"
@@ -344,6 +345,33 @@ locals {
           {
             metric_name_selectors = ["^guardian_rate_limit_rejections_total$"]
             dimensions            = [["transport"]]
+          },
+          {
+            # Policy modules (issue #251). `module` is a catalog instance id, so
+            # the series count is bounded by the catalog.
+            metric_name_selectors = ["^guardian_module_evaluate_duration_seconds$"]
+            dimensions            = [["module"], ["module", "outcome"]]
+          },
+          {
+            metric_name_selectors = [
+              "^guardian_module_fail_open_total$",
+              "^guardian_module_up$",
+              "^guardian_module_circuit_open$",
+              "^guardian_module_enabled$",
+              "^guardian_module_config_drift$",
+            ]
+            dimensions = [["module"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_module_catalog_info$"]
+            dimensions            = [["catalog_hash"]]
+          },
+          {
+            metric_name_selectors = [
+              "^guardian_module_over_budget_accounts$",
+              "^guardian_module_orphaned_assignments$",
+            ]
+            dimensions = [[]]
           },
         ]
       }

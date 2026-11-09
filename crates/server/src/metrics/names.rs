@@ -935,16 +935,16 @@ mod tests {
     }
 
     /// The CloudWatch export re-lists the metric inventory by hand
-    /// (`infra/observability.tf`); a block watch metric missing there
+    /// (`infra/observability.tf`); a block watch or module metric missing there
     /// would never reach CloudWatch, and its histogram would be exported
     /// with lifetime totals unless it is delta-converted too.
     #[test]
-    fn block_watch_metrics_are_exported_to_cloudwatch() {
+    fn block_watch_and_module_metrics_are_exported_to_cloudwatch() {
         let terraform = include_str!("../../../../infra/observability.tf");
-        for def in REGISTRY
-            .iter()
-            .filter(|def| def.name.starts_with("guardian_block_watch_"))
-        {
+        for def in REGISTRY.iter().filter(|def| {
+            def.name.starts_with("guardian_block_watch_")
+                || def.name.starts_with("guardian_module_")
+        }) {
             assert!(
                 terraform.contains(&format!("\"^{}$\"", def.name)),
                 "{} is not selected by an ADOT metric declaration",

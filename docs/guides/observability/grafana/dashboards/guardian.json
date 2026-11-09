@@ -2799,6 +2799,264 @@
           "legendFormat": "observation outage (s)"
         }
       ]
+    },
+    {
+      "type": "row",
+      "title": "Policy modules",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 186
+      },
+      "id": 61,
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Module evaluations by outcome",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 187
+      },
+      "id": 62,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (module, outcome) (rate(guardian_module_evaluate_duration_seconds_count{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{module}} {{outcome}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Module evaluation p99",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 187
+      },
+      "id": 63,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum by (module, le) (rate(guardian_module_evaluate_duration_seconds_bucket{instance=~\"$instance\"}[$__rate_interval])))",
+          "refId": "A",
+          "legendFormat": "{{module}}"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Module health: up, circuit open, enabled",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 195
+      },
+      "id": 64,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "min by (module) (guardian_module_up{instance=~\"$instance\"})",
+          "refId": "A",
+          "legendFormat": "{{module}} up"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max by (module) (guardian_module_circuit_open{instance=~\"$instance\"})",
+          "refId": "B",
+          "legendFormat": "{{module}} circuit open"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "min by (module) (guardian_module_enabled{instance=~\"$instance\"})",
+          "refId": "C",
+          "legendFormat": "{{module}} enabled"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Fail-open skips & configuration",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "guardian-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 195
+      },
+      "id": 65,
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 12,
+            "showPoints": "never",
+            "lineWidth": 1,
+            "lineInterpolation": "smooth"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "sum by (module) (rate(guardian_module_fail_open_total{instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "A",
+          "legendFormat": "{{module}} fail-open/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max by (module) (guardian_module_config_drift{instance=~\"$instance\"})",
+          "refId": "B",
+          "legendFormat": "{{module}} catalog drift"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max(guardian_module_over_budget_accounts{instance=~\"$instance\"})",
+          "refId": "C",
+          "legendFormat": "accounts over budget"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "guardian-prometheus"
+          },
+          "expr": "max(guardian_module_orphaned_assignments{instance=~\"$instance\"})",
+          "refId": "D",
+          "legendFormat": "orphaned assignments"
+        }
+      ]
     }
   ]
 }

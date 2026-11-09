@@ -199,7 +199,7 @@
 - [ ] T060 SC-004 run: enable `basic-policy` on all accounts with the official image and the guides only, timed, gaps fixed in `docs/guides/policy-modules/`
 - [X] T061 Re-check the TLA+ models whose fingerprints the modules work moved (`verify-auth-replay`, `verify-candidate-queue`, `verify-client-sync`, `verify-guardian-switch`, `verify-module-counting`, `verify-multisig-push-gate`, `verify-proposal-lifecycle` under `.agents/skills/`) with each `check.sh`, then `--accept-drift` once the model still mirrors the code
 - [ ] T062 Validation matrix of `speckit/features/251-guardian-modules/quickstart.md` section 5 (M2a rows) run end to end, including `cargo test -p guardian-server --features postgres` for module stores and proposal storage, and `gen-openapi --check`
-- [ ] T063 Export the `guardian_module_*` metrics: add them to the CloudWatch export allowlist in `infra/observability.tf` (selector groups by label dimensions) and a "Policy modules" section of panels in `docs/guides/observability/grafana/dashboards/guardian.json`, listed in `docs/guides/observability/README.md`; validate with `terraform validate` and the local Prometheus and Grafana stack
+- [X] T063 Export the `guardian_module_*` metrics: add them to the CloudWatch export allowlist in `infra/observability.tf` (selector groups by label dimensions) and a "Policy modules" section of panels in `docs/guides/observability/grafana/dashboards/guardian.json`, listed in `docs/guides/observability/README.md`; validate with `terraform validate` and the local Prometheus and Grafana stack
 
 ---
 
