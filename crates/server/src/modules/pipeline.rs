@@ -9,8 +9,17 @@ use std::sync::{Arc, RwLock};
 use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
 use super::store::{AccountParamsRow, ModuleStore, ParamsKind};
-use crate::delta_summary::{FailedOpen, ModuleApproval};
+use crate::delta_summary::FailedOpen;
 use crate::error::GuardianError;
+
+/// The configuration a pipeline run evaluated with, and the failures `on_error = allow` let
+/// through.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Evaluation {
+    pub catalog_hash: String,
+    pub params_version: u64,
+    pub failed_open: Vec<FailedOpen>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layer {
@@ -411,7 +420,7 @@ impl Plan<'_> {
     pub async fn run(
         self,
         build: impl FnOnce() -> Result<HookRequest, String>,
-    ) -> Result<ModuleApproval, GuardianError> {
+    ) -> Result<Evaluation, GuardianError> {
         let Plan {
             hook,
             account_id,
@@ -421,7 +430,7 @@ impl Plan<'_> {
             views: _,
         } = self;
         let account_id = account_id.as_str();
-        let mut approval = ModuleApproval {
+        let mut approval = Evaluation {
             catalog_hash,
             params_version,
             failed_open: Vec::new(),

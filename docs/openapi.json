@@ -7381,10 +7381,12 @@
       },
       "ModuleApproval": {
         "type": "object",
-        "description": "What the policy modules ran with. Allowed evaluations are not listed: the catalog, params\nversion and account determine which modules ran, so only failures let through by\n`on_error = allow` are kept.",
+        "description": "The policy modules' approval of a signed delta: the configuration they ran with, when and for\nwhom. Allowed evaluations are not listed: the catalog, params version and account determine\nwhich modules ran, so only failures let through by `on_error = allow` are kept.",
         "required": [
           "catalog_hash",
-          "params_version"
+          "params_version",
+          "signed_at",
+          "submitter"
         ],
         "properties": {
           "catalog_hash": {
@@ -7401,6 +7403,18 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "proposer": {
+            "type": "string",
+            "description": "The matching proposal's creator; empty when no stored proposal matched."
+          },
+          "signed_at": {
+            "type": "string",
+            "description": "RFC 3339 time the Guardian signed, the accounting time the modules evaluated with."
+          },
+          "submitter": {
+            "type": "string",
+            "description": "The cosigner the acknowledgment was evaluated for."
           }
         }
       },

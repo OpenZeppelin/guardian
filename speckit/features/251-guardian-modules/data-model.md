@@ -73,13 +73,15 @@ One row holding the params version. Every write takes its lock first, increments
 
 ### Delta additions (both backends)
 
+The approval record is `metadata.modules` on the signed delta (`ModuleApproval`), stored with the delta's metadata (JSONB on Postgres, JSON on the filesystem), so it needs no migration. Like the rest of `metadata` it is served on the HTTP delta and dashboard routes, not over gRPC. Written only when a module ran for the delta.
+
 | Field | Set when | Notes |
 |---|---|---|
-| `modules` (evaluation trace) | The Guardian signs the delta after modules ran | Dashboard detail only. `catalog_hash`, `params_version`, `failed_open` (module, layer, failure kind; omitted when empty). Allowed evaluations are derived from the catalog, not stored. Prototype: `metadata.modules` |
-| `signed_at` | Fixed before the pipeline runs | The accounting clock; repeated in `pending` and `CommitEvent` |
+| `catalog_hash`, `params_version`, `failed_open` | The Guardian signs the delta after modules ran | The configuration the modules ran with; `failed_open` lists module, layer and failure kind, omitted when empty. Allowed evaluations are derived from the catalog, not stored |
+| `signed_at` | Fixed before the pipeline runs | RFC 3339; the accounting clock, sent as `accounting_time` and repeated in `pending` and `CommitEvent` (M2b) |
 | `submitter` | At signing | Verified signer commitment of the request being acked |
-| `proposer` | At signing | From `ProposalContext`; empty when no matching proposal |
-| `module_projection` | At signing, for every account, once any instance subscribes to `after_transaction_committed` (M2b) | Stored, never recomputed; a queued candidate without it puts subscribed modules for its account behind the activation fence |
+| `proposer` | At signing | From `ProposalContext`; omitted when no proposal matched |
+| `module_projection` | At signing, for every account, once any instance subscribes to `after_transaction_committed` (M2b) | Stored, never recomputed; a queued candidate without it, or without an approval record, puts subscribed modules for its account behind the activation fence |
 
 ### Proposal storage rule
 

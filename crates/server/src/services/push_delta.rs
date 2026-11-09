@@ -2291,7 +2291,16 @@ mod tests {
             crate::modules::catalog::OnError::Deny,
         )
         .await;
-        result.expect("allowed push succeeds");
+        let pushed = result.expect("allowed push succeeds");
+        assert_eq!(
+            pushed
+                .delta
+                .metadata
+                .and_then(|metadata| metadata.modules)
+                .map(|approval| approval.proposer),
+            Some("0xproposer".to_string()),
+            "the approval records the proposer the modules saw"
+        );
         assert_eq!(
             storage.get_pull_delta_proposal_calls().len(),
             2,
@@ -2331,9 +2340,19 @@ mod tests {
             .and_then(|metadata| metadata.modules)
             .expect("the approving module configuration is recorded");
         assert_eq!(approval.params_version, 0);
+        assert_eq!(approval.proposer, "", "no stored proposal matched");
         assert!(approval.failed_open.is_empty());
         let request = module.last_request().expect("module was called");
         assert_eq!(request.submitter, signer);
+        assert_eq!(approval.submitter, signer);
+        let accounting_time = request.accounting_time.expect("accounting time is sent");
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(&approval.signed_at)
+                .expect("signed_at is RFC 3339")
+                .timestamp_nanos_opt(),
+            Some(accounting_time.seconds * 1_000_000_000 + i64::from(accounting_time.nanos)),
+            "signed_at is the accounting time the modules evaluated with"
+        );
         let Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) =
             &request.subject
         else {

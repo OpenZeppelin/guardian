@@ -141,6 +141,13 @@ async fn approve(
         ProposalMatch::Missing => Ok(None),
         ProposalMatch::Unavailable(error) => Err(format!("proposal lookup failed: {error}")),
     };
+    let proposer = proposal
+        .as_ref()
+        .ok()
+        .and_then(|context| context.as_ref())
+        .map(|context| context.proposer.clone())
+        .unwrap_or_default();
+    let signed_at = state.clock.now();
     let views = plan.views();
     plan.run(|| {
         request::transaction_request(
@@ -159,12 +166,21 @@ async fn approve(
                 },
                 tx_summary: &delta.delta_payload,
                 proposal: proposal?,
-                accounting_time: state.clock.now(),
+                accounting_time: signed_at,
             },
         )
     })
     .await
-    .map(Some)
+    .map(|evaluation| {
+        Some(ModuleApproval {
+            catalog_hash: evaluation.catalog_hash,
+            params_version: evaluation.params_version,
+            failed_open: evaluation.failed_open,
+            signed_at: signed_at.to_rfc3339(),
+            submitter: submitter.commitment.to_string(),
+            proposer,
+        })
+    })
 }
 
 /// The `delta_proposals` row matching a delta, as far as storage could tell.

@@ -61,9 +61,9 @@ pub struct DeltaMetadata {
     pub modules: Option<ModuleApproval>,
 }
 
-/// What the policy modules ran with. Allowed evaluations are not listed: the catalog, params
-/// version and account determine which modules ran, so only failures let through by
-/// `on_error = allow` are kept.
+/// The policy modules' approval of a signed delta: the configuration they ran with, when and for
+/// whom. Allowed evaluations are not listed: the catalog, params version and account determine
+/// which modules ran, so only failures let through by `on_error = allow` are kept.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ModuleApproval {
     /// SHA-256 of the catalog file the approving replica loaded.
@@ -71,6 +71,13 @@ pub struct ModuleApproval {
     pub params_version: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_open: Vec<FailedOpen>,
+    /// RFC 3339 time the Guardian signed, the accounting time the modules evaluated with.
+    pub signed_at: String,
+    /// The cosigner the acknowledgment was evaluated for.
+    pub submitter: String,
+    /// The matching proposal's creator; empty when no stored proposal matched.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub proposer: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
