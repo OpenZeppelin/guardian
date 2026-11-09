@@ -2,13 +2,13 @@
 
 | | |
 |---|---|
-| **Status** | Accepted for implementation; comments still welcome and can still change it. Implementation (milestone M2a, section 7) has not started |
+| **Status** | Accepted. Milestone M2a (section 7) is implemented on branch `251-modules-m2a`, not yet merged to `main`; M2b and M2c have not started. Comments are still welcome; protocol version 1 is frozen, so a change to it is a new capability or a new version (section 3.5) |
 | **Depends on** | [RFC 0001](./0001-server-side-transaction-execution.md) (server-side transaction execution, merged in PR #510): the execution worker is the second caller of the pipeline |
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
-| **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; plan and tasks follow the prototype |
+| **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; the plan, the M2a tasks (`tasks.md`) and the prototype record (`tasks-p0.md`) |
 | **Revision** | 30 (2026-11-09): the secrets backend and the catalog's credential field names (section 2.2); changes in Appendix C |
-| **Review sought** | Comments on the design and the M2a scope remain open until M2a ships, when `guardian.module.v1` freezes (section 7) |
+| **Review sought** | Review of the M2a implementation before it merges; comments on M2b (commit notifications, stateful modules) and M2c (operator-built kinds) |
 | **Code baseline** | `main` at `ca503704`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510, since merged to `main` as `1100f3a4`) and kept as dated evidence. Miden pins: protocol and standards 0.17.1. Appendices B and C cite the baselines of their revisions. Prototype findings (2026-10-13 to 2026-10-15) in `speckit/features/251-guardian-modules/research.md` |
 
 ---

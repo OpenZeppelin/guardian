@@ -1,8 +1,8 @@
 # Implementation Plan: Guardian Modules, a Hook Pipeline for Pluggable Policy
 
-**Branch**: M2a on `251-modules-m2a` and its stacked layer branches (see "M2a delivery"); prototype on `251-modules-prototype` (draft PR #554); RFC and speckit merged with PR #544 | **Date**: 2026-10-13, M2a revision 2026-11-09 | **Spec**: [spec.md](./spec.md)
+**Branch**: M2a on `251-modules-m2a`, one branch that can be split into the layers of "M2a delivery" for review; prototype on `251-modules-prototype` (draft PR #554); RFC and speckit merged with PR #544 | **Date**: 2026-10-13, M2a revision 2026-11-09 | **Spec**: [spec.md](./spec.md)
 **Input**: Feature specification from `speckit/features/251-guardian-modules/spec.md`; design source [RFC 0002](../../../docs/rfcs/0002-guardian-modules.md), written against revision 19; M2a follows revision 26
-**Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. Still open: the end-to-end walk-through and latency A/B against a local Miden node. M2a implementation started 2026-11-09 against RFC revision 26: [tasks.md](./tasks.md); the prototype record is [tasks-p0.md](./tasks-p0.md).
+**Status**: Prototype built (2026-10-13), gates G1 to G5 closed at component level ([research.md](./research.md#prototype-findings-2026-10-13)); RFC revisions 20 (prototype findings) and 21 (layered parameters, decision D11) applied. M2a implemented on `251-modules-m2a` (2026-11-09) against RFC revisions 26 to 30: [tasks.md](./tasks.md), all tasks done except the walk-through against a local node and the manual smokes (T058 to T060); the prototype record is [tasks-p0.md](./tasks-p0.md). The latency A/B is in [research.md](./research.md), "M2a end to end".
 
 ## Summary
 
