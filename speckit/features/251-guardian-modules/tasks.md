@@ -188,8 +188,8 @@
 
 **Purpose**: documentation, verification and release readiness across stories.
 
-- [ ] T052 [P] `docs/TROUBLESHOOTING.md`: `GUARDIAN_MODULE_DENIED`, `GUARDIAN_MODULE_UNAVAILABLE`, `GUARDIAN_MODULE_NOT_FOUND`, `GUARDIAN_MODULE_NOT_DISABLEABLE` with their `meta`, and the denial log fields
-- [ ] T053 [P] Break-glass runbook `docs/runbooks/policy-modules.md` (RFC section 4.2): disabling an instance, deploy-only changes, circuit and budget symptoms; link it from `docs/runbooks/` and `CLAUDE.md`'s lookup table
+- [X] T052 [P] `docs/TROUBLESHOOTING.md`: `GUARDIAN_MODULE_DENIED`, `GUARDIAN_MODULE_UNAVAILABLE`, `GUARDIAN_MODULE_NOT_FOUND`, `GUARDIAN_MODULE_NOT_DISABLEABLE` with their `meta`, and the denial log fields
+- [X] T053 [P] Break-glass runbook `docs/runbooks/policy-modules.md` (RFC section 4.2): disabling an instance, deploy-only changes, circuit and budget symptoms; link it from `docs/runbooks/` and `CLAUDE.md`'s lookup table
 - [ ] T054 [P] Trust boundary and data protection in `docs/CONCEPTS.md`: what external modules receive (full transaction details, proposals that never execute, proposer descriptions), and the operator and vendor guidance of RFC invariant 5
 - [ ] T055 [P] Protocol spec coverage: module error codes and `meta` on proposal creation, push and registration, `GET /policies` and `POST /delta/proposal/check` in `spec/api.md`, and the gate points in the push, proposal and registration processes of `spec/processes.md`
 - [ ] T056 [P] Client READMEs for module errors and `moduleRefusal()` / `module_refusal()`: `crates/client/README.md`, `packages/guardian-client/README.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`

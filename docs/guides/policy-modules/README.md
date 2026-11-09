@@ -182,6 +182,9 @@ return `400` and change nothing.
 
 ## Troubleshooting
 
+For outages, a module that refuses too much, and break-glass steps, see the
+[policy modules runbook](../../runbooks/policy-modules.md).
+
 | Symptom | Cause |
 |---|---|
 | `cannot read module catalog` | `GUARDIAN_MODULES_CONFIG` is relative to the directory you started the server in; start from the repository root. |
