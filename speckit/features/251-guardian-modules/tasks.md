@@ -171,7 +171,7 @@
 
 ### Tests for User Story 6
 
-- [ ] T047 [P] [US6] Conformance suite: turn the prototype's `crates/guardian-module-sdk/tests/conformance.rs` into a reusable suite in `crates/guardian-module-sdk/src/conformance/` (behind a `conformance` feature) that any module author can run, covering identical decisions in process and over gRPC, `evaluate` purity (the same request repeated leaves module state unchanged), params validation, a request at the size cap, and instance-id isolation between two instances on one service; run it for `basic-policy` from `crates/guardian-module-sdk/tests/conformance.rs`
+- [X] T047 [P] [US6] Conformance suite: turn the prototype's `crates/guardian-module-sdk/tests/conformance.rs` into a reusable suite in `crates/guardian-module-sdk/src/conformance.rs` (one file; it also checks `Describe`, decision shape and that one instance's token is refused for another) (behind a `conformance` feature) that any module author can run, covering identical decisions in process and over gRPC, `evaluate` purity (the same request repeated leaves module state unchanged), params validation, a request at the size cap, and instance-id isolation between two instances on one service; run it for `basic-policy` from `crates/guardian-module-sdk/tests/conformance.rs`
 
 ### Implementation for User Story 6
 

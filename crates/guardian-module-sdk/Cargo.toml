@@ -21,5 +21,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "fs"
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 
+[features]
+conformance = []
+
+[dev-dependencies]
+guardian-module-sdk = { path = ".", features = ["conformance"] }
+
 [build-dependencies]
 tonic-prost-build = { workspace = true }

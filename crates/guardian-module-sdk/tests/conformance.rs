@@ -1,10 +1,11 @@
 use guardian_module_sdk::basic_policy::BasicPolicy;
+use guardian_module_sdk::conformance::Suite;
 use guardian_module_sdk::proto::guardian_module_client::GuardianModuleClient;
 use guardian_module_sdk::proto::{asset, hook_request};
 use guardian_module_sdk::serve::serve;
 use guardian_module_sdk::{
-    AccountView, Asset, HookRequest, MidenTransaction, Module, OutputNote, TransactionProjection,
-    TransactionSubject,
+    AccountStateProjection, AccountView, Asset, HookRequest, MidenAccountState, MidenTransaction,
+    Module, OutputNote, RegistrationSubject, TransactionProjection, TransactionSubject,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -72,49 +73,78 @@ fn payment(amounts: &[u64], params: serde_json::Value) -> HookRequest {
     }
 }
 
-#[tokio::test]
-async fn in_process_and_remote_decisions_match() {
-    let mut client = GuardianModuleClient::new(start_remote().await);
-    let cap = json!({ "max_amount_per_tx": { "0xaa": "1000" } });
-    let cases = [
-        payment(&[500], cap.clone()),
-        payment(&[600, 600], cap.clone()),
-        payment(&[1000], cap.clone()),
-        payment(&[1], json!({ "recipient_allowlist": ["0xother"] })),
-    ];
-    for case in cases {
-        let local = BasicPolicy.evaluate(&case).await.unwrap();
-        let remote = client
-            .evaluate(authorized(case.clone(), TOKEN))
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(local, remote);
-        let again = client
-            .evaluate(authorized(case, TOKEN))
-            .await
-            .unwrap()
-            .into_inner();
-        assert_eq!(remote, again);
+fn view(signers: &[&str], code: &str) -> AccountView {
+    AccountView {
+        signer_commitments: signers.iter().map(|s| s.to_string()).collect(),
+        code_commitment: code.into(),
+        ..Default::default()
+    }
+}
+
+fn with_views(mut request: HookRequest, before: &[&str], after: &[&str]) -> HookRequest {
+    request.before = Some(view(before, "0xc1"));
+    request.after = Some(view(after, "0xc1"));
+    request
+}
+
+fn registration(params: serde_json::Value, signers: &[&str]) -> HookRequest {
+    HookRequest {
+        params: serde_json::to_vec(&params).unwrap(),
+        after: Some(view(signers, "0xc1")),
+        subject: Some(hook_request::Subject::Registration(RegistrationSubject {
+            initial_state: Some(AccountStateProjection::miden(MidenAccountState::default())),
+        })),
+        ..Default::default()
     }
 }
 
 #[tokio::test]
-async fn remote_rejects_a_credential_for_another_instance() {
-    let mut client = GuardianModuleClient::new(start_remote().await);
-    let mut request = payment(&[1], json!({}));
-    request.instance_id = "other-instance".into();
-    let status = client
-        .evaluate(authorized(request, TOKEN))
+async fn basic_policy_conforms() {
+    let cap = json!({ "max_amount_per_tx": { "0xaa": "1000" } });
+    let signers = json!({ "signer_check": "added", "signer_denylist": ["0xbad"] });
+    let code = json!({ "code_check": "all", "allowed_code_commitments": ["0xc1"] });
+    Suite::new(BasicPolicy)
+        .request("under the cap", payment(&[500], cap.clone()))
+        .request("split over the cap", payment(&[600, 600], cap.clone()))
+        .request("at the cap", payment(&[1000], cap))
+        .request(
+            "recipient not allowed",
+            payment(&[1], json!({ "recipient_allowlist": ["0xother"] })),
+        )
+        .request(
+            "recipient denied, generic",
+            payment(&[1], json!({ "recipient_denylist": ["0xr1"] })),
+        )
+        .request(
+            "denied signer added",
+            with_views(
+                payment(&[1], signers.clone()),
+                &["0xs1"],
+                &["0xs1", "0xbad"],
+            ),
+        )
+        .request(
+            "listed code",
+            with_views(payment(&[1], code.clone()), &["0xs1"], &["0xs1"]),
+        )
+        .request(
+            "registration with a denied signer",
+            registration(signers, &["0xbad"]),
+        )
+        .request("registration on listed code", registration(code, &["0xs1"]))
+        .request(
+            "params a module cannot read",
+            payment(&[1], json!({ "max_amount_per_tx": { "0xaa": "ten" } })),
+        )
+        .valid_params(json!({}))
+        .valid_params(json!({ "max_amount_per_tx": { "0xaa": "1000" }, "recipient_denylist": [] }))
+        .valid_params(json!({ "code_check": "changed", "allowed_code_commitments": ["0xc1"] }))
+        .invalid_params(json!({ "unknown": 1 }))
+        .invalid_params(json!({ "max_amount_per_tx": { "0xaa": "ten" } }))
+        .invalid_params(json!({ "signer_allowlist": [], "signer_denylist": [] }))
+        .run()
         .await
-        .unwrap_err();
-    assert_eq!(status.code(), tonic::Code::PermissionDenied);
-
-    let status = client
-        .evaluate(authorized(payment(&[1], json!({})), "wrong"))
-        .await
-        .unwrap_err();
-    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+        .assert_conformant();
 }
 
 #[tokio::test]

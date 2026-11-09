@@ -78,7 +78,7 @@ impl<M> Harness<M> {
     }
 }
 
-fn status(error: ModuleError) -> Status {
+pub(crate) fn status(error: ModuleError) -> Status {
     match error {
         ModuleError::Unavailable(message) => Status::unavailable(message),
         ModuleError::InvalidRequest(message) => Status::invalid_argument(message),

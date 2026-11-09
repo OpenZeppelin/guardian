@@ -41,7 +41,7 @@ impl Default for Limits {
     fn default() -> Self {
         Self {
             budget: Duration::from_millis(1_000),
-            request_max_bytes: 2 * 1024 * 1024,
+            request_max_bytes: guardian_module_sdk::DEFAULT_REQUEST_MAX_BYTES,
             breaker_failures: 5,
             probe_interval: Duration::from_millis(5_000),
             params_max_bytes: 64 * 1024,

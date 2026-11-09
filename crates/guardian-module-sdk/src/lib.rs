@@ -5,6 +5,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 pub mod basic_policy;
+#[cfg(feature = "conformance")]
+pub mod conformance;
 pub mod serve;
 
 pub use prost_types;
@@ -24,6 +26,10 @@ pub use proto::{
 };
 
 pub const PROTOCOL_VERSION: u32 = 1;
+
+/// The Guardian's default cap on an encoded `HookRequest`. A module's server must accept
+/// requests at least this large.
+pub const DEFAULT_REQUEST_MAX_BYTES: usize = 2 * 1024 * 1024;
 
 /// Optional protocol features, named in `DescribeRequest.guardian_capabilities` and
 /// `ModuleInfo.required_capabilities`. New features are added as capabilities, not as a new
@@ -63,6 +69,29 @@ pub trait Module: Send + Sync {
 
     async fn notify_gap(&self, _gap: &Gap) -> Result<(), ModuleError> {
         Ok(())
+    }
+}
+
+#[async_trait]
+impl<M: Module + ?Sized> Module for Arc<M> {
+    async fn describe(&self, guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
+        (**self).describe(guardian).await
+    }
+
+    async fn validate_params(&self, params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
+        (**self).validate_params(params).await
+    }
+
+    async fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
+        (**self).evaluate(request).await
+    }
+
+    async fn notify(&self, event: &CommitEvent) -> Result<(), ModuleError> {
+        (**self).notify(event).await
+    }
+
+    async fn notify_gap(&self, gap: &Gap) -> Result<(), ModuleError> {
+        (**self).notify_gap(gap).await
     }
 }
 
