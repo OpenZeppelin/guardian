@@ -1,9 +1,10 @@
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{Credentials, RequestAuthFormat};
+use crate::modules::request::StateRef;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{
-    ProposalMatch, acknowledge_applied, apply_to_base, lookup_matching_proposal,
+    ProposalMatch, Submitter, acknowledge_applied, apply_to_base, lookup_matching_proposal,
 };
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
@@ -207,9 +208,17 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let acknowledged = acknowledge_applied(
         state,
         &scheme,
+        StateRef {
+            commitment: &tail.commitment,
+            json: &tail.state_json,
+        },
         &params.delta,
         applied,
-        proposal_match.payload(),
+        Submitter {
+            commitment: &resolved.signer_commitment,
+            auth: &resolved.metadata.auth,
+        },
+        &proposal_match,
     )
     .await?;
     let matched_proposal = acknowledged.matched_proposal;
@@ -256,6 +265,7 @@ mod tests {
     use super::*;
     use crate::metadata::AccountMetadata;
     use crate::metadata::auth::Auth;
+    use crate::modules::HookName;
     use crate::testing::helpers::create_test_app_state_with_mocks;
     use crate::testing::mocks::{MockMetadataStore, MockNetworkClient, MockStorageBackend};
     use chrono::TimeZone;
@@ -2054,5 +2064,216 @@ mod tests {
         .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    async fn push_with_modules(
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        push_with_modules_when(
+            module,
+            |_| Err("proposal not found".to_string()),
+            crate::modules::catalog::OnError::Deny,
+        )
+        .await
+    }
+
+    /// `proposal` builds the proposal lookup's result from the account id.
+    async fn push_with_modules_when(
+        module: Arc<crate::modules::testing::StubModule>,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+        on_error: crate::modules::catalog::OnError,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        use crate::delta_object::DeltaStatus;
+        use crate::modules::testing::{instance, pipeline};
+        use crate::state_object::StateObject;
+        use crate::testing::helpers::create_test_delta_payload;
+
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b".to_string();
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(&account_id);
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(StateObject {
+                account_id: account_id.clone(),
+                state_json: serde_json::json!({}),
+                commitment: "0xprev".into(),
+                nonce: None,
+                created_at: "2026-05-25T08:00:00Z".into(),
+                updated_at: "2026-05-25T08:00:00Z".into(),
+                auth_scheme: String::new(),
+            }))
+            .with_pull_deltas_after(Ok(Vec::new()))
+            .with_pull_delta_proposal(proposal(&account_id))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new_state": true}),
+                "0xnew".to_string(),
+            )))
+            .with_module_views(
+                guardian_module_sdk::AccountView {
+                    signer_commitments: vec![signer_commitment.clone()],
+                    ..Default::default()
+                },
+                guardian_module_sdk::MidenTransaction::default(),
+            );
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
+            account_id: account_id.clone(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec![signer_commitment.clone()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-05-01T00:00:00Z".into(),
+            updated_at: "2026-05-01T00:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        })));
+        let mut state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+        state.modules = Some(pipeline(vec![instance(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            on_error,
+            module,
+        )]));
+        let params = PushDeltaParams {
+            delta: DeltaObject {
+                account_id: account_id.clone(),
+                nonce: 1,
+                prev_commitment: "0xprev".into(),
+                new_commitment: None,
+                delta_payload: create_test_delta_payload(&account_id),
+                ack_sig: String::new(),
+                ack_pubkey: String::new(),
+                ack_scheme: String::new(),
+                status: DeltaStatus::default(),
+                metadata: None,
+            },
+            credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
+        };
+        (push_delta(&state, params).await, storage, signer_commitment)
+    }
+
+    #[tokio::test]
+    async fn a_failed_proposal_lookup_is_a_module_failure_not_an_empty_proposer() {
+        use crate::modules::catalog::OnError;
+        let lookup_fails = |_: &str| Err("connection reset by peer".to_string());
+
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, _) =
+            push_with_modules_when(module.clone(), lookup_fails, OnError::Deny).await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleUnavailable { module }) if module == "caps"
+        ));
+        assert_eq!(
+            module.calls(),
+            0,
+            "the module never sees a request without its proposer"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, _) =
+            push_with_modules_when(module.clone(), lookup_fails, OnError::Allow).await;
+        let approval = result
+            .expect("fail-open lets the push through")
+            .delta
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .expect("the approval is recorded");
+        assert_eq!(module.calls(), 0);
+        assert_eq!(approval.failed_open.len(), 1);
+        assert_eq!(approval.failed_open[0].failure, "request_unavailable");
+    }
+
+    #[tokio::test]
+    async fn the_one_proposal_read_gives_modules_the_proposer() {
+        use crate::delta_object::DeltaStatus;
+        let module = crate::modules::testing::StubModule::allowing();
+        let pending = |account_id: &str| {
+            Ok(DeltaObject {
+                account_id: account_id.to_string(),
+                nonce: 1,
+                status: DeltaStatus::Pending {
+                    timestamp: "2026-05-25T08:00:00Z".into(),
+                    proposer_id: "0xproposer".into(),
+                    cosigner_sigs: Vec::new(),
+                },
+                delta_payload: serde_json::json!({ "metadata": { "proposal_type": "p2id" } }),
+                ..Default::default()
+            })
+        };
+        let (result, storage, _) = push_with_modules_when(
+            module.clone(),
+            pending,
+            crate::modules::catalog::OnError::Deny,
+        )
+        .await;
+        result.expect("allowed push succeeds");
+        assert_eq!(
+            storage.get_pull_delta_proposal_calls().len(),
+            2,
+            "one read for metadata and modules, one by the optimistic commit to delete the proposal"
+        );
+        let request = module.last_request().expect("module was called");
+        match request.subject {
+            Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) => {
+                assert_eq!(subject.proposer, "0xproposer");
+            }
+            other => panic!("unexpected subject {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn module_denial_refuses_the_ack_and_stores_nothing() {
+        let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+        let (result, storage, _) = push_with_modules(module.clone()).await;
+        assert!(matches!(
+            result,
+            Err(GuardianError::ModuleDenied { module, reason_code, .. })
+                if module == "caps" && reason_code == "amount_cap_exceeded"
+        ));
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert_eq!(module.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn module_allow_acks_and_receives_the_submitter_and_views() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, storage, signer) = push_with_modules(module.clone()).await;
+        let pushed = result.expect("allowed push succeeds");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        let approval = pushed
+            .delta
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .expect("the approving module configuration is recorded");
+        assert_eq!(approval.params_version, 0);
+        assert!(approval.failed_open.is_empty());
+        let request = module.last_request().expect("module was called");
+        assert_eq!(request.submitter, signer);
+        let Some(guardian_module_sdk::proto::hook_request::Subject::Transaction(subject)) =
+            &request.subject
+        else {
+            panic!("transaction subject expected");
+        };
+        assert!(
+            subject.miden().is_some(),
+            "the projection is tagged as Miden"
+        );
+        assert_eq!(
+            subject.raw.as_ref().map(|raw| raw.encoding.as_str()),
+            Some(guardian_module_sdk::RawTransaction::MIDEN_TRANSACTION_SUMMARY)
+        );
+        assert_eq!(request.after.unwrap().signer_commitments, vec![signer]);
+        assert!(request.before.is_some());
     }
 }

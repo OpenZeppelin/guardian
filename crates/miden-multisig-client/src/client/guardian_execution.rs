@@ -556,7 +556,7 @@ mod tests {
 
     /// One scripted status read: an answer after `takes`, or one that never answers.
     enum Step {
-        Answer { takes: Duration, read: Read },
+        Answer { takes: Duration, read: Box<Read> },
         Stall,
     }
 
@@ -564,7 +564,7 @@ mod tests {
         fn from(read: Read) -> Self {
             Step::Answer {
                 takes: Duration::ZERO,
-                read,
+                read: Box::new(read),
             }
         }
     }
@@ -586,7 +586,7 @@ mod tests {
             {
                 Step::Answer { takes, read } => {
                     *self.runtime.now.lock().unwrap() += takes;
-                    read
+                    *read
                 }
                 Step::Stall => std::future::pending().await,
             }
@@ -804,7 +804,7 @@ mod tests {
                 Ok(execution(ExecutionState::Submitted)).into(),
                 Step::Answer {
                     takes: Duration::from_secs(10),
-                    read: Ok(execution(ExecutionState::Committed)),
+                    read: Box::new(Ok(execution(ExecutionState::Committed))),
                 },
             ],
         )

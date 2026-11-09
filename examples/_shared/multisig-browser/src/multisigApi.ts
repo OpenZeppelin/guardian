@@ -416,6 +416,10 @@ function failedExecutionAdvice(error: ExecutionFailure): string {
     case 'GUARDIAN_EXECUTION_CANDIDATE_DISCARDED':
     case 'GUARDIAN_EXECUTION_EXPIRED':
       return 'The transaction was sent and did not land: create and sign a new proposal.';
+    case 'GUARDIAN_EXECUTION_MODULE_DENIED':
+      return 'A GUARDIAN policy refused the transaction: it cannot be executed as it stands.';
+    case 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE':
+      return 'A GUARDIAN policy module could not decide: execute it again shortly.';
     default: {
       const unreachable: never = error;
       throw new Error(`Unknown execution failure: ${JSON.stringify(unreachable)}`);

@@ -912,7 +912,8 @@ async fn execute_until_pre_boundary_failure(
         }
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     };
-    if settled.error.as_ref().map(|error| error.code) != Some(ExecutionFailureCode::NodeUnavailable)
+    if settled.error.as_ref().map(|error| &error.code)
+        != Some(&ExecutionFailureCode::NodeUnavailable)
     {
         return Err(ActionOutcome::failed_product(format!(
             "{label}: expected `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`: {settled:?}"

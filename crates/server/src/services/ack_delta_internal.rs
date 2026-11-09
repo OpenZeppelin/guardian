@@ -4,7 +4,11 @@ use std::sync::Arc;
 use guardian_shared::SignatureScheme;
 
 use crate::delta_object::DeltaObject;
+use crate::delta_summary::ModuleApproval;
 use crate::error::Result;
+use crate::metadata::auth::Auth;
+use crate::modules::HookName;
+use crate::modules::request::{self, StateRef, TransactionInput};
 use crate::network::AppliedState;
 use crate::state::AppState;
 
@@ -16,21 +20,38 @@ pub(crate) struct AcknowledgedDelta {
     pub matched_proposal: bool,
 }
 
-/// Verifies `delta` against the state it builds on, derives its metadata, and signs Guardian's
-/// acknowledgment. The base is the canonical state for a Guardian execution and the queue tail
-/// for a pushed delta. Persists nothing and sets no pending-candidate flag: the public push path
-/// commits the result itself, and a Guardian execution admits it only at its boundary commit.
+/// The cosigner a Guardian acknowledgment is evaluated for: the one calling `push_delta`, or the
+/// one whose request started a Guardian execution. Policy modules receive it as the submitter.
+pub(crate) struct Submitter<'a> {
+    pub commitment: &'a str,
+    pub auth: &'a Auth,
+}
+
+/// Verifies `delta` against the state it builds on, runs the policy modules, derives its
+/// metadata, and signs Guardian's acknowledgment. The base is the canonical state for a Guardian
+/// execution and the queue tail for a pushed delta. Persists nothing and sets no
+/// pending-candidate flag: the public push path commits the result itself, and a Guardian
+/// execution admits it only at its boundary commit.
 pub(crate) async fn acknowledge_delta(
     state: &AppState,
     scheme: &SignatureScheme,
-    base_commitment: &str,
-    base_state_json: &serde_json::Value,
+    base: StateRef<'_>,
     delta: &DeltaObject,
+    submitter: Submitter<'_>,
 ) -> Result<AcknowledgedDelta> {
-    let applied = apply_to_base(state, base_commitment, base_state_json, delta).await?;
+    let applied = apply_to_base(state, base.commitment, base.json, delta).await?;
     let proposal_match =
         lookup_matching_proposal(state, &delta.account_id, delta.nonce, &delta.delta_payload).await;
-    acknowledge_applied(state, scheme, delta, applied, proposal_match.payload()).await
+    acknowledge_applied(
+        state,
+        scheme,
+        base,
+        delta,
+        applied,
+        submitter,
+        &proposal_match,
+    )
+    .await
 }
 
 /// Verifies `delta` against the state it builds on and applies it, without signing anything.
@@ -52,17 +73,33 @@ pub(crate) async fn apply_to_base(
         .map_err(Into::into)
 }
 
-/// Derives the metadata of a delta already applied by [`apply_to_base`], lifting operator
-/// intent from `matching_proposal` when one matched, and signs Guardian's acknowledgment of it.
+/// Runs the `before_transaction_approved` policy modules on a delta already applied by
+/// [`apply_to_base`], derives its metadata, lifting operator intent from the matching proposal
+/// when one matched, and signs Guardian's acknowledgment of it. Every Guardian ack is produced
+/// here, so no caller acknowledges a delta the modules have not approved.
 pub(crate) async fn acknowledge_applied(
     state: &AppState,
     scheme: &SignatureScheme,
+    base: StateRef<'_>,
     delta: &DeltaObject,
     applied: AppliedState,
-    matching_proposal: Option<&Value>,
+    submitter: Submitter<'_>,
+    proposal_match: &ProposalMatch,
 ) -> Result<AcknowledgedDelta> {
-    let derived_metadata =
+    let approval = approve(state, base, delta, &applied, submitter, proposal_match).await?;
+    let matching_proposal = proposal_match.payload();
+    let mut derived_metadata =
         crate::delta_summary::build_metadata(&delta.delta_payload, matching_proposal);
+    match (derived_metadata.as_mut(), approval) {
+        (Some(metadata), approval) => metadata.modules = approval,
+        (None, Some(approval)) => tracing::warn!(
+            account_id = %delta.account_id,
+            catalog_hash = %approval.catalog_hash,
+            params_version = approval.params_version,
+            "Delta has no metadata to record its module approval in"
+        ),
+        (None, None) => {}
+    }
 
     let mut acknowledged = delta.clone();
     acknowledged.new_commitment = Some(applied.commitment.clone());
@@ -76,6 +113,54 @@ pub(crate) async fn acknowledge_applied(
         applied,
         matched_proposal: matching_proposal.is_some(),
     })
+}
+
+/// The `before_transaction_approved` decision for `delta`, or `None` when no module applies to
+/// the account. A proposal lookup that failed is a module failure, never an absent proposer.
+async fn approve(
+    state: &AppState,
+    base: StateRef<'_>,
+    delta: &DeltaObject,
+    applied: &AppliedState,
+    submitter: Submitter<'_>,
+    proposal_match: &ProposalMatch,
+) -> Result<Option<ModuleApproval>> {
+    let Some(modules) = state.modules.as_deref() else {
+        return Ok(None);
+    };
+    let Some(plan) = modules
+        .plan(HookName::BeforeTransactionApproved, &delta.account_id)
+        .await?
+    else {
+        return Ok(None);
+    };
+    let proposal = match proposal_match {
+        ProposalMatch::Found(proposal) => Ok(request::proposal_context(proposal)),
+        ProposalMatch::Missing => Ok(None),
+        ProposalMatch::Unavailable(error) => Err(format!("proposal lookup failed: {error}")),
+    };
+    let views = plan.views();
+    plan.run(|| {
+        request::transaction_request(
+            state.network_client.as_ref(),
+            &views,
+            TransactionInput {
+                account_id: &delta.account_id,
+                submitter: submitter.commitment,
+                auth: submitter.auth,
+                before: base,
+                after: StateRef {
+                    commitment: &applied.commitment,
+                    json: &applied.state_json,
+                },
+                tx_summary: &delta.delta_payload,
+                proposal: proposal?,
+                accounting_time: state.clock.now(),
+            },
+        )
+    })
+    .await
+    .map(Some)
 }
 
 /// The `delta_proposals` row matching a delta, as far as storage could tell.

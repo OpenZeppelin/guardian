@@ -514,7 +514,7 @@ async fn a_pre_boundary_failure_releases_with_its_outcome(h: &Harness) {
         h.storage
             .resolve_execution(
                 h.metadata.as_ref(),
-                h.resolution(&proposal, attempt, &owner, code)
+                h.resolution(&proposal, attempt, &owner, code.clone())
             )
             .await
             .unwrap(),
@@ -523,7 +523,7 @@ async fn a_pre_boundary_failure_releases_with_its_outcome(h: &Harness) {
     );
     assert_eq!(
         h.storage
-            .fail_execution(h.resolution(&proposal, attempt, &owner, code))
+            .fail_execution(h.resolution(&proposal, attempt, &owner, code.clone()))
             .await
             .unwrap(),
         ResolveWrite::Resolved

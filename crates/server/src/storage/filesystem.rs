@@ -4447,6 +4447,62 @@ mod tests {
         tokio::fs::remove_dir_all(temp_dir).await.ok();
     }
 
+    fn pending_from(proposer: &str, signers: &[&str]) -> DeltaObject {
+        let mut proposal = create_test_delta("0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b", 1);
+        proposal.status = DeltaStatus::Pending {
+            timestamp: "2026-10-13T00:00:00Z".into(),
+            proposer_id: proposer.into(),
+            cosigner_sigs: signers
+                .iter()
+                .map(|signer| crate::delta_object::CosignerSignature {
+                    signature: guardian_shared::ProposalSignature::from_scheme(
+                        guardian_shared::SignatureScheme::Falcon,
+                        "0xsig".into(),
+                        None,
+                    ),
+                    timestamp: "2026-10-13T00:00:00Z".into(),
+                    signer_id: (*signer).into(),
+                })
+                .collect(),
+        };
+        proposal
+    }
+
+    fn proposer_of(proposal: &DeltaObject) -> (&str, usize) {
+        match &proposal.status {
+            DeltaStatus::Pending {
+                proposer_id,
+                cosigner_sigs,
+                ..
+            } => (proposer_id, cosigner_sigs.len()),
+            other => panic!("expected a pending proposal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn signature_update_after_creation_is_kept_on_reload() {
+        let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        {
+            let storage = FilesystemService::new(temp_dir.clone()).await.unwrap();
+            storage
+                .submit_delta_proposal("0xabc", &pending_from("0xfirst", &[]))
+                .await
+                .unwrap();
+            storage
+                .update_delta_proposal("0xabc", &pending_from("0xfirst", &["0xcosigner"]))
+                .await
+                .unwrap();
+        }
+        let reloaded = FilesystemService::new(temp_dir.clone()).await.unwrap();
+        let stored = reloaded
+            .pull_delta_proposal(account_id, "0xabc")
+            .await
+            .unwrap();
+        assert_eq!(proposer_of(&stored), ("0xfirst", 1));
+        tokio::fs::remove_dir_all(temp_dir).await.ok();
+    }
+
     #[tokio::test]
     async fn test_delete_nonexistent_proposal() {
         let temp_dir = env::temp_dir().join(format!("guardian_test_{}", uuid::Uuid::new_v4()));

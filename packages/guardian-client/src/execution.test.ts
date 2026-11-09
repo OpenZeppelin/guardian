@@ -12,6 +12,7 @@ import {
   fromServerExecution,
   fromServerExecutionCapability,
   isTerminalExecutionState,
+  type ServerExecutionError,
   type ServerProposalExecution,
 } from './execution.js';
 
@@ -110,6 +111,40 @@ describe('fromServerExecution', () => {
       )
     ).toThrow();
     expect(() => fromServerExecution(envelope({ state: 'failed' }))).toThrow();
+  });
+
+  it('decodes module refusals, a generic denial included, and refuses one without its meta', () => {
+    const failed = (error: ServerExecutionError) =>
+      fromServerExecution(envelope({ state: 'failed', error })).error;
+    expect(
+      failed({
+        code: 'GUARDIAN_EXECUTION_MODULE_DENIED',
+        message: 'denied',
+        meta: { module: 'caps', reason_code: 'amount_cap_exceeded', layer: 'account', client_message: 'over the cap' },
+      })
+    ).toEqual({
+      code: 'GUARDIAN_EXECUTION_MODULE_DENIED',
+      message: 'denied',
+      module: 'caps',
+      reasonCode: 'amount_cap_exceeded',
+      layer: 'account',
+      clientMessage: 'over the cap',
+    });
+    expect(
+      failed({ code: 'GUARDIAN_EXECUTION_MODULE_DENIED', message: 'denied', meta: { reason_code: 'policy_denied' } })
+    ).toEqual({
+      code: 'GUARDIAN_EXECUTION_MODULE_DENIED',
+      message: 'denied',
+      module: null,
+      reasonCode: 'policy_denied',
+      layer: null,
+      clientMessage: null,
+    });
+    expect(
+      failed({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down', meta: { module: 'caps' } })
+    ).toEqual({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down', module: 'caps' });
+    expect(() => failed({ code: 'GUARDIAN_EXECUTION_MODULE_DENIED', message: 'denied' })).toThrow();
+    expect(() => failed({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down', meta: {} })).toThrow();
   });
 
   it('maps nothing in flight and an absent nonce to null', () => {

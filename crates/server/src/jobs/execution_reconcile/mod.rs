@@ -23,7 +23,7 @@ pub enum PassKind {
 }
 
 /// What one pass did with one execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reconciled {
     /// A live worker still owns the attempt, or another reconciler does.
     Owned,
@@ -43,7 +43,7 @@ pub enum Reconciled {
 }
 
 impl Reconciled {
-    fn label(self) -> &'static str {
+    fn label(&self) -> &'static str {
         match self {
             Reconciled::Owned => "owned",
             Reconciled::Released(_) => "released",
@@ -162,7 +162,7 @@ impl Reconciler {
                 PassKind::Steady => ExecutionFailureCode::LeaseExpired,
             };
             let failure = ExecutionFailure {
-                code,
+                code: code.clone(),
                 message: "the attempt stopped renewing its lease before the no-retry boundary"
                     .to_string(),
             };
@@ -233,7 +233,10 @@ impl Reconciler {
                 Reconciled::Waiting
             }
             Observed::Settles(code, message) => {
-                let failure = ExecutionFailure { code, message };
+                let failure = ExecutionFailure {
+                    code: code.clone(),
+                    message,
+                };
                 match state
                     .storage
                     .resolve_execution(state.metadata.as_ref(), resolution(record, &fence, failure))

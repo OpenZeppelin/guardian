@@ -89,6 +89,24 @@ export type ExecutionFailure =
       message: string;
       reason: ForeignAccountUnavailableReason;
     }
+  | {
+      /** A GUARDIAN policy module refused the acknowledgement; the proposal stays stored. */
+      code: 'GUARDIAN_EXECUTION_MODULE_DENIED';
+      message: string;
+      /** The denying instance; `null` for a generic denial, which reports only `policy_denied`. */
+      module: string | null;
+      reasonCode: string;
+      /** `global` or `account`; `null` for a generic denial. */
+      layer: string | null;
+      /** The module's text for the requester, when the instance allows it. */
+      clientMessage: string | null;
+    }
+  | {
+      /** A fail-closed GUARDIAN policy module could not decide; requesting again may succeed. */
+      code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE';
+      message: string;
+      module: string;
+    }
   | { code: PlainExecutionFailureCode; message: string };
 
 export type ExecutionFailureCode = ExecutionFailure['code'];
@@ -98,6 +116,8 @@ export const EXECUTION_FAILURE_CODES: readonly ExecutionFailureCode[] = [
   'GUARDIAN_EXECUTION_REQUEST_INVALID',
   'GUARDIAN_EXECUTION_EXPIRATION_REACHED',
   'GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE',
+  'GUARDIAN_EXECUTION_MODULE_DENIED',
+  'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE',
 ];
 
 /** One execution of a proposal, identified by `(accountId, proposalId)`. */
@@ -167,6 +187,17 @@ export function fromServerExecutionCapability(server: ServerExecutionCapabilityW
   throw new Error(`Guardian returned an execution capability without a boolean enabled: ${JSON.stringify(server.enabled)}`);
 }
 
+function requiredString(value: unknown, what: string): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  throw new Error(`Guardian returned a malformed ${what}: ${JSON.stringify(value)}`);
+}
+
+function optionalString(value: unknown, what: string): string | null {
+  return value === undefined ? null : requiredString(value, what);
+}
+
 function fromServerFailure(error: ServerExecutionError): ExecutionFailure {
   const { code, message, meta } = error;
   switch (code) {
@@ -180,6 +211,17 @@ function fromServerFailure(error: ServerExecutionError): ExecutionFailure {
         message,
         reason: member(FOREIGN_ACCOUNT_UNAVAILABLE_REASONS, meta?.reason, 'foreign account reason'),
       };
+    case 'GUARDIAN_EXECUTION_MODULE_DENIED':
+      return {
+        code,
+        message,
+        module: optionalString(meta?.module, 'denying module'),
+        reasonCode: requiredString(meta?.reason_code, 'module reason code'),
+        layer: optionalString(meta?.layer, 'module layer'),
+        clientMessage: optionalString(meta?.client_message, 'module client message'),
+      };
+    case 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE':
+      return { code, message, module: requiredString(meta?.module, 'unavailable module') };
     default:
       return { code: member(PLAIN_EXECUTION_FAILURE_CODES, code, 'execution failure code'), message };
   }

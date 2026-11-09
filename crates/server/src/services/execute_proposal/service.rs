@@ -314,6 +314,7 @@ pub async fn request_execution(
         nonce: proposal.nonce,
         base_commitment: proposal.prev_commitment,
         scheme: resolved.metadata.auth.guardian_scheme(),
+        requester: resolved.signer_commitment.clone(),
         fence,
         lease,
         elector,

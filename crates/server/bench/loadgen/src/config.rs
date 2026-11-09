@@ -9,6 +9,8 @@ pub enum Scenario {
     StateWrite,
     Mixed,
     StateSync,
+    /// Only `push_delta`, one chained delta per operation; isolates the push path.
+    StatePush,
     Canonicalization,
 }
 

@@ -307,6 +307,63 @@ impl Guardian for GuardianService {
         }
     }
 
+    async fn check_delta_proposal(
+        &self,
+        request: Request<CheckDeltaProposalRequest>,
+    ) -> Result<Response<CheckDeltaProposalResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+        let params = services::PushDeltaProposalParams {
+            account_id: data.account_id,
+            nonce: data.nonce,
+            delta_payload: serde_json::from_str(&data.delta_payload)
+                .map_err(|e| Status::invalid_argument(format!("Invalid delta payload: {e}")))?,
+            credentials,
+        };
+        match services::check_proposal(&self.app_state, params).await {
+            Ok(result) => Ok(Response::new(CheckDeltaProposalResponse {
+                success: true,
+                message: "Proposal creation would pass".to_string(),
+                allowed: true,
+                complete: result.complete,
+                error_code: String::new(),
+            })),
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
+    async fn get_policies(
+        &self,
+        request: Request<GetPoliciesRequest>,
+    ) -> Result<Response<GetPoliciesResponse>, Status> {
+        let credentials = authenticated_request(&request)?;
+        let data = request.into_inner();
+        let params = services::GetPoliciesParams {
+            account_id: data.account_id,
+            credentials,
+        };
+        match services::get_policies(&self.app_state, params).await {
+            Ok(result) => Ok(Response::new(GetPoliciesResponse {
+                success: true,
+                message: "Policies retrieved successfully".to_string(),
+                account_id: result.account_id,
+                policies: result
+                    .policies
+                    .into_iter()
+                    .map(|policy| PolicyEntry {
+                        module_id: policy.module_id,
+                        hooks: policy.hooks,
+                        description: policy.description,
+                        params: policy.params.map(|params| params.to_string()),
+                        account_layer: policy.account_layer.map(|layer| layer.to_string()),
+                    })
+                    .collect(),
+                error_code: String::new(),
+            })),
+            Err(e) => Err(Status::from(e)),
+        }
+    }
+
     async fn get_delta_proposals(
         &self,
         request: Request<GetDeltaProposalsRequest>,

@@ -1192,3 +1192,134 @@ async fn an_unknown_submission_outcome_stays_submitted_and_holds_the_account() {
             .is_some()
     );
 }
+
+/// A fixture whose account is evaluated by one `before_transaction_approved` instance.
+async fn gated(
+    module: Arc<crate::modules::testing::StubModule>,
+    on_error: crate::modules::catalog::OnError,
+    client_reason: crate::modules::catalog::ClientReason,
+) -> Fixture {
+    use crate::modules::catalog::HookName;
+    use crate::modules::testing::{instance, pipeline};
+    let mut f = Fixture::new(Script::default()).await;
+    let _ = f.chain.clone().with_module_views(
+        guardian_module_sdk::AccountView::default(),
+        guardian_module_sdk::MidenTransaction::default(),
+    );
+    let mut caps = instance(
+        "caps",
+        &[HookName::BeforeTransactionApproved],
+        on_error,
+        module,
+    );
+    caps.config.client_reason = client_reason;
+    f.state.modules = Some(pipeline(vec![caps]));
+    f
+}
+
+async fn failed_with(f: &Fixture) -> ExecutionFailureCode {
+    f.request().await.unwrap();
+    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
+    assert!(
+        failed.proposal_exists,
+        "a module refusal keeps the proposal"
+    );
+    assert!(
+        f.state.storage.pull_delta(ACCOUNT, 1).await.is_err(),
+        "nothing is acknowledged or admitted"
+    );
+    assert_eq!(f.calls.lock().unwrap().proved, 0, "nothing is proved");
+    let error = failed.error.expect("a failed execution carries its cause");
+    ExecutionFailureCode::from_parts(&error.code, error.meta.as_ref())
+        .expect("the wire failure decodes to a known code")
+}
+
+#[tokio::test]
+async fn a_module_denial_ends_the_execution_before_the_ack_with_the_denial() {
+    use guardian_shared::execution::ModuleDenial;
+    let module = crate::modules::testing::StubModule::denying("amount_cap_exceeded");
+    let f = gated(
+        module.clone(),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Full,
+    )
+    .await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: Some("caps".into()),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: Some("global".into()),
+            client_message: None,
+        })
+    );
+    assert_eq!(module.calls(), 1);
+    assert_eq!(
+        module.last_request().map(|request| request.submitter),
+        Some(f.signer_commitment.clone()),
+        "the module evaluates the cosigner whose request started the execution"
+    );
+}
+
+#[tokio::test]
+async fn a_generic_denial_on_the_execution_path_names_no_module() {
+    use guardian_shared::execution::ModuleDenial;
+    let f = gated(
+        crate::modules::testing::StubModule::denying("amount_cap_exceeded"),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Generic,
+    )
+    .await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: None,
+            reason_code: "policy_denied".into(),
+            layer: None,
+            client_message: None,
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_failing_fail_closed_module_ends_the_execution_as_unavailable() {
+    let f = gated(
+        crate::modules::testing::StubModule::new(crate::modules::testing::Behaviour::Fail),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Full,
+    )
+    .await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleUnavailable {
+            module: "caps".into()
+        }
+    );
+}
+
+#[tokio::test]
+async fn an_approving_module_lets_the_execution_through_and_is_recorded_on_the_delta() {
+    let module = crate::modules::testing::StubModule::allowing();
+    let f = gated(
+        module.clone(),
+        crate::modules::catalog::OnError::Deny,
+        crate::modules::catalog::ClientReason::Full,
+    )
+    .await;
+    f.request().await.unwrap();
+    f.settle(is_submitted_or_terminal).await;
+    assert_eq!(module.calls(), 1);
+    let candidate = f
+        .state
+        .storage
+        .pull_delta(ACCOUNT, 1)
+        .await
+        .expect("the boundary admitted a candidate");
+    assert!(
+        candidate
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .is_some(),
+        "the approval is recorded on the acknowledged delta"
+    );
+}
