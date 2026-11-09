@@ -789,6 +789,424 @@
         ]
       }
     },
+    "/dashboard/accounts/{account_id}/modules": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "account_modules",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The account's effective module set, in evaluation order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountModulesView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "set_assignment",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssignmentBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Assignment stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountModulesView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing policies:write permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/accounts/{account_id}/modules/{module_id}/params": {
+      "put": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "set_account_layer",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "module_id",
+            "in": "path",
+            "description": "Module instance id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParamsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Account layer stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountModulesView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing policies:write permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "remove_account_layer",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "path",
+            "description": "Account identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "module_id",
+            "in": "path",
+            "description": "Module instance id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Account layer removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountModulesView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing policies:write permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
     "/dashboard/accounts/{account_id}/pause": {
       "post": {
         "tags": [
@@ -1346,6 +1764,514 @@
           },
           "403": {
             "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/modules": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "list_modules",
+        "responses": {
+          "200": {
+            "description": "Module instances with their runtime state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModuleCatalogView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/modules/{module_id}/disable": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "disable_module",
+        "parameters": [
+          {
+            "name": "module_id",
+            "in": "path",
+            "description": "Module instance id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Instance disabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModuleInstanceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing policies:write or modules:disable permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/modules/{module_id}/enable": {
+      "post": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "enable_module",
+        "parameters": [
+          {
+            "name": "module_id",
+            "in": "path",
+            "description": "Module instance id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReasonBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Instance enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModuleInstanceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing policies:write permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/modules/{module_id}/params": {
+      "put": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "set_global_params",
+        "parameters": [
+          {
+            "name": "module_id",
+            "in": "path",
+            "description": "Module instance id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParamsBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Global params stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModuleInstanceView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing policies:write_global permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "operator_session": []
+          }
+        ]
+      }
+    },
+    "/dashboard/modules/{module_id}/params/history": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "operationId": "params_history",
+        "parameters": [
+          {
+            "name": "module_id",
+            "in": "path",
+            "description": "Module instance id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Params changes, newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParamsHistoryView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid params, reason or assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No operator session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing dashboard:read permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or module not found, or no modules configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -4625,6 +5551,66 @@
           }
         }
       },
+      "AccountModuleEntry": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "scope",
+          "enabled",
+          "orphaned"
+        ],
+        "properties": {
+          "account_layer": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "global_params": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "orphaned": {
+            "type": "boolean",
+            "description": "A stored entry naming an instance the catalog no longer declares; skipped at evaluation."
+          },
+          "params": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "scope": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountModulesView": {
+        "type": "object",
+        "required": [
+          "account_id",
+          "modules"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string"
+          },
+          "modules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountModuleEntry"
+            }
+          }
+        }
+      },
       "AccountStatus": {
         "type": "string",
         "enum": [
@@ -4787,6 +5773,39 @@
           },
           "kind": {
             "$ref": "#/components/schemas/AssetKind"
+          }
+        }
+      },
+      "Assigned": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "params"
+        ],
+        "properties": {
+          "module_id": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
+          }
+        }
+      },
+      "AssignmentBody": {
+        "type": "object",
+        "required": [
+          "modules",
+          "reason"
+        ],
+        "properties": {
+          "modules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Assigned"
+            }
+          },
+          "reason": {
+            "type": "string"
           }
         }
       },
@@ -4987,6 +6006,14 @@
             "description": "False when a module that opts out of dry runs was skipped."
           }
         }
+      },
+      "ClientReason": {
+        "type": "string",
+        "description": "How a denial from an instance reaches the client (RFC 0002 section 4.1).",
+        "enum": [
+          "full",
+          "generic"
+        ]
       },
       "ConfigureRequest": {
         "type": "object",
@@ -6946,6 +7973,15 @@
           "client_abandoned"
         ]
       },
+      "Disclosure": {
+        "type": "string",
+        "description": "What an account's cosigners may learn about an instance (RFC 0002 section 2.7).",
+        "enum": [
+          "none",
+          "summary",
+          "params"
+        ]
+      },
       "EcdsaMessageFormat": {
         "type": "string",
         "description": "Message format used by an ECDSA approval.",
@@ -7422,6 +8458,122 @@
           "submitter": {
             "type": "string",
             "description": "The cosigner the acknowledgment was evaluated for."
+          }
+        }
+      },
+      "ModuleCatalogView": {
+        "type": "object",
+        "required": [
+          "catalog_hash",
+          "params_version",
+          "modules",
+          "undeclared"
+        ],
+        "properties": {
+          "catalog_hash": {
+            "type": "string"
+          },
+          "modules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModuleInstanceView"
+            }
+          },
+          "params_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "undeclared": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UndeclaredInstanceView"
+            },
+            "description": "Stored instances the catalog no longer declares: kept, never evaluated, active again if\nthe catalog brings the id back."
+          }
+        }
+      },
+      "ModuleInstanceView": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "kind",
+          "scope",
+          "hooks",
+          "enabled",
+          "catalog_enabled",
+          "enabled_drift",
+          "operator_can_disable",
+          "params",
+          "params_drift",
+          "file_managed_params",
+          "disclosure",
+          "client_reason",
+          "dry_run",
+          "circuit"
+        ],
+        "properties": {
+          "build": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`name version` from `describe` at startup; absent when the startup checks failed."
+          },
+          "catalog_enabled": {
+            "type": "boolean"
+          },
+          "circuit": {
+            "type": "string",
+            "description": "The instance's circuit breaker on the replica that answered: `closed`, `open` or\n`half_open`."
+          },
+          "client_reason": {
+            "$ref": "#/components/schemas/ClientReason"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "disclosure": {
+            "$ref": "#/components/schemas/Disclosure"
+          },
+          "dry_run": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "enabled_drift": {
+            "type": "boolean"
+          },
+          "file_managed_params": {
+            "type": "boolean"
+          },
+          "hooks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "kind": {
+            "type": "string"
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "operator_can_disable": {
+            "type": "boolean"
+          },
+          "params": {
+            "type": "object"
+          },
+          "params_drift": {
+            "type": "boolean"
+          },
+          "scope": {
+            "type": "string"
           }
         }
       },
@@ -8081,6 +9233,39 @@
           }
         }
       },
+      "ParamsBody": {
+        "type": "object",
+        "required": [
+          "params",
+          "reason"
+        ],
+        "properties": {
+          "params": {
+            "type": "object"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      },
+      "ParamsHistoryView": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "entries"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HistoryEntry"
+            }
+          },
+          "module_id": {
+            "type": "string"
+          }
+        }
+      },
       "PauseAccountRequest": {
         "type": "object",
         "required": [
@@ -8392,6 +9577,17 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ReasonBody": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "reason": {
+            "type": "string"
           }
         }
       },
@@ -8719,6 +9915,25 @@
           "slot_name": {
             "type": "string",
             "description": "Human-readable slot name from\n`miden_protocol::account::StorageSlotName` (e.g. `\"consumed_notes\"`).\nSlots are identified by name in Miden, not by numeric index."
+          }
+        }
+      },
+      "UndeclaredInstanceView": {
+        "type": "object",
+        "required": [
+          "module_id",
+          "enabled",
+          "params"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "module_id": {
+            "type": "string"
+          },
+          "params": {
+            "type": "object"
           }
         }
       },

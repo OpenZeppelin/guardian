@@ -110,7 +110,9 @@ fn enabled_default() -> bool {
 }
 
 /// What an account's cosigners may learn about an instance (RFC 0002 section 2.7).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Disclosure {
     #[default]
@@ -120,7 +122,9 @@ pub enum Disclosure {
 }
 
 /// How a denial from an instance reaches the client (RFC 0002 section 4.1).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, serde::Serialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum ClientReason {
     #[default]

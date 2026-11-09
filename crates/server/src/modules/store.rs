@@ -52,22 +52,25 @@ pub struct AccountParamsRow {
     pub updated_by: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HistoryEntry {
     pub version: u64,
     pub module_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
+    #[schema(value_type = Object)]
     pub previous: serde_json::Value,
+    #[schema(value_type = Object)]
     pub new: serde_json::Value,
     pub operator: String,
     pub reason: String,
     pub at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Assigned {
     pub module_id: String,
+    #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
 

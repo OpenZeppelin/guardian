@@ -14,18 +14,19 @@ use crate::state::AppState;
 
 const BODY_LIMIT: usize = 256 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ParamsBody {
+    #[schema(value_type = Object)]
     pub params: serde_json::Value,
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct ReasonBody {
     pub reason: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct AssignmentBody {
     pub modules: Vec<Assigned>,
     pub reason: String,
@@ -44,10 +45,35 @@ async fn body<T: serde::de::DeserializeOwned>(
     Ok((parsed, client_ip))
 }
 
+#[utoipa::path(
+    get,
+    path = "/dashboard/modules",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    responses(
+        (status = 200, description = "Module instances with their runtime state", body = ModuleCatalogView),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn list_modules(State(state): State<AppState>) -> Result<Json<ModuleCatalogView>> {
     admin::catalog_view(&state).await.map(Json)
 }
 
+#[utoipa::path(
+    get,
+    path = "/dashboard/accounts/{account_id}/modules",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier")),
+    responses(
+        (status = 200, description = "The account's effective module set, in evaluation order", body = AccountModulesView),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn account_modules(
     State(state): State<AppState>,
     Path(account_id): Path<String>,
@@ -55,12 +81,27 @@ pub async fn account_modules(
     admin::account_view(&state, &account_id).await.map(Json)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct HistoryQuery {
     before: Option<u64>,
     limit: Option<usize>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/dashboard/modules/{module_id}/params/history",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("module_id" = String, Path, description = "Module instance id"), HistoryQuery),
+    responses(
+        (status = 200, description = "Params changes, newest first", body = ParamsHistoryView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn params_history(
     State(state): State<AppState>,
     Path(module_id): Path<String>,
@@ -71,6 +112,21 @@ pub async fn params_history(
         .map(Json)
 }
 
+#[utoipa::path(
+    put,
+    path = "/dashboard/modules/{module_id}/params",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("module_id" = String, Path, description = "Module instance id")),
+    request_body = ParamsBody,
+    responses(
+        (status = 200, description = "Global params stored", body = ModuleInstanceView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write_global permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn set_global_params(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
@@ -90,6 +146,21 @@ pub async fn set_global_params(
     .map(Json)
 }
 
+#[utoipa::path(
+    post,
+    path = "/dashboard/modules/{module_id}/enable",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("module_id" = String, Path, description = "Module instance id")),
+    request_body = ReasonBody,
+    responses(
+        (status = 200, description = "Instance enabled", body = ModuleInstanceView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn enable_module(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
@@ -102,6 +173,21 @@ pub async fn enable_module(
         .map(Json)
 }
 
+#[utoipa::path(
+    post,
+    path = "/dashboard/modules/{module_id}/disable",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("module_id" = String, Path, description = "Module instance id")),
+    request_body = ReasonBody,
+    responses(
+        (status = 200, description = "Instance disabled", body = ModuleInstanceView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write or modules:disable permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn disable_module(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
@@ -114,6 +200,21 @@ pub async fn disable_module(
         .map(Json)
 }
 
+#[utoipa::path(
+    put,
+    path = "/dashboard/accounts/{account_id}/modules/{module_id}/params",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier"), ("module_id" = String, Path, description = "Module instance id")),
+    request_body = ParamsBody,
+    responses(
+        (status = 200, description = "Account layer stored", body = AccountModulesView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn set_account_layer(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
@@ -134,6 +235,21 @@ pub async fn set_account_layer(
     .map(Json)
 }
 
+#[utoipa::path(
+    delete,
+    path = "/dashboard/accounts/{account_id}/modules/{module_id}/params",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier"), ("module_id" = String, Path, description = "Module instance id")),
+    request_body = ReasonBody,
+    responses(
+        (status = 200, description = "Account layer removed", body = AccountModulesView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn remove_account_layer(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,
@@ -154,6 +270,21 @@ pub async fn remove_account_layer(
     .map(Json)
 }
 
+#[utoipa::path(
+    put,
+    path = "/dashboard/accounts/{account_id}/modules",
+    tag = "dashboard",
+    security(("operator_session" = [])),
+    params(("account_id" = String, Path, description = "Account identifier")),
+    request_body = AssignmentBody,
+    responses(
+        (status = 200, description = "Assignment stored", body = AccountModulesView),
+        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
+        (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+    )
+)]
 pub async fn set_assignment(
     State(state): State<AppState>,
     Extension(operator): Extension<AuthenticatedOperator>,

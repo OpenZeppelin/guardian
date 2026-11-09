@@ -11,16 +11,18 @@ use crate::dashboard::AuthenticatedOperator;
 use crate::error::{GuardianError, Result};
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ModuleInstanceView {
     pub module_id: String,
     pub kind: String,
+    #[schema(value_type = String)]
     pub scope: &'static str,
     pub hooks: Vec<String>,
     pub enabled: bool,
     pub catalog_enabled: bool,
     pub enabled_drift: bool,
     pub operator_can_disable: bool,
+    #[schema(value_type = Object)]
     pub params: serde_json::Value,
     pub params_drift: bool,
     pub file_managed_params: bool,
@@ -33,10 +35,11 @@ pub struct ModuleInstanceView {
     pub dry_run: bool,
     /// The instance's circuit breaker on the replica that answered: `closed`, `open` or
     /// `half_open`.
+    #[schema(value_type = String)]
     pub circuit: &'static str,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ModuleCatalogView {
     pub catalog_hash: String,
     pub params_version: u64,
@@ -46,35 +49,40 @@ pub struct ModuleCatalogView {
     pub undeclared: Vec<UndeclaredInstanceView>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct UndeclaredInstanceView {
     pub module_id: String,
     pub enabled: bool,
+    #[schema(value_type = Object)]
     pub params: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AccountModuleEntry {
     pub module_id: String,
+    #[schema(value_type = String)]
     pub scope: &'static str,
     pub enabled: bool,
     /// A stored entry naming an instance the catalog no longer declares; skipped at evaluation.
     pub orphaned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub global_params: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub account_layer: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
     pub params: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AccountModulesView {
     pub account_id: String,
     pub modules: Vec<AccountModuleEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct ParamsHistoryView {
     pub module_id: String,
     pub entries: Vec<HistoryEntry>,
