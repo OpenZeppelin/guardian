@@ -43,12 +43,24 @@ pub const DB_POOL_CONNECTIONS_MAX: &str = "guardian_db_pool_connections_max";
 pub const DB_POOL_CONNECTIONS: &str = "guardian_db_pool_connections";
 pub const DB_POOL_CONNECTIONS_AVAILABLE: &str = "guardian_db_pool_connections_available";
 pub const DB_POOL_PENDING_ACQUIRES: &str = "guardian_db_pool_pending_acquires";
+pub const DB_POOL_ACQUIRE_DURATION_SECONDS: &str = "guardian_db_pool_acquire_duration_seconds";
 
 // --- Miden RPC (outbound calls to the chain node) -------------------------
 
 pub const MIDEN_RPC_REQUESTS_TOTAL: &str = "guardian_miden_rpc_requests_total";
 pub const MIDEN_RPC_DURATION_SECONDS: &str = "guardian_miden_rpc_duration_seconds";
 pub const MIDEN_RPC_RETRIES_TOTAL: &str = "guardian_miden_rpc_retries_total";
+
+// --- State reconstruction (CPU-bound delta application) ----------------
+
+pub const STATE_RECONSTRUCTION_DURATION_SECONDS: &str =
+    "guardian_state_reconstruction_duration_seconds";
+
+// --- Session read records ------------------------------------------------
+
+pub const SESSION_READ_MAINTENANCE_TIMESTAMP_SECONDS: &str =
+    "guardian_session_read_maintenance_timestamp_seconds";
+pub const SESSION_READS_TOTAL: &str = "guardian_session_reads_total";
 
 // --- Canonicalization jobs ----------------------------------------------
 
@@ -120,6 +132,14 @@ pub const OPERATOR_AUTH_CHALLENGES_TOTAL: &str = "guardian_operator_auth_challen
 pub const OPERATOR_AUTH_VERIFICATIONS_TOTAL: &str = "guardian_operator_auth_verifications_total";
 pub const OPERATOR_SESSIONS_STARTED_TOTAL: &str = "guardian_operator_sessions_started_total";
 pub const RATE_LIMIT_REJECTIONS_TOTAL: &str = "guardian_rate_limit_rejections_total";
+pub const RATE_LIMIT_LOCK_WAIT_DURATION_SECONDS: &str =
+    "guardian_rate_limit_lock_wait_duration_seconds";
+
+// --- Per-account request authentication ------------------------------------
+
+pub const AUTH_REJECTIONS_TOTAL: &str = "guardian_auth_rejections_total";
+pub const METADATA_CACHE_REQUESTS_TOTAL: &str = "guardian_metadata_cache_requests_total";
+pub const READ_AUTH_LOOKUP_DURATION_SECONDS: &str = "guardian_read_auth_lookup_duration_seconds";
 
 // --- Slow aggregates (set by the background refresher) -------------------
 
@@ -161,6 +181,7 @@ pub const LABEL_VERSION: &str = "version";
 pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
 pub const LABEL_PHASE: &str = "phase";
+pub const LABEL_CREDENTIAL: &str = "credential";
 pub const LABEL_REASON: &str = "reason";
 
 /// The closed value set for `LABEL_TRANSPORT`: the request transports,
@@ -188,6 +209,7 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_GIT_COMMIT,
     LABEL_PROFILE,
     LABEL_PHASE,
+    LABEL_CREDENTIAL,
     LABEL_REASON,
 ];
 
@@ -266,6 +288,33 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Outbound Miden chain-node RPC latency in seconds, by operation.",
     },
     MetricDef {
+        name: STATE_RECONSTRUCTION_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[LABEL_KIND],
+        help: "CPU time of one state reconstruction (delta application and \
+               commitment), excluding the wait for a slot, by kind: \
+               foreground (request path) or background (canonicalization and \
+               other workers).",
+    },
+    MetricDef {
+        name: SESSION_READ_MAINTENANCE_TIMESTAMP_SECONDS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Unix time of this replica's last successful maintenance of the \
+               session read records (buckets created ahead, purged ones \
+               dropped). Session reads under the `unique` policy are refused \
+               once no bucket exists for them, an hour after the last success.",
+    },
+    MetricDef {
+        name: SESSION_READS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_KIND, LABEL_OUTCOME],
+        help: "Session reads from live sessions by admission kind (recorded: \
+               admitted once and recorded; window_only: the canonical nonce \
+               poll, accepted every time inside its window) and outcome \
+               (recorded, served, duplicate, stale, outside_window).",
+    },
+    MetricDef {
         name: MIDEN_RPC_RETRIES_TOTAL,
         kind: MetricKind::Counter,
         labels: &[LABEL_OPERATION],
@@ -312,6 +361,35 @@ pub const REGISTRY: &[MetricDef] = &[
         help: "Tasks currently waiting to acquire a database connection, by pool — \
                sustained nonzero values indicate pool exhaustion (postgres builds). \
                Refreshed asynchronously.",
+    },
+    MetricDef {
+        name: DB_POOL_ACQUIRE_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[LABEL_POOL],
+        help: "Time a caller waited to check out a database connection, by pool \
+               (postgres builds).",
+    },
+    MetricDef {
+        name: AUTH_REJECTIONS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_CREDENTIAL, LABEL_REASON],
+        help: "Per-account request authentication rejections by credential kind \
+               (wallet, session) and reason (replay, stale, timestamp_window, \
+               invalid_signature, session_invalid, not_cosigner).",
+    },
+    MetricDef {
+        name: METADATA_CACHE_REQUESTS_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_OUTCOME],
+        help: "Read-path account metadata lookups by outcome: hit (cached copy \
+               current), reload (cached copy stale), miss (not cached).",
+    },
+    MetricDef {
+        name: READ_AUTH_LOOKUP_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Duration of the per-read authorization lookup against the \
+               primary database.",
     },
     MetricDef {
         name: CANONICALIZATION_RUNS_TOTAL,
@@ -595,6 +673,12 @@ pub const REGISTRY: &[MetricDef] = &[
         labels: &[LABEL_LIMIT_TYPE, LABEL_TRANSPORT],
         help: "Requests rejected by the rate limiter, by limit type (burst, sustained) \
                and transport (http, grpc).",
+    },
+    MetricDef {
+        name: RATE_LIMIT_LOCK_WAIT_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[],
+        help: "Time a request waited for the in-process rate-limiter lock.",
     },
     MetricDef {
         name: DELTAS_GAUGE,

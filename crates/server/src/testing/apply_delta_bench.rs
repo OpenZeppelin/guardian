@@ -253,7 +253,7 @@ fn print_row(label: String, state_bytes: usize, delta_bytes: usize, samples: &[u
 async fn apply_delta_cost_by_account_size() {
     let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
     println!(
-        "\napply_delta — partial delta by account size (warmup={WARMUP_ITERS}, measured={MEASURED_ITERS})"
+        "\napply_delta: partial delta by account size (warmup={WARMUP_ITERS}, measured={MEASURED_ITERS})"
     );
     print_header("cosig/txs");
 
@@ -277,7 +277,7 @@ async fn apply_delta_cost_by_account_size() {
 async fn apply_delta_cost_full_state_deployment() {
     let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
     println!(
-        "\napply_delta — full-state deployment (warmup={WARMUP_ITERS}, measured={MEASURED_ITERS})"
+        "\napply_delta: full-state deployment (warmup={WARMUP_ITERS}, measured={MEASURED_ITERS})"
     );
     print_header("cosigners");
 
@@ -301,7 +301,7 @@ async fn apply_delta_cost_full_state_deployment() {
 async fn apply_delta_cost_large_delta() {
     let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
     println!(
-        "\napply_delta — largest accepted delta (~1 MB body limit) (warmup={WARMUP_ITERS}, measured={MEASURED_ITERS})"
+        "\napply_delta: largest accepted delta (~1 MB body limit) (warmup={WARMUP_ITERS}, measured={MEASURED_ITERS})"
     );
     print_header("base txs");
 
@@ -316,6 +316,73 @@ async fn apply_delta_cost_large_delta() {
             json_bytes(&state_json),
             json_bytes(&delta_payload),
             &samples,
+        );
+    }
+    println!();
+}
+
+fn median_micros(mut run: impl FnMut() -> u128) -> u128 {
+    let mut samples: Vec<u128> = (0..PHASE_ITERS).map(|_| run()).collect();
+    samples.sort_unstable();
+    percentile(&samples, 0.50)
+}
+
+const PHASE_ITERS: usize = 30;
+
+/// Splits one reconstruction into its phases, to tell which optimisation
+/// removes the cost: loading the snapshot (JSON, base64 and rebuilding the
+/// storage trees), applying the patch to a loaded account, the commitment,
+/// and serializing the result.
+#[tokio::test]
+#[ignore = "release-mode benchmark; run with --release --ignored --nocapture"]
+async fn apply_delta_cost_by_phase() {
+    use guardian_shared::FromJson;
+    use miden_protocol::transaction::TransactionSummary;
+
+    println!("\napply_delta: p50 by phase (iterations={PHASE_ITERS})");
+    println!(
+        "{:>12} {:>12} {:>12} {:>12} {:>12} {:>12}",
+        "cosig/txs", "load", "apply", "commitment", "serialize", "total"
+    );
+    for &(cosigners, executed_txs) in &[(3usize, 0usize), (3, 1_000), (11, 10_000), (50, 50_000)] {
+        let account = build_account(cosigners, executed_txs);
+        let state_json = account.to_json();
+        let summary = TransactionSummary::from_json(&build_partial_delta(&account, 1))
+            .expect("transaction summary");
+        let delta = summary.account_delta().clone();
+
+        let load = median_micros(|| {
+            let started = Instant::now();
+            black_box(Account::from_json(black_box(&state_json)).expect("load"));
+            started.elapsed().as_micros()
+        });
+        let apply = median_micros(|| {
+            let mut loaded = account.clone();
+            let started = Instant::now();
+            guardian_shared::account_delta::apply_account_delta(&mut loaded, black_box(&delta))
+                .expect("apply");
+            let elapsed = started.elapsed().as_micros();
+            black_box(loaded);
+            elapsed
+        });
+        let commitment = median_micros(|| {
+            let started = Instant::now();
+            black_box(black_box(&account).to_commitment());
+            started.elapsed().as_micros()
+        });
+        let serialize = median_micros(|| {
+            let started = Instant::now();
+            black_box(black_box(&account).to_json());
+            started.elapsed().as_micros()
+        });
+        println!(
+            "{:>12} {:>12} {:>12} {:>12} {:>12} {:>12}",
+            format!("{cosigners}/{executed_txs}"),
+            fmt_micros(load),
+            fmt_micros(apply),
+            fmt_micros(commitment),
+            fmt_micros(serialize),
+            fmt_micros(load + apply + commitment + serialize),
         );
     }
     println!();

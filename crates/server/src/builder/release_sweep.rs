@@ -85,7 +85,7 @@ impl Default for ReleaseSweepConfig {
         Self {
             enabled: true,
             rotation_seconds: 6 * 60 * 60, // every account checked every 6 hours
-            max_rate_per_second: 5,        // bounded share of node RPC capacity
+            max_rate_per_second: 10,       // bounded share of node RPC capacity
             page_size: 100,
             recheck_seconds: 60,
             confirmations: 2,
@@ -269,11 +269,11 @@ mod tests {
         let config = ReleaseSweepConfig::default();
         assert!(config.enabled);
         assert_eq!(config.rotation_seconds, 21_600);
-        assert_eq!(config.max_rate_per_second, 5);
+        assert_eq!(config.max_rate_per_second, 10);
         assert_eq!(config.page_size, 100);
         assert_eq!(config.recheck_seconds, 60);
         assert_eq!(config.confirmations, 2);
-        assert_eq!(config.min_spacing(), Duration::from_millis(200));
+        assert_eq!(config.min_spacing(), Duration::from_millis(100));
     }
 
     #[test]

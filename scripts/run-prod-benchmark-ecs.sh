@@ -309,7 +309,7 @@ fi
 
 TASK_DEF_JSON="$(aws_cmd ecs describe-task-definition --task-definition "$SERVER_TASK_DEFINITION_ARN" --output json)"
 TASK_EXECUTION_ROLE_ARN="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.executionRoleArn')"
-TASK_ROLE_ARN="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.taskRoleArn')"
+TASK_ROLE_ARN="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.taskRoleArn // empty')"
 CPU_ARCHITECTURE_NAME="${CPU_ARCHITECTURE:-$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.runtimePlatform.cpuArchitecture // empty')}"
 SERVER_LOG_GROUP="$(printf '%s' "$TASK_DEF_JSON" | "$JQ_BIN" -r '.taskDefinition.containerDefinitions[0].logConfiguration.options["awslogs-group"]')"
 
@@ -400,7 +400,7 @@ TASK_DEF_FILE="$(mktemp)"
         }
       }
     ]
-  }' > "$TASK_DEF_FILE"
+  } | if $task_role_arn == "" then del(.taskRoleArn) else . end' > "$TASK_DEF_FILE"
 
 BENCH_TASK_DEFINITION_ARN="$(aws_cmd ecs register-task-definition --cli-input-json "file://${TASK_DEF_FILE}" --query 'taskDefinition.taskDefinitionArn' --output text)"
 rm -f "$TASK_DEF_FILE"
@@ -470,6 +470,25 @@ for task_arn in "${TASK_ARNS[@]}"; do
   fi
 done
 
+fetch_log_stream() {
+  local stream="$1" token="" next page
+  page="$(mktemp)"
+  while :; do
+    "$JQ_BIN" -n --arg g "$SERVER_LOG_GROUP" --arg s "$stream" --arg t "$token" \
+      '{logGroupName: $g, logStreamName: $s, startFromHead: true} + (if $t == "" then {} else {nextToken: $t} end)' \
+      > "${page}.req"
+    if ! aws_cmd logs get-log-events --cli-input-json "file://${page}.req" --output json > "$page"; then
+      rm -f "$page" "${page}.req"
+      return 1
+    fi
+    "$JQ_BIN" -r '.events[].message' "$page"
+    next="$("$JQ_BIN" -r '.nextForwardToken' "$page")"
+    [ "$next" = "$token" ] && break
+    token="$next"
+  done
+  rm -f "$page" "${page}.req"
+}
+
 for task_id in "${TASK_IDS[@]}"; do
   log_stream="${LOG_STREAM_PREFIX}/${BENCH_CONTAINER_NAME}/${task_id}"
   log_file="${WORKER_ARTIFACT_DIR}/${task_id}.log"
@@ -477,22 +496,25 @@ for task_id in "${TASK_IDS[@]}"; do
   artifact_line=""
 
   for _ in $(seq 1 20); do
-    if aws_cmd logs get-log-events \
-      --log-group-name "$SERVER_LOG_GROUP" \
-      --log-stream-name "$log_stream" \
-      --output json > "$log_file" 2>/dev/null; then
-      artifact_line="$( "$JQ_BIN" -r '.events[].message' "$log_file" | grep '^BENCH_WORKER_ARTIFACT_BASE64=' | tail -n1 || true )"
+    if fetch_log_stream "$log_stream" > "$log_file" 2>/dev/null; then
+      artifact_line="$( awk '
+        found && !/^[A-Za-z0-9+\/=]+$/ { exit }
+        /^BENCH_WORKER_ARTIFACT_BASE64=/ { found = 1 }
+        found { printf "%s", $0 }
+      ' "$log_file" || true )"
     fi
-    if [ -n "$artifact_line" ]; then
+    if [ -n "$artifact_line" ] \
+      && printf '%s' "${artifact_line#BENCH_WORKER_ARTIFACT_BASE64=}" | base64 -d 2>/dev/null | "$JQ_BIN" -e . >/dev/null 2>&1; then
       break
     fi
+    artifact_line=""
     sleep 3
   done
 
   if [ -z "$artifact_line" ]; then
     log_error "failed to retrieve worker artifact from log stream ${log_stream}"
     if [ -f "$log_file" ]; then
-      "$JQ_BIN" -r '.events[].message' "$log_file" | tail -n 50 >&2 || true
+      grep -v '^[A-Za-z0-9+/=]*$' "$log_file" | grep -v '^BENCH_WORKER_ARTIFACT_BASE64=' | tail -n 50 >&2 || true
     fi
     exit 1
   fi

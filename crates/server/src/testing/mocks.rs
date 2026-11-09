@@ -2193,6 +2193,25 @@ impl MetadataStore for MockMetadataStore {
             .unwrap_or_else(|| Ok(vec![]))
     }
 
+    async fn count(&self) -> StdResult<u64, String> {
+        self.list().await.map(|ids| ids.len() as u64)
+    }
+
+    async fn get_for_read_at(
+        &self,
+        account_id: &str,
+        _auth_version: i64,
+    ) -> StdResult<Option<crate::metadata::AccountMetadata>, String> {
+        self.get(account_id).await
+    }
+
+    async fn get_for_read(
+        &self,
+        account_id: &str,
+    ) -> StdResult<Option<crate::metadata::AccountMetadata>, String> {
+        self.get(account_id).await
+    }
+
     async fn list_paged(
         &self,
         _limit: u32,
@@ -2230,8 +2249,31 @@ impl MetadataStore for MockMetadataStore {
             .unwrap_or_else(|| Ok(Vec::new()))
     }
 
-    async fn purge_session_floors(&self, _before_ms: i64) -> StdResult<u64, String> {
+    async fn purge_session_floors(
+        &self,
+        _max_age_ms: i64,
+        _clock: &dyn crate::builder::clock::Clock,
+    ) -> StdResult<u64, String> {
         Ok(0)
+    }
+
+    async fn advance_session_floor(
+        &self,
+        account_id: &str,
+        floor_key: &str,
+        timestamp: i64,
+        _skew_ms: i64,
+        _clock: &dyn crate::builder::clock::Clock,
+    ) -> StdResult<crate::metadata::SessionFloorOutcome, String> {
+        self.update_last_auth_timestamp_cas(account_id, floor_key, timestamp)
+            .await
+            .map(|advanced| {
+                if advanced {
+                    crate::metadata::SessionFloorOutcome::Advanced
+                } else {
+                    crate::metadata::SessionFloorOutcome::Replay
+                }
+            })
     }
 
     async fn update_last_auth_timestamp_cas(

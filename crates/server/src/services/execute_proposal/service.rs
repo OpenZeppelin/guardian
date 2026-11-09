@@ -130,7 +130,13 @@ pub async fn request_execution(
         proposal_id,
         credentials,
     } = params;
-    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
+    let resolved = resolve_account_allowing_session(
+        state,
+        &account_id,
+        &credentials,
+        guardian_shared::session_request::SessionOperation::ExecuteDeltaProposal,
+    )
+    .await?;
     ensure_account_active_metadata(&resolved.metadata)?;
     let executor = state
         .execution

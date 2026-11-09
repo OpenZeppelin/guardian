@@ -177,7 +177,7 @@ pub struct ConfigureResponse {
     path = "/configure",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     request_body = ConfigureRequest,
     responses(
         (status = 200, description = "Account configured", body = ConfigureResponse),
@@ -218,7 +218,7 @@ pub async fn configure(
     path = "/delta",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     request_body = DeltaObject,
     responses(
         (status = 200, description = "Delta accepted", body = DeltaObject),
@@ -254,7 +254,7 @@ pub async fn push_delta(
     path = "/delta",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Delta found", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -286,7 +286,7 @@ pub async fn get_delta(
     path = "/delta/since",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(DeltaQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Merged delta", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -319,7 +319,7 @@ pub async fn get_delta_since(
     path = "/delta/history",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(HistoryQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(HistoryQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "One page of canonical history", body = crate::services::PagedResult<crate::services::HistoryEntry>),
         (status = 400, description = "Invalid limit or cursor, or account on an unsupported network (unsupported_for_network)", body = crate::openapi::ApiErrorResponse),
@@ -359,7 +359,7 @@ pub async fn get_delta_history(
     path = "/state",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(StateQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Current account state", body = StateObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -501,6 +501,8 @@ pub struct CreateSessionResponse {
     pub signer_commitment: String,
     /// RFC 3339 UTC.
     pub expires_at: String,
+    #[serde(flatten)]
+    pub request_policy: crate::session::SessionRequestPolicy,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -512,7 +514,7 @@ pub struct RevokeSessionResponse {
 /// Register a wallet-authorized P-256 delegated signer.
 ///
 /// The wallet signs a session grant once; afterwards the delegated signer
-/// signs per-account requests with `x-auth-format: session`. Wallet-only
+/// signs per-account requests with `x-auth-format: session-v2`. Wallet-only
 /// routes (`/delta/candidate/abandon`, `/configure`, `/state/lookup`,
 /// `/session/revoke-all`, and `POST /delta` onto an account without the
 /// multisig auth) reject session credentials with
@@ -558,6 +560,7 @@ pub async fn create_session(
     Ok(Json(CreateSessionResponse {
         signer_commitment: result.signer_commitment,
         expires_at: result.expires_at.to_rfc3339(),
+        request_policy: result.request_policy,
     }))
 }
 
@@ -688,6 +691,7 @@ pub async fn status(State(state): State<AppState>) -> Json<crate::services::Stat
         ),
         crate::services::SessionsStatus {
             max_ttl_seconds: state.miden_sessions.config().max_ttl_seconds(),
+            request_policy: state.miden_sessions.request_policy(),
         },
     ))
 }
@@ -741,7 +745,7 @@ pub async fn get_pubkey(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     request_body = DeltaProposalRequest,
     responses(
         (status = 200, description = "Proposal created", body = DeltaProposalResponse),
@@ -795,7 +799,7 @@ pub async fn push_delta_proposal(
     path = "/delta/candidate/abandon",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     request_body = AbandonCandidateRequest,
     responses(
         (status = 202, description = "Abandon intent accepted (or already resolved)", body = AbandonCandidateResponse),
@@ -871,7 +875,7 @@ pub struct CurrentExecutionResponse {
     path = "/delta/proposal/execution",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     request_body = ExecuteProposalRequest,
     responses(
         (status = 202, description = "Execution accepted", body = crate::services::execution_status::ExecutionEnvelope),
@@ -917,7 +921,7 @@ pub async fn execute_delta_proposal(
     path = "/delta/proposal/execution",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(ExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Execution state", body = crate::services::execution_status::ExecutionEnvelope),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -948,7 +952,7 @@ pub async fn get_delta_proposal_execution(
     path = "/delta/execution/current",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(CurrentExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(CurrentExecutionQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "The in-flight execution, or null", body = CurrentExecutionResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -977,7 +981,7 @@ pub async fn get_current_execution(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ProposalQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(ProposalQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Pending proposals, each without its stored `transaction_request` (the single-proposal read returns it)", body = ProposalsResponse),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -1008,7 +1012,7 @@ pub async fn get_delta_proposals(
     path = "/delta/proposal/single",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(ProposalItemQuery, ("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(ProposalItemQuery, ("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     responses(
         (status = 200, description = "Proposal found", body = DeltaObject),
         (status = 401, description = "Authentication failed or replay rejected", body = crate::openapi::ApiErrorResponse),
@@ -1043,7 +1047,7 @@ pub async fn get_delta_proposal(
     path = "/delta/proposal",
     tag = "client",
     security(("x-pubkey" = [], "x-signature" = [], "x-timestamp" = [])),
-    params(("x-auth-format" = Option<String>, Header, description = "Optional ECDSA request format: eip712; omitted for raw signatures")),
+    params(("x-auth-format" = Option<String>, Header, description = "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures")),
     request_body = SignProposalRequest,
     responses(
         (status = 200, description = "Signature accepted", body = DeltaObject),

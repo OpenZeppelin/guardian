@@ -28,6 +28,7 @@ fn merge_worker_operations_should_sum_counts() {
             operations: vec![sample_operation("push_delta", "all", 10, 8, 2, 4.0, 100.0)],
             cleanup_accounts: vec![sample_account("0x1")],
             canonicalization_samples: vec![],
+            wallet_signed_operations: 0,
         },
         WorkerArtifact {
             run_id: "run-1".to_string(),
@@ -43,6 +44,7 @@ fn merge_worker_operations_should_sum_counts() {
             operations: vec![sample_operation("push_delta", "all", 12, 10, 2, 5.0, 200.0)],
             cleanup_accounts: vec![sample_account("0x2")],
             canonicalization_samples: vec![],
+            wallet_signed_operations: 0,
         },
     ];
 

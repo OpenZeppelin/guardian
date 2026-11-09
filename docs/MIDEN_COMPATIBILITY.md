@@ -611,6 +611,83 @@ wallet-only. The new SDKs sign a push with the session whenever one is active.
 - **A push onto an account without the multisig auth stays wallet-only**
   (`wallet_signature_required`); see the previous section.
 
+### Operation-bound session requests (0.19.0)
+
+Session requests are now signed over a version 2 envelope that binds the
+transport and the route's operation (`x-auth-format: session-v2`, see
+`spec/api.md`, Session Authentication), so a signed request cannot be
+replayed on another route. This is a breaking change for session requests
+only; wallet-signed requests, session grants and logout are unchanged.
+
+- Server and SDKs must be upgraded together. An upgraded Guardian answers
+  `x-auth-format: session` with `unsupported_auth_version` (HTTP 400, gRPC
+  `INVALID_ARGUMENT`), so browser apps on an older SDK lose session requests
+  until they upgrade. An upgraded SDK refuses a Guardian that does not report
+  `request_auth_version: 2` when it starts a session. Neither side falls back
+  to the other format.
+- Existing grants and stored session keys keep working after the SDK
+  upgrade: the grant format and key usages are unchanged, so no new wallet
+  prompt is needed.
+- An earlier release answers a version 2 session request with
+  `authentication_failed` (HTTP 401) on HTTP and `INVALID_ARGUMENT` on gRPC.
+  The TypeScript SDK reads that as a rejected session: it drops the session
+  key and signs later requests with the wallet until the app starts a new
+  session. The Rust SDK returns the error to the caller and keeps the
+  session. This happens only while a request can reach an earlier release:
+  during a rolling update that overlaps both versions (a session started on
+  a new replica, then served by an old one) and after a rollback.
+- Cut a server fleet over as a whole (drained or blue/green) to avoid it. On a
+  rolling update the exposure is the overlap: sessions started during it may
+  end and be started again.
+- Rolling the server back to an earlier release fails explicitly rather
+  than silently: upgraded SDKs refuse to start a session against it
+  (`UnsupportedAuthVersion`), a TypeScript session already running ends on
+  its next request and falls back to the wallet, and a Rust session already
+  running has its requests refused until the server is upgraded again.
+  Wallet-signed requests keep working across the rollback.
+- Each signed session read is accepted
+  once, in any order, so parallel and reordered reads no longer fail with
+  `authentication_replay`. Session writes keep the strict timestamp floor.
+  A replica of an earlier release never accepts a version 2 session request.
+- The session-signed canonical nonce poll (`GET /state/nonce`,
+  `GetCanonicalNonce`) is the one exception: it is accepted every time
+  inside its timestamp window and leaves no record, so polling it costs no
+  database write. A copy of a poll returns only the nonce and state head the
+  session could read anyway, and stops working once the session is revoked
+  or expires.
+- Existing sessions keep working: an upgraded SDK signs version 2 with the
+  same session key, and its reads are admitted by the record like any other
+  session's. No new wallet prompt is needed.
+- Session reads must carry a timestamp within 60 s of server time (5 minutes
+  before this release), and the canonical nonce poll at most 60 s behind and 30 s ahead;
+  wallet requests and session writes keep 5 minutes. A client whose
+  clock is more than a minute off gets `timestamp_out_of_window` on session
+  reads and keeps its session: sync its clock.
+- SDK API changes:
+  - TypeScript `SessionRequestSigner` implementations receive the operation as
+    a new first argument of `signRequest` and must sign the envelope returned
+    by `sessionRequestEnvelope`. They must also provide `nextTimestamp(accountId)`
+    (strictly increasing per account, at most 1 s ahead of the clock; the
+    `SessionTimestamps` helper does this) and `writeSequencer` (a
+    `WriteSequencer`, shared by every client using the session). A JavaScript
+    signer without them fails on its first session request.
+    `nextTimestamp(accountId, afterReplay)` takes a second argument: after a
+    replay rejection the timestamp jumps near the 1 s ahead limit, so a
+    session resumed in another page or tab does not keep colliding.
+  - `resumeGuardianSession` / `MultisigClient.resumeSession` now read
+    `GET /status` and throw `UnsupportedAuthVersionError` for a Guardian that
+    does not report version 2, instead of returning a session that would fail
+    on its first request.
+  - The TypeScript `CreateSessionResponse` gains `requestAuthVersion`, and
+    `StatusResponse.sessions` gains it as an optional field.
+  - Rust `ClientError` gains `UnsupportedAuthVersion` (exhaustive matches must
+    handle it); the generated `CreateSessionResponse` gains
+    `request_auth_version`, so struct literals of it must set it.
+  - A new error code, `timestamp_out_of_window` (401), replaces
+    `authentication_failed` for a request timestamp outside its window. Both
+    SDKs keep the session on it; integrations branching on
+    `authentication_failed` for clock problems should add it.
+
 ### Registration and reconfiguration (0.19.0)
 
 - **`/configure` registers only guarded multisig accounts.** A state without

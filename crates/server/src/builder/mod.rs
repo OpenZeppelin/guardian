@@ -608,12 +608,28 @@ impl ServerBuilder {
         let miden_sessions = {
             let config =
                 crate::session::SessionConfig::from_env().map_err(|error| error.to_string())?;
-            let store = match coordination.as_ref() {
-                Some(handles) => handles.miden_sessions.clone(),
-                None => Arc::new(crate::coordination::InMemorySessionStore::new()),
-            };
-            Arc::new(crate::session::MidenSessions::new(config, store))
+            match coordination.as_ref() {
+                Some(handles) => Arc::new(
+                    crate::session::MidenSessions::new(config, handles.miden_sessions.clone())
+                        .with_read_records(handles.read_records.clone()),
+                ),
+                None => Arc::new(crate::session::MidenSessions::new(
+                    config,
+                    Arc::new(crate::coordination::InMemorySessionStore::new()),
+                )),
+            }
         };
+        miden_sessions
+            .read_records()
+            .maintain(
+                chrono::Utc::now().timestamp_millis(),
+                crate::session::READ_RECORD_RETAIN_MS,
+                crate::session::READ_RECORD_AHEAD_MS,
+            )
+            .await
+            .map_err(|error| {
+                format!("Failed to prepare the session read records before serving: {error}")
+            })?;
 
         let rpc_settings = crate::network::RpcSettings::resolve_for(self.rpc, network_type)?;
         let network_client = rpc_settings.connect().await?;

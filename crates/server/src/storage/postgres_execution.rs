@@ -1,3 +1,4 @@
+use crate::storage::postgres::TimedCheckout;
 use chrono::{DateTime, Utc};
 use diesel::prelude::*;
 use diesel_async::scoped_futures::ScopedFutureExt;
@@ -487,7 +488,7 @@ impl PostgresService {
         &self,
     ) -> Result<diesel_async::pooled_connection::deadpool::Object<AsyncPgConnection>, String> {
         self.pool
-            .get()
+            .get_timed(crate::metrics::labels::PoolKind::Storage)
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))
     }

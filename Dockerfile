@@ -60,7 +60,6 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 COPY --from=benchmark-builder /app/target/release/guardian-prod-benchmarks /app/guardian-prod-benchmarks
-COPY --from=benchmark-builder /app/crates/contracts/masm /app/crates/contracts/masm
 
 ENTRYPOINT ["/app/guardian-prod-benchmarks"]
 
