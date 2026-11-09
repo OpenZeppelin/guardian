@@ -142,12 +142,9 @@ async fn validated(
     let stored = validate_params(&instance.module, params, instance.config.timeout)
         .await
         .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
-    if contains_secret_reference(&stored) {
-        return Err(GuardianError::InvalidInput(format!(
-            "module {}: normalized params contain a secret reference",
-            instance.config.id
-        )));
-    }
+    pipeline
+        .storable_normalization(&stored)
+        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
     Ok(stored)
 }
 
@@ -398,7 +395,13 @@ pub async fn enable(
                     module: Some(module_id.to_string()),
                 }
             })?;
-        if checked.params != params && !instance.config.file_managed_params {
+        let storable = pipeline
+            .storable_normalization(&checked.params)
+            .inspect_err(|error| {
+                tracing::warn!(module = %module_id, %error, "Module's normalized params break the params rules; kept the stored params");
+            })
+            .is_ok();
+        if checked.params != params && !instance.config.file_managed_params && storable {
             let migrator = format!(
                 "module:{}",
                 instance.build.as_deref().unwrap_or(&instance.config.kind)

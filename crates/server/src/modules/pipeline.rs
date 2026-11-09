@@ -115,7 +115,22 @@ impl std::fmt::Display for Failure {
     }
 }
 
+/// The rules every stored params value follows, applied to what a module returns as normalized
+/// params: within the size cap and free of secret references.
+fn storable(limits: &Limits, params: &serde_json::Value) -> Result<(), String> {
+    limits.check_params_size(params)?;
+    if super::catalog::contains_secret_reference(params) {
+        return Err("normalized params contain a secret reference".into());
+    }
+    Ok(())
+}
+
 impl ModulePipeline {
+    /// [`storable`] under this pipeline's limits.
+    pub fn storable_normalization(&self, params: &serde_json::Value) -> Result<(), String> {
+        storable(&self.limits, params)
+    }
+
     pub async fn new(
         mut catalog: Catalog,
         registry: &Registry,
@@ -170,7 +185,11 @@ impl ModulePipeline {
             let seed = if config.file_managed_params {
                 serde_json::json!({})
             } else {
-                normalized.get(&config.id).unwrap_or(&config.params).clone()
+                normalized
+                    .get(&config.id)
+                    .filter(|params| storable(&limits, params).is_ok())
+                    .unwrap_or(&config.params)
+                    .clone()
             };
             store
                 .seed_instance(&config.id, config.enabled, &seed, &now)
@@ -186,6 +205,10 @@ impl ModulePipeline {
             ) else {
                 continue;
             };
+            if let Err(error) = storable(&limits, params) {
+                tracing::warn!(module = %instance.config.id, %error, "Module's normalized params break the params rules; kept the stored params");
+                continue;
+            }
             let operator = format!(
                 "module:{}",
                 instance.build.as_deref().unwrap_or(&instance.config.kind)
@@ -1227,6 +1250,54 @@ params = {params}
             ),
             "an effect this Guardian does not know is never read as an allow"
         );
+    }
+
+    #[tokio::test]
+    async fn normalized_params_that_break_the_params_rules_are_not_stored() {
+        use crate::modules::testing::{FixedFactory, ProtocolStub};
+        let catalog = Catalog::parse(
+            r#"
+[[module]]
+id = "migrating"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+params = { old_name = 5 }
+"#,
+            None,
+        )
+        .unwrap();
+        for normalized in [
+            serde_json::json!({ "new_name": "x".repeat(200) }),
+            serde_json::json!({ "key": { "$secret": "vendor-key" } }),
+        ] {
+            let mut stub = ProtocolStub::new();
+            stub.normalized = Some(normalized.clone());
+            let mut registry = Registry::first_party();
+            registry
+                .register("protocol-stub", Arc::new(FixedFactory(Arc::new(stub))))
+                .unwrap();
+            let store: Arc<dyn ModuleStore> =
+                Arc::new(super::super::store::FsModuleStore::in_memory());
+            ModulePipeline::new(
+                catalog.clone(),
+                &registry,
+                store.clone(),
+                "2026-10-16T00:00:00Z".to_string(),
+                crate::modules::limits::Limits {
+                    params_max_bytes: 100,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                store.instances().await.unwrap()[0].global_params,
+                serde_json::json!({ "old_name": 5 }),
+                "kept the catalog params instead of {normalized}"
+            );
+        }
     }
 
     #[tokio::test]
