@@ -594,3 +594,134 @@ mod tests {
         println!("account_view: {view:?} per call, tx_projection: {projection:?} per call");
     }
 }
+
+#[cfg(test)]
+mod standard_account_tests {
+    use guardian_shared::SignatureScheme::{self, Ecdsa, Falcon};
+    use guardian_shared::ToJson;
+    use miden_protocol::account::Account;
+
+    use super::*;
+    use crate::testing::helpers::{build_guarded_multisig_account, build_single_key_account};
+
+    fn key(n: u32) -> Word {
+        Word::from([n, n + 1, n + 2, n + 3])
+    }
+
+    fn assert_code_fields(view: &AccountView, account: &Account) {
+        assert_eq!(view.code_commitment, word_hex(&account.code().commitment()));
+        assert_eq!(
+            view.procedure_roots,
+            account
+                .code()
+                .procedure_roots()
+                .map(|root| word_hex(&root))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn guarded_multisig_with_overrides(
+        seed: [u8; 32],
+        threshold: u32,
+        approvers: &[(Word, SignatureScheme)],
+        guardian: (Word, SignatureScheme),
+        overrides: impl Fn(&Account) -> Vec<(miden_protocol::account::AccountProcedureRoot, u32)>,
+    ) -> Account {
+        use miden_protocol::account::AccountBuilder;
+        use miden_protocol::account::auth::PublicKeyCommitment;
+        use miden_standards::account::auth::{
+            Approver, ApproverSet, AuthGuardedMultisigConfig, GuardianConfig,
+        };
+        use miden_standards::account::wallets::BasicWallet;
+
+        let plain = build_guarded_multisig_account(seed, threshold, approvers, guardian);
+        let approver = |(commitment, scheme): (Word, SignatureScheme)| {
+            Approver::new(PublicKeyCommitment::from(commitment), scheme.auth_scheme())
+        };
+        let config = AuthGuardedMultisigConfig::new(
+            ApproverSet::new(approvers.iter().copied().map(approver).collect(), threshold).unwrap(),
+            GuardianConfig::new(approver(guardian)),
+        )
+        .unwrap()
+        .with_proc_thresholds(overrides(&plain))
+        .unwrap();
+        AccountBuilder::new(seed)
+            .with_component(miden_protocol::account::AccountComponent::from(
+                AuthGuardedMultisig::new(config).unwrap(),
+            ))
+            .with_component(BasicWallet)
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn single_key_accounts_carry_their_code_and_leave_the_signer_to_the_registration() {
+        for scheme in [Falcon, Ecdsa] {
+            let account = build_single_key_account([1; 32], (key(9), scheme));
+            let view = account_view(&account.to_json()).unwrap();
+            assert!(view.signer_commitments.is_empty());
+            assert!(view.signer_schemes.is_empty());
+            assert_eq!(view.default_threshold, None);
+            assert!(view.procedure_thresholds.is_empty());
+            assert_code_fields(&view, &account);
+        }
+    }
+
+    #[test]
+    fn a_two_of_three_falcon_multisig_reads_back_as_built() {
+        let approvers = [(key(1), Falcon), (key(2), Falcon), (key(3), Falcon)];
+        let account = build_guarded_multisig_account([2; 32], 2, &approvers, (key(7), Falcon));
+        let view = account_view(&account.to_json()).unwrap();
+        assert_eq!(
+            view.signer_commitments,
+            approvers
+                .iter()
+                .map(|(commitment, _)| word_hex(commitment))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(view.signer_schemes.len(), 3);
+        assert!(
+            view.signer_schemes
+                .values()
+                .all(|scheme| scheme == "falcon")
+        );
+        assert_eq!(view.default_threshold, Some(2));
+        assert!(view.procedure_thresholds.is_empty());
+        assert_code_fields(&view, &account);
+    }
+
+    #[test]
+    fn a_mixed_scheme_multisig_keeps_each_scheme_and_its_effective_override() {
+        let approvers = [(key(1), Falcon), (key(2), Ecdsa), (key(3), Falcon)];
+        let account =
+            guarded_multisig_with_overrides([3; 32], 2, &approvers, (key(7), Ecdsa), |plain| {
+                vec![(plain.code().procedures()[1], 1)]
+            });
+        let view = account_view(&account.to_json()).unwrap();
+        for (commitment, scheme) in approvers {
+            assert_eq!(
+                view.signer_schemes
+                    .get(&word_hex(&commitment))
+                    .map(String::as_str),
+                Some(scheme.as_str())
+            );
+        }
+        let overridden = Word::from(account.code().procedures()[1]);
+        assert_eq!(
+            view.procedure_thresholds,
+            [(word_hex(&overridden), 1)].into()
+        );
+        assert_code_fields(&view, &account);
+    }
+
+    #[test]
+    fn an_override_on_the_auth_procedure_changes_nothing_and_is_left_out() {
+        let approvers = [(key(1), Falcon), (key(2), Falcon)];
+        let account =
+            guarded_multisig_with_overrides([4; 32], 2, &approvers, (key(7), Falcon), |plain| {
+                vec![(plain.code().procedures()[0], 1)]
+            });
+        let view = account_view(&account.to_json()).unwrap();
+        assert!(view.procedure_thresholds.is_empty());
+    }
+}
