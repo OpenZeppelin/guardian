@@ -52,7 +52,8 @@ Symptoms: clients get `503 GUARDIAN_MODULE_UNAVAILABLE` with `meta.module`
 `guardian_module_up{module}` is 0; `Policy module health probe failed` and
 `Policy module failed; refusing` at `warn`;
 `guardian_module_circuit_open{module}` is 1 once a replica has seen
-`GUARDIAN_MODULE_BREAKER_FAILURES` (5) failures in a row, after which the
+`GUARDIAN_MODULE_BREAKER_FAILURES` (5) failures in a row (dry-run checks do not
+count), after which the
 module is skipped without waiting for its timeout.
 
 1. Check the module itself (its process, endpoint, certificate, token). A

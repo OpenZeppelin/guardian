@@ -877,7 +877,9 @@ impl Plan<'_> {
                 Err(CallError::Timeout) => Failure::Timeout,
             };
             super::metrics::evaluated(id, super::metrics::Outcome::Error, took);
-            if !(cut_by_budget && matches!(failure, Failure::Timeout)) {
+            // A dry run is sent by a cosigner without anyone's signature, so its failures do not
+            // count toward opening the breaker for every account.
+            if !dry_run && !(cut_by_budget && matches!(failure, Failure::Timeout)) {
                 breakers.failed(id);
             }
             approval
@@ -1927,6 +1929,27 @@ mod failure_handling_tests {
             StubModule::new(Behaviour::Fail),
         )]);
         assert!(run(&open).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn dry_run_failures_do_not_open_the_circuit() {
+        let pipeline = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Fail),
+        )])
+        .with_limits(Limits {
+            breaker_failures: 2,
+            ..Limits::default()
+        });
+        for _ in 0..4 {
+            let (plans, _) = pipeline.plan_dry_run("0xacc").await.unwrap();
+            for plan in plans {
+                assert!(plan.run(|| Ok(HookRequest::default())).await.is_err());
+            }
+        }
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Closed);
     }
 
     #[tokio::test]
