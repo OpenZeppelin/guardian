@@ -9,8 +9,8 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use super::store::{
-    AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleStore, ParamsKind,
-    assignment_changes,
+    AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleSnapshot, ModuleStore,
+    ParamsKind, assignment_changes,
 };
 
 pub struct PgModuleStore {
@@ -155,6 +155,15 @@ fn account_params_row(row: AccountParamsSql) -> Result<AccountParamsRow, String>
         updated_at: row.updated_at.to_rfc3339(),
         updated_by: row.updated_by,
     })
+}
+
+diesel::define_sql_function! {
+    /// Typed so the statement is prepared once per connection: one module evaluation is one
+    /// call (see the migration for what it returns).
+    fn guardian_module_snapshot(
+        account_id: Text,
+        cached_version: Nullable<BigInt>,
+    ) -> Record<(BigInt, Nullable<Jsonb>, Jsonb)>;
 }
 
 #[async_trait]
@@ -410,6 +419,34 @@ impl ModuleStore for PgModuleStore {
         rows.into_iter().map(account_params_row).collect()
     }
 
+    async fn snapshot(
+        &self,
+        account_id: &str,
+        cached_version: Option<u64>,
+    ) -> Result<ModuleSnapshot, String> {
+        let mut conn = self.conn().await?;
+        let (version, instances, account_params): (
+            i64,
+            Option<serde_json::Value>,
+            serde_json::Value,
+        ) = diesel::select(guardian_module_snapshot(
+            account_id,
+            cached_version.map(|version| version as i64),
+        ))
+        .get_result(&mut conn)
+        .await
+        .map_err(|e| format!("module snapshot: {e}"))?;
+        Ok(ModuleSnapshot {
+            version: version as u64,
+            instances: instances
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("module snapshot instances: {e}"))?,
+            account_params: serde_json::from_value(account_params)
+                .map_err(|e| format!("module snapshot account rows: {e}"))?,
+        })
+    }
+
     async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String> {
         let mut conn = self.conn().await?;
         let rows: Vec<AccountParamsSql> = diesel::sql_query(
@@ -619,13 +656,21 @@ impl ModuleStore for PgModuleStore {
         }
     }
 
-    async fn history(&self, module_id: &str) -> Result<Vec<HistoryEntry>, String> {
+    async fn history(
+        &self,
+        module_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>, String> {
         let mut conn = self.conn().await?;
         let rows: Vec<HistorySql> = diesel::sql_query(
             "SELECT version, module_id, account_id, previous_params, new_params, operator, reason, \
-             changed_at FROM module_params_history WHERE module_id = $1 ORDER BY id",
+             changed_at FROM module_params_history WHERE module_id = $1 \
+             AND ($2::BIGINT IS NULL OR version < $2) ORDER BY version DESC, id DESC LIMIT $3",
         )
         .bind::<Text, _>(module_id)
+        .bind::<Nullable<BigInt>, _>(before.map(|before| before as i64))
+        .bind::<BigInt, _>(limit as i64)
         .load(&mut conn)
         .await
         .map_err(|e| format!("module params history: {e}"))?;
@@ -668,6 +713,62 @@ mod tests {
             reason: "ticket",
             at: at.to_string(),
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_snapshot_reads_one_version_and_skips_rows_the_cache_holds() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let t0 = "2026-11-09T00:00:00Z";
+        let module = format!("caps-{}", rand::random::<u32>());
+        let account = format!("0xacc{}", rand::random::<u32>());
+        store
+            .seed_instance(&module, true, &json!({ "cap": 1000 }), t0)
+            .await
+            .unwrap();
+        store
+            .set_layer(&account, &module, Some(json!({ "cap": 100 })), &change(t0))
+            .await
+            .unwrap();
+
+        let fresh = store.snapshot(&account, None).await.unwrap();
+        assert_eq!(fresh.version, store.version().await.unwrap());
+        let instances = fresh.instances.expect("no cached version");
+        let row = instances
+            .iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(row.global_params, json!({ "cap": 1000 }));
+        assert_eq!(fresh.account_params.len(), 1);
+        assert_eq!(fresh.account_params[0].params, json!({ "cap": 100 }));
+        assert_eq!(fresh.account_params[0].kind, ParamsKind::Layer);
+
+        let cached = store.snapshot(&account, Some(fresh.version)).await.unwrap();
+        assert!(cached.instances.is_none(), "the cache holds this version");
+        assert_eq!(cached.account_params, fresh.account_params);
+
+        store
+            .set_global(&module, json!({ "cap": 10 }), &change(t0))
+            .await
+            .unwrap();
+        let moved = store.snapshot(&account, Some(fresh.version)).await.unwrap();
+        assert!(moved.version > fresh.version);
+        let row = moved
+            .instances
+            .expect("a stale cache gets the rows")
+            .into_iter()
+            .find(|row| row.module_id == module)
+            .unwrap();
+        assert_eq!(row.global_params, json!({ "cap": 10 }));
+        assert!(
+            store
+                .snapshot("0xnobody", None)
+                .await
+                .unwrap()
+                .account_params
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -743,9 +844,18 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|row| row.kind == ParamsKind::Layer));
 
-        let history = other_replica.history(&module).await.unwrap();
+        let history = other_replica.history(&module, None, 10).await.unwrap();
         assert_eq!(history.len(), 3);
-        assert_eq!(history[2].account_id.as_deref(), Some(account.as_str()));
+        assert_eq!(history[0].account_id.as_deref(), Some(account.as_str()));
+        let older = other_replica
+            .history(&module, Some(history[0].version), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            older,
+            vec![history[1].clone()],
+            "paged below a version, newest first"
+        );
         assert_eq!(other_replica.version().await.unwrap(), start + 4);
 
         store

@@ -269,6 +269,16 @@ impl super::store::ModuleStore for RacingStore {
         self.inner.instances().await
     }
 
+    async fn snapshot(
+        &self,
+        account_id: &str,
+        cached_version: Option<u64>,
+    ) -> Result<super::store::ModuleSnapshot, String> {
+        let writes = std::mem::take(&mut *self.before_account_params.lock().unwrap());
+        self.commit(writes).await?;
+        self.inner.snapshot(account_id, cached_version).await
+    }
+
     async fn set_enabled(
         &self,
         module_id: &str,
@@ -346,8 +356,13 @@ impl super::store::ModuleStore for RacingStore {
         self.inner.set_assignment(account_id, modules, change).await
     }
 
-    async fn history(&self, module_id: &str) -> Result<Vec<super::store::HistoryEntry>, String> {
-        self.inner.history(module_id).await
+    async fn history(
+        &self,
+        module_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<super::store::HistoryEntry>, String> {
+        self.inner.history(module_id, before, limit).await
     }
 
     async fn version(&self) -> Result<u64, String> {

@@ -125,6 +125,14 @@ pub trait ModuleStore: Send + Sync {
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String>;
 
+    /// What one evaluation reads, as of one params version: the account's rows and, unless
+    /// `cached_version` is that version, the instance rows.
+    async fn snapshot(
+        &self,
+        account_id: &str,
+        cached_version: Option<u64>,
+    ) -> Result<ModuleSnapshot, String>;
+
     /// Every account's rows, ordered by account and position; a startup scan, not a hot path.
     async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String>;
 
@@ -153,9 +161,23 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<bool, String>;
 
-    async fn history(&self, module_id: &str) -> Result<Vec<HistoryEntry>, String>;
+    /// The module's history, newest first: at most `limit` entries below version `before`.
+    async fn history(
+        &self,
+        module_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>, String>;
 
     async fn version(&self) -> Result<u64, String>;
+}
+
+/// See [`ModuleStore::snapshot`].
+#[derive(Debug, Clone)]
+pub struct ModuleSnapshot {
+    pub version: u64,
+    pub instances: Option<Vec<InstanceRow>>,
+    pub account_params: Vec<AccountParamsRow>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -168,6 +190,17 @@ struct Tables {
 impl Tables {
     fn version(&self) -> u64 {
         self.history.last().map_or(0, |entry| entry.version)
+    }
+
+    fn account_rows(&self, account_id: &str) -> Vec<AccountParamsRow> {
+        let mut rows: Vec<AccountParamsRow> = self
+            .account_params
+            .iter()
+            .filter(|row| row.account_id == account_id)
+            .cloned()
+            .collect();
+        rows.sort_by_key(|row| row.position);
+        rows
     }
 
     fn append(
@@ -411,15 +444,22 @@ impl ModuleStore for FsModuleStore {
     }
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String> {
+        Ok(self.read(|tables| tables.account_rows(account_id)))
+    }
+
+    async fn snapshot(
+        &self,
+        account_id: &str,
+        cached_version: Option<u64>,
+    ) -> Result<ModuleSnapshot, String> {
         Ok(self.read(|tables| {
-            let mut rows: Vec<AccountParamsRow> = tables
-                .account_params
-                .iter()
-                .filter(|row| row.account_id == account_id)
-                .cloned()
-                .collect();
-            rows.sort_by_key(|row| row.position);
-            rows
+            let version = tables.version();
+            ModuleSnapshot {
+                version,
+                instances: (cached_version != Some(version))
+                    .then(|| tables.instances.values().cloned().collect()),
+                account_params: tables.account_rows(account_id),
+            }
         }))
     }
 
@@ -535,12 +575,20 @@ impl ModuleStore for FsModuleStore {
         })
     }
 
-    async fn history(&self, module_id: &str) -> Result<Vec<HistoryEntry>, String> {
+    async fn history(
+        &self,
+        module_id: &str,
+        before: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HistoryEntry>, String> {
         Ok(self.read(|tables| {
             tables
                 .history
                 .iter()
+                .rev()
                 .filter(|entry| entry.module_id == module_id)
+                .filter(|entry| before.is_none_or(|before| entry.version < before))
+                .take(limit)
                 .cloned()
                 .collect()
         }))
@@ -621,9 +669,9 @@ mod tests {
             .unwrap();
         store.set_enabled("caps", false, &change()).await.unwrap();
         assert!(!store.instances().await.unwrap()[0].enabled);
-        let history = store.history("caps").await.unwrap();
-        assert_eq!(history[1].previous, json!({ "enabled": true }));
-        assert_eq!(history[1].new, json!({ "enabled": false }));
+        let history = store.history("caps", None, 10).await.unwrap();
+        assert_eq!(history[0].previous, json!({ "enabled": true }));
+        assert_eq!(history[0].new, json!({ "enabled": false }));
         assert_eq!(store.version().await.unwrap(), 2);
         assert!(
             store
@@ -662,9 +710,18 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(store.account_params("0xacc").await.unwrap().len(), 1);
-        let history = store.history("blocklist").await.unwrap();
+        let history = store.history("blocklist", None, 10).await.unwrap();
         assert_eq!(history.len(), 2);
-        assert_eq!(history[1].previous, json!({ "b": 1 }));
+        assert_eq!(history[0].previous, json!({ "b": 1 }));
+        let older = store
+            .history("blocklist", Some(history[0].version), 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            older,
+            vec![history[1].clone()],
+            "paged below a version, newest first"
+        );
     }
 
     #[tokio::test]

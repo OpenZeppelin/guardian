@@ -52,9 +52,6 @@ pub struct ModulePipeline {
     assignment_report: std::sync::Mutex<(usize, usize)>,
 }
 
-/// The `module_instances` rows as of one params version.
-const SNAPSHOT_ATTEMPTS: usize = 3;
-
 pub(super) type Rows = Arc<HashMap<String, (serde_json::Value, bool)>>;
 
 #[derive(Default)]
@@ -471,29 +468,48 @@ impl ModulePipeline {
         Ok((version, rows))
     }
 
-    /// The global rows and one account's rows as of a single params version. Every module write
-    /// moves the version in the same transaction, so an unchanged version across the reads
-    /// means no write committed between them; otherwise the reads are retried. Without this a
-    /// request could combine a new global rule with an old account layer, a combination no
-    /// operator ever configured.
+    /// The global rows and one account's rows as of a single params version, read in one store
+    /// call. Without it a request could combine a new global rule with an old account layer, a
+    /// combination no operator ever configured. The instance rows come from the cache when it
+    /// holds the version the store reports.
     pub(super) async fn snapshot(
         &self,
         account_id: &str,
     ) -> Result<(u64, Rows, Vec<AccountParamsRow>), GuardianError> {
-        for _ in 0..SNAPSHOT_ATTEMPTS {
-            let (version, rows) = self.versioned_rows().await?;
-            let account_rows = self
-                .store
-                .account_params(account_id)
-                .await
-                .map_err(Self::store_error)?;
-            if self.store.version().await.map_err(Self::store_error)? == version {
-                return Ok((version, rows, account_rows));
+        let cached = self
+            .cache
+            .read()
+            .ok()
+            .and_then(|cache| cache.version.map(|version| (version, cache.rows.clone())));
+        let snapshot = self
+            .store
+            .snapshot(account_id, cached.as_ref().map(|(version, _)| *version))
+            .await
+            .map_err(Self::store_error)?;
+        let rows = match (snapshot.instances, cached) {
+            (Some(instances), _) => {
+                let rows: Rows = Arc::new(
+                    instances
+                        .into_iter()
+                        .map(|row| (row.module_id, (row.global_params, row.enabled)))
+                        .collect(),
+                );
+                if let Ok(mut cache) = self.cache.write() {
+                    *cache = Cache {
+                        version: Some(snapshot.version),
+                        rows: rows.clone(),
+                    };
+                }
+                rows
             }
-        }
-        Err(Self::store_error(
-            "module state kept changing while it was read".into(),
-        ))
+            (None, Some((_, rows))) => rows,
+            (None, None) => {
+                return Err(Self::store_error(
+                    "module store omitted the instance rows without a cached version".into(),
+                ));
+            }
+        };
+        Ok((snapshot.version, rows, snapshot.account_params))
     }
 
     pub(super) fn global_params_in(rows: &Rows, instance: &Instance) -> serde_json::Value {
@@ -1281,7 +1297,7 @@ params = { old_name = 5 }
             store.instances().await.unwrap()[0].global_params,
             serde_json::json!({ "new_name": 5 })
         );
-        let last = store.history("migrating").await.unwrap().pop().unwrap();
+        let last = store.history("migrating", None, 1).await.unwrap().remove(0);
         assert_eq!(last.operator, "module:protocol-stub 1");
         assert_eq!(last.reason, "params migrated by the module");
         assert_eq!(last.previous, serde_json::json!({ "old_name": 7 }));
@@ -1435,7 +1451,7 @@ params = { old_name = 1000 }
             serde_json::json!({ "new_name": 100 }),
             "the operator's cap of 100 stays"
         );
-        let last = store.history("migrating").await.unwrap().pop().unwrap();
+        let last = store.history("migrating", None, 1).await.unwrap().remove(0);
         assert_eq!(
             last.operator, "0xracing-operator",
             "no migration entry after it"

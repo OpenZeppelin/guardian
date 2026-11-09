@@ -352,17 +352,11 @@ pub async fn history(
             "limit must be between 1 and {HISTORY_PAGE_MAX}"
         )));
     }
-    let mut entries = pipeline
+    let entries = pipeline
         .store()
-        .history(module_id)
+        .history(module_id, before, limit)
         .await
         .map_err(GuardianError::StorageError)?;
-    entries.reverse();
-    let entries = entries
-        .into_iter()
-        .filter(|entry| before.is_none_or(|before| entry.version < before))
-        .take(limit)
-        .collect();
     Ok(ParamsHistoryView {
         module_id: module_id.to_string(),
         entries,
