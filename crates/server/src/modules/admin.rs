@@ -112,12 +112,20 @@ fn require_reason(reason: &str) -> Result<()> {
 
 /// Validates operator-supplied params and returns what to store: the module's normalized form
 /// when it sent one.
-async fn validated(instance: &Instance, params: &serde_json::Value) -> Result<serde_json::Value> {
+async fn validated(
+    pipeline: &ModulePipeline,
+    instance: &Instance,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value> {
     if !params.is_object() {
         return Err(GuardianError::InvalidInput(
             "params must be a JSON object".into(),
         ));
     }
+    pipeline
+        .limits()
+        .check_params_size(params)
+        .map_err(|e| GuardianError::InvalidInput(format!("module {}: {e}", instance.config.id)))?;
     if contains_secret_reference(params) {
         return Err(GuardianError::InvalidInput(
             "secret references cannot be set through the operator API".into(),
@@ -191,6 +199,14 @@ async fn instance_view(
 ) -> Result<ModuleInstanceView> {
     let params = pipeline.global_params(instance).await?;
     let enabled = pipeline.enabled(instance).await?;
+    let seeded = pipeline
+        .store()
+        .instances()
+        .await
+        .map_err(GuardianError::StorageError)?
+        .into_iter()
+        .find(|row| row.module_id == instance.config.id)
+        .map(|row| row.seeded_params);
     Ok(ModuleInstanceView {
         module_id: instance.config.id.clone(),
         kind: instance.config.kind.clone(),
@@ -205,7 +221,7 @@ async fn instance_view(
         catalog_enabled: instance.config.catalog_enabled,
         enabled_drift: enabled != instance.config.catalog_enabled,
         operator_can_disable: instance.config.operator_can_disable,
-        params_drift: params != instance.config.params,
+        params_drift: seeded.is_some_and(|seeded| seeded != instance.config.params),
         params,
         file_managed_params: instance.config.file_managed_params,
         build: instance.build.clone(),
@@ -309,16 +325,39 @@ pub async fn account_view(state: &AppState, account_id: &str) -> Result<AccountM
     })
 }
 
-pub async fn history(state: &AppState, module_id: &str) -> Result<ParamsHistoryView> {
+const HISTORY_PAGE_DEFAULT: usize = 100;
+const HISTORY_PAGE_MAX: usize = 1_000;
+
+/// The instance's params changes, newest first: those with a version below `before` when set,
+/// at most `limit` (default 100, at most 1,000).
+pub async fn history(
+    state: &AppState,
+    module_id: &str,
+    before: Option<u64>,
+    limit: Option<usize>,
+) -> Result<ParamsHistoryView> {
     let pipeline = pipeline(state)?;
     instance(pipeline, module_id)?;
+    let limit = limit.unwrap_or(HISTORY_PAGE_DEFAULT);
+    if limit == 0 || limit > HISTORY_PAGE_MAX {
+        return Err(GuardianError::InvalidInput(format!(
+            "limit must be between 1 and {HISTORY_PAGE_MAX}"
+        )));
+    }
+    let mut entries = pipeline
+        .store()
+        .history(module_id)
+        .await
+        .map_err(GuardianError::StorageError)?;
+    entries.reverse();
+    let entries = entries
+        .into_iter()
+        .filter(|entry| before.is_none_or(|before| entry.version < before))
+        .take(limit)
+        .collect();
     Ok(ParamsHistoryView {
         module_id: module_id.to_string(),
-        entries: pipeline
-            .store()
-            .history(module_id)
-            .await
-            .map_err(GuardianError::StorageError)?,
+        entries,
     })
 }
 
@@ -438,7 +477,7 @@ pub async fn set_global(
             "module {module_id}: params with secret references are managed in the catalog file"
         )));
     }
-    let params = validated(instance, &params).await?;
+    let params = validated(pipeline, instance, &params).await?;
     pipeline
         .store()
         .set_global(module_id, params, &change(state, operator, reason))
@@ -475,7 +514,7 @@ pub async fn set_layer(
         )));
     }
     let params = match params {
-        Some(params) => Some(validated(instance, &params).await?),
+        Some(params) => Some(validated(pipeline, instance, &params).await?),
         None => None,
     };
     let mut rows = pipeline
@@ -564,7 +603,7 @@ pub async fn set_assignment(
         }
         to_store.push(Assigned {
             module_id: assigned.module_id.clone(),
-            params: validated(instance, &assigned.params).await?,
+            params: validated(pipeline, instance, &assigned.params).await?,
         });
     }
     let mut rows = pipeline
@@ -910,10 +949,67 @@ mod tests {
             Some(json!({ "recipient_denylist": ["0xccc"] }))
         );
 
-        let history = history(&state, "blocklist").await.unwrap().entries;
+        let history = history(&state, "blocklist", None, None)
+            .await
+            .unwrap()
+            .entries;
         assert_eq!(history.len(), 2);
-        assert_eq!(history[0].reason, "OP-90");
-        assert_eq!(history[1].account_id.as_deref(), Some(ACCOUNT));
+        assert_eq!(
+            history[0].account_id.as_deref(),
+            Some(ACCOUNT),
+            "newest first"
+        );
+        assert_eq!(history[1].reason, "OP-90");
+    }
+
+    #[tokio::test]
+    async fn history_pages_newest_first_by_version() {
+        let state = state();
+        for n in 0..3 {
+            set_global(
+                &state,
+                &operator(),
+                "blocklist",
+                json!({ "recipient_denylist": [format!("0x{n}")] }),
+                &format!("OP-{n}"),
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        let first = history(&state, "blocklist", None, Some(2))
+            .await
+            .unwrap()
+            .entries;
+        assert_eq!(
+            first
+                .iter()
+                .map(|entry| entry.reason.as_str())
+                .collect::<Vec<_>>(),
+            ["OP-2", "OP-1"]
+        );
+        let next = history(&state, "blocklist", Some(first[1].version), Some(2))
+            .await
+            .unwrap()
+            .entries;
+        assert_eq!(
+            next.iter()
+                .map(|entry| entry.reason.as_str())
+                .collect::<Vec<_>>(),
+            ["OP-0"]
+        );
+        assert!(history(&state, "blocklist", None, Some(0)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn params_over_the_size_cap_are_refused_before_the_module_is_called() {
+        let state = state();
+        let huge = json!({ "recipient_denylist": vec!["0x".repeat(40); 4_000] });
+        let refused = set_global(&state, &operator(), "blocklist", huge, "OP-9", None).await;
+        assert!(
+            matches!(&refused, Err(GuardianError::InvalidInput(message)) if message.contains("GUARDIAN_MODULE_PARAMS_MAX_BYTES")),
+            "{refused:?}"
+        );
     }
 
     #[tokio::test]
@@ -1017,8 +1113,11 @@ mod tests {
             .await
             .unwrap();
         assert!(view.enabled);
-        let history = history(&state, "blocklist").await.unwrap().entries;
-        assert_eq!(history.last().unwrap().new, json!({ "enabled": true }));
+        let history = history(&state, "blocklist", None, None)
+            .await
+            .unwrap()
+            .entries;
+        assert_eq!(history[0].new, json!({ "enabled": true }), "newest first");
     }
 
     #[tokio::test]

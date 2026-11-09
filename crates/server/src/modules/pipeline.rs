@@ -122,9 +122,17 @@ impl ModulePipeline {
         now: String,
         limits: Limits,
     ) -> Result<Self, String> {
-        let stored: HashMap<String, (serde_json::Value, bool)> = store
-            .instances()
-            .await?
+        for config in &catalog.instances {
+            limits
+                .check_params_size(&config.params)
+                .map_err(|e| format!("module {}: catalog {e}", config.id))?;
+        }
+        let rows = store.instances().await?;
+        let seeded: HashMap<String, serde_json::Value> = rows
+            .iter()
+            .map(|row| (row.module_id.clone(), row.seeded_params.clone()))
+            .collect();
+        let stored: HashMap<String, (serde_json::Value, bool)> = rows
             .into_iter()
             .map(|row| (row.module_id, (row.global_params, row.enabled)))
             .collect();
@@ -139,7 +147,9 @@ impl ModulePipeline {
             super::metrics::config_drift(
                 &config.id,
                 *enabled != config.catalog_enabled
-                    || (!config.file_managed_params && *params != config.params),
+                    || seeded
+                        .get(&config.id)
+                        .is_some_and(|seeded| *seeded != config.params),
             );
             if *enabled != config.catalog_enabled {
                 tracing::warn!(module = %config.id, enabled, "Catalog `enabled` differs from the stored runtime flag; the stored flag applies");

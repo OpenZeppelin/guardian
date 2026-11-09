@@ -821,10 +821,18 @@ mod tests {
             }]
         };
         let t0 = "2026-11-09T00:00:00Z";
-        assert!(store.seed_assignment(&account, copy(), &change(t0)).await.unwrap());
+        assert!(
+            store
+                .seed_assignment(&account, copy(), &change(t0))
+                .await
+                .unwrap()
+        );
         let before = store.version().await.unwrap();
         assert!(
-            !store.seed_assignment(&account, copy(), &change(t0)).await.unwrap(),
+            !store
+                .seed_assignment(&account, copy(), &change(t0))
+                .await
+                .unwrap(),
             "an existing assignment is kept"
         );
         assert_eq!(
@@ -837,7 +845,10 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            !store.seed_assignment(&account, copy(), &change(t0)).await.unwrap(),
+            !store
+                .seed_assignment(&account, copy(), &change(t0))
+                .await
+                .unwrap(),
             "an assignment an operator emptied is not refilled"
         );
         assert!(store.account_params(&account).await.unwrap().is_empty());

@@ -55,11 +55,20 @@ pub async fn account_modules(
     admin::account_view(&state, &account_id).await.map(Json)
 }
 
+#[derive(Debug, Deserialize)]
+pub struct HistoryQuery {
+    before: Option<u64>,
+    limit: Option<usize>,
+}
+
 pub async fn params_history(
     State(state): State<AppState>,
     Path(module_id): Path<String>,
+    axum::extract::Query(query): axum::extract::Query<HistoryQuery>,
 ) -> Result<Json<ParamsHistoryView>> {
-    admin::history(&state, &module_id).await.map(Json)
+    admin::history(&state, &module_id, query.before, query.limit)
+        .await
+        .map(Json)
 }
 
 pub async fn set_global_params(

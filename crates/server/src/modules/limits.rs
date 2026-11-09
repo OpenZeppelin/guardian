@@ -7,6 +7,7 @@ pub const BUDGET_ENV: &str = "GUARDIAN_MODULE_EVALUATION_BUDGET_MS";
 pub const REQUEST_MAX_BYTES_ENV: &str = "GUARDIAN_MODULE_REQUEST_MAX_BYTES";
 pub const BREAKER_FAILURES_ENV: &str = "GUARDIAN_MODULE_BREAKER_FAILURES";
 pub const PROBE_INTERVAL_ENV: &str = "GUARDIAN_MODULE_PROBE_INTERVAL_MS";
+pub const PARAMS_MAX_BYTES_ENV: &str = "GUARDIAN_MODULE_PARAMS_MAX_BYTES";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
@@ -18,6 +19,22 @@ pub struct Limits {
     pub breaker_failures: u32,
     /// Interval of the `Describe` health probe per instance.
     pub probe_interval: Duration,
+    /// Largest params value one write may store, as compact JSON with sorted keys.
+    pub params_max_bytes: usize,
+}
+
+impl Limits {
+    /// Refuses `params` larger than [`Self::params_max_bytes`].
+    pub fn check_params_size(&self, params: &serde_json::Value) -> Result<(), String> {
+        let size = serde_json::to_vec(params).map_or(usize::MAX, |bytes| bytes.len());
+        if size > self.params_max_bytes {
+            return Err(format!(
+                "params of {size} bytes exceed {PARAMS_MAX_BYTES_ENV} ({} bytes)",
+                self.params_max_bytes
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Default for Limits {
@@ -27,6 +44,7 @@ impl Default for Limits {
             request_max_bytes: 2 * 1024 * 1024,
             breaker_failures: 5,
             probe_interval: Duration::from_millis(5_000),
+            params_max_bytes: 64 * 1024,
         }
     }
 }
@@ -54,6 +72,9 @@ impl Limits {
             probe_interval: positive(&var, PROBE_INTERVAL_ENV)?
                 .map(Duration::from_millis)
                 .unwrap_or(defaults.probe_interval),
+            params_max_bytes: positive(&var, PARAMS_MAX_BYTES_ENV)?
+                .map(|bytes| usize::try_from(bytes).unwrap_or(usize::MAX))
+                .unwrap_or(defaults.params_max_bytes),
         })
     }
 }

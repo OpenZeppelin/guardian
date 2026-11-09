@@ -388,6 +388,7 @@ modules guide](./guides/policy-modules/README.md).
 | `GUARDIAN_MODULE_REQUEST_MAX_BYTES` | `2097152` (2 MiB) | Largest encoded request sent to a module. A larger one is a module failure and is not sent; its `on_error` applies. |
 | `GUARDIAN_MODULE_BREAKER_FAILURES` | `5` | Consecutive failures (timeouts, transport errors, malformed decisions) that open an instance's circuit breaker on a replica. While open the module is not called and its `on_error` applies at once. A deny is an answer and resets the count. |
 | `GUARDIAN_MODULE_PROBE_INTERVAL_MS` | `5000` | Interval of the `Describe` health probe of every enabled instance. A successful probe moves an open breaker to half-open, where the next call decides; the result is `guardian_module_up`. |
+| `GUARDIAN_MODULE_PARAMS_MAX_BYTES` | `65536` (64 KiB) | Largest params value one write may store (global params, an account layer or an assignment entry), measured as compact JSON with sorted keys. A larger write is refused with `invalid_input` before the module is called, and a larger catalog seed refuses startup, so no params value can push every request for an account over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`. |
 
 ## Runtime — EVM (feature-gated)
 
