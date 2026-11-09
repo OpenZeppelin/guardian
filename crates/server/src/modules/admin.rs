@@ -630,6 +630,19 @@ pub async fn set_assignment(
         .account_params(&account_id)
         .await
         .map_err(GuardianError::StorageError)?;
+    // Rows naming an instance the catalog no longer declares are kept as they are: they apply
+    // again if the instance comes back, and the operator cannot list them in the request.
+    to_store.extend(
+        current
+            .iter()
+            .filter(|row| {
+                row.kind == ParamsKind::Assignment && pipeline.instance(&row.module_id).is_none()
+            })
+            .map(|row| Assigned {
+                module_id: row.module_id.clone(),
+                params: row.params.clone(),
+            }),
+    );
     let mut rows = current.clone();
     rows.retain(|row| row.kind == ParamsKind::Layer);
     rows.extend(to_store.iter().map(|assigned| {
@@ -833,6 +846,17 @@ mod tests {
         let catalog = catalog_view(&state).await.unwrap();
         assert_eq!(catalog.undeclared.len(), 1);
         assert_eq!(catalog.undeclared[0].module_id, "retired");
+
+        let after = set_assignment(&state, &operator(), ACCOUNT, Vec::new(), "OP-9", None)
+            .await
+            .unwrap();
+        let kept: Vec<_> = after
+            .modules
+            .iter()
+            .filter(|entry| entry.orphaned)
+            .map(|entry| entry.module_id.as_str())
+            .collect();
+        assert_eq!(kept, ["retired"], "an assignment write keeps orphaned rows");
     }
 
     #[tokio::test]
