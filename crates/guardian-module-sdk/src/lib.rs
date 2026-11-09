@@ -10,6 +10,7 @@ pub mod serve;
 pub use prost_types;
 pub use secrecy;
 
+#[allow(clippy::large_enum_variant)]
 pub mod proto {
     tonic::include_proto!("guardian.module.v1");
 }

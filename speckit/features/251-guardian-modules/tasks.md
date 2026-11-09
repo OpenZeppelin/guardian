@@ -43,9 +43,9 @@
 - [X] T009 Record `signed_at` (fixed before the pipeline runs and sent as `accounting_time`), `submitter` and `proposer` with the approval trace (`catalog_hash`, `params_version`, `failed_open`) in `ModuleApproval` (`crates/server/src/delta_summary/mod.rs`), written at signing in `crates/server/src/services/ack_delta_internal.rs`; the pipeline returns only the configuration it ran with (`Evaluation`, `crates/server/src/modules/pipeline.rs`). Revised 2026-11-09: kept in `metadata.modules` instead of new delta columns, since delta metadata is already stored on both backends and served only on HTTP, so no migration and no wire change; `data-model.md` updated
 - [X] T010 [P] Build account views from the single decode the push path already does: carry the view fields on `AppliedState` (`crates/server/src/network/mod.rs`, `crates/server/src/network/miden/mod.rs` `verify_and_apply_delta`) and use them in `crates/server/src/modules/request.rs` instead of a second `Account::from_json`; run proposal creation through `verify_and_apply_delta` when a module will be called (P0 T089)
 - [X] T011 Measure the frozen extraction against real account layouts, not only synthetic slots: views of accounts built from the upstream `miden-standards` components (single-key Falcon and ECDSA, 2-of-3 Falcon guarded multisig, mixed-scheme guarded multisig with a procedure override, an override on the auth procedure) asserted in `crates/server/src/network/miden/module_views.rs` (`standard_account_tests`); the code-replacement projection is covered by the `new_code_commitment` test. Revised 2026-11-09: built from the real components instead of captured from devnet, which needs funded accounts; a devnet capture remains for the T059 walk-through. Found: the `DELTA_1` fixture adds an approver key without its scheme entry, which the standard multisig always writes, so its resulting view is refused
-- [ ] T012 Mark protocol version 1 frozen: state it in the proto header of `crates/guardian-module-sdk/proto/guardian_module_v1.proto` and the contract copy, and record the freeze (commit and date) in RFC 0002 section 7 and Appendix C (`docs/rfcs/0002-guardian-modules.md`)
+- [ ] T012 Mark protocol version 1 frozen: state it in the proto header of `crates/guardian-module-sdk/proto/guardian_module_v1.proto` and the contract copy, and record the freeze (commit and date) in RFC 0002 section 7 and Appendix C (`docs/rfcs/0002-guardian-modules.md`). Runs last among the freeze criteria (RFC 0002 section 7): after T019 and T020 (dry run with approval instances), T024 (lost claim) and T025 (`code_check`), which use fields already in the proto but must be implemented with tests before the freeze
 
-**Checkpoint**: requests carry the complete version 1 surface, measured on real accounts. User story phases can start in parallel.
+**Checkpoint**: requests carry the complete version 1 surface, measured on real account layouts (T003 to T011). User story phases can start in parallel. T012, the freeze itself, waits for the behaviour-only freeze criteria in US2 and US3.
 
 ---
 
@@ -207,8 +207,8 @@
 ### Phase dependencies
 
 - **Setup (T001, T002)** first.
-- **Foundational (T003 to T012)** blocks every story. T003 first (it renumbers the proto); T004, T005, T006 and T010 then run in parallel; T007 and T008 after T003; T009 after T007 (it stores `submitter` and `proposer`); T011 after T005 and T006; T012 last.
-- **Stories** start after T012 and are independent of each other, with these exceptions: T030 (budget on writes) needs T028; T039 and T040 (`default` copy) touch `configure_account.rs` after T024, so run US3 before US5 or coordinate the file; T021 needs the `guardian-client` dependency decision.
+- **Foundational (T003 to T011)** blocks every story; T012 (the freeze) follows the freeze criteria in US2 and US3. T003 first (it renumbers the proto); T004, T005, T006 and T010 then run in parallel; T007 and T008 after T003; T009 after T007 (it stores `submitter` and `proposer`); T011 after T005 and T006; T012 after T019, T020, T024 and T025.
+- **Stories** start after T011 and are independent of each other, with these exceptions: T030 (budget on writes) needs T028; T039 and T040 (`default` copy) touch `configure_account.rs` after T024, so run US3 before US5 or coordinate the file; T021 needs the `guardian-client` dependency decision.
 - **Polish (T052 to T062)** after the stories it documents; T061 and T062 last.
 
 ### User story dependencies
@@ -235,7 +235,7 @@ T005 code fields in views  (network/miden/module_views.rs, view half)
 T006 projection fields     (network/miden/module_views.rs, projection half; coordinate with T005)
 T010 single decode         (network/mod.rs, network/miden/mod.rs)
 
-# Stories, after T012, one developer each:
+# Stories, after T011, one developer each:
 US4  T028 to T036  (modules/budget.rs, breaker.rs, metrics.rs)
 US6  T047 to T051  (guardian-module-sdk, examples/policy-module)
 US2  T019 to T022  (pipeline dry run, TypeScript multisig)
