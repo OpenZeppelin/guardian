@@ -127,6 +127,60 @@ step_budget = "60s"
 required = true
 core = false
 
+# Policy modules (RFC 0002). The stack's catalog (qualification/stack/lib/modules.sh) scopes
+# every instance `assigned`, so a module applies only to an account a scenario assigns it to.
+# The scenarios propose a fixture threshold change and assign a signer allowlist that names
+# none of the account's signers.
+#
+# Both SDKs: the Rust leg meets the refusal over gRPC and the TypeScript leg over HTTP, at the
+# dry-run check and at creation, and each clears its assignment on every path because the
+# fixture account is shared.
+[[scenario]]
+id = "det-module-refusal"
+title = "An assigned policy module refuses a proposal with its id and reason, and stops once unassigned"
+profile = "deterministic"
+sdk = "both"
+runtime = "server-side"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-refusal"]
+step_budget = "90s"
+required = true
+core = false
+
+# Rust only: the driver serves the remote module (basic-policy over TLS, its token read from the
+# Guardian's file secrets backend), so the scenario can take it down. Fail-closed while down,
+# naming the instance, and disabling it lets the account through.
+[[scenario]]
+id = "det-module-unavailable"
+title = "A remote policy module decides over TLS, refuses as unavailable while down, and disabling it is the way out"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-unavailable"]
+step_budget = "90s"
+required = true
+core = false
+
+# Rust only, like det-restart-durability: the operator's disable has to outlive the process,
+# so the first pass disables and the pass after the restart finds it disabled against a catalog
+# that still says enabled, with the disable in the params history, and enables it again.
+[[scenario]]
+id = "det-module-break-glass"
+title = "Disabling a refusing module lets the account through, and the switch survives a restart"
+profile = "deterministic"
+sdk = "rust"
+scheme = "n/a"
+shape = "n/a"
+mode = "n/a"
+actions = ["account-register", "module-break-glass"]
+step_budget = "90s"
+required = true
+core = false
+
 # Both SDKs: the Rust leg reaches the refusal over gRPC and the TypeScript leg over HTTP, and
 # this is the only deterministic coverage of the HTTP execution routes.
 [[scenario]]
@@ -706,6 +760,26 @@ scheme = "ecdsa"
 shape = "1-of-1"
 mode = "online"
 actions = ["account-create", "account-register", "asset-transfer", "note-consume", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
+# A policy module on a real transaction. The deterministic module scenarios use a fixture
+# summary; this one caps a payment the account actually sends, so the module sees what the
+# network builds, fee note included. The cap is exactly what `asset-send` sends: one unit more
+# is refused at the check and at creation, the capped amount passes, and the approval hook runs
+# again when GUARDIAN signs at execution. The transaction pays its fee in the same asset, so a
+# fee note counted as a payment would push the capped send over and fail it.
+[[scenario]]
+id = "live-module-cap-1of1-ecdsa"
+title = "A per-account amount cap refuses a payment over it, and a payment at the cap lands with its fee"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "module-cap-assign", "module-cap-refuses", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
 step_budget = "480s"
 required = true
 core = false

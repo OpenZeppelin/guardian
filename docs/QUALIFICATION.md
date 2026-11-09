@@ -85,10 +85,11 @@ gitignored directories, and tears it down afterwards:
 | A fourth Guardian that offers execution, `server-executing` | a configured prover and a database of its own (`guardian_executing`), so execution requests get past the capability gate in the deterministic profile |
 | A fifth Guardian that queues chained candidates, `server-queue` | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` set to `2` in the deterministic profile and `4` in the live one (`QUAL_QUEUE_DEPTH` overrides it), the main server's acknowledgement identity, and a database of its own, so the candidate queue (issue #17) is qualified as an operator opts into it while the main server keeps the default of one in-flight candidate |
 | Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
+| Policy module catalog | `lib/modules.sh` writes the main server's catalog per run: two in-process `basic-policy` instances and one remote `grpc` instance, all scoped `assigned` so no other scenario meets them. The remote one points at a module the Rust driver serves on the host (`host.docker.internal`, on `QUAL_MODULE_PORT`) over TLS, with a certificate a per-run CA signs and a bearer token the server reads through the file secrets backend |
 | Guardian execution | the live profile points the server at the network's public prover (`https://tx-prover.<network>.miden.io`, overridable with `QUAL_TX_PROVER_URL`), so it offers execution; the deterministic stack configures none, so execution must be refused |
 | Postgres password | random per run |
 | Ports | picked per run, so concurrent runs do not collide |
-| Everything written per run | one directory per run under `qualification/stack/runs/`, removed with the stack: the generated environment file, both acknowledgement key directories and the operator allowlist, so a second run cannot overwrite what the first one's server is still mounting |
+| Everything written per run | one directory per run under `qualification/stack/runs/`, removed with the stack: the generated environment file, both acknowledgement key directories, the operator allowlist and the module catalog with its certificates and token, so a second run cannot overwrite what the first one's server is still mounting |
 
 The deterministic profile is the exception worth knowing about: it registers a
 **committed fixture account** whose stored state binds one specific guardian
@@ -298,6 +299,42 @@ must fit its step budget inside devnet's 150 s historical window, and the wait a
 it; they still run there. Testnet runs Miden 0.16 until its 0.17 upgrade, so until then a
 testnet run of this line fails them along with everything else on 0.17.
 
+### Policy modules
+
+Four scenarios cover policy modules ([RFC 0002](./rfcs/0002-guardian-modules.md)). Every
+instance in the stack's catalog is scoped `assigned`, so it applies only to an account a
+scenario assigns it to through the operator API, and the operator in the allowlist holds
+`policies:write` for that.
+
+- `det-module-refusal` (deterministic, both SDKs): `qual-gate` is assigned to the fixture
+  account with a signer allowlist that names none of its signers. The proposal is refused at
+  the dry-run check and at creation with `GUARDIAN_MODULE_DENIED`, module `qual-gate` and
+  `signer_not_allowed`, over gRPC (Rust) and HTTP (TypeScript); once the assignment is
+  cleared the same proposal passes the check.
+- `det-module-unavailable` (deterministic, Rust): the driver serves `basic-policy` for
+  `qual-remote` and enables it. The remote module refuses over TLS with the token from the
+  secrets backend; with the module stopped the check is refused as
+  `GUARDIAN_MODULE_UNAVAILABLE` naming `qual-remote` (`on_error = "deny"`), and disabling the
+  instance lets the account through. The instance starts disabled in the catalog, because an
+  enabled module that cannot be reached stops the server from starting, and the action leaves
+  it disabled on every path for the restart that follows.
+- `det-module-break-glass` (deterministic, Rust): disabling `qual-switch` lets a refused
+  account through at once. The pass after the restart finds it still disabled against a
+  catalog that says enabled, with the disable in its params history, and enables it again.
+- `live-module-cap-1of1-ecdsa` (live, both SDKs, required on testnet): `qual-gate` caps the
+  account at exactly what `asset-send` sends, and the account's own policy listing shows it.
+  One unit more is refused at the check and at creation with `amount_cap_exceeded`; the capped
+  payment passes, is signed by GUARDIAN at execution after the approval hook runs on the real
+  transaction, and lands. The funding asset is the network's fee asset, so a fee note counted
+  as a payment would push the capped send over the cap and fail it. Devnet's pairs exclude it
+  for the window reason above.
+
+The deterministic scenarios propose the first threshold-only fixture delta (`queue_1`), not
+`delta_1`: the fixture generator adds `delta_1`'s signer without the approver scheme entry a
+real add-signer writes, and GUARDIAN refuses (as unavailable) to build a module's account view
+from that state. What stays uncovered: a fail-open instance (`on_error = "allow"`) recording
+`metadata.modules.failed_open` on a signed delta, the circuit breaker, and mutual TLS.
+
 ## Reading the outcome
 
 | Exit code | Meaning |
@@ -438,9 +475,9 @@ is still cheaper to make all six at once:
 | `crates/qualification-driver/src/manifest/mod.rs` | the `Action` variant |
 | the same file | its `From<String>` arm, the wire name |
 | `crates/qualification-driver/src/scenario/mod.rs` | the Rust dispatch arm |
-| `crates/qualification-driver/src/scenario/{live,account,identity,error_envelope}.rs` | the Rust body, in the file for its family |
+| `crates/qualification-driver/src/scenario/{live,account,identity,error_envelope,modules}.rs` | the Rust body, in the file for its family |
 | `packages/miden-multisig-client/tests/qualification/runner.ts` | the TypeScript dispatch case |
-| `packages/miden-multisig-client/tests/qualification/actions/{live,account,identity,errorEnvelope,operator}.ts` | the TypeScript body |
+| `packages/miden-multisig-client/tests/qualification/actions/{live,account,identity,errorEnvelope,operator,modules}.ts` | the TypeScript body |
 
 An action implemented on one SDK only is legitimate when it records a real
 capability gap, but it must report a skip naming the gap rather than a pass. Two

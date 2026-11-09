@@ -151,6 +151,57 @@
     {
       "actions": [
         "account-register",
+        "module-refusal"
+      ],
+      "core": false,
+      "id": "det-module-refusal",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "n/a",
+      "sdk": "both",
+      "shape": "n/a",
+      "step_budget": "PT1M30S",
+      "title": "An assigned policy module refuses a proposal with its id and reason, and stops once unassigned"
+    },
+    {
+      "actions": [
+        "account-register",
+        "module-unavailable"
+      ],
+      "core": false,
+      "id": "det-module-unavailable",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M30S",
+      "title": "A remote policy module decides over TLS, refuses as unavailable while down, and disabling it is the way out"
+    },
+    {
+      "actions": [
+        "account-register",
+        "module-break-glass"
+      ],
+      "core": false,
+      "id": "det-module-break-glass",
+      "mode": "n/a",
+      "profile": "deterministic",
+      "required": true,
+      "runtime": null,
+      "scheme": "n/a",
+      "sdk": "rust",
+      "shape": "n/a",
+      "step_budget": "PT1M30S",
+      "title": "Disabling a refusing module lets the account through, and the switch survives a restart"
+    },
+    {
+      "actions": [
+        "account-register",
         "proposal-create",
         "guardian-execution-unavailable"
       ],
@@ -857,6 +908,31 @@
       "shape": "1-of-1",
       "step_budget": "PT8M",
       "title": "The multisig sends assets out and the vault reflects it"
+    },
+    {
+      "actions": [
+        "account-create",
+        "account-register",
+        "asset-transfer",
+        "note-consume",
+        "module-cap-assign",
+        "module-cap-refuses",
+        "asset-send",
+        "proposal-sign",
+        "proposal-execute",
+        "asset-send-assert"
+      ],
+      "core": false,
+      "id": "live-module-cap-1of1-ecdsa",
+      "mode": "online",
+      "profile": "live",
+      "required": true,
+      "runtime": "server-side",
+      "scheme": "ecdsa",
+      "sdk": "both",
+      "shape": "1-of-1",
+      "step_budget": "PT8M",
+      "title": "A per-account amount cap refuses a payment over it, and a payment at the cap lands with its fee"
     },
     {
       "actions": [

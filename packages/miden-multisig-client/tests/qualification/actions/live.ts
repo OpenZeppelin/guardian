@@ -26,7 +26,8 @@ import {
   type LiveSession,
   type Scheme,
 } from '../live.js';
-import { setAccountPaused } from './operator.js';
+import { GATE, expectDenied } from './modules.js';
+import { setAccountModules, setAccountPaused } from './operator.js';
 import type { ActionContext, ActionOutcome } from '../runner.js';
 
 /** Matches the Rust driver, so the two legs fund identically. */
@@ -3419,4 +3420,94 @@ export async function abandonStrandedHeadAndRecover(
     };
   }
   return { kind: 'environment_blocked', reason: `the fresh transfer was ${completion.reason}` };
+}
+
+/**
+ * Assigns the stack's `qual-gate` module to the scenario's account with a cap
+ * of exactly what `asset-send` sends, and reads it back through the account's
+ * own policy listing. Mirrors `assign_cap` in the Rust driver.
+ */
+export async function assignModuleCap(context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig || !session.accountId) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so there is no asset to cap' };
+  }
+  const cap = { max_amount_per_tx: { [session.faucetId]: P2ID_AMOUNT.toString() } };
+  const assigned = await setAccountModules(context, session.accountId, [{ moduleId: GATE, params: cap }]);
+  if (assigned) return assigned;
+
+  try {
+    const policies = await session.multisig.getPolicies();
+    const policy = policies.find((entry) => entry.moduleId === GATE);
+    if (!policy) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the account's policies do not list the ${GATE} it was assigned: ${JSON.stringify(policies)}`,
+      };
+    }
+    const expected = JSON.stringify(cap);
+    if (JSON.stringify(policy.params) !== expected && JSON.stringify(policy.accountLayer) !== expected) {
+      return {
+        kind: 'failed',
+        classification: 'product',
+        reason: `the account's policies list ${GATE} without the cap it was assigned: ${JSON.stringify(policy)}`,
+      };
+    }
+    return { kind: 'passed' };
+  } catch (error) {
+    return { kind: 'failed', classification: 'product', reason: `listing the account's policies failed: ${String(error)}` };
+  }
+}
+
+/**
+ * One unit over the cap is refused by the dry-run check and at creation,
+ * naming the module and `amount_cap_exceeded`; the capped amount itself passes
+ * the check. The transaction also pays the network fee, so the capped amount
+ * passing is what shows the fee note is not counted as a payment. Mirrors
+ * `assert_cap_refuses` in the Rust driver.
+ */
+export async function assertModuleCapRefuses(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId || !session.treasuryId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+  const multisig = session.multisig;
+  const send = (amount: bigint) =>
+    ({ type: 'p2id', recipientId: session.treasuryId!, faucetId: session.faucetId!, amount }) as const;
+
+  const overCheck = await expectDenied(
+    'the check of a payment over the cap',
+    () => proposeWhenSettled(() => multisig.checkTransaction(send(P2ID_AMOUNT + 1n))),
+    GATE,
+    'amount_cap_exceeded',
+  );
+  if (overCheck.kind !== 'passed') return overCheck;
+  const over = await expectDenied(
+    'a payment over the cap',
+    () =>
+      proposeWhenSettled(() =>
+        multisig.createP2idProposal(session.treasuryId!, session.faucetId!, P2ID_AMOUNT + 1n),
+      ),
+    GATE,
+    'amount_cap_exceeded',
+  );
+  if (over.kind !== 'passed') return over;
+
+  try {
+    await proposeWhenSettled(() => multisig.checkTransaction(send(P2ID_AMOUNT)));
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `the check of a payment of exactly the cap was refused, so the fee may count as a payment: ${String(error)}`,
+    };
+  }
 }

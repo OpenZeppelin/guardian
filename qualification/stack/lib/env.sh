@@ -45,6 +45,8 @@ qual_generate_env() {
   QUAL_HTTP_PORT_E="${QUAL_HTTP_PORT_E:-$(qual_free_port)}"
   QUAL_GRPC_PORT_E="${QUAL_GRPC_PORT_E:-$(qual_free_port)}"
   QUAL_METRICS_PORT="${QUAL_METRICS_PORT:-$(qual_free_port)}"
+  # Where the Rust driver serves the remote policy module, on the host.
+  QUAL_MODULE_PORT="${QUAL_MODULE_PORT:-$(qual_free_port)}"
   # The queue server's depth. The deterministic profile has three chained
   # fixture deltas, so a depth of two is the deepest it can fill and still
   # refuse the next one; the live chained scenario pushes three transactions
@@ -59,7 +61,11 @@ qual_generate_env() {
   QUAL_ACK_KEYS_DIR="${run_dir}/ack-keys"
   QUAL_ACK_KEYS_MIGRATION_DIR="${run_dir}/ack-keys-migration-target"
   QUAL_OPERATOR_DIR="${run_dir}/operator"
-  mkdir -p "${QUAL_ACK_KEYS_DIR}" "${QUAL_ACK_KEYS_MIGRATION_DIR}" "${QUAL_OPERATOR_DIR}"
+  QUAL_MODULES_DIR="${run_dir}/modules"
+  QUAL_MODULE_SECRETS_DIR="${run_dir}/module-secrets"
+  QUAL_MODULE_TLS_DIR="${run_dir}/module-tls"
+  mkdir -p "${QUAL_ACK_KEYS_DIR}" "${QUAL_ACK_KEYS_MIGRATION_DIR}" "${QUAL_OPERATOR_DIR}" \
+    "${QUAL_MODULES_DIR}" "${QUAL_MODULE_SECRETS_DIR}" "${QUAL_MODULE_TLS_DIR}"
 
   cat > "${out}" <<ENV
 QUAL_RUN_ID=${QUAL_RUN_ID}
@@ -88,6 +94,9 @@ QUAL_RUST_LOG=${QUAL_RUST_LOG:-info}
 QUAL_ACK_KEYS_DIR=${QUAL_ACK_KEYS_DIR}
 QUAL_ACK_KEYS_MIGRATION_DIR=${QUAL_ACK_KEYS_MIGRATION_DIR}
 QUAL_OPERATOR_DIR=${QUAL_OPERATOR_DIR}
+QUAL_MODULE_PORT=${QUAL_MODULE_PORT}
+QUAL_MODULES_DIR=${QUAL_MODULES_DIR}
+QUAL_MODULE_SECRETS_DIR=${QUAL_MODULE_SECRETS_DIR}
 ENV
 
   export QUAL_RUN_ID QUAL_PROJECT QUAL_HTTP_PORT QUAL_GRPC_PORT QUAL_POSTGRES_PASSWORD
@@ -97,4 +106,5 @@ ENV
   export QUAL_HTTP_PORT_E QUAL_GRPC_PORT_E
   export QUAL_METRICS_PORT QUAL_QUEUE_DEPTH
   export QUAL_ACK_KEYS_DIR QUAL_ACK_KEYS_MIGRATION_DIR QUAL_OPERATOR_DIR
+  export QUAL_MODULE_PORT QUAL_MODULES_DIR QUAL_MODULE_SECRETS_DIR QUAL_MODULE_TLS_DIR
 }

@@ -1,4 +1,4 @@
-import { GuardianOperatorHttpClient } from '@openzeppelin/guardian-operator-client';
+import { GuardianOperatorHttpClient, type ModuleAssignment } from '@openzeppelin/guardian-operator-client';
 import { Word } from '@miden-sdk/miden-sdk';
 
 import { fetchWithCookieJar } from '../cookieJar.js';
@@ -81,6 +81,31 @@ export async function setAccountPaused(
       kind: 'failed',
       classification: 'product',
       reason: `${paused ? 'pause' : 'unpause'} was refused: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * Replaces the account's policy module assignments as the operator that holds
+ * `policies:write`; an empty list clears them. Mirrors `Operator::assign` and
+ * `Operator::clear` in the Rust driver.
+ */
+export async function setAccountModules(
+  context: ActionContext,
+  accountId: string,
+  modules: ModuleAssignment[],
+): Promise<ActionOutcome | null> {
+  const result = await login(context, 'reader');
+  if ('failure' in result) return result.failure;
+
+  try {
+    await result.client.setAccountModules(accountId, modules, 'qualification: policy module scenario');
+    return null;
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason: `assigning policy modules to ${accountId} was refused: ${String(error)}`,
     };
   }
 }

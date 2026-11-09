@@ -9,6 +9,7 @@ import {
   assertSession,
 } from './actions/operator.js';
 import { assertHttpEnvelope } from './actions/errorEnvelope.js';
+import { assertRefusal as assertModuleRefusal } from './actions/modules.js';
 import { isEnvironmental } from './environment.js';
 import { buildResult } from './report.js';
 import type { Classification, Runtime, Scenario, ScenarioResult } from './types.js';
@@ -63,6 +64,7 @@ export const HANDLERS: Readonly<Record<string, ActionHandler>> = {
   'operator-denial': assertDenial,
   'operator-logout': assertLogout,
   'operator-allowlist-reload': assertAllowlistReload,
+  'module-refusal': assertModuleRefusal,
 };
 
 /**
@@ -195,6 +197,10 @@ async function runLiveAction(
       return live.lowerProcedureThreshold(context, scenario.id);
     case 'procedure-threshold-assert':
       return live.assertProcedureThreshold(context, scenario.id);
+    case 'module-cap-assign':
+      return live.assignModuleCap(context, scenario.id);
+    case 'module-cap-refuses':
+      return live.assertModuleCapRefuses(context, scenario.id);
     default:
       return null;
   }
