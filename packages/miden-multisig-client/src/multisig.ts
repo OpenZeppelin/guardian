@@ -5,7 +5,7 @@
  * for proposal management.
  */
 
-import { GuardianHttpClient, GuardianHttpError, type ProposalExecution, type TransactionRequestEnvelope, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
+import { GuardianHttpClient, GuardianHttpError, type CheckProposalResult, type Policy, type ProposalExecution, type TransactionRequestEnvelope, type AbandonCandidateResponse, type AbandonStatus, type DeltaObject, type HistoryOptions, type HistoryPage, type ProposalSignature, type Signer, type AuthConfig, type StateObject } from '@openzeppelin/guardian-client';
 import type {
   ConsumableNote,
   ExportedProposal,
@@ -194,6 +194,33 @@ export interface AccountStateVerificationResult {
  * knob lives in a single trailing options bag, so call sites never need
  * positional `undefined` holes to reach a later option.
  */
+/**
+ * A transaction to check against GUARDIAN's policy modules before proposing it, one variant per
+ * typed `create*Proposal` method with that method's arguments. `switch_guardian` is not listed:
+ * leaving a GUARDIAN is never gated by its modules.
+ */
+export type CheckableTransaction =
+  | { type: 'p2id'; recipientId: string; faucetId: string; amount: bigint; options?: CreateP2idProposalOptions }
+  | { type: 'addSigner'; newSigner: SignerInput; options?: CreateSignerProposalOptions }
+  | { type: 'removeSigner'; signer: string; options?: CreateSignerProposalOptions }
+  | { type: 'changeThreshold'; newThreshold: number; options?: CreateProposalOptions }
+  | {
+      type: 'updateProcedureThreshold';
+      procedure: ProcedureName;
+      threshold: number;
+      options?: CreateProposalOptions;
+    }
+  | { type: 'consumeNotes'; noteIds: string[]; options?: CreateProposalOptions }
+  | {
+      type: 'custom';
+      transactionRequestBytes: Uint8Array;
+      proposalType: string;
+      options?: CreateProposalOptions;
+    };
+
+/** Thrown inside a check once the payload is built, so nothing after the push runs. */
+const CHECKED = Symbol('checked');
+
 export interface CreateProposalOptions {
   /**
    * Proposal nonce: the account nonce the executed transaction will have.
@@ -1360,6 +1387,56 @@ export class Multisig {
     await this.refreshConfigFromStore();
     this.assertKeySchemeMatches();
     return this.pushProposal(nonce, txSummaryBase64, metadata, undefined);
+  }
+
+  /**
+   * The policies GUARDIAN applies to this account, as far as its operator discloses them, in
+   * the order they are evaluated. Mirrors the Rust `MultisigClient::get_policies`.
+   */
+  async getPolicies(): Promise<Policy[]> {
+    return this.guardian.getPolicies(this._accountId);
+  }
+
+  /**
+   * Asks GUARDIAN whether `transaction` would be accepted as a proposal: it is built exactly as
+   * the matching `create*Proposal` method builds it, but nothing is stored and no proposal slot
+   * is taken. Resolves with `complete: false` when a module that opts out of checks was skipped.
+   * A policy refusal rejects with the same `GuardianHttpError` creation would
+   * (`moduleRefusal()`). Advisory: approval still decides, and GUARDIAN rate limits checks per
+   * account and signer. Mirrors the Rust `MultisigClient::check_transaction`.
+   */
+  async checkTransaction(transaction: CheckableTransaction): Promise<CheckProposalResult> {
+    let result: CheckProposalResult | undefined;
+    const checking = Object.create(this) as Multisig;
+    (checking as unknown as { pushProposal: Multisig['pushProposal'] }).pushProposal = async (
+      nonce,
+      txSummaryBase64,
+      metadata,
+      transactionRequest,
+    ) => {
+      result = await this.guardian.checkDeltaProposal({
+        accountId: this._accountId,
+        nonce,
+        deltaPayload: {
+          txSummary: { data: txSummaryBase64 },
+          signatures: [],
+          metadata: ProposalMetadataCodec.toGuardian(metadata),
+          ...(transactionRequest ? { transactionRequest } : {}),
+        },
+      });
+      throw CHECKED;
+    };
+    try {
+      await proposeOn(checking, transaction);
+    } catch (error) {
+      if (error !== CHECKED) {
+        throw error;
+      }
+    }
+    if (!result) {
+      throw new Error('the transaction was not built, so it was not checked');
+    }
+    return result;
   }
 
   /**
@@ -3847,4 +3924,40 @@ function decodeEmbeddedConsumeNotes(metadata: ConsumeNotesProposalMetadata): Not
     decoded.push(note);
   }
   return decoded;
+}
+
+function proposeOn(multisig: Multisig, transaction: CheckableTransaction): Promise<Proposal> {
+  switch (transaction.type) {
+    case 'p2id':
+      return multisig.createP2idProposal(
+        transaction.recipientId,
+        transaction.faucetId,
+        transaction.amount,
+        transaction.options,
+      );
+    case 'addSigner':
+      return multisig.createAddSignerProposal(transaction.newSigner, transaction.options);
+    case 'removeSigner':
+      return multisig.createRemoveSignerProposal(transaction.signer, transaction.options);
+    case 'changeThreshold':
+      return multisig.createChangeThresholdProposal(transaction.newThreshold, transaction.options);
+    case 'updateProcedureThreshold':
+      return multisig.createUpdateProcedureThresholdProposal(
+        transaction.procedure,
+        transaction.threshold,
+        transaction.options,
+      );
+    case 'consumeNotes':
+      return multisig.createConsumeNotesProposal(transaction.noteIds, transaction.options);
+    case 'custom':
+      return multisig.createCustomProposal(
+        transaction.transactionRequestBytes,
+        transaction.proposalType,
+        transaction.options,
+      );
+    default: {
+      const unreachable: never = transaction;
+      throw new Error(`Unknown transaction ${JSON.stringify(unreachable)}`);
+    }
+  }
 }

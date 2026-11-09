@@ -558,6 +558,35 @@ mod tests {
     }
 
     #[test]
+    fn a_proposal_push_keeps_a_module_refusal_typed_and_maps_other_refusals() {
+        let denied = MultisigError::proposal_push(guardian_status(
+            tonic::Code::PermissionDenied,
+            serde_json::json!({
+                "code": "GUARDIAN_MODULE_DENIED",
+                "message": "denied",
+                "meta": { "retryable": false, "module": "caps", "reason_code": "amount_cap_exceeded" }
+            }),
+        ));
+        assert!(
+            matches!(denied, MultisigError::ModuleDenied { ref reason_code, .. } if reason_code == "amount_cap_exceeded"),
+            "{denied:?}"
+        );
+
+        let full = MultisigError::proposal_push(guardian_status(
+            tonic::Code::InvalidArgument,
+            serde_json::json!({
+                "code": "GUARDIAN_PROPOSAL_REQUEST_TOO_LARGE",
+                "message": "too large",
+                "meta": { "retryable": false }
+            }),
+        ));
+        assert!(matches!(
+            full,
+            MultisigError::GuardianProposalRefused { .. }
+        ));
+    }
+
+    #[test]
     fn miden_client_conversion_retains_typed_rpc_kind() {
         let error = MultisigError::from(request_error(GrpcError::ResourceExhausted));
 

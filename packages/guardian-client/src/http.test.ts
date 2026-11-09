@@ -725,6 +725,45 @@ describe('GuardianHttpClient', () => {
   });
 
   describe('pushDeltaProposal', () => {
+    it('rejects a proposal a policy module refuses with the typed refusal', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_MODULE_DENIED',
+            message: "This Guardian's policy doesn't allow this request.",
+            meta: {
+              retryable: false,
+              module: 'caps',
+              reason_code: 'amount_cap_exceeded',
+              layer: 'global',
+            },
+          }),
+      });
+
+      const error = await client
+        .pushDeltaProposal({
+          accountId: '0x' + 'a'.repeat(30),
+          nonce: 1,
+          deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+        })
+        .catch((e) => e as GuardianHttpError);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      const refused = error as GuardianHttpError;
+      expect(refused.moduleRefusal()).toEqual({
+        kind: 'denied',
+        module: 'caps',
+        reasonCode: 'amount_cap_exceeded',
+        layer: 'global',
+        clientMessage: null,
+      });
+      expect(refused.isRetryable()).toBe(false);
+    });
+
     it('lets an EIP-712 signer create an unsigned proposal', async () => {
       const signer: Signer = {
         ...mockSigner,

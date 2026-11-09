@@ -377,6 +377,16 @@ try {
 }
 ```
 
+### Policy module refusals
+
+A request a policy module refuses is a `GuardianHttpError` whose
+`moduleRefusal()` returns `{ kind: 'denied', module, reasonCode, layer,
+clientMessage }` (final; a generic denial has only `reasonCode:
+'policy_denied'`) or `{ kind: 'unavailable', module }` (retryable), and `null`
+for any other error. `getPolicies(accountId)` lists the rules the Guardian
+discloses, and `checkDeltaProposal(request)` runs the policy modules on a
+proposal without storing it.
+
 ### Rate limits and retries
 
 The server rate-limits both its HTTP and gRPC surfaces. The sustained

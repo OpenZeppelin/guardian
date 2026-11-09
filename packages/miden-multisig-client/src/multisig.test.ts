@@ -3593,6 +3593,89 @@ describe('Multisig', () => {
     });
   });
 
+  describe('policy discovery', () => {
+    const config = {
+      threshold: 1,
+      signerCommitments: ['0x' + 'a'.repeat(64)],
+      guardianCommitment: '0x' + 'c'.repeat(64),
+    };
+    const payP2id = {
+      type: 'p2id' as const,
+      recipientId: '0xrecipient',
+      faucetId: '0xfaucet',
+      amount: 100n,
+      options: { nonce: 1 },
+    };
+    const lastRequest = () => {
+      const [url, init] = mockFetch.mock.calls[mockFetch.mock.calls.length - 1];
+      const body = (init as RequestInit | undefined)?.body;
+      return { url: String(url), body: body === undefined ? undefined : JSON.parse(String(body)) };
+    };
+
+    it('checks a transaction built as proposing would build it, storing nothing', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ allowed: true, complete: false }) });
+
+      const result = await multisig.checkTransaction(payP2id);
+
+      expect(result).toEqual({ allowed: true, complete: false });
+      const { url, body } = lastRequest();
+      expect(url).toContain('/delta/proposal/check');
+      expect(body.delta_payload.metadata).toMatchObject({
+        proposal_type: 'p2id',
+        recipient_id: '0xrecipient',
+        faucet_id: '0xfaucet',
+        amount: '100',
+      });
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('rejects a refused check with the refusal creation would return', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_MODULE_DENIED',
+            message: "This Guardian's policy doesn't allow this request.",
+            meta: { retryable: false, reason_code: 'policy_denied' },
+          }),
+      });
+
+      const error = await multisig.checkTransaction(payP2id).catch((e: unknown) => e);
+
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect((error as GuardianHttpError).moduleRefusal()).toMatchObject({
+        kind: 'denied',
+        reasonCode: 'policy_denied',
+        module: null,
+      });
+      expect(multisig.listProposals()).toEqual([]);
+    });
+
+    it('lists the policies GUARDIAN discloses for the account', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          policies: [
+            { module_id: 'caps', hooks: ['before_transaction_approved'], description: 'At most 5 per transaction' },
+          ],
+        }),
+      });
+
+      const policies = await multisig.getPolicies();
+
+      expect(policies).toEqual([
+        { moduleId: 'caps', hooks: ['before_transaction_approved'], description: 'At most 5 per transaction' },
+      ]);
+      expect(lastRequest().url).toContain('/policies');
+    });
+  });
+
   describe('createProposal', () => {
     it('refuses on a guardian_executable client, which must store the request with the summary', async () => {
       const multisig = new Multisig(
@@ -3642,6 +3725,48 @@ describe('Multisig', () => {
         } as never),
       ).rejects.toThrow(/incomplete signer set/);
       expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a policy refusal at creation as the typed GuardianHttpError', async () => {
+      const config = {
+        threshold: 1,
+        signerCommitments: ['0x' + 'a'.repeat(64)],
+        guardianCommitment: '0x' + 'c'.repeat(64),
+      };
+      const multisig = createTestMultisig(config);
+      storeHoldsConfig(config);
+      mockWebClient.accounts.get.mockResolvedValue(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 1));
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 403,
+        statusText: 'Forbidden',
+        text: async () =>
+          JSON.stringify({
+            code: 'GUARDIAN_MODULE_DENIED',
+            message: "This Guardian's policy doesn't allow this request.",
+            meta: { retryable: false, module: 'caps', reason_code: 'amount_cap_exceeded', layer: 'global' },
+          }),
+      });
+
+      const error = await multisig
+        .createProposal(1, 'AQID', {
+          proposalType: 'p2id',
+          boundBlockNum: MOCK_BOUND_BLOCK_NUM,
+          saltHex: MOCK_SALT_HEX,
+          description: '',
+          recipientId: '0x' + '1'.repeat(30),
+          faucetId: '0x' + '2'.repeat(30),
+          amount: '1',
+        } as never)
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect((error as GuardianHttpError).moduleRefusal()).toMatchObject({
+        kind: 'denied',
+        module: 'caps',
+        reasonCode: 'amount_cap_exceeded',
+      });
+      expect(multisig.listProposals()).toEqual([]);
     });
 
     it('parses the reply against the signer config in the store', async () => {

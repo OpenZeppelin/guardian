@@ -87,6 +87,7 @@ export {
   type CreateProposalOptions,
   type CreateSignerProposalOptions,
   type CreateP2idProposalOptions,
+  type CheckableTransaction,
 } from './multisig.js';
 export { AccountInspector, type DetectedMultisigConfig, type VaultBalance } from './inspector.js';
 export {
@@ -120,7 +121,7 @@ export type {
 } from './transaction/options.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
-export type { GuardianErrorMeta, ModuleRefusal } from '@openzeppelin/guardian-client';
+export type { CheckProposalResult, GuardianErrorMeta, ModuleRefusal, Policy } from '@openzeppelin/guardian-client';
 // Typed error-code vocabulary (issue #318): branch on GuardianErrorCode,
 // never on message text; unknown wire codes surface via rawCode.
 export {
