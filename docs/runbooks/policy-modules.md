@@ -24,6 +24,11 @@ For every instance in the catalog, know which path stops it:
 | `operator_can_disable = false`, `on_error = "allow"` | None needed for an outage: failures continue (recorded on the delta). A module that denies wrongly needs a params change or a deploy | Next request |
 | `operator_can_disable = false`, `on_error = "deny"` | A deploy: change the catalog and restart | A rollout |
 
+- Use `on_error = "allow"` only where skipping the instance is acceptable for
+  any transaction, not only during an outage: a transaction whose request the
+  Guardian cannot build or send (an account view it cannot read, a request over
+  `GUARDIAN_MODULE_REQUEST_MAX_BYTES`) is a module failure too, and a fail-open
+  instance is then skipped for it (recorded in `metadata.modules.failed_open`).
 - Give the on-call operator `modules:disable`. It allows disabling instances
   marked `operator_can_disable` and nothing else, so it is safe to hand out
   more widely than `policies:write` ([permissions](../DASHBOARD.md#permission-vocabulary)).
@@ -144,7 +149,12 @@ names the instance (`module <id>: ...`).
   history and assignments are kept for when it comes back.
 
 A disabled instance that fails its checks only logs `Disabled module failed
-its startup checks` and stays disabled.
+its startup checks` and stays disabled. Each replica creates its instances when
+it starts: if one replica could not create a disabled instance (a secret it
+could not read at the time, say), enabling the instance through another replica
+does not repair it there, and its calls on that replica fail and follow
+`on_error`. `guardian_module_up` is 0 for the instance on that replica; restart
+it after enabling.
 
 ## After an incident
 
