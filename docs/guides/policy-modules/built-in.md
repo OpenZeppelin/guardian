@@ -15,12 +15,20 @@ All params are optional; an instance with none allows everything.
 | `asset_allowlist` | `["<faucet id>", ...]` | `asset_not_allowed` | Assets sent in payment notes and received in input notes. |
 | `recipient_allowlist` | `["<account id>", ...]` | `recipient_not_allowed` | P2ID and P2IDE targets. |
 | `recipient_denylist` | `["<account id>", ...]` | `recipient_blocked` | |
-| `deny_unknown_recipients` | `true` / `false` | `recipient_not_allowed` | Refuses payment notes whose recipient the Guardian cannot identify (not P2ID or P2IDE). |
+| `deny_unknown_recipients` | `true` / `false` | `recipient_blocked` | With `recipient_denylist`: also refuses payment notes whose recipient the Guardian cannot identify (not P2ID or P2IDE). |
 | `signer_allowlist` or `signer_denylist` | `["<signer commitment>", ...]` | `signer_not_allowed` | Mutually exclusive. |
 | `signer_check` | `"added"` (default) or `"all"` | | `added` checks only signers a transaction adds; `all` checks every signer after it. |
 
 Signer rules apply at all three hooks, including registration. Transaction
 rules (caps, assets, recipients) apply to proposals and approvals.
+
+Each refusal carries a fixed `client_message` naming the rule (for example
+"The transaction sends more than this Guardian allows per transaction."),
+never a list entry or a limit, so a `client_reason = "full"` instance tells
+users what to change without disclosing params. The exact amounts and
+entries go to the server log. A transaction request without a Miden
+projection is not judged: the module returns an error and the instance's
+`on_error` applies.
 
 ## The example catalog
 

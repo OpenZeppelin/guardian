@@ -62,7 +62,7 @@
 
 ### Implementation for User Story 1
 
-- [ ] T015 [US1] `basic-policy` review fixes in `crates/guardian-module-sdk/src/basic_policy.rs`: a fixed `client_message` per reason code; a missing projection is a module error, not a `projection_missing` deny; tests for both (P0 T091)
+- [X] T015 [US1] `basic-policy` review fixes in `crates/guardian-module-sdk/src/basic_policy.rs`: a fixed `client_message` per reason code; a missing projection is a module error, not a `projection_missing` deny; tests for both (P0 T091)
 - [ ] T016 [US1] Denial log line with the fields of RFC section 2.2 (instance, layer, reason code, `request_id`, account, submitter) in `crates/server/src/modules/pipeline.rs`, with `request_id` defined as in RFC section 3.2; test that a generic denial still logs the full decision (P0 T091)
 
 **Checkpoint**: SC-002 holds on all three approval paths and SC-001 has its baseline.

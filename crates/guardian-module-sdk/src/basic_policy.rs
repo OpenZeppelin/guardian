@@ -7,8 +7,8 @@ use serde::Deserialize;
 
 use crate::proto::{asset, hook_request};
 use crate::{
-    AccountView, Decision, DescribeRequest, Hook, HookRequest, Module, ModuleError, ModuleInfo,
-    PROTOCOL_VERSION, ParamsVerdict, TransactionSubject,
+    AccountView, Decision, DescribeRequest, Hook, HookRequest, MidenTransaction, Module,
+    ModuleError, ModuleInfo, PROTOCOL_VERSION, ParamsVerdict, TransactionSubject,
 };
 
 pub const KIND: &str = "basic-policy";
@@ -113,6 +113,46 @@ fn parse_policy(params: &[u8]) -> Result<Policy, String> {
     Policy::try_from(params)
 }
 
+/// A `basic-policy` rule. Each denies with a fixed reason code and a fixed client message that
+/// names the rule, never a list entry or a limit, so a denial discloses no params; the details
+/// go only to the logged message.
+#[derive(Debug, Clone, Copy)]
+enum Rule {
+    RecipientAllowlist,
+    RecipientDenylist,
+    AssetAllowlist,
+    AmountCap,
+    Signers,
+}
+
+impl Rule {
+    fn deny(self, logged: String) -> Decision {
+        let (reason_code, client_message) = match self {
+            Rule::RecipientAllowlist => (
+                "recipient_not_allowed",
+                "A payment goes to a recipient this Guardian does not accept.",
+            ),
+            Rule::RecipientDenylist => (
+                "recipient_blocked",
+                "A payment goes to a recipient this Guardian blocks.",
+            ),
+            Rule::AssetAllowlist => (
+                "asset_not_allowed",
+                "The transaction moves an asset this Guardian does not accept.",
+            ),
+            Rule::AmountCap => (
+                "amount_cap_exceeded",
+                "The transaction sends more than this Guardian allows per transaction.",
+            ),
+            Rule::Signers => (
+                "signer_not_allowed",
+                "The account would have a signer this Guardian does not accept.",
+            ),
+        };
+        Decision::deny(reason_code, logged).with_client_message(client_message)
+    }
+}
+
 impl Policy {
     fn evaluate(&self, request: &HookRequest) -> Result<Decision, ModuleError> {
         if let Some(signers) = &self.signers {
@@ -125,14 +165,11 @@ impl Policy {
                 .into_iter()
                 .find(|signer| !signers.permits(signer))
             {
-                return Ok(Decision::deny(
-                    "signer_not_allowed",
-                    format!("signer {signer} is not permitted"),
-                ));
+                return Ok(Rule::Signers.deny(format!("signer {signer} is not permitted")));
             }
         }
         match &request.subject {
-            Some(hook_request::Subject::Transaction(tx)) => Ok(self.evaluate_transaction(tx)),
+            Some(hook_request::Subject::Transaction(tx)) => self.evaluate_transaction(tx),
             Some(hook_request::Subject::Registration(_)) => Ok(Decision::allow()),
             None => Err(ModuleError::InvalidRequest("request has no subject".into())),
         }
@@ -149,11 +186,16 @@ impl Policy {
             .collect()
     }
 
-    fn evaluate_transaction(&self, tx: &TransactionSubject) -> Decision {
+    fn evaluate_transaction(&self, tx: &TransactionSubject) -> Result<Decision, ModuleError> {
         let Some(projection) = tx.miden() else {
-            return Decision::deny("projection_missing", "transaction has no Miden projection");
+            return Err(ModuleError::InvalidRequest(
+                "transaction has no Miden projection to judge".into(),
+            ));
         };
+        Ok(self.judge(projection))
+    }
 
+    fn judge(&self, projection: &MidenTransaction) -> Decision {
         let payments = || projection.output_notes.iter().filter(|note| !note.tx_fee);
 
         if let Some(allowed) = &self.assets {
@@ -164,10 +206,7 @@ impl Policy {
                 .map(|a| a.faucet_id.to_ascii_lowercase())
                 .find(|faucet| !allowed.contains(faucet))
             {
-                return Decision::deny(
-                    "asset_not_allowed",
-                    format!("asset {faucet} is not allowed"),
-                );
+                return Rule::AssetAllowlist.deny(format!("asset {faucet} is not allowed"));
             }
         }
 
@@ -176,17 +215,13 @@ impl Policy {
                 let recipient = match (&note.p2id_target, note.partial) {
                     (Some(target), false) => target.to_ascii_lowercase(),
                     _ => {
-                        return Decision::deny(
-                            "recipient_not_allowed",
-                            format!("note {} has no checkable recipient", note.note_id),
-                        );
+                        return Rule::RecipientAllowlist
+                            .deny(format!("note {} has no checkable recipient", note.note_id));
                     }
                 };
                 if !allowed.contains(&recipient) {
-                    return Decision::deny(
-                        "recipient_not_allowed",
-                        format!("recipient {recipient} is not allowed"),
-                    );
+                    return Rule::RecipientAllowlist
+                        .deny(format!("recipient {recipient} is not allowed"));
                 }
             }
         }
@@ -195,17 +230,13 @@ impl Policy {
             for note in payments() {
                 match (&note.p2id_target, note.partial) {
                     (Some(target), false) if blocked.contains(&target.to_ascii_lowercase()) => {
-                        return Decision::deny(
-                            "recipient_blocked",
-                            format!("recipient {target} is blocked"),
-                        );
+                        return Rule::RecipientDenylist
+                            .deny(format!("recipient {target} is blocked"));
                     }
                     (Some(_), false) => {}
                     _ if self.deny_unknown_recipients => {
-                        return Decision::deny(
-                            "recipient_not_allowed",
-                            format!("note {} has no checkable recipient", note.note_id),
-                        );
+                        return Rule::RecipientDenylist
+                            .deny(format!("note {} has no checkable recipient", note.note_id));
                     }
                     _ => {}
                 }
@@ -225,10 +256,8 @@ impl Policy {
             }
             for (faucet, cap) in &self.caps {
                 if sent.get(faucet).is_some_and(|total| total > cap) {
-                    return Decision::deny(
-                        "amount_cap_exceeded",
-                        format!("sent {} of {faucet}, cap {cap}", sent[faucet]),
-                    );
+                    return Rule::AmountCap
+                        .deny(format!("sent {} of {faucet}, cap {cap}", sent[faucet]));
                 }
             }
         }
@@ -478,8 +507,44 @@ mod tests {
         let strict = json!({ "recipient_denylist": ["0xbad"], "deny_unknown_recipients": true });
         assert_eq!(
             decide(&tx_request(strict, unknown)).await.reason_code,
-            "recipient_not_allowed"
+            "recipient_blocked",
+            "an unknown recipient refused by the denylist rule reports that rule"
         );
+    }
+
+    #[tokio::test]
+    async fn a_denial_names_its_rule_to_the_client_and_discloses_no_param() {
+        let projection = MidenTransaction {
+            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 5_000)])],
+            ..Default::default()
+        };
+        let decision = decide(&tx_request(cap(), projection)).await;
+        assert_eq!(decision.reason_code, "amount_cap_exceeded");
+        assert!(!decision.client_message.is_empty());
+        assert!(decision.client_message.len() <= 256);
+        for detail in ["1000", "5000", USDC, "0xr1"] {
+            assert!(
+                !decision.client_message.contains(detail),
+                "{detail} leaked into {:?}",
+                decision.client_message
+            );
+        }
+        assert!(
+            decision.message.contains("1000"),
+            "details stay in the logged message"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_transaction_without_a_miden_projection_is_not_judged() {
+        let mut request = tx_request(cap(), MidenTransaction::default());
+        if let Some(hook_request::Subject::Transaction(subject)) = &mut request.subject {
+            subject.projection = None;
+        }
+        assert!(matches!(
+            BasicPolicy.evaluate(&request).await,
+            Err(ModuleError::InvalidRequest(_))
+        ));
     }
 
     #[tokio::test]
