@@ -181,6 +181,24 @@ At concurrency 8 (3 rounds x 1,600 pushes) the server is saturated at about 89 p
 - Fixed (2026-10-16): account views are cached per replica by the state commitment the Guardian computed (stored tail, applied state, registration head; never a client value), bounded at 4,096 entries. A chained push reuses the previous push's `after` view, and a proposal's approval push reuses both views built at its creation. `push_delta` reads the matching proposal once for metadata and modules; a storage failure still reaches modules as a failure, not as "no proposer".
 - Left for M2a: the remaining `after` decode (about 1.3 ms) could come from the account `apply_delta` already decodes. Since #523 (`8c1e5d6f`) the push path calls `verify_and_apply_delta`, which decodes the base account once and applies the summary to it, so both views can be read from that decode by adding view fields to `AppliedState`; proposal creation still calls `verify_delta` alone and moves to `verify_and_apply_delta` when a module will be called (RFC revision 24, section 3.2). Re-measure on a quiet machine. Moving request assembly inside the reconstruction gate (revision 20 item 8) would put this cost into the contended section; measure throughput at concurrency 8 before and after.
 
+### M2a end to end (2026-11-09)
+
+The loadgen `state-push` scenario no longer works since the multisig push gate (#536): a bare push is refused with "This transaction still needs more signatures". A new `proposal-push` scenario creates a proposal carrying the owner's approval (one-signer accounts) and then pushes the delta, so each operation runs both gate hooks, `before_proposal_created` and `before_transaction_approved`. Same setup as G3 otherwise: `examples/bench_server` release build, filesystem backend, canonicalization off, gRPC with Falcon auth, concurrency 1, 4 accounts. Three configurations: no catalog; one in-process `basic-policy` instance on both hooks (amount cap and signer rule); the same params served by `examples/policy-module` over loopback gRPC with a bearer token. No local node of the 0.17 line was available (the installed `miden-node` is 0.15.1), so the server connects to devnet RPC at startup only; nothing in the measured path calls the node. Latencies are server-side span times (`push_delta_proposal`, `push_delta`), 3,000 requests each.
+
+| Build | Config | proposal p50 | proposal p99 | push p50 | push p99 |
+|---|---|---|---|---|---|
+| before the fix below, fixed leg order | none | 20.8 ms | 44.5 ms | 28.1 ms | 56.4 ms |
+| | in-process | 24.9 ms (+4.1) | 61.7 ms | 29.4 ms (+1.3) | 74.0 ms |
+| | remote | 24.5 ms (+3.7) | 54.3 ms | 29.1 ms (+1.0) | 60.8 ms |
+| after the fix, leg order rotated per round | none | 21.9 ms | 96.7 ms | 29.7 ms | 108.8 ms |
+| | in-process | 21.5 ms | 86.5 ms | 28.7 ms | 107.0 ms |
+| | remote | 21.5 ms | 63.9 ms | 29.0 ms | 76.2 ms |
+
+- Fixed: with modules to run, proposal creation verified the delta (`verify_delta`) and then decoded and applied it again for the module views. It now decodes once (`apply_delta_with_module_views` with the tail commitment, which performs the same check), and keeps `verify_delta` alone when no module applies. The consistent +4 ms at the proposal median went away.
+- The p99 differences are the machine, not the modules: with a fixed order (none, in-process, remote) the in-process leg showed a p99 two to three times the baseline in every round, and with the order rotated the tail followed the position instead (the no-catalog leg in round 1 reached 315 ms client-side). CPU time on the request task (`time.busy`) differs by under 0.5 ms at p50 between configurations.
+- **SC-001** holds (no catalog is one `Option` check per request) and **SC-006** holds within this machine's noise; a quiet machine or the deployed bench would bound the p99 more tightly.
+- Not run here: the quickstart walk-through against a local node; it needs a 0.17-line `miden-node`.
+
 ### In-process custom kinds (2026-10-16)
 
 `ServerBuilder::with_module_kind` is about thirty lines on top of the existing `Registry`: the catalog, pipeline, params API and history already work for any kind. The cost is elsewhere. In process, a module shares the process that holds the acknowledgement keys, so "a module can only refuse" holds by review, not isolation; a panic would unwind through the request handler; and a timeout only fires at await points, so a blocking module ignored `timeout_ms`. Every module call now runs on its own task: a panic is a module failure under `on_error`, and the timeout holds while other runtime workers are free (a module that blocks still occupies a worker until it returns). The per-call cost is one task spawn. Open for M2c: `ServerBuilder::from_env`, so a custom build does not copy `main.rs`, and the semver commitment of publishing `guardian-server` as a library.
