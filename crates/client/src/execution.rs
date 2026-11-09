@@ -2,7 +2,7 @@
 
 pub use guardian_shared::execution::{
     ExecutionFailureCode, ExecutionState, ExpirationBound, ForeignAccountUnavailableReason,
-    RequestInvalidReason,
+    ModuleDenial, RequestInvalidReason,
 };
 
 use crate::error::{ClientError, ClientResult};

@@ -120,7 +120,7 @@ export type {
 } from './transaction/options.js';
 
 export { GuardianHttpClient, GuardianHttpError } from '@openzeppelin/guardian-client';
-export type { GuardianErrorMeta } from '@openzeppelin/guardian-client';
+export type { GuardianErrorMeta, ModuleRefusal } from '@openzeppelin/guardian-client';
 // Typed error-code vocabulary (issue #318): branch on GuardianErrorCode,
 // never on message text; unknown wire codes surface via rawCode.
 export {

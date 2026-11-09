@@ -56,7 +56,7 @@ pub use note_recovery::{
     NoteRecoveryOptions, NoteRecoveryReport, RecoveryStep, RecoveryStepProblem,
 };
 pub use proposal_note_import::{NoteImportOutcome, NoteImportSource, NoteImportStatus};
-pub use proposals::{AbandonRequest, AbandonRequestState, AbandonStatus};
+pub use proposals::{AbandonRequest, AbandonRequestState, AbandonStatus, Policy};
 pub use public_note_backfill::{BlockRange, PublicBackfillOptions, PublicBackfillReport};
 pub use recovery::{TransportRecoveryReport, TransportRecoveryStatus};
 

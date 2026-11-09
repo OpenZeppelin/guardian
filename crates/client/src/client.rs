@@ -4,14 +4,16 @@ use crate::execution::ProposalExecution;
 use crate::keystore::Signer;
 use crate::proto::guardian_client::GuardianClient as GuardianGrpcClient;
 use crate::proto::{
-    AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig, ConfigureRequest,
-    ConfigureResponse, ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest,
+    AbandonDeltaCandidateRequest, AbandonDeltaCandidateResponse, AuthConfig,
+    CheckDeltaProposalRequest, CheckDeltaProposalResponse, ConfigureRequest, ConfigureResponse,
+    ExecuteDeltaProposalRequest, GetAccountByKeyCommitmentRequest,
     GetAccountByKeyCommitmentResponse, GetCanonicalNonceRequest, GetCanonicalNonceResponse,
     GetCurrentExecutionRequest, GetDeltaHistoryRequest, GetDeltaHistoryResponse,
     GetDeltaProposalExecutionRequest, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
-    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    GetDeltaSinceRequest, GetDeltaSinceResponse, GetPoliciesRequest, GetPoliciesResponse,
+    GetPubkeyRequest, GetStateRequest, GetStateResponse,
+    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
     PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest,
     RevokeSessionRequest, SessionGrantFields, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
@@ -824,6 +826,52 @@ impl GuardianClient {
             return Err(ClientError::ServerError(inner.message.clone()));
         }
 
+        Ok(inner)
+    }
+
+    /// Dry run of [`Self::push_delta_proposal`]: the same checks and proposal-creation policy
+    /// modules, without storing a proposal. A module refusal is the same typed error proposal
+    /// creation returns; `complete` is false when a module that opts out of dry runs was
+    /// skipped. Advisory: approval still decides.
+    pub async fn check_delta_proposal(
+        &mut self,
+        account_id: &AccountId,
+        nonce: u64,
+        delta_payload: impl serde::Serialize,
+    ) -> ClientResult<CheckDeltaProposalResponse> {
+        let message = CheckDeltaProposalRequest {
+            account_id: account_id.to_string(),
+            nonce,
+            delta_payload: serde_json::to_string(&delta_payload)?,
+        };
+        let inner = self
+            .send_allowing_session(account_id, message, async |client, request| {
+                client.check_delta_proposal(request).await
+            })
+            .await?;
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+        Ok(inner)
+    }
+
+    /// The policy modules that apply to the account, as far as the Guardian's operator
+    /// discloses them, in evaluation order. `params` and `account_layer` are JSON objects.
+    pub async fn get_policies(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<GetPoliciesResponse> {
+        let message = GetPoliciesRequest {
+            account_id: account_id.to_string(),
+        };
+        let inner = self
+            .send_allowing_session(account_id, message, async |client, request| {
+                client.get_policies(request).await
+            })
+            .await?;
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
         Ok(inner)
     }
 
