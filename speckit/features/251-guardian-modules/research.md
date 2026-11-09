@@ -271,7 +271,7 @@ Both reviewers accepted the design. Applied, still as revision 24:
 
 Two more reviews; one cited lines from before revision 24 (`checkProposal`, the `drift` example, "catalog params" in the hook table), all already fixed. Applied, still as revision 24:
 
-- **Delegation was visible only at creation.** `submitter_session` is always false at the ack, where rules must be enforced. `proposer_session` is now stored with the proposal, returned with the proposer by the `ProposalContext` lookup, and sent in `TransactionSubject`, `pending` and `CommitEvent`.
+- **Delegation was visible only at creation.** `submitter_session` was always false at the ack, where rules must be enforced, so revision 24 added `proposer_session`, stored with the proposal. Revised 2026-11-09 (RFC revision 27): since #580 `push_delta` and Guardian execution accept session credentials, so `submitter_session` is set at the ack; `proposer_session` was dropped, since a session key cannot approve a proposal and no catalog policy needs it.
 - **The dry run skipped the hook that matters.** It now also runs instances subscribed only to `before_transaction_approved`, marked with `HookRequest.dry_run`, and `complete` is derived from the catalog, so it no longer reveals that one account carries a hidden instance.
 - **Code allowlist grandfathering.** `code_check = "changed"` (default) keeps code an account already runs, documented as `signer_check = "added"` is; `code_check = "all"` checks the current code at every gate hook.
 - **Reassignment of a stateful module** after removal from an account enters `resync_required`, matching catalog removal and return. The counting model does not cover assignment changes (its SKILL.md says so); T096 extends it.

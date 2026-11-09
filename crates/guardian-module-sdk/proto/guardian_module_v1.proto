@@ -82,8 +82,7 @@ message TransactionSubject {
   RawTransaction raw = 2;             // the network's own encoding; UNSTABLE across that network's protocol bumps
   repeated PendingTransaction pending = 3;  // signed for this account, not yet acknowledged by this module (section 3.4)
   string proposer = 4;                // signer commitment that created the matching proposal; verified; empty when there is none (section 3.2)
-  bool proposer_session = 5;          // the proposer created it through a delegated session key (section 3.2)
-  bytes unverified_metadata = 6;      // UTF-8 JSON, proposer-asserted proposal metadata; never authoritative; UNSTABLE across SDK releases (section 3.2)
+  bytes unverified_metadata = 5;      // UTF-8 JSON, proposer-asserted proposal metadata; never authoritative; UNSTABLE across SDK releases (section 3.2)
 }
 
 message PendingTransaction {
@@ -95,7 +94,6 @@ message PendingTransaction {
   optional google.protobuf.Timestamp committed_at = 6;  // set when state = committed
   string submitter = 7;               // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
   string proposer = 8;                // as in TransactionSubject at that ack; empty when there was no matching proposal
-  bool proposer_session = 9;          // as in TransactionSubject at that ack
 }
 enum PendingState {
   PENDING_STATE_UNSPECIFIED = 0;
@@ -211,7 +209,6 @@ message CommitEvent {
   google.protobuf.Timestamp signed_at = 11;  // the accounting clock, identical to the value the module saw in pending (section 3.4)
   string submitter = 12;              // as in HookRequest at the ack that signed this transaction; verified (section 3.2)
   string proposer = 13;               // as in TransactionSubject at that ack; empty when there was no matching proposal (section 3.2)
-  bool proposer_session = 14;         // as in TransactionSubject at that ack
 }
 
 message Gap {
