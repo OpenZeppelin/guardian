@@ -615,6 +615,8 @@ component schemas.
 | client | `POST /delta/proposal/execution` | signed headers | Ask Guardian to prove and submit a threshold-met proposal (202 new, 200 already running). Body `{account_id, proposal_id}`, both required and signed as `guardian.ExecuteDeltaProposal` (see [Miden Request Signing](#miden-request-signing)) |
 | client | `GET /delta/proposal/execution` | signed headers | The latest execution of a proposal (404 `GUARDIAN_EXECUTION_NOT_FOUND` when the proposal exists but was never executed; 404 `proposal_not_found` when the proposal is gone and no attempt is left, which is how a proposal whose records retention deleted reads: see `GUARDIAN_EXECUTION_RECORD_RETENTION_DAYS`) |
 | client | `GET /delta/execution/current` | signed headers | The account's in-flight execution; `{"execution": null}` when none |
+| client | `GET /policies` | signed headers | The policy modules that apply to `?account_id`, as far as each instance's catalog entry discloses them, in evaluation order; empty without modules |
+| client | `POST /delta/proposal/check` | signed headers | Dry run of `POST /delta/proposal` (same body): its checks and the account's gate modules with `dry_run = true`; stores nothing. `200 {allowed: true, complete}`, or the error creation would return. Rate limited per account and signer (`GUARDIAN_MODULE_CHECK_RATE_PER_MIN`) |
 | client | `POST /session` | wallet-signed grant in the body | Register a delegated signer (see [Session Authentication](#session-authentication)) |
 | client | `POST /session/logout` | session-key-signed headers | Revoke this session |
 | client | `POST /session/revoke-all` | wallet-signed headers | Revoke every session of a signer |
@@ -633,6 +635,15 @@ component schemas.
 | dashboard | `GET /dashboard/stats` | session + `dashboard:read` | Account counts, Miden asset totals, and coverage in one request |
 | dashboard | `POST /dashboard/stats/refresh` | session + `stats:refresh` | Request an out-of-cycle refresh of the stats aggregate (202) |
 | dashboard | `GET /dashboard/session` | session | Session introspection |
+| dashboard | `GET /dashboard/modules` | session + `dashboard:read` | Policy module catalog with runtime state (enabled, params, drift, circuit, undeclared stored instances) |
+| dashboard | `GET /dashboard/modules/{module_id}/params/history` | session + `dashboard:read` | Params history of an instance, newest first (`before`, `limit`) |
+| dashboard | `PUT /dashboard/modules/{module_id}/params` | session + `policies:write_global` | Replace an instance's global params (validated by the module; `reason` required) |
+| dashboard | `POST /dashboard/modules/{module_id}/enable` | session + `policies:write` | Enable an instance after its startup checks |
+| dashboard | `POST /dashboard/modules/{module_id}/disable` | session + `policies:write` or `modules:disable` | Disable an instance the catalog marks `operator_can_disable` |
+| dashboard | `GET /dashboard/accounts/{account_id}/modules` | session + `dashboard:read` | The modules that apply to an account, its layers and assignments |
+| dashboard | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | session + `policies:write` | Set an account's layer on an `all` instance |
+| dashboard | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | session + `policies:write` | Remove that layer |
+| dashboard | `PUT /dashboard/accounts/{account_id}/modules` | session + `policies:write` | Replace an account's `default` and `assigned` module entries |
 | dashboard | `GET /dashboard/deltas` | session + `dashboard:read` | Cross-account delta feed |
 | dashboard | `GET /dashboard/proposals` | session + `dashboard:read` | Cross-account proposal feed |
 | evm | `GET /evm/auth/challenge` | public | EIP-712 session challenge |
@@ -811,6 +822,20 @@ Stable error codes include:
 - `invalid_timestamp` (`/dashboard/stats?updated_since=` is not RFC3339, issue #371)
 - `GUARDIAN_INSUFFICIENT_OPERATOR_PERMISSION`
 - `GUARDIAN_ACCOUNT_PAUSED`
+- Policy modules (servers started with a module catalog): `GUARDIAN_MODULE_DENIED` (HTTP 403 /
+  gRPC `PermissionDenied`; `meta.module`, `meta.reason_code`, `meta.layer` = `global` or
+  `account`, and `meta.client_message` when the module set one; an instance with
+  `client_reason = "generic"` sends only `meta.reason_code = "policy_denied"`) and
+  `GUARDIAN_MODULE_UNAVAILABLE` (HTTP 503 / gRPC `Unavailable`, `meta.module`, retryable: a
+  fail-closed module could not decide). Both are returned by `POST /configure` (hook
+  `before_account_registered`), `POST /delta/proposal` and `POST /delta/proposal/check`
+  (`before_proposal_created`, and in the check also `before_transaction_approved`) and
+  `POST /delta` (`before_transaction_approved`), and by their gRPC methods; a Guardian
+  execution reports them as `GUARDIAN_EXECUTION_MODULE_DENIED` and
+  `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (see [ProposalExecution](#proposalexecution)). The
+  operator module routes add `GUARDIAN_MODULE_NOT_FOUND` (404, `meta.module`) and
+  `GUARDIAN_MODULE_NOT_DISABLEABLE` (409 / gRPC `FailedPrecondition`, `meta.module`), and
+  return `GUARDIAN_MODULE_UNAVAILABLE` when an instance being enabled fails its startup checks.
 - `data_unavailable`
 
 HTTP endpoints that return structured error envelopes include `code` when available.
@@ -844,6 +869,8 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `CreateSession(CreateSessionRequest) -> CreateSessionResponse`
 - `RevokeSession(RevokeSessionRequest) -> RevokeSessionResponse`
 - `RevokeAllSessions(RevokeAllSessionsRequest) -> RevokeAllSessionsResponse`
+- `GetPolicies(GetPoliciesRequest) -> GetPoliciesResponse` (mirrors `GET /policies`)
+- `CheckDeltaProposal(CheckDeltaProposalRequest) -> CheckDeltaProposalResponse` (mirrors `POST /delta/proposal/check`)
 
 Every gRPC method is rate limited from the same store as the HTTP surface;
 see [Rate Limiting](#rate-limiting) for the keying rules and the rejection
