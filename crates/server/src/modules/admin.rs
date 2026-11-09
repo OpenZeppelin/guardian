@@ -430,6 +430,21 @@ pub async fn set_layer(
         Some(params) => Some(validated(instance, &params).await?),
         None => None,
     };
+    let mut rows = pipeline
+        .store()
+        .account_params(&account_id)
+        .await
+        .map_err(GuardianError::StorageError)?;
+    rows.retain(|row| !(row.kind == ParamsKind::Layer && row.module_id == module_id));
+    if let Some(params) = &params {
+        rows.push(proposed_row(
+            &account_id,
+            module_id,
+            ParamsKind::Layer,
+            params,
+        ));
+    }
+    pipeline.check_budget(&rows)?;
     pipeline
         .store()
         .set_layer(
@@ -450,6 +465,24 @@ pub async fn set_layer(
         client_ip,
     );
     account_view(state, &account_id).await
+}
+
+/// A row as a pending write would store it, for the budget check before the write.
+fn proposed_row(
+    account_id: &str,
+    module_id: &str,
+    kind: ParamsKind,
+    params: &serde_json::Value,
+) -> super::store::AccountParamsRow {
+    super::store::AccountParamsRow {
+        account_id: account_id.to_string(),
+        module_id: module_id.to_string(),
+        kind,
+        position: 0,
+        params: params.clone(),
+        updated_at: String::new(),
+        updated_by: String::new(),
+    }
 }
 
 pub async fn set_assignment(
@@ -486,6 +519,21 @@ pub async fn set_assignment(
             params: validated(instance, &assigned.params).await?,
         });
     }
+    let mut rows = pipeline
+        .store()
+        .account_params(&account_id)
+        .await
+        .map_err(GuardianError::StorageError)?;
+    rows.retain(|row| row.kind == ParamsKind::Layer);
+    rows.extend(to_store.iter().map(|assigned| {
+        proposed_row(
+            &account_id,
+            &assigned.module_id,
+            ParamsKind::Assignment,
+            &assigned.params,
+        )
+    }));
+    pipeline.check_budget(&rows)?;
     pipeline
         .store()
         .set_assignment(&account_id, to_store, &change(state, operator, reason))
@@ -604,6 +652,98 @@ mod tests {
         assert_eq!(
             view.modules[0].account_layer,
             Some(json!({ "new_name": 5 }))
+        );
+    }
+
+    /// `state()`'s instances (50 ms each; `blocklist` and `vendor` on every account) under a
+    /// 120 ms budget: 100 ms before any account write.
+    fn tight_budget(state: &mut AppState) {
+        let instances = state.modules.as_ref().unwrap().instances().to_vec();
+        state.modules = Some(Arc::new(
+            ModulePipeline::from_instances(instances).with_limits(crate::modules::limits::Limits {
+                budget: std::time::Duration::from_millis(120),
+                ..Default::default()
+            }),
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_account_write_that_could_exceed_the_budget_is_refused_and_stores_nothing() {
+        let mut state = state();
+        tight_budget(&mut state);
+        let layer = set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "blocklist",
+            Some(json!({ "recipient_denylist": ["0xbbb"] })),
+            "OP-1",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(&layer, Err(GuardianError::InvalidInput(message)) if message.contains("budget")),
+            "{layer:?}"
+        );
+        let assignment = set_assignment(
+            &state,
+            &operator(),
+            ACCOUNT,
+            vec![Assigned {
+                module_id: "optional".into(),
+                params: json!({}),
+            }],
+            "OP-2",
+            None,
+        )
+        .await;
+        assert!(matches!(assignment, Err(GuardianError::InvalidInput(_))));
+        let pipeline = state.modules.as_ref().unwrap();
+        assert!(
+            pipeline
+                .store()
+                .account_params(ACCOUNT)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn accounts_stored_over_the_budget_are_reported_at_startup() {
+        let mut state = state();
+        set_assignment(
+            &state,
+            &operator(),
+            ACCOUNT,
+            vec![Assigned {
+                module_id: "optional".into(),
+                params: json!({}),
+            }],
+            "OP-3",
+            None,
+        )
+        .await
+        .unwrap();
+        let store = state.modules.as_ref().unwrap().store_handle();
+        let instances = state.modules.as_ref().unwrap().instances().to_vec();
+        state.modules = Some(Arc::new(
+            ModulePipeline::from_instances_with_store(instances, store).with_limits(
+                crate::modules::limits::Limits {
+                    budget: std::time::Duration::from_millis(120),
+                    ..Default::default()
+                },
+            ),
+        ));
+        assert_eq!(
+            state
+                .modules
+                .as_ref()
+                .unwrap()
+                .report_over_budget()
+                .await
+                .unwrap(),
+            1
         );
     }
 

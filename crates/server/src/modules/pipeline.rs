@@ -240,6 +240,76 @@ impl ModulePipeline {
         &self.breakers
     }
 
+    /// The hook with the largest worst-case module time for an account whose module rows are
+    /// `rows`, and that time: every `scope = all` instance, once more for an account layer on
+    /// it, plus every listed instance. Disabled instances count, since enabling needs no further
+    /// check; a row naming an instance the catalog no longer declares costs nothing.
+    pub fn worst_case(&self, rows: &[AccountParamsRow]) -> (HookName, std::time::Duration) {
+        let calls = |id: &str, kind: ParamsKind| {
+            rows.iter()
+                .filter(|row| row.kind == kind && row.module_id == id)
+                .count() as u32
+        };
+        HookName::GATES
+            .into_iter()
+            .map(|hook| {
+                let total = self
+                    .instances
+                    .iter()
+                    .filter(|instance| instance.config.hooks.contains(&hook))
+                    .map(|instance| {
+                        let id = instance.config.id.as_str();
+                        let count = match instance.config.scope {
+                            Scope::All => 1 + calls(id, ParamsKind::Layer),
+                            Scope::Assigned => calls(id, ParamsKind::Assignment),
+                        };
+                        instance.config.timeout * count
+                    })
+                    .sum();
+                (hook, total)
+            })
+            .max_by_key(|(_, total)| *total)
+            .unwrap_or((
+                HookName::BeforeTransactionApproved,
+                std::time::Duration::ZERO,
+            ))
+    }
+
+    /// Refuses an account whose modules, with `rows` stored, could exceed the evaluation budget.
+    pub fn check_budget(&self, rows: &[AccountParamsRow]) -> Result<(), GuardianError> {
+        let (hook, total) = self.worst_case(rows);
+        if total > self.limits.budget {
+            return Err(GuardianError::InvalidInput(format!(
+                "the account's modules at {} take up to {} ms, over the evaluation budget of {} ms",
+                hook.as_str(),
+                total.as_millis(),
+                self.limits.budget.as_millis()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Logs every account whose stored modules exceed the budget, without refusing to start: a
+    /// deploy that raised a timeout must not become an outage. Returns their count.
+    pub async fn report_over_budget(&self) -> Result<usize, String> {
+        let rows = self.store.all_account_params().await?;
+        let mut over = 0;
+        for account in rows.chunk_by(|a, b| a.account_id == b.account_id) {
+            let (hook, total) = self.worst_case(account);
+            if total > self.limits.budget {
+                over += 1;
+                tracing::warn!(
+                    account_id = %account[0].account_id,
+                    hook = hook.as_str(),
+                    worst_case_ms = total.as_millis() as u64,
+                    budget_ms = self.limits.budget.as_millis() as u64,
+                    "Account's policy modules exceed the evaluation budget; the runtime budget applies"
+                );
+            }
+        }
+        Ok(over)
+    }
+
     /// One health probe of every enabled instance: `Describe` under its timeout, with the startup
     /// checks. A healthy module half-opens an open breaker so the next real call is sent.
     pub async fn probe(&self) {
@@ -278,6 +348,11 @@ impl ModulePipeline {
         self.instances
             .iter()
             .find(|instance| instance.config.id == module_id)
+    }
+
+    #[cfg(test)]
+    pub fn store_handle(&self) -> Arc<dyn ModuleStore> {
+        self.store.clone()
     }
 
     pub fn store(&self) -> &dyn ModuleStore {

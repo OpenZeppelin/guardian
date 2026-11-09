@@ -310,6 +310,10 @@ impl super::store::ModuleStore for RacingStore {
         self.inner.account_params(account_id).await
     }
 
+    async fn all_account_params(&self) -> Result<Vec<super::store::AccountParamsRow>, String> {
+        self.inner.all_account_params().await
+    }
+
     async fn set_layer(
         &self,
         account_id: &str,

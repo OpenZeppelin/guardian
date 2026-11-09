@@ -785,6 +785,7 @@ impl ServerBuilder {
             chrono::Utc::now().to_rfc3339(),
             module_store,
             &module_registry,
+            self.execution.lease,
         )
         .await?;
 

@@ -12,6 +12,7 @@ use guardian_module_sdk::{
 use super::catalog::{Catalog, InstanceConfig};
 use super::grpc_kind::GrpcFactory;
 
+#[derive(Clone)]
 pub struct Instance {
     pub config: InstanceConfig,
     pub module: Arc<dyn Module>,

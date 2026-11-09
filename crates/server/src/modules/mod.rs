@@ -45,25 +45,28 @@ pub async fn from_env(
     now: String,
     store: Option<Arc<dyn store::ModuleStore>>,
     registry: &Registry,
+    execution_lease: std::time::Duration,
 ) -> Result<Option<Arc<ModulePipeline>>, String> {
     let Some(path) = std::env::var_os(CONFIG_ENV).filter(|value| !value.is_empty()) else {
         return Ok(None);
     };
     let catalog_path = PathBuf::from(path);
     let catalog = Catalog::load(&catalog_path)?;
+    let limits = limits::Limits::from_env()?;
     if crate::config::stage::Stage::from_env()
         .map_err(|e| e.to_string())?
         .is_prod()
     {
         catalog.check_production()?;
+        catalog.check_budget(limits.budget, execution_lease)?;
     }
     let store = match store {
         Some(store) => store,
         None => Arc::new(filesystem_store(&catalog_path)?),
     };
-    let pipeline =
-        ModulePipeline::new(catalog, registry, store, now, limits::Limits::from_env()?).await?;
+    let pipeline = ModulePipeline::new(catalog, registry, store, now, limits).await?;
     let version = pipeline.store().version().await?;
+    let over_budget = pipeline.report_over_budget().await?;
     let builds = pipeline
         .instances()
         .iter()
@@ -76,6 +79,6 @@ pub async fn from_env(
         })
         .collect::<Vec<_>>()
         .join(", ");
-    tracing::info!(catalog_hash = %pipeline.catalog_hash, params_version = version, %builds, "Policy modules loaded");
+    tracing::info!(catalog_hash = %pipeline.catalog_hash, params_version = version, %builds, over_budget, "Policy modules loaded");
     Ok(Some(Arc::new(pipeline)))
 }

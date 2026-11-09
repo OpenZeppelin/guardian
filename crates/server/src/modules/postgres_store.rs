@@ -145,6 +145,18 @@ async fn append(
     .await
 }
 
+fn account_params_row(row: AccountParamsSql) -> Result<AccountParamsRow, String> {
+    Ok(AccountParamsRow {
+        account_id: row.account_id,
+        module_id: row.module_id,
+        kind: ParamsKind::parse(&row.kind)?,
+        position: row.position,
+        params: row.params,
+        updated_at: row.updated_at.to_rfc3339(),
+        updated_by: row.updated_by,
+    })
+}
+
 #[async_trait]
 impl ModuleStore for PgModuleStore {
     async fn seed_instance(
@@ -395,19 +407,19 @@ impl ModuleStore for PgModuleStore {
         .load(&mut conn)
         .await
         .map_err(|e| format!("account module params: {e}"))?;
-        rows.into_iter()
-            .map(|row| {
-                Ok(AccountParamsRow {
-                    account_id: row.account_id,
-                    module_id: row.module_id,
-                    kind: ParamsKind::parse(&row.kind)?,
-                    position: row.position,
-                    params: row.params,
-                    updated_at: row.updated_at.to_rfc3339(),
-                    updated_by: row.updated_by,
-                })
-            })
-            .collect()
+        rows.into_iter().map(account_params_row).collect()
+    }
+
+    async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String> {
+        let mut conn = self.conn().await?;
+        let rows: Vec<AccountParamsSql> = diesel::sql_query(
+            "SELECT account_id, module_id, kind, position, params, updated_at, updated_by \
+             FROM module_account_params ORDER BY account_id, position, module_id",
+        )
+        .load(&mut conn)
+        .await
+        .map_err(|e| format!("all account module params: {e}"))?;
+        rows.into_iter().map(account_params_row).collect()
     }
 
     async fn set_layer(

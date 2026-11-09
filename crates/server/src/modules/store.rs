@@ -122,6 +122,9 @@ pub trait ModuleStore: Send + Sync {
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String>;
 
+    /// Every account's rows, ordered by account and position; a startup scan, not a hot path.
+    async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String>;
+
     async fn set_layer(
         &self,
         account_id: &str,
@@ -403,6 +406,14 @@ impl ModuleStore for FsModuleStore {
                 .cloned()
                 .collect();
             rows.sort_by_key(|row| row.position);
+            rows
+        }))
+    }
+
+    async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String> {
+        Ok(self.read(|tables| {
+            let mut rows = tables.account_params.clone();
+            rows.sort_by(|a, b| (&a.account_id, a.position).cmp(&(&b.account_id, b.position)));
             rows
         }))
     }

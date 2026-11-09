@@ -35,6 +35,12 @@ pub enum HookName {
 }
 
 impl HookName {
+    pub const GATES: [HookName; 3] = [
+        HookName::BeforeTransactionApproved,
+        HookName::BeforeProposalCreated,
+        HookName::BeforeAccountRegistered,
+    ];
+
     /// The catalog spelling, for example `before_transaction_approved`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -246,6 +252,38 @@ impl Catalog {
         Ok(())
     }
 
+    /// Prod-stage budget checks: for every hook, the timeouts of the instances every new account
+    /// receives (all but `assigned`, enabled or not, since enabling needs no further check) fit
+    /// in `budget`, and `budget` is below the execution reservation `lease`.
+    pub fn check_budget(&self, budget: Duration, lease: Duration) -> Result<(), String> {
+        if budget >= lease {
+            return Err(format!(
+                "the module evaluation budget ({} ms) must be below the execution reservation \
+                 lease ({} ms)",
+                budget.as_millis(),
+                lease.as_millis()
+            ));
+        }
+        for hook in HookName::GATES {
+            let total: Duration = self
+                .instances
+                .iter()
+                .filter(|config| config.scope != Scope::Assigned && config.hooks.contains(&hook))
+                .map(|config| config.timeout)
+                .sum();
+            if total > budget {
+                return Err(format!(
+                    "the timeouts of the modules every account receives at {} add up to {} ms, \
+                     over the evaluation budget of {} ms",
+                    hook.as_str(),
+                    total.as_millis(),
+                    budget.as_millis()
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn load(path: &Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read module catalog {}: {e}", path.display()))?;
@@ -418,6 +456,55 @@ hooks = ["before_account_registered"]
 timeout_ms = 20
 on_error = "allow"
 "#;
+
+    fn timed(instances: &[(&str, &str, u64)]) -> Catalog {
+        let text: String = instances
+            .iter()
+            .map(|(id, scope, timeout_ms)| {
+                format!(
+                    "[[module]]\nid = \"{id}\"\nkind = \"basic-policy\"\nscope = \"{scope}\"\n\
+                     hooks = [\"before_transaction_approved\"]\ntimeout_ms = {timeout_ms}\n\n"
+                )
+            })
+            .collect();
+        parse(&text).unwrap()
+    }
+
+    #[test]
+    fn the_modules_every_account_receives_must_fit_in_the_budget() {
+        let budget = Duration::from_millis(1_000);
+        let lease = Duration::from_secs(60);
+        assert!(
+            timed(&[("a", "all", 500), ("b", "all", 500)])
+                .check_budget(budget, lease)
+                .is_ok()
+        );
+        let over = timed(&[("a", "all", 600), ("b", "all", 600)])
+            .check_budget(budget, lease)
+            .unwrap_err();
+        assert!(over.contains("before_transaction_approved"), "{over}");
+        assert!(
+            timed(&[("a", "all", 600), ("b", "assigned", 600)])
+                .check_budget(budget, lease)
+                .is_ok(),
+            "assigned instances are checked per account, not at startup"
+        );
+    }
+
+    #[test]
+    fn the_budget_must_be_below_the_execution_lease() {
+        let catalog = timed(&[("a", "all", 10)]);
+        assert!(
+            catalog
+                .check_budget(Duration::from_secs(30), Duration::from_secs(30))
+                .is_err()
+        );
+        assert!(
+            catalog
+                .check_budget(Duration::from_secs(1), Duration::from_secs(30))
+                .is_ok()
+        );
+    }
 
     #[test]
     fn parses_instances() {
