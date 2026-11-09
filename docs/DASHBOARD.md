@@ -389,9 +389,11 @@ is assigned. Disabling an instance the catalog does not mark
 `operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
 
 Writes are refused with `400 invalid_input` when the params exceed
-`GUARDIAN_MODULE_PARAMS_MAX_BYTES`, or when the account's modules could exceed
-the evaluation budget afterwards (each `all` instance, again for its layer,
-plus each assigned one). `GET /dashboard/modules` reports each instance's
+`GUARDIAN_MODULE_PARAMS_MAX_BYTES`, or when they would take the account's modules
+over the evaluation budget at a hook where they are not already that far over
+(each `all` instance, again for its layer, plus each assigned one). A write that
+keeps or lowers the cost always passes, so an account a deploy pushed over the
+budget can be brought back under it. `GET /dashboard/modules` reports each instance's
 `circuit` on the answering replica, `params_drift` against the params seeded
 from the catalog file, and under `undeclared` the stored instances the catalog
 no longer declares. An account's entries naming such an instance are marked

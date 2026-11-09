@@ -270,6 +270,17 @@ impl ModulePipeline {
     /// it, plus every listed instance. Disabled instances count, since enabling needs no further
     /// check; a row naming an instance the catalog no longer declares costs nothing.
     pub fn worst_case(&self, rows: &[AccountParamsRow]) -> (HookName, std::time::Duration) {
+        self.costs(rows)
+            .into_iter()
+            .max_by_key(|(_, total)| *total)
+            .unwrap_or((
+                HookName::BeforeTransactionApproved,
+                std::time::Duration::ZERO,
+            ))
+    }
+
+    /// The summed timeouts of the module calls an account with `rows` makes at each gate hook.
+    fn costs(&self, rows: &[AccountParamsRow]) -> Vec<(HookName, std::time::Duration)> {
         let calls = |id: &str, kind: ParamsKind| {
             rows.iter()
                 .filter(|row| row.kind == kind && row.module_id == id)
@@ -293,23 +304,27 @@ impl ModulePipeline {
                     .sum();
                 (hook, total)
             })
-            .max_by_key(|(_, total)| *total)
-            .unwrap_or((
-                HookName::BeforeTransactionApproved,
-                std::time::Duration::ZERO,
-            ))
+            .collect()
     }
 
     /// Refuses an account whose modules, with `rows` stored, could exceed the evaluation budget.
-    pub fn check_budget(&self, rows: &[AccountParamsRow]) -> Result<(), GuardianError> {
-        let (hook, total) = self.worst_case(rows);
-        if total > self.limits.budget {
-            return Err(GuardianError::InvalidInput(format!(
-                "the account's modules at {} take up to {} ms, over the evaluation budget of {} ms",
-                hook.as_str(),
-                total.as_millis(),
-                self.limits.budget.as_millis()
-            )));
+    /// Refuses a write that would take the account's modules over the budget at a hook where
+    /// they are not already at least that far over. A write that keeps or lowers the cost passes,
+    /// so an account a deploy pushed over the budget can still be brought back under it.
+    pub fn check_budget(
+        &self,
+        current: &[AccountParamsRow],
+        proposed: &[AccountParamsRow],
+    ) -> Result<(), GuardianError> {
+        for ((hook, total), (_, now)) in self.costs(proposed).into_iter().zip(self.costs(current)) {
+            if total > self.limits.budget && total > now {
+                return Err(GuardianError::InvalidInput(format!(
+                    "the account's modules at {} would take up to {} ms, over the evaluation budget of {} ms",
+                    hook.as_str(),
+                    total.as_millis(),
+                    self.limits.budget.as_millis()
+                )));
+            }
         }
         Ok(())
     }

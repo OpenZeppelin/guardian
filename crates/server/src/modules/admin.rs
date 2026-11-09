@@ -525,11 +525,12 @@ pub async fn set_layer(
         Some(params) => Some(validated(pipeline, instance, &params).await?),
         None => None,
     };
-    let mut rows = pipeline
+    let current = pipeline
         .store()
         .account_params(&account_id)
         .await
         .map_err(GuardianError::StorageError)?;
+    let mut rows = current.clone();
     rows.retain(|row| !(row.kind == ParamsKind::Layer && row.module_id == module_id));
     if let Some(params) = &params {
         rows.push(proposed_row(
@@ -539,7 +540,7 @@ pub async fn set_layer(
             params,
         ));
     }
-    pipeline.check_budget(&rows)?;
+    pipeline.check_budget(&current, &rows)?;
     pipeline
         .store()
         .set_layer(
@@ -614,11 +615,12 @@ pub async fn set_assignment(
             params: validated(pipeline, instance, &assigned.params).await?,
         });
     }
-    let mut rows = pipeline
+    let current = pipeline
         .store()
         .account_params(&account_id)
         .await
         .map_err(GuardianError::StorageError)?;
+    let mut rows = current.clone();
     rows.retain(|row| row.kind == ParamsKind::Layer);
     rows.extend(to_store.iter().map(|assigned| {
         proposed_row(
@@ -628,7 +630,7 @@ pub async fn set_assignment(
             &assigned.params,
         )
     }));
-    pipeline.check_budget(&rows)?;
+    pipeline.check_budget(&current, &rows)?;
     pipeline
         .store()
         .set_assignment(&account_id, to_store, &change(state, operator, reason))
@@ -920,6 +922,51 @@ mod tests {
                 .unwrap(),
             (1, 0)
         );
+    }
+
+    #[tokio::test]
+    async fn an_account_already_over_the_budget_can_be_brought_back_under_it() {
+        let mut state = state();
+        let optional = || {
+            vec![Assigned {
+                module_id: "optional".into(),
+                params: json!({}),
+            }]
+        };
+        set_assignment(&state, &operator(), ACCOUNT, optional(), "OP-1", None)
+            .await
+            .unwrap();
+        let store = state.modules.as_ref().unwrap().store_handle();
+        let instances = state.modules.as_ref().unwrap().instances().to_vec();
+        state.modules = Some(Arc::new(
+            ModulePipeline::from_instances_with_store(instances, store).with_limits(
+                crate::modules::limits::Limits {
+                    budget: std::time::Duration::from_millis(120),
+                    ..Default::default()
+                },
+            ),
+        ));
+
+        let more = set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "blocklist",
+            Some(json!({ "recipient_denylist": ["0xbbb"] })),
+            "OP-2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(&more, Err(GuardianError::InvalidInput(message)) if message.contains("budget")),
+            "a write that adds cost to an account over the budget: {more:?}"
+        );
+        set_assignment(&state, &operator(), ACCOUNT, optional(), "OP-3", None)
+            .await
+            .expect("the same cost is not refused");
+        set_assignment(&state, &operator(), ACCOUNT, Vec::new(), "OP-4", None)
+            .await
+            .expect("removing the assignment brings the account back under the budget");
     }
 
     #[tokio::test]
