@@ -218,12 +218,19 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
-    approve_registration(
+    // A new account, or a claim whose account never got its default modules, is evaluated
+    // with them and receives copies of them below.
+    let first_registration = match &existing {
+        None => true,
+        Some(_) => unfinished_claim && !has_assignment(state, &params.account_id).await?,
+    };
+    let default_copies = approve_registration(
         state,
         &params,
         &signer_commitment,
         &head,
         existing.is_some() && !unfinished_claim,
+        first_registration,
     )
     .await?;
 
@@ -277,12 +284,36 @@ pub async fn configure_account(
             &signer_commitment,
             &head,
             has_stored_state(state, &params.account_id).await,
+            false,
         )
         .await?;
         Some(claimed)
     } else {
         existing
     };
+
+    // The account is now claimed by this request: copy the default modules it was evaluated
+    // with. Only an account without any assignment history receives them, so an operator's
+    // earlier write wins, and a crash before this point is repaired by the retry, which finds
+    // an unfinished claim with no history and copies again.
+    if (created || first_registration && existing.is_some())
+        && !default_copies.is_empty()
+        && let Some(modules) = state.modules.as_deref()
+    {
+        modules
+            .store()
+            .seed_assignment(
+                &params.account_id.to_ascii_lowercase(),
+                default_copies,
+                &crate::modules::store::Change {
+                    operator: "catalog",
+                    reason: "default modules copied at registration",
+                    at: now.clone(),
+                },
+            )
+            .await
+            .map_err(GuardianError::StorageError)?;
+    }
 
     // The replay-state row has an FK to account metadata, which the claim
     // above guarantees, so every configuration consumes its timestamp
@@ -575,14 +606,19 @@ async fn approve_registration(
     signer_commitment: &str,
     head: &StateHead,
     stored: bool,
-) -> Result<()> {
-    let plan = match state.modules.as_deref() {
-        Some(modules) => {
+    first_registration: bool,
+) -> Result<Vec<crate::modules::store::Assigned>> {
+    let (plan, default_copies) = match state.modules.as_deref() {
+        Some(modules) if first_registration => {
+            modules.plan_first_registration(&params.account_id).await?
+        }
+        Some(modules) => (
             modules
                 .plan(HookName::BeforeAccountRegistered, &params.account_id)
-                .await?
-        }
-        None => None,
+                .await?,
+            Vec::new(),
+        ),
+        None => (None, Vec::new()),
     };
     if let Some(plan) = plan {
         let stored_state = if stored {
@@ -622,7 +658,21 @@ async fn approve_registration(
         })
         .await?;
     }
-    Ok(())
+    Ok(default_copies)
+}
+
+/// Whether the account already holds module assignments.
+async fn has_assignment(state: &AppState, account_id: &str) -> Result<bool> {
+    let Some(modules) = state.modules.as_deref() else {
+        return Ok(false);
+    };
+    Ok(modules
+        .store()
+        .account_params(&account_id.to_ascii_lowercase())
+        .await
+        .map_err(GuardianError::StorageError)?
+        .iter()
+        .any(|row| row.kind == crate::modules::store::ParamsKind::Assignment))
 }
 
 /// Whether the account has a stored state. A failed read counts as stored, so it can never make
@@ -3474,14 +3524,29 @@ mod tests {
         storage: MockStorageBackend,
         metadata: MockMetadataStore,
         module: Arc<crate::modules::testing::StubModule>,
+        modules: Arc<crate::modules::ModulePipeline>,
     }
 
     async fn configure_with_module(
         existing: impl FnOnce(String) -> Option<AccountMetadata>,
         module: Arc<crate::modules::testing::StubModule>,
     ) -> ModuleRun {
-        use crate::modules::catalog::OnError;
-        use crate::modules::testing::{instance, pipeline};
+        let signers = crate::modules::testing::instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            crate::modules::catalog::OnError::Deny,
+            module.clone(),
+        );
+        configure_with_modules(existing, vec![signers], module).await
+    }
+
+    /// `module` is the stub the caller inspects; `instances` is the whole catalog.
+    async fn configure_with_modules(
+        existing: impl FnOnce(String) -> Option<AccountMetadata>,
+        instances: Vec<crate::modules::registry::Instance>,
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> ModuleRun {
+        use crate::modules::testing::pipeline;
         use crate::testing::helpers::generate_falcon_signature;
 
         let account_id_hex = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
@@ -3517,12 +3582,8 @@ mod tests {
             .with_set(Ok(()));
         let mut state =
             create_test_app_state(network_client, storage.clone(), metadata.clone()).await;
-        state.modules = Some(pipeline(vec![instance(
-            "signers",
-            &[HookName::BeforeAccountRegistered],
-            OnError::Deny,
-            module.clone(),
-        )]));
+        let modules = pipeline(instances);
+        state.modules = Some(modules.clone());
 
         let result = configure_account(
             &state,
@@ -3542,6 +3603,7 @@ mod tests {
             storage,
             metadata,
             module,
+            modules,
         }
     }
 
@@ -3748,5 +3810,114 @@ mod tests {
         );
         assert!(storage.get_submit_state_calls().is_empty());
         assert!(metadata.get_set_calls().is_empty());
+    }
+
+    fn default_instance(
+        id: &str,
+        hooks: &[HookName],
+        module: Arc<crate::modules::testing::StubModule>,
+    ) -> crate::modules::registry::Instance {
+        let mut instance = crate::modules::testing::instance_with_params(
+            id,
+            hooks,
+            module,
+            serde_json::json!({ "limit": 5 }),
+        );
+        instance.config.scope = crate::modules::catalog::Scope::Default;
+        instance
+    }
+
+    async fn assignment_of(
+        modules: &crate::modules::ModulePipeline,
+    ) -> Vec<(String, serde_json::Value)> {
+        modules
+            .store()
+            .account_params("0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d")
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|row| row.kind == crate::modules::store::ParamsKind::Assignment)
+            .map(|row| (row.module_id, row.params))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_new_account_is_judged_by_default_modules_and_receives_copies_of_them() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let elsewhere = crate::modules::testing::StubModule::allowing();
+        let run = configure_with_modules(
+            |_| None,
+            vec![
+                default_instance(
+                    "screening",
+                    &[HookName::BeforeAccountRegistered],
+                    module.clone(),
+                ),
+                default_instance(
+                    "caps",
+                    &[HookName::BeforeTransactionApproved],
+                    elsewhere.clone(),
+                ),
+            ],
+            module.clone(),
+        )
+        .await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            module.calls(),
+            1,
+            "a default instance judges the registration"
+        );
+        assert_eq!(elsewhere.calls(), 0, "one on other hooks is not called");
+        assert_eq!(
+            assignment_of(&run.modules).await,
+            vec![
+                ("screening".to_string(), serde_json::json!({ "limit": 5 })),
+                ("caps".to_string(), serde_json::json!({ "limit": 5 })),
+            ],
+            "every enabled default is copied with the params evaluated"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_registration_receives_no_default_copies() {
+        let module = crate::modules::testing::StubModule::denying("signer_not_allowed");
+        let run = configure_with_modules(
+            |_| None,
+            vec![default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            )],
+            module,
+        )
+        .await;
+        assert!(matches!(
+            run.result,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
+        assert!(assignment_of(&run.modules).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_reregistering_account_keeps_its_assignment_and_gets_no_defaults() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let run = configure_with_modules(
+            existing_account(false, false),
+            vec![default_instance(
+                "screening",
+                &[HookName::BeforeAccountRegistered],
+                module.clone(),
+            )],
+            module.clone(),
+        )
+        .await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        assert_eq!(
+            module.calls(),
+            0,
+            "defaults apply only to accounts that never had them"
+        );
+        assert!(assignment_of(&run.modules).await.is_empty());
     }
 }

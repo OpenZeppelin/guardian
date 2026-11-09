@@ -41,6 +41,16 @@ pub struct ModuleCatalogView {
     pub catalog_hash: String,
     pub params_version: u64,
     pub modules: Vec<ModuleInstanceView>,
+    /// Stored instances the catalog no longer declares: kept, never evaluated, active again if
+    /// the catalog brings the id back.
+    pub undeclared: Vec<UndeclaredInstanceView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UndeclaredInstanceView {
+    pub module_id: String,
+    pub enabled: bool,
+    pub params: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -48,6 +58,8 @@ pub struct AccountModuleEntry {
     pub module_id: String,
     pub scope: &'static str,
     pub enabled: bool,
+    /// A stored entry naming an instance the catalog no longer declares; skipped at evaluation.
+    pub orphaned: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub global_params: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -71,6 +83,7 @@ pub struct ParamsHistoryView {
 fn scope_name(scope: Scope) -> &'static str {
     match scope {
         Scope::All => "all",
+        Scope::Default => "default",
         Scope::Assigned => "assigned",
     }
 }
@@ -210,10 +223,24 @@ pub async fn catalog_view(state: &AppState) -> Result<ModuleCatalogView> {
     for instance in pipeline.instances() {
         modules.push(instance_view(pipeline, instance).await?);
     }
+    let undeclared = pipeline
+        .store()
+        .instances()
+        .await
+        .map_err(GuardianError::StorageError)?
+        .into_iter()
+        .filter(|row| pipeline.instance(&row.module_id).is_none())
+        .map(|row| UndeclaredInstanceView {
+            module_id: row.module_id,
+            enabled: row.enabled,
+            params: row.global_params,
+        })
+        .collect();
     Ok(ModuleCatalogView {
         catalog_hash: pipeline.catalog_hash.clone(),
         params_version: version(pipeline).await?,
         modules,
+        undeclared,
     })
 }
 
@@ -235,6 +262,7 @@ pub async fn account_view(state: &AppState, account_id: &str) -> Result<AccountM
             module_id: instance.config.id.clone(),
             scope: "all",
             enabled: pipeline.enabled(instance).await?,
+            orphaned: false,
             global_params: Some(pipeline.global_params(instance).await?),
             account_layer: rows
                 .iter()
@@ -243,23 +271,37 @@ pub async fn account_view(state: &AppState, account_id: &str) -> Result<AccountM
             params: None,
         });
     }
-    modules.extend(
-        rows.into_iter()
-            .filter(|row| row.kind == ParamsKind::Assignment)
-            .map(|row| AccountModuleEntry {
-                scope: "assigned",
-                module_id: row.module_id,
-                global_params: None,
-                account_layer: None,
-                params: Some(row.params),
-                enabled: false,
-            }),
-    );
-    for entry in modules.iter_mut().filter(|entry| entry.scope == "assigned") {
-        entry.enabled = match pipeline.instance(&entry.module_id) {
-            Some(instance) => pipeline.enabled(instance).await?,
-            None => false,
-        };
+    for row in rows
+        .iter()
+        .filter(|row| row.kind == ParamsKind::Layer && pipeline.instance(&row.module_id).is_none())
+    {
+        modules.push(AccountModuleEntry {
+            module_id: row.module_id.clone(),
+            scope: "all",
+            enabled: false,
+            orphaned: true,
+            global_params: None,
+            account_layer: Some(row.params.clone()),
+            params: None,
+        });
+    }
+    for row in rows
+        .into_iter()
+        .filter(|row| row.kind == ParamsKind::Assignment)
+    {
+        let instance = pipeline.instance(&row.module_id);
+        modules.push(AccountModuleEntry {
+            scope: instance.map_or("assigned", |instance| scope_name(instance.config.scope)),
+            enabled: match instance {
+                Some(instance) => pipeline.enabled(instance).await?,
+                None => false,
+            },
+            orphaned: instance.is_none(),
+            module_id: row.module_id,
+            global_params: None,
+            account_layer: None,
+            params: Some(row.params),
+        });
     }
     Ok(AccountModulesView {
         account_id,
@@ -671,6 +713,67 @@ mod tests {
                 ..Default::default()
             }),
         ));
+    }
+
+    #[tokio::test]
+    async fn views_report_real_scopes_orphaned_rows_and_undeclared_instances() {
+        let mut state = state();
+        let store = state.modules.as_ref().unwrap().store_handle();
+        let mut instances = state.modules.as_ref().unwrap().instances().to_vec();
+        let mut screening = instance(
+            "screening",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            Arc::new(BasicPolicy),
+        );
+        screening.config.scope = Scope::Default;
+        instances.push(screening);
+        store
+            .seed_instance("retired", true, &json!({ "old": true }), "t0")
+            .await
+            .unwrap();
+        store
+            .set_assignment(
+                ACCOUNT,
+                vec![
+                    Assigned {
+                        module_id: "screening".into(),
+                        params: json!({}),
+                    },
+                    Assigned {
+                        module_id: "retired".into(),
+                        params: json!({}),
+                    },
+                ],
+                &Change {
+                    operator: "0xop",
+                    reason: "setup",
+                    at: "t1".into(),
+                },
+            )
+            .await
+            .unwrap();
+        state.modules = Some(Arc::new(ModulePipeline::from_instances_with_store(
+            instances, store,
+        )));
+
+        let account = account_view(&state, ACCOUNT).await.unwrap();
+        let entry = |id: &str| {
+            account
+                .modules
+                .iter()
+                .find(|entry| entry.module_id == id)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(entry("screening").scope, "default");
+        assert!(!entry("screening").orphaned);
+        assert!(entry("retired").orphaned);
+        assert!(!entry("retired").enabled);
+
+        let catalog = catalog_view(&state).await.unwrap();
+        assert_eq!(catalog.undeclared.len(), 1);
+        assert_eq!(catalog.undeclared[0].module_id, "retired");
     }
 
     #[tokio::test]

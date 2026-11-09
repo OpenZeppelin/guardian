@@ -34,8 +34,7 @@ ModuleInstanceView {
   kind: string,
   scope: "all" | "default" | "assigned",
   hooks: string[],
-  declared: bool,               // false: a stored flag the catalog no longer declares (M2a, not in the prototype)
-  catalog_enabled?: bool,       // seed value from the file; absent when declared = false
+  catalog_enabled: bool,        // seed value from the file
   enabled: bool,                // runtime flag
   enabled_drift: bool,          // catalog_enabled != enabled
   operator_can_disable: bool,
@@ -47,15 +46,16 @@ ModuleInstanceView {
   description?: string,
   client_reason: "full" | "generic",
   dry_run: bool,
-  circuit: "closed" | "open" | "half_open"   // on the replica that answered (M2a, not in the prototype)
+  circuit: "closed" | "open" | "half_open"   // on the replica that answered
 }
-ModuleCatalogView     { catalog_hash: string, params_version: number, modules: ModuleInstanceView[] }
+UndeclaredInstanceView { module_id: string, enabled: bool, params: object }  // stored, no longer in the catalog; never evaluated
+ModuleCatalogView     { catalog_hash: string, params_version: number, modules: ModuleInstanceView[], undeclared: UndeclaredInstanceView[] }
 
 AccountModuleEntry {
   module_id: string,
   scope: "all" | "default" | "assigned",
   enabled: bool,
-  orphaned: bool,               // stored entry naming an instance the catalog no longer declares (M2a, not in the prototype)
+  orphaned: bool,               // stored entry naming an instance the catalog no longer declares; skipped at evaluation
   global_params?: object,       // scope = all: the instance's global params
   account_layer?: object,       // scope = all: this account's layer, when set
   params?: object               // default / assigned: this account's own params
@@ -88,6 +88,6 @@ All errors use the `{ code, message, meta }` envelope.
 
 Contract tests in `crates/server` and `packages/guardian-operator-client` pin every row.
 
-## Prototype status (#554)
+## Implementation status (M2a)
 
-All M2a routes exist and match the shapes above, except the fields marked "not in the prototype". Not built yet: `resync` (M2b), the budget check on `PUT`, the operator client, and the OpenAPI entries.
+All M2a routes exist with the shapes above. `PUT` writes are refused when the account's worst case could exceed the evaluation budget. Not built yet: `resync` (M2b), the operator client methods and the OpenAPI entries for these routes (tasks T044, T045).

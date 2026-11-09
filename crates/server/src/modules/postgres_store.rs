@@ -550,6 +550,75 @@ impl ModuleStore for PgModuleStore {
         .map_err(|e| format!("set assignment: {e}"))
     }
 
+    async fn seed_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<Assigned>,
+        change: &Change<'_>,
+    ) -> Result<bool, String> {
+        if modules.is_empty() {
+            return Ok(false);
+        }
+        let changed_at = at(change)?;
+        let mut conn = self.conn().await?;
+        let account_id = account_id.to_string();
+        let written = conn
+            .transaction::<(), diesel::result::Error, _>(|conn| {
+                async move {
+                    // The version row lock serializes every module write, so the check below
+                    // and the insert cannot interleave with another write for this account.
+                    let version = bump(conn).await?;
+                    let taken: Vec<VersionSql> = diesel::sql_query(
+                        "SELECT 1::BIGINT AS version WHERE EXISTS (SELECT 1 FROM \
+                         module_account_params WHERE account_id = $1 AND kind = 'assignment') \
+                         OR EXISTS (SELECT 1 FROM module_params_history WHERE account_id = $1)",
+                    )
+                    .bind::<Text, _>(&account_id)
+                    .load(conn)
+                    .await?;
+                    if !taken.is_empty() {
+                        return Err(diesel::result::Error::RollbackTransaction);
+                    }
+                    for (position, assigned) in modules.iter().enumerate() {
+                        diesel::sql_query(
+                            "INSERT INTO module_account_params \
+                             (account_id, module_id, kind, position, params, updated_at, updated_by) \
+                             VALUES ($1, $2, 'assignment', $3, $4, $5, $6)",
+                        )
+                        .bind::<Text, _>(&account_id)
+                        .bind::<Text, _>(&assigned.module_id)
+                        .bind::<Integer, _>(position as i32)
+                        .bind::<Jsonb, _>(&assigned.params)
+                        .bind::<Timestamptz, _>(changed_at)
+                        .bind::<Text, _>(change.operator)
+                        .execute(conn)
+                        .await?;
+                    }
+                    for (module_id, before, after) in assignment_changes(&[], &modules) {
+                        append(
+                            conn,
+                            version,
+                            &module_id,
+                            Some(&account_id),
+                            &before,
+                            &after,
+                            change,
+                            changed_at,
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                .scope_boxed()
+            })
+            .await;
+        match written {
+            Ok(()) => Ok(true),
+            Err(diesel::result::Error::RollbackTransaction) => Ok(false),
+            Err(e) => Err(format!("seed assignment: {e}")),
+        }
+    }
+
     async fn history(&self, module_id: &str) -> Result<Vec<HistoryEntry>, String> {
         let mut conn = self.conn().await?;
         let rows: Vec<HistorySql> = diesel::sql_query(
@@ -737,6 +806,41 @@ mod tests {
         let rows = store.account_params(&account).await.unwrap();
         assert_eq!(rows.len(), 1, "one replacement wins, never a union");
         assert!(store.version().await.unwrap() >= before + 8);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn default_copies_reach_only_accounts_without_assignment_history() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let account = format!("0xseed{}", rand::random::<u32>());
+        let copy = || {
+            vec![Assigned {
+                module_id: "screening".into(),
+                params: json!({ "limit": 5 }),
+            }]
+        };
+        let t0 = "2026-11-09T00:00:00Z";
+        assert!(store.seed_assignment(&account, copy(), &change(t0)).await.unwrap());
+        let before = store.version().await.unwrap();
+        assert!(
+            !store.seed_assignment(&account, copy(), &change(t0)).await.unwrap(),
+            "an existing assignment is kept"
+        );
+        assert_eq!(
+            store.version().await.unwrap(),
+            before,
+            "a refused copy does not move the version"
+        );
+        store
+            .set_assignment(&account, Vec::new(), &change(t0))
+            .await
+            .unwrap();
+        assert!(
+            !store.seed_assignment(&account, copy(), &change(t0)).await.unwrap(),
+            "an assignment an operator emptied is not refilled"
+        );
+        assert!(store.account_params(&account).await.unwrap().is_empty());
     }
 
     #[tokio::test]

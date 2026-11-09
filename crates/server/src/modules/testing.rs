@@ -314,6 +314,17 @@ impl super::store::ModuleStore for RacingStore {
         self.inner.all_account_params().await
     }
 
+    async fn seed_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<super::store::Assigned>,
+        change: &super::store::Change<'_>,
+    ) -> Result<bool, String> {
+        self.inner
+            .seed_assignment(account_id, modules, change)
+            .await
+    }
+
     async fn set_layer(
         &self,
         account_id: &str,

@@ -140,6 +140,16 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<(), String>;
 
+    /// Writes `modules` as the account's assignment only when it has neither an assignment nor
+    /// any assignment history, which is how `default` instances reach a newly registered
+    /// account; an operator's earlier write always wins. Returns whether it wrote.
+    async fn seed_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<Assigned>,
+        change: &Change<'_>,
+    ) -> Result<bool, String>;
+
     async fn history(&self, module_id: &str) -> Result<Vec<HistoryEntry>, String>;
 
     async fn version(&self) -> Result<u64, String>;
@@ -486,6 +496,42 @@ impl ModuleStore for FsModuleStore {
         })
     }
 
+    async fn seed_assignment(
+        &self,
+        account_id: &str,
+        modules: Vec<Assigned>,
+        change: &Change<'_>,
+    ) -> Result<bool, String> {
+        self.write(|tables| {
+            let assigned = tables
+                .account_params
+                .iter()
+                .any(|row| row.account_id == account_id && row.kind == ParamsKind::Assignment);
+            let history = tables
+                .history
+                .iter()
+                .any(|entry| entry.account_id.as_deref() == Some(account_id));
+            if assigned || history || modules.is_empty() {
+                return Ok(false);
+            }
+            for (position, assigned) in modules.iter().enumerate() {
+                tables.account_params.push(AccountParamsRow {
+                    account_id: account_id.to_string(),
+                    module_id: assigned.module_id.clone(),
+                    kind: ParamsKind::Assignment,
+                    position: position as i32,
+                    params: assigned.params.clone(),
+                    updated_at: change.at.clone(),
+                    updated_by: change.operator.to_string(),
+                });
+            }
+            for (module_id, before, after) in assignment_changes(&[], &modules) {
+                tables.append(&module_id, Some(account_id), before, after, change);
+            }
+            Ok(true)
+        })
+    }
+
     async fn history(&self, module_id: &str) -> Result<Vec<HistoryEntry>, String> {
         Ok(self.read(|tables| {
             tables
@@ -616,6 +662,47 @@ mod tests {
         let history = store.history("blocklist").await.unwrap();
         assert_eq!(history.len(), 2);
         assert_eq!(history[1].previous, json!({ "b": 1 }));
+    }
+
+    #[tokio::test]
+    async fn default_copies_never_overwrite_an_operator_write_or_refill_an_emptied_assignment() {
+        let store = FsModuleStore::in_memory();
+        let change = |at: &str| Change {
+            operator: "catalog",
+            reason: "default",
+            at: at.into(),
+        };
+        let copy = || {
+            vec![Assigned {
+                module_id: "screening".into(),
+                params: serde_json::json!({ "limit": 5 }),
+            }]
+        };
+        assert!(
+            store
+                .seed_assignment("0xnew", copy(), &change("t1"))
+                .await
+                .unwrap()
+        );
+        assert!(
+            !store
+                .seed_assignment("0xnew", copy(), &change("t2"))
+                .await
+                .unwrap(),
+            "an assignment already exists"
+        );
+        store
+            .set_assignment("0xnew", Vec::new(), &change("t3"))
+            .await
+            .unwrap();
+        assert!(
+            !store
+                .seed_assignment("0xnew", copy(), &change("t4"))
+                .await
+                .unwrap(),
+            "an assignment an operator emptied is not refilled"
+        );
+        assert!(store.account_params("0xnew").await.unwrap().is_empty());
     }
 
     #[tokio::test]

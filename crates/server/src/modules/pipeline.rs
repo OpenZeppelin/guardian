@@ -10,7 +10,7 @@ use super::breaker::Breakers;
 use super::limits::Limits;
 use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
-use super::store::{AccountParamsRow, ModuleStore, ParamsKind};
+use super::store::{AccountParamsRow, Assigned, ModuleStore, ParamsKind};
 use crate::delta_summary::FailedOpen;
 use crate::error::GuardianError;
 
@@ -271,7 +271,7 @@ impl ModulePipeline {
                         let id = instance.config.id.as_str();
                         let count = match instance.config.scope {
                             Scope::All => 1 + calls(id, ParamsKind::Layer),
-                            Scope::Assigned => calls(id, ParamsKind::Assignment),
+                            Scope::Default | Scope::Assigned => calls(id, ParamsKind::Assignment),
                         };
                         instance.config.timeout * count
                     })
@@ -474,26 +474,64 @@ impl ModulePipeline {
         hook: HookName,
         account_id: &str,
     ) -> Result<Option<Plan<'_>>, GuardianError> {
+        Ok(self.plan_with(hook, account_id, false).await?.0)
+    }
+
+    /// The `before_account_registered` plan of an account registering for the first time (no
+    /// account yet, or a claim with no assignment history): the `all` instances and every
+    /// enabled `default` instance subscribed to the hook, with its current global params. Also
+    /// returns the `default` copies to store for the account, every enabled `default` instance
+    /// with exactly the params evaluated, read in the same snapshot.
+    pub async fn plan_first_registration(
+        &self,
+        account_id: &str,
+    ) -> Result<(Option<Plan<'_>>, Vec<Assigned>), GuardianError> {
+        self.plan_with(HookName::BeforeAccountRegistered, account_id, true)
+            .await
+    }
+
+    async fn plan_with(
+        &self,
+        hook: HookName,
+        account_id: &str,
+        first_registration: bool,
+    ) -> Result<(Option<Plan<'_>>, Vec<Assigned>), GuardianError> {
         let account_id = account_id.to_ascii_lowercase();
         let subscribed = |rows: &Rows, instance: &&Instance| {
             instance.config.hooks.contains(&hook) && Self::enabled_in(rows, instance)
         };
-        let (_, rows) = self.versioned_rows().await?;
-        if !self
-            .instances
-            .iter()
-            .any(|instance| subscribed(&rows, &instance))
-        {
-            return Ok(None);
+        if !first_registration {
+            let (_, rows) = self.versioned_rows().await?;
+            if !self
+                .instances
+                .iter()
+                .any(|instance| subscribed(&rows, &instance))
+            {
+                return Ok((None, Vec::new()));
+            }
         }
         let (params_version, rows, account_rows) = self.snapshot(&account_id).await?;
+        let defaults: Vec<Assigned> = if first_registration {
+            self.instances
+                .iter()
+                .filter(|instance| {
+                    instance.config.scope == Scope::Default && Self::enabled_in(&rows, instance)
+                })
+                .map(|instance| Assigned {
+                    module_id: instance.config.id.clone(),
+                    params: Self::global_params_in(&rows, instance),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let active: Vec<&Instance> = self
             .instances
             .iter()
             .filter(|instance| subscribed(&rows, instance))
             .collect();
         if active.is_empty() {
-            return Ok(None);
+            return Ok((None, defaults));
         }
         let mut modules = Vec::new();
         for instance in active
@@ -522,7 +560,15 @@ impl ModulePipeline {
                 modules.push((*instance, row.params.clone(), Layer::Account));
             }
         }
-        Ok((!modules.is_empty()).then_some(Plan {
+        for copy in &defaults {
+            if let Some(instance) = active
+                .iter()
+                .find(|instance| instance.config.id == copy.module_id)
+            {
+                modules.push((*instance, copy.params.clone(), Layer::Global));
+            }
+        }
+        let plan = (!modules.is_empty()).then_some(Plan {
             hook,
             account_id,
             modules,
@@ -532,7 +578,8 @@ impl ModulePipeline {
             limits: self.limits,
             breakers: self.breakers.clone(),
             dry_run: false,
-        }))
+        });
+        Ok((plan, defaults))
     }
 
     /// The plans for a dry-run check of a proposal: the `before_proposal_created` instances,
