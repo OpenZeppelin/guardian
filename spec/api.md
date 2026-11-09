@@ -601,7 +601,7 @@ travels as `meta_json`):
   (`bound`: `approval`, `transaction`) and `GUARDIAN_EXECUTION_FOREIGN_ACCOUNT_UNAVAILABLE`
   (`reason`: `private`, `unavailable`); on servers with policy modules,
   `GUARDIAN_EXECUTION_MODULE_DENIED` (`reason_code`, and `module`, `layer`, `client_message` unless
-  the denial is generic) and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`module`). The full list is in
+  the denial is generic) and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`module`, absent when the instance's denials are generic). The full list is in
   [`docs/TROUBLESHOOTING.md`](../docs/TROUBLESHOOTING.md#guardian-execution).
 - `delta_nonce` is set once the execution committed to its candidate delta.
 - `newly_accepted` separates the request that started the execution from a repeat that found
@@ -893,7 +893,8 @@ Stable error codes include:
   gRPC `PermissionDenied`; `meta.module`, `meta.reason_code`, `meta.layer` = `global` or
   `account`, and `meta.client_message` when the module set one; an instance with
   `client_reason = "generic"` sends only `meta.reason_code = "policy_denied"`) and
-  `GUARDIAN_MODULE_UNAVAILABLE` (HTTP 503 / gRPC `Unavailable`, `meta.module`, retryable: a
+  `GUARDIAN_MODULE_UNAVAILABLE` (HTTP 503 / gRPC `Unavailable`, `meta.module` unless the
+  instance's denials are generic, retryable: a
   fail-closed module could not decide). Both are returned by `POST /configure` (hook
   `before_account_registered`), `POST /delta/proposal` and `POST /delta/proposal/check`
   (`before_proposal_created`, and in the check also `before_transaction_approved`) and

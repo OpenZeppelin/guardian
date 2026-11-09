@@ -388,7 +388,7 @@ pub async fn enable(
             .map_err(|error| {
                 tracing::warn!(module = %module_id, %error, "Module failed its checks; not enabled");
                 GuardianError::ModuleUnavailable {
-                    module: module_id.to_string(),
+                    module: Some(module_id.to_string()),
                 }
             })?;
         if checked.params != params && !instance.config.file_managed_params {

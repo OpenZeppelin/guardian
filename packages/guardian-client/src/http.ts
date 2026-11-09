@@ -141,7 +141,7 @@ export type ModuleRefusal =
       layer: string | null;
       clientMessage: string | null;
     }
-  | { kind: 'unavailable'; module: string };
+  | { kind: 'unavailable'; module: string | null };
 
 /** Why GUARDIAN refuses to execute a proposal and leaves it to local execution. */
 export type LocalExecutionReason = 'switch_guardian';
@@ -326,7 +326,7 @@ export class GuardianHttpError extends Error {
               clientMessage: meta.clientMessage ?? null,
             };
       case 'module_unavailable':
-        return meta.module === undefined ? null : { kind: 'unavailable', module: meta.module };
+        return { kind: 'unavailable', module: meta.module ?? null };
       default:
         return null;
     }

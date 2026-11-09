@@ -144,7 +144,11 @@ describe('fromServerExecution', () => {
       failed({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down', meta: { module: 'caps' } })
     ).toEqual({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down', module: 'caps' });
     expect(() => failed({ code: 'GUARDIAN_EXECUTION_MODULE_DENIED', message: 'denied' })).toThrow();
-    expect(() => failed({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down', meta: {} })).toThrow();
+    expect(failed({ code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE', message: 'down' })).toEqual({
+      code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE',
+      message: 'down',
+      module: null,
+    });
   });
 
   it('maps nothing in flight and an absent nonce to null', () => {

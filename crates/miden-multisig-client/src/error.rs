@@ -41,8 +41,9 @@ pub enum MultisigError {
     },
 
     /// A fail-closed GUARDIAN policy module could not decide. Retryable.
-    #[error("GUARDIAN policy module {module} is unavailable; try again shortly")]
-    ModuleUnavailable { module: String },
+    /// `module` is absent for an instance whose denials are generic.
+    #[error("a GUARDIAN policy module is unavailable; try again shortly")]
+    ModuleUnavailable { module: Option<String> },
 
     /// GUARDIAN refused a Guardian-execution request with a stable code, such as
     /// `GUARDIAN_PROPOSAL_NOT_READY` or `GUARDIAN_EXECUTION_CONFLICT`. `retryable` is the
@@ -553,7 +554,7 @@ mod tests {
         ));
         assert!(matches!(
             unavailable,
-            MultisigError::ModuleUnavailable { ref module } if module == "sanctions"
+            MultisigError::ModuleUnavailable { ref module } if module.as_deref() == Some("sanctions")
         ));
     }
 

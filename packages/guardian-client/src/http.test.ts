@@ -1795,7 +1795,10 @@ describe('GuardianHttpError', () => {
 
     it('reports no refusal for other codes or a refusal missing its required field', () => {
       expect(refused(403, 'GUARDIAN_MODULE_DENIED', { retryable: false, module: 'caps' }).moduleRefusal()).toBeNull();
-      expect(refused(503, 'GUARDIAN_MODULE_UNAVAILABLE', { retryable: true }).moduleRefusal()).toBeNull();
+      expect(refused(503, 'GUARDIAN_MODULE_UNAVAILABLE', { retryable: true }).moduleRefusal()).toEqual({
+        kind: 'unavailable',
+        module: null,
+      });
       expect(refused(409, 'GUARDIAN_EXECUTION_CONFLICT', { retryable: false, module: 'caps' }).moduleRefusal()).toBeNull();
       expect(new GuardianHttpError(502, 'Bad Gateway', 'upstream exploded').moduleRefusal()).toBeNull();
     });

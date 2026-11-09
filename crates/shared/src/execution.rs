@@ -138,8 +138,9 @@ pub enum ExecutionFailureCode {
     /// A GUARDIAN policy module refused the acknowledgement. The proposal stays stored.
     ModuleDenied(ModuleDenial),
     /// A fail-closed GUARDIAN policy module could not decide. Requesting again may succeed.
+    /// `module` is absent for an instance whose denials are generic.
     ModuleUnavailable {
-        module: String,
+        module: Option<String>,
     },
 }
 
@@ -156,6 +157,12 @@ struct BoundMeta {
 #[derive(Serialize, Deserialize)]
 struct ModuleMeta {
     module: String,
+}
+
+#[derive(Deserialize)]
+struct OptionalModuleMeta {
+    #[serde(default)]
+    module: Option<String>,
 }
 
 impl ExecutionFailureCode {
@@ -247,11 +254,12 @@ impl ExecutionFailureCode {
                 serde_json::to_value(BoundMeta { bound: *bound })
             }
             ExecutionFailureCode::ModuleDenied(denial) => serde_json::to_value(denial),
-            ExecutionFailureCode::ModuleUnavailable { module } => {
-                serde_json::to_value(ModuleMeta {
-                    module: module.clone(),
-                })
-            }
+            ExecutionFailureCode::ModuleUnavailable {
+                module: Some(module),
+            } => serde_json::to_value(ModuleMeta {
+                module: module.clone(),
+            }),
+            ExecutionFailureCode::ModuleUnavailable { module: None } => return None,
             ExecutionFailureCode::BindingMismatch
             | ExecutionFailureCode::StateMismatch
             | ExecutionFailureCode::RequestCodec
@@ -330,7 +338,14 @@ impl ExecutionFailureCode {
                 ExecutionFailureCode::ModuleDenied(required::<ModuleDenial>(code, meta)?)
             }
             "GUARDIAN_EXECUTION_MODULE_UNAVAILABLE" => ExecutionFailureCode::ModuleUnavailable {
-                module: required::<ModuleMeta>(code, meta)?.module,
+                module: match meta {
+                    Some(meta) => {
+                        serde_json::from_value::<OptionalModuleMeta>(meta.clone())
+                            .map_err(|e| format!("{code} has malformed meta: {e}"))?
+                            .module
+                    }
+                    None => None,
+                },
             },
             other => return Err(format!("unknown execution failure code '{other}'")),
         })
@@ -365,13 +380,15 @@ mod tests {
             client_message: None,
         });
         let unavailable = ExecutionFailureCode::ModuleUnavailable {
-            module: "caps".into(),
+            module: Some("caps".into()),
         };
         assert_eq!(
             generic.meta(),
             Some(serde_json::json!({ "reason_code": "policy_denied" }))
         );
-        for code in [full, generic, unavailable] {
+        let unnamed = ExecutionFailureCode::ModuleUnavailable { module: None };
+        assert_eq!(unnamed.meta(), None);
+        for code in [full, generic, unavailable, unnamed] {
             assert!(!code.ends_proposal());
             assert_eq!(
                 ExecutionFailureCode::from_parts(code.as_str(), code.meta().as_ref()).unwrap(),

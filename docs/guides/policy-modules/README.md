@@ -52,7 +52,8 @@ operator endpoints and permissions.
   surface it as a typed refusal (`ClientError::module_refusal`,
   `GuardianHttpError.moduleRefusal()`). A Guardian execution refused this way ends `failed` with
   `GUARDIAN_EXECUTION_MODULE_DENIED` (same `meta`) or
-  `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`meta.module`), and its proposal is
+  `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`meta.module`, omitted like the
+  denial's for a generic instance), and its proposal is
   kept.
 
 ## What users see

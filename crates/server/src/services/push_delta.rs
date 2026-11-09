@@ -2424,7 +2424,7 @@ mod tests {
             push_with_modules_when(module.clone(), lookup_fails, OnError::Deny).await;
         assert!(matches!(
             result,
-            Err(GuardianError::ModuleUnavailable { module }) if module == "caps"
+            Err(GuardianError::ModuleUnavailable { module }) if module.as_deref() == Some("caps")
         ));
         assert_eq!(
             module.calls(),

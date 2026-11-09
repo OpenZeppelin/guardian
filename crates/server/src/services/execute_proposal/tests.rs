@@ -1300,7 +1300,7 @@ async fn a_failing_fail_closed_module_ends_the_execution_as_unavailable() {
     assert_eq!(
         failed_with(&f).await,
         ExecutionFailureCode::ModuleUnavailable {
-            module: "caps".into()
+            module: Some("caps".into())
         }
     );
 }

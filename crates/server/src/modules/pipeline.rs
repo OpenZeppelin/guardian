@@ -871,7 +871,10 @@ fn fail(
         OnError::Deny => {
             tracing::warn!(module = %instance.config.id, account_id, %failure, "Policy module failed; refusing");
             Err(GuardianError::ModuleUnavailable {
-                module: instance.config.id.clone(),
+                module: match instance.config.client_reason {
+                    ClientReason::Full => Some(instance.config.id.clone()),
+                    ClientReason::Generic => None,
+                },
             })
         }
         OnError::Allow => {
@@ -1040,7 +1043,7 @@ params = {params}
         )]);
         assert!(matches!(
             run(&pipeline).await,
-            Err(GuardianError::ModuleUnavailable { module }) if module == "slow"
+            Err(GuardianError::ModuleUnavailable { module }) if module.as_deref() == Some("slow")
         ));
     }
 
@@ -1115,7 +1118,7 @@ params = {params}
         )]);
         assert!(matches!(
             run(&pipeline).await,
-            Err(GuardianError::ModuleUnavailable { module }) if module == "buggy"
+            Err(GuardianError::ModuleUnavailable { module }) if module.as_deref() == Some("buggy")
         ));
 
         let pipeline = pipeline_with(OnError::Allow, Behaviour::Panic);
@@ -1795,9 +1798,24 @@ mod failure_handling_tests {
         )]);
         let refused = run(&closed).await.unwrap_err();
         assert!(
-            matches!(&refused, GuardianError::ModuleUnavailable { module } if module == "screening")
+            matches!(&refused, GuardianError::ModuleUnavailable { module } if module.as_deref() == Some("screening"))
         );
         assert!(refused.retryable());
+
+        let mut hidden = instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Fail),
+        );
+        hidden.config.client_reason = ClientReason::Generic;
+        let refused = run(&ModulePipeline::from_instances(vec![hidden]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&refused, GuardianError::ModuleUnavailable { module: None }),
+            "an instance with generic denials is not named when it fails either: {refused:?}"
+        );
 
         let open = ModulePipeline::from_instances(vec![instance(
             "scoring",

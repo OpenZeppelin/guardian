@@ -47,7 +47,8 @@ routes are in [`DASHBOARD.md`](../DASHBOARD.md#policy-modules) and in
 
 ## A module is down
 
-Symptoms: clients get `503 GUARDIAN_MODULE_UNAVAILABLE` with `meta.module`;
+Symptoms: clients get `503 GUARDIAN_MODULE_UNAVAILABLE` with `meta.module`
+(no module for an instance with `client_reason = "generic"`; the `warn` log names it);
 `guardian_module_up{module}` is 0; `Policy module health probe failed` and
 `Policy module failed; refusing` at `warn`;
 `guardian_module_circuit_open{module}` is 1 once a replica has seen

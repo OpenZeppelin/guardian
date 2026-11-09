@@ -105,7 +105,8 @@ export type ExecutionFailure =
       /** A fail-closed GUARDIAN policy module could not decide; requesting again may succeed. */
       code: 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE';
       message: string;
-      module: string;
+      /** Absent for an instance whose denials are generic. */
+      module: string | null;
     }
   | { code: PlainExecutionFailureCode; message: string };
 
@@ -221,7 +222,7 @@ function fromServerFailure(error: ServerExecutionError): ExecutionFailure {
         clientMessage: optionalString(meta?.client_message, 'module client message'),
       };
     case 'GUARDIAN_EXECUTION_MODULE_UNAVAILABLE':
-      return { code, message, module: requiredString(meta?.module, 'unavailable module') };
+      return { code, message, module: optionalString(meta?.module, 'unavailable module') };
     default:
       return { code: member(PLAIN_EXECUTION_FAILURE_CODES, code, 'execution failure code'), message };
   }

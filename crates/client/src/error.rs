@@ -39,9 +39,8 @@ pub enum ModuleRefusal {
         /// The module's text for the requester, when the instance allows it.
         client_message: Option<String>,
     },
-    Unavailable {
-        module: String,
-    },
+    /// `module` is absent for an instance whose denials are generic.
+    Unavailable { module: Option<String> },
 }
 
 /// Errors that can occur when using the GUARDIAN client.
@@ -203,7 +202,7 @@ impl ClientError {
                 client_message: field("client_message"),
             }),
             MODULE_UNAVAILABLE_CODE => Some(ModuleRefusal::Unavailable {
-                module: field("module")?,
+                module: field("module"),
             }),
             _ => None,
         }
@@ -317,7 +316,7 @@ mod tests {
         assert_eq!(
             err.module_refusal(),
             Some(ModuleRefusal::Unavailable {
-                module: "sanctions".into()
+                module: Some("sanctions".into())
             })
         );
         assert!(err.is_retryable());

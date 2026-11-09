@@ -173,9 +173,10 @@ pub enum GuardianError {
     /// [`GuardianError::ModuleDenied`], but nothing about which module refused or why.
     ModuleDeniedGeneric,
     /// A fail-closed policy module could not decide. Stable code
-    /// `GUARDIAN_MODULE_UNAVAILABLE`, HTTP 503, gRPC `UNAVAILABLE`, retryable.
+    /// `GUARDIAN_MODULE_UNAVAILABLE`, HTTP 503, gRPC `UNAVAILABLE`, retryable. `module` is absent
+    /// for an instance whose denials are generic, so a failure names no more than a denial would.
     ModuleUnavailable {
-        module: String,
+        module: Option<String>,
     },
     /// No policy module instance with this id. Stable code `GUARDIAN_MODULE_NOT_FOUND`, HTTP 404.
     ModuleNotFound {
@@ -822,8 +823,13 @@ impl fmt::Display for GuardianError {
             GuardianError::ModuleDeniedGeneric => {
                 write!(f, "A policy module denied the request (generic denial)")
             }
-            GuardianError::ModuleUnavailable { module } => {
+            GuardianError::ModuleUnavailable {
+                module: Some(module),
+            } => {
                 write!(f, "Policy module '{module}' is unavailable")
+            }
+            GuardianError::ModuleUnavailable { module: None } => {
+                write!(f, "A policy module is unavailable")
             }
             GuardianError::ModuleNotFound { module } => {
                 write!(f, "Policy module '{module}' not found")
@@ -1063,7 +1069,7 @@ impl GuardianError {
                 Some(layer.clone()),
             ),
             GuardianError::ModuleDeniedGeneric => (None, Some(GENERIC_REASON_CODE.into()), None),
-            GuardianError::ModuleUnavailable { module } => (Some(module.clone()), None, None),
+            GuardianError::ModuleUnavailable { module } => (module.clone(), None, None),
             GuardianError::ModuleNotFound { module } => (Some(module.clone()), None, None),
             GuardianError::ModuleNotDisableable { module } => (Some(module.clone()), None, None),
             _ => (None, None, None),

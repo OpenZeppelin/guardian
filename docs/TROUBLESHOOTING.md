@@ -1044,7 +1044,7 @@ Causes of a `failed` execution, in `error.code`:
 | `GUARDIAN_EXECUTION_INSUFFICIENT_SIGNATURES` | none | Yes, once more cosigners have signed; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_NOT_PROCESSED` | none | Yes; the node refused the send before processing it (a rate limit that outlasted the client's retries, an authentication or permission refusal, an unimplemented call, or inputs sealed against an encryption key the validator no longer holds), so the transaction cannot land and the proposal is kept. Check the node endpoint and its limits if it repeats. |
 | `GUARDIAN_EXECUTION_MODULE_DENIED` | `reason_code`, plus `module`, `layer` and `client_message` unless the instance reports generic denials (`reason_code: policy_denied` only) | Not while the policy holds; the proposal is untouched. Only on servers built with policy modules. |
-| `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` | `module` | Yes, once the fail-closed module answers again; the proposal is untouched. |
+| `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` | `module`, unless the instance reports generic denials | Yes, once the fail-closed module answers again; the proposal is untouched. |
 | `GUARDIAN_EXECUTION_SUBMISSION_REJECTED`, `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED`, `GUARDIAN_EXECUTION_EXPIRED` | none | No; the transaction was sent, and the proposal is gone (`proposal_exists: false`). |
 
 `error.message` is a fixed, user-safe sentence for its cause, plus chain facts such as block
@@ -1062,7 +1062,7 @@ Only on servers started with a module catalog. See
 | Code | HTTP | `meta` | First check |
 |---|---|---|---|
 | `GUARDIAN_MODULE_DENIED` | 403 (gRPC `PermissionDenied`) | `module`, `reason_code`, `layer` (`global` or `account`), and `client_message` when the module set one; only `reason_code: "policy_denied"` for an instance with `client_reason = "generic"` | A policy refused the request: proposal creation, delta push, account registration or the dry-run check. Not retryable while the policy holds. The server log line `Policy module denied the request` has the module's own `message`. |
-| `GUARDIAN_MODULE_UNAVAILABLE` | 503 (gRPC `Unavailable`) | `module` | A fail-closed module timed out, errored, sent an invalid decision, was skipped by an open circuit, or would have received a request over the size cap. Retryable once it answers. On the operator API, enabling an instance that fails its startup checks returns it too. |
+| `GUARDIAN_MODULE_UNAVAILABLE` | 503 (gRPC `Unavailable`) | `module`, unless the instance has `client_reason = "generic"` (then the `Policy module failed; refusing` log line names it) | A fail-closed module timed out, errored, sent an invalid decision, was skipped by an open circuit, or would have received a request over the size cap. Retryable once it answers. On the operator API, enabling an instance that fails its startup checks returns it too. |
 | `GUARDIAN_MODULE_NOT_FOUND` | 404 | `module` | Operator API: no catalog instance with this id. Instances come only from the catalog file. |
 | `GUARDIAN_MODULE_NOT_DISABLEABLE` | 409 (gRPC `FailedPrecondition`) | `module` | Operator API: the instance's catalog entry has `operator_can_disable = false`. Changing that is a deploy (edit the catalog and restart). |
 

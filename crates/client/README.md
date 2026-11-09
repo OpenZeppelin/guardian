@@ -143,7 +143,8 @@ A refusal is a `ClientError` whose `guardian_code()` is the wire code (for examp
 it. A request a module refuses fails with a `ClientError` whose
 `module_refusal()` returns `ModuleRefusal::Denied { module, reason_code, layer,
 client_message }` (final; a generic denial carries only `policy_denied`) or
-`ModuleRefusal::Unavailable { module }` (retryable). A Guardian execution a
+`ModuleRefusal::Unavailable { module }` (retryable; `module` is `None` for an
+instance with generic denials). A Guardian execution a
 module refuses ends failed with `ExecutionFailureCode::ModuleDenied(ModuleDenial)`
 or `ExecutionFailureCode::ModuleUnavailable { module }`, and its proposal is
 kept:

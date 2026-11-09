@@ -818,7 +818,8 @@ The answer is advisory: approval still decides, and the Guardian rate limits
 checks per account and signer. A refusal, from a check, at creation, push or
 registration, is `MultisigError::ModuleDenied { module, reason_code, layer,
 client_message }` (final; a generic denial carries only `policy_denied`) or
-`MultisigError::ModuleUnavailable { module }` (retryable). A Guardian execution
+`MultisigError::ModuleUnavailable { module }` (retryable; `module` is `None` for
+an instance with generic denials). A Guardian execution
 refused by a module ends failed with `ExecutionFailureCode::ModuleDenied` or
 `ExecutionFailureCode::ModuleUnavailable`, and the proposal is kept.
 

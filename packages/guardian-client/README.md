@@ -393,12 +393,13 @@ try {
 A request a policy module refuses is a `GuardianHttpError` whose
 `moduleRefusal()` returns `{ kind: 'denied', module, reasonCode, layer,
 clientMessage }` (final; a generic denial has only `reasonCode:
-'policy_denied'`) or `{ kind: 'unavailable', module }` (retryable), and `null`
+'policy_denied'`) or `{ kind: 'unavailable', module }` (retryable; `module` is
+`null` for an instance with generic denials), and `null`
 for any other error. `getPolicies(accountId)` lists the rules the Guardian
 discloses, and `checkDeltaProposal(request)` runs the policy modules on a
 proposal without storing it. A Guardian execution a module refuses ends
 `failed` with `error.code` `GUARDIAN_EXECUTION_MODULE_DENIED` (the same `meta`
-as a denial) or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`meta.module`), and
+as a denial) or `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` (`meta.module` when given), and
 its proposal is kept.
 
 ### Rate limits and retries
