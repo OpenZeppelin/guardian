@@ -151,15 +151,23 @@ async fn validated(
     Ok(stored)
 }
 
+/// The key the account's module rows use: its id lowercased, as evaluation looks them up.
+/// Registration stores the id as the client sent it, so the account is looked up as given and
+/// then lowercased.
 async fn existing_account(state: &AppState, account_id: &str) -> Result<String> {
-    let account_id = account_id.to_ascii_lowercase();
-    match state.metadata.get(&account_id).await {
-        Ok(Some(_)) => Ok(account_id),
-        Ok(None) => Err(GuardianError::AccountNotFound(account_id)),
-        Err(e) => Err(GuardianError::StorageError(format!(
-            "account lookup failed: {e}"
-        ))),
+    let key = account_id.to_ascii_lowercase();
+    for candidate in [account_id, key.as_str()] {
+        match state.metadata.get(candidate).await {
+            Ok(Some(_)) => return Ok(key.clone()),
+            Ok(None) => continue,
+            Err(e) => {
+                return Err(GuardianError::StorageError(format!(
+                    "account lookup failed: {e}"
+                )));
+            }
+        }
     }
+    Err(GuardianError::AccountNotFound(account_id.to_string()))
 }
 
 async fn version(pipeline: &ModulePipeline) -> Result<u64> {
@@ -269,11 +277,16 @@ pub async fn catalog_view(state: &AppState) -> Result<ModuleCatalogView> {
 }
 
 pub async fn account_view(state: &AppState, account_id: &str) -> Result<AccountModulesView> {
-    let pipeline = pipeline(state)?;
     let account_id = existing_account(state, account_id).await?;
+    view_of(state, &account_id).await
+}
+
+/// The modules of the account whose module rows are keyed `account_id`.
+async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesView> {
+    let pipeline = pipeline(state)?;
     let rows = pipeline
         .store()
-        .account_params(&account_id)
+        .account_params(account_id)
         .await
         .map_err(GuardianError::StorageError)?;
     let mut modules = Vec::new();
@@ -328,7 +341,7 @@ pub async fn account_view(state: &AppState, account_id: &str) -> Result<AccountM
         });
     }
     Ok(AccountModulesView {
-        account_id,
+        account_id: account_id.to_string(),
         modules,
     })
 }
@@ -554,7 +567,7 @@ pub async fn set_layer(
         payload,
         client_ip,
     );
-    account_view(state, &account_id).await
+    view_of(state, &account_id).await
 }
 
 /// A row as a pending write would store it, for the budget check before the write.
@@ -640,7 +653,7 @@ pub async fn set_assignment(
         payload,
         client_ip,
     );
-    account_view(state, &account_id).await
+    view_of(state, &account_id).await
 }
 
 #[cfg(test)]
@@ -916,6 +929,57 @@ mod tests {
                 .unwrap(),
             (1, 0)
         );
+    }
+
+    #[tokio::test]
+    async fn an_account_registered_with_a_mixed_case_id_takes_layers_and_assignments() {
+        let mut state = state();
+        state.metadata = Arc::new(MockMetadataStore::new().with_row(AccountMetadata {
+            account_id: "0xAcC".into(),
+            auth: Auth::MidenFalconRpo {
+                cosigner_commitments: vec!["0xs1".into()],
+            },
+            network_config: crate::metadata::NetworkConfig::miden_default(),
+            created_at: "2026-10-15T00:00:00Z".into(),
+            updated_at: "2026-10-15T00:00:00Z".into(),
+            has_pending_candidate: false,
+            paused_at: None,
+            paused_reason: None,
+            released_at: None,
+        }));
+        set_layer(
+            &state,
+            &operator(),
+            "0xAcC",
+            "blocklist",
+            Some(json!({ "recipient_denylist": ["0xbbb"] })),
+            "OP-1",
+            None,
+        )
+        .await
+        .expect("the id as registered is found");
+        let rows = state
+            .modules
+            .as_ref()
+            .unwrap()
+            .store()
+            .account_params("0xacc")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1, "stored under the key evaluation reads");
+        assert!(matches!(
+            set_layer(
+                &state,
+                &operator(),
+                "0xBbB",
+                "blocklist",
+                None,
+                "OP-2",
+                None
+            )
+            .await,
+            Err(GuardianError::AccountNotFound(_))
+        ));
     }
 
     #[tokio::test]
