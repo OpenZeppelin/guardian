@@ -76,12 +76,9 @@ Cosigners use two client endpoints:
   creation would return. At most `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` (30)
   checks per account and signer per minute.
 
-The Rust multisig SDK wraps both (`get_policies`, and `check_transaction`,
-which builds the transaction exactly as `propose_transaction` does). The
-TypeScript multisig SDK does not yet: until the next
-`@openzeppelin/guardian-client` release, TypeScript callers use
-`getPolicies` and `checkDeltaProposal` on the base `GuardianHttpClient` and
-pass the proposal payload themselves.
+The multisig SDKs wrap both: Rust `get_policies` and `check_transaction`,
+TypeScript `getPolicies` and `checkTransaction`, which build the transaction
+exactly as proposing it would.
 
 An instance whose catalog params contain secret references cannot use
 `disclosure = "params"`: the server refuses to start, since the reference

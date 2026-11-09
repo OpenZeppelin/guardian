@@ -27,11 +27,47 @@ A stateless module implements three methods:
 | `validate_params` | `ParamsVerdict::ok()`, `ParamsVerdict::invalid(message)` or `ParamsVerdict::normalized(params)` | Called at startup and on every params write. Reject unknown fields (`#[serde(deny_unknown_fields)]`) so a typo fails here, not silently at evaluation. Return `normalized` to have the Guardian store the params in your current shape. |
 | `evaluate` | `Decision::allow()` or `Decision::deny(reason_code, message)` | Must be free of side effects: the same transaction is evaluated at proposal creation and again at approval, and clients retry. |
 
-A reason code is lowercase `snake_case`; anything else counts as a module
-failure. Return `ModuleError` for a request you cannot judge; the instance's
-`on_error` then decides. `Decision::allow` and `Decision::deny` set the
-decision's `effect`; a Guardian treats an effect it does not know as a
-failure, never as an allow.
+Add `guardian-module-sdk` with the `conformance` feature as a dev-dependency to
+test it (see [Test it](#test-it)). The crate re-exports `async_trait`, so
+`#[guardian_module_sdk::async_trait]` goes on the `impl`.
+
+## The protocol
+
+Modules speak `guardian.module.v1`, defined in
+[`guardian_module_v1.proto`](../../../crates/guardian-module-sdk/proto/guardian_module_v1.proto).
+Protocol version 1 is frozen: later Guardian releases add fields, hooks and
+named capabilities, never a change that breaks a version 1 module. A module in
+another language implements the `GuardianModule` service from that file with
+any gRPC stack; the Rust trait above is a thin layer over it.
+
+| RPC | When the Guardian calls it |
+|---|---|
+| `Describe` | At startup, before enabling an instance, and every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` (5 s) as a health probe |
+| `ValidateParams` | At startup for the stored global params, and on every params write through the operator API |
+| `Evaluate` | Once per gate hook invocation the instance applies to, and again for an account's layer |
+| `Notify`, `NotifyGap` | Not called yet; commit notifications arrive with the M2b slice. The SDK answers them with success |
+
+Every call carries `authorization: Bearer <token>` in its gRPC metadata, with
+the token of the instance it is for, and `instance_id` in the message
+(`Describe` names no instance). Any gRPC error status is a module failure, as
+is a call that outlives the instance's `timeout_ms`, and the instance's
+`on_error` decides; repeated failures open a circuit breaker that skips the
+module until a health probe succeeds. Requests can be up to 2 MiB encoded
+(`GUARDIAN_MODULE_REQUEST_MAX_BYTES`), so keep your server's receive limit at
+least that high (tonic's default is 4 MiB).
+
+## Decisions
+
+| Field | Rule |
+|---|---|
+| `effect` | `ALLOW` or `DENY`, set by `Decision::allow()` and `Decision::deny(..)`. A value the Guardian does not know is a module failure, never an allow. A module that leaves it unspecified is read through `allow` |
+| `reason_code` | Required on a deny: 1 to 64 characters of `a-z`, `0-9` and `_`. Anything else turns the deny into a module failure. Stable codes let operators and clients act on them |
+| `message` | For the operator: logged with the decision, never sent to clients |
+| `client_message` | Optional, for the person who sent the request, via `.with_client_message(..)`. Plain text: the Guardian drops control characters, collapses whitespace and keeps at most 256 characters. Shown only for instances with `client_reason = "full"` (the default); with `"generic"` the client sees `reason_code = "policy_denied"` and nothing else |
+
+Return `ModuleError` for a request you cannot judge (a missing projection,
+params you cannot read). It is a module failure and `on_error` decides, so a
+module never allows by accident.
 
 ## Changing your module across releases
 
@@ -51,24 +87,65 @@ failure, never as an allow.
 
 The rules are in [RFC 0002 section 3.5](../../rfcs/0002-guardian-modules.md#35-protocol-evolution-and-compatibility).
 
-## What a request carries
+## Hooks and requests
 
-| Field | Use it for |
+| Hook | Called | `subject` |
+|---|---|---|
+| `before_proposal_created` | Before a multisig proposal is stored, and in dry runs | `transaction` |
+| `before_transaction_approved` | Before the Guardian signs a pushed delta or a Guardian execution: the one that enforces, since transactions signed offline skip proposals | `transaction` |
+| `before_account_registered` | When an account is first configured on this Guardian | `registration` |
+
+A module lists the hooks it supports in `describe`; the catalog subscribes each
+instance to some of them, and the Guardian refuses an instance subscribed to a
+hook its module does not list.
+
+| `HookRequest` field | Contents |
 |---|---|
-| `params` | The params to apply, as JSON bytes: the global ones, or an account's layer on its second pass |
-| `subject.miden()` (the Miden variant of `subject.transaction.projection`) | The decoded transaction: vault changes, output notes (amount, faucet, `note_type`, `p2id_target`, `tx_fee`), input notes, storage changes |
-| `before`, `after` | Account views: signer commitments, `default_threshold` (absent for single-key accounts), procedure thresholds, auth scheme |
-| `submitter`, `subject.transaction.proposer` | Verified signer commitments |
-| `subject.transaction.unverified_metadata` | What the proposer claimed; never base a decision on it alone |
+| `request_id` | Unique per hook invocation and shared by every module called in it; log it to join your logs with the Guardian's |
+| `hook` | Which hook is calling |
+| `dry_run` | `true` for a policy check: nothing is stored or signed whatever you decide (see [Dry runs](#dry-runs)) |
+| `network`, `network_id` | `"miden"`, and `"mainnet"`, `"testnet"`, `"devnet"`, `"cedar"` or `"local"` |
+| `account_id`, `instance_id` | The account, and the catalog id of the instance being called |
+| `params` | UTF-8 JSON: the instance's global params, the account's layer on its second pass, or the account's own params for a `default` or `assigned` instance. Read them on every call; they change without restarting the module |
+| `accounting_time` | The time recorded with the transaction if it is signed; at `before_proposal_created` and in a dry run, the evaluation time |
+| `submitter`, `submitter_session` | The verified signer commitment that authenticated the request, and whether it did so through a session key it delegated |
+| `before` | The account as the Guardian holds it; absent at `before_account_registered` |
+| `after` | The account as it will be if every module allows |
+| `subject.transaction.projection` | The decoded transaction; read the Miden variant with `subject.miden()` |
+| `subject.transaction.proposer` | The verified signer commitment that created the matching proposal; empty when there is none |
+| `subject.transaction.unverified_metadata` | UTF-8 JSON the proposer asserted; never base a decision on it alone |
 | `subject.transaction.raw` | The transaction in its network's own encoding (`encoding = "miden.transaction_summary"`), for modules that decode it themselves; tied to the Guardian's Miden version |
+| `subject.transaction.pending` | Empty until commit notifications ship (M2b) |
+| `subject.registration.initial_state` | The account about to be accepted: vault and storage slots |
 
-Skip the fee note (`tx_fee = true`) when counting payments: every transaction
-pays its fee through an output note.
+An account view (`before`, `after`) carries the account `commitment`, its
+`signer_commitments` with each signer's scheme in `signer_schemes` (`auth_scheme`
+is `"falcon"`, `"ecdsa"` or `"mixed"`), `default_threshold` (absent for
+single-key accounts), `procedure_thresholds`, `code_commitment` and the
+`procedure_roots` the code exports.
+
+The Miden projection has the `nonce_delta`, the `reference_block` and optional
+`expiration_block`, `vault_changes` (asset and direction), `output_notes`
+(`note_type`, assets, `p2id_target` for known P2ID and P2IDE scripts,
+`tx_fee`), `input_notes`, `storage_changes` by slot name, and
+`new_code_commitment` when the transaction replaces the account's code.
+Amounts are decimal strings. Skip the fee note (`tx_fee = true`) when counting
+payments: every transaction pays its fee through an output note.
 
 Projections are tagged by network (`TransactionProjection`, `oneof network`).
 Miden is the only network today; read it with `subject.miden()` and return a
 `ModuleError` when it is absent, so a module never judges a transaction it
 does not understand.
+
+## Dry runs
+
+Cosigners can check a transaction before proposing it
+(`POST /delta/proposal/check`). The Guardian then calls the account's gate
+instances with `dry_run = true`: the creation instances, then those subscribed
+only to `before_transaction_approved`. Decide exactly as you would otherwise;
+`evaluate` has no side effects either way. An operator who does not want an
+instance to see transactions that may never be proposed sets `dry_run = false`
+in its catalog entry, and the check then reports `complete: false`.
 
 ## Run it over gRPC
 
@@ -84,6 +161,13 @@ cp docs/guides/policy-modules/custom.toml .guardian/
 Set `GUARDIAN_MODULES_CONFIG=.guardian/custom.toml` in the guide's `.env` and
 start the server as in the setup. The log line lists
 `note-policy=note-policy <version>`.
+
+The catalog names the token with `auth = { token_secret = "note-policy.token" }`;
+the Guardian reads it through its secrets backend, and the module is started
+with the same value. For TLS, mutual TLS and the AWS secrets provider, see
+[remote modules](./remote.md#credentials) and
+[`examples/policy-module`](../../../examples/policy-module/README.md), a
+standalone service you can copy as a starting point.
 
 ## Run it in process
 
@@ -107,7 +191,11 @@ set -a && . docs/guides/policy-modules/.env && set +a
 cargo run -p guardian-server --example custom_module_server
 ```
 
-No module process, token or endpoint is involved. To run it next to another
+No module process, token or endpoint is involved. An in-process module that
+needs a credential of its own, such as a vendor API key, names it in its
+catalog params as `{ "$secret" = "<name>" }`. The Guardian reads it at startup
+and the factory gets the value from `ModuleInstanceConfig::secret("<name>")`;
+`HookRequest.params` keeps the reference, never the value. To run it next to another
 Guardian, set `GUARDIAN_EXAMPLE_HTTP_PORT` and `GUARDIAN_EXAMPLE_GRPC_PORT`
 (default 3000 and 50051). The stock binary refuses
 this catalog at startup, since it does not know the `note-policy` kind.
@@ -132,16 +220,44 @@ from `main.rs`, so keep it in step with it when you upgrade.
 The tests work the same in either mode. The module's own tests run with
 `cargo test -p guardian-module-sdk --example note-policy-serve`.
 
+## Test it
+
+The SDK's conformance suite runs your module in process and over loopback gRPC,
+with two instances on one service:
+
+```rust
+use guardian_module_sdk::conformance::Suite;
+
+#[tokio::test]
+async fn note_policy_conforms() {
+    Suite::new(NotePolicy)
+        .request("one payment", one_payment())
+        .request("two payments", two_payments())
+        .valid_params(serde_json::json!({ "max_payment_notes": 1 }))
+        .invalid_params(serde_json::json!({ "max_notes": 1 }))
+        .run()
+        .await
+        .assert_conformant();
+}
+```
+
+It checks that `describe` reports protocol version 1 and known hooks, that
+params validate the same over both transports and that normalized params
+validate to themselves, that every request gets the same answer in process and
+over gRPC, repeated, in reverse order and concurrently (so `evaluate` keeps no
+state), that every deny has a valid `reason_code` and a plain `client_message`
+of at most 256 characters, that one instance's token is refused for another,
+and that a request at the 2 MiB size cap goes through. A module written in
+another language can port these cases to its own tests. `note-policy` and `basic-policy` run it in
+[`tests/conformance.rs`](../../../crates/guardian-module-sdk/tests/conformance.rs).
+
 ## Shipping your module
 
 - Use `serve(YourModule).instance(id, token)` from the SDK, or implement the
   `GuardianModule` service from the proto in any language with gRPC support.
 - Keep the module stateless for now. Limits that count across transactions
   (daily caps) need the commit notifications of the RFC's M2b slice.
-- The SDK's conformance tests
-  ([`tests/conformance.rs`](../../../crates/guardian-module-sdk/tests/conformance.rs))
-  check that `basic-policy` decides the same in process and over gRPC; copy the
-  pattern to test your module over the real transport.
+- Run the conformance suite in your CI, with requests that cover every rule.
 - Prefer the remote path for code you do not own. In process, the rule that a
   module can only refuse, never sign, holds by code review rather than by
   isolation.

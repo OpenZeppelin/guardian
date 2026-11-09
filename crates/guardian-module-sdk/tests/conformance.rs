@@ -1,3 +1,6 @@
+#[path = "../examples/note_policy/mod.rs"]
+mod note_policy;
+
 use guardian_module_sdk::basic_policy::BasicPolicy;
 use guardian_module_sdk::conformance::Suite;
 use guardian_module_sdk::proto::guardian_module_client::GuardianModuleClient;
@@ -5,7 +8,7 @@ use guardian_module_sdk::proto::{asset, hook_request};
 use guardian_module_sdk::serve::serve;
 use guardian_module_sdk::{
     AccountStateProjection, AccountView, Asset, HookRequest, MidenAccountState, MidenTransaction,
-    Module, OutputNote, RegistrationSubject, TransactionProjection, TransactionSubject,
+    Module, NoteType, OutputNote, RegistrationSubject, TransactionProjection, TransactionSubject,
 };
 use serde_json::json;
 use tokio::net::TcpListener;
@@ -142,6 +145,61 @@ async fn basic_policy_conforms() {
         .invalid_params(json!({ "unknown": 1 }))
         .invalid_params(json!({ "max_amount_per_tx": { "0xaa": "ten" } }))
         .invalid_params(json!({ "signer_allowlist": [], "signer_denylist": [] }))
+        .run()
+        .await
+        .assert_conformant();
+}
+
+fn notes(notes: Vec<OutputNote>, params: serde_json::Value) -> HookRequest {
+    HookRequest {
+        params: serde_json::to_vec(&params).unwrap(),
+        after: Some(AccountView::default()),
+        subject: Some(hook_request::Subject::Transaction(TransactionSubject {
+            projection: Some(TransactionProjection::miden(MidenTransaction {
+                output_notes: notes,
+                ..Default::default()
+            })),
+            ..Default::default()
+        })),
+        ..Default::default()
+    }
+}
+
+fn note(note_type: NoteType, tx_fee: bool) -> OutputNote {
+    OutputNote {
+        note_type: note_type as i32,
+        tx_fee,
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn note_policy_conforms() {
+    let one = json!({ "max_payment_notes": 1 });
+    let private = json!({ "deny_private_notes": true });
+    Suite::new(note_policy::NotePolicy)
+        .request(
+            "one payment and the fee note",
+            notes(
+                vec![note(NoteType::Public, false), note(NoteType::Public, true)],
+                one.clone(),
+            ),
+        )
+        .request(
+            "two payments",
+            notes(
+                vec![note(NoteType::Public, false), note(NoteType::Public, false)],
+                one,
+            ),
+        )
+        .request(
+            "a private payment",
+            notes(vec![note(NoteType::Private, false)], private),
+        )
+        .request("registration", registration(json!({}), &["0xs1"]))
+        .valid_params(json!({ "max_payment_notes": 1, "deny_private_notes": true }))
+        .valid_params(json!({}))
+        .invalid_params(json!({ "max_notes": 1 }))
         .run()
         .await
         .assert_conformant();

@@ -13,7 +13,7 @@ is the transport. Do the [setup](./README.md#setup) first; the catalog is
 
 | Call | When | Purpose |
 |---|---|---|
-| `Describe` | Startup, and before enabling | Name, version, protocol version and supported hooks. A mismatch with the catalog stops startup. |
+| `Describe` | Startup, before enabling, and every 5 s as a health probe | Name, version, protocol version and supported hooks. A mismatch with the catalog stops startup. |
 | `ValidateParams` | Startup, and on every params write | The module rejects params it cannot use; nothing is stored. |
 | `Evaluate` | Every gated request | One request in, one decision out, within `timeout_ms`. |
 
@@ -23,6 +23,10 @@ projection, the raw transaction summary, the verified submitter and proposer,
 and the proposal's unverified metadata. The module keeps no params of its own,
 so params changed through the API apply on the next request without
 restarting it.
+
+To write your own remote module, in Rust or any language with gRPC, read
+[custom modules](./custom.md): the protocol, every request field, the rules for
+decisions, dry runs and the conformance suite. This page is about running one.
 
 ## 1. Token and module
 
