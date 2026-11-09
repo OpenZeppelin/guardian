@@ -2897,7 +2897,7 @@
               },
               {
                 "$ref": "#/components/schemas/ModuleApproval",
-                "description": "The policy module configuration that approved this delta. Absent when no module ran."
+                "description": "The policy module configuration that approved this delta, for operators: absent when no\nmodule ran, and never included in client API responses."
               }
             ]
           },

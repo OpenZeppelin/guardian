@@ -56,7 +56,8 @@ pub struct DeltaMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub proposal: Option<ProposalMetadata>,
 
-    /// The policy module configuration that approved this delta. Absent when no module ran.
+    /// The policy module configuration that approved this delta, for operators: absent when no
+    /// module ran, and never included in client API responses.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modules: Option<ModuleApproval>,
 }

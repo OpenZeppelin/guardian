@@ -245,7 +245,7 @@ pub async fn push_delta(
     };
 
     let response = services::push_delta(&state, params).await?;
-    Ok(Json(response.delta))
+    Ok(Json(response.delta.without_module_trace()))
 }
 
 /// Fetch the delta for an account at a specific nonce.
@@ -276,7 +276,7 @@ pub async fn get_delta(
     };
 
     let response = services::get_delta(&state, params).await?;
-    Ok(Json(response.delta))
+    Ok(Json(response.delta.without_module_trace()))
 }
 
 /// Fetch the merged delta accumulating all changes for an account
@@ -308,7 +308,7 @@ pub async fn get_delta_since(
     };
 
     let response = services::get_delta_since(&state, params).await?;
-    Ok(Json(response.merged_delta))
+    Ok(Json(response.merged_delta.without_module_trace()))
 }
 
 /// Paginated canonical delta history for an account (issue
@@ -786,7 +786,7 @@ pub async fn push_delta_proposal(
 
     let response = services::push_delta_proposal(&state, params).await?;
     Ok(Json(DeltaProposalResponse {
-        delta: response.delta,
+        delta: response.delta.without_module_trace(),
         commitment: response.commitment,
     }))
 }
@@ -1093,7 +1093,11 @@ pub async fn get_delta_proposals(
 
     let response = services::get_delta_proposals(&state, params).await?;
     Ok(Json(ProposalsResponse {
-        proposals: response.proposals,
+        proposals: response
+            .proposals
+            .into_iter()
+            .map(DeltaObject::without_module_trace)
+            .collect(),
     }))
 }
 
@@ -1125,7 +1129,7 @@ pub async fn get_delta_proposal(
     };
 
     let response = services::get_delta_proposal(&state, params).await?;
-    Ok(Json(response.proposal))
+    Ok(Json(response.proposal.without_module_trace()))
 }
 
 /// Add a cosigner signature to an existing multisig proposal. The approval
@@ -1164,7 +1168,7 @@ pub async fn sign_delta_proposal(
     };
 
     let response = services::sign_delta_proposal(&state, params).await?;
-    Ok(Json(response.delta))
+    Ok(Json(response.delta.without_module_trace()))
 }
 
 struct RequestPayloadParts {
