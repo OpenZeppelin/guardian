@@ -105,6 +105,7 @@ pub async fn check_proposal(
 }
 
 #[tracing::instrument(
+    name = "push_delta_proposal",
     level = "info",
     skip(state, params),
     fields(
@@ -297,16 +298,44 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
         .cloned()
         .unwrap_or_default();
 
-    // Validate delta using network client (check validity but don't apply)
-    {
+    let (plans, complete) = match (dry_run, state.modules.as_deref()) {
+        (Some(planned), _) => planned,
+        (None, Some(modules)) => (
+            modules
+                .plan(HookName::BeforeProposalCreated, &account_id)
+                .await?
+                .into_iter()
+                .collect(),
+            true,
+        ),
+        (None, None) => (Vec::new(), true),
+    };
+    // With modules to run, one decode verifies the delta against the tail and builds the
+    // account views they receive; without, the delta is only verified.
+    let applied = {
         let client = state.network_client.clone();
         let prev_commitment = tail.commitment.clone();
         let prev_state_json = tail.state_json.clone();
         let tx_summary = Arc::new(tx_summary.clone());
+        let evaluate = !plans.is_empty();
         crate::network::reconstructor()
-            .run(move || client.verify_delta(&prev_commitment, &prev_state_json, &tx_summary))
-            .await?;
-    }
+            .run(move || {
+                if evaluate {
+                    client
+                        .apply_delta_with_module_views(
+                            Some(&prev_commitment),
+                            &prev_state_json,
+                            &tx_summary,
+                        )
+                        .map(Some)
+                } else {
+                    client
+                        .verify_delta(&prev_commitment, &prev_state_json, &tx_summary)
+                        .map(|()| None)
+                }
+            })
+            .await?
+    };
     let commitment = proposal_id.map_err(GuardianError::InvalidDelta)?;
     tracing::Span::current().record("commitment", tracing::field::display(&commitment));
 
@@ -347,29 +376,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
-    let (plans, complete) = match (dry_run, state.modules.as_deref()) {
-        (Some(planned), _) => planned,
-        (None, Some(modules)) => (
-            modules
-                .plan(HookName::BeforeProposalCreated, &account_id)
-                .await?
-                .into_iter()
-                .collect(),
-            true,
-        ),
-        (None, None) => (Vec::new(), true),
-    };
-    if !plans.is_empty() {
-        let (after, module_views) = {
-            let client = state.network_client.clone();
-            let tail_state_json = tail.state_json.clone();
-            let tx_summary = tx_summary.clone();
-            crate::network::reconstructor()
-                .run(move || {
-                    client.apply_delta_with_module_views(None, &tail_state_json, &tx_summary)
-                })
-                .await?
-        };
+    if let Some((after, module_views)) = applied {
         let proposal = ProposalContext {
             proposer: proposer_id.clone(),
             metadata: delta_payload
