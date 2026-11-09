@@ -264,4 +264,7 @@ Foundational, then US1: the frozen protocol and a mandatory policy enforced on e
 
 ### Delivery as stacked PRs
 
+Decision 2026-11-09: all M2a work lands on `251-modules-m2a`; layer branches are cut from it when review needs them, following the recipe below.
+
+
 The prototype is one 13,000-line draft (#554). M2a ships as a stack of five PRs off `main`, each building and testing on its own, the way the PR #510 review stack was layered by path. The layers, their branches and what each contains are in [plan.md](./plan.md), "M2a delivery": module SDK, server core, hooks, clients, docs. New M2a work goes to the layer it belongs to: Phase 2 proto tasks and US6 to the SDK layer; US4 and the operator routes of US5 to server core; US1, US3 and the server half of US2 to hooks; the client halves of US2 and US5 to clients; Polish docs to docs.

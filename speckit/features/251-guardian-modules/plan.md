@@ -136,6 +136,9 @@ Per AGENTS.md, published crates and packages document new public API in their ow
 
 ## M2a delivery
 
+**Decision (2026-11-09)**: M2a is developed on one branch, `251-modules-m2a`. The layer split below was built and checked once and is kept as a recipe; reviewable branches are cut from `251-modules-m2a` by layer when needed, not maintained alongside it.
+
+
 The prototype (#554) is one draft of about 13,000 lines and is not merged as it is. M2a starts from it and ships as a stack of pull requests off `main`, each building and passing its tests on its own, in this order:
 
 | Layer | Branch | Content |
