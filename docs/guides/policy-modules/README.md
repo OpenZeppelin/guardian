@@ -85,6 +85,13 @@ An instance whose catalog params contain secret references cannot use
 `disclosure = "params"`: the server refuses to start, since the reference
 would show cosigners the secret's name.
 
+Such an instance's global params stay in the catalog file: the operator API
+refuses to change them, and the database keeps only an empty placeholder. If a
+later catalog drops the secret references, the instance becomes
+operator-managed and starts from that empty placeholder, not from the new
+catalog params (the catalog only seeds params on first start). Set its params
+through the API right after that deploy.
+
 In
 [`built-in.toml`](./built-in.toml), `caps` discloses its params and
 `blocklist` denies generically.

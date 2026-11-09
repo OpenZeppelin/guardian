@@ -158,9 +158,10 @@ impl ModulePipeline {
             let Some((params, enabled)) = stored.get(&config.id) else {
                 continue;
             };
-            if seeded
-                .get(&config.id)
-                .is_some_and(|seeded| *seeded != config.params)
+            if !config.file_managed_params
+                && seeded
+                    .get(&config.id)
+                    .is_some_and(|seeded| *seeded != config.params)
             {
                 seed_drift.insert(config.id.clone());
             }

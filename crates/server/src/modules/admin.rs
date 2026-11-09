@@ -234,7 +234,8 @@ async fn instance_view(
         catalog_enabled: instance.config.catalog_enabled,
         enabled_drift: enabled != instance.config.catalog_enabled,
         operator_can_disable: instance.config.operator_can_disable,
-        params_drift: seeded.is_some_and(|seeded| seeded != instance.config.params),
+        params_drift: !instance.config.file_managed_params
+            && seeded.is_some_and(|seeded| seeded != instance.config.params),
         params,
         file_managed_params: instance.config.file_managed_params,
         build: instance.build.clone(),
