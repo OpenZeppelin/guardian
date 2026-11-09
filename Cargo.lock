@@ -3489,6 +3489,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "guardian-policy-module"
+version = "0.1.0"
+dependencies = [
+ "guardian-module-sdk",
+ "tokio",
+ "tonic",
+]
+
+[[package]]
 name = "guardian-prod-benchmarks"
 version = "0.1.0"
 dependencies = [

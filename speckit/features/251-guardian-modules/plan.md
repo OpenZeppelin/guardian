@@ -73,9 +73,9 @@ crates/guardian-module-sdk/                    # published crate (M2a)
 │   ├── lib.rs                                 # Module, ModuleFactory, ModuleError, protocol types, request helpers
 │   ├── serve.rs                               # gRPC harness, per-instance credentials
 │   ├── basic_policy.rs                        # first-party reference kind
-│   ├── conformance/                           # M2a: reusable suite (today tests/conformance.rs)
+│   ├── conformance.rs                         # reusable suite, `conformance` feature
 │   └── stateful.rs                            # M2b: watermark helper
-├── examples/basic-policy-serve.rs, note-policy-serve.rs
+├── examples/note-policy-serve.rs
 └── tests/conformance.rs
 
 crates/server/src/

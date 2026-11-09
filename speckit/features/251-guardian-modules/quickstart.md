@@ -42,7 +42,7 @@ With `examples/demo` against the local server:
 
 ```bash
 openssl rand -hex 32 > .guardian/caps.token
-cargo run -p guardian-module-sdk --example basic-policy-serve -- \
+cargo run -p guardian-policy-module -- \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 

@@ -31,13 +31,14 @@ call:
 
 ```sh
 (umask 077; openssl rand -hex 32 > .guardian/caps.token)
-cargo run -p guardian-module-sdk --example basic-policy-serve -- \
+cargo run -p guardian-policy-module -- \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
-The serve harness accepts a call only for an instance id it knows, with that
-instance's token. One process can host several instances, each with its own
-token: repeat `--instance`.
+The module is [`examples/policy-module`](../../../examples/policy-module/README.md),
+built on the SDK's serve harness. It accepts a call only for an instance id it
+knows, with that instance's token. One process can host several instances, each
+with its own token: repeat `--instance`.
 
 ## 2. Catalog and server
 
@@ -82,9 +83,11 @@ The log line lists `caps-remote=basic-policy 0.18.1`.
   (`127.0.0.1`, `localhost`, `::1`), so a missing letter cannot turn TLS off.
 - In the prod stage (`GUARDIAN_ENV=prod`) plain text is refused and `auth` is
   mandatory for every remote instance.
-- The SDK's serve harness speaks plain text only, so for TLS put it behind a
-  TLS-terminating proxy on the module's host, or serve the module with your own
-  tonic server configured for TLS.
+- The example module serves TLS and mutual TLS itself (`--tls-cert`,
+  `--tls-key`, `--client-ca`); see its
+  [README](../../../examples/policy-module/README.md#tls). A module built on
+  the SDK harness does the same by adding the harness service to a tonic
+  server configured for TLS.
 
 ## Credentials
 

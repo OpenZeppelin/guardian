@@ -13,6 +13,7 @@ members = [
     "crates/qualification-driver",
     "examples/rust",
     "examples/demo",
+    "examples/policy-module",
 ]
 default-members = [
     "crates/shared",
