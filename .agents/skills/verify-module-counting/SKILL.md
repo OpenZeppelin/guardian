@@ -135,12 +135,12 @@ Rust paths are relative to `crates/server/src/`; "RFC" is
 | `Snapshot` | `services/push_delta.rs` `push_delta` (`CandidateChain::load_for_admission`) plus RFC 3.4 "Guardian side": queue, unacknowledged events and `resync_required` in one repeatable-read transaction. The client's base is the tail it knows |
 | `SnapshotQueue` | mutation `m3` only: the queue read in a second transaction |
 | `Evaluate` | RFC 3.4 "Module side": counters and watermark from one consistent read, pending entries above the watermark, plus the delta; `on_error = deny` under `resync_required` and until the resync's Gap is acknowledged (RFC 3.3) |
-| `Store` | `storage/mod.rs` `gate_candidate_submission` (tail, room) under the account lock, `storage/postgres.rs` `submit_candidate` (deletes a `retained` or client-abandoned row at the same nonce) |
+| `Store` | `storage/mod.rs` `gate_candidate_submission` (tail, room) under the account lock, `storage/postgres.rs` `submit_candidate` (archives a `retained` or client-abandoned row at the same nonce, which stays promotable; refuses a paused or released account and one under a Guardian execution without writing) |
 | `Execute` | a cosigner submits any signed delta; Miden executes it only on its parent state |
 | `Promote` | `storage/postgres.rs` `promote_candidate` (`PromotableKind::Candidate`) plus RFC 2.3/3.3: the `module_events` row in the same transaction |
 | `WriteEvent` | mutation `m5` only: the event row in a later transaction |
 | `Retain` | `jobs/canonicalization/processor.rs` `retain_candidate`; successors parked as `RetainReason::Orphaned` |
-| `Reconcile` | `jobs/canonicalization/reconciliation.rs` `reconcile_chain_advance` / `reconcile_recoverable_path` through `promote_candidate` (`PromotableKind::Retained`, client-abandoned) |
+| `Reconcile` | `jobs/canonicalization/reconciliation.rs` `reconcile_chain_advance` / `reconcile_recoverable_path` through `promote_candidate` (`PromotableKind::Retained`, client-abandoned, or `Superseded` for an archived row) |
 | `Expire` | retained-row TTL (reconciliation step 1) |
 | `Acquire`, `Notice` | `coordination/postgres/lease.rs` `try_acquire`; the old holder keeps sending until it notices |
 | `SendNotify`, `SendGap` | RFC 3.3 notifier: read the cursor and the Gap obligation in one statement; while the obligation is open send only the Gap, otherwise the next event |

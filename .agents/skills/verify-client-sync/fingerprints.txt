@@ -14,7 +14,7 @@ crates/miden-multisig-client/src/client/account.rs refresh_cached_account_from_s
 crates/miden-multisig-client/src/client/helpers.rs finalize_transaction bfd0fddd310f47e6
 crates/miden-multisig-client/src/client/helpers.rs rebuilds_local_state_from_delta e505dcca5111be28
 crates/miden-multisig-client/src/client/helpers.rs submit_transaction_at_tip 868a7b51b15f9fa7
-crates/miden-multisig-client/src/client/helpers.rs get_guardian_ack_signature c95d133cba082b6a
+crates/miden-multisig-client/src/client/helpers.rs get_guardian_ack_signature 6724b8a80e8bcc59
 crates/miden-multisig-client/src/client/proposals.rs execute_proposal 0ae7632c3d6f2cd7
 crates/miden-multisig-client/src/client/proposals.rs propose_transaction_with_options 076e1703b567767d
 crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 371832148205f50f

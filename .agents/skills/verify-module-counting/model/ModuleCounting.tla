@@ -159,9 +159,13 @@ Evaluate(r) ==
 
 \* The candidate gate (storage/mod.rs gate_candidate_submission) under the
 \* account lock: the delta must extend the current tail and the queue must
-\* have room. Admission deletes a recoverable row at the same nonce
-\* (storage/postgres.rs submit_candidate, "reconcile_superseded"). Only an
-\* admitted delta's ack signature is returned.
+\* have room. Admission archives a recoverable row at the same nonce
+\* (storage/postgres.rs submit_candidate, archive_parked_delta, with
+\* retention on), and reconciliation can still promote the archived row
+\* (PromotableKind::Superseded) if it landed, so it stays in `retained`
+\* until it expires. The other refusals submit_candidate adds (paused or
+\* released account, an execution's reservation) write nothing, like a
+\* refused gate. Only an admitted delta's ack signature is returned.
 Store(r) ==
     /\ req[r].phase = "allowed"
     /\ LET t == Len(txs) + 1
@@ -169,12 +173,11 @@ Store(r) ==
        IN IF req[r].base = QueueTail /\ Len(queue) < Depth /\ Len(txs) < MaxTx
           THEN /\ txs' = Append(txs, [parent |-> req[r].base, nonce |-> n, amt |-> req[r].amt])
                /\ queue' = Append(queue, t)
-               /\ retained' = {x \in retained : txs[x].nonce # n}
                /\ evalLog' = [evalLog EXCEPT !.missedLive = req[r].missed.live,
                                              !.missedRecoverable = req[r].missed.recov]
-          ELSE UNCHANGED <<txs, queue, retained, evalLog>>
+          ELSE UNCHANGED <<txs, queue, evalLog>>
     /\ req' = [req EXCEPT ![r] = Idle]
-    /\ UNCHANGED <<canon, events, unwritten, chain, moduleVars, notifyVars>>
+    /\ UNCHANGED <<canon, retained, events, unwritten, chain, moduleVars, notifyVars>>
 
 (***************************************************************************)
 (* Chain and canonicalization.                                             *)
