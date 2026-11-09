@@ -705,6 +705,32 @@ describe('GuardianHttpClient', () => {
       );
     });
 
+    it('signs the check tagged as CheckDeltaProposal, and creation untagged', async () => {
+      client.setSigner(mockSigner);
+      const signRequest = vi.mocked(mockSigner.signRequest!);
+      signRequest.mockClear();
+      mockFetch
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ allowed: true, complete: true }) })
+        .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+      const request = {
+        accountId,
+        nonce: 1,
+        deltaPayload: { txSummary: { data: 'base64summary' }, signatures: [] },
+      };
+
+      await client.checkDeltaProposal(request);
+      await client.pushDeltaProposal(request).catch(() => undefined);
+
+      const body = {
+        account_id: accountId,
+        nonce: 1,
+        delta_payload: { tx_summary: { data: 'base64summary' }, signatures: [] },
+      };
+      const [check, create] = signRequest.mock.calls.map((call) => call[2].toBytes());
+      expect(check).toEqual(RequestAuthPayload.forOperation('CheckDeltaProposal', body).toBytes());
+      expect(create).toEqual(RequestAuthPayload.fromRequest(body).toBytes());
+    });
+
     it('surfaces a policy refusal from the check as the creation error', async () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({

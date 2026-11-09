@@ -657,7 +657,7 @@ export class GuardianHttpClient {
    */
   async checkDeltaProposal(request: DeltaProposalRequest): Promise<CheckProposalResult> {
     const serverRequest = toServerDeltaProposalRequest(request);
-    const response = await this.fetchAuthenticated('/delta/proposal/check', {
+    const response = await this.fetchSigned('/delta/proposal/check', {
       method: 'POST',
       body: JSON.stringify(serverRequest),
     }, request.accountId, RequestAuthPayload.forOperation('CheckDeltaProposal', serverRequest), SessionOperation.CheckDeltaProposal);
