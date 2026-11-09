@@ -2241,6 +2241,141 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
     );
   });
 
+  it('lists module instances, decoding runtime state and undeclared instances', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        catalog_hash: '0xcafe',
+        params_version: 7,
+        modules: [INSTANCE],
+        undeclared: [{ module_id: 'retired', enabled: false, params: {} }],
+      }),
+    );
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const catalog = await client.listModules();
+    expect(catalog.catalogHash).toBe('0xcafe');
+    expect(catalog.paramsVersion).toBe(7);
+    expect(catalog.modules[0]).toMatchObject({
+      moduleId: 'caps',
+      scope: 'all',
+      circuit: 'closed',
+      operatorCanDisable: true,
+      params: { max_amount_per_tx: { '0xaa': '5' } },
+    });
+    expect(catalog.undeclared).toEqual([{ moduleId: 'retired', enabled: false, params: {} }]);
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://guardian.example/dashboard/modules',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('refuses a module instance with an unknown circuit state or scope', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    for (const broken of [{ circuit: 'ajar' }, { scope: 'sometimes' }]) {
+      mockFetch.mockResolvedValueOnce(
+        okJson({ catalog_hash: '0x', params_version: 0, modules: [{ ...INSTANCE, ...broken }], undeclared: [] }),
+      );
+      await expect(client.listModules()).rejects.toThrow(/unknown value/);
+    }
+  });
+
+  it('reads and writes an account module set', async () => {
+    const view = {
+      account_id: 'acc-1',
+      modules: [
+        { module_id: 'caps', scope: 'all', enabled: true, orphaned: false, global_params: {}, account_layer: { cap: 1 } },
+        { module_id: 'screening', scope: 'default', enabled: true, orphaned: false, params: { list: 'eu' } },
+        { module_id: 'retired', scope: 'assigned', enabled: false, orphaned: true, params: {} },
+      ],
+    };
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    const modules = await client.getAccountModules('acc-1');
+    expect(modules.modules.map((entry) => [entry.moduleId, entry.scope, entry.orphaned])).toEqual([
+      ['caps', 'all', false],
+      ['screening', 'default', false],
+      ['retired', 'assigned', true],
+    ]);
+    expect(modules.modules[0].accountLayer).toEqual({ cap: 1 });
+    expect(modules.modules[1].globalParams).toBeNull();
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    await client.setAccountModules('acc-1', [{ moduleId: 'screening', params: { list: 'eu' } }], 'OP-1');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/accounts/acc-1/modules',
+      expect.objectContaining({
+        method: 'PUT',
+        body: JSON.stringify({ modules: [{ module_id: 'screening', params: { list: 'eu' } }], reason: 'OP-1' }),
+      }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    await client.setAccountModuleLayer('acc-1', 'caps', { cap: 1 }, 'OP-2');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/accounts/acc-1/modules/caps/params',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ params: { cap: 1 }, reason: 'OP-2' }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson(view));
+    await client.removeAccountModuleLayer('acc-1', 'caps', 'OP-3');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/accounts/acc-1/modules/caps/params',
+      expect.objectContaining({ method: 'DELETE', body: JSON.stringify({ reason: 'OP-3' }) }),
+    );
+  });
+
+  it('writes global params, switches instances and pages the history', async () => {
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+
+    mockFetch.mockResolvedValueOnce(okJson(INSTANCE));
+    await client.setModuleGlobalParams('caps', { max_amount_per_tx: {} }, 'OP-4');
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/modules/caps/params',
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ params: { max_amount_per_tx: {} }, reason: 'OP-4' }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson({ ...INSTANCE, enabled: false }));
+    expect((await client.disableModule('caps', 'OP-5')).enabled).toBe(false);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/modules/caps/disable',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ reason: 'OP-5' }) }),
+    );
+
+    mockFetch.mockResolvedValueOnce(okJson(INSTANCE));
+    expect((await client.enableModule('caps', 'OP-6')).enabled).toBe(true);
+
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        module_id: 'caps',
+        entries: [
+          { version: 9, account_id: 'acc-1', previous: null, new: { cap: 1 }, operator: '0xop', reason: 'OP-2', at: 't9' },
+          { version: 8, previous: { a: 1 }, new: { a: 2 }, operator: '0xop', reason: 'OP-1', at: 't8' },
+        ],
+      }),
+    );
+    const history = await client.getModuleParamsHistory('caps', { before: 10, limit: 2 });
+    expect(history.entries.map((entry) => [entry.version, entry.accountId, entry.previous])).toEqual([
+      [9, 'acc-1', null],
+      [8, null, { a: 1 }],
+    ]);
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      'https://guardian.example/dashboard/modules/caps/params/history?before=10&limit=2',
+      expect.objectContaining({ method: 'GET' }),
+    );
+  });
+
+  it('surfaces a refused disable as an HTTP error', async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      statusText: 'Conflict',
+      text: async () =>
+        JSON.stringify({ code: 'GUARDIAN_MODULE_NOT_DISABLEABLE', message: 'protected', meta: { retryable: false } }),
+    });
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    await expect(client.disableModule('vendor', 'OP-7')).rejects.toMatchObject({ status: 409 });
+  });
+
   it('parses a successful pauseAccount response', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({
@@ -2588,6 +2723,26 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
     expect(err.data).toBeNull();
   });
 });
+
+const INSTANCE = {
+        module_id: 'caps',
+        kind: 'basic-policy',
+        scope: 'all',
+        hooks: ['before_transaction_approved'],
+        enabled: true,
+        catalog_enabled: true,
+        enabled_drift: false,
+        operator_can_disable: true,
+        params: { max_amount_per_tx: { '0xaa': '5' } },
+        params_drift: false,
+        file_managed_params: false,
+        build: 'basic-policy 0.19.0',
+        disclosure: 'params',
+        description: 'At most 5 per transaction',
+        client_reason: 'full',
+        dry_run: true,
+        circuit: 'closed',
+      };
 
 function okJson(payload: unknown) {
   return {

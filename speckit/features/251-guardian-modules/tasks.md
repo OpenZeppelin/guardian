@@ -146,7 +146,7 @@
 ### Tests for User Story 5
 
 - [X] T037 [P] [US5] `default` copy tests in `crates/server/src/services/configure_account.rs`: the copy carries the evaluated params and is written with the claim on Postgres; on the filesystem it replaces an earlier unclaimed attempt's copy; an unfinished claim with no assignment history repeats it, one an operator emptied does not
-- [ ] T038 [P] [US5] Operator client tests in `packages/guardian-operator-client/src/` for every module route, including permission errors for `modules:disable` holders
+- [X] T038 [P] [US5] Operator client tests in `packages/guardian-operator-client/src/` for every module route, including permission errors for `modules:disable` holders
 
 ### Implementation for User Story 5
 
@@ -155,9 +155,9 @@
 - [X] T041 [US5] `params_drift` against `seeded_params`, `GUARDIAN_MODULE_PARAMS_MAX_BYTES` on every params write, and paginated history (`?before=&limit=`) in `crates/server/src/modules/admin.rs`, `store.rs` and `postgres_store.rs` (P0 T090)
 - [X] T042 [US5] `orphaned` on account view rows naming an instance the catalog no longer declares (skipped at evaluation, counted at startup) and an `undeclared` list of such stored instances in `GET /dashboard/modules` (contract revised from a per-instance `declared` flag) in `crates/server/src/modules/admin.rs`
 - [X] T043 [US5] Dropped: RFC 0002 section 3.5 ("Parameter migration") has account layers and assignments migrate when they are next written, and requires modules to keep accepting their previous shapes until then; only global params migrate at startup and before enabling, which the prototype does (P0 T073)
-- [ ] T044 [US5] Module routes in `packages/guardian-operator-client/src/` (list, account modules read and replace, global params, account layer set and delete, history, enable, disable) with types matching `speckit/features/251-guardian-modules/contracts/operator-modules-api.md`, and its README
+- [X] T044 [US5] Module routes in `packages/guardian-operator-client/src/` (list, account modules read and replace, global params, account layer set and delete, history, enable, disable) with types matching `speckit/features/251-guardian-modules/contracts/operator-modules-api.md`, and its README
 - [X] T045 [US5] OpenAPI entries for the `/dashboard/modules` and account module routes (`utoipa` annotations in `crates/server/src/api/dashboard_modules.rs`), regenerated into `docs/openapi-dashboard.json`
-- [ ] T046 [US5] Smoke the operator routes through `examples/operator-smoke-web` with the `smoke-test-operator-dashboard` skill, and document the routes and permissions in `docs/DASHBOARD.md` ("Policy modules")
+- [X] T046 [US5] Document the routes, permissions, limits, `undeclared`, `orphaned` and history paging in `docs/DASHBOARD.md` ("Policy modules"); the browser smoke of these routes through `examples/operator-smoke-web` runs with the other smokes in T058
 
 **Checkpoint**: US5 acceptance scenarios 1 to 16 pass and SC-009, SC-012 hold.
 
@@ -194,7 +194,7 @@
 - [ ] T055 [P] Protocol spec coverage: module error codes and `meta` on proposal creation, push and registration, `GET /policies` and `POST /delta/proposal/check` in `spec/api.md`, and the gate points in the push, proposal and registration processes of `spec/processes.md`
 - [ ] T056 [P] Client READMEs for module errors and `moduleRefusal()` / `module_refusal()`: `crates/client/README.md`, `packages/guardian-client/README.md`, `crates/miden-multisig-client/README.md`, `packages/miden-multisig-client/README.md`
 - [ ] T057 Rust and TypeScript parity fixture: one shared JSON fixture of module error bodies under `packages/guardian-client/src/` (or the repo's existing shared fixture location) driving both `crates/client` and `packages/guardian-client` tests, so SC-010 is checked by the same cases
-- [ ] T058 End-to-end smokes with a catalog: `smoke-test-rust-multisig-sdk` and `smoke-test-ts-multisig-sdk` skills, refusal at creation, push and registration, and `examples/demo` and `examples/web` with and without a catalog (quickstart section 5)
+- [ ] T058 End-to-end smokes with a catalog: `smoke-test-rust-multisig-sdk` and `smoke-test-ts-multisig-sdk` skills, refusal at creation, push and registration, and `examples/demo` and `examples/web` with and without a catalog (quickstart section 5); and the operator module routes, including `modules:disable` permission errors, through `examples/operator-smoke-web` with the `smoke-test-operator-dashboard` skill
 - [ ] T059 Quickstart walk-through against a local node with the filesystem backend and the latency A/B (zero, one in-process, one remote module), results in `speckit/features/251-guardian-modules/research.md` (P0 T033; SC-001, SC-006)
 - [ ] T060 SC-004 run: enable `basic-policy` on all accounts with the official image and the guides only, timed, gaps fixed in `docs/guides/policy-modules/`
 - [ ] T061 Re-check the TLA+ models whose fingerprints the modules work moved (`verify-auth-replay`, `verify-candidate-queue`, `verify-client-sync`, `verify-guardian-switch`, `verify-module-counting`, `verify-multisig-push-gate`, `verify-proposal-lifecycle` under `.agents/skills/`) with each `check.sh`, then `--accept-drift` once the model still mirrors the code

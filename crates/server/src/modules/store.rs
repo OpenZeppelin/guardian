@@ -58,9 +58,9 @@ pub struct HistoryEntry {
     pub module_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
-    #[schema(value_type = Object)]
+    #[schema(value_type = Option<Object>)]
     pub previous: serde_json::Value,
-    #[schema(value_type = Object)]
+    #[schema(value_type = Option<Object>)]
     pub new: serde_json::Value,
     pub operator: String,
     pub reason: String,

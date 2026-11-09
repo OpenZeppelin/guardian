@@ -840,3 +840,99 @@ export interface DashboardInfoResponse {
   inFlightProposalCount: number;
   degradedAggregates: string[];
 }
+
+// --- Policy modules --------------------------------------------------------
+
+export type ModuleScope = 'all' | 'default' | 'assigned';
+export type ModuleDisclosure = 'none' | 'summary' | 'params';
+export type ModuleClientReason = 'full' | 'generic';
+export type ModuleCircuit = 'closed' | 'open' | 'half_open';
+export type ModuleParams = Record<string, unknown>;
+
+/** One declared module instance with its runtime state on the answering replica. */
+export interface ModuleInstance {
+  moduleId: string;
+  kind: string;
+  scope: ModuleScope;
+  hooks: string[];
+  enabled: boolean;
+  catalogEnabled: boolean;
+  enabledDrift: boolean;
+  operatorCanDisable: boolean;
+  /** Current global params; secret references are shown unresolved. */
+  params: ModuleParams;
+  paramsDrift: boolean;
+  fileManagedParams: boolean;
+  /** `name version` from `describe` at startup; `null` when the startup checks failed. */
+  build: string | null;
+  disclosure: ModuleDisclosure;
+  description: string | null;
+  clientReason: ModuleClientReason;
+  dryRun: boolean;
+  circuit: ModuleCircuit;
+}
+
+/** A stored instance the catalog no longer declares: kept, never evaluated. */
+export interface UndeclaredModuleInstance {
+  moduleId: string;
+  enabled: boolean;
+  params: ModuleParams;
+}
+
+export interface ModuleCatalog {
+  catalogHash: string;
+  paramsVersion: number;
+  modules: ModuleInstance[];
+  undeclared: UndeclaredModuleInstance[];
+}
+
+/** One module in an account's effective set, in evaluation order. */
+export interface AccountModuleEntry {
+  moduleId: string;
+  scope: ModuleScope;
+  enabled: boolean;
+  /** The entry names an instance the catalog no longer declares; it is skipped. */
+  orphaned: boolean;
+  /** `scope = all`: the instance's global params. */
+  globalParams: ModuleParams | null;
+  /** `scope = all`: this account's layer, when set. */
+  accountLayer: ModuleParams | null;
+  /** `default` or `assigned`: this account's own params. */
+  params: ModuleParams | null;
+}
+
+export interface AccountModules {
+  accountId: string;
+  modules: AccountModuleEntry[];
+}
+
+export interface ModuleAssignment {
+  moduleId: string;
+  params: ModuleParams;
+}
+
+export interface ModuleParamsHistoryEntry {
+  version: number;
+  /** The account a per-account change applied to; `null` for a global change. */
+  accountId: string | null;
+  /** `null` when the module was not assigned before the change. */
+  previous: ModuleParams | null;
+  /** `null` when the change removed the module or the layer. */
+  new: ModuleParams | null;
+  operator: string;
+  reason: string;
+  at: string;
+}
+
+export interface ModuleParamsHistory {
+  moduleId: string;
+  /** Newest first. */
+  entries: ModuleParamsHistoryEntry[];
+}
+
+export interface ModuleParamsHistoryOptions {
+  /** Only changes with a version below this one, to page backwards. */
+  before?: number;
+  /** At most this many entries (1 to 1,000; the server defaults to 100). */
+  limit?: number;
+}

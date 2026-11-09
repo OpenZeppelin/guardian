@@ -290,6 +290,30 @@ for (const entry of page.items) {
 }
 ```
 
+### Policy Modules
+
+Manage the policy module instances the Guardian's catalog declares. Every
+write takes a reason and is validated by the module before it is stored.
+
+```ts
+const catalog = await client.listModules();
+// catalog.modules: [{ moduleId, scope, enabled, circuit, params, paramsDrift, ... }]
+// catalog.undeclared: stored instances the catalog no longer declares
+
+await client.setModuleGlobalParams('blocklist', { recipient_denylist: ['0xaaa'] }, 'OP-90'); // policies:write_global
+await client.setAccountModuleLayer(accountId, 'blocklist', { recipient_denylist: ['0xccc'] }, 'OP-91'); // policies:write
+await client.removeAccountModuleLayer(accountId, 'blocklist', 'OP-92');
+await client.setAccountModules(accountId, [{ moduleId: 'treasury-allowlist', params: {} }], 'OP-93');
+await client.disableModule('risk-scorer', 'incident'); // policies:write or modules:disable
+await client.enableModule('risk-scorer', 'recovered'); // policies:write
+
+const modules = await client.getAccountModules(accountId); // evaluation order; orphaned entries are skipped
+const page = await client.getModuleParamsHistory('blocklist', { limit: 50 }); // newest first
+const older = await client.getModuleParamsHistory('blocklist', {
+  before: page.entries[page.entries.length - 1].version,
+});
+```
+
 ### Logout
 
 ```typescript

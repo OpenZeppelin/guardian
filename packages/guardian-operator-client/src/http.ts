@@ -17,6 +17,20 @@ import type {
   DashboardDeltaNoteCounts,
   DashboardDeltaNoteTag,
   DashboardDeltaProposalMetadata,
+  AccountModuleEntry,
+  AccountModules,
+  ModuleAssignment,
+  ModuleCatalog,
+  ModuleCircuit,
+  ModuleClientReason,
+  ModuleDisclosure,
+  ModuleInstance,
+  ModuleParams,
+  ModuleParamsHistory,
+  ModuleParamsHistoryEntry,
+  ModuleParamsHistoryOptions,
+  ModuleScope,
+  UndeclaredModuleInstance,
   DashboardDeltaStatus,
   DashboardDeltaStorageChange,
   DashboardDeltaVaultChange,
@@ -652,6 +666,109 @@ export class GuardianOperatorHttpClient {
     const url = new URL('dashboard/proposals', this.baseUrl);
     applyPaginationParams(url, options);
     return this.request(url, { method: 'GET' }, parseGlobalProposalsPage);
+  }
+
+  /** Every declared module instance with its runtime state, and stored instances the catalog
+   * no longer declares. Requires `dashboard:read`. */
+  async listModules(): Promise<ModuleCatalog> {
+    return this.request(new URL('dashboard/modules', this.baseUrl), { method: 'GET' }, parseModuleCatalog);
+  }
+
+  /** The account's effective module set, in evaluation order. Requires `dashboard:read`. */
+  async getAccountModules(accountId: string): Promise<AccountModules> {
+    return this.request(
+      new URL(`dashboard/accounts/${encodeURIComponent(accountId)}/modules`, this.baseUrl),
+      { method: 'GET' },
+      parseAccountModules,
+    );
+  }
+
+  /** The instance's params changes, global and per account, newest first. Requires
+   * `dashboard:read`. */
+  async getModuleParamsHistory(
+    moduleId: string,
+    options: ModuleParamsHistoryOptions = {},
+  ): Promise<ModuleParamsHistory> {
+    const url = new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/params/history`, this.baseUrl);
+    if (options.before !== undefined) url.searchParams.set('before', String(options.before));
+    if (options.limit !== undefined) url.searchParams.set('limit', String(options.limit));
+    return this.request(url, { method: 'GET' }, parseModuleParamsHistory);
+  }
+
+  /** Replaces an instance's global params, which every account shares. Requires
+   * `policies:write_global`. */
+  async setModuleGlobalParams(moduleId: string, params: ModuleParams, reason: string): Promise<ModuleInstance> {
+    return this.request(
+      new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/params`, this.baseUrl),
+      { method: 'PUT', body: JSON.stringify({ params, reason }) },
+      (value) => parseModuleInstance(value, 'module instance'),
+    );
+  }
+
+  /** Enables an instance after re-running its startup checks. Requires `policies:write`. */
+  async enableModule(moduleId: string, reason: string): Promise<ModuleInstance> {
+    return this.request(
+      new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/enable`, this.baseUrl),
+      { method: 'POST', body: JSON.stringify({ reason }) },
+      (value) => parseModuleInstance(value, 'module instance'),
+    );
+  }
+
+  /** Disables an instance the catalog marks `operator_can_disable`. Requires
+   * `policies:write` or `modules:disable`. */
+  async disableModule(moduleId: string, reason: string): Promise<ModuleInstance> {
+    return this.request(
+      new URL(`dashboard/modules/${encodeURIComponent(moduleId)}/disable`, this.baseUrl),
+      { method: 'POST', body: JSON.stringify({ reason }) },
+      (value) => parseModuleInstance(value, 'module instance'),
+    );
+  }
+
+  /** Sets this account's layer on a `scope = all` instance, which can only add restrictions.
+   * Requires `policies:write`. */
+  async setAccountModuleLayer(
+    accountId: string,
+    moduleId: string,
+    params: ModuleParams,
+    reason: string,
+  ): Promise<AccountModules> {
+    return this.request(
+      this.accountModuleParamsUrl(accountId, moduleId),
+      { method: 'PUT', body: JSON.stringify({ params, reason }) },
+      parseAccountModules,
+    );
+  }
+
+  /** Removes this account's layer on a `scope = all` instance. Requires `policies:write`. */
+  async removeAccountModuleLayer(accountId: string, moduleId: string, reason: string): Promise<AccountModules> {
+    return this.request(
+      this.accountModuleParamsUrl(accountId, moduleId),
+      { method: 'DELETE', body: JSON.stringify({ reason }) },
+      parseAccountModules,
+    );
+  }
+
+  /** Replaces the account's `default` and `assigned` modules with `modules`, in evaluation
+   * order. Requires `policies:write`. */
+  async setAccountModules(accountId: string, modules: ModuleAssignment[], reason: string): Promise<AccountModules> {
+    return this.request(
+      new URL(`dashboard/accounts/${encodeURIComponent(accountId)}/modules`, this.baseUrl),
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          modules: modules.map((module) => ({ module_id: module.moduleId, params: module.params })),
+          reason,
+        }),
+      },
+      parseAccountModules,
+    );
+  }
+
+  private accountModuleParamsUrl(accountId: string, moduleId: string): URL {
+    return new URL(
+      `dashboard/accounts/${encodeURIComponent(accountId)}/modules/${encodeURIComponent(moduleId)}/params`,
+      this.baseUrl,
+    );
   }
 
   private async request<T>(
@@ -2384,4 +2501,127 @@ function parseDeltaStatus(
     context,
     `expected status to be "candidate" / "canonical" / "retained" / "discarded", got ${JSON.stringify(value)}`,
   );
+}
+
+function requireOneOf<T extends string>(
+  record: Record<string, unknown>,
+  key: string,
+  allowed: readonly T[],
+  context: string,
+): T {
+  const value = requireString(record, key, context);
+  if (!(allowed as readonly string[]).includes(value)) {
+    throw new GuardianOperatorContractError(context, `field "${key}" has unknown value "${value}"`);
+  }
+  return value as T;
+}
+
+function requireParams(record: Record<string, unknown>, key: string, context: string): ModuleParams {
+  return asRecord(requireField(record, key, context), `${context}.${key}`);
+}
+
+function optionalParams(record: Record<string, unknown>, key: string, context: string): ModuleParams | null {
+  const value = record[key];
+  return value === undefined || value === null ? null : asRecord(value, `${context}.${key}`);
+}
+
+function nullableParams(record: Record<string, unknown>, key: string, context: string): ModuleParams | null {
+  const value = requireField(record, key, context);
+  return value === null ? null : asRecord(value, `${context}.${key}`);
+}
+
+function optionalString(record: Record<string, unknown>, key: string, context: string): string | null {
+  const value = record[key];
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') {
+    throw new GuardianOperatorContractError(context, `field "${key}" must be a string`);
+  }
+  return value;
+}
+
+const MODULE_SCOPES = ['all', 'default', 'assigned'] as const;
+
+function parseModuleInstance(value: unknown, context: string): ModuleInstance {
+  const record = asRecord(value, context);
+  return {
+    moduleId: requireString(record, 'module_id', context),
+    kind: requireString(record, 'kind', context),
+    scope: requireOneOf(record, 'scope', MODULE_SCOPES, context),
+    hooks: requireStringArray(record, 'hooks', context),
+    enabled: requireBoolean(record, 'enabled', context),
+    catalogEnabled: requireBoolean(record, 'catalog_enabled', context),
+    enabledDrift: requireBoolean(record, 'enabled_drift', context),
+    operatorCanDisable: requireBoolean(record, 'operator_can_disable', context),
+    params: requireParams(record, 'params', context),
+    paramsDrift: requireBoolean(record, 'params_drift', context),
+    fileManagedParams: requireBoolean(record, 'file_managed_params', context),
+    build: optionalString(record, 'build', context),
+    disclosure: requireOneOf(record, 'disclosure', ['none', 'summary', 'params'] as const, context),
+    description: optionalString(record, 'description', context),
+    clientReason: requireOneOf(record, 'client_reason', ['full', 'generic'] as const, context),
+    dryRun: requireBoolean(record, 'dry_run', context),
+    circuit: requireOneOf(record, 'circuit', ['closed', 'open', 'half_open'] as const, context),
+  };
+}
+
+function parseModuleCatalog(value: unknown): ModuleCatalog {
+  const context = 'module catalog';
+  const record = asRecord(value, context);
+  return {
+    catalogHash: requireString(record, 'catalog_hash', context),
+    paramsVersion: requireInteger(record, 'params_version', context),
+    modules: requireArray(record, 'modules', context).map((entry) =>
+      parseModuleInstance(entry, `${context}.modules`),
+    ),
+    undeclared: requireArray(record, 'undeclared', context).map((entry) => {
+      const item = asRecord(entry, `${context}.undeclared`);
+      return {
+        moduleId: requireString(item, 'module_id', `${context}.undeclared`),
+        enabled: requireBoolean(item, 'enabled', `${context}.undeclared`),
+        params: requireParams(item, 'params', `${context}.undeclared`),
+      };
+    }),
+  };
+}
+
+function parseAccountModules(value: unknown): AccountModules {
+  const context = 'account modules';
+  const record = asRecord(value, context);
+  return {
+    accountId: requireString(record, 'account_id', context),
+    modules: requireArray(record, 'modules', context).map((entry) => {
+      const item = asRecord(entry, `${context}.modules`);
+      const itemContext = `${context}.modules`;
+      return {
+        moduleId: requireString(item, 'module_id', itemContext),
+        scope: requireOneOf(item, 'scope', MODULE_SCOPES, itemContext),
+        enabled: requireBoolean(item, 'enabled', itemContext),
+        orphaned: requireBoolean(item, 'orphaned', itemContext),
+        globalParams: optionalParams(item, 'global_params', itemContext),
+        accountLayer: optionalParams(item, 'account_layer', itemContext),
+        params: optionalParams(item, 'params', itemContext),
+      };
+    }),
+  };
+}
+
+function parseModuleParamsHistory(value: unknown): ModuleParamsHistory {
+  const context = 'module params history';
+  const record = asRecord(value, context);
+  return {
+    moduleId: requireString(record, 'module_id', context),
+    entries: requireArray(record, 'entries', context).map((entry) => {
+      const item = asRecord(entry, `${context}.entries`);
+      const itemContext = `${context}.entries`;
+      return {
+        version: requireInteger(item, 'version', itemContext),
+        accountId: optionalString(item, 'account_id', itemContext),
+        previous: nullableParams(item, 'previous', itemContext),
+        new: nullableParams(item, 'new', itemContext),
+        operator: requireString(item, 'operator', itemContext),
+        reason: requireString(item, 'reason', itemContext),
+        at: requireString(item, 'at', itemContext),
+      };
+    }),
+  };
 }

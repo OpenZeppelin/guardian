@@ -360,7 +360,7 @@ the parser rejects both.
 
 ## Policy modules
 
-Prototype (RFC 0002, issue #251); not in a release yet. The endpoints
+M2a (RFC 0002, issue #251); not in a release yet. The endpoints
 manage the module instances the catalog file declares
 ([`GUARDIAN_MODULES_CONFIG`](./CONFIGURATION.md#runtime-policy-modules));
 they cannot add, remove or reconfigure an instance. Every write takes a
@@ -371,7 +371,7 @@ in the params history and the audit log. A walkthrough is in the
 | Endpoint | Permission | Body |
 |---|---|---|
 | `GET /dashboard/modules` | `dashboard:read` | |
-| `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | |
+| `GET /dashboard/modules/{module_id}/params/history?before=<version>&limit=<n>` | `dashboard:read` | |
 | `GET /dashboard/accounts/{account_id}/modules` | `dashboard:read` | |
 | `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | `{"params": {...}, "reason": "..."}` |
 | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "..."}` |
@@ -382,8 +382,21 @@ in the params history and the audit log. A walkthrough is in the
 
 On a `scope = all` instance the per-account params are a layer evaluated
 after the global params, and both must allow, so a layer only adds
-restrictions. Disabling an instance the catalog does not mark
+restrictions. A `scope = default` instance is copied into an account's
+assignment when it first registers and is then replaced or removed with the
+account's other assignments; a `scope = assigned` one applies only where it
+is assigned. Disabling an instance the catalog does not mark
 `operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
+
+Writes are refused with `400 invalid_input` when the params exceed
+`GUARDIAN_MODULE_PARAMS_MAX_BYTES`, or when the account's modules could exceed
+the evaluation budget afterwards (each `all` instance, again for its layer,
+plus each assigned one). `GET /dashboard/modules` reports each instance's
+`circuit` on the answering replica, `params_drift` against the params seeded
+from the catalog file, and under `undeclared` the stored instances the catalog
+no longer declares. An account's entries naming such an instance are marked
+`orphaned` and skipped. The history is newest first, at most 100 entries per
+page by default (1,000 at most), and `before` pages backwards by version.
 
 ## Account pausing
 

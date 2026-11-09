@@ -18,6 +18,20 @@ export {
 export type { OperatorPermission } from './permissions.js';
 
 export type {
+  AccountModuleEntry,
+  AccountModules,
+  ModuleAssignment,
+  ModuleCatalog,
+  ModuleCircuit,
+  ModuleClientReason,
+  ModuleDisclosure,
+  ModuleInstance,
+  ModuleParams,
+  ModuleParamsHistory,
+  ModuleParamsHistoryEntry,
+  ModuleParamsHistoryOptions,
+  ModuleScope,
+  UndeclaredModuleInstance,
   AccountPausedErrorDetails,
   AccountReleasedErrorDetails,
   AccountStatus,

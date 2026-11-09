@@ -4191,8 +4191,6 @@
         "required": [
           "version",
           "module_id",
-          "previous",
-          "new",
           "operator",
           "reason",
           "at"
@@ -4211,13 +4209,19 @@
             "type": "string"
           },
           "new": {
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "operator": {
             "type": "string"
           },
           "previous": {
-            "type": "object"
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "reason": {
             "type": "string"
