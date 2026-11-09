@@ -75,7 +75,7 @@ does not understand.
 The [remote](./remote.md) page explains the transport.
 
 ```sh
-openssl rand -hex 32 > .guardian/note-policy.token
+(umask 077; openssl rand -hex 32 > .guardian/note-policy.token)
 cargo run -p guardian-module-sdk --example note-policy-serve -- \
   --listen 127.0.0.1:7444 --instance note-policy .guardian/note-policy.token
 cp docs/guides/policy-modules/custom.toml .guardian/

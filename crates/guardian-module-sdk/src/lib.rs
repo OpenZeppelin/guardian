@@ -104,11 +104,13 @@ pub struct ModuleInstanceConfig {
     pub auth_token: Option<secrecy::SecretString>,
     pub tls: Option<ModuleTls>,
     pub timeout: std::time::Duration,
+    /// The catalog params, with any `$secret` references unresolved.
     pub params: serde_json::Value,
+    /// The values of the `$secret` references in `params`, by secret name. Only in-process
+    /// instances receive them; a remote module holds its own credentials.
+    pub secrets: std::collections::BTreeMap<String, secrecy::SecretString>,
 }
 
-/// TLS settings of a remote module: a private CA (the system roots when absent) and an
-/// optional client identity for mutual TLS.
 impl ModuleInstanceConfig {
     pub fn new(
         id: impl Into<String>,
@@ -124,6 +126,7 @@ impl ModuleInstanceConfig {
             tls: None,
             timeout,
             params,
+            secrets: Default::default(),
         }
     }
 
@@ -141,8 +144,23 @@ impl ModuleInstanceConfig {
         self.tls = tls;
         self
     }
+
+    pub fn with_secrets(
+        mut self,
+        secrets: std::collections::BTreeMap<String, secrecy::SecretString>,
+    ) -> Self {
+        self.secrets = secrets;
+        self
+    }
+
+    /// The value of the `{"$secret": name}` reference in this instance's params.
+    pub fn secret(&self, name: &str) -> Option<&secrecy::SecretString> {
+        self.secrets.get(name)
+    }
 }
 
+/// TLS settings of a remote module: a private CA (the system roots when absent) and an
+/// optional client identity for mutual TLS.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 pub struct ModuleTls {
@@ -317,10 +335,16 @@ mod tests {
             }),
             timeout: std::time::Duration::from_millis(10),
             params: serde_json::json!({}),
+            secrets: [(
+                "k".to_string(),
+                secrecy::SecretString::from("very-secret-param"),
+            )]
+            .into(),
         };
         let debug = format!("{config:?}");
         assert!(!debug.contains("very-secret-token"));
         assert!(!debug.contains("very-secret-key"));
+        assert!(!debug.contains("very-secret-param"));
     }
 
     #[test]

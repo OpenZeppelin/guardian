@@ -1,5 +1,5 @@
 # Remote module: the same basic-policy served by a separate process over gRPC.
-# Copy to .guardian/remote.toml, put the bearer token in .guardian/caps.token,
+# Copy to .guardian/remote.toml, put the bearer token in .guardian/caps.token (mode 0600),
 # and start the module before the Guardian (see remote.md).
 
 [[module]]
@@ -22,5 +22,5 @@ hooks = ["before_proposal_created", "before_transaction_approved"]
 timeout_ms = 200
 on_error = "deny"
 operator_can_disable = true
-auth = { token_file = "caps.token" }
+auth = { token_secret = "caps.token" }
 params = { max_amount_per_tx = { "0xREPLACE_WITH_FAUCET_ID" = "3" } }

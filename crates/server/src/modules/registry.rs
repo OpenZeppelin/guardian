@@ -125,6 +125,7 @@ impl Registry {
             .factories
             .get(&config.kind)
             .ok_or_else(|| format!("unknown kind {}", config.kind))?;
+        let credentials = config.credentials.clone()?;
         let instance = ModuleInstanceConfig::new(
             config.id.clone(),
             config.kind.clone(),
@@ -132,8 +133,9 @@ impl Registry {
             config.params.clone(),
         )
         .with_endpoint(config.endpoint.clone())
-        .with_auth_token(config.auth_token.clone())
-        .with_tls(config.tls.clone());
+        .with_auth_token(credentials.auth_token)
+        .with_tls(credentials.tls)
+        .with_secrets(credentials.params);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| factory.create(&instance)))
             .map_err(|_| "module factory panicked".to_string())?
             .map_err(|e| e.to_string())
@@ -374,19 +376,13 @@ enabled = ENABLED
 
     #[tokio::test]
     async fn the_guide_catalogs_load() {
-        let dir = std::env::temp_dir().join(format!("guide_{:016x}", rand::random::<u64>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        for token in ["caps.token", "note-policy.token"] {
-            std::fs::write(dir.join(token), "t").unwrap();
-        }
         for text in [
             include_str!("../../../../docs/guides/policy-modules/remote.toml"),
             include_str!("../../../../docs/guides/policy-modules/custom.toml"),
             include_str!("../../../../docs/guides/policy-modules/custom-in-process.toml"),
         ] {
-            Catalog::parse(text, Some(&dir)).expect("guide catalog parses");
+            Catalog::parse(text, None).expect("guide catalog parses");
         }
-        std::fs::remove_dir_all(dir).ok();
         let built_in = include_str!("../../../../docs/guides/policy-modules/built-in.toml");
         let instances = Registry::first_party()
             .instantiate(&catalog(built_in), &HashMap::new())

@@ -1,6 +1,6 @@
 //! The module catalog: instances declared in the file at `GUARDIAN_MODULES_CONFIG`.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -66,15 +66,54 @@ impl HookName {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthEntry {
-    token_file: PathBuf,
+    token_secret: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TlsEntry {
     ca_file: Option<PathBuf>,
-    client_cert_file: Option<PathBuf>,
-    client_key_file: Option<PathBuf>,
+    client_cert_secret: Option<String>,
+    client_key_secret: Option<String>,
+}
+
+/// The secrets an instance names, resolved through the secrets backend before it is created.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecretRefs {
+    pub token: Option<String>,
+    pub tls: Option<TlsRefs>,
+    /// Names of the `$secret` references in the catalog params of an in-process instance.
+    pub params: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TlsRefs {
+    pub ca_file: Option<PathBuf>,
+    pub client_cert: Option<String>,
+    pub client_key: Option<String>,
+}
+
+impl SecretRefs {
+    pub fn is_empty(&self) -> bool {
+        self.token.is_none() && self.tls.is_none() && self.params.is_empty()
+    }
+
+    pub fn names_secrets(&self) -> bool {
+        self.token.is_some()
+            || !self.params.is_empty()
+            || self
+                .tls
+                .as_ref()
+                .is_some_and(|tls| tls.client_cert.is_some())
+    }
+}
+
+/// What an instance's [`SecretRefs`] resolved to.
+#[derive(Debug, Clone, Default)]
+pub struct Credentials {
+    pub auth_token: Option<guardian_module_sdk::secrecy::SecretString>,
+    pub tls: Option<guardian_module_sdk::ModuleTls>,
+    pub params: BTreeMap<String, guardian_module_sdk::secrecy::SecretString>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -160,8 +199,10 @@ pub struct InstanceConfig {
     pub client_reason: ClientReason,
     /// Whether the dry-run check may call the instance.
     pub dry_run: bool,
-    pub auth_token: Option<guardian_module_sdk::secrecy::SecretString>,
-    pub tls: Option<guardian_module_sdk::ModuleTls>,
+    pub secrets: SecretRefs,
+    /// What `secrets` resolved to, or why they did not; an instance is created only from a
+    /// resolution, so a missing secret fails it like any other creation error.
+    pub credentials: Result<Credentials, String>,
     /// Seed for the instance's global params; operator-managed after the first start.
     pub params: serde_json::Value,
     /// Params holding secret references stay file-managed: the operator API cannot change them.
@@ -189,10 +230,56 @@ fn json_object(value: Option<toml::Value>, what: &str) -> Result<serde_json::Val
 pub(crate) fn contains_secret_reference(value: &serde_json::Value) -> bool {
     match value {
         serde_json::Value::Object(map) => {
-            map.contains_key("$secret") || map.values().any(contains_secret_reference)
+            map.contains_key(SECRET_KEY) || map.values().any(contains_secret_reference)
         }
         serde_json::Value::Array(items) => items.iter().any(contains_secret_reference),
         _ => false,
+    }
+}
+
+const SECRET_KEY: &str = "$secret";
+const SECRET_NAME_MAX_CHARS: usize = 512;
+
+/// A secrets backend name: what AWS Secrets Manager accepts, which the file provider reads as a
+/// path below its directory.
+pub(crate) fn check_secret_name(name: &str) -> Result<(), String> {
+    let valid = (1..=SECRET_NAME_MAX_CHARS).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_+=.@-".contains(&b));
+    if valid {
+        Ok(())
+    } else {
+        Err(format!(
+            "secret name {name:?} must be 1 to {SECRET_NAME_MAX_CHARS} characters of letters, digits and /_+=.@-"
+        ))
+    }
+}
+
+/// Collects the names of the `$secret` references in `value`; a reference is an object whose
+/// only key is `$secret`, with a secret name as its value.
+fn secret_references(
+    value: &serde_json::Value,
+    names: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Object(map) => match map.get(SECRET_KEY) {
+            Some(serde_json::Value::String(name)) if map.len() == 1 => {
+                check_secret_name(name)?;
+                names.insert(name.clone());
+                Ok(())
+            }
+            Some(_) => Err(format!(
+                "a secret reference is {{ \"{SECRET_KEY}\" = \"<name>\" }} and nothing else"
+            )),
+            None => map
+                .values()
+                .try_for_each(|value| secret_references(value, names)),
+        },
+        serde_json::Value::Array(items) => items
+            .iter()
+            .try_for_each(|value| secret_references(value, names)),
+        _ => Ok(()),
     }
 }
 
@@ -244,13 +331,13 @@ impl Catalog {
             let Some(endpoint) = &config.endpoint else {
                 continue;
             };
-            if Transport::of(endpoint, config.tls.is_some())? != Transport::Tls {
+            if Transport::of(endpoint, config.secrets.tls.is_some())? != Transport::Tls {
                 return Err(format!(
                     "module {}: plain text is not allowed in the prod stage",
                     config.id
                 ));
             }
-            if config.auth_token.is_none() {
+            if config.secrets.token.is_none() {
                 return Err(format!(
                     "module {}: auth is mandatory for remote modules in the prod stage",
                     config.id
@@ -360,56 +447,49 @@ impl Catalog {
                     "module {id}: disclosure = \"params\" would show cosigners the secret references in its params; use \"summary\" or \"none\""
                 ));
             }
-            let auth_token = entry
+            let mut param_secrets = BTreeSet::new();
+            secret_references(&params, &mut param_secrets)
+                .map_err(|e| format!("module {id} params: {e}"))?;
+            let token = entry
                 .auth
-                .map(|auth| {
-                    let path = match base_dir {
-                        Some(dir) if auth.token_file.is_relative() => dir.join(&auth.token_file),
-                        _ => auth.token_file.clone(),
-                    };
-                    std::fs::read_to_string(&path)
-                        .map(zeroize::Zeroizing::new)
-                        .map(|token| guardian_module_sdk::secrecy::SecretString::from(token.trim()))
-                        .map_err(|e| format!("module {id}: cannot read token file: {e}"))
-                })
-                .transpose()?;
-            let resolve = |path: &PathBuf| match base_dir {
-                Some(dir) if path.is_relative() => dir.join(path),
-                _ => path.clone(),
-            };
-            let read = |path: &PathBuf, what: &str| {
-                std::fs::read(resolve(path))
-                    .map_err(|e| format!("module {id}: cannot read {what}: {e}"))
-            };
+                .map(|auth| check_secret_name(&auth.token_secret).map(|()| auth.token_secret))
+                .transpose()
+                .map_err(|e| format!("module {id} auth: {e}"))?;
             let tls = entry
                 .tls
                 .map(|tls| {
-                    let client_identity = match (&tls.client_cert_file, &tls.client_key_file) {
-                        (Some(cert), Some(key)) => {
-                            let key = zeroize::Zeroizing::new(read(key, "client key")?);
-                            let key = String::from_utf8(key.to_vec())
-                                .map_err(|_| format!("module {id}: client key is not PEM"))?;
-                            Some(guardian_module_sdk::ClientIdentity::new(
-                                read(cert, "client certificate")?,
-                                guardian_module_sdk::secrecy::SecretString::from(key),
-                            ))
-                        }
-                        (None, None) => None,
-                        _ => {
-                            return Err(format!(
-                                "module {id}: client_cert_file and client_key_file go together"
-                            ));
-                        }
-                    };
-                    Ok(guardian_module_sdk::ModuleTls::new(
-                        tls.ca_file
-                            .as_ref()
-                            .map(|ca| read(ca, "CA file"))
-                            .transpose()?,
-                        client_identity,
-                    ))
+                    if tls.client_cert_secret.is_some() != tls.client_key_secret.is_some() {
+                        return Err(
+                            "client_cert_secret and client_key_secret go together".to_string()
+                        );
+                    }
+                    for name in [&tls.client_cert_secret, &tls.client_key_secret]
+                        .into_iter()
+                        .flatten()
+                    {
+                        check_secret_name(name)?;
+                    }
+                    Ok(TlsRefs {
+                        ca_file: tls.ca_file.map(|path| match base_dir {
+                            Some(dir) if path.is_relative() => dir.join(path),
+                            _ => path,
+                        }),
+                        client_cert: tls.client_cert_secret,
+                        client_key: tls.client_key_secret,
+                    })
                 })
-                .transpose()?;
+                .transpose()
+                .map_err(|e| format!("module {id} tls: {e}"))?;
+            let secrets = SecretRefs {
+                token,
+                tls,
+                params: param_secrets,
+            };
+            let credentials = if secrets.is_empty() {
+                Ok(Credentials::default())
+            } else {
+                Err("secrets not resolved".to_string())
+            };
             instances.push(InstanceConfig {
                 id,
                 kind: entry.kind,
@@ -425,8 +505,8 @@ impl Catalog {
                 description,
                 client_reason: entry.client_reason,
                 dry_run: entry.dry_run,
-                auth_token,
-                tls,
+                secrets,
+                credentials,
                 file_managed_params: contains_secret_reference(&params),
                 params,
             });
@@ -575,24 +655,32 @@ on_error = "allow"
     }
 
     #[test]
-    fn tokens_never_appear_in_debug_output() {
-        let dir = std::env::temp_dir().join(format!("modules_{:016x}", rand::random::<u64>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("token"), "very-secret-token\n").unwrap();
-        let text = r#"
-[[module]]
-id = "remote"
-kind = "grpc"
-endpoint = "grpc://127.0.0.1:7443"
-scope = "all"
-hooks = ["before_transaction_approved"]
-timeout_ms = 20
-auth = { token_file = "token" }
-"#;
-        let catalog = Catalog::parse(text, Some(&dir)).unwrap();
-        assert!(!format!("{catalog:?}").contains("very-secret-token"));
-        assert!(catalog.instances[0].auth_token.is_some());
-        std::fs::remove_dir_all(dir).ok();
+    fn credentials_are_secret_names_resolved_later() {
+        let text = remote(
+            "grpc://127.0.0.1:7443",
+            r#"auth = { token_secret = "guardian/modules/risk-token" }
+tls = { ca_file = "ca.pem", client_cert_secret = "risk-cert", client_key_secret = "risk-key" }"#,
+        );
+        let catalog = Catalog::parse(&text, Some(Path::new("/etc/guardian"))).unwrap();
+        let config = &catalog.instances[0];
+        assert_eq!(
+            config.secrets,
+            SecretRefs {
+                token: Some("guardian/modules/risk-token".into()),
+                tls: Some(TlsRefs {
+                    ca_file: Some(PathBuf::from("/etc/guardian/ca.pem")),
+                    client_cert: Some("risk-cert".into()),
+                    client_key: Some("risk-key".into()),
+                }),
+                params: BTreeSet::new(),
+            }
+        );
+        assert!(config.credentials.is_err());
+        let invalid = remote(
+            "grpc://127.0.0.1:7443",
+            r#"auth = { token_secret = "../token file" }"#,
+        );
+        assert!(parse(&invalid).unwrap_err().contains("secret name"));
     }
 
     fn remote(endpoint: &str, extra: &str) -> String {
@@ -637,26 +725,20 @@ timeout_ms = 20
 
     #[test]
     fn prod_requires_tls_and_a_token_for_remote_modules() {
-        let dir = std::env::temp_dir().join(format!("modules_{:016x}", rand::random::<u64>()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("token"), "t").unwrap();
-        let auth = r#"auth = { token_file = "token" }"#;
+        let auth = r#"auth = { token_secret = "token" }"#;
         let check = |endpoint: &str, extra: &str| {
-            Catalog::parse(&remote(endpoint, extra), Some(&dir))
-                .unwrap()
-                .check_production()
+            parse(&remote(endpoint, extra)).unwrap().check_production()
         };
         assert!(check("grpc://risk.internal:7443", auth).is_ok());
         assert!(check("grpc://risk.internal:7443", "").is_err());
         assert!(check("grpc+insecure://127.0.0.1:7443", auth).is_err());
-        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
     fn a_client_certificate_needs_its_key() {
         let text = remote(
             "grpc://risk.internal:7443",
-            r#"tls = { client_cert_file = "cert.pem" }"#,
+            r#"tls = { client_cert_secret = "cert" }"#,
         );
         assert!(parse(&text).unwrap_err().contains("go together"));
     }

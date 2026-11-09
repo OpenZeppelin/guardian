@@ -46,14 +46,14 @@ cargo run -p guardian-module-sdk --example basic-policy-serve -- \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
-The harness speaks plain text, so the catalog entry uses the loopback scheme and the same token (relative to the catalog file):
+The harness speaks plain text, so the catalog entry uses the loopback scheme and the same token, named as a secret:
 
 ```toml
 [[module]]
 id = "caps-remote"
 kind = "grpc"
 endpoint = "grpc+insecure://127.0.0.1:7443"
-auth = { token_file = "caps.token" }   # prototype stand-in; M2a uses token_secret (RFC 0002 section 2.2)
+auth = { token_secret = "caps.token" }   # read by the file provider from the catalog directory, mode 0600
 ```
 
 Point this second instance of kind `grpc` at it with `on_error = "deny"`, repeat step 2, then stop the module: pushes return `GUARDIAN_MODULE_UNAVAILABLE`; after five failures they return without waiting for the timeout; `guardian_module_up` drops to 0. Switch to `on_error = "allow"`: pushes proceed and `guardian_module_fail_open_total` increases. (US4, US6)

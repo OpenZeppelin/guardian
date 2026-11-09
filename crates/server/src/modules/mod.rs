@@ -13,6 +13,7 @@ pub mod pipeline;
 pub mod postgres_store;
 pub mod registry;
 pub mod request;
+pub mod secrets;
 pub mod store;
 #[cfg(test)]
 pub mod testing;
@@ -52,15 +53,22 @@ pub async fn from_env(
         return Ok(None);
     };
     let catalog_path = PathBuf::from(path);
-    let catalog = Catalog::load(&catalog_path)?;
+    let mut catalog = Catalog::load(&catalog_path)?;
     let limits = limits::Limits::from_env()?;
-    if crate::config::stage::Stage::from_env()
+    let prod = crate::config::stage::Stage::from_env()
         .map_err(|e| e.to_string())?
-        .is_prod()
-    {
+        .is_prod();
+    if prod {
         catalog.check_production()?;
         catalog.check_budget(limits.budget, execution_lease)?;
     }
+    let source = if catalog.names_secrets() {
+        let catalog_dir = catalog_path.parent().unwrap_or(std::path::Path::new("."));
+        Some(secrets::from_env(catalog_dir, prod).await?)
+    } else {
+        None
+    };
+    catalog.resolve_secrets(source.as_deref()).await;
     let store = match store {
         Some(store) => store,
         None => Arc::new(filesystem_store(&catalog_path)?),

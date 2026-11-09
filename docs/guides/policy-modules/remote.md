@@ -30,7 +30,7 @@ Each instance authenticates the Guardian with a bearer token, sent on every
 call:
 
 ```sh
-openssl rand -hex 32 > .guardian/caps.token
+(umask 077; openssl rand -hex 32 > .guardian/caps.token)
 cargo run -p guardian-module-sdk --example basic-policy-serve -- \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
@@ -48,8 +48,11 @@ cp docs/guides/policy-modules/remote.toml .guardian/
 Replace the faucet placeholder, set `GUARDIAN_MODULES_CONFIG=.guardian/remote.toml`
 in the guide's `.env`, and start the server as in the setup. The module must
 already be running: an enabled instance that cannot be reached stops startup.
-The log line lists `caps-remote=basic-policy 0.18.1`. The token path resolves
-against the catalog's directory.
+The log line lists `caps-remote=basic-policy 0.18.1`.
+
+`auth.token_secret` names a secret in the Guardian's secrets backend (see
+[Credentials](#credentials)); here the `file` provider reads it from
+`.guardian/caps.token`.
 
 ## 3. Try it
 
@@ -69,8 +72,11 @@ against the catalog's directory.
 
   ```toml
   endpoint = "grpc://risk.internal:7443"
-  tls = { ca_file = "risk-ca.pem", client_cert_file = "guardian.pem", client_key_file = "guardian.key" }
+  tls = { ca_file = "risk-ca.pem", client_cert_secret = "guardian/modules/risk-cert", client_key_secret = "guardian/modules/risk-key" }
   ```
+
+  `ca_file` is a path (relative to the catalog's directory); the client
+  certificate and key are secret names, like the token.
 
 - Plain text needs the explicit `grpc+insecure://` scheme and a loopback host
   (`127.0.0.1`, `localhost`, `::1`), so a missing letter cannot turn TLS off.
@@ -79,6 +85,20 @@ against the catalog's directory.
 - The SDK's serve harness speaks plain text only, so for TLS put it behind a
   TLS-terminating proxy on the module's host, or serve the module with your own
   tonic server configured for TLS.
+
+## Credentials
+
+The token and the mTLS client certificate and key are secrets, named in the
+catalog and read once at startup through the secrets backend that
+`GUARDIAN_MODULE_SECRET_PROVIDER` selects:
+
+| Provider | Default for | A secret name is |
+|---|---|---|
+| `file` | every stage but prod | A path below `GUARDIAN_MODULE_SECRET_DIR` (the catalog's directory when unset). The file must be readable by its owner only (`0600`), or startup refuses it |
+| `aws` | the prod stage | An AWS Secrets Manager secret id, read with the task's credentials (`AWS_REGION` required) |
+
+An enabled instance whose secret cannot be read stops startup; a disabled one
+stays disabled. Changing a secret takes effect at the next restart.
 
 ## What a remote module cannot do
 

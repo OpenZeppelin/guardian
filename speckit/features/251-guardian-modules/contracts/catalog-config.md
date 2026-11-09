@@ -41,7 +41,7 @@ hooks = ["before_transaction_approved"]
 timeout_ms = 300
 on_error = "allow"
 auth = { token_secret = "guardian/modules/risk-vendor-token" }
-tls = { ca_file = "risk-ca.pem" }     # optional; client_cert / client_key secret references add mTLS
+tls = { ca_file = "risk-ca.pem" }     # optional; client_cert_secret and client_key_secret add mTLS
 ```
 
 ## Disclosure (RFC 0002 section 2.7)
@@ -62,7 +62,16 @@ tls = { ca_file = "risk-ca.pem" }     # optional; client_cert / client_key secre
 
 Plain text needs its own scheme so a missing letter cannot turn TLS off. In the prod stage every remote instance must use `grpc://` and set `auth`, or startup stops. `auth` and `tls` are allowed only on remote kinds.
 
-The prototype (#554) reads secrets from files instead of the secrets backend: `auth = { token_file = "..." }` and `tls = { ca_file, client_cert_file, client_key_file }`, paths relative to the catalog file.
+## Secrets
+
+`auth.token_secret`, `tls.client_cert_secret`, `tls.client_key_secret` and `{ "$secret" = "<name>" }` in the params of an in-process instance name secrets; `tls.ca_file` is a path, relative to the catalog's directory. A name is 1 to 512 characters of letters, digits and `/_+=.@-`, and a `$secret` object has no other key. Secrets are read once, when the instances are created, through `GUARDIAN_MODULE_SECRET_PROVIDER`:
+
+| Provider | Default | Name |
+|---|---|---|
+| `file` | Outside the prod stage | Path below `GUARDIAN_MODULE_SECRET_DIR` (default: the catalog's directory), no `.` or `..` segments, file mode `0600` |
+| `aws` | Prod stage | AWS Secrets Manager secret id; needs `AWS_REGION` |
+
+A secret that cannot be read fails the instance's creation: startup stops for an enabled instance, and a disabled one stays disabled. The token is trimmed of surrounding whitespace. `$secret` values reach only the in-process factory (`ModuleInstanceConfig::secret`); `HookRequest.params` keeps the references, and they are refused in remote params, account layers and the operator API.
 
 ## Kinds
 

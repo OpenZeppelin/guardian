@@ -19,6 +19,7 @@ this doc covers *how* to bootstrap, replace, and respond to compromise.
 | Operator public keys | Secrets Manager (Terraform-managed or pre-existing ARN) | Updated by editing Terraform var or rotating the secret value | ECS task runtime role, on each dashboard challenge **and each authenticated `/dashboard/*` request** (hot-reloaded — no restart needed) |
 | EVM allowed chains + RPC URLs | Secrets Manager (Terraform-managed) | Updated by editing `config/evm/chains.json` and redeploying | ECS task execution role; surfaced as env to the task |
 | Remote prover URL (optional, Guardian execution) | Secrets Manager: Terraform-managed `<stack>/server/tx-prover-url` from `guardian_tx_prover_url`, or a pre-existing ARN in `guardian_tx_prover_url_secret_arn`. An `http(s)` URL with a host and no userinfo, query or fragment (the server refuses those at startup), so it holds no credentials; a private prover is restricted at the network level | Managed secret: change `guardian_tx_prover_url` and redeploy. The task definition reads the secret at its pinned version, so the new version produces a new task definition revision and the deploy (including `deploy --skip-build`) rolls the tasks onto the new URL. Pre-existing ARN: the task reads `AWSCURRENT` when it starts, and rotating the value does not change the task definition, so run `aws ecs update-service --cluster <cluster> --service <service> --force-new-deployment` afterwards. The managed secret has a 7-day recovery window (`aws secretsmanager restore-secret`), and a plan that would delete it fails unless `guardian_execution_enabled = false` | ECS task execution role (plus `kms:Decrypt` on the key when a pre-existing secret uses a customer-managed KMS key); surfaced as `GUARDIAN_TX_PROVER_URL` to the task |
+| Policy module credentials (optional) | `GUARDIAN_MODULE_SECRET_PROVIDER`: Secrets Manager (`aws`, the prod default) or owner-only files (`file`); names come from the module catalog | Created and rotated by the operator; read once at startup, so a change takes effect at the next restart | ECS task **runtime** role, at server startup |
 
 The ACK secret name is one value that travels through three places. They
 have **different variable names by design** — each layer has a distinct
@@ -532,6 +533,40 @@ To rotate an RPC URL (e.g. switch provider):
 1. Edit `chains.json`, redeploy. No special handling — the server treats
    chain config as a startup-time read.
 
+## Policy module secrets
+
+A module catalog (`GUARDIAN_MODULES_CONFIG`) names three kinds of secrets: the
+bearer token of a remote instance (`auth.token_secret`), its mTLS client
+certificate and key (`tls.client_cert_secret`, `tls.client_key_secret`), and
+`{ "$secret" = "<name>" }` values in the params of an in-process instance. The
+server reads them once, when it creates the instances, through the provider
+`GUARDIAN_MODULE_SECRET_PROVIDER` selects; see
+[CONFIGURATION.md](../CONFIGURATION.md) and the
+[remote module guide](../guides/policy-modules/remote.md#credentials).
+
+- **AWS (`aws`).** A name is a Secrets Manager secret id holding a secret
+  string. The reference Terraform does not create these secrets or grant the
+  task access to them: create each secret, then grant the ECS task runtime role
+  `secretsmanager:GetSecretValue` on it before enabling the instance.
+- **Files (`file`).** A name is a relative path below
+  `GUARDIAN_MODULE_SECRET_DIR` (the catalog's directory when unset). The server
+  refuses a file readable by group or others, as it does for ACK key files; a
+  Kubernetes secret mount needs `defaultMode: 0400`.
+
+**Rotating a token.** Configure the module to accept both the old and the new
+token for the instance, update the secret, restart the Guardian replicas, then
+drop the old token from the module. A module served by the SDK harness holds one
+token per instance, so restart it with the new token right after the Guardian.
+
+**Compromise.** A leaked module token lets its holder call the module as the
+Guardian: probe decisions, or, once notify ships, forge commit events. Replace
+the token as above and review the module's logs for calls that do not match the
+Guardian's `request_id`s. A leaked `$secret` value is the third party's
+credential (a vendor API key): revoke it with the vendor.
+
+A secret that cannot be read stops startup for an enabled instance and leaves a
+disabled one disabled; the error names the secret, never its value.
+
 ## Audit trail
 
 CloudTrail `GetSecretValue` events are scoped per-secret ARN. The
@@ -545,6 +580,7 @@ relevant principals you should see hitting each secret:
 | Operator pubkeys | ECS task runtime role + operators updating the list |
 | EVM chains / RPCs | ECS task execution role only |
 | Prover URL | ECS task execution role only |
+| Policy module credentials | ECS task runtime role (on cold start) + operators rotating them |
 
 Any other principal touching these secrets is suspicious.
 
