@@ -245,19 +245,21 @@ impl NetworkClient for MockNetworkClient {
     fn module_account_view(
         &self,
         _state_json: &serde_json::Value,
-    ) -> StdResult<guardian_module_sdk::AccountView, String> {
+    ) -> StdResult<crate::network::ModuleAccount, String> {
         self.module_decodes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.module_account_view
             .lock()
             .unwrap()
             .clone()
+            .map(|view| crate::network::ModuleAccount { view, nonce: 0 })
             .ok_or_else(|| "no module account view configured".to_string())
     }
 
     fn module_transaction(
         &self,
         tx_summary: &serde_json::Value,
+        _initial_nonce: u64,
     ) -> StdResult<crate::network::ModuleTransaction, String> {
         self.module_decodes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);

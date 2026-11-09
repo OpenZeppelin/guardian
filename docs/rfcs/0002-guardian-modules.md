@@ -7,7 +7,7 @@
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
 | **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; the plan, the M2a tasks (`tasks.md`) and the prototype record (`tasks-p0.md`) |
-| **Revision** | 30 (2026-11-09): the secrets backend and the catalog's credential field names (section 2.2); changes in Appendix C |
+| **Revision** | 31 (2026-11-09): `tx_fee` marks only the fee note `pay_fee` creates (section 3.1); changes in Appendix C |
 | **Review sought** | Review of the M2a implementation before it merges; comments on M2b (commit notifications, stateful modules) and M2c (operator-built kinds) |
 | **Code baseline** | `main` at `ca503704`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510, since merged to `main` as `1100f3a4`) and kept as dated evidence. Miden pins: protocol and standards 0.17.1. Appendices B and C cite the baselines of their revisions. Prototype findings (2026-10-13 to 2026-10-15) in `speckit/features/251-guardian-modules/research.md` |
 
@@ -721,7 +721,7 @@ message OutputNote {
   repeated Asset assets = 5;
   string script_root = 6;
   optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
-  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment
+  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note)
 }
 enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
 
@@ -797,7 +797,7 @@ message Gap {
 
 `p2id_target` is set only when the note script root is a known P2ID or P2IDE script. Recipient-based policies are enforceable because `TransactionSummary.output_notes` is a collection of `RawOutputNote::Full(Note) | Partial(PartialNote)` (`miden-protocol-0.17.1/src/transaction/tx_summary.rs:31-39`, `outputs/notes.rs:190`) **[READ]**: a full note carries recipient, assets and script even when its type is private. A partial note exposes only the recipient digest, so it is marked `partial = true` and a recipient policy must decide what to do with an unknown recipient.
 
-**The fee is a note.** In Miden 0.17 `pay_fee` creates a public `TX_FEE` output note funded from the account's vault (`miden-standards-0.17.1/src/account/auth/singlesig.rs:45`) **[READ]**. Listed as an ordinary note, the fee looks like a payment: in the prototype a cap on the fee asset refused every transaction, consuming notes included, and a recipient allowlist would refuse every transaction too, since the fee note has no P2ID recipient. The Guardian therefore marks it with `OutputNote.tx_fee` (set when the note script is the standard `TX_FEE` script), and policies treat it as the fee, not a payment.
+**The fee is a note.** In Miden 0.17 `pay_fee` creates a public `TX_FEE` output note funded from the account's vault (`miden-standards-0.17.1/src/account/auth/singlesig.rs:45`) **[READ]**. Listed as an ordinary note, the fee looks like a payment: in the prototype a cap on the fee asset refused every transaction, consuming notes included, and a recipient allowlist would refuse every transaction too, since the fee note has no P2ID recipient. The Guardian therefore marks it with `OutputNote.tx_fee`, and policies treat it as the fee, not a payment. The script alone does not identify the fee: `TX_FEE` is a standard script that any transaction script can use (`tx_fee::create_output_note` is public), with any assets, and anyone can consume the note, so a note marked by its script would move funds past every recipient, asset and amount rule. `tx_fee` is set only for the note `pay_fee` creates, recognized by everything `pay_fee` fixes: it is the transaction's only `TX_FEE` note, its serial number is `TxFeeNote::derive_serial_number(account, nonce before the transaction, block the summary binds)`, and it carries one fungible asset of the chain's fee faucet, which the Guardian reads once from the node's protocol configuration. Any other `TX_FEE` note, and every `TX_FEE` note when the transaction has more than one or the fee faucet is not known yet, is an ordinary output note. A zero fee creates no fee note.
 
 #### `basic-policy` rules
 
@@ -1206,6 +1206,7 @@ None. Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
+| 31 | 2026-11-09 | `OutputNote.tx_fee` set only for the fee note `pay_fee` creates (section 3.1): the only `TX_FEE` note, with the derived serial number and one asset of the chain's fee faucet. Revisions 20 to 30 set it for any note with the `TX_FEE` script, which a transaction script can create with any assets, so the flag let funds past every `basic-policy` rule. No wire change; the field's meaning is narrowed |
 | 30 | 2026-11-09 | the secrets backend named: `GUARDIAN_MODULE_SECRET_PROVIDER` selects AWS Secrets Manager (the prod default) or owner-only files below `GUARDIAN_MODULE_SECRET_DIR`, read once when the instances are created; a secret that cannot be read fails creation, with the enabled/disabled rule of section 2.2. Field names fixed as `auth.token_secret`, `tls.client_cert_secret` and `tls.client_key_secret`; a secret name is 1 to 512 characters of letters, digits and `/_+=.@-`, and a `$secret` object has no other key (section 2.2). In-process factories read `$secret` values from `ModuleInstanceConfig::secret`. No protocol change |
 | 29 | 2026-11-09 | M2a implementation of `scope = default`: the copy is written right after the claim, only into an account with no assignment and no assignment history, under the module state lock, instead of in the claim's transaction on Postgres and before the claim on the filesystem; a crash in between is repaired by the unfinished-claim retry, so both backends follow one rule and no transaction spans the metadata and module stores (section 2.3). No protocol change |
 | 28 | 2026-11-09 | protocol version 1 frozen: the freeze criteria of section 7 met at `e4efd839` on `251-modules-m2a`, with tests; the proto copies say so. No design change |

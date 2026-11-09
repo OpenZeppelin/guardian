@@ -130,7 +130,9 @@ The Miden projection has the `nonce_delta`, the `reference_block` and optional
 `tx_fee`), `input_notes`, `storage_changes` by slot name, and
 `new_code_commitment` when the transaction replaces the account's code.
 Amounts are decimal strings. Skip the fee note (`tx_fee = true`) when counting
-payments: every transaction pays its fee through an output note.
+payments: every transaction pays its fee through an output note. The Guardian
+sets `tx_fee` only on the one note the fee payment creates, never on another
+note that merely uses the fee script, so treat every other note as a payment.
 
 Projections are tagged by network (`TransactionProjection`, `oneof network`).
 Miden is the only network today; read it with `subject.miden()` and return a

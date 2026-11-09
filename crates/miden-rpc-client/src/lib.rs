@@ -549,6 +549,33 @@ impl MidenRpcClient {
             })
     }
 
+    /// The asset id the chain charges fees in, from the protocol configuration the latest block
+    /// header commits to, as a hex word. Takes `&self` like [`Self::get_account_commitment`].
+    pub async fn get_fee_asset_id(&self, read_mode: RpcReadMode) -> Result<String, RpcClientError> {
+        const OPERATION: &str = "get_fee_asset_id";
+        let response = self
+            .retry_read(OPERATION, read_mode, |mut client| async move {
+                let request = rpc::GetBlockHeaderByNumberRequest {
+                    block_num: None,
+                    include_mmr_proof: Some(false),
+                    include_protocol_config: Some(true),
+                };
+                client
+                    .get_block_header_by_number(Request::new(request))
+                    .await
+                    .map(tonic::Response::into_inner)
+            })
+            .await?;
+        response
+            .protocol_config
+            .and_then(|config| config.fee_asset_id)
+            .and_then(|word| word_to_hex(&word))
+            .ok_or_else(|| RpcClientError::MalformedResponse {
+                operation: OPERATION,
+                reason: "no fee asset id in the protocol configuration".to_string(),
+            })
+    }
+
     /// One page of the transactions committed against `account_id` in
     /// `block_from..=block_to`. The node records a header for every
     /// account, private ones included, never prunes them, and rejects a

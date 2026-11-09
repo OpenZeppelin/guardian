@@ -399,6 +399,9 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
     if let Some((after, module_views)) = applied {
+        if let Err(error) = state.network_client.load_fee_faucet().await {
+            tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
+        }
         let proposal = ProposalContext {
             proposer: proposer_id.clone(),
             metadata: delta_payload

@@ -8,7 +8,7 @@ use guardian_module_sdk::{AccountView, HookRequest, RegistrationSubject, Transac
 use crate::delta_object::{DeltaObject, DeltaStatus};
 use crate::metadata::NetworkConfig;
 use crate::metadata::auth::Auth;
-use crate::network::NetworkClient;
+use crate::network::{ModuleAccount, NetworkClient};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProposalContext {
@@ -55,7 +55,7 @@ const VIEW_CACHE_CAPACITY: usize = 4096;
 #[derive(Default)]
 pub struct ViewCache {
     entries: std::sync::Mutex<(
-        std::collections::HashMap<String, AccountView>,
+        std::collections::HashMap<String, ModuleAccount>,
         std::collections::VecDeque<String>,
     )>,
 }
@@ -65,18 +65,18 @@ impl ViewCache {
         &self,
         network: &dyn NetworkClient,
         state: StateRef<'_>,
-    ) -> Result<AccountView, String> {
+    ) -> Result<ModuleAccount, String> {
         if let Ok(entries) = self.entries.lock()
-            && let Some(view) = entries.0.get(state.commitment)
+            && let Some(account) = entries.0.get(state.commitment)
         {
-            return Ok(view.clone());
+            return Ok(account.clone());
         }
-        let view = network.module_account_view(state.json)?;
-        self.insert(state.commitment, view.clone());
-        Ok(view)
+        let account = network.module_account_view(state.json)?;
+        self.insert(state.commitment, account.clone());
+        Ok(account)
     }
 
-    fn insert(&self, commitment: &str, view: AccountView) {
+    fn insert(&self, commitment: &str, view: ModuleAccount) {
         if let Ok(mut entries) = self.entries.lock() {
             let (views, order) = &mut *entries;
             if views.insert(commitment.to_string(), view).is_none() {
@@ -93,7 +93,7 @@ impl ViewCache {
     /// Keeps `view` for `commitment` when it was built from an account already decoded, so request
     /// assembly does not decode it again. A failed extraction is not kept: assembly then retries
     /// it and the failure applies to the modules.
-    pub fn seed(&self, commitment: &str, view: Result<AccountView, String>) {
+    pub fn seed(&self, commitment: &str, view: Result<ModuleAccount, String>) {
         if let Ok(view) = view {
             self.insert(commitment, view);
         }
@@ -126,7 +126,7 @@ fn view(
     state: StateRef<'_>,
     auth: &Auth,
 ) -> Result<AccountView, String> {
-    let mut view = views.get_or_build(network, state)?;
+    let mut view = views.get_or_build(network, state)?.view;
     if view.default_threshold.is_none() {
         match auth.cosigner_commitments().as_slice() {
             [signer] => {
@@ -175,7 +175,8 @@ pub fn transaction_request(
     views: &ViewCache,
     input: TransactionInput<'_>,
 ) -> Result<HookRequest, String> {
-    let transaction = network.module_transaction(input.tx_summary)?;
+    let initial_nonce = views.get_or_build(network, input.before)?.nonce;
+    let transaction = network.module_transaction(input.tx_summary, initial_nonce)?;
     let (proposer, unverified_metadata) = match input.proposal {
         Some(context) => (
             context.proposer,
@@ -270,17 +271,17 @@ mod tests {
             MockNetworkClient::new().with_module_views(view_with("0xfirst"), Default::default());
         let cache = ViewCache::default();
         assert_eq!(
-            cache.get_or_build(&network, state("0xc1")).unwrap(),
+            cache.get_or_build(&network, state("0xc1")).unwrap().view,
             view_with("0xfirst")
         );
         *network.module_account_view.lock().unwrap() = Some(view_with("0xsecond"));
         assert_eq!(
-            cache.get_or_build(&network, state("0xc1")).unwrap(),
+            cache.get_or_build(&network, state("0xc1")).unwrap().view,
             view_with("0xfirst"),
             "same commitment, cached view"
         );
         assert_eq!(
-            cache.get_or_build(&network, state("0xc2")).unwrap(),
+            cache.get_or_build(&network, state("0xc2")).unwrap().view,
             view_with("0xsecond"),
             "new commitment, fresh decode"
         );
@@ -392,9 +393,15 @@ mod tests {
     fn a_seeded_view_is_used_without_decoding_and_a_failed_one_is_not_kept() {
         let network = MockNetworkClient::new();
         let cache = ViewCache::default();
-        cache.seed("0xc1", Ok(view_with("0xseeded")));
+        cache.seed(
+            "0xc1",
+            Ok(ModuleAccount {
+                view: view_with("0xseeded"),
+                nonce: 0,
+            }),
+        );
         assert_eq!(
-            cache.get_or_build(&network, state("0xc1")).unwrap(),
+            cache.get_or_build(&network, state("0xc1")).unwrap().view,
             view_with("0xseeded")
         );
         cache.seed("0xc2", Err("undecodable".into()));

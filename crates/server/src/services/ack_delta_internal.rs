@@ -184,6 +184,9 @@ async fn approve(
         .and_then(|context| context.as_ref())
         .map(|context| context.proposer.clone())
         .unwrap_or_default();
+    if let Err(error) = state.network_client.load_fee_faucet().await {
+        tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
+    }
     let signed_at = state.clock.now();
     let views = plan.views();
     if let Some(module_views) = module_views {

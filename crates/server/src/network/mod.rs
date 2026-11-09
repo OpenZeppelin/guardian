@@ -274,11 +274,19 @@ pub struct TransactionSearch {
 /// plus the commitment, nonce, and auth bindings of the account it encodes,
 /// read off the account the method already holds so a caller persisting or
 /// inspecting the state never decodes the blob again (issue #328).
+/// An account as policy modules see it, with its nonce: the fee note a transaction creates
+/// derives its serial number from the nonce of the state it starts from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModuleAccount {
+    pub view: guardian_module_sdk::AccountView,
+    pub nonce: u64,
+}
+
 /// Policy module account views of a delta's base state and of the state it produces.
 #[derive(Debug, Clone)]
 pub struct ModuleViews {
-    pub before: Result<guardian_module_sdk::AccountView, String>,
-    pub after: Result<guardian_module_sdk::AccountView, String>,
+    pub before: Result<ModuleAccount, String>,
+    pub after: Result<ModuleAccount, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -554,22 +562,27 @@ pub trait NetworkClient: Send + Sync {
 
     /// The account's signers and thresholds as policy modules see them. Errors on auth state
     /// this network cannot interpret; an empty view is never returned.
-    fn module_account_view(
-        &self,
-        state_json: &serde_json::Value,
-    ) -> Result<guardian_module_sdk::AccountView, String> {
+    fn module_account_view(&self, state_json: &serde_json::Value) -> Result<ModuleAccount, String> {
         let _ = state_json;
         Err("policy modules are not supported on this network".into())
     }
 
     /// The decoded effects of a transaction as policy modules see them. `tx_summary` is the
-    /// bare summary the Guardian verifies and signs, never a proposal wrapper.
+    /// bare summary the Guardian verifies and signs, never a proposal wrapper; `initial_nonce`
+    /// is the nonce of the state it starts from, which identifies its fee note.
     fn module_transaction(
         &self,
         tx_summary: &serde_json::Value,
+        initial_nonce: u64,
     ) -> Result<ModuleTransaction, String> {
-        let _ = tx_summary;
+        let _ = (tx_summary, initial_nonce);
         Err("policy modules are not supported on this network".into())
+    }
+
+    /// Loads the chain's fee faucet once, so module projections can tell the transaction's fee
+    /// note from a payment. Until it is loaded no note is treated as the fee note.
+    async fn load_fee_faucet(&self) -> Result<(), String> {
+        Ok(())
     }
 
     /// Determine if account auth should be updated given the state

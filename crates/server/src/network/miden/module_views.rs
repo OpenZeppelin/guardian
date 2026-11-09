@@ -6,14 +6,16 @@ use guardian_module_sdk::{
     OutputNote, StorageChange, StorageOp, StorageSlotKind, VaultChange,
 };
 use guardian_shared::{FromJson, SignatureScheme};
+use miden_protocol::Felt;
 use miden_protocol::Word;
+use miden_protocol::account::AccountId;
 use miden_protocol::account::{Account, StoragePatchOperation, StorageSlotContent};
 use miden_protocol::asset::Asset;
-use miden_protocol::note::{Note, NoteType as MidenNoteType};
+use miden_protocol::note::{Note, NoteId, NoteType as MidenNoteType};
 use miden_protocol::transaction::{RawOutputNote, TransactionSummary};
 use miden_protocol::utils::serde::Serializable;
 use miden_standards::account::auth::AuthGuardedMultisig;
-use miden_standards::note::{P2idNoteStorage, P2ideNoteStorage, StandardNote};
+use miden_standards::note::{P2idNoteStorage, P2ideNoteStorage, StandardNote, TxFeeNote};
 
 fn word_hex(word: &Word) -> String {
     format!("0x{}", hex::encode(word.as_bytes()))
@@ -30,6 +32,14 @@ fn felt_u32(felt: miden_protocol::Felt) -> Result<u32, String> {
 /// scheme is an error, never a signer without a scheme.
 pub fn account_view(state_json: &serde_json::Value) -> Result<AccountView, String> {
     account_view_of(&Account::from_json(state_json)?)
+}
+
+/// [`account_view_of`] together with the account's nonce.
+pub fn module_account_of(account: &Account) -> Result<crate::network::ModuleAccount, String> {
+    Ok(crate::network::ModuleAccount {
+        view: account_view_of(account)?,
+        nonce: account.nonce().as_canonical_u64(),
+    })
 }
 
 /// [`account_view`] of an account already decoded.
@@ -152,7 +162,49 @@ fn p2id_target(note: &Note) -> Option<String> {
     }
 }
 
-fn output_note(raw: &RawOutputNote) -> OutputNote {
+/// The transaction's fee note: a note with the TX_FEE script is a payment like any other, since
+/// any transaction script can create one, with any assets, that anyone can consume. Only the note
+/// `pay_fee` creates is the fee, and it is recognised by everything `pay_fee` fixes: it is the
+/// only TX_FEE note, its serial number is derived from the account, the nonce the transaction
+/// starts from and the block its summary binds, and it carries one fungible asset of the chain's
+/// fee faucet. Without a known fee faucet no note qualifies.
+fn fee_note(
+    summary: &TransactionSummary,
+    initial_nonce: u64,
+    fee_faucet: Option<AccountId>,
+) -> Option<NoteId> {
+    let fee_faucet = fee_faucet?;
+    let mut tx_fee_notes = summary.output_notes().iter().filter_map(|raw| match raw {
+        RawOutputNote::Full(note)
+            if matches!(
+                StandardNote::from_script(note.script()),
+                Some(StandardNote::TX_FEE)
+            ) =>
+        {
+            Some(note)
+        }
+        _ => None,
+    });
+    let note = tx_fee_notes.next()?;
+    if tx_fee_notes.next().is_some() {
+        return None;
+    }
+    let serial_number = TxFeeNote::derive_serial_number(
+        summary.account_delta().id(),
+        Felt::new_unchecked(initial_nonce),
+        summary.block_number(),
+    );
+    if note.recipient().serial_num() != serial_number {
+        return None;
+    }
+    let assets: Vec<&Asset> = note.assets().iter().collect();
+    match assets.as_slice() {
+        [asset] if asset.is_fungible() && asset.faucet_id() == fee_faucet => Some(note.id()),
+        _ => None,
+    }
+}
+
+fn output_note(raw: &RawOutputNote, fee_note: Option<NoteId>) -> OutputNote {
     match raw {
         RawOutputNote::Full(note) => OutputNote {
             note_id: note.id().to_hex(),
@@ -162,10 +214,7 @@ fn output_note(raw: &RawOutputNote) -> OutputNote {
             assets: note.assets().iter().map(module_asset).collect(),
             script_root: word_hex(&Word::from(note.script().root())),
             p2id_target: p2id_target(note),
-            tx_fee: matches!(
-                StandardNote::from_script(note.script()),
-                Some(StandardNote::TX_FEE)
-            ),
+            tx_fee: fee_note == Some(note.id()),
         },
         RawOutputNote::Partial(partial) => OutputNote {
             note_id: partial.id().to_hex(),
@@ -192,11 +241,16 @@ fn storage_op(op: StoragePatchOperation) -> i32 {
 /// rather than unwrapped, so a module never judges a different summary than the one signed.
 pub fn module_transaction(
     tx_summary: &serde_json::Value,
+    initial_nonce: u64,
+    fee_faucet: Option<AccountId>,
 ) -> Result<crate::network::ModuleTransaction, String> {
     let summary = TransactionSummary::from_json(tx_summary)
         .map_err(|e| format!("transaction summary does not decode: {e}"))?;
     Ok(crate::network::ModuleTransaction {
-        projection: projection_from_summary(&summary)?,
+        projection: projection_from_summary(
+            &summary,
+            fee_note(&summary, initial_nonce, fee_faucet),
+        )?,
         raw_tx_summary: summary.to_bytes(),
     })
 }
@@ -213,7 +267,10 @@ fn expiration_block(block_number: u32, expiration_delta: u16) -> Result<Option<u
         .ok_or_else(|| format!("expiration overflows: block {block_number} + {expiration_delta}"))
 }
 
-fn projection_from_summary(summary: &TransactionSummary) -> Result<MidenTransaction, String> {
+fn projection_from_summary(
+    summary: &TransactionSummary,
+    fee_note: Option<NoteId>,
+) -> Result<MidenTransaction, String> {
     let delta = summary.account_delta();
     let vault = delta.vault();
     let vault_changes = vault
@@ -271,7 +328,11 @@ fn projection_from_summary(summary: &TransactionSummary) -> Result<MidenTransact
             .as_code()
             .map(|code| word_hex(&code.commitment())),
         vault_changes,
-        output_notes: summary.output_notes().iter().map(output_note).collect(),
+        output_notes: summary
+            .output_notes()
+            .iter()
+            .map(|note| output_note(note, fee_note))
+            .collect(),
         input_notes: summary
             .input_notes()
             .iter()
@@ -483,7 +544,7 @@ mod tests {
             crate::testing::fixtures::DELTA_3_JSON,
         ] {
             let delta: serde_json::Value = serde_json::from_str(fixture).unwrap();
-            let transaction = module_transaction(&delta["delta_payload"]).unwrap();
+            let transaction = module_transaction(&delta["delta_payload"], 0, None).unwrap();
             let projection = transaction.projection;
             assert!(projection.nonce_delta >= 0);
             for change in &projection.storage_changes {
@@ -492,7 +553,7 @@ mod tests {
             }
             assert!(!transaction.raw_tx_summary.is_empty());
             let wrapped = serde_json::json!({ "tx_summary": delta["delta_payload"].clone() });
-            assert!(module_transaction(&wrapped).is_err());
+            assert!(module_transaction(&wrapped, 0, None).is_err());
         }
     }
 
@@ -505,8 +566,8 @@ mod tests {
         let mut payload = signed["delta_payload"].clone();
         payload["tx_summary"] = decoy["delta_payload"].clone();
         assert_eq!(
-            module_transaction(&payload).unwrap(),
-            module_transaction(&signed["delta_payload"]).unwrap()
+            module_transaction(&payload, 0, None).unwrap(),
+            module_transaction(&signed["delta_payload"], 0, None).unwrap()
         );
     }
 
@@ -546,12 +607,148 @@ mod tests {
         )
     }
 
+    fn dummy_id(byte: u8) -> AccountId {
+        AccountId::dummy(
+            [byte; 15],
+            AccountIdVersion::Version1,
+            AccountType::Private,
+            miden_protocol::account::AssetCallbackFlag::Disabled,
+        )
+    }
+
+    const NONCE: u64 = 7;
+    const BLOCK: u32 = 100;
+
+    fn fee_note_with(serial: Word, assets: Vec<Asset>) -> RawOutputNote {
+        let note = TxFeeNote::builder()
+            .sender(dummy_id(3))
+            .serial_number(serial)
+            .assets(assets)
+            .build()
+            .unwrap();
+        RawOutputNote::Full(note.into())
+    }
+
+    fn canonical_serial() -> Word {
+        TxFeeNote::derive_serial_number(
+            dummy_id(3),
+            Felt::new_unchecked(NONCE),
+            miden_protocol::block::BlockNumber::from(BLOCK),
+        )
+    }
+
+    fn fungible(faucet: u8, amount: u64) -> Asset {
+        miden_protocol::asset::FungibleAsset::new(dummy_id(faucet), amount)
+            .unwrap()
+            .into()
+    }
+
+    fn summary_with(notes: Vec<RawOutputNote>) -> TransactionSummary {
+        use miden_protocol::account::{
+            AccountCodePatch, AccountDelta, AccountStoragePatch, AccountVaultDelta,
+        };
+        use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+        TransactionSummary::new(
+            AccountDelta::new(
+                dummy_id(3),
+                AccountStoragePatch::default(),
+                AccountVaultDelta::default(),
+                AccountCodePatch::new(None),
+                Felt::new_unchecked(1),
+            )
+            .unwrap(),
+            InputNotes::new(vec![]).unwrap(),
+            RawOutputNotes::new(notes).unwrap(),
+            miden_protocol::block::BlockNumber::from(BLOCK),
+            Word::default(),
+            0,
+            Default::default(),
+        )
+    }
+
+    fn fee_flags(notes: Vec<RawOutputNote>, fee_faucet: Option<AccountId>) -> Vec<bool> {
+        let summary = summary_with(notes);
+        projection_from_summary(&summary, fee_note(&summary, NONCE, fee_faucet))
+            .unwrap()
+            .output_notes
+            .iter()
+            .map(|note| note.tx_fee)
+            .collect()
+    }
+
+    #[test]
+    fn only_the_note_pay_fee_creates_is_the_fee_note() {
+        let fee_faucet = Some(dummy_id(9));
+        let canonical = || fee_note_with(canonical_serial(), vec![fungible(9, 5)]);
+        assert_eq!(fee_flags(vec![canonical()], fee_faucet), [true]);
+        assert_eq!(
+            fee_flags(vec![canonical()], None),
+            [false],
+            "unknown fee faucet"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![
+                    canonical(),
+                    fee_note_with(canonical_serial(), vec![fungible(9, 1_000_000)])
+                ],
+                fee_faucet
+            ),
+            [false, false],
+            "a second note with the same serial number makes neither the fee"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![
+                    fee_note_with(Word::from([1u32, 2, 3, 4]), vec![fungible(9, 5)]),
+                    canonical()
+                ],
+                fee_faucet
+            ),
+            [false, false],
+            "an extra TX_FEE note with another serial number"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![fee_note_with(
+                    Word::from([1u32, 2, 3, 4]),
+                    vec![fungible(9, 5)]
+                )],
+                fee_faucet
+            ),
+            [false],
+            "not the serial number pay_fee derives"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![fee_note_with(
+                    canonical_serial(),
+                    vec![fungible(4, 1_000_000)]
+                )],
+                fee_faucet
+            ),
+            [false],
+            "an asset of another faucet"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![fee_note_with(
+                    canonical_serial(),
+                    vec![fungible(9, 5), fungible(4, 1_000_000)]
+                )],
+                fee_faucet
+            ),
+            [false],
+            "more than the fee asset"
+        );
+    }
+
     #[test]
     fn projection_carries_the_reference_block_and_an_expiration_only_when_one_is_set() {
-        let expiring = projection_from_summary(&summary(None, 20)).unwrap();
+        let expiring = projection_from_summary(&summary(None, 20), None).unwrap();
         assert_eq!(expiring.reference_block, 100);
         assert_eq!(expiring.expiration_block, Some(120));
-        let open = projection_from_summary(&summary(None, 0)).unwrap();
+        let open = projection_from_summary(&summary(None, 0), None).unwrap();
         assert_eq!(open.reference_block, 100);
         assert_eq!(open.expiration_block, None);
     }
@@ -560,13 +757,13 @@ mod tests {
     fn a_code_replacement_names_the_new_code_commitment() {
         let code = AccountCode::mock();
         assert_eq!(
-            projection_from_summary(&summary(Some(code.clone()), 0))
+            projection_from_summary(&summary(Some(code.clone()), 0), None)
                 .unwrap()
                 .new_code_commitment,
             Some(word_hex(&code.commitment()))
         );
         assert_eq!(
-            projection_from_summary(&summary(None, 0))
+            projection_from_summary(&summary(None, 0), None)
                 .unwrap()
                 .new_code_commitment,
             None
@@ -588,7 +785,7 @@ mod tests {
         let view = started.elapsed() / runs;
         let started = std::time::Instant::now();
         for _ in 0..runs {
-            module_transaction(&delta["delta_payload"]).unwrap();
+            module_transaction(&delta["delta_payload"], 0, None).unwrap();
         }
         let projection = started.elapsed() / runs;
         println!("account_view: {view:?} per call, tx_projection: {projection:?} per call");

@@ -33,6 +33,8 @@ use miden_standards::account::auth::AuthGuardedMultisig;
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
     client: MidenRpcClient,
+    /// The chain's fee faucet, loaded once by [`NetworkClient::load_fee_faucet`].
+    fee_faucet: std::sync::OnceLock<AccountId>,
 }
 
 impl MidenNetworkClient {
@@ -56,7 +58,10 @@ impl MidenNetworkClient {
             )
             .increment(1);
         }));
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            fee_faucet: std::sync::OnceLock::new(),
+        })
     }
 
     /// Builds a client without contacting the network or loading TLS roots, for
@@ -68,7 +73,10 @@ impl MidenNetworkClient {
     pub(crate) fn lazy_for_test(network: NetworkType) -> Self {
         let client = MidenRpcClient::lazy_unconnected(network.rpc_endpoint())
             .expect("lazy client construction is infallible for a valid endpoint");
-        Self { client }
+        Self {
+            client,
+            fee_faucet: std::sync::OnceLock::new(),
+        }
     }
 
     /// True when an on-chain commitment is the empty-word digest the Miden
@@ -561,11 +569,11 @@ impl NetworkClient for MidenNetworkClient {
         if let Some(prev_commitment) = prev_commitment {
             Self::ensure_prev_commitment(&account, prev_commitment)?;
         }
-        let before = module_views::account_view_of(&account);
+        let before = module_views::module_account_of(&account);
         let applied = Self::applied_account(Ok(account), &tx_summary)?;
         let views = crate::network::ModuleViews {
             before,
-            after: module_views::account_view_of(&applied),
+            after: module_views::module_account_of(&applied),
         };
         Ok((Self::applied_state(&applied), views))
     }
@@ -935,15 +943,34 @@ impl NetworkClient for MidenNetworkClient {
     fn module_account_view(
         &self,
         state_json: &serde_json::Value,
-    ) -> Result<guardian_module_sdk::AccountView, String> {
-        module_views::account_view(state_json)
+    ) -> Result<crate::network::ModuleAccount, String> {
+        module_views::module_account_of(&Account::from_json(state_json)?)
     }
 
     fn module_transaction(
         &self,
         tx_summary: &serde_json::Value,
+        initial_nonce: u64,
     ) -> Result<crate::network::ModuleTransaction, String> {
-        module_views::module_transaction(tx_summary)
+        module_views::module_transaction(tx_summary, initial_nonce, self.fee_faucet.get().copied())
+    }
+
+    async fn load_fee_faucet(&self) -> Result<(), String> {
+        if self.fee_faucet.get().is_some() {
+            return Ok(());
+        }
+        let asset_id = self
+            .client
+            .get_fee_asset_id(RpcReadMode::Configured)
+            .await
+            .map_err(|e| format!("cannot read the chain's fee asset: {e}"))?;
+        let word = Word::try_from(asset_id.as_str())
+            .map_err(|e| format!("fee asset id is not a word: {e}"))?;
+        let faucet = AssetId::try_from(word)
+            .map_err(|e| format!("fee asset id does not decode: {e}"))?
+            .faucet_id();
+        let _ = self.fee_faucet.set(faucet);
+        Ok(())
     }
 
     async fn should_update_auth(
@@ -1577,7 +1604,13 @@ mod tests {
         let client = MidenRpcClient::connect(endpoint)
             .await
             .expect("the scripted node accepts connections");
-        (MidenNetworkClient { client }, requests)
+        (
+            MidenNetworkClient {
+                client,
+                fee_faucet: std::sync::OnceLock::new(),
+            },
+            requests,
+        )
     }
 
     fn history_account_id() -> String {
