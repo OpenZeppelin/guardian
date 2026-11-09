@@ -480,9 +480,11 @@ impl ModuleStore for FsModuleStore {
     ) -> Result<(), String> {
         self.write(|tables| {
             let previous = tables.row_params(account_id, module_id, ParamsKind::Layer);
-            tables
-                .account_params
-                .retain(|row| !(row.account_id == account_id && row.module_id == module_id));
+            tables.account_params.retain(|row| {
+                !(row.account_id == account_id
+                    && row.module_id == module_id
+                    && row.kind == ParamsKind::Layer)
+            });
             if let Some(params) = &params {
                 tables.account_params.push(AccountParamsRow {
                     account_id: account_id.to_string(),

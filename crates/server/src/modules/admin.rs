@@ -527,7 +527,7 @@ pub async fn set_layer(
     let pipeline = pipeline(state)?;
     let account_id = existing_account(state, account_id).await?;
     let instance = instance(pipeline, module_id)?;
-    if instance.config.scope != Scope::All {
+    if params.is_some() && instance.config.scope != Scope::All {
         return Err(GuardianError::InvalidInput(format!(
             "module {module_id}: account layers apply only to scope = \"all\" instances; assign it instead"
         )));
@@ -631,6 +631,17 @@ pub async fn set_assignment(
         .account_params(&account_id)
         .await
         .map_err(GuardianError::StorageError)?;
+    if let Some(layer) = current.iter().find(|row| {
+        row.kind == ParamsKind::Layer
+            && to_store
+                .iter()
+                .any(|assigned| assigned.module_id == row.module_id)
+    }) {
+        return Err(GuardianError::InvalidInput(format!(
+            "module {}: the account still has a layer on it from when it applied to every account; delete the layer first",
+            layer.module_id
+        )));
+    }
     // Rows naming an instance the catalog no longer declares are kept as they are: they apply
     // again if the instance comes back, and the operator cannot list them in the request.
     to_store.extend(
@@ -1008,6 +1019,46 @@ mod tests {
             .await,
             Err(GuardianError::AccountNotFound(_))
         ));
+    }
+
+    #[tokio::test]
+    async fn a_layer_left_by_a_scope_change_can_be_deleted_before_the_module_is_assigned() {
+        let state = state();
+        let store = state.modules.as_ref().unwrap().store_handle();
+        store
+            .set_layer(
+                ACCOUNT,
+                "optional",
+                Some(json!({ "recipient_denylist": ["0xbbb"] })),
+                &Change {
+                    operator: "0xop",
+                    reason: "written while optional applied to every account",
+                    at: "t0".into(),
+                },
+            )
+            .await
+            .unwrap();
+        let operator = operator();
+        let assign = || {
+            set_assignment(
+                &state,
+                &operator,
+                ACCOUNT,
+                vec![Assigned {
+                    module_id: "optional".into(),
+                    params: json!({}),
+                }],
+                "OP-1",
+                None,
+            )
+        };
+        assert!(
+            matches!(assign().await, Err(GuardianError::InvalidInput(message)) if message.contains("delete the layer first"))
+        );
+        set_layer(&state, &operator, ACCOUNT, "optional", None, "OP-2", None)
+            .await
+            .expect("a stale layer can be deleted whatever the instance's scope is now");
+        assign().await.expect("then the module can be assigned");
     }
 
     #[tokio::test]
