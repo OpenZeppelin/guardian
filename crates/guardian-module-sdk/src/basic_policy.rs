@@ -86,6 +86,29 @@ fn normalized(values: &[String]) -> BTreeSet<String> {
     values.iter().map(|v| v.to_ascii_lowercase()).collect()
 }
 
+/// Ids in the hex form the Guardian reports them in (`0x` and hex digits), lowercased. Any other
+/// spelling, a bech32 address for one, would never match a request, so a denylist or a cap would
+/// silently not apply; it is refused instead.
+fn ids(field: &str, values: &[String]) -> Result<BTreeSet<String>, String> {
+    values.iter().map(|value| id(field, value)).collect()
+}
+
+fn id(field: &str, value: &str) -> Result<String, String> {
+    match value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        Some(rest)
+            if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
+        {
+            Ok(value.to_ascii_lowercase())
+        }
+        _ => Err(format!(
+            "{field}: {value:?} is not an id in 0x hex form (a bech32 address is not accepted)"
+        )),
+    }
+}
+
 impl TryFrom<Params> for Policy {
     type Error = String;
 
@@ -94,9 +117,10 @@ impl TryFrom<Params> for Policy {
             .max_amount_per_tx
             .into_iter()
             .map(|(faucet, amount)| {
+                let faucet = id("max_amount_per_tx", &faucet)?;
                 amount
                     .parse::<u128>()
-                    .map(|amount| (faucet.to_ascii_lowercase(), amount))
+                    .map(|amount| (faucet.clone(), amount))
                     .map_err(|_| format!("max_amount_per_tx for {faucet} is not a decimal amount"))
             })
             .collect::<Result<_, _>>()?;
@@ -104,19 +128,35 @@ impl TryFrom<Params> for Policy {
             (Some(_), Some(_)) => {
                 return Err("signer_allowlist and signer_denylist are mutually exclusive".into());
             }
-            (Some(list), None) => Some(SignerList::Allow(normalized(&list))),
-            (None, Some(list)) => Some(SignerList::Deny(normalized(&list))),
+            (Some(list), None) => Some(SignerList::Allow(ids("signer_allowlist", &list)?)),
+            (None, Some(list)) => Some(SignerList::Deny(ids("signer_denylist", &list)?)),
             (None, None) => None,
         };
         Ok(Self {
             caps,
-            assets: params.asset_allowlist.as_deref().map(normalized),
-            recipients: params.recipient_allowlist.as_deref().map(normalized),
-            blocked_recipients: params.recipient_denylist.as_deref().map(normalized),
+            assets: params
+                .asset_allowlist
+                .as_deref()
+                .map(|list| ids("asset_allowlist", list))
+                .transpose()?,
+            recipients: params
+                .recipient_allowlist
+                .as_deref()
+                .map(|list| ids("recipient_allowlist", list))
+                .transpose()?,
+            blocked_recipients: params
+                .recipient_denylist
+                .as_deref()
+                .map(|list| ids("recipient_denylist", list))
+                .transpose()?,
             deny_unknown_recipients: params.deny_unknown_recipients,
             signers,
             signer_check: params.signer_check,
-            code: params.allowed_code_commitments.as_deref().map(normalized),
+            code: params
+                .allowed_code_commitments
+                .as_deref()
+                .map(|list| ids("allowed_code_commitments", list))
+                .transpose()?,
             code_check: params.code_check,
         })
     }
@@ -774,6 +814,9 @@ mod tests {
     #[tokio::test]
     async fn validate_params_rejects_bad_input() {
         for params in [
+            json!({ "recipient_denylist": ["mtst1qrkd5x7qy0mw0yqzlvqlqd3w9cafjkw"] }),
+            json!({ "max_amount_per_tx": { "faucet": "10" } }),
+            json!({ "signer_denylist": ["0x"] }),
             json!({ "unknown": 1 }),
             json!({ "max_amount_per_tx": { USDC: "ten" } }),
             json!({ "signer_allowlist": [], "signer_denylist": [] }),

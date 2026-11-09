@@ -7,7 +7,11 @@ and scope. Do the [setup](./README.md#setup) first; the catalog is
 
 ## `basic-policy` params
 
-All params are optional; an instance with none allows everything.
+All params are optional; an instance with none allows everything. Write every
+id (faucet, recipient, signer commitment, code commitment) in the `0x` hex form
+the Guardian reports, not as a bech32 address: params with another form are
+refused, since such an id would never match and its rule would not apply.
+Case does not matter.
 
 | Param | Value | Refuses with | Notes |
 |---|---|---|---|

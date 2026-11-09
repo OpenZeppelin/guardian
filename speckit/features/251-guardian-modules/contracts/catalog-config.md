@@ -79,6 +79,8 @@ A secret that cannot be read fails the instance's creation: startup stops for an
 
 ## `basic-policy` params (M2a)
 
+Every id is written in `0x` hex form (case-insensitive); `validate_params` refuses any other form, such as a bech32 address, which would never match a request.
+
 | Param | Type | Effect |
 |---|---|---|
 | `max_amount_per_tx` | map faucet id to decimal string | For each listed faucet, deny if the gross amount sent exceeds it: the sum of that faucet's fungible amounts over every output note, full or partial. Input notes consumed in the same transaction do not offset it, the fee note (`tx_fee`) is not counted, faucets not listed are uncapped, non-fungible assets are not counted (use `asset_allowlist`) |
