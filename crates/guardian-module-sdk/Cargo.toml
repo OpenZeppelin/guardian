@@ -8,6 +8,14 @@ license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 description = "Module interface, protocol types and serving harness for Guardian policy modules"
+readme = "README.md"
+documentation = "https://docs.rs/guardian-module-sdk"
+keywords = ["guardian", "miden", "policy", "grpc", "multisig"]
+categories = ["cryptography::cryptocurrencies", "network-programming"]
+include = ["src/**/*", "proto/**/*", "build.rs", "Cargo.toml", "README.md"]
+
+[package.metadata.docs.rs]
+all-features = true
 
 [dependencies]
 async-trait = "0.1"

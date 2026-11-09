@@ -2,13 +2,12 @@
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
-
 pub mod basic_policy;
 #[cfg(feature = "conformance")]
 pub mod conformance;
 pub mod serve;
 
+pub use async_trait::async_trait;
 pub use prost_types;
 pub use secrecy;
 

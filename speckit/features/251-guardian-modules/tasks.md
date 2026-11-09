@@ -176,8 +176,8 @@
 ### Implementation for User Story 6
 
 - [X] T048 [US6] Secret references through the secrets backend: replace `auth.token_file` and `tls.*_file` in `crates/server/src/modules/catalog.rs` and `crates/server/src/modules/grpc_kind.rs` with secret references resolved when the instance is created, following `docs/runbooks/secrets.md`; resolve `$secret` in in-process params at creation and pass them only to the in-process module, never in a request; keep rejection in remote params, account layers and the operator API; update `speckit/features/251-guardian-modules/contracts/catalog-config.md`
-- [ ] T049 [US6] `examples/policy-module/`: `basic-policy` as a standalone gRPC service through the `serve` harness, with `Cargo.toml`, `README.md` (run, TLS, per-instance token), a `Dockerfile`, and a matching remote catalog entry in `docs/guides/policy-modules/remote.toml`
-- [ ] T050 [US6] Publishable `guardian-module-sdk`: crates.io metadata in `crates/guardian-module-sdk/Cargo.toml`, `crates/guardian-module-sdk/README.md` (module author quick start), and the crate added to the release order of the `release-guardian-sdk-packages` skill
+- [X] T049 [US6] `examples/policy-module/`: `basic-policy` as a standalone gRPC service through the `serve` harness, with `Cargo.toml`, `README.md` (run, TLS, per-instance token), a `Dockerfile`, and a matching remote catalog entry in `docs/guides/policy-modules/remote.toml`
+- [X] T050 [US6] Publishable `guardian-module-sdk`: crates.io metadata in `crates/guardian-module-sdk/Cargo.toml`, `crates/guardian-module-sdk/README.md` (module author quick start), and the crate added to the release order of the `release-guardian-sdk-packages` skill
 - [ ] T051 [US6] Remote module author guide in `docs/guides/policy-modules/custom.md` and `remote.md`: protocol version 1, request fields, `reason_code` rules, `client_message`, `dry_run`, conformance suite, credentials; written so SC-011 holds without reading server code
 
 **Checkpoint**: SC-005 and SC-011 hold; US6 acceptance scenarios 1 to 5 pass.
