@@ -53,6 +53,8 @@ pub struct MockNetworkClient {
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
     pub module_account_view: Arc<StdMutex<Option<guardian_module_sdk::AccountView>>>,
     pub module_projection: Arc<StdMutex<Option<guardian_module_sdk::MidenTransaction>>>,
+    /// Account views and projections built for policy modules.
+    pub module_decodes: Arc<std::sync::atomic::AtomicUsize>,
     /// The block every observed commitment reports it was read at.
     pub observed_block: Arc<StdMutex<u32>>,
     /// How long every observed commitment takes to answer.
@@ -244,6 +246,8 @@ impl NetworkClient for MockNetworkClient {
         &self,
         _state_json: &serde_json::Value,
     ) -> StdResult<guardian_module_sdk::AccountView, String> {
+        self.module_decodes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.module_account_view
             .lock()
             .unwrap()
@@ -255,6 +259,8 @@ impl NetworkClient for MockNetworkClient {
         &self,
         tx_summary: &serde_json::Value,
     ) -> StdResult<crate::network::ModuleTransaction, String> {
+        self.module_decodes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let projection = self
             .module_projection
             .lock()

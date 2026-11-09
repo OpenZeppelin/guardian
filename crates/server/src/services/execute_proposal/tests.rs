@@ -1200,20 +1200,28 @@ async fn gated(
     client_reason: crate::modules::catalog::ClientReason,
 ) -> Fixture {
     use crate::modules::catalog::HookName;
-    use crate::modules::testing::{instance, pipeline};
-    let mut f = Fixture::new(Script::default()).await;
-    let _ = f.chain.clone().with_module_views(
-        guardian_module_sdk::AccountView::default(),
-        guardian_module_sdk::MidenTransaction::default(),
-    );
-    let mut caps = instance(
+    let mut caps = crate::modules::testing::instance(
         "caps",
         &[HookName::BeforeTransactionApproved],
         on_error,
         module,
     );
     caps.config.client_reason = client_reason;
-    f.state.modules = Some(pipeline(vec![caps]));
+    gated_by(caps, guardian_module_sdk::MidenTransaction::default()).await
+}
+
+/// A fixture whose account is evaluated by `module`, the executed transaction's decoded effect
+/// being `projection`.
+async fn gated_by(
+    module: crate::modules::registry::Instance,
+    projection: guardian_module_sdk::MidenTransaction,
+) -> Fixture {
+    let mut f = Fixture::new(Script::default()).await;
+    let _ = f
+        .chain
+        .clone()
+        .with_module_views(guardian_module_sdk::AccountView::default(), projection);
+    f.state.modules = Some(crate::modules::testing::pipeline(vec![module]));
     f
 }
 
@@ -1322,4 +1330,41 @@ async fn an_approving_module_lets_the_execution_through_and_is_recorded_on_the_d
             .is_some(),
         "the approval is recorded on the acknowledged delta"
     );
+}
+
+#[tokio::test]
+async fn a_guardian_execution_over_a_mandatory_cap_is_refused_before_anything_is_proved() {
+    use guardian_shared::execution::ModuleDenial;
+    const USDC: &str = "0xaa00";
+    let cap = crate::modules::testing::instance_with_params(
+        "caps",
+        &[crate::modules::catalog::HookName::BeforeTransactionApproved],
+        Arc::new(guardian_module_sdk::basic_policy::BasicPolicy),
+        serde_json::json!({ "max_amount_per_tx": { USDC: "1000" } }),
+    );
+    let paying_5000 = guardian_module_sdk::MidenTransaction {
+        output_notes: vec![guardian_module_sdk::OutputNote {
+            note_id: "0xnote".into(),
+            assets: vec![guardian_module_sdk::Asset {
+                faucet_id: USDC.into(),
+                value: Some(guardian_module_sdk::proto::asset::Value::FungibleAmount(
+                    "5000".into(),
+                )),
+            }],
+            p2id_target: Some("0xrecipient".into()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let f = gated_by(cap, paying_5000).await;
+    assert_eq!(
+        failed_with(&f).await,
+        ExecutionFailureCode::ModuleDenied(ModuleDenial {
+            module: Some("caps".into()),
+            reason_code: "amount_cap_exceeded".into(),
+            layer: Some("global".into()),
+            client_message: None,
+        })
+    );
+    assert_eq!(f.calls.lock().unwrap().submitted, 0, "nothing is submitted");
 }

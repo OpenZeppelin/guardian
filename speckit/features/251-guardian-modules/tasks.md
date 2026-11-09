@@ -57,8 +57,8 @@
 
 ### Tests for User Story 1
 
-- [ ] T013 [P] [US1] Acceptance suite in `crates/server/src/modules/acceptance_tests.rs` (registered in `crates/server/src/modules/mod.rs`): with a real `basic-policy` cap instance, a transfer under the cap is acked; over the cap is refused with `GUARDIAN_MODULE_DENIED` naming instance and reason code and stores no candidate, through a stored proposal and through an offline push; a Guardian execution over the cap ends `GUARDIAN_EXECUTION_MODULE_DENIED` with nothing proved; a proposal labelled as a threshold change that moves funds is judged on its effect
-- [ ] T014 [P] [US1] No-modules regression: a test in `crates/server/src/modules/acceptance_tests.rs` that a server built without `GUARDIAN_MODULES_CONFIG` never builds a view or projection (spy on the network client) and acks as before; record the zero-module `push_delta` p99 A/B (filesystem, local) in `speckit/features/251-guardian-modules/research.md`
+- [X] T013 [P] [US1] Acceptance suite with a real `basic-policy` cap of 1,000: under the cap is acked; over the cap is refused with `GUARDIAN_MODULE_DENIED` (instance, reason code, layer) and nothing is stored, through a stored proposal and through an offline push without one; a proposal labelled `change_threshold` that moves funds is judged on its effect (`crates/server/src/services/push_delta.rs` tests); a Guardian execution over the cap ends `GUARDIAN_EXECUTION_MODULE_DENIED` with nothing proved or submitted (`crates/server/src/services/execute_proposal/tests.rs`). Placed next to each path's fixtures rather than in a separate file, which would duplicate them
+- [X] T014 [P] [US1] No-modules regression: without a catalog a push builds no account view or projection and records no approval, while the same push with a module does (`MockNetworkClient::module_decodes`, `crates/server/src/services/push_delta.rs`). The p99 A/B against `main` is measured with the other configurations in T059, in one session
 
 ### Implementation for User Story 1
 

@@ -2157,8 +2157,41 @@ mod tests {
         proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
         on_error: crate::modules::catalog::OnError,
     ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        push_through(
+            crate::modules::testing::instance(
+                "caps",
+                &[HookName::BeforeTransactionApproved],
+                on_error,
+                module,
+            ),
+            guardian_module_sdk::MidenTransaction::default(),
+            proposal,
+        )
+        .await
+    }
+
+    /// Pushes a delta whose decoded effect is `projection` to a Guardian running `module`.
+    async fn push_through(
+        module: crate::modules::registry::Instance,
+        projection: guardian_module_sdk::MidenTransaction,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend, String) {
+        let (result, storage, signer, _) = push_on(Some(module), projection, proposal).await;
+        (result, storage, signer)
+    }
+
+    async fn push_on(
+        module: Option<crate::modules::registry::Instance>,
+        projection: guardian_module_sdk::MidenTransaction,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        String,
+        MockNetworkClient,
+    ) {
         use crate::delta_object::DeltaStatus;
-        use crate::modules::testing::{instance, pipeline};
+        use crate::modules::testing::pipeline;
         use crate::state_object::StateObject;
         use crate::testing::helpers::create_test_delta_payload;
 
@@ -2191,7 +2224,7 @@ mod tests {
                     signer_commitments: vec![signer_commitment.clone()],
                     ..Default::default()
                 },
-                guardian_module_sdk::MidenTransaction::default(),
+                projection,
             );
         let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
             account_id: account_id.clone(),
@@ -2208,15 +2241,10 @@ mod tests {
         })));
         let mut state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(network),
+            Arc::new(network.clone()),
             Arc::new(metadata),
         );
-        state.modules = Some(pipeline(vec![instance(
-            "caps",
-            &[HookName::BeforeTransactionApproved],
-            on_error,
-            module,
-        )]));
+        state.modules = module.map(|module| pipeline(vec![module]));
         let params = PushDeltaParams {
             delta: DeltaObject {
                 account_id: account_id.clone(),
@@ -2232,7 +2260,147 @@ mod tests {
             },
             credentials: Credentials::signature(signer_pubkey, signer_signature, signer_timestamp),
         };
-        (push_delta(&state, params).await, storage, signer_commitment)
+        (
+            push_delta(&state, params).await,
+            storage,
+            signer_commitment,
+            network,
+        )
+    }
+
+    #[tokio::test]
+    async fn without_modules_a_push_builds_no_view_or_projection_and_records_no_approval() {
+        let (result, storage, _, network) =
+            push_on(None, paying(5_000), stored_proposal_labelled("p2id")).await;
+        let pushed = result.expect("acknowledged as before modules existed");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        assert_eq!(
+            network
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert!(
+            pushed
+                .delta
+                .metadata
+                .is_none_or(|metadata| metadata.modules.is_none())
+        );
+        let (_, _, _, gated) = push_on(
+            Some(cap_of_1000()),
+            paying(500),
+            stored_proposal_labelled("p2id"),
+        )
+        .await;
+        assert!(
+            gated
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst)
+                > 0,
+            "the same push with a module does build them"
+        );
+    }
+
+    const USDC: &str = "0xaa00";
+
+    fn cap_of_1000() -> crate::modules::registry::Instance {
+        crate::modules::testing::instance_with_params(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            Arc::new(guardian_module_sdk::basic_policy::BasicPolicy),
+            serde_json::json!({ "max_amount_per_tx": { USDC: "1000" } }),
+        )
+    }
+
+    fn paying(amount: u64) -> guardian_module_sdk::MidenTransaction {
+        guardian_module_sdk::MidenTransaction {
+            output_notes: vec![guardian_module_sdk::OutputNote {
+                note_id: "0xnote".into(),
+                assets: vec![guardian_module_sdk::Asset {
+                    faucet_id: USDC.into(),
+                    value: Some(guardian_module_sdk::proto::asset::Value::FungibleAmount(
+                        amount.to_string(),
+                    )),
+                }],
+                p2id_target: Some("0xrecipient".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn stored_proposal_labelled(
+        proposal_type: &'static str,
+    ) -> impl FnOnce(&str) -> std::result::Result<DeltaObject, String> {
+        move |account_id| {
+            Ok(DeltaObject {
+                account_id: account_id.to_string(),
+                nonce: 1,
+                status: crate::delta_object::DeltaStatus::Pending {
+                    timestamp: "2026-05-25T08:00:00Z".into(),
+                    proposer_id: "0xproposer".into(),
+                    cosigner_sigs: Vec::new(),
+                },
+                delta_payload: serde_json::json!({ "metadata": { "proposal_type": proposal_type } }),
+                ..Default::default()
+            })
+        }
+    }
+
+    fn no_stored_proposal(_: &str) -> std::result::Result<DeltaObject, String> {
+        Err("proposal not found".to_string())
+    }
+
+    fn assert_refused_by_the_cap(result: &Result<PushDeltaResult>, storage: &MockStorageBackend) {
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::ModuleDenied { module, reason_code, layer, .. })
+                    if module == "caps" && reason_code == "amount_cap_exceeded" && layer == "global"
+            ),
+            "{result:?}"
+        );
+        assert!(
+            storage.get_submit_delta_calls().is_empty(),
+            "nothing signed or stored"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_payment_under_a_mandatory_cap_is_acknowledged_as_without_modules() {
+        let (result, storage, _) =
+            push_through(cap_of_1000(), paying(500), stored_proposal_labelled("p2id")).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_payment_over_a_mandatory_cap_is_refused_through_a_stored_proposal() {
+        let (result, storage, _) = push_through(
+            cap_of_1000(),
+            paying(5_000),
+            stored_proposal_labelled("p2id"),
+        )
+        .await;
+        assert_refused_by_the_cap(&result, &storage);
+    }
+
+    #[tokio::test]
+    async fn a_payment_over_a_mandatory_cap_signed_offline_is_refused_without_a_proposal() {
+        let (result, storage, _) =
+            push_through(cap_of_1000(), paying(5_000), no_stored_proposal).await;
+        assert_refused_by_the_cap(&result, &storage);
+    }
+
+    #[tokio::test]
+    async fn the_decision_follows_the_effect_not_the_proposal_label() {
+        let (result, storage, _) = push_through(
+            cap_of_1000(),
+            paying(5_000),
+            stored_proposal_labelled("change_threshold"),
+        )
+        .await;
+        assert_refused_by_the_cap(&result, &storage);
     }
 
     #[tokio::test]
