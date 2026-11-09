@@ -1,7 +1,7 @@
 use crate::builder::state::AppState;
 use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
-use crate::metadata::auth::Credentials;
+use crate::metadata::auth::{Credentials, RequestAuthFormat};
 use crate::modules::HookName;
 use crate::modules::request::{self, ProposalContext, StateRef, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
@@ -143,6 +143,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
 
     let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
     ensure_account_active_metadata(&resolved.metadata)?;
+    let credentials_session = credentials.auth_format() == RequestAuthFormat::Session;
     // A dry run is admitted against its rate limit before any reconstruction work, whether
     // or not modules are configured.
     if mode == Mode::DryRun {
@@ -384,7 +385,9 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                 TransactionInput {
                     account_id: &account_id,
                     submitter: &proposer_id,
+                    submitter_session: credentials_session,
                     auth: &resolved.metadata.auth,
+                    network_config: &resolved.metadata.network_config,
                     before: StateRef {
                         commitment: &tail.commitment,
                         json: &tail.state_json,

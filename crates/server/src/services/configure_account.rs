@@ -264,7 +264,9 @@ pub async fn configure_account(
                 RegistrationInput {
                     account_id: &params.account_id,
                     submitter: &signer_commitment,
+                    submitter_session: false,
                     auth: &params.auth,
+                    network_config: &params.network_config,
                     stored_state: stored_state.map(|stored| StateRef {
                         commitment: &stored.commitment,
                         json: &stored.state_json,

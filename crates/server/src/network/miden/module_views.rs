@@ -23,19 +23,23 @@ fn felt_u32(felt: miden_protocol::Felt) -> Result<u32, String> {
     u32::try_from(felt.as_canonical_u64()).map_err(|_| "value does not fit in u32".into())
 }
 
-/// Signers with their schemes, default threshold and procedure thresholds of a multisig account.
-/// An account without the multisig component is single-key: its view carries no signers and no
-/// `default_threshold`, and the caller fills the signer and its scheme from the account's
+/// Code, signers with their schemes, default threshold and effective procedure thresholds of an
+/// account. An account without the multisig component is single-key: its view carries no signers
+/// and no `default_threshold`, and the caller fills the signer and its scheme from the account's
 /// verified auth configuration. A signer whose scheme entry is missing or names no supported
 /// scheme is an error, never a signer without a scheme.
 pub fn account_view(state_json: &serde_json::Value) -> Result<AccountView, String> {
     let account = Account::from_json(state_json)?;
     let storage = account.storage();
+    let code = account.code();
+    let procedure_roots: Vec<String> = code.procedure_roots().map(|root| word_hex(&root)).collect();
 
     let Ok(threshold_config) = storage.get_item(AuthGuardedMultisig::threshold_config_slot())
     else {
         return Ok(AccountView {
             commitment: word_hex(&account.to_commitment()),
+            code_commitment: word_hex(&code.commitment()),
+            procedure_roots,
             ..Default::default()
         });
     };
@@ -79,13 +83,22 @@ pub fn account_view(state_json: &serde_json::Value) -> Result<AccountView, Strin
         })
         .collect::<Result<_, String>>()?;
 
+    // On chain an override applies only to a non-auth procedure the code exports, and zero means
+    // the default; other entries change nothing, so a threshold floor must not see them.
+    let auth_procedure = code.procedure_roots().next();
     let procedure_thresholds = match storage
         .get(AuthGuardedMultisig::procedure_thresholds_slot())
         .map(|slot| slot.content())
     {
         Some(StorageSlotContent::Map(map)) => map
             .entries()
-            .map(|(root, value)| Ok((word_hex(&Word::from(*root)), felt_u32(value[0])?)))
+            .map(|(root, value)| Ok((Word::from(*root), felt_u32(value[0])?)))
+            .filter(|entry| {
+                entry.as_ref().map_or(true, |(root, threshold)| {
+                    *threshold != 0 && code.has_procedure(*root) && Some(*root) != auth_procedure
+                })
+            })
+            .map(|entry| entry.map(|(root, threshold)| (word_hex(&root), threshold)))
             .collect::<Result<_, String>>()?,
         Some(_) => return Err("procedure thresholds slot is not a map".into()),
         None => Default::default(),
@@ -97,6 +110,8 @@ pub fn account_view(state_json: &serde_json::Value) -> Result<AccountView, Strin
         signer_commitments,
         default_threshold: Some(default_threshold),
         procedure_thresholds,
+        code_commitment: word_hex(&code.commitment()),
+        procedure_roots,
         signer_schemes,
     })
 }
@@ -182,9 +197,15 @@ pub fn module_transaction(
     })
 }
 
-fn expiration_block(block_number: u32, expiration_delta: u16) -> Result<u32, String> {
+/// `None` for a transaction without an expiration (delta 0), so "never expires" is not confused
+/// with "expires at the reference block".
+fn expiration_block(block_number: u32, expiration_delta: u16) -> Result<Option<u32>, String> {
+    if expiration_delta == 0 {
+        return Ok(None);
+    }
     block_number
         .checked_add(u32::from(expiration_delta))
+        .map(Some)
         .ok_or_else(|| format!("expiration overflows: block {block_number} + {expiration_delta}"))
 }
 
@@ -236,10 +257,15 @@ fn projection_from_summary(summary: &TransactionSummary) -> Result<MidenTransact
 
     Ok(MidenTransaction {
         nonce_delta: delta.nonce_delta().as_canonical_u64() as i64,
+        reference_block: summary.block_number().as_u32(),
         expiration_block: expiration_block(
             summary.block_number().as_u32(),
             summary.expiration_delta(),
         )?,
+        new_code_commitment: delta
+            .code()
+            .as_code()
+            .map(|code| word_hex(&code.commitment())),
         vault_changes,
         output_notes: summary.output_notes().iter().map(output_note).collect(),
         input_notes: summary
@@ -352,19 +378,43 @@ mod tests {
         assert!(view.commitment.starts_with("0x"));
     }
 
+    fn mock_roots() -> Vec<Word> {
+        AccountCode::mock().procedure_roots().collect()
+    }
+
     #[test]
-    fn view_reads_signers_default_and_procedure_thresholds() {
-        let root = Word::from([7u32, 7, 7, 7]);
+    fn view_reads_signers_default_and_only_effective_procedure_thresholds() {
+        let roots = mock_roots();
+        assert!(roots.len() >= 3, "mock code: auth plus two procedures");
+        let (auth, effective, zeroed) = (roots[0], roots[1], roots[2]);
+        let unexported = Word::from([7u32, 7, 7, 7]);
         let view = account_view(&multisig(
             2,
             3,
             3,
-            vec![(root, Word::from([3u32, 0, 0, 0]))],
+            vec![
+                (effective, Word::from([3u32, 0, 0, 0])),
+                (zeroed, Word::from([0u32, 0, 0, 0])),
+                (auth, Word::from([1u32, 0, 0, 0])),
+                (unexported, Word::from([3u32, 0, 0, 0])),
+            ],
         ))
         .unwrap();
         assert_eq!(view.signer_commitments.len(), 3);
         assert_eq!(view.default_threshold, Some(2));
-        assert_eq!(view.procedure_thresholds.get(&word_hex(&root)), Some(&3));
+        assert_eq!(
+            view.procedure_thresholds,
+            [(word_hex(&effective), 3)].into(),
+            "zero, auth and unexported overrides change nothing on chain"
+        );
+        assert_eq!(
+            view.procedure_roots,
+            roots.iter().map(word_hex).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            view.code_commitment,
+            word_hex(&AccountCode::mock().commitment())
+        );
         assert_eq!(view.signer_schemes.len(), 3);
         assert!(
             view.signer_schemes
@@ -414,6 +464,11 @@ mod tests {
         assert!(!view.commitment.is_empty());
         assert!(view.signer_commitments.is_empty());
         assert_eq!(view.default_threshold, None);
+        assert_eq!(
+            view.code_commitment,
+            word_hex(&AccountCode::mock().commitment())
+        );
+        assert_eq!(view.procedure_roots.len(), mock_roots().len());
     }
 
     #[test]
@@ -453,8 +508,65 @@ mod tests {
 
     #[test]
     fn expiration_overflow_is_an_error() {
-        assert_eq!(expiration_block(10, 5), Ok(15));
+        assert_eq!(expiration_block(10, 5), Ok(Some(15)));
+        assert_eq!(expiration_block(u32::MAX, 0), Ok(None));
         assert!(expiration_block(u32::MAX, 1).is_err());
+    }
+
+    fn summary(code: Option<AccountCode>, expiration_delta: u16) -> TransactionSummary {
+        use miden_protocol::account::{
+            AccountCodePatch, AccountDelta, AccountStoragePatch, AccountVaultDelta,
+        };
+        use miden_protocol::transaction::{InputNotes, RawOutputNotes};
+        let delta = AccountDelta::new(
+            AccountId::dummy(
+                [3u8; 15],
+                AccountIdVersion::Version1,
+                AccountType::Private,
+                miden_protocol::account::AssetCallbackFlag::Disabled,
+            ),
+            AccountStoragePatch::default(),
+            AccountVaultDelta::default(),
+            AccountCodePatch::new(code),
+            miden_protocol::Felt::new_unchecked(1),
+        )
+        .unwrap();
+        TransactionSummary::new(
+            delta,
+            InputNotes::new(vec![]).unwrap(),
+            RawOutputNotes::new(vec![]).unwrap(),
+            miden_protocol::block::BlockNumber::from(100u32),
+            Word::default(),
+            expiration_delta,
+            Default::default(),
+        )
+    }
+
+    #[test]
+    fn projection_carries_the_reference_block_and_an_expiration_only_when_one_is_set() {
+        let expiring = projection_from_summary(&summary(None, 20)).unwrap();
+        assert_eq!(expiring.reference_block, 100);
+        assert_eq!(expiring.expiration_block, Some(120));
+        let open = projection_from_summary(&summary(None, 0)).unwrap();
+        assert_eq!(open.reference_block, 100);
+        assert_eq!(open.expiration_block, None);
+    }
+
+    #[test]
+    fn a_code_replacement_names_the_new_code_commitment() {
+        let code = AccountCode::mock();
+        assert_eq!(
+            projection_from_summary(&summary(Some(code.clone()), 0))
+                .unwrap()
+                .new_code_commitment,
+            Some(word_hex(&code.commitment()))
+        );
+        assert_eq!(
+            projection_from_summary(&summary(None, 0))
+                .unwrap()
+                .new_code_commitment,
+            None
+        );
     }
 
     #[test]

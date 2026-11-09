@@ -37,6 +37,8 @@ pub(super) struct ExecutionJob {
     /// modules evaluate the acknowledgement for. A repeated request joins the running attempt,
     /// which keeps it.
     pub requester: String,
+    /// Whether that request was signed by a delegated session key.
+    pub requester_session: bool,
     pub fence: LeaseFence,
     pub lease: Lease,
     pub elector: Arc<dyn LeaderElector>,
@@ -473,7 +475,8 @@ async fn acknowledge(
         &delta,
         Submitter {
             commitment: &job.requester,
-            auth: &registered.auth,
+            session: job.requester_session,
+            account: &registered,
         },
     )
     .await

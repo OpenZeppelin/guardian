@@ -6,6 +6,7 @@ use guardian_module_sdk::proto::hook_request;
 use guardian_module_sdk::{AccountView, HookRequest, RegistrationSubject, TransactionSubject};
 
 use crate::delta_object::{DeltaObject, DeltaStatus};
+use crate::metadata::NetworkConfig;
 use crate::metadata::auth::Auth;
 use crate::network::NetworkClient;
 
@@ -137,10 +138,21 @@ fn view(
     Ok(view)
 }
 
+/// The account's network within its family, from its registered configuration; modules are not
+/// offered EVM accounts.
+fn network_id(config: &NetworkConfig) -> Result<&'static str, String> {
+    match config {
+        NetworkConfig::Miden { network_type } => Ok(network_type.as_str()),
+        NetworkConfig::Evm { .. } => Err("policy modules do not evaluate EVM accounts".into()),
+    }
+}
+
 pub struct TransactionInput<'a> {
     pub account_id: &'a str,
     pub submitter: &'a str,
+    pub submitter_session: bool,
     pub auth: &'a Auth,
+    pub network_config: &'a NetworkConfig,
     pub before: StateRef<'a>,
     pub after: StateRef<'a>,
     pub tx_summary: &'a serde_json::Value,
@@ -163,9 +175,11 @@ pub fn transaction_request(
     };
     Ok(HookRequest {
         network: "miden".into(),
+        network_id: network_id(input.network_config)?.into(),
         account_id: input.account_id.to_string(),
         accounting_time: Some(timestamp(input.accounting_time)),
         submitter: input.submitter.to_string(),
+        submitter_session: input.submitter_session,
         before: Some(view(network, views, input.before, input.auth)?),
         after: Some(view(network, views, input.after, input.auth)?),
         subject: Some(hook_request::Subject::Transaction(TransactionSubject {
@@ -187,7 +201,9 @@ pub fn transaction_request(
 pub struct RegistrationInput<'a> {
     pub account_id: &'a str,
     pub submitter: &'a str,
+    pub submitter_session: bool,
     pub auth: &'a Auth,
+    pub network_config: &'a NetworkConfig,
     pub stored_state: Option<StateRef<'a>>,
     pub initial_state: StateRef<'a>,
     pub accounting_time: DateTime<Utc>,
@@ -200,9 +216,11 @@ pub fn registration_request(
 ) -> Result<HookRequest, String> {
     Ok(HookRequest {
         network: "miden".into(),
+        network_id: network_id(input.network_config)?.into(),
         account_id: input.account_id.to_string(),
         accounting_time: Some(timestamp(input.accounting_time)),
         submitter: input.submitter.to_string(),
+        submitter_session: input.submitter_session,
         before: input
             .stored_state
             .map(|state| view(network, views, state, input.auth))
@@ -318,6 +336,46 @@ mod tests {
             Some("ecdsa")
         );
         assert_eq!(single.auth_scheme, "ecdsa");
+    }
+
+    #[test]
+    fn requests_name_the_accounts_network_and_refuse_evm_accounts() {
+        use crate::metadata::network::MidenNetworkType;
+        let auth = Auth::MidenFalconRpo {
+            cosigner_commitments: vec!["0xa".into()],
+        };
+        let network = MockNetworkClient::new()
+            .with_module_views(multisig_view(&[("0xa", "falcon")]), Default::default());
+        let request = |config: &NetworkConfig| {
+            registration_request(
+                &network,
+                &ViewCache::default(),
+                RegistrationInput {
+                    account_id: "0xacc",
+                    submitter: "0xa",
+                    submitter_session: false,
+                    auth: &auth,
+                    network_config: config,
+                    stored_state: None,
+                    initial_state: state("0xc1"),
+                    accounting_time: Utc::now(),
+                },
+            )
+        };
+        let testnet = request(&NetworkConfig::Miden {
+            network_type: MidenNetworkType::Testnet,
+        })
+        .unwrap();
+        assert_eq!(testnet.network, "miden");
+        assert_eq!(testnet.network_id, "testnet");
+        assert!(
+            request(&NetworkConfig::Evm {
+                chain_id: 1,
+                account_address: "0x1".into(),
+                multisig_validator_address: "0x2".into(),
+            })
+            .is_err()
+        );
     }
 
     #[test]

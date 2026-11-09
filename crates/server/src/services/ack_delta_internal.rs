@@ -6,7 +6,7 @@ use guardian_shared::SignatureScheme;
 use crate::delta_object::DeltaObject;
 use crate::delta_summary::ModuleApproval;
 use crate::error::Result;
-use crate::metadata::auth::Auth;
+use crate::metadata::AccountMetadata;
 use crate::modules::HookName;
 use crate::modules::request::{self, StateRef, TransactionInput};
 use crate::network::AppliedState;
@@ -20,11 +20,13 @@ pub(crate) struct AcknowledgedDelta {
     pub matched_proposal: bool,
 }
 
-/// The cosigner a Guardian acknowledgment is evaluated for: the one calling `push_delta`, or the
-/// one whose request started a Guardian execution. Policy modules receive it as the submitter.
+/// The cosigner a Guardian acknowledgment is evaluated for, the one calling `push_delta` or the
+/// one whose request started a Guardian execution, and the account it acts on.
 pub(crate) struct Submitter<'a> {
     pub commitment: &'a str,
-    pub auth: &'a Auth,
+    /// Whether the request was signed by a delegated session key rather than the wallet.
+    pub session: bool,
+    pub account: &'a AccountMetadata,
 }
 
 /// Verifies `delta` against the state it builds on, runs the policy modules, derives its
@@ -147,7 +149,9 @@ async fn approve(
             TransactionInput {
                 account_id: &delta.account_id,
                 submitter: submitter.commitment,
-                auth: submitter.auth,
+                submitter_session: submitter.session,
+                auth: &submitter.account.auth,
+                network_config: &submitter.account.network_config,
                 before: base,
                 after: StateRef {
                     commitment: &applied.commitment,

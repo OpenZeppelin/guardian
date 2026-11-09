@@ -216,7 +216,8 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         applied,
         Submitter {
             commitment: &resolved.signer_commitment,
-            auth: &resolved.metadata.auth,
+            session: params.credentials.auth_format() == RequestAuthFormat::Session,
+            account: &resolved.metadata,
         },
         &proposal_match,
     )
@@ -1478,6 +1479,28 @@ mod tests {
         procedure_overrides: &[(miden_protocol::Word, u32)],
         lookup: ProposalLookup,
     ) -> (Result<PushDeltaResult>, MockStorageBackend) {
+        push_on_multisig_gated_by(
+            request_signer,
+            approvers,
+            approver_schemes,
+            threshold,
+            procedure_overrides,
+            lookup,
+            None,
+        )
+        .await
+    }
+
+    /// As `push_on_multisig_signed_by`, with `modules` evaluating the push.
+    async fn push_on_multisig_gated_by(
+        request_signer: RequestSigner,
+        approvers: &[String],
+        approver_schemes: &[guardian_shared::SignatureScheme],
+        threshold: u32,
+        procedure_overrides: &[(miden_protocol::Word, u32)],
+        lookup: ProposalLookup,
+        modules: Option<Arc<crate::modules::pipeline::ModulePipeline>>,
+    ) -> (Result<PushDeltaResult>, MockStorageBackend) {
         use crate::delta_object::DeltaStatus;
         use crate::state_object::StateObject;
         use crate::testing::helpers::TestSigner;
@@ -1539,7 +1562,19 @@ mod tests {
             .with_apply_delta(Ok((
                 serde_json::json!({"new_state": true}),
                 "0xnew_commitment".to_string(),
-            )));
+            )))
+            .with_module_views(
+                guardian_module_sdk::AccountView {
+                    signer_commitments: approvers.to_vec(),
+                    signer_schemes: approvers
+                        .iter()
+                        .map(|approver| (approver.clone(), "falcon".to_string()))
+                        .collect(),
+                    default_threshold: Some(threshold),
+                    ..Default::default()
+                },
+                guardian_module_sdk::MidenTransaction::default(),
+            );
         let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
             account_id: account_id.clone(),
             auth: Auth::MidenFalconRpo {
@@ -1553,11 +1588,12 @@ mod tests {
             paused_reason: None,
             released_at: None,
         })));
-        let state = create_test_app_state_with_mocks(
+        let mut state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
             Arc::new(network),
             Arc::new(metadata),
         );
+        state.modules = modules;
         let credentials = match request_signer {
             RequestSigner::Wallet => {
                 let (signature, timestamp) = caller.sign(&account_id);
@@ -2064,6 +2100,44 @@ mod tests {
         .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn modules_learn_whether_the_submitter_signed_through_a_session() {
+        use crate::modules::testing::{StubModule, instance, pipeline};
+        use crate::testing::helpers::TestSigner;
+
+        for (request_signer, through_session) in [
+            (RequestSigner::Wallet, false),
+            (RequestSigner::Session, true),
+        ] {
+            let first = TestSigner::new();
+            let second = TestSigner::new();
+            let summary = pushed_summary();
+            let module = StubModule::allowing();
+            let (result, _) = push_on_multisig_gated_by(
+                request_signer,
+                &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+                &[],
+                2,
+                &[],
+                ProposalLookup::Signatures(vec![
+                    falcon_approval(&first, &summary),
+                    falcon_approval(&second, &summary),
+                ]),
+                Some(pipeline(vec![instance(
+                    "caps",
+                    &[HookName::BeforeTransactionApproved],
+                    crate::modules::catalog::OnError::Deny,
+                    module.clone(),
+                )])),
+            )
+            .await;
+            assert!(result.is_ok(), "{result:?}");
+            let request = module.last_request().expect("the module was called");
+            assert_eq!(request.submitter_session, through_session);
+            assert_eq!(request.network_id, "local");
+        }
     }
 
     async fn push_with_modules(
