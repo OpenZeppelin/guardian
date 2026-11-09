@@ -139,6 +139,18 @@ pub const DASHBOARD_STATS_REFRESH_FAILURES_TOTAL: &str =
 pub const DASHBOARD_STATS_REFRESH_DURATION_SECONDS: &str =
     "guardian_dashboard_stats_refresh_duration_seconds";
 
+// --- Policy modules -------------------------------------------------------
+
+pub const MODULE_EVALUATE_DURATION_SECONDS: &str = "guardian_module_evaluate_duration_seconds";
+pub const MODULE_FAIL_OPEN_TOTAL: &str = "guardian_module_fail_open_total";
+pub const MODULE_UP: &str = "guardian_module_up";
+pub const MODULE_CIRCUIT_OPEN: &str = "guardian_module_circuit_open";
+pub const MODULE_ENABLED: &str = "guardian_module_enabled";
+pub const MODULE_CONFIG_DRIFT: &str = "guardian_module_config_drift";
+pub const MODULE_CATALOG_INFO: &str = "guardian_module_catalog_info";
+pub const MODULE_OVER_BUDGET_ACCOUNTS: &str = "guardian_module_over_budget_accounts";
+pub const MODULE_ORPHANED_ASSIGNMENTS: &str = "guardian_module_orphaned_assignments";
+
 // --- Build identity ------------------------------------------------------
 
 pub const BUILD_INFO: &str = "guardian_build_info";
@@ -162,6 +174,10 @@ pub const LABEL_GIT_COMMIT: &str = "git_commit";
 pub const LABEL_PROFILE: &str = "profile";
 pub const LABEL_PHASE: &str = "phase";
 pub const LABEL_REASON: &str = "reason";
+/// A policy module instance id; bounded by the operator's catalog.
+pub const LABEL_MODULE: &str = "module";
+/// The loaded module catalog's hash; one value per deploy.
+pub const LABEL_CATALOG_HASH: &str = "catalog_hash";
 
 /// The closed value set for `LABEL_TRANSPORT`: the request transports,
 /// and the block transports of block watch (`stream`, `poll`).
@@ -189,6 +205,8 @@ pub const LABEL_ALLOWLIST: &[&str] = &[
     LABEL_PROFILE,
     LABEL_PHASE,
     LABEL_REASON,
+    LABEL_MODULE,
+    LABEL_CATALOG_HASH,
 ];
 
 /// Metric type, mirroring the Prometheus instrument kinds in use.
@@ -657,6 +675,60 @@ pub const REGISTRY: &[MetricDef] = &[
         labels: &[],
         help: "Wall-clock duration of one /dashboard/stats aggregate refresh \
                (metadata walk, batched state reads, vault decoding).",
+    },
+    MetricDef {
+        name: MODULE_EVALUATE_DURATION_SECONDS,
+        kind: MetricKind::Histogram,
+        labels: &[LABEL_MODULE, LABEL_OUTCOME],
+        help: "Policy module evaluations in seconds, by instance and outcome (allow, deny, error, skipped).",
+    },
+    MetricDef {
+        name: MODULE_FAIL_OPEN_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_MODULE],
+        help: "Policy module failures a fail-open instance let through, by instance.",
+    },
+    MetricDef {
+        name: MODULE_UP,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 when the instance's last health probe succeeded, 0 when it failed.",
+    },
+    MetricDef {
+        name: MODULE_CIRCUIT_OPEN,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 while the instance's circuit breaker is open on this replica.",
+    },
+    MetricDef {
+        name: MODULE_ENABLED,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 when the instance is enabled, 0 when an operator disabled it.",
+    },
+    MetricDef {
+        name: MODULE_CONFIG_DRIFT,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_MODULE],
+        help: "1 when the catalog's enabled flag or params differ from the stored runtime values.",
+    },
+    MetricDef {
+        name: MODULE_CATALOG_INFO,
+        kind: MetricKind::Gauge,
+        labels: &[LABEL_CATALOG_HASH],
+        help: "The module catalog this replica loaded (constant 1).",
+    },
+    MetricDef {
+        name: MODULE_OVER_BUDGET_ACCOUNTS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Accounts whose stored modules could exceed the evaluation budget, found at startup.",
+    },
+    MetricDef {
+        name: MODULE_ORPHANED_ASSIGNMENTS,
+        kind: MetricKind::Gauge,
+        labels: &[],
+        help: "Stored account module rows naming an instance the catalog no longer declares, found at startup.",
     },
 ];
 

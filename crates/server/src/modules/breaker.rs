@@ -105,6 +105,7 @@ impl Breakers {
             Err(_) => return,
         };
         if previous != current {
+            super::metrics::circuit_open(instance, current == CircuitState::Open);
             tracing::warn!(
                 module = instance,
                 from = previous.as_str(),

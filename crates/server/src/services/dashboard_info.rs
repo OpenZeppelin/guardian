@@ -171,6 +171,9 @@ pub struct DashboardBackendInfo {
     /// `None` when running in optimistic-commit mode; `Some(_)` when
     /// the canonicalization worker is active.
     pub canonicalization: Option<DashboardCanonicalizationConfig>,
+    /// Hash of the policy module catalog this replica loaded; `None` when
+    /// no catalog is configured. Replicas of one deploy report the same hash.
+    pub module_catalog_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
@@ -300,6 +303,10 @@ pub async fn get_dashboard_info(state: &AppState) -> Result<DashboardInfoRespons
             }
         }),
         block_watch: block_watch_info(state).await,
+        module_catalog_hash: state
+            .modules
+            .as_ref()
+            .map(|modules| modules.catalog_hash.clone()),
     };
 
     let build = DashboardBuildInfo {
@@ -633,6 +640,19 @@ mod tests {
         let info = get_dashboard_info(&state).await.unwrap();
         assert_eq!(info.backend.storage, "postgres");
         assert_eq!(info.backend.supported_ack_schemes, vec!["ecdsa", "falcon"]);
+    }
+
+    #[tokio::test]
+    async fn backend_reports_the_loaded_module_catalog_and_none_without_one() {
+        let mut state = build_state(Vec::new(), MockStorageBackend::new()).await;
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.backend.module_catalog_hash, None);
+
+        let mut pipeline = crate::modules::ModulePipeline::from_instances(Vec::new());
+        pipeline.catalog_hash = "0xcafe".into();
+        state.modules = Some(std::sync::Arc::new(pipeline));
+        let info = get_dashboard_info(&state).await.unwrap();
+        assert_eq!(info.backend.module_catalog_hash.as_deref(), Some("0xcafe"));
     }
 
     #[tokio::test]

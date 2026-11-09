@@ -996,6 +996,18 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
     backend.blockWatch = parseBlockWatchInfo(blockWatchField);
   }
 
+  // Optional: absent on servers predating policy modules, null without a
+  // module catalog.
+  const catalogHashField = backendRecord.module_catalog_hash;
+  if (catalogHashField === null) {
+    backend.moduleCatalogHash = null;
+  } else if (catalogHashField !== undefined) {
+    if (typeof catalogHashField !== 'string') {
+      throw new Error('dashboard info.backend.module_catalog_hash must be a string or null');
+    }
+    backend.moduleCatalogHash = catalogHashField;
+  }
+
   const accountsByAuthMethod = requireCountMap(
     requireField(record, 'accounts_by_auth_method', 'dashboard info'),
     'dashboard info.accounts_by_auth_method',

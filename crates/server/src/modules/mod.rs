@@ -7,6 +7,7 @@ pub mod check_limit;
 pub mod disclosure;
 pub mod grpc_kind;
 pub mod limits;
+pub mod metrics;
 pub mod pipeline;
 #[cfg(feature = "postgres")]
 pub mod postgres_store;
@@ -66,7 +67,9 @@ pub async fn from_env(
     };
     let pipeline = ModulePipeline::new(catalog, registry, store, now, limits).await?;
     let version = pipeline.store().version().await?;
-    let over_budget = pipeline.report_over_budget().await?;
+    let (over_budget, orphaned) = pipeline.report_stored_assignments().await?;
+    metrics::catalog(&pipeline.catalog_hash);
+    metrics::stored_assignments(over_budget, orphaned);
     let builds = pipeline
         .instances()
         .iter()
@@ -79,6 +82,6 @@ pub async fn from_env(
         })
         .collect::<Vec<_>>()
         .join(", ");
-    tracing::info!(catalog_hash = %pipeline.catalog_hash, params_version = version, %builds, over_budget, "Policy modules loaded");
+    tracing::info!(catalog_hash = %pipeline.catalog_hash, params_version = version, %builds, over_budget, orphaned, "Policy modules loaded");
     Ok(Some(Arc::new(pipeline)))
 }

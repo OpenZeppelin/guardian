@@ -31,6 +31,9 @@ pub struct ModuleInstanceView {
     pub description: Option<String>,
     pub client_reason: ClientReason,
     pub dry_run: bool,
+    /// The instance's circuit breaker on the replica that answered: `closed`, `open` or
+    /// `half_open`.
+    pub circuit: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -197,6 +200,7 @@ async fn instance_view(
         description: instance.config.description.clone(),
         client_reason: instance.config.client_reason,
         dry_run: instance.config.dry_run,
+        circuit: pipeline.breakers().state(&instance.config.id).as_str(),
     })
 }
 
@@ -326,6 +330,7 @@ pub async fn enable(
             .set_enabled(module_id, true, &change(state, operator, reason))
             .await
             .map_err(GuardianError::StorageError)?;
+        super::metrics::enabled(module_id, true);
     }
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": version(pipeline).await? });
     audit(
@@ -361,6 +366,7 @@ pub async fn disable(
             .set_enabled(module_id, false, &change(state, operator, reason))
             .await
             .map_err(GuardianError::StorageError)?;
+        super::metrics::enabled(module_id, false);
     }
     let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": version(pipeline).await? });
     audit(
@@ -668,6 +674,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_catalog_view_shows_each_instance_circuit_on_this_replica() {
+        let state = state();
+        let pipeline = state.modules.as_ref().unwrap();
+        for _ in 0..crate::modules::limits::Limits::default().breaker_failures {
+            pipeline.breakers().failed("blocklist");
+        }
+        let view = catalog_view(&state).await.unwrap();
+        let circuit = |id: &str| {
+            view.modules
+                .iter()
+                .find(|module| module.module_id == id)
+                .unwrap()
+                .circuit
+        };
+        assert_eq!(circuit("blocklist"), "open");
+        assert_eq!(circuit("optional"), "closed");
+    }
+
+    #[tokio::test]
     async fn an_account_write_that_could_exceed_the_budget_is_refused_and_stores_nothing() {
         let mut state = state();
         tight_budget(&mut state);
@@ -740,10 +765,10 @@ mod tests {
                 .modules
                 .as_ref()
                 .unwrap()
-                .report_over_budget()
+                .report_stored_assignments()
                 .await
                 .unwrap(),
-            1
+            (1, 0)
         );
     }
 

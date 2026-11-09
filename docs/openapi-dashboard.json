@@ -2069,6 +2069,13 @@
               }
             ]
           },
+          "module_catalog_hash": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Hash of the policy module catalog this replica loaded; `None` when\nno catalog is configured. Replicas of one deploy report the same hash."
+          },
           "release_sweep": {
             "oneOf": [
               {

@@ -806,6 +806,9 @@ export interface DashboardBackendInfo {
   /** Block watch state; `null` when block watch is disabled, absent on
    * servers predating it. */
   blockWatch?: DashboardBlockWatchInfo | null;
+  /** Hash of the policy module catalog the answering replica loaded; `null`
+   * when no catalog is configured, absent on servers predating modules. */
+  moduleCatalogHash?: string | null;
 }
 
 export interface DashboardInfoResponse {

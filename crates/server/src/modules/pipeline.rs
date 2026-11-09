@@ -129,8 +129,16 @@ impl ModulePipeline {
         let mut effective = HashMap::new();
         for config in &mut catalog.instances {
             let Some((params, enabled)) = stored.get(&config.id) else {
+                super::metrics::enabled(&config.id, config.enabled);
+                super::metrics::config_drift(&config.id, false);
                 continue;
             };
+            super::metrics::enabled(&config.id, *enabled);
+            super::metrics::config_drift(
+                &config.id,
+                *enabled != config.catalog_enabled
+                    || (!config.file_managed_params && *params != config.params),
+            );
             if *enabled != config.catalog_enabled {
                 tracing::warn!(module = %config.id, enabled, "Catalog `enabled` differs from the stored runtime flag; the stored flag applies");
             }
@@ -290,9 +298,14 @@ impl ModulePipeline {
     }
 
     /// Logs every account whose stored modules exceed the budget, without refusing to start: a
-    /// deploy that raised a timeout must not become an outage. Returns their count.
-    pub async fn report_over_budget(&self) -> Result<usize, String> {
+    /// deploy that raised a timeout must not become an outage. Returns the count of those
+    /// accounts and of stored rows naming an instance the catalog no longer declares.
+    pub async fn report_stored_assignments(&self) -> Result<(usize, usize), String> {
         let rows = self.store.all_account_params().await?;
+        let orphaned = rows
+            .iter()
+            .filter(|row| self.instance(&row.module_id).is_none())
+            .count();
         let mut over = 0;
         for account in rows.chunk_by(|a, b| a.account_id == b.account_id) {
             let (hook, total) = self.worst_case(account);
@@ -307,7 +320,7 @@ impl ModulePipeline {
                 );
             }
         }
-        Ok(over)
+        Ok((over, orphaned))
     }
 
     /// One health probe of every enabled instance: `Describe` under its timeout, with the startup
@@ -317,7 +330,10 @@ impl ModulePipeline {
             if !matches!(self.enabled(instance).await, Ok(true)) {
                 continue;
             }
-            match super::registry::describe_healthy(&instance.config, &instance.module).await {
+            let healthy =
+                super::registry::describe_healthy(&instance.config, &instance.module).await;
+            super::metrics::up(&instance.config.id, healthy.is_ok());
+            match healthy {
                 Ok(_) => self.breakers.probe_succeeded(&instance.config.id),
                 Err(error) => tracing::warn!(
                     module = %instance.config.id,
@@ -616,6 +632,11 @@ impl Plan<'_> {
                 None
             };
             if let Some(failure) = unsent {
+                super::metrics::evaluated(
+                    id,
+                    super::metrics::Outcome::Skipped,
+                    std::time::Duration::ZERO,
+                );
                 approval
                     .failed_open
                     .extend(fail(instance, layer, account_id, &failure)?);
@@ -625,19 +646,23 @@ impl Plan<'_> {
             // A call the budget cuts short counts as a timeout, but is not the module's failure.
             let cut_by_budget = remaining < instance.config.timeout;
             let module = instance.module.clone();
+            let started = tokio::time::Instant::now();
             let outcome = isolated(instance.config.timeout.min(remaining), async move {
                 module.evaluate(&request).await
             })
             .await;
+            let took = started.elapsed();
             let failure = match outcome.map(|decision| (effect(&decision), decision)) {
                 Ok((Some(Effect::Allow), _)) => {
                     breakers.answered(id);
+                    super::metrics::evaluated(id, super::metrics::Outcome::Allow, took);
                     continue;
                 }
                 Ok((Some(Effect::Deny), decision))
                     if is_valid_reason_code(&decision.reason_code) =>
                 {
                     breakers.answered(id);
+                    super::metrics::evaluated(id, super::metrics::Outcome::Deny, took);
                     tracing::info!(
                         request_id = %request_id,
                         module = %instance.config.id,
@@ -670,6 +695,7 @@ impl Plan<'_> {
                 }
                 Err(CallError::Timeout) => Failure::Timeout,
             };
+            super::metrics::evaluated(id, super::metrics::Outcome::Error, took);
             if !(cut_by_budget && matches!(failure, Failure::Timeout)) {
                 breakers.failed(id);
             }
@@ -723,6 +749,7 @@ fn fail(
             })
         }
         OnError::Allow => {
+            super::metrics::failed_open(&instance.config.id);
             tracing::warn!(module = %instance.config.id, account_id, %failure, "Policy module failed; continuing (fail-open)");
             Ok(Some(FailedOpen {
                 module_id: instance.config.id.clone(),

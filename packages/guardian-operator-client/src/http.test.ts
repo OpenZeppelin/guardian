@@ -857,6 +857,36 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     }
   });
 
+
+  it('decodes the module catalog hash, absent without modules, and refuses a malformed one', async () => {
+    const info = (backendExtra: Record<string, unknown>) => ({
+      service_status: 'healthy',
+      environment: 'devnet',
+      build: {
+        version: '0.19.0',
+        git_commit: 'abcdef123456',
+        profile: 'release',
+        started_at: '2026-11-09T10:00:00Z',
+      },
+      backend: { storage: 'postgres', supported_ack_schemes: ['ecdsa', 'falcon'], ...backendExtra },
+      total_account_count: 1,
+      accounts_by_auth_method: {},
+      latest_activity: null,
+      delta_status_counts: { candidate: 0, canonical: 0, retained: 0, discarded: 0 },
+      in_flight_proposal_count: 0,
+      degraded_aggregates: [],
+    });
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+
+    mockFetch.mockResolvedValueOnce(okJson(info({ module_catalog_hash: '0xcafe' })));
+    expect((await client.getDashboardInfo()).backend.moduleCatalogHash).toBe('0xcafe');
+    mockFetch.mockResolvedValueOnce(okJson(info({ module_catalog_hash: null })));
+    expect((await client.getDashboardInfo()).backend.moduleCatalogHash).toBeNull();
+    mockFetch.mockResolvedValueOnce(okJson(info({})));
+    expect((await client.getDashboardInfo()).backend.moduleCatalogHash).toBeUndefined();
+    mockFetch.mockResolvedValueOnce(okJson(info({ module_catalog_hash: 7 })));
+    await expect(client.getDashboardInfo()).rejects.toThrow(/module_catalog_hash/);
+  });
   it('passes limit and cursor query params for delta listing', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({ items: [], next_cursor: null }),
