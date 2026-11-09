@@ -435,8 +435,12 @@ impl Plan<'_> {
             params_version,
             failed_open: Vec::new(),
         };
+        let request_id = format!("{:032x}", rand::random::<u128>());
         let base = match build() {
-            Ok(base) => base,
+            Ok(base) => HookRequest {
+                request_id: request_id.clone(),
+                ..base
+            },
             Err(error) => {
                 for (instance, _, layer) in &modules {
                     let failure = Failure::RequestUnavailable(error.clone());
@@ -465,12 +469,16 @@ impl Plan<'_> {
                     if is_valid_reason_code(&decision.reason_code) =>
                 {
                     tracing::info!(
+                        request_id = %request_id,
                         module = %instance.config.id,
                         account_id,
                         ?hook,
+                        submitter = %base.submitter,
                         reason_code = %decision.reason_code,
                         layer = layer.as_str(),
                         message = %decision.message,
+                        catalog_hash = %approval.catalog_hash,
+                        params_version = approval.params_version,
                         client_reason = ?instance.config.client_reason,
                         "Policy module denied the request"
                     );
@@ -1268,6 +1276,107 @@ params = { old_name = 1000 }
                 layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
                 Some("global")
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod evaluation_trace_tests {
+    use guardian_module_sdk::HookRequest;
+
+    use super::*;
+    use crate::modules::catalog::{ClientReason, HookName, OnError};
+    use crate::modules::testing::{StubModule, instance};
+
+    const HOOK: HookName = HookName::BeforeTransactionApproved;
+
+    #[tokio::test]
+    async fn one_invocation_shares_a_request_id_and_the_next_gets_a_new_one() {
+        let first = StubModule::allowing();
+        let second = StubModule::allowing();
+        let pipeline = ModulePipeline::from_instances(vec![
+            instance("first", &[HOOK], OnError::Deny, first.clone()),
+            instance("second", &[HOOK], OnError::Deny, second.clone()),
+        ]);
+        let id = |module: &StubModule| module.last_request().unwrap().request_id;
+
+        pipeline
+            .run(HOOK, "0xacc", || Ok(HookRequest::default()))
+            .await
+            .unwrap();
+        let invocation = id(&first);
+        assert!(!invocation.is_empty());
+        assert_eq!(id(&second), invocation);
+
+        pipeline
+            .run(HOOK, "0xacc", || Ok(HookRequest::default()))
+            .await
+            .unwrap();
+        assert_ne!(id(&first), invocation);
+    }
+
+    #[derive(Clone, Default)]
+    struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+        type Writer = Captured;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_generic_denial_hides_the_decision_from_the_client_but_logs_it_whole() {
+        let captured = Captured::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(captured.clone())
+            .with_ansi(false)
+            .finish();
+        let _pin = crate::testing::log_capture::dispatcher_registry_pin();
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let mut screening = instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::denying("sanctioned_counterparty"),
+        );
+        screening.config.client_reason = ClientReason::Generic;
+        let pipeline = ModulePipeline::from_instances(vec![screening]);
+        let result = pipeline
+            .run(HOOK, "0xacc", || {
+                Ok(HookRequest {
+                    submitter: "0xsubmitter".into(),
+                    ..Default::default()
+                })
+            })
+            .await;
+        assert!(matches!(result, Err(GuardianError::ModuleDeniedGeneric)));
+
+        let log = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
+        for field in [
+            "request_id=",
+            "module=screening",
+            "account_id=\"0xacc\"",
+            "submitter=0xsubmitter",
+            "reason_code=sanctioned_counterparty",
+            "layer=\"global\"",
+            "catalog_hash=",
+            "params_version=",
+        ] {
+            assert!(log.contains(field), "{field} missing from {log}");
         }
     }
 }
