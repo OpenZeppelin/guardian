@@ -21,6 +21,16 @@ pub enum SignerCheck {
     All,
 }
 
+/// Which code `allowed_code_commitments` checks: only code an account registers with or changes
+/// to (`changed`), or the code it runs at every gate hook (`all`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeCheck {
+    #[default]
+    Changed,
+    All,
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Params {
@@ -40,6 +50,10 @@ pub struct Params {
     pub signer_denylist: Option<Vec<String>>,
     #[serde(default)]
     pub signer_check: SignerCheck,
+    #[serde(default)]
+    pub allowed_code_commitments: Option<Vec<String>>,
+    #[serde(default)]
+    pub code_check: CodeCheck,
 }
 
 struct Policy {
@@ -50,6 +64,8 @@ struct Policy {
     deny_unknown_recipients: bool,
     signers: Option<SignerList>,
     signer_check: SignerCheck,
+    code: Option<BTreeSet<String>>,
+    code_check: CodeCheck,
 }
 
 enum SignerList {
@@ -100,6 +116,8 @@ impl TryFrom<Params> for Policy {
             deny_unknown_recipients: params.deny_unknown_recipients,
             signers,
             signer_check: params.signer_check,
+            code: params.allowed_code_commitments.as_deref().map(normalized),
+            code_check: params.code_check,
         })
     }
 }
@@ -123,6 +141,7 @@ enum Rule {
     AssetAllowlist,
     AmountCap,
     Signers,
+    Code,
 }
 
 impl Rule {
@@ -148,6 +167,10 @@ impl Rule {
                 "signer_not_allowed",
                 "The account would have a signer this Guardian does not accept.",
             ),
+            Rule::Code => (
+                "code_not_allowed",
+                "The account would run code this Guardian does not accept.",
+            ),
         };
         Decision::deny(reason_code, logged).with_client_message(client_message)
     }
@@ -168,10 +191,39 @@ impl Policy {
                 return Ok(Rule::Signers.deny(format!("signer {signer} is not permitted")));
             }
         }
+        if let Some(allowed) = &self.code
+            && let Some(code) = self.checked_code(request)?
+            && !allowed.contains(&code.to_ascii_lowercase())
+        {
+            return Ok(Rule::Code.deny(format!("code {code} is not allowed")));
+        }
         match &request.subject {
             Some(hook_request::Subject::Transaction(tx)) => self.evaluate_transaction(tx),
             Some(hook_request::Subject::Registration(_)) => Ok(Decision::allow()),
             None => Err(ModuleError::InvalidRequest("request has no subject".into())),
+        }
+    }
+
+    /// The code commitment `allowed_code_commitments` must list for this request, if any: under
+    /// `changed` the code an account registers with or a transaction replaces its code with,
+    /// under `all` the code the account runs after the request, at every hook.
+    fn checked_code(&self, request: &HookRequest) -> Result<Option<String>, ModuleError> {
+        let after_code = || {
+            request
+                .after
+                .as_ref()
+                .map(|after| after.code_commitment.clone())
+                .ok_or_else(|| ModuleError::InvalidRequest("request has no account view".into()))
+        };
+        match (self.code_check, &request.subject) {
+            (CodeCheck::All, _)
+            | (CodeCheck::Changed, Some(hook_request::Subject::Registration(_))) => {
+                after_code().map(Some)
+            }
+            (CodeCheck::Changed, Some(hook_request::Subject::Transaction(tx))) => Ok(tx
+                .miden()
+                .and_then(|projection| projection.new_code_commitment.clone())),
+            (CodeCheck::Changed, None) => Ok(None),
         }
     }
 
@@ -533,6 +585,96 @@ mod tests {
             decision.message.contains("1000"),
             "details stay in the logged message"
         );
+    }
+
+    const REVIEWED: &str = "0xc0de";
+    const UNREVIEWED: &str = "0xbad";
+
+    fn code_rule(code_check: &str) -> serde_json::Value {
+        json!({ "allowed_code_commitments": [REVIEWED], "code_check": code_check })
+    }
+
+    fn running(mut request: HookRequest, code: &str) -> HookRequest {
+        if let Some(after) = request.after.as_mut() {
+            after.code_commitment = code.into();
+        }
+        request
+    }
+
+    fn registration(params: serde_json::Value, code: &str) -> HookRequest {
+        running(
+            HookRequest {
+                params: serde_json::to_vec(&params).unwrap(),
+                after: Some(view(&["0xs1"])),
+                subject: Some(hook_request::Subject::Registration(
+                    RegistrationSubject::default(),
+                )),
+                ..Default::default()
+            },
+            code,
+        )
+    }
+
+    fn replacing_code_with(code: Option<&str>) -> MidenTransaction {
+        MidenTransaction {
+            new_code_commitment: code.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_code_check_judges_registration_and_code_replacement_only() {
+        let rule = code_rule("changed");
+        assert!(decide(&registration(rule.clone(), REVIEWED)).await.allow);
+        let refused = decide(&registration(rule.clone(), UNREVIEWED)).await;
+        assert_eq!(refused.reason_code, "code_not_allowed");
+        assert!(!refused.client_message.contains(UNREVIEWED));
+
+        let unchanged = running(
+            tx_request(rule.clone(), replacing_code_with(None)),
+            UNREVIEWED,
+        );
+        assert!(
+            decide(&unchanged).await.allow,
+            "code an account already runs is kept until it changes"
+        );
+        let upgrade = tx_request(rule.clone(), replacing_code_with(Some(UNREVIEWED)));
+        assert_eq!(decide(&upgrade).await.reason_code, "code_not_allowed");
+        let reviewed = tx_request(rule, replacing_code_with(Some(REVIEWED)));
+        assert!(decide(&reviewed).await.allow);
+    }
+
+    #[tokio::test]
+    async fn all_code_check_judges_the_code_an_account_runs_at_every_hook() {
+        let rule = code_rule("all");
+        let unchanged = running(
+            tx_request(rule.clone(), replacing_code_with(None)),
+            UNREVIEWED,
+        );
+        assert_eq!(decide(&unchanged).await.reason_code, "code_not_allowed");
+        let upgraded = running(
+            tx_request(rule, replacing_code_with(Some(REVIEWED))),
+            REVIEWED,
+        );
+        assert!(
+            decide(&upgraded).await.allow,
+            "an account on unlisted code can still upgrade to listed code"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_code_check_is_refused_when_the_params_are_written() {
+        let verdict = BasicPolicy
+            .validate_params(
+                &serde_json::to_vec(&json!({
+                    "allowed_code_commitments": [REVIEWED],
+                    "code_check": "sometimes"
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(!verdict.ok);
     }
 
     #[tokio::test]

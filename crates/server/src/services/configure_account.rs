@@ -79,25 +79,7 @@ pub async fn configure_account(
     // it is held to the scheme policy for new accounts and counted as a
     // creation. A failed state read keeps the reconfiguration treatment, so
     // it can never block an account that does have state.
-    let unfinished_claim = match &existing {
-        Some(_) => match state
-            .storage
-            .pull_state_commitment(&params.account_id)
-            .await
-        {
-            Ok(_) => false,
-            Err(e) if crate::storage::is_storage_not_found(&e) => true,
-            Err(e) => {
-                tracing::warn!(
-                    account_id = %params.account_id,
-                    error = %e,
-                    "Could not check for a stored state; treating the account as configured"
-                );
-                false
-            }
-        },
-        None => false,
-    };
+    let unfinished_claim = existing.is_some() && !has_stored_state(state, &params.account_id).await;
     // The GUARDIAN's scheme selects this server's ACK identity for the
     // account; every scheme the account uses, its cosigners' included, is
     // held to the policy for new accounts. A reconfiguration is held to it
@@ -236,51 +218,14 @@ pub async fn configure_account(
         (head, signer_commitment)
     };
 
-    let plan = match state.modules.as_deref() {
-        Some(modules) => {
-            modules
-                .plan(HookName::BeforeAccountRegistered, &params.account_id)
-                .await?
-        }
-        None => None,
-    };
-    if let Some(plan) = plan {
-        let stored_state = match &existing {
-            Some(_) if !unfinished_claim => Some(
-                state
-                    .storage
-                    .pull_state(&params.account_id)
-                    .await
-                    .map_err(|e| format!("stored state unavailable: {e}")),
-            ),
-            _ => None,
-        };
-        let views = plan.views();
-        plan.run(|| {
-            let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
-            request::registration_request(
-                state.network_client.as_ref(),
-                &views,
-                RegistrationInput {
-                    account_id: &params.account_id,
-                    submitter: &signer_commitment,
-                    submitter_session: false,
-                    auth: &params.auth,
-                    network_config: &params.network_config,
-                    stored_state: stored_state.map(|stored| StateRef {
-                        commitment: &stored.commitment,
-                        json: &stored.state_json,
-                    }),
-                    initial_state: StateRef {
-                        commitment: &head.commitment,
-                        json: &params.initial_state,
-                    },
-                    accounting_time: state.clock.now(),
-                },
-            )
-        })
-        .await?;
-    }
+    approve_registration(
+        state,
+        &params,
+        &signer_commitment,
+        &head,
+        existing.is_some() && !unfinished_claim,
+    )
+    .await?;
 
     let now = state.clock.now_rfc3339();
 
@@ -318,11 +263,23 @@ pub async fn configure_account(
         let claimed = state.metadata.get(&params.account_id).await.map_err(|e| {
             GuardianError::StorageError(format!("Failed to re-read account metadata: {e}"))
         })?;
-        Some(claimed.ok_or_else(|| {
+        let claimed = claimed.ok_or_else(|| {
             GuardianError::StorageError(
                 "Account metadata vanished after a concurrent first configuration".to_string(),
             )
-        })?)
+        })?;
+        // The modules judged this request as a new account; it is now a reconfiguration of the
+        // account it lost to, whose modules and stored state differ, so they judge it again
+        // before it consumes anything.
+        approve_registration(
+            state,
+            &params,
+            &signer_commitment,
+            &head,
+            has_stored_state(state, &params.account_id).await,
+        )
+        .await?;
+        Some(claimed)
     } else {
         existing
     };
@@ -608,6 +565,81 @@ fn reject_disallowed_scheme(state: &AppState, scheme: SignatureScheme) -> Result
         scheme: scheme.as_str().to_string(),
         allowed_schemes: allowed.names(),
     })
+}
+
+/// Runs `before_account_registered` for this request: with the stored state as `before` when
+/// `stored`, without one for a first configuration or a claim whose state was never stored.
+async fn approve_registration(
+    state: &AppState,
+    params: &ConfigureAccountParams,
+    signer_commitment: &str,
+    head: &StateHead,
+    stored: bool,
+) -> Result<()> {
+    let plan = match state.modules.as_deref() {
+        Some(modules) => {
+            modules
+                .plan(HookName::BeforeAccountRegistered, &params.account_id)
+                .await?
+        }
+        None => None,
+    };
+    if let Some(plan) = plan {
+        let stored_state = if stored {
+            Some(
+                state
+                    .storage
+                    .pull_state(&params.account_id)
+                    .await
+                    .map_err(|e| format!("stored state unavailable: {e}")),
+            )
+        } else {
+            None
+        };
+        let views = plan.views();
+        plan.run(|| {
+            let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
+            request::registration_request(
+                state.network_client.as_ref(),
+                &views,
+                RegistrationInput {
+                    account_id: &params.account_id,
+                    submitter: signer_commitment,
+                    submitter_session: false,
+                    auth: &params.auth,
+                    network_config: &params.network_config,
+                    stored_state: stored_state.map(|stored| StateRef {
+                        commitment: &stored.commitment,
+                        json: &stored.state_json,
+                    }),
+                    initial_state: StateRef {
+                        commitment: &head.commitment,
+                        json: &params.initial_state,
+                    },
+                    accounting_time: state.clock.now(),
+                },
+            )
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+/// Whether the account has a stored state. A failed read counts as stored, so it can never make
+/// an account with state look unconfigured.
+async fn has_stored_state(state: &AppState, account_id: &str) -> bool {
+    match state.storage.pull_state_commitment(account_id).await {
+        Ok(_) => true,
+        Err(e) if crate::storage::is_storage_not_found(&e) => false,
+        Err(e) => {
+            tracing::warn!(
+                account_id = %account_id,
+                error = %e,
+                "Could not check for a stored state; treating the account as configured"
+            );
+            true
+        }
+    }
 }
 
 /// The stored state's commitment and nonce, or `None` when the account has
@@ -3585,5 +3617,136 @@ mod tests {
         let run =
             configure_with_module(existing_account(false, true), StubModule::denying("no")).await;
         assert_nothing_written(&run);
+    }
+
+    /// Allows the first evaluation and denies every later one.
+    #[derive(Default)]
+    struct AllowsOnce {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl guardian_module_sdk::Module for AllowsOnce {
+        async fn describe(
+            &self,
+            _guardian: &guardian_module_sdk::DescribeRequest,
+        ) -> std::result::Result<guardian_module_sdk::ModuleInfo, guardian_module_sdk::ModuleError>
+        {
+            Ok(Default::default())
+        }
+
+        async fn validate_params(
+            &self,
+            _params: &[u8],
+        ) -> std::result::Result<guardian_module_sdk::ParamsVerdict, guardian_module_sdk::ModuleError>
+        {
+            Ok(guardian_module_sdk::ParamsVerdict::ok())
+        }
+
+        async fn evaluate(
+            &self,
+            _request: &guardian_module_sdk::HookRequest,
+        ) -> std::result::Result<guardian_module_sdk::Decision, guardian_module_sdk::ModuleError>
+        {
+            Ok(
+                match self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                    0 => guardian_module_sdk::Decision::allow(),
+                    _ => guardian_module_sdk::Decision::deny("signer_not_allowed", "re-run"),
+                },
+            )
+        }
+    }
+
+    /// A first configuration that loses its claim to an account another request created
+    /// meanwhile, judged by `module` at `before_account_registered`.
+    async fn lose_the_claim_under(
+        module: Arc<dyn guardian_module_sdk::Module>,
+    ) -> (
+        Result<ConfigureAccountResult>,
+        MockMetadataStore,
+        MockStorageBackend,
+    ) {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{instance, pipeline};
+        use crate::testing::helpers::generate_falcon_signature;
+
+        let account_id = "0x1d1d1d1c1d1d1d011d1d1d1d1d1d1d";
+        let (pubkey, commitment, signature, timestamp) = generate_falcon_signature(account_id);
+        let winner = AccountMetadata {
+            created_at: "2023-06-01T00:00:00Z".into(),
+            ..claimed_metadata(account_id, &commitment)
+        };
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(winner)))
+            .with_get(Ok(None))
+            .with_create(Ok(false))
+            .with_update_timestamp_cas(Ok(true));
+        let storage = MockStorageBackend::new();
+        let mut state = create_test_app_state(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_get_state_head(Ok(head("0x1234", 3)))
+                .with_module_views(
+                    guardian_module_sdk::AccountView {
+                        signer_commitments: vec![commitment.clone()],
+                        ..Default::default()
+                    },
+                    guardian_module_sdk::MidenTransaction::default(),
+                ),
+            storage.clone(),
+            metadata.clone(),
+        )
+        .await;
+        state.modules = Some(pipeline(vec![instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            OnError::Deny,
+            module,
+        )]));
+        let initial_state =
+            serde_json::from_str(include_str!("../testing/fixtures/account.json")).unwrap();
+        let result = configure_account(
+            &state,
+            ConfigureAccountParams {
+                account_id: account_id.to_string(),
+                auth: Auth::MidenFalconRpo {
+                    cosigner_commitments: vec![commitment],
+                },
+                network_config: crate::metadata::NetworkConfig::miden_default(),
+                initial_state,
+                credential: Credentials::signature(pubkey, signature, timestamp),
+            },
+        )
+        .await;
+        (result, metadata, storage)
+    }
+
+    #[tokio::test]
+    async fn a_lost_claim_is_judged_again_against_the_winners_account() {
+        let module = crate::modules::testing::StubModule::allowing();
+        let (result, _, storage) = lose_the_claim_under(module.clone()).await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            module.calls(),
+            2,
+            "once as a new account, once as a reconfiguration of the winner's"
+        );
+        assert_eq!(storage.get_submit_state_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_lost_claim_refused_on_the_second_judgement_consumes_and_stores_nothing() {
+        let (result, metadata, storage) =
+            lose_the_claim_under(Arc::new(AllowsOnce::default())).await;
+        assert!(
+            matches!(&result, Err(GuardianError::ModuleDenied { reason_code, .. }) if reason_code == "signer_not_allowed"),
+            "{result:?}"
+        );
+        assert!(
+            metadata.get_update_timestamp_cas_calls().is_empty(),
+            "the replay timestamp is not consumed, so the request can be sent again"
+        );
+        assert!(storage.get_submit_state_calls().is_empty());
+        assert!(metadata.get_set_calls().is_empty());
     }
 }

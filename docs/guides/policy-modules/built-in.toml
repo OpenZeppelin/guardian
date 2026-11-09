@@ -38,6 +38,19 @@ timeout_ms = 50
 on_error = "deny"
 params = { signer_check = "added", signer_denylist = ["0xdededededededededededededededededededededededededededededededede"] }
 
+# Code pinning (uncomment after reviewing the account code you accept): an account must
+# register with a listed code commitment, and a transaction that replaces its code must
+# replace it with listed code. With code_check = "all", every gate hook checks the code the
+# account runs, so an account on unlisted code can only upgrade.
+# [[module]]
+# id = "reviewed-code"
+# kind = "basic-policy"
+# scope = "all"
+# hooks = ["before_account_registered", "before_proposal_created", "before_transaction_approved"]
+# timeout_ms = 50
+# on_error = "deny"
+# params = { code_check = "changed", allowed_code_commitments = ["0xREPLACE_WITH_REVIEWED_CODE_COMMITMENT"] }
+
 # Opt-in module: applies only to accounts an operator assigns it to, with their own params.
 [[module]]
 id = "treasury-allowlist"

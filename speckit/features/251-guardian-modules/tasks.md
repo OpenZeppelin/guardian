@@ -99,13 +99,13 @@
 
 ### Tests for User Story 3
 
-- [ ] T023 [P] [US3] Registration races in `crates/server/src/services/configure_account.rs` tests: a losing first configuration is evaluated again against the winner's assignment before it consumes anything; a denied first configuration claims nothing; a denied re-onboarding leaves released state, metadata and assignment unchanged; a mixed-scheme account's registration request carries `signer_schemes` for every signer
+- [X] T023 [P] [US3] Registration races in `crates/server/src/services/configure_account.rs` tests: a losing first configuration is evaluated again against the winner's assignment before it consumes anything; a denied first configuration claims nothing; a denied re-onboarding leaves released state, metadata and assignment unchanged; a mixed-scheme account's registration request carries `signer_schemes` for every signer
 
 ### Implementation for User Story 3
 
-- [ ] T024 [US3] Registration per RFC section 2.3 "Registration" in `crates/server/src/services/configure_account.rs`: for a lost claim, re-plan and re-run the pipeline against the winning account (unfinished claim or existing account) before `consume_auth_timestamp`; keep the hook before the claim (P0 T085)
-- [ ] T025 [US3] `basic-policy` `allowed_code_commitments` with `code_check` (`changed` or `current`, reason code `code_not_allowed`) in `crates/guardian-module-sdk/src/basic_policy.rs`, reading `AccountView.code_commitment` and `MidenTransaction.new_code_commitment`; params validation and tests at registration and at code replacement (P0 T093)
-- [ ] T026 [US3] Document the code allowlist and signer modes in `docs/guides/policy-modules/built-in.md` and its `built-in.toml`
+- [X] T024 [US3] Registration per RFC section 2.3 "Registration" in `crates/server/src/services/configure_account.rs`: for a lost claim, re-plan and re-run the pipeline against the winning account (unfinished claim or existing account) before `consume_auth_timestamp`; keep the hook before the claim (P0 T085)
+- [X] T025 [US3] `basic-policy` `allowed_code_commitments` with `code_check` (`changed` or `current`, reason code `code_not_allowed`) in `crates/guardian-module-sdk/src/basic_policy.rs`, reading `AccountView.code_commitment` and `MidenTransaction.new_code_commitment`; params validation and tests at registration and at code replacement (P0 T093)
+- [X] T026 [US3] Document the code allowlist and signer modes in `docs/guides/policy-modules/built-in.md` and its `built-in.toml`
 
 **Checkpoint**: US3 acceptance scenarios 1 to 5 pass, and the code allowlist is in `basic-policy`.
 

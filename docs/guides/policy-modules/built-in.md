@@ -18,9 +18,11 @@ All params are optional; an instance with none allows everything.
 | `deny_unknown_recipients` | `true` / `false` | `recipient_blocked` | With `recipient_denylist`: also refuses payment notes whose recipient the Guardian cannot identify (not P2ID or P2IDE). |
 | `signer_allowlist` or `signer_denylist` | `["<signer commitment>", ...]` | `signer_not_allowed` | Mutually exclusive. |
 | `signer_check` | `"added"` (default) or `"all"` | | `added` checks only signers a transaction adds; `all` checks every signer after it. |
+| `allowed_code_commitments` | `["<code commitment>", ...]` | `code_not_allowed` | Pins accounts to account code you reviewed. The Guardian does not check an account's code itself, so a module verdict is only as good as the code that requires the Guardian's signature. |
+| `code_check` | `"changed"` (default) or `"all"` | | `changed` checks the code an account registers with and code a transaction replaces it with, so accounts already on other code keep working until they change it; `all` checks the code the account runs at every hook, so an account on unlisted code can only upgrade to listed code. |
 
-Signer rules apply at all three hooks, including registration. Transaction
-rules (caps, assets, recipients) apply to proposals and approvals.
+Signer and code rules apply at all three hooks, including registration.
+Transaction rules (caps, assets, recipients) apply to proposals and approvals.
 
 Each refusal carries a fixed `client_message` naming the rule (for example
 "The transaction sends more than this Guardian allows per transaction."),
