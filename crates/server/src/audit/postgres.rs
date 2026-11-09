@@ -8,6 +8,7 @@
 //!
 //! Available only with the `postgres` Cargo feature.
 
+use crate::storage::postgres::TimedCheckout;
 use std::sync::Arc;
 
 use diesel::prelude::*;
@@ -85,7 +86,7 @@ impl PostgresAuditor {
             let outcome = event.outcome.as_str();
             let result = async {
                 let mut conn = pool
-                    .get()
+                    .get_timed(crate::metrics::labels::PoolKind::Metadata)
                     .await
                     .map_err(|error| format!("audit pool: {error}"))?;
                 let new_row = NewAdminAction {

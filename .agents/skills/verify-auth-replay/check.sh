@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # Model-check Guardian's signed-request replay protection (model/AuthReplay.tla).
 #
-#   check.sh                 quick tier, under a minute
-#   check.sh --deep          adds a wallet-plus-session cell, about 6 more min
+#   check.sh                 quick tier, about 2 minutes
+#   check.sh --deep          adds the wallet-plus-session cell and the session
+#                            read cells, over an hour more
 #   check.sh --cell <cell> <group>
 #                            run one cell, print TLC's full output and trace
 #   check.sh --drift-only    only compare the mirrored code with fingerprints.txt,
 #                            without running TLC (exit 0 no drift, 3 drift)
 #   check.sh --accept-drift  re-record fingerprints.txt once the model has
-#                            been reviewed against the changed Rust
+#                            been reviewed against the changed code
 #
 # Groups: "accept" checks AcceptedAtMostOnce and FloorsOnlyRise; "writes"
 # checks WritesAtMostOnce; "all" checks all three in one run.
 #
 # Exit codes: 0 every cell matches expected.txt and no drift; 1 a cell
-# differs from expected.txt; 2 setup error; 3 cells match but Rust the
+# differs from expected.txt; 2 setup error; 3 cells match but code the
 # model mirrors changed since fingerprints.txt was recorded.
 set -euo pipefail
 
@@ -38,7 +39,7 @@ if [[ "${1:-}" == "--drift-only" ]]; then
     echo "No drift: $(wc -l < "$SKILL_DIR/fingerprints.txt" | tr -d ' ') mirrored functions match fingerprints.txt."
     exit 0
   fi
-  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
+  echo "DRIFT: code that the model mirrors changed since fingerprints.txt was recorded:"
   { grep -E '^[-+][^-+]' <<< "$drift" || true; } | sed 's/^/  /'
   echo "Review the matching actions in model/AuthReplay.tla, then run check.sh --accept-drift."
   exit 3
@@ -100,17 +101,30 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/auth-replay-tlc.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 
 # Cell parameters: scenario, signing keys, request kinds, MaxRequests,
-# MaxTime, MaxStall. Skew = 1 and Ttl = 2 clock units throughout, so a
-# MaxStall of 3 is "a handler finishes within max TTL plus skew" and 99 is
-# unbounded (the code today).
+# MaxTime, MaxStall, FloorChecks. Skew = 1 and Ttl = 2 clock
+# units throughout, so a MaxStall of 3 is "a handler finishes within max TTL
+# plus skew" and 99 is unbounded (the code today: nothing bounds a handler).
+# FloorChecks FALSE removes the session floor's freshness and fence checks,
+# which reproduces F2. Nonce cells add NonceRecheck, NonceLiveCheck, Skew and
+# NonceFuture (defaults TRUE, TRUE, 1, 0); FALSE switches the serving call's
+# window or session check off.
 cell_params() {
   case "$1" in
-    configure-fresh)     echo 'fresh|{"s1", "s2"}|{"configure", "push"}|2|4|3' ;;
-    configure-existing)  echo 'existing|{"s1", "s2"}|{"configure", "push"}|2|4|3' ;;
-    migrated)            echo 'migrated|{"s1", "s2"}|{"configure", "push"}|2|4|3' ;;
-    session-bounded)     echo 'existing|{"sess"}|{"push"}|1|6|3' ;;
-    session-unbounded)   echo 'existing|{"sess"}|{"push"}|1|6|99' ;;
-    session-mixed)       echo 'existing|{"s1", "sess"}|{"configure", "push"}|2|6|3' ;;
+    configure-fresh)     echo 'fresh|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
+    configure-existing)  echo 'existing|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
+    migrated)            echo 'migrated|{"s1", "s2"}|{"configure", "push"}|2|4|3|TRUE' ;;
+    session-bounded)     echo 'existing|{"sess"}|{"push"}|1|6|3|TRUE' ;;
+    session-unbounded)   echo 'existing|{"sess"}|{"push"}|1|6|99|TRUE' ;;
+    session-unbounded-unfenced) echo 'existing|{"sess"}|{"push"}|1|6|99|FALSE' ;;
+    session-mixed)       echo 'existing|{"s1", "sess"}|{"configure", "push"}|2|6|3|TRUE' ;;
+    session-reads-writes) echo 'existing|{"sess"}|{"read", "push"}|2|6|3|TRUE' ;;
+    session-reads)       echo 'existing|{"sess"}|{"read"}|2|6|99|TRUE' ;;
+    session-reads-quick) echo 'existing|{"sess"}|{"read"}|1|4|3|TRUE' ;;
+    session-nonce-quick) echo 'existing|{"sess"}|{"nonce"}|2|4|3|TRUE|TRUE' ;;
+    session-nonce-future) echo 'existing|{"sess"}|{"nonce"}|2|5|99|TRUE|TRUE|TRUE|2|1' ;;
+    session-nonce-unchecked) echo 'existing|{"sess"}|{"nonce"}|1|5|99|TRUE|FALSE' ;;
+    session-nonce-unlive) echo 'existing|{"sess"}|{"nonce"}|1|5|99|TRUE|TRUE|FALSE' ;;
+    session-nonce-mixed) echo 'existing|{"s1", "sess"}|{"nonce", "read"}|2|5|99|TRUE|TRUE' ;;
     *) echo "unknown cell $1" >&2; return 2 ;;
   esac
 }
@@ -131,11 +145,12 @@ run_cell() {
   local cell="$1" group="$2" out="$3"
   local dir="$WORK/$cell-$group" params checks
   params="$(cell_params "$cell")"
-  IFS='|' read -r scenario keys kinds max_requests max_time max_stall <<< "$params"
+  IFS='|' read -r scenario keys kinds max_requests max_time max_stall floor_checks nonce_recheck nonce_live skew nonce_future <<< "$params"
   case "$group" in
     accept) checks=$'INVARIANT AcceptedAtMostOnce\nPROPERTY FloorsOnlyRise' ;;
     writes) checks='INVARIANT WritesAtMostOnce' ;;
     all) checks=$'INVARIANT AcceptedAtMostOnce WritesAtMostOnce\nPROPERTY FloorsOnlyRise' ;;
+    nonce) checks=$'INVARIANT AcceptedAtMostOnce NonceLeavesReplayState NonceServedOnlyLiveInWindow\nPROPERTY FloorsOnlyRise' ;;
     *) echo "unknown group $group" >&2; return 2 ;;
   esac
   mkdir -p "$dir"
@@ -146,12 +161,16 @@ CONSTANTS
     Handlers = {h1, h2}
     MaxRequests = $max_requests
     MaxTime = $max_time
-    Skew = 1
+    Skew = ${skew:-1}
     Ttl = 2
     SignKeys = $keys
     Kinds = $kinds
     MaxStall = $max_stall
     Scenario = "$scenario"
+    FloorChecks = $floor_checks
+    NonceFuture = ${nonce_future:-0}
+    NonceRecheck = ${nonce_recheck:-TRUE}
+    NonceLiveCheck = ${nonce_live:-TRUE}
 SYMMETRY Perms
 SPECIFICATION Spec
 $checks
@@ -215,7 +234,7 @@ done < "$SKILL_DIR/expected.txt"
 
 if ! diff -u "$SKILL_DIR/fingerprints.txt" <(fingerprints) > "$WORK/drift.diff"; then
   echo
-  echo "DRIFT: Rust that the model mirrors changed since fingerprints.txt was recorded:"
+  echo "DRIFT: code that the model mirrors changed since fingerprints.txt was recorded:"
   { grep -E '^[-+][^-+]' "$WORK/drift.diff" || true; } | sed 's/^/  /'
   echo "Review the matching actions in model/AuthReplay.tla, then run check.sh --accept-drift."
   [[ $status -eq 0 ]] && status=3

@@ -30,3 +30,6 @@ profile = "dev"
 region = "us-east-1"
 ecs_cluster = "guardian-prod-cluster"
 ecs_service = "guardian-prod-server"
+
+[credential]
+kind = "wallet"

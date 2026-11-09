@@ -61,6 +61,9 @@ impl ExecutionStatus {
 pub struct SessionsStatus {
     /// Grants may expire at most this many seconds after registration.
     pub max_ttl_seconds: u64,
+    /// How session requests must be signed.
+    #[serde(flatten)]
+    pub request_policy: crate::session::SessionRequestPolicy,
 }
 
 /// Assemble the status response. Pure so it is unit-testable without an
@@ -93,6 +96,7 @@ mod tests {
     fn sessions() -> SessionsStatus {
         SessionsStatus {
             max_ttl_seconds: 28_800,
+            request_policy: crate::session::MidenSessions::default().request_policy(),
         }
     }
 

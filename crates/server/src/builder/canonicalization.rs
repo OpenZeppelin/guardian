@@ -8,6 +8,35 @@ pub const ENV_FAST_PROMOTION_ENABLED: &str = "GUARDIAN_CANONICALIZATION_FAST_PRO
 /// Environment override for [`CanonicalizationConfig::max_concurrent_accounts`].
 pub const ENV_MAX_CONCURRENT_ACCOUNTS: &str = "GUARDIAN_CANONICALIZATION_MAX_CONCURRENT_ACCOUNTS";
 
+/// Environment override for [`CanonicalizationConfig::rebuild_admission`].
+pub const ENV_REBUILD_ADMISSION: &str = "GUARDIAN_CANONICALIZATION_REBUILD_ADMISSION";
+
+/// How many background reconstructions the canonicalization worker may run
+/// at once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RebuildAdmission {
+    /// Every reconstruction slot but one, so a `push_delta` never waits for
+    /// background rebuilds to free a slot; one on hosts with two slots or
+    /// fewer (4 vCPU or fewer).
+    LeaveOneForPushes,
+    /// This many, capped at the host's reconstruction slots.
+    Fixed(usize),
+}
+
+impl RebuildAdmission {
+    /// The admission for a host with `cpu_slots` reconstruction slots.
+    pub fn for_slots(self, cpu_slots: usize) -> usize {
+        match self {
+            Self::LeaveOneForPushes => cpu_slots.saturating_sub(1).max(1),
+            Self::Fixed(count) => count,
+        }
+    }
+}
+
+/// Upper bound accepted for [`CanonicalizationConfig::rebuild_admission`];
+/// the effective value is further capped at half the host's cores.
+pub const MAX_REBUILD_ADMISSION: usize = 64;
+
 /// Environment override for [`CanonicalizationConfig::retained_ttl_seconds`].
 /// `0` is the runtime kill switch: retention is disabled and the historical
 /// delete-on-exhaustion behavior is restored without a recompile.
@@ -129,6 +158,11 @@ pub struct CanonicalizationConfig {
     /// from the canonical state (one delta application per queued
     /// candidate), so this also bounds per-push reconstruction cost.
     pub max_pending_candidates_per_account: usize,
+
+    /// How many background state reconstructions the worker may run at
+    /// once, out of the process-wide reconstruction limit (half the host's
+    /// cores) that `push_delta` shares.
+    pub rebuild_admission: RebuildAdmission,
 }
 
 impl Default for CanonicalizationConfig {
@@ -148,6 +182,7 @@ impl Default for CanonicalizationConfig {
             reconcile_page_size: 100,             // Accounts per reconcile pass; cursor rotates
             max_concurrent_accounts: Stage::Dev.default_canonicalization_max_concurrent_accounts(),
             max_pending_candidates_per_account: DEFAULT_MAX_PENDING_CANDIDATES_PER_ACCOUNT,
+            rebuild_admission: RebuildAdmission::LeaveOneForPushes,
         }
     }
 }
@@ -377,6 +412,47 @@ impl CanonicalizationConfig {
         }
     }
 
+    /// Override how many background reconstructions may run at once.
+    pub fn with_rebuild_admission(mut self, admission: RebuildAdmission) -> Self {
+        if let RebuildAdmission::Fixed(count) = admission {
+            assert!(
+                (1..=MAX_REBUILD_ADMISSION).contains(&count),
+                "rebuild_admission must be between 1 and {MAX_REBUILD_ADMISSION}"
+            );
+        }
+        self.rebuild_admission = admission;
+        self
+    }
+
+    /// Apply the [`ENV_REBUILD_ADMISSION`] override when set; a
+    /// present-but-invalid value fails startup.
+    pub fn with_rebuild_admission_from_env(self) -> Result<Self, String> {
+        self.rebuild_admission_from_var(ENV_REBUILD_ADMISSION)
+    }
+
+    fn rebuild_admission_from_var(self, var_name: &str) -> Result<Self, String> {
+        match std::env::var(var_name) {
+            Ok(value) => {
+                if value.trim() == "auto" {
+                    return Ok(self.with_rebuild_admission(RebuildAdmission::LeaveOneForPushes));
+                }
+                let admission = value.trim().parse::<usize>().map_err(|_| {
+                    format!("{var_name} must be 'auto' or a positive integer, got '{value}'")
+                })?;
+                if !(1..=MAX_REBUILD_ADMISSION).contains(&admission) {
+                    return Err(format!(
+                        "{var_name} must be between 1 and {MAX_REBUILD_ADMISSION}, got {admission}"
+                    ));
+                }
+                Ok(self.with_rebuild_admission(RebuildAdmission::Fixed(admission)))
+            }
+            Err(std::env::VarError::NotPresent) => Ok(self),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                Err(format!("{var_name} contains invalid UTF-8"))
+            }
+        }
+    }
+
     /// Override how many candidate deltas one account may queue (issue
     /// #17). `1` reproduces the historical one-in-flight behavior.
     pub fn with_max_pending_candidates_per_account(mut self, depth: usize) -> Self {
@@ -460,6 +536,47 @@ mod tests {
                 .fast_promotion_enabled_from_var(var_name)
                 .is_err()
         );
+
+        unsafe { std::env::remove_var(var_name) };
+    }
+
+    #[test]
+    fn leaving_one_slot_for_pushes_changes_nothing_up_to_four_vcpu() {
+        let auto = RebuildAdmission::LeaveOneForPushes;
+        assert_eq!(
+            [1, 2, 4, 8].map(|slots| auto.for_slots(slots)),
+            [1, 1, 3, 7]
+        );
+        assert_eq!(RebuildAdmission::Fixed(2).for_slots(8), 2);
+    }
+
+    #[test]
+    fn rebuild_admission_env_accepts_the_range_and_rejects_the_rest() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        let var_name = "GUARDIAN_CANON_REBUILD_ADMISSION_TEST";
+        let parse = |value: Option<&str>| {
+            match value {
+                Some(value) => unsafe { std::env::set_var(var_name, value) },
+                None => unsafe { std::env::remove_var(var_name) },
+            }
+            CanonicalizationConfig::default().rebuild_admission_from_var(var_name)
+        };
+
+        assert_eq!(
+            parse(None).unwrap().rebuild_admission,
+            RebuildAdmission::LeaveOneForPushes
+        );
+        assert_eq!(
+            parse(Some("auto")).unwrap().rebuild_admission,
+            RebuildAdmission::LeaveOneForPushes
+        );
+        assert_eq!(
+            parse(Some(" 4 ")).unwrap().rebuild_admission,
+            RebuildAdmission::Fixed(4)
+        );
+        assert!(parse(Some("0")).is_err());
+        assert!(parse(Some("65")).is_err());
+        assert!(parse(Some("two")).is_err());
 
         unsafe { std::env::remove_var(var_name) };
     }

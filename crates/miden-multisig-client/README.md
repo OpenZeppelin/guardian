@@ -168,6 +168,17 @@ logs out the one it replaces, and `set_guardian_endpoint` drops the session.
 not yet registered can still be registered for about 10 minutes, so run it
 again 10 minutes later when a key may be compromised.
 
+Sessions sign the version 2 request format, which binds each request to its
+transport and route. Upgrade the Guardian and this SDK together: a Guardian
+that does not report `request_auth_version: 2` is refused when the session
+starts (the new session is logged out), and a Guardian of this version
+refuses session requests from older SDKs with `unsupported_auth_version`.
+Neither side falls back to the other format or to the key manager. Session
+reads must be within 60 s of server time and session writes within 5
+minutes; a request outside its window fails with `timestamp_out_of_window`
+and the session is kept, so sync the clock. See
+[`docs/MIDEN_COMPATIBILITY.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
+
 ## Configuration
 
 Beyond the endpoints and the account directory, the builder carries three

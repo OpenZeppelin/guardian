@@ -21,6 +21,9 @@ pub struct RunConfig {
     pub accounts_per_user: u32,
     pub deployment_shape: Option<String>,
     pub operation_mix: OperationMix,
+    pub credential: Credential,
+    #[serde(default)]
+    pub roles: Option<RoleConfig>,
     pub scheme_distribution: SchemeDistribution,
     pub canonicalization: CanonicalizationConfig,
     pub cleanup: CleanupConfig,
@@ -40,6 +43,60 @@ pub struct OperationMix {
 #[serde(rename_all = "snake_case")]
 pub enum ReadOperation {
     GetState,
+}
+
+/// What signs each benchmark request. Report wallet and session runs
+/// separately: they exercise different replay protection.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Credential {
+    Wallet,
+    /// Every active user starts a session on `network` before warmup and
+    /// signs reads and pushes with it.
+    Session {
+        network: String,
+    },
+}
+
+impl Credential {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wallet => "wallet",
+            Self::Session { .. } => "session",
+        }
+    }
+}
+
+/// How long benchmark sessions are granted beyond the run, to cover seeding
+/// and the time clients drop a session before it expires.
+pub const SESSION_TTL_MARGIN_SECONDS: u64 = 30 * 60;
+/// The longest session lifetime a Guardian accepts.
+pub const MAX_SESSION_TTL_SECONDS: u64 = 8 * 60 * 60;
+
+/// Splits seeded users into dedicated writers, paced readers, and idle
+/// accounts that only add to the account count. When absent, every user
+/// runs the `operation_mix` cycle.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RoleConfig {
+    pub readers: u32,
+    pub writers: u32,
+    pub reader_poll_interval_ms: u64,
+    pub read_mode: ReadMode,
+    /// Zero pushes back to back (burst).
+    pub writer_push_interval_ms: u64,
+    /// Readers seeded as cosigners of each writer's account, polling it
+    /// instead of an account of their own, so reads observe writes. Readers
+    /// beyond `writers * cosigners_per_writer` poll their own accounts.
+    pub cosigners_per_writer: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadMode {
+    /// Poll the canonical nonce and fetch state only when it changed, as
+    /// both multisig SDKs do.
+    NonceThenStateOnChange,
+    FullState,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -109,6 +166,25 @@ impl RunConfig {
         }
         if self.canonicalization.timeout_seconds == 0 {
             bail!("canonicalization.timeout_seconds must be greater than 0");
+        }
+        if let Some(roles) = &self.roles {
+            if u64::from(roles.readers) + u64::from(roles.writers) > u64::from(self.users) {
+                bail!("roles.readers + roles.writers must not exceed users");
+            }
+            if roles.readers > 0 && roles.reader_poll_interval_ms == 0 {
+                bail!("roles.reader_poll_interval_ms must be greater than 0");
+            }
+        }
+        if let Credential::Session { network } = &self.credential {
+            if network.trim().is_empty() {
+                bail!("credential.network must not be empty for session runs");
+            }
+            if self.duration_seconds + SESSION_TTL_MARGIN_SECONDS > MAX_SESSION_TTL_SECONDS {
+                bail!(
+                    "session runs must last at most {}s so one session covers the run",
+                    MAX_SESSION_TTL_SECONDS - SESSION_TTL_MARGIN_SECONDS
+                );
+            }
         }
         if self.aws.region.trim().is_empty() {
             bail!("aws.region must not be empty");

@@ -1,0 +1,42 @@
+profile_name = "target-317-mix-wallet"
+guardian_endpoint = "https://guardian-testnet.openzeppelin.com"
+transport = "grpc"
+duration_seconds = 1800
+warmup_seconds = 60
+users = 100000
+accounts_per_user = 1
+deployment_shape = "prod-multi-task"
+artifacts_dir = "benchmarks/prod-server/reports"
+
+[operation_mix]
+read_operation = "get_state"
+reads_per_push = 0
+
+[roles]
+readers = 20000
+writers = 100
+reader_poll_interval_ms = 2000
+read_mode = "nonce_then_state_on_change"
+writer_push_interval_ms = 10000
+cosigners_per_writer = 3
+
+[scheme_distribution]
+falcon_percent = 0
+ecdsa_percent = 100
+
+[canonicalization]
+sample_rate = 0.2
+poll_interval_ms = 1000
+timeout_seconds = 180
+
+[cleanup]
+enabled = true
+
+[aws]
+profile = "dev"
+region = "us-east-1"
+ecs_cluster = "guardian-prod-cluster"
+ecs_service = "guardian-prod-server"
+
+[credential]
+kind = "wallet"

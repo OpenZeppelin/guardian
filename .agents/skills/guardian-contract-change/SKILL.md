@@ -47,12 +47,16 @@ If the change touches proposal payloads or account state shapes, also inspect bo
    - `packages/guardian-client/src/conversion.ts`
    - `packages/guardian-client/src/http.ts`
    - tests for malformed or missing fields
-5. Propagate into multisig SDKs if the changed fields cross that boundary.
+5. If the change adds a per-account route, lets a wallet-only route accept
+   sessions, or changes whether a route reads or writes, follow
+   `guardian-session-routes` (operation registry, test vectors, resolver,
+   both clients).
+6. Propagate into multisig SDKs if the changed fields cross that boundary.
    Proposal metadata, state objects, ack fields, and status transitions are the common triggers.
-6. Update examples and docs when the change is visible to users or integrators.
+7. Update examples and docs when the change is visible to users or integrators.
    Start with `examples/demo`, `examples/smoke-web`, and `examples/web`.
    Use the Documentation Impact Check in `AGENTS.md` to pick the matching `spec/`, `docs/`, SDK, and example docs.
-7. Run the smallest meaningful validation set, then expand if high-risk.
+8. Run the smallest meaningful validation set, then expand if high-risk.
 
 ## Guardrails
 

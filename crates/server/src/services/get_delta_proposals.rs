@@ -2,7 +2,7 @@ use crate::builder::state::AppState;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::resolve_account_allowing_session;
+use crate::services::resolve_account_for_read;
 
 #[derive(Debug, Clone)]
 pub struct GetDeltaProposalsParams {
@@ -25,7 +25,13 @@ pub async fn get_delta_proposals(
     } = params;
 
     // Resolve account and verify authentication
-    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
+    let resolved = resolve_account_for_read(
+        state,
+        &account_id,
+        &credentials,
+        guardian_shared::session_request::SessionOperation::GetDeltaProposals,
+    )
+    .await?;
 
     let mut proposals: Vec<DeltaObject> = resolved
         .storage

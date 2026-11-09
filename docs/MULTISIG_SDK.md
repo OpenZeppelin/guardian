@@ -1543,6 +1543,15 @@ to about 10 minutes, so run `revokeAllSessions` again 10 minutes later when a
 key may be compromised. The full protocol is in `spec/api.md` (Session
 Authentication).
 
+Each session request signs a version 2 envelope that names the route's
+operation and the transport (`x-auth-format: session-v2`), so a signed read
+can never be replayed on another route. This needs a Guardian that reports
+`request_auth_version: 2`; on an older Guardian `startSession` fails with
+`UnsupportedAuthVersionError` (TypeScript) or
+`ClientError::UnsupportedAuthVersion` (Rust) instead of falling back to the
+wallet, and an upgraded Guardian answers requests from an older SDK with
+`unsupported_auth_version`.
+
 ### API Reference
 
 #### MultisigClient

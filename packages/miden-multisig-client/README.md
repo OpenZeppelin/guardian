@@ -430,6 +430,22 @@ Page logout is not revocation: a script that stole the key keeps it, so use
 Revoke-all ends the sessions already registered with Guardian, and a page that
 got a grant signed can register it for up to about 10 minutes afterwards.
 
+Sessions sign the version 2 request format (`x-auth-format: session-v2`),
+which binds each request to its transport and route. Upgrade the Guardian
+and this SDK together: `startSession` and `resumeSession` throw
+`UnsupportedAuthVersionError` (from `@openzeppelin/guardian-client`) when the
+Guardian does not report `requestAuthVersion: 2`, and a Guardian of this
+version answers session requests from older SDKs with
+`unsupported_auth_version`. Neither falls back to the wallet. Stored session
+keys and grants from earlier releases keep working, with no new wallet
+prompt. Session reads must be within 60 s of server time and session writes
+within 5 minutes; a request outside its window fails with
+`timestamp_out_of_window` and the session is kept. A custom
+`SessionRequestSigner` must implement the new `signRequest(operation, ...)`,
+`nextTimestamp` and `writeSequencer` members (see the
+`@openzeppelin/guardian-client` README). See
+[`docs/MIDEN_COMPATIBILITY.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
+
 ### Load an Existing Multisig
 
 The configuration is automatically detected from the account's on-chain storage:

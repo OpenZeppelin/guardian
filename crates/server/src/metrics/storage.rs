@@ -166,6 +166,17 @@ impl StorageBackend for InstrumentedStorage {
         .await
     }
 
+    async fn pull_state_heads_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<HashMap<String, StateHead>, String> {
+        timed(
+            "pull_state_heads_batch",
+            self.inner.pull_state_heads_batch(account_ids),
+        )
+        .await
+    }
+
     async fn pull_delta(&self, account_id: &str, nonce: u64) -> Result<DeltaObject, String> {
         timed("pull_delta", self.inner.pull_delta(account_id, nonce)).await
     }

@@ -32,6 +32,7 @@ struct RunReportInput<'a> {
     operations: Vec<crate::report::OperationReport>,
     canonicalization: Option<CanonicalizationReport>,
     canonicalization_samples_path: Option<String>,
+    wallet_signed_operations: u64,
     cleanup_manifest: &'a CleanupManifest,
     artifacts: &'a crate::artifacts::ArtifactPaths,
 }
@@ -59,6 +60,7 @@ pub async fn run_worker(
         operations: execution.run_output.operations,
         cleanup_accounts: execution.run_output.cleanup_accounts,
         canonicalization_samples: execution.run_output.canonicalization_samples,
+        wallet_signed_operations: execution.run_output.wallet_signed_operations,
     };
 
     println!("{}", worker_artifact.encoded_line()?);
@@ -145,6 +147,10 @@ pub async fn aggregate(
         operations,
         canonicalization,
         canonicalization_samples_path,
+        wallet_signed_operations: worker_artifacts
+            .iter()
+            .map(|artifact| artifact.wallet_signed_operations)
+            .sum(),
         cleanup_manifest: &cleanup_manifest,
         artifacts: &artifacts,
     });
@@ -198,6 +204,7 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         operations,
         canonicalization,
         canonicalization_samples_path,
+        wallet_signed_operations,
         cleanup_manifest,
         artifacts,
     } = input;
@@ -218,6 +225,8 @@ fn build_run_report(input: RunReportInput<'_>) -> BenchmarkRunReport {
         measurement_seconds,
         guardian_endpoint: config.normalized_guardian_endpoint(),
         deployment_shape: config.deployment_shape.clone(),
+        credential: config.credential.as_str().to_string(),
+        wallet_signed_operations,
         scheme_distribution: SchemeDistributionReport {
             falcon_percent: config.scheme_distribution.falcon_percent,
             ecdsa_percent: config.scheme_distribution.ecdsa_percent,
@@ -329,6 +338,14 @@ fn render_summary(report: &BenchmarkRunReport) -> String {
     output.push_str(&format!("Run ID: `{}`\n", report.run_id));
     output.push_str(&format!("Profile: `{}`\n", report.profile_name));
     output.push_str(&format!("Endpoint: `{}`\n", report.guardian_endpoint));
+    output.push_str(&format!("Credential: `{}`\n", report.credential));
+    if report.wallet_signed_operations > 0 {
+        output.push_str(&format!(
+            "**Warning:** {} measured operations were signed by the wallet after users lost their \
+             session; this is not a clean session run.\n",
+            report.wallet_signed_operations
+        ));
+    }
     output.push_str(&format!(
         "Measured duration: `{:.2}s`\n",
         report.measurement_seconds

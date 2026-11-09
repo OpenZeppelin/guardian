@@ -1,9 +1,10 @@
 //! P-256 session keys.
 //!
-//! A session key signs the 32 bytes of a Guardian message word with ECDSA over
-//! P-256 and SHA-256, which is what WebCrypto's
-//! `sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes)` produces for a
-//! non-extractable browser key. Signatures are the 64-byte `r || s` encoding.
+//! A session key signs message bytes with ECDSA over P-256 and SHA-256, which
+//! is what WebCrypto's `sign({ name: "ECDSA", hash: "SHA-256" }, key, bytes)`
+//! produces for a non-extractable browser key: the 32 bytes of a message word
+//! for grants and logout, a [`crate::session_request`] envelope for
+//! per-account requests. Signatures are the 64-byte `r || s` encoding.
 
 use miden_protocol::Word;
 use p256::ecdsa::signature::{Signer, Verifier};
@@ -14,14 +15,19 @@ use crate::session_grant::SESSION_PUBLIC_KEY_LEN;
 /// Length of an `r || s` P-256 signature.
 pub const SESSION_SIGNATURE_LEN: usize = 64;
 
-/// Verifies a session-key signature over `message`.
+/// Verifies a session-key signature over the 32 bytes of `message`.
 pub fn verify(public_key: &[u8], message: Word, signature: &[u8]) -> Result<(), String> {
+    verify_bytes(public_key, &message.as_bytes(), signature)
+}
+
+/// Verifies a session-key signature over `message` bytes.
+pub fn verify_bytes(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), String> {
     let verifying_key = VerifyingKey::from_sec1_bytes(public_key)
         .map_err(|_| "Invalid session public key".to_string())?;
     let signature = Signature::from_slice(signature)
         .map_err(|_| format!("Session signature must be {SESSION_SIGNATURE_LEN} bytes (r || s)"))?;
     verifying_key
-        .verify(&message.as_bytes(), &signature)
+        .verify(message, &signature)
         .map_err(|_| "Session signature verification failed".to_string())
 }
 
@@ -64,12 +70,21 @@ impl SessionKey {
 
     /// Signs the 32 bytes of `message`.
     pub fn sign(&self, message: Word) -> [u8; SESSION_SIGNATURE_LEN] {
-        let signature: Signature = self.signing_key.sign(&message.as_bytes());
-        signature.to_bytes().into()
+        self.sign_bytes(&message.as_bytes())
     }
 
     pub fn sign_hex(&self, message: Word) -> String {
         format!("0x{}", hex::encode(self.sign(message)))
+    }
+
+    /// Signs `message` bytes.
+    pub fn sign_bytes(&self, message: &[u8]) -> [u8; SESSION_SIGNATURE_LEN] {
+        let signature: Signature = self.signing_key.sign(message);
+        signature.to_bytes().into()
+    }
+
+    pub fn sign_bytes_hex(&self, message: &[u8]) -> String {
+        format!("0x{}", hex::encode(self.sign_bytes(message)))
     }
 }
 

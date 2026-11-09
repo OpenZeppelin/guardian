@@ -1,3 +1,4 @@
+import type { SessionOperation, WriteSequencer } from './session-request.js';
 import type { TransactionRequestEnvelope } from './request-envelope.js';
 
 import type { RequestAuthPayload } from './auth-request.js';
@@ -95,7 +96,7 @@ export type SessionEndReason = 'logout' | 'expired' | 'revoked' | 'rejected';
 
 /**
  * Signs session-eligible requests on behalf of a wallet after a session grant
- * was registered. Requests carry `x-auth-format: session`.
+ * was registered. Requests carry `x-auth-format: session-v2`.
  */
 export interface SessionRequestSigner {
   /** Hex SEC1-compressed P-256 session public key, sent as `x-pubkey`. */
@@ -107,7 +108,21 @@ export interface SessionRequestSigner {
   readonly signerCommitment: string;
   /** Unix seconds. */
   readonly expiresAt: number;
+  /**
+   * The next request timestamp (Unix ms) for `accountId`: strictly increasing
+   * per account for this session, never more than a second ahead of the
+   * clock, and jumped near that limit when `afterReplay` (see
+   * `SessionTimestamps`).
+   */
+  nextTimestamp(accountId: string, afterReplay: boolean): Promise<number>;
+  /** Orders this session's writes per account; shared by every client using it. */
+  readonly writeSequencer: WriteSequencer;
+  /**
+   * Sign the version 2 envelope (see `sessionRequestEnvelope`) of this
+   * request over HTTP as `operation`.
+   */
   signRequest(
+    operation: SessionOperation,
     accountId: string,
     timestamp: number,
     requestPayload: RequestAuthPayload
@@ -128,14 +143,25 @@ export interface CreateSessionRequest {
   grant: SessionGrantFields;
 }
 
-export interface CreateSessionResponse {
+/** How a Guardian expects session requests to be signed. */
+export interface SessionRequestPolicy {
+  /**
+   * The session request envelope version; this client signs 2, under which
+   * each signed session read is admitted once, within 60 s of server time,
+   * except the canonical nonce poll, accepted every time within 60 s behind
+   * and 30 s ahead.
+   */
+  requestAuthVersion: number;
+}
+
+export interface CreateSessionResponse extends SessionRequestPolicy {
   signerCommitment: string;
   /** RFC 3339 UTC. */
   expiresAt: string;
 }
 
 /** Session parameters a Guardian advertises on `GET /status`. */
-export interface SessionsStatus {
+export interface SessionsStatus extends Partial<SessionRequestPolicy> {
   /** Grants may expire at most this many seconds after registration. */
   maxTtlSeconds: number;
 }

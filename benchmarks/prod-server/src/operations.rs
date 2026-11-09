@@ -12,6 +12,7 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum OperationKind {
+    GetCanonicalNonce,
     GetState,
     PushDelta,
 }
@@ -19,13 +20,14 @@ pub enum OperationKind {
 impl OperationKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::GetCanonicalNonce => "get_canonical_nonce",
             Self::GetState => "get_state",
             Self::PushDelta => "push_delta",
         }
     }
 }
 
-pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
+pub fn create_delta_summary(account_id: &AccountId, nonce: u64) -> Result<TransactionSummary> {
     let account_delta = AccountDelta::new(
         *account_id,
         AccountStoragePatch::default(),
@@ -34,7 +36,7 @@ pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value>
         Felt::new_unchecked(nonce),
     )
     .map_err(|error| anyhow!("failed to build account delta: {error}"))?;
-    let tx_summary = TransactionSummary::new(
+    Ok(TransactionSummary::new(
         account_delta,
         InputNotes::new(Vec::new())
             .map_err(|error| anyhow!("failed to build input notes: {error}"))?,
@@ -44,6 +46,22 @@ pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value>
         Word::from([ZERO; 4]),
         0,
         TransactionSummaryUserParams::new([ZERO; 6]),
-    );
-    Ok(tx_summary.to_json())
+    ))
+}
+
+pub fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
+    Ok(create_delta_summary(account_id, nonce)?.to_json())
+}
+
+/// The proposal for a benchmark delta, as a client stores it before
+/// collecting approvals: a multisig push is admitted only against a pending
+/// proposal holding the threshold of verified approvals.
+pub fn proposal_payload(summary: &TransactionSummary) -> Value {
+    serde_json::json!({
+        "tx_summary": summary.to_json(),
+        "metadata": {
+            "proposal_type": "benchmark",
+            "bound_block_num": summary.block_number().as_u32(),
+        },
+    })
 }

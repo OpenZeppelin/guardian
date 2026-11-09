@@ -7,6 +7,20 @@ export {
 } from './error-codes.js';
 export type { GuardianErrorCode } from './error-codes.js';
 export { RequestAuthPayload } from './auth-request.js';
+export {
+  SESSION_REQUEST_AUTH_FORMAT,
+  SESSION_REQUEST_ENVELOPE_LENGTH,
+  SESSION_REQUEST_VERSION,
+  SESSION_TIMESTAMP_MAX_AHEAD_MS,
+  SessionOperation,
+  SessionTimestamps,
+  WriteSequencer,
+  isSessionWrite,
+  SessionTransport,
+  UnsupportedAuthVersionError,
+  assertSupportedSessionPolicy,
+  sessionRequestEnvelope,
+} from './session-request.js';
 export type { SignedOperation } from './auth-request.js';
 export {
   ENVELOPE_FORMAT_VERSION,

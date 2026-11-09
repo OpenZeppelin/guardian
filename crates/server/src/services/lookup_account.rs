@@ -64,8 +64,8 @@ pub async fn lookup_account(
     // Replays within the skew window are accepted by design.
     let request_timestamp = params.credentials.timestamp();
     let server_now_ms = state.clock.now().timestamp_millis();
-    let time_diff_ms = (server_now_ms - request_timestamp).abs();
-    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS {
+    let time_diff_ms = server_now_ms.abs_diff(request_timestamp);
+    if time_diff_ms > MAX_TIMESTAMP_SKEW_MS as u64 {
         tracing::warn!(
             request_timestamp = %request_timestamp,
             server_now_ms = %server_now_ms,
@@ -73,9 +73,10 @@ pub async fn lookup_account(
             max_skew_ms = %MAX_TIMESTAMP_SKEW_MS,
             "Lookup request timestamp outside allowed skew window"
         );
-        return Err(GuardianError::AuthenticationFailed(format!(
-            "Request timestamp outside allowed window: {time_diff_ms}ms drift (max {MAX_TIMESTAMP_SKEW_MS}ms)"
-        )));
+        return Err(GuardianError::TimestampOutOfWindow {
+            drift_ms: time_diff_ms,
+            window_ms: MAX_TIMESTAMP_SKEW_MS as u64,
+        });
     }
 
     let (pubkey_hex, signature_hex, _) = params.credentials.as_signature().ok_or_else(|| {
@@ -96,6 +97,7 @@ pub async fn lookup_account(
             request_timestamp,
             key_commitment_word,
         ),
+        RequestAuthFormat::LegacySession => return Err(GuardianError::UnsupportedAuthVersion),
         RequestAuthFormat::Session => {
             let message = LookupAuthMessage::new(request_timestamp, key_commitment_word).to_word();
             return Err(

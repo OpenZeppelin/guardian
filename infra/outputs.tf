@@ -167,12 +167,12 @@ output "server_desired_count" {
 
 output "server_cpu" {
   description = "Configured ECS task CPU units"
-  value       = var.server_cpu
+  value       = local.effective_server_cpu
 }
 
 output "server_memory" {
   description = "Configured ECS task memory in MiB"
-  value       = var.server_memory
+  value       = local.effective_server_memory
 }
 
 output "server_autoscaling_enabled" {

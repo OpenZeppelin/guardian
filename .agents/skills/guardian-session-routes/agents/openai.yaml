@@ -1,0 +1,4 @@
+interface:
+  display_name: "Guardian Session Routes"
+  short_description: "Add or change a session-eligible per-account route end to end"
+  default_prompt: "Use $guardian-session-routes to register this route's session operation across the shared registry, server, clients, test vectors, docs and models."

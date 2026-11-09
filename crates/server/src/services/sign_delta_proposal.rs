@@ -47,7 +47,13 @@ pub async fn sign_delta_proposal(
     let normalized_commitment = normalize_commitment_hex(&commitment)?;
 
     // Resolve account and verify authentication
-    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
+    let resolved = resolve_account_allowing_session(
+        state,
+        &account_id,
+        &credentials,
+        guardian_shared::session_request::SessionOperation::SignDeltaProposal,
+    )
+    .await?;
     ensure_account_active_metadata(&resolved.metadata)?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
@@ -1410,7 +1416,10 @@ mod tests {
             .await
             .expect_err("unauthenticated paused account must be rejected with auth error");
         assert!(
-            matches!(err, GuardianError::AuthenticationFailed(_)),
+            matches!(
+                err,
+                GuardianError::AuthenticationFailed(_) | GuardianError::TimestampOutOfWindow { .. }
+            ),
             "unauthenticated caller must not learn pause state; got: {err:?}"
         );
     }

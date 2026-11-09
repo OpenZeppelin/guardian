@@ -1,0 +1,15 @@
+DROP FUNCTION guardian_serve_session_read(TEXT, TEXT, BYTEA, BIGINT, BIGINT, BIGINT, BOOLEAN);
+DROP FUNCTION guardian_admit_session_read(TEXT, TEXT, BYTEA, BYTEA, BIGINT, BIGINT, BOOLEAN);
+DROP FUNCTION guardian_delete_fenced_session_floors();
+DROP FUNCTION guardian_raise_session_floor_fence(BIGINT);
+DROP INDEX account_auth_state_session_floor_ts;
+DROP FUNCTION guardian_advance_session_floor(TEXT, TEXT, BIGINT, BIGINT, TEXT);
+DELETE FROM replay_fence WHERE fence = 'session_floor';
+DROP FUNCTION guardian_drop_fenced_session_read_partitions();
+DROP FUNCTION guardian_advance_session_read_fence(BIGINT);
+DROP FUNCTION guardian_record_session_read(BYTEA, BIGINT, BIGINT);
+DROP FUNCTION guardian_ensure_session_read_partitions(BIGINT, BIGINT);
+DROP FUNCTION guardian_db_now_ms();
+DROP FUNCTION guardian_session_read_partition_ms();
+DROP TABLE session_read_seen;
+DROP TABLE replay_fence;

@@ -143,6 +143,32 @@ async fn test_canonical_nonce_rejects_a_signature_over_a_different_query() {
 }
 
 #[tokio::test]
+async fn test_wallet_signed_nonce_poll_is_accepted_once() {
+    let (app, _state, signer, account_id_hex) = configured_account().await;
+
+    let payload = json!({ "account_id": account_id_hex });
+    let (signature_hex, timestamp) = signer.sign_json_payload(&account_id_hex, &payload);
+    let poll = || {
+        Request::builder()
+            .uri(format!("/state/nonce?account_id={account_id_hex}"))
+            .method("GET")
+            .header("x-pubkey", &signer.pubkey_hex)
+            .header("x-signature", &signature_hex)
+            .header("x-timestamp", timestamp.to_string())
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let first = app.clone().call(poll()).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let copy = app.clone().call(poll()).await.unwrap();
+    assert_eq!(copy.status(), StatusCode::UNAUTHORIZED);
+    let bytes = to_bytes(copy.into_body(), usize::MAX).await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["code"], "authentication_replay", "body: {body}");
+}
+
+#[tokio::test]
 async fn test_canonical_nonce_unknown_account_is_not_found() {
     let (app, _state, signer, _account_id_hex) = configured_account().await;
 

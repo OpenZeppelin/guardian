@@ -11,6 +11,10 @@ This crate contains shared types and utilities for the GUARDIAN project.
 - `session_grant`: Miden account session grants (issue #219): the grant fields,
   origin validation, and the grant, logout and revoke-all digests every client
   must reproduce byte for byte (`tests/fixtures/session_grant_vectors.json`)
+- `session_request`: the version 2 session request envelope (issue #317):
+  the permanent `SessionOperation` registry, the transport, the 62-byte
+  envelope a session key signs and the key of Guardian's record of accepted
+  reads. Cross-language fixtures: `tests/fixtures/session_request_vectors.json`
 - `session_key`: the delegated P-256 session key: generation, raw `r || s`
   signing and verification
 - `retry`: Transient-failure classification, jittered backoff, and the retry

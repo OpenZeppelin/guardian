@@ -66,6 +66,17 @@ impl MultisigClient {
             .await?)
     }
 
+    /// Logs the active session out on the Guardian this client still points
+    /// at, best effort and bounded by [`LEAVE_GUARDIAN_TIMEOUT`], then drops
+    /// it. Run before an executed `switch_guardian` repoints the client, so
+    /// the delegated key stops working on the Guardian the account left.
+    pub(crate) async fn leave_guardian_session(&mut self) {
+        let session = std::mem::take(&mut self.guardian_session);
+        if session.info().is_some() {
+            let _ = tokio::time::timeout(LEAVE_GUARDIAN_TIMEOUT, self.log_out(session)).await;
+        }
+    }
+
     async fn log_out(&self, session: SessionSlot) {
         if let Ok(client) = self.create_guardian_client().await {
             let _ = client
@@ -76,3 +87,6 @@ impl MultisigClient {
         }
     }
 }
+
+/// How long leaving a Guardian waits for the old one to revoke the session.
+const LEAVE_GUARDIAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

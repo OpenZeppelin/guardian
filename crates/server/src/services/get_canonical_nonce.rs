@@ -10,9 +10,10 @@
 //! (see [`crate::state_object::StateObject::nonce`]) is decoded once here
 //! and its nonce stored for the next call.
 
+use crate::coordination::read_records::PrefetchedHead;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::{ResolvedAccount, resolve_account_allowing_session};
+use crate::services::{ResolvedAccount, resolve_account_for_head_read};
 use crate::state::AppState;
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +35,7 @@ pub struct CanonicalNonceResponse {
 }
 
 #[tracing::instrument(
-    level = "info",
+    level = "debug",
     skip(state, params),
     fields(account_id = %params.account_id)
 )]
@@ -44,8 +45,8 @@ pub async fn get_canonical_nonce(
 ) -> Result<CanonicalNonceResponse> {
     tracing::debug!("Getting canonical nonce");
 
-    let resolved =
-        resolve_account_allowing_session(state, &params.account_id, &params.credentials).await?;
+    let (resolved, prefetched) =
+        resolve_account_for_head_read(state, &params.account_id, &params.credentials).await?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),
@@ -53,11 +54,17 @@ pub async fn get_canonical_nonce(
         });
     }
 
-    let head = resolved
-        .storage
-        .pull_state_head(&params.account_id)
-        .await
-        .map_err(|e| state_read_error(&params.account_id, e))?;
+    let head = match prefetched {
+        PrefetchedHead::Found(head) => head,
+        PrefetchedHead::Missing => {
+            return Err(GuardianError::StateNotFound(params.account_id));
+        }
+        PrefetchedHead::NotRead => resolved
+            .storage
+            .pull_state_head(&params.account_id)
+            .await
+            .map_err(|e| state_read_error(&params.account_id, e))?,
+    };
 
     match head.nonce {
         Some(nonce) => Ok(CanonicalNonceResponse {

@@ -4,7 +4,7 @@ This guide covers the current AWS deployment for Guardian. The AWS stack now use
 
 The deployment surface supports two stage profiles:
 - `DEPLOY_STAGE=dev` keeps the current low-cost, fixed-capacity behavior
-- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
+- `DEPLOY_STAGE=prod` enables ECS autoscaling, RDS storage autoscaling, RDS Proxy, larger default RDS sizing, 2 vCPU / 4 GiB server tasks, RDS deletion protection with a final snapshot on destroy, and benchmark-oriented runtime defaults
 
 ## Published Docker images
 
@@ -998,9 +998,134 @@ aws ecr delete-repository --repository-name guardian-server --force --region us-
 - higher ECS desired count
 - ECS service autoscaling
 - larger default RDS instance class and base storage
+- 2 vCPU / 4 GiB server tasks (`server_cpu = 2048`, `server_memory = 4096`; 512 / 1024 in dev)
+  (raised from 512 / 1024 for session-read load, see [Sizing for session reads](#sizing-for-session-reads)). An existing prod stack that never set `server_cpu` rolls its tasks to the new size on the next apply, about four times the Fargate cost per task; set `server_cpu = 512` and `server_memory = 1024` to keep the previous size. Set the two together: `server_memory` defaults to twice `server_cpu`, and a plan stops with an error when the pair is not a Fargate size (for example a stack that set only `server_memory = 2048` now needs `server_cpu = 512` as well, or to drop the override).
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
 - higher Guardian runtime rate-limit and DB-pool defaults for benchmark traffic
+
+#### Canonicalization leader size
+
+Canonicalization runs on one replica at a time (the lease holder), and its
+state rebuilds share the task's reconstruction slots (half its vCPU) with
+`push_delta`. With the default `GUARDIAN_CANONICALIZATION_REBUILD_ADMISSION=auto`
+the worker uses every slot but one, so draining `N` concurrent candidates
+takes about `N x rebuild time / (vCPU / 2 - 1)` (at least one slot), before
+Miden RPC and block inclusion. On 2 and 4 vCPU tasks that is one rebuild at a
+time. For 100 concurrent candidates within the 30 s target:
+
+| Rebuild time | 2 or 4 vCPU | 8 vCPU | 16 vCPU |
+|---:|---:|---:|---:|
+| 50 ms | 5 s | 1.7 s | 0.7 s |
+| 300 ms | 30 s | 10 s | 4.3 s |
+| 1 s | 100 s | 33 s | 14 s |
+
+Set `server_cpu` accordingly (Fargate CPU units: 4096 = 4 vCPU, 8192 = 8,
+16384 = 16). Every replica gets the same size, since any of them may hold the
+lease. Measured scheduling:
+[`benchmarks/prod-server/results/2026-10-30-rebuild-admission-local.md`](../benchmarks/prod-server/results/2026-10-30-rebuild-admission-local.md).
+
+#### Sizing for session reads
+
+Most traffic from session-v2 clients is the canonical nonce poll: a client
+polls each account's nonce (one poll every 2 s per active user in the
+benchmark profiles) and fetches full state only when it changes. Measured
+on AWS with the window-only nonce poll (`benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md`,
+"Window-only nonce poll on AWS"), each 1,000 nonce polls/s
+cost about:
+
+- **0.2 vCPU of database** on Graviton3 (`db.m7g`), one call per poll;
+- **0.5 vCPU of Guardian server**, mostly session signature verification and
+  request handling. One 2 vCPU task saturates at about 3,000 to 3,500
+  polls/s.
+
+Latency stays low while database CPU is under about 80% (7,500 polls/s on
+`db.m7g.large`: 78% CPU, every load-generator worker's p95 under 150 ms)
+and turns into seconds of queueing at saturation (about 10,000/s on the
+same class: 99.5% CPU, p95 about 2 s). Plan for peak database CPU at or
+below about 70%, and server tasks at the 65% autoscaling target. These are
+7-minute runs and the latencies are per-worker figures, not fleet
+percentiles, so treat the table as preliminary sizing.
+
+| Active users polling (every 2 s) | Nonce polls/s | Database | Server tasks (2 vCPU each) |
+|---:|---:|---|---|
+| up to 8,000 | up to 4,000 | `db.m7g.large` | 2 to 3 |
+| up to 14,000 | up to 7,000 | `db.m7g.large` (tight) or `db.m7g.xlarge` | 4 to 5 |
+| 20,000 (issue #317 target) | 10,000 | `db.m7g.xlarge` (51% CPU measured) | 6 to 8 (not yet qualified) |
+
+The last row is not yet qualified for latency: at 10,000 polls/s on
+`db.m7g.xlarge` the database had headroom, but with 4 tasks one ran at 96 to
+98% CPU while the average was 61%, and the write tail reached several
+seconds. 6 to 8 tasks allows for that uneven spread; a perfectly even spread
+would fit in about 4.
+
+Set `rds_instance_class` and `server_desired_count` /
+`server_autoscaling_max_capacity` to match; the prod profile already runs
+2 vCPU / 4 GiB tasks (`server_cpu = 2048`, `server_memory = 4096`). Its
+default database class, `db.r6g.large` (Graviton2, memory-optimized), was not
+measured, and memory is not the constraint here, so prefer the
+general-purpose Graviton3 class. The measurements connected the servers to
+the database directly. Pool sizes of 32 per pool per task fit comfortably:
+4 tasks held 241 connections. Rate limits were off in the
+benchmark; size `guardian_rate_per_min` for the number of users behind each
+client IP before relying on these numbers.
+
+Not covered by these figures: canonicalization and proving (the benchmark ran
+with canonicalization off; size the leader with the table above), full
+`get_state` on every poll instead of the nonce poll, and more than about
+15,000 accounts. Writes at the benchmark mix (one push per writer every
+10 s) added little load.
+
+##### Recommended production settings
+
+The prod profile runs two 2 vCPU / 4 GiB tasks (`server_cpu = 2048`,
+`server_memory = 4096`) with autoscaling to 6, and `db.r6g.large`. Two tasks
+serve about 8,000 active users polling every 2 s at the 65% autoscaling
+target. For a production deployment that serves session users:
+
+1. **Set the autoscaling maximum** (`server_autoscaling_max_capacity`) from
+   the table above for the expected peak, keeping at least 2 tasks.
+2. **Choose the database class from the expected peak of active users**, not
+   from the largest target, since each size up doubles its cost:
+   - up to about 10,000 users (5,000 polls/s): `db.m7g.large` (measured at
+     53% CPU); prefer it over the default `db.r6g.large` (memory-optimized,
+     Graviton2, not measured), at about the same price;
+   - about 10,000 to 14,000 users (up to 7,000 polls/s): `db.m7g.large` runs
+     at roughly 60 to 80% CPU (78% measured at 7,500 polls/s); move to
+     `db.m7g.xlarge` for headroom as the peak approaches 14,000;
+   - more than about 14,000, up to 20,000 users: `db.m7g.xlarge` (51% CPU
+     measured at 10,000 polls/s; `db.m7g.large` saturates).
+
+   Watch `CPUUtilization` and Performance Insights after the change and size
+   up before peak database CPU passes about 70%.
+3. **Check connections against `max_connections`.** Each task opens up to two
+   pools of `GUARDIAN_DB_POOL_MAX_SIZE` (32 in prod), so 6 tasks can hold about
+   400 connections. The RDS default `max_connections` scales with instance
+   memory (roughly 900 on an 8 GiB class, roughly 1,700 on 16 GiB), which
+   leaves room; recheck it before raising the pool size or the task count.
+4. **Size the rate limit for shared IPs.** `guardian_rate_per_min` is per
+   client IP across HTTP and gRPC; one polling user makes about 30 nonce
+   polls a minute per account, so many users behind one NAT need a
+   correspondingly larger budget.
+
+For example, a deployment expecting up to about 20,000 active users:
+
+```bash
+export TF_VAR_rds_instance_class=db.m7g.xlarge
+export TF_VAR_server_desired_count=4
+export TF_VAR_server_autoscaling_max_capacity=8
+./scripts/aws-deploy.sh plan
+```
+
+Changing `rds_instance_class` interrupts the database either way: a
+single-AZ instance restarts (several minutes of downtime), and a Multi-AZ
+instance fails over to the resized standby (typically one to two minutes
+while connections are re-established). `infra/rds.tf` sets
+`apply_immediately = true`, so the change happens during the apply; run it in
+a maintenance window.
+A development stack with occasional traffic can keep a burstable class
+(`db.t4g`), which runs at full speed only while it has CPU credits; do not
+benchmark against one.
 
 #### Horizontal scaling (multiple replicas)
 
@@ -1029,6 +1154,28 @@ HTTPS is enabled when `acm_certificate_arn` is set. DNS can be managed through C
 When HTTPS is enabled, the ALB routes standard HTTPS requests to the server HTTP port `3000` and gRPC requests for `/guardian.Guardian/*` to the server gRPC port `50051`. The public gRPC endpoint uses the same hostname on port `443`.
 
 On Apple Silicon hosts, `CPU_ARCHITECTURE=X86_64` builds are slower because Docker builds `linux/amd64` images under emulation. Switching to `ARM64` avoids that local emulation cost, but it also changes the ECS task runtime architecture.
+
+## Cutting Over To Session-v2 (0.19.0)
+
+Guardian 0.19.0 accepts session requests only in the version 2 format, and earlier releases accept only version 1 (see [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#operation-bound-session-requests-0190)). A replica of each version behind one endpoint refuses the other's session requests, so keep the time both run together short. Wallet-signed requests work on both throughout.
+
+The stack deploys with ECS rolling updates (`deployment_minimum_healthy_percent = 100`, ceiling `server_deployment_maximum_percent`), not a blue/green controller, so old and new tasks overlap until the old ones drain. To cut over:
+
+1. Ship the 0.19 SDKs in your apps first, or accept that apps on older SDKs lose session requests (`unsupported_auth_version`) from the moment the first new task serves traffic until they upgrade. Neither SDK falls back to the other format.
+2. Deploy as usual:
+   ```bash
+   ./scripts/aws-deploy.sh deploy
+   ```
+   The embedded migrations run on the first new task and are additive; old tasks keep working against them during the overlap.
+3. Wait for the rollout to finish: `aws ecs describe-services` lists a single `PRIMARY` deployment with `rolloutState` `COMPLETED`. Until then a session started on a new task can reach an old one, which refuses it (HTTP 401 `authentication_failed`, gRPC `INVALID_ARGUMENT`). The TypeScript SDK then ends that session and signs with the wallet until the app starts a new session; the Rust SDK returns the error and the next request on a new task succeeds. Only sessions started during the overlap are affected.
+4. Confirm the new version is serving:
+   ```bash
+   curl -s https://<host>/status | jq '.sessions'
+   ```
+   It reports `request_auth_version: 2`.
+5. Watch `guardian_auth_rejections_total` by `reason` and `guardian_session_reads_total` by `kind` and `outcome` in Grafana. A rise in `timestamp_window` rejections points at client clocks more than 60 s off (30 s fast for the canonical nonce poll); `outside_window` on the `window_only` kind is the canonical nonce poll.
+
+To roll back, redeploy the previous image digest. The rollback is explicit, not silent: upgraded SDKs refuse to start a session against the older server, TypeScript sessions already running end on their next request and fall back to the wallet, and Rust sessions already running have their requests refused until the server is upgraded once more. Wallet-signed requests keep working. Plan a rollback window accordingly.
 
 ## Migrating An Existing ECS-Postgres Stack
 

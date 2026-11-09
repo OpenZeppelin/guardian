@@ -580,7 +580,8 @@ impl MultisigClient {
 
         if let Some(endpoint) = new_guardian_endpoint {
             let switching_endpoint = endpoint != self.guardian_endpoint;
-            self.guardian_endpoint = endpoint;
+            self.leave_guardian_session().await;
+            self.point_at_guardian(endpoint);
             self.account = Some(MultisigAccount::new(updated_account.clone()));
 
             if switching_endpoint {

@@ -1,7 +1,12 @@
-import type {
-  RequestAuthPayload,
-  SessionEndReason,
-  SessionRequestSigner,
+import {
+  SessionTimestamps,
+  WriteSequencer,
+  SessionTransport,
+  sessionRequestEnvelope,
+  type RequestAuthPayload,
+  type SessionEndReason,
+  type SessionOperation,
+  type SessionRequestSigner,
 } from '@openzeppelin/guardian-client';
 import type { Word } from '@miden-sdk/miden-sdk';
 import { AuthDigest } from '../utils/digest.js';
@@ -39,8 +44,12 @@ export class WebCryptoSessionKey {
   }
 
   /** Sign the 32 bytes of a word: ECDSA P-256 over SHA-256, `r || s` hex. */
-  async signWord(word: Word): Promise<string> {
-    const message = new Uint8Array(wordToBytes(word));
+  signWord(word: Word): Promise<string> {
+    return this.signBytes(new Uint8Array(wordToBytes(word)));
+  }
+
+  /** Sign message bytes: ECDSA P-256 over SHA-256, `r || s` hex. */
+  async signBytes(message: Uint8Array<ArrayBuffer>): Promise<string> {
     const signature = await subtle().sign(SIGNATURE, this.privateKey, message);
     return bytesToHex(new Uint8Array(signature));
   }
@@ -63,6 +72,9 @@ export interface GuardianSessionOptions {
  * registered. Plug into `GuardianHttpClient.setSession`.
  */
 export class GuardianSession implements SessionRequestSigner {
+  private readonly timestamps = new SessionTimestamps();
+  readonly writeSequencer = new WriteSequencer();
+
   constructor(
     private readonly key: WebCryptoSessionKey,
     /** Commitment of the wallet that signed the grant. */
@@ -89,12 +101,20 @@ export class GuardianSession implements SessionRequestSigner {
     this.options.onEnded?.(reason, this);
   }
 
+  nextTimestamp(accountId: string, afterReplay: boolean): Promise<number> {
+    return this.timestamps.next(accountId, afterReplay);
+  }
+
   signRequest(
+    operation: SessionOperation,
     accountId: string,
     timestamp: number,
     requestPayload: RequestAuthPayload,
   ): Promise<string> {
-    return this.key.signWord(AuthDigest.fromRequest(accountId, timestamp, requestPayload));
+    const word = AuthDigest.fromRequest(accountId, timestamp, requestPayload);
+    return this.key.signBytes(
+      sessionRequestEnvelope(SessionTransport.Http, operation, new Uint8Array(wordToBytes(word))),
+    );
   }
 
   signLogout(timestampMs: number): Promise<string> {

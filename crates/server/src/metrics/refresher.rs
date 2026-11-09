@@ -52,7 +52,7 @@ pub async fn fetch_snapshot(
 ) -> Result<RefreshSnapshot, String> {
     let delta_counts = storage.count_deltas_by_status().await?;
     let in_flight_proposals = storage.count_in_flight_proposals().await?;
-    let accounts_total = metadata.list().await?.len() as u64;
+    let accounts_total = metadata.count().await?;
 
     let mut pools = Vec::new();
     if let Some(status) = storage.pool_status() {

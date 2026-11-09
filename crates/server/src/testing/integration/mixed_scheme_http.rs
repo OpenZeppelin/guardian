@@ -390,9 +390,19 @@ async fn get_state_with_session(
         .uri(uri)
         .method("GET")
         .header("x-pubkey", session_key.public_key_hex())
-        .header("x-signature", session_key.sign_hex(message))
+        .header(
+            "x-signature",
+            session_key.sign_bytes_hex(
+                &guardian_shared::session_request::SessionRequestEnvelope::from_request_word(
+                    guardian_shared::session_request::SessionTransport::Http,
+                    guardian_shared::session_request::SessionOperation::GetState,
+                    message,
+                )
+                .to_bytes(),
+            ),
+        )
         .header("x-timestamp", timestamp.to_string())
-        .header("x-auth-format", "session")
+        .header("x-auth-format", "session-v2")
         .body(Body::empty())
         .unwrap();
     send(&fixture.app, request).await

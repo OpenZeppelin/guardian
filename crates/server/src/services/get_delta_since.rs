@@ -1,7 +1,7 @@
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::resolve_account_allowing_session;
+use crate::services::resolve_account_for_read;
 use crate::state::AppState;
 
 #[derive(Debug, Clone)]
@@ -27,8 +27,13 @@ pub async fn get_delta_since(
 ) -> Result<GetDeltaSinceResult> {
     tracing::debug!("Getting delta since");
 
-    let resolved =
-        resolve_account_allowing_session(state, &params.account_id, &params.credentials).await?;
+    let resolved = resolve_account_for_read(
+        state,
+        &params.account_id,
+        &params.credentials,
+        guardian_shared::session_request::SessionOperation::GetDeltaSince,
+    )
+    .await?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
             network: "evm".to_string(),

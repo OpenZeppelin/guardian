@@ -28,6 +28,9 @@ use guardian_shared::SignatureScheme;
 use guardian_shared::auth_request_message::AuthRequestMessage;
 use guardian_shared::auth_request_payload::AuthRequestPayload;
 use guardian_shared::session_key::SessionKey;
+use guardian_shared::session_request::{
+    SessionOperation, SessionRequestEnvelope, SessionTransport,
+};
 use miden_protocol::Word;
 use prost::Message;
 use std::sync::Arc;
@@ -37,16 +40,36 @@ use tonic::{Code, Request, Status};
 fn as_session<T>(mut request: Request<T>) -> Request<T> {
     request
         .metadata_mut()
-        .insert("x-auth-format", "session".parse().unwrap());
+        .insert("x-auth-format", "session-v2".parse().unwrap());
     request
 }
 
-/// A request signed by `key` over `message` at `timestamp`.
+/// The operation a session signs for an RPC taking `T`, named after its
+/// request message, or `None` for an RPC sessions may not use.
+fn grpc_operation<T>() -> Option<SessionOperation> {
+    let rpc = std::any::type_name::<T>()
+        .rsplit("::")
+        .next()?
+        .strip_suffix("Request")?;
+    SessionOperation::ALL
+        .into_iter()
+        .find(|operation| operation.name() == rpc)
+}
+
+/// A request signed by `key` at `timestamp`: over the version 2 envelope of
+/// `word` for a session RPC, over `word` itself elsewhere.
 fn signed_by_session<T>(message: T, key: &SessionKey, word: Word, timestamp: i64) -> Request<T> {
+    let signature = match grpc_operation::<T>() {
+        Some(operation) => key.sign_bytes_hex(
+            &SessionRequestEnvelope::from_request_word(SessionTransport::Grpc, operation, word)
+                .to_bytes(),
+        ),
+        None => key.sign_hex(word),
+    };
     as_session(create_request_with_auth(
         message,
         &key.public_key_hex(),
-        &key.sign_hex(word),
+        &signature,
         timestamp,
     ))
 }
@@ -220,6 +243,42 @@ async fn assert_wallet_only_rpcs(
         .await
         .expect_err("revoke-all is wallet-only");
     assert_error(&status, code, guardian_code, "RevokeAllSessions");
+}
+
+#[tokio::test]
+async fn test_grpc_version_1_session_requests_are_refused_as_unsupported() {
+    let (service, state, signer, account_id_hex) = configured_account().await;
+    let key = falcon_session(&service, &state, &signer).await;
+    let message = GetStateRequest {
+        account_id: account_id_hex.clone(),
+    };
+    let timestamp = now_ms();
+    let word = AuthRequestMessage::from_account_id_hex(
+        &account_id_hex,
+        timestamp,
+        AuthRequestPayload::from_protobuf_message(&message),
+    )
+    .unwrap()
+    .to_word();
+    let mut request = create_request_with_auth(
+        message,
+        &key.public_key_hex(),
+        &key.sign_hex(word),
+        timestamp,
+    );
+    request
+        .metadata_mut()
+        .insert("x-auth-format", "session".parse().unwrap());
+    let status = service
+        .get_state(request)
+        .await
+        .expect_err("version 1 is refused");
+    assert_error(
+        &status,
+        Code::InvalidArgument,
+        "unsupported_auth_version",
+        "version 1 session request",
+    );
 }
 
 #[tokio::test]

@@ -10,9 +10,12 @@ use crate::services::execution_codec::TransactionRequestEnvelope;
 use crate::services::proposal_signature::{
     ensure_cosigner_approval, proposal_tx_summary, verify_proposal_signature,
 };
-use crate::services::{normalize_payload, resolve_account_allowing_session};
+use crate::services::{
+    normalize_payload, resolve_account_allowing_session, resolve_account_for_read,
+};
 use crate::storage::{ProposalAdmission, ProposalWrite};
 use guardian_shared::DeltaSignature;
+use guardian_shared::session_request::SessionOperation;
 use serde::Deserialize;
 use std::sync::Arc;
 
@@ -142,7 +145,26 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
 
     let delta_payload = normalize_payload(delta_payload)?;
 
-    let resolved = resolve_account_allowing_session(state, &account_id, &credentials).await?;
+    let resolved = match mode {
+        Mode::Create => {
+            resolve_account_allowing_session(
+                state,
+                &account_id,
+                &credentials,
+                SessionOperation::PushDeltaProposal,
+            )
+            .await?
+        }
+        Mode::DryRun => {
+            resolve_account_for_read(
+                state,
+                &account_id,
+                &credentials,
+                SessionOperation::CheckDeltaProposal,
+            )
+            .await?
+        }
+    };
     ensure_account_active_metadata(&resolved.metadata)?;
     let credentials_session = credentials.auth_format() == RequestAuthFormat::Session;
     // A dry run is admitted against its rate limit before any reconstruction work, whether
@@ -2318,7 +2340,10 @@ mod tests {
             .await
             .expect_err("unauthenticated paused account must be rejected with auth error");
         assert!(
-            matches!(err, GuardianError::AuthenticationFailed(_)),
+            matches!(
+                err,
+                GuardianError::AuthenticationFailed(_) | GuardianError::TimestampOutOfWindow { .. }
+            ),
             "unauthenticated caller must not learn pause state; got: {err:?}"
         );
     }

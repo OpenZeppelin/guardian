@@ -37,6 +37,7 @@ pub struct CreateSessionParams {
 pub struct CreateSessionResult {
     pub signer_commitment: String,
     pub expires_at: DateTime<Utc>,
+    pub request_policy: crate::session::SessionRequestPolicy,
 }
 
 /// Registers a delegated signer after checking the grant against this
@@ -187,6 +188,7 @@ pub async fn create_session(
     Ok(CreateSessionResult {
         signer_commitment,
         expires_at,
+        request_policy: crate::session::SessionRequestPolicy::current(),
     })
 }
 
