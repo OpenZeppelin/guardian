@@ -76,8 +76,6 @@ pub async fn from_env(
     let pipeline = ModulePipeline::new(catalog, registry, store, now, limits).await?;
     let version = pipeline.store().version().await?;
     let (over_budget, orphaned) = pipeline.report_stored_assignments().await?;
-    metrics::catalog(&pipeline.catalog_hash);
-    metrics::stored_assignments(over_budget, orphaned);
     let builds = pipeline
         .instances()
         .iter()

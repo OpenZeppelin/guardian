@@ -3,10 +3,10 @@
 use guardian_module_sdk::{Decision, Effect, HookRequest, is_valid_reason_code};
 
 use super::catalog::{Catalog, ClientReason, HookName, OnError, Scope};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::breaker::Breakers;
+use super::breaker::{Breakers, CircuitState};
 use super::limits::Limits;
 use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
@@ -46,6 +46,10 @@ pub struct ModulePipeline {
     limits: Limits,
     breakers: Arc<Breakers>,
     pub catalog_hash: String,
+    /// Instances whose stored seed differs from the catalog's params, as of startup.
+    seed_drift: HashSet<String>,
+    /// Accounts over the budget and orphaned assignment rows, as of the last report.
+    assignment_report: std::sync::Mutex<(usize, usize)>,
 }
 
 /// The `module_instances` rows as of one params version.
@@ -137,20 +141,17 @@ impl ModulePipeline {
             .map(|row| (row.module_id, (row.global_params, row.enabled)))
             .collect();
         let mut effective = HashMap::new();
+        let mut seed_drift = HashSet::new();
         for config in &mut catalog.instances {
             let Some((params, enabled)) = stored.get(&config.id) else {
-                super::metrics::enabled(&config.id, config.enabled);
-                super::metrics::config_drift(&config.id, false);
                 continue;
             };
-            super::metrics::enabled(&config.id, *enabled);
-            super::metrics::config_drift(
-                &config.id,
-                *enabled != config.catalog_enabled
-                    || seeded
-                        .get(&config.id)
-                        .is_some_and(|seeded| *seeded != config.params),
-            );
+            if seeded
+                .get(&config.id)
+                .is_some_and(|seeded| *seeded != config.params)
+            {
+                seed_drift.insert(config.id.clone());
+            }
             if *enabled != config.catalog_enabled {
                 tracing::warn!(module = %config.id, enabled, "Catalog `enabled` differs from the stored runtime flag; the stored flag applies");
             }
@@ -218,6 +219,8 @@ impl ModulePipeline {
             breakers: Arc::new(Breakers::new(limits.breaker_failures)),
             limits,
             catalog_hash: catalog.hash,
+            seed_drift,
+            assignment_report: std::sync::Mutex::new((0, 0)),
         })
     }
 
@@ -242,6 +245,8 @@ impl ModulePipeline {
             limits: Limits::default(),
             breakers: Arc::new(Breakers::new(Limits::default().breaker_failures)),
             catalog_hash: String::new(),
+            seed_drift: HashSet::new(),
+            assignment_report: std::sync::Mutex::new((0, 0)),
         }
     }
 
@@ -332,14 +337,43 @@ impl ModulePipeline {
                 );
             }
         }
+        if let Ok(mut report) = self.assignment_report.lock() {
+            *report = (over, orphaned);
+        }
         Ok((over, orphaned))
+    }
+
+    /// Sets the state gauges from the stored rows and this replica's breakers. Run on every probe,
+    /// so they are set once a metrics recorder exists and follow changes other replicas make.
+    fn publish(&self, rows: &Rows) {
+        super::metrics::catalog(&self.catalog_hash);
+        let (over_budget, orphaned) = self
+            .assignment_report
+            .lock()
+            .map(|report| *report)
+            .unwrap_or_default();
+        super::metrics::stored_assignments(over_budget, orphaned);
+        for instance in &self.instances {
+            let id = &instance.config.id;
+            let enabled = Self::enabled_in(rows, instance);
+            super::metrics::enabled(id, enabled);
+            super::metrics::config_drift(
+                id,
+                enabled != instance.config.catalog_enabled || self.seed_drift.contains(id),
+            );
+            super::metrics::circuit_open(id, self.breakers.state(id) == CircuitState::Open);
+        }
     }
 
     /// One health probe of every enabled instance: `Describe` under its timeout, with the startup
     /// checks. A healthy module half-opens an open breaker so the next real call is sent.
     pub async fn probe(&self) {
+        let Ok(rows) = self.rows().await else {
+            return;
+        };
+        self.publish(&rows);
         for instance in &self.instances {
-            if !matches!(self.enabled(instance).await, Ok(true)) {
+            if !Self::enabled_in(&rows, instance) {
                 continue;
             }
             let healthy =
@@ -884,6 +918,31 @@ params = {params}
             None,
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_probe_publishes_the_state_gauges() {
+        let pipeline = pipeline(vec![instance(
+            "caps",
+            &[HookName::BeforeTransactionApproved],
+            OnError::Deny,
+            StubModule::allowing(),
+        )]);
+        let rows = pipeline.rows().await.unwrap();
+        let recorder = crate::metrics::build_recorder();
+        let handle = recorder.handle();
+        metrics::with_local_recorder(&recorder, || pipeline.publish(&rows));
+        let text = handle.render();
+        for line in [
+            "guardian_module_enabled{module=\"caps\"} 1",
+            "guardian_module_circuit_open{module=\"caps\"} 0",
+            "guardian_module_config_drift{module=\"caps\"} 0",
+            "guardian_module_over_budget_accounts 0",
+            "guardian_module_orphaned_assignments 0",
+            "guardian_module_catalog_info{catalog_hash=\"\"} 1",
+        ] {
+            assert!(text.contains(line), "{line} missing from:\n{text}");
+        }
     }
 
     #[tokio::test]
