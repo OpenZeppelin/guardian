@@ -65,8 +65,14 @@ impl<M> Harness<M> {
             .and_then(|value| value.strip_prefix("Bearer "))
             .ok_or_else(|| Status::unauthenticated("missing bearer token"))?;
         let accepted = match instance_id {
-            Some(id) => self.tokens.get(id).is_some_and(|token| token == presented),
-            None => self.tokens.values().any(|token| token == presented),
+            Some(id) => self
+                .tokens
+                .get(id)
+                .is_some_and(|token| same_token(token, presented)),
+            None => self
+                .tokens
+                .values()
+                .any(|token| same_token(token, presented)),
         };
         if accepted {
             Ok(())
@@ -76,6 +82,17 @@ impl<M> Harness<M> {
             ))
         }
     }
+}
+
+/// Compares in time independent of where the tokens differ, so response timing does not reveal
+/// a token prefix.
+fn same_token(expected: &str, presented: &str) -> bool {
+    expected.len() == presented.len()
+        && expected
+            .bytes()
+            .zip(presented.bytes())
+            .fold(0u8, |difference, (a, b)| difference | (a ^ b))
+            == 0
 }
 
 pub(crate) fn status(error: ModuleError) -> Status {

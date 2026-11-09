@@ -61,7 +61,14 @@ impl ModuleFactory for GrpcFactory {
         let authorization = instance
             .auth_token
             .as_ref()
-            .map(|token| MetadataValue::try_from(format!("Bearer {}", token.expose_secret())))
+            .map(|token| {
+                MetadataValue::try_from(format!("Bearer {}", token.expose_secret())).map(
+                    |mut value| {
+                        value.set_sensitive(true);
+                        value
+                    },
+                )
+            })
             .transpose()
             .map_err(|_| ModuleError::InvalidRequest("token is not a valid header value".into()))?;
         Ok(Arc::new(GrpcModule {
