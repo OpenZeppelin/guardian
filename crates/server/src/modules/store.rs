@@ -601,7 +601,8 @@ impl ModuleStore for FsModuleStore {
     }
 }
 
-/// `(module_id, previous, new)` for every module whose assigned params changed.
+/// `(module_id, previous, new)`: one history entry per module whose params or evaluation position the write changes: order
+/// decides which module refuses first and which ones the budget cuts.
 pub(crate) fn assignment_changes(
     previous: &[AccountParamsRow],
     modules: &[Assigned],
@@ -612,17 +613,17 @@ pub(crate) fn assignment_changes(
     ids.dedup();
     ids.into_iter()
         .filter_map(|module_id| {
-            let before = previous
+            let old = previous.iter().find(|row| row.module_id == module_id);
+            let new = modules
                 .iter()
-                .find(|row| row.module_id == module_id)
-                .map(|row| row.params.clone())
+                .position(|assigned| assigned.module_id == module_id);
+            let before = old.map(|row| row.params.clone()).unwrap_or_default();
+            let after = new
+                .map(|index| modules[index].params.clone())
                 .unwrap_or_default();
-            let after = modules
-                .iter()
-                .find(|assigned| assigned.module_id == module_id)
-                .map(|assigned| assigned.params.clone())
-                .unwrap_or_default();
-            (before != after).then(|| (module_id.to_string(), before, after))
+            let moved =
+                matches!((old, new), (Some(row), Some(index)) if row.position as usize != index);
+            (before != after || moved).then(|| (module_id.to_string(), before, after))
         })
         .collect()
 }
@@ -681,6 +682,38 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn reordering_an_assignment_is_recorded_and_moves_the_version() {
+        let store = FsModuleStore::in_memory();
+        let assigned = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| Assigned {
+                    module_id: id.to_string(),
+                    params: json!({}),
+                })
+                .collect::<Vec<_>>()
+        };
+        store
+            .set_assignment("0xacc", assigned(&["a", "b"]), &change())
+            .await
+            .unwrap();
+        let version = store.version().await.unwrap();
+        store
+            .set_assignment("0xacc", assigned(&["b", "a"]), &change())
+            .await
+            .unwrap();
+        assert!(store.version().await.unwrap() > version);
+        assert_eq!(store.history("a", None, 10).await.unwrap().len(), 2);
+        let order: Vec<_> = store
+            .account_params("0xacc")
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.module_id)
+            .collect();
+        assert_eq!(order, ["b", "a"]);
     }
 
     #[tokio::test]
