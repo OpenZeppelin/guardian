@@ -1363,7 +1363,9 @@ async fn a_guardian_execution_over_a_mandatory_cap_is_refused_before_anything_is
             module: Some("caps".into()),
             reason_code: "amount_cap_exceeded".into(),
             layer: Some("global".into()),
-            client_message: None,
+            client_message: Some(
+                "The transaction sends more than this Guardian allows per transaction.".into()
+            ),
         })
     );
     assert_eq!(f.calls.lock().unwrap().submitted, 0, "nothing is submitted");
