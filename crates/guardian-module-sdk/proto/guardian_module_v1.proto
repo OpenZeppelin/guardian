@@ -1,6 +1,6 @@
-// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 26).
+// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 28).
 // The proto in RFC section 3 is authoritative; regenerate this file when it changes.
-// Protocol version 1 is frozen when M2a ships.
+// Protocol version 1 is frozen (2026-11-09, at e4efd839): changes within it are additive only (RFC section 3.5).
 
 syntax = "proto3";
 package guardian.module.v1;

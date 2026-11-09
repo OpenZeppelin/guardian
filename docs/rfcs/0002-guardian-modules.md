@@ -7,7 +7,7 @@
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
 | **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; plan and tasks follow the prototype |
-| **Revision** | 27 (2026-11-09): `proposer_session` dropped from version 1, `submitter_session` set at the ack now that pushes accept sessions; changes in Appendix C |
+| **Revision** | 28 (2026-11-09): protocol version 1 frozen at `e4efd839`; changes in Appendix C |
 | **Review sought** | Comments on the design and the M2a scope remain open until M2a ships, when `guardian.module.v1` freezes (section 7) |
 | **Code baseline** | `main` at `ca503704`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510, since merged to `main` as `1100f3a4`) and kept as dated evidence. Miden pins: protocol and standards 0.17.1. Appendices B and C cite the baselines of their revisions. Prototype findings (2026-10-13 to 2026-10-15) in `speckit/features/251-guardian-modules/research.md` |
 
@@ -1093,6 +1093,8 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 
 **Freeze criteria.** Version 1 freezes only once the prototype implements, with tests, the protocol surface added in revision 24 that is so far derived from reading code: the renumbered proto, registration before the claim (new account, unfinished claim, lost claim), `network_id`, `code_commitment` and `procedure_roots` with effective-override filtering (non-zero, exported, not the auth procedure), `reference_block` and the optional `expiration_block`, `new_code_commitment`, `submitter_session`, `dry_run` with approval instances in the check, and the `allowed_code_commitments` rule with `code_check`. Extraction details are where the prototype found errors before (the fee note, single-key views), so these are measured against real accounts, not only fixtures.
 
+**Frozen.** The freeze criteria were met on 2026-11-09 at `e4efd839` on the M2a branch `251-modules-m2a`: every field and behaviour listed above is implemented with tests, except `proposer_session`, removed in revision 27 (section 3.2). From then on `guardian.module.v1` changes only additively (section 3.5).
+
 **M2a: stateless gates.**
 
 - Gate hooks `before_transaction_approved`, `before_proposal_created` and `before_account_registered` (section 2.3), the pipeline, and the catalog with kinds and instances, `enabled`, `operator_can_disable` and secret references.
@@ -1204,6 +1206,7 @@ None. Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
+| 28 | 2026-11-09 | protocol version 1 frozen: the freeze criteria of section 7 met at `e4efd839` on `251-modules-m2a`, with tests; the proto copies say so. No design change |
 | 27 | 2026-11-09 | `proposer_session` removed from `TransactionSubject`, `PendingTransaction` and `CommitEvent`, and `unverified_metadata` renumbered to 5 before the freeze: a session key cannot approve a proposal, so whether one created it adds nothing the threshold does not already require, and no catalog policy uses it; version 1 can add it later. Section 3.2 corrected for #580: `push_delta` and Guardian execution accept session credentials, so `submitter_session` can be true at the ack. Freeze criteria and the M2a list updated (section 7) |
 | 26 | 2026-11-09 | `main` (mixed-scheme accounts, #565) merged into the prototype. `AccountView.signer_schemes` (signer commitment to `falcon` or `ecdsa`), decoded per approver from state, and `auth_scheme` redefined as the signers' common scheme or `mixed`, because "one scheme per account" no longer holds (section 3.2). The execution path's refusals named as `GUARDIAN_EXECUTION_MODULE_DENIED` and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` failure codes (section 4.1). The execution requester is carried to the ack, not stored on the reservation, since pre-boundary attempts are never resumed (sections 3.2 and 7) |
 | 25 | 2026-11-03 | status moved from Open for comment to Accepted for implementation on merge of PR #544; RFC 0001 links point at its merged copy and section 7 records that PR #510 has merged; review-sought and code-baseline rows updated to match. No design change |
