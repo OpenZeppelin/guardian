@@ -57,7 +57,7 @@ fn payment(amounts: &[u64], params: serde_json::Value) -> HookRequest {
                 faucet_id: "0xaa".into(),
                 value: Some(asset::Value::FungibleAmount(amount.to_string())),
             }],
-            p2id_target: Some("0xr1".into()),
+            p2id_target: Some("0xa1".into()),
             ..Default::default()
         })
         .collect();
@@ -112,29 +112,29 @@ async fn basic_policy_conforms() {
         .request("at the cap", payment(&[1000], cap))
         .request(
             "recipient not allowed",
-            payment(&[1], json!({ "recipient_allowlist": ["0xother"] })),
+            payment(&[1], json!({ "recipient_allowlist": ["0x07e4"] })),
         )
         .request(
             "recipient denied, generic",
-            payment(&[1], json!({ "recipient_denylist": ["0xr1"] })),
+            payment(&[1], json!({ "recipient_denylist": ["0xa1"] })),
         )
         .request(
             "denied signer added",
             with_views(
                 payment(&[1], signers.clone()),
-                &["0xs1"],
-                &["0xs1", "0xbad"],
+                &["0x51"],
+                &["0x51", "0xbad"],
             ),
         )
         .request(
             "listed code",
-            with_views(payment(&[1], code.clone()), &["0xs1"], &["0xs1"]),
+            with_views(payment(&[1], code.clone()), &["0x51"], &["0x51"]),
         )
         .request(
             "registration with a denied signer",
             registration(signers, &["0xbad"]),
         )
-        .request("registration on listed code", registration(code, &["0xs1"]))
+        .request("registration on listed code", registration(code, &["0x51"]))
         .request(
             "params a module cannot read",
             payment(&[1], json!({ "max_amount_per_tx": { "0xaa": "ten" } })),
@@ -196,7 +196,7 @@ async fn note_policy_conforms() {
             "a private payment",
             notes(vec![note(NoteType::Private, false)], private),
         )
-        .request("registration", registration(json!({}), &["0xs1"]))
+        .request("registration", registration(json!({}), &["0x51"]))
         .valid_params(json!({ "max_payment_notes": 1, "deny_private_notes": true }))
         .valid_params(json!({}))
         .invalid_params(json!({ "max_notes": 1 }))

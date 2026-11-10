@@ -123,7 +123,7 @@ auth = { token_secret = "guardian/modules/no-private-notes-token" }
 
 ```toml
 [dev-dependencies]
-guardian-module-sdk = { version = "0.19", features = ["conformance"] }
+guardian-module-sdk = { version = "0.19.0-rc.1", features = ["conformance"] }
 ```
 
 ```rust

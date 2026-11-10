@@ -85,9 +85,10 @@ impl<M> Harness<M> {
 }
 
 /// Compares in time independent of where the tokens differ, so response timing does not reveal
-/// a token prefix.
+/// a token prefix. An empty registered token matches nothing.
 fn same_token(expected: &str, presented: &str) -> bool {
-    expected.len() == presented.len()
+    !expected.is_empty()
+        && expected.len() == presented.len()
         && expected
             .bytes()
             .zip(presented.bytes())

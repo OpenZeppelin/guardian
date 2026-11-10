@@ -1,6 +1,7 @@
-// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 28).
+// guardian.module.v1, extracted from docs/rfcs/0002-guardian-modules.md section 3 (revision 32).
 // The proto in RFC section 3 is authoritative; regenerate this file when it changes.
-// Protocol version 1 is frozen (2026-11-09, at e4efd839): changes within it are additive only (RFC section 3.5).
+// Protocol version 1 is not frozen yet: it freezes with the first published guardian-module-sdk
+// release, and from then on changes within it are additive only (RFC section 3.5).
 
 syntax = "proto3";
 package guardian.module.v1;
@@ -51,7 +52,7 @@ message HookRequest {
   Hook hook = 2;
   bool dry_run = 3;                   // a policy check: nothing is stored or signed whatever the decision (section 2.7)
   string network = 4;                 // network family: "miden"
-  string network_id = 5;              // the account's network within the family: "mainnet", "testnet", "devnet", "cedar" or "local" (section 3.1)
+  string network_id = 5;              // the network this Guardian serves within the family: "mainnet", "testnet", "devnet", "cedar" or "local"; from its own configuration, never from the request (section 3.1)
   string account_id = 6;
   string instance_id = 7;             // catalog id of the instance being called
   bytes params = 8;                   // UTF-8 JSON, params of the layer being evaluated (global, account layer, or the account's own for default/assigned)
@@ -102,21 +103,20 @@ enum PendingState {
 }
 
 message RegistrationSubject {
-  AccountStateProjection initial_state = 1;  // the account about to be accepted, per network
+  AccountStateProjection initial_state = 1;  // the account about to be accepted, per network: its whole vault and storage
 }
 
 enum Effect {
-  EFFECT_UNSPECIFIED = 0;             // a module that does not set `effect`: `allow` decides
+  EFFECT_UNSPECIFIED = 0;             // never a decision: a module failure
   EFFECT_ALLOW = 1;
   EFFECT_DENY = 2;
 }
 
 message Decision {
-  bool allow = 1;                     // read only when effect is unspecified
+  Effect effect = 1;                  // unspecified, or a value the Guardian does not know, is a module failure
   string reason_code = 2;             // required on a deny; ignored on an allow
   string message = 3;                 // logged, never forwarded to clients
-  Effect effect = 4;                  // wins over allow when set; a value the Guardian does not know is a module failure
-  string client_message = 5;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it (section 2.7)
+  string client_message = 4;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it (section 2.7)
 }
 
 // A transaction as its network describes it. One variant per network; a module reads the
@@ -141,14 +141,15 @@ message RawTransaction {
 }
 
 message MidenTransaction {
-  int64 nonce_delta = 1;
-  uint32 reference_block = 2;         // the block the transaction was executed against
-  optional uint32 expiration_block = 3;  // absent when the transaction sets no expiration (section 3.1)
+  uint64 nonce_delta = 1;
+  uint32 bound_block = 2;             // the block the summary binds; the transaction executes against this block or a later one (section 3.1)
+  optional uint32 expiration_delta = 3;  // blocks after the block the transaction executes against at which it expires; absent when its script sets none. Not an absolute height: that block is not known at approval (section 3.1)
   repeated VaultChange vault_changes = 4;
   repeated OutputNote output_notes = 5;
   repeated InputNote input_notes = 6;
   repeated StorageChange storage_changes = 7;
   optional string new_code_commitment = 8;  // set when the transaction replaces the account's code (section 3.1)
+  optional uint64 approval_expiration_block = 9;  // the block at which the cosigners' approval of this transaction lapses; absent when it never lapses (section 3.1)
 }
 
 message MidenAccountState {
@@ -172,7 +173,7 @@ message OutputNote {
   repeated Asset assets = 5;
   string script_root = 6;
   optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
-  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note)
+  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note, and only while it carries no more of the fee asset than a transaction can owe)
 }
 enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
 

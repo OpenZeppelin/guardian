@@ -550,7 +550,7 @@ fn normalizes_to(verdict: &ParamsVerdict, normalized: &serde_json::Value) -> boo
 
 fn well_formed(decision: &Decision) -> Result<(), String> {
     let allowed = match Effect::try_from(decision.effect) {
-        Ok(Effect::Unspecified) => decision.allow,
+        Ok(Effect::Unspecified) => return Err("the decision sets no effect".into()),
         Ok(Effect::Allow) => true,
         Ok(Effect::Deny) => false,
         Err(_) => return Err(format!("unknown effect {}", decision.effect)),

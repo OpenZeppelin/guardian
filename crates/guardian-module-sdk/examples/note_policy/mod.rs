@@ -143,7 +143,7 @@ mod tests {
                 .evaluate(&request(params.clone(), one_payment))
                 .await
                 .unwrap()
-                .allow
+                .allows()
         );
         let two_payments = vec![note(NoteType::Public, false), note(NoteType::Public, false)];
         let decision = NotePolicy
@@ -169,7 +169,7 @@ mod tests {
                 .evaluate(&request(serde_json::json!({}), notes))
                 .await
                 .unwrap()
-                .allow
+                .allows()
         );
     }
 

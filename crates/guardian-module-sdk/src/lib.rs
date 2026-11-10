@@ -34,8 +34,6 @@ pub const DEFAULT_REQUEST_MAX_BYTES: usize = 2 * 1024 * 1024;
 /// `ModuleInfo.required_capabilities`. New features are added as capabilities, not as a new
 /// protocol version, so modules and Guardians of one major version keep working together.
 pub mod capability {
-    /// `Decision.effect` is read.
-    pub const DECISION_EFFECT: &str = "decision.effect";
     /// `ParamsVerdict.normalized_params` is stored.
     pub const PARAMS_NORMALIZATION: &str = "params.normalization";
 }
@@ -253,7 +251,6 @@ impl RegistrationSubject {
 impl Decision {
     pub fn allow() -> Self {
         Self {
-            allow: true,
             reason_code: String::new(),
             message: String::new(),
             effect: Effect::Allow as i32,
@@ -263,12 +260,16 @@ impl Decision {
 
     pub fn deny(reason_code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
-            allow: false,
             reason_code: reason_code.into(),
             message: message.into(),
             effect: Effect::Deny as i32,
             client_message: String::new(),
         }
+    }
+
+    /// Whether this decision allows the request.
+    pub fn allows(&self) -> bool {
+        self.effect == Effect::Allow as i32
     }
 
     /// Text for the person who sent the request. The Guardian forwards it only for instances

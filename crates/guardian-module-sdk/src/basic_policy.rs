@@ -49,11 +49,11 @@ pub struct Params {
     #[serde(default)]
     pub signer_denylist: Option<Vec<String>>,
     #[serde(default)]
-    pub signer_check: SignerCheck,
+    pub signer_check: Option<SignerCheck>,
     #[serde(default)]
     pub allowed_code_commitments: Option<Vec<String>>,
     #[serde(default)]
-    pub code_check: CodeCheck,
+    pub code_check: Option<CodeCheck>,
 }
 
 struct Policy {
@@ -87,8 +87,8 @@ fn normalized(values: &[String]) -> BTreeSet<String> {
 }
 
 /// Ids in the hex form the Guardian reports them in (`0x` and hex digits), lowercased. Any other
-/// spelling, a bech32 address for one, would never match a request, so a denylist or a cap would
-/// silently not apply; it is refused instead.
+/// spelling, a bech32 address or a placeholder left in an example catalog for one, would never
+/// match a request, so a denylist or a cap would silently not apply; it is refused instead.
 fn ids(field: &str, values: &[String]) -> Result<BTreeSet<String>, String> {
     values.iter().map(|value| id(field, value)).collect()
 }
@@ -98,9 +98,7 @@ fn id(field: &str, value: &str) -> Result<String, String> {
         .strip_prefix("0x")
         .or_else(|| value.strip_prefix("0X"))
     {
-        Some(rest)
-            if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') =>
-        {
+        Some(rest) if !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_hexdigit()) => {
             Ok(value.to_ascii_lowercase())
         }
         _ => Err(format!(
@@ -113,17 +111,35 @@ impl TryFrom<Params> for Policy {
     type Error = String;
 
     fn try_from(params: Params) -> Result<Self, String> {
-        let caps = params
-            .max_amount_per_tx
-            .into_iter()
-            .map(|(faucet, amount)| {
-                let faucet = id("max_amount_per_tx", &faucet)?;
-                amount
-                    .parse::<u128>()
-                    .map(|amount| (faucet.clone(), amount))
-                    .map_err(|_| format!("max_amount_per_tx for {faucet} is not a decimal amount"))
-            })
-            .collect::<Result<_, _>>()?;
+        let mut caps = BTreeMap::new();
+        for (faucet, amount) in params.max_amount_per_tx {
+            let faucet = id("max_amount_per_tx", &faucet)?;
+            let amount = amount
+                .parse::<u128>()
+                .map_err(|_| format!("max_amount_per_tx for {faucet} is not a decimal amount"))?;
+            if caps.insert(faucet.clone(), amount).is_some() {
+                return Err(format!(
+                    "max_amount_per_tx names {faucet} more than once (ids are compared in lowercase)"
+                ));
+            }
+        }
+        if params.deny_unknown_recipients && params.recipient_denylist.is_none() {
+            return Err(
+                "deny_unknown_recipients applies to recipient_denylist, which is not set".into(),
+            );
+        }
+        if params.signer_check.is_some()
+            && params.signer_allowlist.is_none()
+            && params.signer_denylist.is_none()
+        {
+            return Err(
+                "signer_check applies to signer_allowlist or signer_denylist, neither of which is set"
+                    .into(),
+            );
+        }
+        if params.code_check.is_some() && params.allowed_code_commitments.is_none() {
+            return Err("code_check applies to allowed_code_commitments, which is not set".into());
+        }
         let signers = match (params.signer_allowlist, params.signer_denylist) {
             (Some(_), Some(_)) => {
                 return Err("signer_allowlist and signer_denylist are mutually exclusive".into());
@@ -151,13 +167,13 @@ impl TryFrom<Params> for Policy {
                 .transpose()?,
             deny_unknown_recipients: params.deny_unknown_recipients,
             signers,
-            signer_check: params.signer_check,
+            signer_check: params.signer_check.unwrap_or_default(),
             code: params
                 .allowed_code_commitments
                 .as_deref()
                 .map(|list| ids("allowed_code_commitments", list))
                 .transpose()?,
-            code_check: params.code_check,
+            code_check: params.code_check.unwrap_or_default(),
         })
     }
 }
@@ -430,8 +446,8 @@ mod tests {
     fn tx_request(params: serde_json::Value, projection: MidenTransaction) -> HookRequest {
         HookRequest {
             params: serde_json::to_vec(&params).unwrap(),
-            before: Some(view(&["0xs1"])),
-            after: Some(view(&["0xs1"])),
+            before: Some(view(&["0x51"])),
+            after: Some(view(&["0x51"])),
             subject: Some(hook_request::Subject::Transaction(TransactionSubject {
                 projection: Some(TransactionProjection::miden(projection)),
                 ..Default::default()
@@ -451,23 +467,23 @@ mod tests {
     #[tokio::test]
     async fn allows_a_payment_under_the_cap() {
         let projection = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 500)])],
+            output_notes: vec![p2id("0xa1", vec![fungible(USDC, 500)])],
             ..Default::default()
         };
-        assert!(decide(&tx_request(cap(), projection)).await.allow);
+        assert!(decide(&tx_request(cap(), projection)).await.allows());
     }
 
     #[tokio::test]
     async fn sums_split_payments_against_the_cap() {
         let projection = MidenTransaction {
             output_notes: vec![
-                p2id("0xr1", vec![fungible(USDC, 600)]),
-                p2id("0xr2", vec![fungible(USDC, 600)]),
+                p2id("0xa1", vec![fungible(USDC, 600)]),
+                p2id("0xa2", vec![fungible(USDC, 600)]),
             ],
             ..Default::default()
         };
         let decision = decide(&tx_request(cap(), projection)).await;
-        assert!(!decision.allow);
+        assert!(!decision.allows());
         assert_eq!(decision.reason_code, "amount_cap_exceeded");
     }
 
@@ -479,26 +495,26 @@ mod tests {
                 direction: crate::Direction::Out as i32,
             }],
             input_notes: vec![crate::InputNote {
-                note_id: "0xin".into(),
+                note_id: "0x14".into(),
                 assets: vec![fungible(USDC, 1000)],
             }],
-            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 1500)])],
+            output_notes: vec![p2id("0xa1", vec![fungible(USDC, 1500)])],
             ..Default::default()
         };
-        assert!(!decide(&tx_request(cap(), projection)).await.allow);
+        assert!(!decide(&tx_request(cap(), projection)).await.allows());
     }
 
     #[tokio::test]
     async fn uncapped_assets_and_nfts_are_not_counted() {
         let nft = Asset {
             faucet_id: USDC.into(),
-            value: Some(asset::Value::NftId("0xnft".into())),
+            value: Some(asset::Value::NftId("0x4f7".into())),
         };
         let projection = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(ETH, 5000), nft])],
+            output_notes: vec![p2id("0xa1", vec![fungible(ETH, 5000), nft])],
             ..Default::default()
         };
-        assert!(decide(&tx_request(cap(), projection)).await.allow);
+        assert!(decide(&tx_request(cap(), projection)).await.allows());
     }
 
     fn fee_note(amount: u64) -> OutputNote {
@@ -513,13 +529,17 @@ mod tests {
     #[tokio::test]
     async fn the_fee_note_is_not_a_payment() {
         let projection = MidenTransaction {
-            output_notes: vec![fee_note(5000), p2id("0xr1", vec![fungible(USDC, 500)])],
+            output_notes: vec![fee_note(5000), p2id("0xa1", vec![fungible(USDC, 500)])],
             ..Default::default()
         };
-        assert!(decide(&tx_request(cap(), projection.clone())).await.allow);
+        assert!(
+            decide(&tx_request(cap(), projection.clone()))
+                .await
+                .allows()
+        );
 
-        let params = json!({ "recipient_allowlist": ["0xr1"], "asset_allowlist": [ETH, USDC] });
-        assert!(decide(&tx_request(params, projection)).await.allow);
+        let params = json!({ "recipient_allowlist": ["0xa1"], "asset_allowlist": [ETH, USDC] });
+        assert!(decide(&tx_request(params, projection)).await.allows());
 
         let only_fee = MidenTransaction {
             output_notes: vec![fee_note(5000)],
@@ -528,20 +548,20 @@ mod tests {
         assert!(
             decide(&tx_request(json!({ "asset_allowlist": [ETH] }), only_fee))
                 .await
-                .allow
+                .allows()
         );
     }
 
     #[tokio::test]
     async fn recipient_allowlist_denies_partial_and_unlisted_notes() {
-        let params = json!({ "recipient_allowlist": ["0xr1"] });
+        let params = json!({ "recipient_allowlist": ["0xa1"] });
         let listed = MidenTransaction {
-            output_notes: vec![p2id("0xR1", vec![fungible(USDC, 1)])],
+            output_notes: vec![p2id("0xA1", vec![fungible(USDC, 1)])],
             ..Default::default()
         };
-        assert!(decide(&tx_request(params.clone(), listed)).await.allow);
+        assert!(decide(&tx_request(params.clone(), listed)).await.allows());
 
-        let mut partial_note = p2id("0xr1", vec![fungible(USDC, 1)]);
+        let mut partial_note = p2id("0xa1", vec![fungible(USDC, 1)]);
         partial_note.partial = true;
         let partial = MidenTransaction {
             output_notes: vec![partial_note],
@@ -555,17 +575,17 @@ mod tests {
         );
 
         let unlisted = MidenTransaction {
-            output_notes: vec![p2id("0xr9", vec![fungible(USDC, 1)])],
+            output_notes: vec![p2id("0xa9", vec![fungible(USDC, 1)])],
             ..Default::default()
         };
-        assert!(!decide(&tx_request(params, unlisted)).await.allow);
+        assert!(!decide(&tx_request(params, unlisted)).await.allows());
     }
 
     #[tokio::test]
     async fn asset_allowlist_covers_sent_and_received_assets() {
         let params = json!({ "asset_allowlist": [USDC] });
         let projection = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(ETH, 1)])],
+            output_notes: vec![p2id("0xa1", vec![fungible(ETH, 1)])],
             ..Default::default()
         };
         assert_eq!(
@@ -588,13 +608,13 @@ mod tests {
             "recipient_blocked"
         );
 
-        let mut partial = p2id("0xr1", vec![fungible(USDC, 1)]);
+        let mut partial = p2id("0xa1", vec![fungible(USDC, 1)]);
         partial.partial = true;
         let unknown = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 1)]), partial],
+            output_notes: vec![p2id("0xa1", vec![fungible(USDC, 1)]), partial],
             ..Default::default()
         };
-        assert!(decide(&tx_request(params, unknown.clone())).await.allow);
+        assert!(decide(&tx_request(params, unknown.clone())).await.allows());
 
         let strict = json!({ "recipient_denylist": ["0xbad"], "deny_unknown_recipients": true });
         assert_eq!(
@@ -607,14 +627,14 @@ mod tests {
     #[tokio::test]
     async fn a_denial_names_its_rule_to_the_client_and_discloses_no_param() {
         let projection = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 5_000)])],
+            output_notes: vec![p2id("0xa1", vec![fungible(USDC, 5_000)])],
             ..Default::default()
         };
         let decision = decide(&tx_request(cap(), projection)).await;
         assert_eq!(decision.reason_code, "amount_cap_exceeded");
         assert!(!decision.client_message.is_empty());
         assert!(decision.client_message.len() <= 256);
-        for detail in ["1000", "5000", USDC, "0xr1"] {
+        for detail in ["1000", "5000", USDC, "0xa1"] {
             assert!(
                 !decision.client_message.contains(detail),
                 "{detail} leaked into {:?}",
@@ -645,7 +665,7 @@ mod tests {
         running(
             HookRequest {
                 params: serde_json::to_vec(&params).unwrap(),
-                after: Some(view(&["0xs1"])),
+                after: Some(view(&["0x51"])),
                 subject: Some(hook_request::Subject::Registration(
                     RegistrationSubject::default(),
                 )),
@@ -665,7 +685,7 @@ mod tests {
     #[tokio::test]
     async fn changed_code_check_judges_registration_and_code_replacement_only() {
         let rule = code_rule("changed");
-        assert!(decide(&registration(rule.clone(), REVIEWED)).await.allow);
+        assert!(decide(&registration(rule.clone(), REVIEWED)).await.allows());
         let refused = decide(&registration(rule.clone(), UNREVIEWED)).await;
         assert_eq!(refused.reason_code, "code_not_allowed");
         assert!(!refused.client_message.contains(UNREVIEWED));
@@ -675,13 +695,13 @@ mod tests {
             UNREVIEWED,
         );
         assert!(
-            decide(&unchanged).await.allow,
+            decide(&unchanged).await.allows(),
             "code an account already runs is kept until it changes"
         );
         let upgrade = tx_request(rule.clone(), replacing_code_with(Some(UNREVIEWED)));
         assert_eq!(decide(&upgrade).await.reason_code, "code_not_allowed");
         let reviewed = tx_request(rule, replacing_code_with(Some(REVIEWED)));
-        assert!(decide(&reviewed).await.allow);
+        assert!(decide(&reviewed).await.allows());
     }
 
     #[tokio::test]
@@ -697,7 +717,7 @@ mod tests {
             REVIEWED,
         );
         assert!(
-            decide(&upgraded).await.allow,
+            decide(&upgraded).await.allows(),
             "an account on unlisted code can still upgrade to listed code"
         );
     }
@@ -733,7 +753,7 @@ mod tests {
     async fn asset_allowlist_covers_consumed_notes() {
         let projection = MidenTransaction {
             input_notes: vec![crate::InputNote {
-                note_id: "0xin".into(),
+                note_id: "0x14".into(),
                 assets: vec![fungible(ETH, 1)],
             }],
             ..Default::default()
@@ -752,7 +772,7 @@ mod tests {
     #[tokio::test]
     async fn forged_metadata_does_not_change_the_decision() {
         let projection = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 5000)])],
+            output_notes: vec![p2id("0xa1", vec![fungible(USDC, 5000)])],
             ..Default::default()
         };
         let mut request = tx_request(cap(), projection);
@@ -761,7 +781,7 @@ mod tests {
                 serde_json::to_vec(&json!({ "proposal_type": "change_threshold", "amount": "1" }))
                     .unwrap();
         }
-        assert!(!decide(&request).await.allow);
+        assert!(!decide(&request).await.allows());
     }
 
     fn signer_request(
@@ -782,31 +802,31 @@ mod tests {
 
     #[tokio::test]
     async fn added_mode_checks_only_new_signers() {
-        let params = json!({ "signer_allowlist": ["0xs2"] });
-        let request = signer_request(params.clone(), Some(&["0xs1"]), &["0xs1", "0xs2"]);
-        assert!(decide(&request).await.allow);
+        let params = json!({ "signer_allowlist": ["0x52"] });
+        let request = signer_request(params.clone(), Some(&["0x51"]), &["0x51", "0x52"]);
+        assert!(decide(&request).await.allows());
 
-        let request = signer_request(params, Some(&["0xs1"]), &["0xs1", "0xs3"]);
+        let request = signer_request(params, Some(&["0x51"]), &["0x51", "0x53"]);
         assert_eq!(decide(&request).await.reason_code, "signer_not_allowed");
     }
 
     #[tokio::test]
     async fn all_mode_checks_every_signer() {
-        let params = json!({ "signer_check": "all", "signer_allowlist": ["0xs2"] });
-        let request = signer_request(params, Some(&["0xs1"]), &["0xs1", "0xs2"]);
-        assert!(!decide(&request).await.allow);
+        let params = json!({ "signer_check": "all", "signer_allowlist": ["0x52"] });
+        let request = signer_request(params, Some(&["0x51"]), &["0x51", "0x52"]);
+        assert!(!decide(&request).await.allows());
     }
 
     #[tokio::test]
     async fn registration_checks_every_initial_signer() {
         let params = json!({ "signer_denylist": ["0xbad"] });
-        let request = signer_request(params, None, &["0xs1", "0xBAD"]);
-        assert!(!decide(&request).await.allow);
+        let request = signer_request(params, None, &["0x51", "0xBAD"]);
+        assert!(!decide(&request).await.allows());
     }
 
     #[tokio::test]
     async fn missing_account_view_is_an_error_not_an_allow() {
-        let mut request = signer_request(json!({ "signer_allowlist": ["0xs1"] }), None, &[]);
+        let mut request = signer_request(json!({ "signer_allowlist": ["0x51"] }), None, &[]);
         request.after = None;
         assert!(BasicPolicy.evaluate(&request).await.is_err());
     }
@@ -820,6 +840,11 @@ mod tests {
             json!({ "unknown": 1 }),
             json!({ "max_amount_per_tx": { USDC: "ten" } }),
             json!({ "signer_allowlist": [], "signer_denylist": [] }),
+            json!({ "max_amount_per_tx": { "0xREPLACE_WITH_FAUCET_ID": "5" } }),
+            json!({ "max_amount_per_tx": { "0xAA": "5", "0xaa": "9" } }),
+            json!({ "deny_unknown_recipients": true }),
+            json!({ "signer_check": "all" }),
+            json!({ "code_check": "all" }),
         ] {
             let verdict = BasicPolicy
                 .validate_params(&serde_json::to_vec(&params).unwrap())
@@ -832,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn evaluating_twice_gives_the_same_decision() {
         let projection = MidenTransaction {
-            output_notes: vec![p2id("0xr1", vec![fungible(USDC, 900)])],
+            output_notes: vec![p2id("0xa1", vec![fungible(USDC, 900)])],
             ..Default::default()
         };
         let request = tx_request(cap(), projection);
