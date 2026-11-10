@@ -88,7 +88,11 @@ module is skipped without waiting for its timeout.
    set `on_error = "allow"`, or `operator_can_disable = true` and then
    disable through the API, or remove the instance. Editing `enabled` in the
    catalog does nothing once the instance has started once: the stored flag
-   applies and `guardian_module_config_drift` reports the difference.
+   applies and `guardian_module_config_drift` reports the difference. The one
+   exception tightens policy: an instance the catalog declares enabled and
+   not `operator_can_disable` is switched on at startup even when it is
+   stored as disabled, with a params history entry by `catalog`, so making an
+   instance non-disableable in the catalog also ends an earlier disable.
    Removing an instance leaves its account assignments in place, marked
    `orphaned` and skipped, so adding it back restores them.
 
@@ -144,9 +148,22 @@ Symptoms: `timed out` failures, the p99 of
 ## The server does not start
 
 An enabled instance that cannot be created or fails its startup checks stops
-startup: an unknown kind, an unreachable module, a token the module rejects, a
-secret the secrets backend cannot read, or params the module refuses. The log
-names the instance (`module <id>: ...`).
+startup: an unknown kind, a token the module rejects, a module that answers
+with a protocol version or hooks the Guardian cannot use, a secret the secrets
+backend cannot read, params the module refuses, or an unreachable module of an
+instance that has never started on this Guardian. The log names the instance
+(`module <id>: ...`).
+
+A module that is merely down does not stop a restart once its instance has
+started here before. The server logs `Enabled module did not answer its
+startup checks` and starts with that instance unavailable: its circuit is
+open, so its accounts get `GUARDIAN_MODULE_UNAVAILABLE` (or skip it with
+`on_error = "allow"`, recorded as a fail-open skip), and every other account
+is served. Each health probe then runs the full startup checks, and the
+instance comes back on its own once they pass (`Policy module passed the
+startup checks it could not be reached for`). If the module returns with
+params it now refuses, the instance stays unavailable and the log says why:
+write params it accepts through the operator API.
 
 - Fix the cause (start the module, fix the secret, see
   [secrets](./secrets.md#policy-module-secrets)), or

@@ -52,7 +52,11 @@ cp docs/guides/policy-modules/remote.toml .guardian/
 
 Replace the faucet placeholder, set `GUARDIAN_MODULES_CONFIG=.guardian/remote.toml`
 in the guide's `.env`, and start the server as in the setup. The module must
-already be running: an enabled instance that cannot be reached stops startup.
+already be running: an enabled instance that is new to this Guardian and
+cannot be reached stops startup. Once the instance has started here, a later
+start during a module outage succeeds with the instance unavailable (its
+accounts get `GUARDIAN_MODULE_UNAVAILABLE`, or skip it with
+`on_error = "allow"`) until a health probe passes its startup checks.
 The log line lists `caps-remote=basic-policy <version>`.
 
 `auth.token_secret` names a secret in the Guardian's secrets backend (see
