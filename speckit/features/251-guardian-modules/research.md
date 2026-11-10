@@ -199,6 +199,23 @@ The loadgen `state-push` scenario no longer works since the multisig push gate (
 - **SC-001** holds (no catalog is one `Option` check per request) and **SC-006** holds within this machine's noise; a quiet machine or the deployed bench would bound the p99 more tightly.
 - Not run here: the quickstart walk-through against a local node; it needs a 0.17-line `miden-node`.
 
+### Default-module copy at registration (2026-11-10)
+
+Every module write takes the `module_state_version` row lock. The copy a first registration writes held it across a transaction of ten round trips for three default modules (begin, version bump, the account check, one insert and one history row per module, commit), so registrations ran one at a time for that long, and operator writes waited behind them. The copy is now one call of `guardian_module_seed_assignment`, which takes the lock, checks the account and writes its rows and history inside one statement.
+
+Local A/B on the Postgres store alone: 600 copies of three default modules (32 denylist entries each), from 1, 8 and 32 tasks, against the local Postgres container, two runs per leg. This measures the store call, not a whole `/configure` request.
+
+| Leg | Concurrency | Copies per second | p50 | p99 |
+|---|---|---|---|---|
+| transaction of statements | 1 | 289, 343 | 3.2 ms, 2.7 ms | 6.7 ms, 6.5 ms |
+| transaction of statements | 8 | 378, 394 | 17.0 ms, 16.4 ms | 71 ms, 62 ms |
+| transaction of statements | 32 | 341, 388 | 67 ms, 60 ms | 360 ms, 324 ms |
+| one function call | 1 | 2036, 2833 | 0.45 ms, 0.31 ms | 1.1 ms, 1.0 ms |
+| one function call | 8 | 2591, 3397 | 1.8 ms, 1.4 ms | 47 ms, 18 ms |
+| one function call | 32 | 1752, 2212 | 10.6 ms, 8.8 ms | 98 ms, 89 ms |
+
+The copies still serialize on the one row, so throughput does not grow with concurrency; it is five to nine times higher because the lock is held for one statement. A per-account params version would remove the shared lock (not done). The startup report no longer loads every account's params either: it reads which module each account row names (`account_modules`), and the probe loop recounts it every minute so the over-budget and orphan gauges follow operator fixes.
+
 ### In-process custom kinds (2026-10-16)
 
 `ServerBuilder::with_module_kind` is about thirty lines on top of the existing `Registry`: the catalog, pipeline, params API and history already work for any kind. The cost is elsewhere. In process, a module shares the process that holds the acknowledgement keys, so "a module can only refuse" holds by review, not isolation; a panic would unwind through the request handler; and a timeout only fires at await points, so a blocking module ignored `timeout_ms`. Every module call now runs on its own task: a panic is a module failure under `on_error`, and the timeout holds while other runtime workers are free (a module that blocks still occupies a worker until it returns). The per-call cost is one task spawn. Open for M2c: `ServerBuilder::from_env`, so a custom build does not copy `main.rs`, and the semver commitment of publishing `guardian-server` as a library.

@@ -166,6 +166,19 @@ diesel::define_sql_function! {
     ) -> Record<(BigInt, Nullable<Jsonb>, Jsonb)>;
 }
 
+diesel::define_sql_function! {
+    /// Typed so the statement is prepared once per connection: the default-module copy of a
+    /// first registration is one call, which holds the module state lock for that call only
+    /// (see the migration).
+    fn guardian_module_seed_assignment(
+        account_id: Text,
+        modules: Jsonb,
+        operator: Text,
+        reason: Text,
+        changed_at: Timestamptz,
+    ) -> Nullable<BigInt>;
+}
+
 #[async_trait]
 impl ModuleStore for PgModuleStore {
     async fn seed_instance(
@@ -618,63 +631,26 @@ impl ModuleStore for PgModuleStore {
             return Ok(false);
         }
         let changed_at = at(change)?;
+        let modules = serde_json::Value::Array(
+            modules
+                .into_iter()
+                .map(|assigned| {
+                    serde_json::json!({ "module_id": assigned.module_id, "params": assigned.params })
+                })
+                .collect(),
+        );
         let mut conn = self.conn().await?;
-        let account_id = account_id.to_string();
-        let written = conn
-            .transaction::<(), diesel::result::Error, _>(|conn| {
-                async move {
-                    // The version row lock serializes every module write, so the check below
-                    // and the insert cannot interleave with another write for this account.
-                    let version = bump(conn).await?;
-                    let taken: Vec<VersionSql> = diesel::sql_query(
-                        "SELECT 1::BIGINT AS version WHERE EXISTS (SELECT 1 FROM \
-                         module_account_params WHERE account_id = $1 AND kind = 'assignment') \
-                         OR EXISTS (SELECT 1 FROM module_params_history WHERE account_id = $1)",
-                    )
-                    .bind::<Text, _>(&account_id)
-                    .load(conn)
-                    .await?;
-                    if !taken.is_empty() {
-                        return Err(diesel::result::Error::RollbackTransaction);
-                    }
-                    for (position, assigned) in modules.iter().enumerate() {
-                        diesel::sql_query(
-                            "INSERT INTO module_account_params \
-                             (account_id, module_id, kind, position, params, updated_at, updated_by) \
-                             VALUES ($1, $2, 'assignment', $3, $4, $5, $6)",
-                        )
-                        .bind::<Text, _>(&account_id)
-                        .bind::<Text, _>(&assigned.module_id)
-                        .bind::<Integer, _>(position as i32)
-                        .bind::<Jsonb, _>(&assigned.params)
-                        .bind::<Timestamptz, _>(changed_at)
-                        .bind::<Text, _>(change.operator)
-                        .execute(conn)
-                        .await?;
-                    }
-                    for (module_id, before, after) in assignment_changes(&[], &modules) {
-                        append(
-                            conn,
-                            version,
-                            &module_id,
-                            Some(&account_id),
-                            &before,
-                            &after,
-                            change,
-                            changed_at,
-                        )
-                        .await?;
-                    }
-                    Ok(())
-                }
-                .scope_boxed()
-            })
-            .await;
-        match written {
-            Ok(()) => Ok(true),
-            Err(diesel::result::Error::RollbackTransaction) => Ok(false),
-            Err(e) => Err(format!("seed assignment: {e}")),
-        }
+        let committed: Option<i64> = diesel::select(guardian_module_seed_assignment(
+            account_id,
+            modules,
+            change.operator,
+            change.reason,
+            changed_at,
+        ))
+        .get_result(&mut conn)
+        .await
+        .map_err(|e| format!("seed assignment: {e}"))?;
+        Ok(committed.is_some())
     }
 
     async fn history(
@@ -983,6 +959,60 @@ mod tests {
             "an assignment an operator emptied is not refilled"
         );
         assert!(store.account_params(&account).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_default_copy_keeps_its_order_and_records_each_module() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let run = rand::random::<u32>();
+        let account = format!("0xorder{run}");
+        let (second, first) = (format!("a-second-{run}"), format!("z-first-{run}"));
+        let before = store.version().await.unwrap();
+        assert!(
+            store
+                .seed_assignment(
+                    &account,
+                    vec![
+                        Assigned {
+                            module_id: first.clone(),
+                            params: json!({ "limit": 1 }),
+                        },
+                        Assigned {
+                            module_id: second.clone(),
+                            params: json!({ "limit": 2 }),
+                        },
+                    ],
+                    &change("2026-11-10T00:00:00Z"),
+                )
+                .await
+                .unwrap()
+        );
+        let version = store.version().await.unwrap();
+        assert_eq!(version, before + 1, "one copy is one version");
+        let rows = store.account_params(&account).await.unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.module_id.as_str(), row.position, row.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (first.as_str(), 0, ParamsKind::Assignment),
+                (second.as_str(), 1, ParamsKind::Assignment),
+            ],
+            "evaluation order is the order given, not the id order"
+        );
+        assert_eq!(rows[1].params, json!({ "limit": 2 }));
+        for (module, params) in [
+            (&first, json!({ "limit": 1 })),
+            (&second, json!({ "limit": 2 })),
+        ] {
+            let history = store.history(module, None, 10).await.unwrap();
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].version, version);
+            assert_eq!(history[0].previous, serde_json::Value::Null);
+            assert_eq!(history[0].new, params);
+        }
     }
 
     #[tokio::test]
