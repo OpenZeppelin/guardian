@@ -92,6 +92,18 @@ pub enum GuardianError {
     SessionExpired,
     /// The delegated signer's session was revoked by logout or revoke-all.
     SessionRevoked,
+    /// A session request in a format this server no longer accepts (the
+    /// version 1 `x-auth-format: session`). Terminal: the client must sign
+    /// with a supported version, not retry or fall back to its wallet.
+    UnsupportedAuthVersion,
+    /// The request's timestamp is further from server time than its window
+    /// allows (60 s for session reads, 5 minutes otherwise): the client's
+    /// clock is off. Terminal until the clock is fixed, but it says nothing
+    /// about the credentials, so clients keep their session.
+    TimestampOutOfWindow {
+        drift_ms: u64,
+        window_ms: u64,
+    },
     InvalidEvmProposal(String),
     InsufficientSignatures {
         required: usize,
@@ -273,6 +285,8 @@ impl GuardianError {
             GuardianError::StateNotOnChain { .. } => StatusCode::CONFLICT,
             GuardianError::SessionExpired => StatusCode::UNAUTHORIZED,
             GuardianError::SessionRevoked => StatusCode::UNAUTHORIZED,
+            GuardianError::UnsupportedAuthVersion => StatusCode::BAD_REQUEST,
+            GuardianError::TimestampOutOfWindow { .. } => StatusCode::UNAUTHORIZED,
             GuardianError::InvalidEvmProposal(_) => StatusCode::BAD_REQUEST,
             GuardianError::InsufficientSignatures { .. } => StatusCode::BAD_REQUEST,
             GuardianError::RateLimitExceeded { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -333,6 +347,8 @@ impl GuardianError {
             GuardianError::StateNotOnChain { .. } => tonic::Code::FailedPrecondition,
             GuardianError::SessionExpired => tonic::Code::Unauthenticated,
             GuardianError::SessionRevoked => tonic::Code::Unauthenticated,
+            GuardianError::UnsupportedAuthVersion => tonic::Code::InvalidArgument,
+            GuardianError::TimestampOutOfWindow { .. } => tonic::Code::Unauthenticated,
             GuardianError::InvalidEvmProposal(_) => tonic::Code::InvalidArgument,
             GuardianError::InsufficientSignatures { .. } => tonic::Code::FailedPrecondition,
             GuardianError::RateLimitExceeded { .. } => tonic::Code::ResourceExhausted,
@@ -400,6 +416,8 @@ impl GuardianError {
             GuardianError::StateNotOnChain { .. } => "state_not_on_chain",
             GuardianError::SessionExpired => "session_expired",
             GuardianError::SessionRevoked => "session_revoked",
+            GuardianError::UnsupportedAuthVersion => "unsupported_auth_version",
+            GuardianError::TimestampOutOfWindow { .. } => "timestamp_out_of_window",
             GuardianError::InvalidEvmProposal(_) => "invalid_evm_proposal",
             GuardianError::InsufficientSignatures { .. } => "insufficient_signatures",
             GuardianError::RateLimitExceeded { .. } => "rate_limit_exceeded",
@@ -502,6 +520,12 @@ impl GuardianError {
             }
             GuardianError::SessionRevoked => {
                 "Your Guardian session was ended. Please start a new session."
+            }
+            GuardianError::UnsupportedAuthVersion => {
+                "This app's Guardian client is out of date. Please update it."
+            }
+            GuardianError::TimestampOutOfWindow { .. } => {
+                "Your device's clock is off. Please set it to the correct time and try again."
             }
             GuardianError::ProposalAlreadySigned { .. } => {
                 "You've already signed this transaction."
@@ -685,6 +709,17 @@ impl fmt::Display for GuardianError {
             ),
             GuardianError::SessionExpired => write!(f, "Session expired"),
             GuardianError::SessionRevoked => write!(f, "Session revoked"),
+            GuardianError::UnsupportedAuthVersion => write!(
+                f,
+                "Unsupported session request format; sign with x-auth-format: session-v2"
+            ),
+            GuardianError::TimestampOutOfWindow {
+                drift_ms,
+                window_ms,
+            } => write!(
+                f,
+                "Request timestamp outside allowed window: {drift_ms}ms drift (max {window_ms}ms)"
+            ),
             GuardianError::InvalidEvmProposal(msg) => write!(f, "Invalid EVM proposal: {msg}"),
             GuardianError::InsufficientSignatures { required, got } => {
                 write!(f, "Insufficient signatures: required {required}, got {got}")
@@ -1808,6 +1843,10 @@ mod tests {
             GuardianError::CandidateLanded {
                 account_id: "0xDEADBEEFACCOUNT".into(),
                 nonce: 42,
+            },
+            GuardianError::TimestampOutOfWindow {
+                drift_ms: 61_000,
+                window_ms: 60_000,
             },
         ]
     }

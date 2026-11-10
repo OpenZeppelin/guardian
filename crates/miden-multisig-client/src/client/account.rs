@@ -847,6 +847,7 @@ impl MultisigClient {
     }
 
     /// Changes the GUARDIAN endpoint and optionally registers the account on the new server.
+    /// A Guardian session belongs to the old endpoint, so this drops it.
     ///
     /// When repointing to a different GUARDIAN provider after a switch, call
     /// [`MultisigClient::preserve_pre_switch_proposal_notes`] first — notes
@@ -857,8 +858,6 @@ impl MultisigClient {
     ///
     /// * `new_endpoint` - The new GUARDIAN server endpoint URL
     /// * `register` - If true, registers the current account on the new GUARDIAN server
-    ///
-    /// A Guardian session belongs to the old endpoint, so this drops it.
     ///
     /// # Example
     ///
@@ -871,14 +870,22 @@ impl MultisigClient {
         new_endpoint: &str,
         register: bool,
     ) -> Result<()> {
-        self.guardian_endpoint = new_endpoint.to_string();
-        self.guardian_session = guardian_client::SessionSlot::default();
+        self.point_at_guardian(new_endpoint.to_string());
 
         if register {
             self.register_on_guardian().await?;
         }
 
         Ok(())
+    }
+
+    /// Points the client at `endpoint` and drops the Guardian session: a
+    /// session exists only on the Guardian that granted it, and is bound to
+    /// that Guardian's key. Used by [`MultisigClient::set_guardian_endpoint`]
+    /// and by an executed `switch_guardian` proposal.
+    pub(crate) fn point_at_guardian(&mut self, endpoint: String) {
+        self.guardian_endpoint = endpoint;
+        self.guardian_session = guardian_client::SessionSlot::default();
     }
 }
 

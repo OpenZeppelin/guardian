@@ -77,19 +77,45 @@ impl From<ReconstructError> for GuardianError {
 /// `buffer_unordered(max_concurrent_accounts)` could otherwise queue many
 /// reconstructions on the `cpu` gate, and a `push_delta` arriving after them
 /// would wait behind the whole backlog. With `admission` capacity 1, only the
-/// active background reconstruction can hold or wait for `cpu`.
+/// active background reconstruction can hold or wait for `cpu`. A larger
+/// admission (see [`Self::allow_background_admission`]) lets that many
+/// background reconstructions run at once, never more than `cpu` allows.
 #[derive(Clone)]
 pub struct Reconstructor {
     cpu: Arc<Semaphore>,
+    cpu_permits: usize,
     admission: Arc<Semaphore>,
+    admission_capacity: Arc<std::sync::Mutex<usize>>,
 }
 
 impl Reconstructor {
     fn with_capacity(cpu_permits: usize) -> Self {
         Self {
             cpu: Arc::new(Semaphore::new(cpu_permits)),
+            cpu_permits,
             admission: Arc::new(Semaphore::new(1)),
+            admission_capacity: Arc::new(std::sync::Mutex::new(1)),
         }
+    }
+
+    /// Raise the background admission gate to `admission` concurrent
+    /// reconstructions, capped at the CPU gate. It never lowers the gate.
+    /// Returns the capacity in effect.
+    pub fn allow_background_admission(
+        &self,
+        admission: crate::canonicalization::RebuildAdmission,
+    ) -> usize {
+        let admission = admission.for_slots(self.cpu_permits);
+        let target = admission.clamp(1, self.cpu_permits);
+        let mut capacity = self
+            .admission_capacity
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if target > *capacity {
+            self.admission.add_permits(target - *capacity);
+            *capacity = target;
+        }
+        *capacity
     }
 
     /// API path (`push_delta`): straight to the shared CPU gate.
@@ -136,11 +162,23 @@ impl Reconstructor {
             .map_err(|e| ReconstructError::Task(format!("reconstruction gate closed: {e}")))?;
 
         let span = tracing::Span::current();
+        let kind = if admission.is_some() {
+            "background"
+        } else {
+            "foreground"
+        };
         match tokio::task::spawn_blocking(move || {
             let _span = span.enter();
             let _admission = admission;
             let _cpu = cpu;
-            op()
+            let started = std::time::Instant::now();
+            let result = op();
+            metrics::histogram!(
+                crate::metrics::names::STATE_RECONSTRUCTION_DURATION_SECONDS,
+                crate::metrics::names::LABEL_KIND => kind
+            )
+            .record(started.elapsed().as_secs_f64());
+            result
         })
         .await
         {
@@ -834,6 +872,111 @@ mod tests {
     async fn capacity_two_allows_overlap_proving_the_gate_is_the_limiter() {
         let gate = Reconstructor::with_capacity(2);
         assert_eq!(peak_concurrency(&gate).await, 2);
+    }
+
+    #[test]
+    fn background_admission_is_capped_by_the_cpu_gate_and_never_lowered() {
+        let gate = Reconstructor::with_capacity(4);
+        assert_eq!(
+            gate.allow_background_admission(crate::canonicalization::RebuildAdmission::Fixed(2)),
+            2
+        );
+        assert_eq!(gate.available_admission_permits(), 2);
+        assert_eq!(
+            gate.allow_background_admission(crate::canonicalization::RebuildAdmission::Fixed(9)),
+            4
+        );
+        assert_eq!(gate.available_admission_permits(), 4);
+        assert_eq!(
+            gate.allow_background_admission(crate::canonicalization::RebuildAdmission::Fixed(1)),
+            4
+        );
+
+        let small_host = Reconstructor::with_capacity(1);
+        assert_eq!(
+            small_host
+                .allow_background_admission(crate::canonicalization::RebuildAdmission::Fixed(3)),
+            1
+        );
+        assert_eq!(small_host.available_admission_permits(), 1);
+    }
+
+    /// Prints how long 100 queued background rebuilds take to drain and how
+    /// long foreground reconstructions wait for the gate meanwhile, per host
+    /// size and background admission. Work is timed sleep, so this measures
+    /// the gate's scheduling alone, not CPU contention.
+    /// `cargo test -p guardian-server --lib rebuild_admission_scheduling -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "measurement, prints a report"]
+    async fn rebuild_admission_scheduling_report() {
+        const REBUILDS: usize = 100;
+        const REBUILD: Duration = Duration::from_millis(40);
+        const PUSH: Duration = Duration::from_millis(10);
+        const PUSH_EVERY: Duration = Duration::from_millis(20);
+
+        println!(
+            "| vCPU | CPU permits | admission | drain s | push wait p50 ms | p95 ms | max ms |"
+        );
+        println!("|---:|---:|---:|---:|---:|---:|---:|");
+        for cpu_permits in [1usize, 2, 4] {
+            for admission in 1..=cpu_permits {
+                let gate = Reconstructor::with_capacity(cpu_permits);
+                gate.allow_background_admission(crate::canonicalization::RebuildAdmission::Fixed(
+                    admission,
+                ));
+                let started = std::time::Instant::now();
+                let background: Vec<_> = (0..REBUILDS)
+                    .map(|_| {
+                        let gate = gate.clone();
+                        tokio::spawn(async move {
+                            gate.run_background(|| {
+                                std::thread::sleep(REBUILD);
+                                Ok::<(), String>(())
+                            })
+                            .await
+                            .unwrap()
+                        })
+                    })
+                    .collect();
+                let drained = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let pushes = tokio::spawn({
+                    let gate = gate.clone();
+                    let drained = drained.clone();
+                    async move {
+                        let mut waits = Vec::new();
+                        while !drained.load(Ordering::SeqCst) {
+                            let asked = std::time::Instant::now();
+                            let waited = gate
+                                .run(move || {
+                                    let wait = asked.elapsed();
+                                    std::thread::sleep(PUSH);
+                                    Ok::<Duration, String>(wait)
+                                })
+                                .await
+                                .unwrap();
+                            waits.push(waited.as_secs_f64() * 1_000.0);
+                            tokio::time::sleep(PUSH_EVERY).await;
+                        }
+                        waits
+                    }
+                });
+                for rebuild in background {
+                    rebuild.await.unwrap();
+                }
+                let drain = started.elapsed().as_secs_f64();
+                drained.store(true, Ordering::SeqCst);
+                let mut waits = pushes.await.unwrap();
+                waits.sort_by(f64::total_cmp);
+                let at = |q: f64| waits[((waits.len() - 1) as f64 * q).round() as usize];
+                println!(
+                    "| {} | {cpu_permits} | {admission} | {drain:.1} | {:.0} | {:.0} | {:.0} |",
+                    cpu_permits * 2,
+                    at(0.5),
+                    at(0.95),
+                    waits.last().copied().unwrap_or_default(),
+                );
+            }
+        }
     }
 
     /// Run two reconstructions concurrently through `gate` and report the peak

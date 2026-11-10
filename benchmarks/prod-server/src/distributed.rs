@@ -50,6 +50,7 @@ pub struct WorkerArtifact {
     pub operations: Vec<OperationReport>,
     pub cleanup_accounts: Vec<CleanupAccountRecord>,
     pub canonicalization_samples: Vec<CanonicalizationSample>,
+    pub wallet_signed_operations: u64,
 }
 
 impl WorkerArtifact {

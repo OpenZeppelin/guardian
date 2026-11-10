@@ -287,8 +287,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `alias_subdomain` | `""` | Migration-only legacy subdomain under `domain_name`; leave empty normally |
 | `alias_acm_certificate_arn` | `""` | Migration-only distinct legacy certificate attached through SNI |
 | `alb_ingress_cidrs` | `["0.0.0.0/0"]` | CIDR blocks allowed to reach the ALB |
-| `server_cpu` | `512` | Server task CPU units |
-| `server_memory` | `1024` | Server task memory (MB) |
+| `server_cpu` | `512` in dev, `2048` in prod | Server task CPU units |
+| `server_memory` | twice `server_cpu` (`1024` in dev, `4096` in prod) | Server task memory (MiB); the pair must be a Fargate task size, or the plan stops with an error |
 | `server_desired_count` | `1` in dev, `2` in prod | ECS service desired task count |
 | `server_autoscaling_enabled` | `false` in dev, `true` in prod | Whether ECS autoscaling is enabled |
 | `guardian_rate_limit_enabled` | `true` | Whether Guardian rate limiting is enabled (HTTP and gRPC) |
@@ -392,6 +392,7 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 - larger default RDS instance class and base storage
 - RDS storage autoscaling
 - RDS Proxy between ECS and RDS
+- 2 vCPU / 4 GiB server tasks
 - higher runtime rate limits and DB pool sizes for benchmark traffic
 
 ## HTTPS Configuration

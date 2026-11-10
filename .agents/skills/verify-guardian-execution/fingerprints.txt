@@ -1,4 +1,4 @@
-crates/server/src/services/execute_proposal/service.rs request_execution 26ff7c0c41996b5d
+crates/server/src/services/execute_proposal/service.rs request_execution 53954da7fe94d6cd
 crates/server/src/services/execute_proposal/worker.rs run_execution e7c8bb2181f51ea7
 crates/server/src/services/execute_proposal/worker.rs run_to_boundary 8bef28647e656733
 crates/server/src/services/execute_proposal/worker.rs approach_boundary a248e9dcb6395278
@@ -48,14 +48,14 @@ crates/server/src/storage/postgres.rs client_abandoned_reason e3bb054327f33c62
 crates/server/src/storage/postgres.rs lease_fence_is_current 951aa94931bd4c54
 crates/server/src/storage/postgres.rs lock_account_metadata f7e4fe07b5fbdad9
 crates/server/src/storage/postgres.rs clear_pending_flag_if_none ab1f451ea9f18cad
-crates/server/src/storage/postgres.rs pull_recoverable_deltas 3a397123c23e5839
-crates/server/src/storage/postgres.rs submit_candidate 78fce4c0773b9421
-crates/server/src/storage/postgres.rs promote_candidate 7723aa1795b4c94a
-crates/server/src/storage/postgres.rs discard_candidate 96eb99645d435499
-crates/server/src/storage/postgres.rs update_candidate_status d103f712cb1aaff7
+crates/server/src/storage/postgres.rs pull_recoverable_deltas d957f324fcb632e8
+crates/server/src/storage/postgres.rs submit_candidate e060bdbb989ca363
+crates/server/src/storage/postgres.rs promote_candidate 6685d4b2108225d8
+crates/server/src/storage/postgres.rs discard_candidate d45ece5c5a02b8cc
+crates/server/src/storage/postgres.rs update_candidate_status e320deb79b175ec9
 crates/server/src/storage/postgres.rs archive_parked_delta ab03f8c79a990dc6
 crates/server/src/storage/postgres.rs restore_superseded 5ae2a5e38baf32e6
-crates/server/src/storage/postgres.rs pull_superseded_deltas b050cc3f5fe9d3b8
+crates/server/src/storage/postgres.rs pull_superseded_deltas 8f6ec1bf593e02e2
 crates/server/src/builder/canonicalization.rs archives_superseded f304c6a39fa148b0
 crates/server/src/jobs/execution_reconcile/mod.rs pass 56d789d1e89af925
 crates/server/src/jobs/execution_reconcile/mod.rs reconcile af57fca9f7d1e5e1

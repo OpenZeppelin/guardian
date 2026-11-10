@@ -127,8 +127,14 @@ impl ServerHandle {
         }
 
         // Start background jobs based on canonicalization config
-        if self.app_state.canonicalization.is_some() {
-            tracing::info!("Starting canonicalization worker");
+        if let Some(config) = &self.app_state.canonicalization {
+            let admission = crate::network::reconstructor()
+                .allow_background_admission(config.rebuild_admission);
+            tracing::info!(
+                rebuild_admission = admission,
+                requested_rebuild_admission = ?config.rebuild_admission,
+                "Starting canonicalization worker"
+            );
             start_canonicalization_worker(self.app_state.clone(), self.leader.clone());
         } else {
             tracing::info!(
@@ -288,6 +294,7 @@ impl ServerHandle {
                 if metrics_enabled {
                     Server::builder()
                         .layer(MetricsGrpcLayer::new())
+                        .layer(crate::middleware::MissingMessageStatusLayer)
                         .layer(rate_limit)
                         .add_service(GuardianServer::new(service))
                         .add_service(reflection_service)
@@ -296,6 +303,7 @@ impl ServerHandle {
                         .expect("gRPC server failed");
                 } else {
                     Server::builder()
+                        .layer(crate::middleware::MissingMessageStatusLayer)
                         .layer(rate_limit)
                         .add_service(GuardianServer::new(service))
                         .add_service(reflection_service)
@@ -766,16 +774,39 @@ fn start_session_sweep_worker(state: AppState) {
                     "Miden session sweep failed",
                 );
             }
-            let floor_cutoff_ms = crate::session::stale_floor_cutoff_ms(
-                state.clock.now().timestamp_millis(),
-                state.miden_sessions.config().max_ttl_seconds(),
-            );
-            if let Err(error) = state.metadata.purge_session_floors(floor_cutoff_ms).await {
+            let floor_age_ms =
+                crate::session::stale_floor_age_ms(state.miden_sessions.config().max_ttl_seconds());
+            if let Err(error) = state
+                .metadata
+                .purge_session_floors(floor_age_ms, state.clock.as_ref())
+                .await
+            {
                 tracing::warn!(
                     target: "session.sweep",
                     %error,
                     "Miden session replay-floor purge failed",
                 );
+            }
+            let now = state.clock.now();
+            match state
+                .miden_sessions
+                .read_records()
+                .maintain(
+                    now.timestamp_millis(),
+                    crate::session::READ_RECORD_RETAIN_MS,
+                    crate::session::READ_RECORD_AHEAD_MS,
+                )
+                .await
+            {
+                Ok(_) => metrics::gauge!(
+                    crate::metrics::names::SESSION_READ_MAINTENANCE_TIMESTAMP_SECONDS
+                )
+                .set(now.timestamp() as f64),
+                Err(error) => tracing::error!(
+                    target: "session.sweep",
+                    %error,
+                    "Session read record maintenance failed",
+                ),
             }
             #[cfg(feature = "evm")]
             if let Err(error) = state.evm.sessions.sweep_expired(state.clock.now()).await {

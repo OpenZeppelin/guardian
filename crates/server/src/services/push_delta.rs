@@ -34,9 +34,13 @@ pub struct PushDeltaResult {
 pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<PushDeltaResult> {
     tracing::debug!("Pushing delta");
 
-    let resolved =
-        resolve_account_allowing_session(state, &params.delta.account_id, &params.credentials)
-            .await?;
+    let resolved = resolve_account_allowing_session(
+        state,
+        &params.delta.account_id,
+        &params.credentials,
+        guardian_shared::session_request::SessionOperation::PushDelta,
+    )
+    .await?;
     ensure_account_active_metadata(&resolved.metadata)?;
     if resolved.metadata.network_config.is_evm() {
         return Err(GuardianError::UnsupportedForNetwork {
@@ -727,7 +731,10 @@ mod tests {
             .await
             .expect_err("unauthenticated paused account must be rejected with auth error");
         assert!(
-            matches!(err, GuardianError::AuthenticationFailed(_)),
+            matches!(
+                err,
+                GuardianError::AuthenticationFailed(_) | GuardianError::TimestampOutOfWindow { .. }
+            ),
             "unauthenticated caller must not learn pause state; got: {err:?}"
         );
     }
@@ -1460,11 +1467,15 @@ mod tests {
             timestamp,
             AuthRequestPayload::empty(),
         )
-        .expect("valid account ID")
-        .to_word();
+        .expect("valid account ID");
+        let envelope = guardian_shared::session_request::SessionRequestEnvelope::new(
+            guardian_shared::session_request::SessionTransport::Http,
+            guardian_shared::session_request::SessionOperation::PushDelta,
+            &message,
+        );
         Credentials::signature(
             session_key.public_key_hex(),
-            session_key.sign_hex(message),
+            session_key.sign_bytes_hex(&envelope.to_bytes()),
             timestamp,
         )
         .with_auth_format(RequestAuthFormat::Session)

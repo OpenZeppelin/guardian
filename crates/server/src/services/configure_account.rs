@@ -37,10 +37,24 @@ pub async fn configure_account(
 ) -> Result<ConfigureAccountResult> {
     tracing::debug!("Configuring account");
 
-    if params.credential.auth_format() == crate::metadata::auth::RequestAuthFormat::Session {
-        validate_request_timestamp(state, &params.account_id, &params.credential)?;
-        let message = super::auth_request_word(&params.account_id, &params.credential)?;
-        return Err(super::reject_session_credentials(state, &params.credential, message).await);
+    match params.credential.auth_format() {
+        crate::metadata::auth::RequestAuthFormat::Session => {
+            validate_request_timestamp(
+                state,
+                &params.account_id,
+                &params.credential,
+                crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+            )?;
+            let message = super::auth_request_word(&params.account_id, &params.credential)?;
+            return Err(
+                super::reject_session_credentials(state, &params.credential, message).await,
+            );
+        }
+        crate::metadata::auth::RequestAuthFormat::LegacySession => {
+            return Err(GuardianError::UnsupportedAuthVersion);
+        }
+        crate::metadata::auth::RequestAuthFormat::Raw
+        | crate::metadata::auth::RequestAuthFormat::Eip712 => {}
     }
 
     let network_config = params
@@ -60,8 +74,12 @@ pub async fn configure_account(
         .validate_canonical_signer_set()
         .map_err(GuardianError::InvalidInput)?;
 
-    let request_timestamp =
-        validate_request_timestamp(state, &params.account_id, &params.credential)?;
+    let request_timestamp = validate_request_timestamp(
+        state,
+        &params.account_id,
+        &params.credential,
+        crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
+    )?;
 
     let existing = state.metadata.get(&params.account_id).await.map_err(|e| {
         tracing::error!(
@@ -287,6 +305,7 @@ pub async fn configure_account(
         &params.account_id,
         &signer_commitment,
         request_timestamp,
+        crate::metadata::auth::MAX_TIMESTAMP_SKEW_MS,
     )
     .await?;
 
@@ -1304,7 +1323,7 @@ mod tests {
 
         assert!(matches!(
             configure_account(&state, params).await,
-            Err(GuardianError::AuthenticationFailed(_))
+            Err(GuardianError::TimestampOutOfWindow { .. })
         ));
     }
 

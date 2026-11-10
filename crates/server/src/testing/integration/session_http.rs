@@ -17,6 +17,9 @@ use crate::testing::helpers::{
     IntegrationMockNetworkClient, TestEcdsaSigner, TestSigner, create_router,
     create_test_app_state, fixture_signer, load_fixture_account, load_fixture_delta,
 };
+use guardian_shared::session_request::{
+    SessionOperation, SessionRequestEnvelope, SessionTransport,
+};
 
 use axum::{
     body::{Body, to_bytes},
@@ -114,26 +117,62 @@ async fn falcon_session_for(
     let (status, body) = post_session(app, &input.body(&session_key, "falcon", &signature)).await;
     assert_eq!(status, StatusCode::OK, "create session: {body}");
     assert_eq!(body["signer_commitment"], signer.commitment_hex);
+    assert_eq!(body["request_auth_version"], 2, "{body}");
+    assert!(body.get("read_replay_policy").is_none(), "{body}");
     session_key
 }
 
-/// A request signed by the session key over `message`.
+/// The operation a session signs for `method uri`, or `None` for a route
+/// sessions may not use.
+fn http_operation(method: &str, uri: &str) -> Option<SessionOperation> {
+    let path = uri.split('?').next().unwrap_or(uri);
+    Some(match (method, path) {
+        ("GET", "/state") => SessionOperation::GetState,
+        ("GET", "/state/nonce") => SessionOperation::GetCanonicalNonce,
+        ("GET", "/delta") => SessionOperation::GetDelta,
+        ("GET", "/delta/since") => SessionOperation::GetDeltaSince,
+        ("GET", "/delta/history") => SessionOperation::GetDeltaHistory,
+        ("GET", "/delta/proposal") => SessionOperation::GetDeltaProposals,
+        ("GET", "/delta/proposal/single") => SessionOperation::GetDeltaProposal,
+        ("POST", "/delta") => SessionOperation::PushDelta,
+        ("POST", "/delta/proposal") => SessionOperation::PushDeltaProposal,
+        ("PUT", "/delta/proposal") => SessionOperation::SignDeltaProposal,
+        ("POST", "/delta/proposal/execution") => SessionOperation::ExecuteDeltaProposal,
+        ("GET", "/delta/proposal/execution") => SessionOperation::GetDeltaProposalExecution,
+        ("GET", "/delta/execution/current") => SessionOperation::GetCurrentExecution,
+        _ => return None,
+    })
+}
+
+/// A request signed by the session key: over the version 2 envelope of
+/// `request_word` on a session route, over `request_word` itself elsewhere.
 fn signed_by_session(
     method: &str,
     uri: &str,
     session_key: &SessionKey,
-    message: Word,
+    request_word: Word,
     timestamp: i64,
     body: Body,
 ) -> Request<Body> {
+    let signature = match http_operation(method, uri) {
+        Some(operation) => session_key.sign_bytes_hex(
+            &SessionRequestEnvelope::from_request_word(
+                SessionTransport::Http,
+                operation,
+                request_word,
+            )
+            .to_bytes(),
+        ),
+        None => session_key.sign_hex(request_word),
+    };
     Request::builder()
         .uri(uri)
         .method(method)
         .header(header::CONTENT_TYPE, "application/json")
         .header("x-pubkey", session_key.public_key_hex())
-        .header("x-signature", session_key.sign_hex(message))
+        .header("x-signature", signature)
         .header("x-timestamp", timestamp.to_string())
-        .header("x-auth-format", "session")
+        .header("x-auth-format", "session-v2")
         .body(body)
         .unwrap()
 }
@@ -318,6 +357,11 @@ async fn test_status_advertises_sessions() {
     let (status, body) = send(&app, status_request()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["sessions"]["max_ttl_seconds"], MAX_TTL_SECONDS);
+    assert_eq!(body["sessions"]["request_auth_version"], 2);
+    assert_eq!(
+        body["sessions"],
+        serde_json::json!({ "max_ttl_seconds": MAX_TTL_SECONDS, "request_auth_version": 2 })
+    );
 
     // Sessions are always on; the default maximum lifetime is 8 hours.
     let default_app = create_router(create_test_app_state().await);
@@ -453,6 +497,277 @@ async fn test_session_signature_is_bound_to_the_request() {
         StatusCode::UNAUTHORIZED,
         "authentication_failed",
         "other account",
+    );
+}
+
+#[tokio::test]
+async fn test_session_signature_is_bound_to_its_operation() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+    let timestamp = now_ms();
+    let message = request_word(
+        &account_id_hex,
+        timestamp,
+        &json!({ "account_id": account_id_hex }),
+    );
+    let signed_for_state = session_key.sign_bytes_hex(
+        &SessionRequestEnvelope::from_request_word(
+            SessionTransport::Http,
+            SessionOperation::GetState,
+            message,
+        )
+        .to_bytes(),
+    );
+    let presented_on = |uri: String, transport_signature: &str| {
+        Request::builder()
+            .uri(uri)
+            .method("GET")
+            .header("x-pubkey", session_key.public_key_hex())
+            .header("x-signature", transport_signature)
+            .header("x-timestamp", timestamp.to_string())
+            .header("x-auth-format", "session-v2")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let response = send(
+        &app,
+        presented_on(
+            format!("/state/nonce?account_id={account_id_hex}"),
+            &signed_for_state,
+        ),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a GetState signature on /state/nonce, same payload",
+    );
+
+    let signed_for_grpc = session_key.sign_bytes_hex(
+        &SessionRequestEnvelope::from_request_word(
+            SessionTransport::Grpc,
+            SessionOperation::GetState,
+            message,
+        )
+        .to_bytes(),
+    );
+    let response = send(
+        &app,
+        presented_on(
+            format!("/state?account_id={account_id_hex}"),
+            &signed_for_grpc,
+        ),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a gRPC signature over HTTP",
+    );
+
+    let (status, body) = send(
+        &app,
+        presented_on(
+            format!("/state?account_id={account_id_hex}"),
+            &signed_for_state,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "its own operation: {body}");
+}
+
+#[tokio::test]
+async fn test_version_1_session_requests_are_refused_as_unsupported() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+    let timestamp = now_ms();
+    let message = request_word(
+        &account_id_hex,
+        timestamp,
+        &json!({ "account_id": account_id_hex }),
+    );
+    let response = send(
+        &app,
+        Request::builder()
+            .uri(format!("/state?account_id={account_id_hex}"))
+            .method("GET")
+            .header("x-pubkey", session_key.public_key_hex())
+            .header("x-signature", session_key.sign_hex(message))
+            .header("x-timestamp", timestamp.to_string())
+            .header("x-auth-format", "session")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_error(
+        &response,
+        StatusCode::BAD_REQUEST,
+        "unsupported_auth_version",
+        "version 1 session request",
+    );
+    assert_eq!(response.1["meta"]["retryable"], false, "{}", response.1);
+}
+
+/// `GET {path}?account_id=...` signed by the session key at `timestamp`, as
+/// a request to send more than once.
+fn session_read_request(
+    session_key: &SessionKey,
+    path: &str,
+    account_id_hex: &str,
+    timestamp: i64,
+) -> Request<Body> {
+    signed_by_session(
+        "GET",
+        &format!("{path}?account_id={account_id_hex}"),
+        session_key,
+        request_word(
+            account_id_hex,
+            timestamp,
+            &json!({ "account_id": account_id_hex }),
+        ),
+        timestamp,
+        Body::empty(),
+    )
+}
+
+#[tokio::test]
+async fn test_unique_reads_accept_equal_and_reversed_timestamps_and_refuse_copies() {
+    let (app, state, signer, account_id_hex) = configured_account().await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+
+    let now = now_ms();
+    for (path, timestamp) in [
+        ("/state", now),
+        ("/state/nonce", now),
+        ("/delta/proposal", now),
+        ("/state", now - 1_000),
+    ] {
+        let (status, body) = send(
+            &app,
+            session_read_request(&session_key, path, &account_id_hex, timestamp),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{path} at {timestamp}: {body}");
+    }
+
+    let copy = || session_read_request(&session_key, "/state", &account_id_hex, now);
+    assert_error(
+        &send(&app, copy()).await,
+        StatusCode::UNAUTHORIZED,
+        "authentication_replay",
+        "a copy of an admitted read",
+    );
+    state
+        .miden_sessions
+        .read_records()
+        .maintain(now_ms(), crate::session::READ_RECORD_RETAIN_MS, 0)
+        .await
+        .unwrap();
+    assert_error(
+        &send(&app, copy()).await,
+        StatusCode::UNAUTHORIZED,
+        "authentication_replay",
+        "still refused after maintenance",
+    );
+}
+
+#[tokio::test]
+async fn test_nonce_polls_are_accepted_repeatedly_inside_their_window() {
+    use crate::metadata::auth::{SESSION_NONCE_FUTURE_MS, SESSION_READ_SKEW_MS};
+
+    let mut state = with_max_ttl(create_test_app_state().await);
+    state.clock = Arc::new(MockClock::new(chrono::Utc::now()));
+    let (app, state, signer, account_id_hex) = configured_account_with(state).await;
+    let session_key = falcon_session(&app, &state, &signer).await;
+    let now = state.clock.now().timestamp_millis();
+
+    let poll =
+        |timestamp| session_read_request(&session_key, "/state/nonce", &account_id_hex, timestamp);
+    for attempt in 0..3 {
+        let (status, body) = send(&app, poll(now)).await;
+        assert_eq!(status, StatusCode::OK, "copy {attempt} of one poll: {body}");
+    }
+    for timestamp in [now - SESSION_READ_SKEW_MS, now + SESSION_NONCE_FUTURE_MS] {
+        let (status, body) = send(&app, poll(timestamp)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "at the window edge {timestamp}: {body}"
+        );
+    }
+    for timestamp in [
+        now - SESSION_READ_SKEW_MS - 1,
+        now + SESSION_NONCE_FUTURE_MS + 1,
+    ] {
+        assert_error(
+            &send(&app, poll(timestamp)).await,
+            StatusCode::UNAUTHORIZED,
+            "timestamp_out_of_window",
+            "outside the nonce poll window",
+        );
+    }
+
+    let ahead = now + SESSION_NONCE_FUTURE_MS + 1;
+    let (status, body) = send(
+        &app,
+        session_read_request(&session_key, "/state", &account_id_hex, ahead),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "other reads keep their window: {body}"
+    );
+    assert_error(
+        &send(
+            &app,
+            session_read_request(&session_key, "/state", &account_id_hex, ahead),
+        )
+        .await,
+        StatusCode::UNAUTHORIZED,
+        "authentication_replay",
+        "other reads are still admitted once",
+    );
+
+    let message = request_word(
+        &account_id_hex,
+        now,
+        &json!({ "account_id": account_id_hex }),
+    );
+    let signed_for_nonce = session_key.sign_bytes_hex(
+        &SessionRequestEnvelope::from_request_word(
+            SessionTransport::Http,
+            SessionOperation::GetCanonicalNonce,
+            message,
+        )
+        .to_bytes(),
+    );
+    let nonce_signature_on_state = Request::builder()
+        .uri(format!("/state?account_id={account_id_hex}"))
+        .method("GET")
+        .header("x-pubkey", session_key.public_key_hex())
+        .header("x-signature", &signed_for_nonce)
+        .header("x-timestamp", now.to_string())
+        .header("x-auth-format", "session-v2")
+        .body(Body::empty())
+        .unwrap();
+    assert_error(
+        &send(&app, nonce_signature_on_state).await,
+        StatusCode::UNAUTHORIZED,
+        "authentication_failed",
+        "a nonce poll signature on /state",
+    );
+
+    let (status, _) = logout(&app, &session_key).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_error(
+        &send(&app, poll(now)).await,
+        StatusCode::UNAUTHORIZED,
+        "session_revoked",
+        "a copy of a poll after logout",
     );
 }
 
@@ -1627,10 +1942,10 @@ async fn test_session_cannot_lock_the_wallet_out() {
     let (app, state, signer, account_id_hex) = configured_account_with(state).await;
     let session_key = falcon_session(&app, &state, &signer).await;
 
-    // A stolen session stamps its requests at the edge of the skew window;
-    // the frozen clock keeps that edge exact.
+    // A stolen session stamps its reads at the edge of the session read
+    // window; the frozen clock keeps that edge exact.
     let now = state.clock.now().timestamp_millis();
-    let ahead = now + 299_000;
+    let ahead = now + crate::metadata::auth::SESSION_READ_SKEW_MS - 1_000;
     let (status, body) =
         session_get_with(&app, &session_key, "/state", &account_id_hex, ahead).await;
     assert_eq!(status, StatusCode::OK, "{body}");

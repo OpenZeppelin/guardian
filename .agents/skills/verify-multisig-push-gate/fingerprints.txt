@@ -3,17 +3,17 @@ crates/server/src/services/multisig_admission.rs signature_floor 17e83d08e3b9b2b
 crates/server/src/services/multisig_admission.rs pending_signatures aaf000190ef8e292
 crates/server/src/services/multisig_admission.rs verified_approver_count bdab3f16b0e99ab6
 Cargo.lock @pin miden-standards 0.17.1
-crates/server/src/services/push_delta.rs push_delta ec924647e7c55a81
+crates/server/src/services/push_delta.rs push_delta 260dcab35e645a98
 crates/server/src/services/push_delta.rs run 17815b0a4b4255f3
 crates/server/src/services/ack_delta_internal.rs lookup_matching_proposal 9b5ac8501f9abe75
 crates/server/src/services/candidate_chain.rs ensure_tail_keeps_auth cba3037b83a609b8
-crates/server/src/services/sign_delta_proposal.rs sign_delta_proposal afc8cda063f8f4ae
+crates/server/src/services/sign_delta_proposal.rs sign_delta_proposal 7f42c80cb717ed45
 crates/server/src/services/sign_delta_proposal.rs load_pending_proposal 5dba9f0ea2924d5f
 crates/server/src/services/sign_delta_proposal.rs with_approval 339dc6ff4a75f59d
-crates/server/src/storage/postgres.rs update_delta_proposal_if_status ecd5ba77be198132
+crates/server/src/storage/postgres.rs update_delta_proposal_if_status 2c4734db9c1dbdc7
 crates/server/src/storage/filesystem.rs update_delta_proposal_if_status 35d40d47f96cd204
 crates/server/src/storage/encryption/decorator.rs update_delta_proposal_if_status ca3e8f2f0b6497b9
-crates/server/src/storage/postgres.rs update_delta_proposal de621c9ddaf3f34c
+crates/server/src/storage/postgres.rs update_delta_proposal 194e7e9fa6923fe3
 crates/server/src/storage/filesystem.rs update_delta_proposal 6b9667af9fcdb0bc
 crates/server/src/storage/filesystem.rs submit_delta_proposal 75fa735e3e524970
 crates/miden-multisig-client/src/client/offline.rs relay_collected_approvals c6820784f3e9f85f
@@ -21,8 +21,8 @@ crates/miden-multisig-client/src/client/offline.rs execute_imported_proposal 371
 crates/miden-multisig-client/src/client/proposals.rs execute_proposal 0ae7632c3d6f2cd7
 packages/miden-multisig-client/src/multisig.ts relayCollectedApprovals a04503eb321ced3c
 packages/miden-multisig-client/src/multisig.ts prepareProposalExecution 244406c248b93c2e
-packages/miden-multisig-client/src/multisig.ts executeProposal 3476a15bbd9d277a
+packages/miden-multisig-client/src/multisig.ts executeProposal 63330ec3cb16bd47
 packages/miden-multisig-client/src/multisig.ts assembleCustomAdvice 6bca168916212bc1
 packages/miden-multisig-client/src/multisig.ts servedSwitchProposal 1d20c761856c0524
-crates/client/src/client.rs push_delta 61d2b5b12bf12f28
-packages/guardian-client/src/http.ts pushDelta 23d67ce58c3d702b
+crates/client/src/client.rs push_delta aace0efcc691a5a6
+packages/guardian-client/src/http.ts pushDelta 05cceb46764eabad

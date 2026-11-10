@@ -29,6 +29,8 @@ use crate::storage::postgres::{self, PostgresService};
 const ENV_DB_POOL_MAX_SIZE: &str = "GUARDIAN_DB_POOL_MAX_SIZE";
 #[cfg(feature = "postgres")]
 const ENV_METADATA_DB_POOL_MAX_SIZE: &str = "GUARDIAN_METADATA_DB_POOL_MAX_SIZE";
+#[cfg(feature = "postgres")]
+const ENV_METADATA_CACHE_MAX_BYTES: &str = "GUARDIAN_METADATA_CACHE_MAX_BYTES";
 
 /// Builder for creating the storage backend and metadata store.
 #[derive(Default)]
@@ -119,7 +121,9 @@ impl StorageMetadataBuilder {
             let migration_url = postgres::preflight_tls(raw_url)?;
             postgres::run_migrations(&migration_url).await?;
             let storage = PostgresService::new(raw_url, database_pool_max_size).await?;
-            let metadata = PostgresMetadataStore::new(raw_url, metadata_pool_max_size).await?;
+            let metadata = PostgresMetadataStore::new(raw_url, metadata_pool_max_size)
+                .await?
+                .with_read_cache_max_bytes(resolve_cache_max_bytes()?);
             let auditor: SharedAuditor = Arc::new(PostgresAuditor::new(metadata.pool_handle()));
 
             let (storage, cipher) = wrap_with_encryption(storage).await?;
@@ -145,6 +149,9 @@ impl StorageMetadataBuilder {
                 .metadata_path
                 .ok_or_else(|| "GUARDIAN_METADATA_PATH is required".to_string())?;
 
+            let read_records = crate::coordination::FileReadRecords::open(
+                &metadata_path.join("session_read_seen"),
+            )?;
             // Block watch keeps its cursor next to the metadata, so a
             // restart resumes the feed where it stopped (issue #585).
             let block_watch_dir = metadata_path.join("block_watch");
@@ -163,10 +170,11 @@ impl StorageMetadataBuilder {
             // The in-memory stats store never touches disk, so the
             // cipher is not needed on this path.
             let (storage, _cipher) = wrap_with_encryption(storage).await?;
-            let coordination =
+            let mut coordination =
                 crate::coordination::CoordinationHandles::in_memory_with_block_watch_dir(
                     block_watch_dir,
                 )?;
+            coordination.read_records = Arc::new(read_records);
 
             Ok((storage, Arc::new(metadata), auditor, coordination))
         }
@@ -325,6 +333,21 @@ fn resolve_pool_size(
                 Err(format!("{env_var_name} must contain valid UTF-8"))
             }
         },
+    }
+}
+
+#[cfg(feature = "postgres")]
+fn resolve_cache_max_bytes() -> Result<u64, String> {
+    match std::env::var(ENV_METADATA_CACHE_MAX_BYTES) {
+        Ok(value) => value.trim().parse::<u64>().map_err(|_| {
+            format!("{ENV_METADATA_CACHE_MAX_BYTES} must be a non-negative integer, got '{value}'")
+        }),
+        Err(std::env::VarError::NotPresent) => {
+            Ok(crate::metadata::postgres::DEFAULT_READ_CACHE_MAX_BYTES)
+        }
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "{ENV_METADATA_CACHE_MAX_BYTES} must contain valid UTF-8"
+        )),
     }
 }
 

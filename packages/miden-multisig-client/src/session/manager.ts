@@ -1,7 +1,9 @@
-import type {
-  GuardianHttpClient,
-  SessionGrantFields,
-  Signer,
+import {
+  type GuardianHttpClient,
+  type SessionGrantFields,
+  type Signer,
+  UnsupportedAuthVersionError,
+  assertSupportedSessionPolicy,
 } from '@openzeppelin/guardian-client';
 import {
   GuardianSession,
@@ -115,6 +117,7 @@ export async function startGuardianSession(
   if (!status.sessions) {
     throw new GuardianSessionsUnsupportedError();
   }
+  assertSupportedSessionPolicy(status.sessions);
   const maxTtl = status.sessions.maxTtlSeconds - MAX_TTL_MARGIN_SECONDS;
   const ttl = Math.min(options.ttlSeconds ?? maxTtl, maxTtl);
   if (!Number.isInteger(ttl) || ttl <= GRANT_WINDOW_SECONDS) {
@@ -149,13 +152,26 @@ export async function startGuardianSession(
         'start the session again',
     );
   }
-  await guardian.createSession({
-    scheme: signer.scheme,
-    ...(signer.requestAuthFormat === 'eip712' ? { authFormat: 'eip712' as const } : {}),
-    ...(signer.scheme === 'ecdsa' ? { publicKey: signer.publicKey } : {}),
-    signature,
-    grant,
-  });
+  try {
+    await guardian.createSession({
+      scheme: signer.scheme,
+      ...(signer.requestAuthFormat === 'eip712' ? { authFormat: 'eip712' as const } : {}),
+      ...(signer.scheme === 'ecdsa' ? { publicKey: signer.publicKey } : {}),
+      signature,
+      grant,
+    });
+  } catch (error) {
+    if (error instanceof UnsupportedAuthVersionError) {
+      const unused = new GuardianSession(
+        key,
+        signer.commitment,
+        grant.expiresAt,
+        storeId(guardianCommitment, signer.commitment),
+      );
+      await guardian.revokeSession(unused).catch(() => false);
+    }
+    throw error;
+  }
 
   const session = new GuardianSession(
     key,
@@ -186,8 +202,9 @@ export async function startGuardianSession(
 /**
  * Reuse a session key persisted by `startGuardianSession` without asking the
  * wallet again; `signer` becomes `guardian`'s signer when a session resumes.
- * Returns `null` when none
- * is stored or it expires within 30 seconds. A session revoked elsewhere
+ * Returns `null` when none is stored or it expires within 30 seconds, and
+ * throws `GuardianSessionsUnsupportedError` when Guardian no longer accepts
+ * sessions. A session revoked elsewhere
  * fails its next request with `session_revoked` and ends then (`onEnded`);
  * start a new one.
  */
@@ -207,6 +224,11 @@ export async function resumeGuardianSession(
     await store.remove(id, record.publicKey);
     return null;
   }
+  const { sessions } = await guardian.getStatus();
+  if (!sessions) {
+    throw new GuardianSessionsUnsupportedError();
+  }
+  assertSupportedSessionPolicy(sessions);
   const session = new GuardianSession(
     new WebCryptoSessionKey(record.privateKey, record.publicKey),
     signer.commitment,

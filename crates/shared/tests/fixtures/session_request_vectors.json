@@ -1,0 +1,427 @@
+{
+  "schema": "guardian.session_request.v2",
+  "auth_format": "session-v2",
+  "version": 2,
+  "secret_hex": "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a",
+  "public_key_hex": "0x020c901d423c831ca85e27c73c263ba132721bb9d7a84c4f0380b2a6756fd60133",
+  "operations": [
+    {
+      "id": 1,
+      "name": "GetState",
+      "replay_policy": "read"
+    },
+    {
+      "id": 2,
+      "name": "GetCanonicalNonce",
+      "replay_policy": "read"
+    },
+    {
+      "id": 3,
+      "name": "GetDelta",
+      "replay_policy": "read"
+    },
+    {
+      "id": 4,
+      "name": "GetDeltaSince",
+      "replay_policy": "read"
+    },
+    {
+      "id": 5,
+      "name": "GetDeltaHistory",
+      "replay_policy": "read"
+    },
+    {
+      "id": 6,
+      "name": "GetDeltaProposals",
+      "replay_policy": "read"
+    },
+    {
+      "id": 7,
+      "name": "GetDeltaProposal",
+      "replay_policy": "read"
+    },
+    {
+      "id": 8,
+      "name": "PushDelta",
+      "replay_policy": "write"
+    },
+    {
+      "id": 9,
+      "name": "PushDeltaProposal",
+      "replay_policy": "write"
+    },
+    {
+      "id": 10,
+      "name": "SignDeltaProposal",
+      "replay_policy": "write"
+    },
+    {
+      "id": 11,
+      "name": "ExecuteDeltaProposal",
+      "replay_policy": "write"
+    },
+    {
+      "id": 12,
+      "name": "GetDeltaProposalExecution",
+      "replay_policy": "read"
+    },
+    {
+      "id": 13,
+      "name": "GetCurrentExecution",
+      "replay_policy": "read"
+    }
+  ],
+  "vectors": [
+    {
+      "name": "GetState_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 1,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100017f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xcbfb74dd3f087877abb10ad106c8c02caa478b83b71475e32dee60a1b43ed23a",
+      "record_key_hex": "0x12870955be9f9848800e1d64399a08fb3bb17c1301e6b8170e27dd1d224e4ec0",
+      "signature_hex": "0x09101dd5ae8bd0fc7f4fb80225945177148bace603ec85c91df807fc23c63ebb24a29075792b08ba3243945fba25774b11197ec919ccc67be9faf92db0b2480c"
+    },
+    {
+      "name": "GetState_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 1,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200017f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xe76655410329e61c253f90e765b7f60cba03275cf518d9cb55f8483032dc1b04",
+      "record_key_hex": "0x42a1bb27e050e61c9e1db48a8dba7c9071216306358ae454bd9f48df2dc92e6e",
+      "signature_hex": "0xfe92d0ff591b221bc90ab464b27c3dd31694839e8353711d5eb3c966aa9c5784d1c3fbdd70f84978afdba59ba9517af7f13d0c9cfe6e552516cb775d644ed683"
+    },
+    {
+      "name": "GetCanonicalNonce_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 2,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100027f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x8fe647b7ca9fda13cf5af57126bbbe15e39f41a42de4bc7063ba66d24b58db07",
+      "record_key_hex": "0xff69dff1eff4972e1d90f2044f2f36320c7c71e28a81f0a88632f4ae2ef71836",
+      "signature_hex": "0x282ccd581a93618a00a046f3c09a7e08d4a49ae13aa03035f43e534afaebe02f176cadaea875684ba025d5f560a3385103ddf8fcdf078f7275ce6f4c0163c64e"
+    },
+    {
+      "name": "GetCanonicalNonce_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 2,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200027f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x8fac92a501cc9675ce9ebedec664dd52e344acfd5babb0ac407867912dd9c472",
+      "record_key_hex": "0x57891e5b9385e23e522419dcc8c9db3f446e4b73f1d045b72a7092046fd3d78c",
+      "signature_hex": "0xbf48c634fcbf82322dde03e432d64f472882be5220e138a944b8b560b3a63e7f62c2b49c0db95b070ab78fba5e7e4d68148efc2575604d762c6c1d2dc1d2ade6"
+    },
+    {
+      "name": "GetDelta_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 3,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100037f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x16a0717392b4f2a5390dd39f58c08ea943b90090e2e31c3c2ad82e1ba64262d6",
+      "record_key_hex": "0x74b4d26610606fa5742be063ecfa713961d62dab82dc40f145a867f95304975f",
+      "signature_hex": "0x61775ccd99cdc0cedbbaa741d82ea6344bb9cf88bf4b011ee4f92dec3e926cdac0b3d67b3821b422a04b06365010f27297bdb3dce3a816e94d28aedf869eeb22"
+    },
+    {
+      "name": "GetDelta_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 3,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200037f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x71ba836a10cf401324e751c49b3922ec992355d2b2d656396fac48e13fe681c7",
+      "record_key_hex": "0x2e40b22d7ee1d180a1b6545b865dec5724ec8468e7858ca567022b8241736971",
+      "signature_hex": "0x2cd3f3db7825fbbc351838ea9c01bc23f3be616990fb2554ea1405ff93460ed6af40f0f32be7f5ee988000b339ed5dececfc13d52f0b499fa5dc4d950c00308f"
+    },
+    {
+      "name": "GetDeltaSince_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 4,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100047f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xd2435a3969bd8f198d65b01a8cc11ca4768381d95267cd6f960818149895c0ea",
+      "record_key_hex": "0x98f441a8ccb49c33b4dd07353bb36e1b877ae82009c9287f3fbd763834e66f9c",
+      "signature_hex": "0xc0e3570ecd6ccb90e22a65f732af924b504ed146a7757a194dd725deb4cbffc2a8373116a3f336913ba097ab7b94b6788e0bbcdf09cccdb97e3c1b78b808d301"
+    },
+    {
+      "name": "GetDeltaSince_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 4,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200047f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xfeda9908bc52dd6dd9bc72edf8ac1f3540bb84ccedfca07e4f658f77da724494",
+      "record_key_hex": "0xe428f57a293dc1ec7f641e1d4c2b0eaaa4d1d4efc1786a0b9a3a02528e8eab18",
+      "signature_hex": "0x69c0d63260bd13c627fa64502c44ddb33d807feca9e8440e2a505f6b57222a7666bbfa30e640da5ddedc9fcdf717417dbf42677f0ed0707fd8c0fb302f7ce974"
+    },
+    {
+      "name": "GetDeltaHistory_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 5,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100057f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x91921a1c1c817ab4354f203b4add35a74eff6fba4bca2437ff873705d1a7f10e",
+      "record_key_hex": "0x1448300f7b5ab329149aacc3972ab9d02c198244329aab28b790938eb1612025",
+      "signature_hex": "0x675949e08867a0c0adbdeeb2ef97196346dadb875985e69409cb45b0856ec94cf46fbdb01135c50d651bd40b38cd3b42c0709b0b70f81b3bd34ca7570bcdf753"
+    },
+    {
+      "name": "GetDeltaHistory_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 5,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200057f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xf23fac63d4df5ed9656887323c762322c277a7ce058adc7e240645ff73bb32b0",
+      "record_key_hex": "0xc62cf367734f234799bc471b43012879b6366ff7b10ed1fffa0ab7a8ce88eab1",
+      "signature_hex": "0x91cf22bfc8439a03ac9de0e85b7aaf12a3af385b4c0031fe0c089d00fb483d050c748b56de2c21b596ffc144947ff118b8ae059029042ed46470cc1efd6e1cb7"
+    },
+    {
+      "name": "GetDeltaProposals_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 6,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100067f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x526ad908af7dee33bab1212ef612d120a7f38286ff83ffdc088c61e3226b382e",
+      "record_key_hex": "0x675d94755fd01cca3391fa309f6d8673ef0f1a21c2838f83c07fa4701fb41bea",
+      "signature_hex": "0x51af37ab412175285cf2c7263f8030f821fe8b675b8b4335c91b46aef96680bc7c6992a6015560228959fc1b20210e4c94d418c08929d6d5da5935f61ee27d42"
+    },
+    {
+      "name": "GetDeltaProposals_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 6,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200067f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x6213657b99b3bdb730decfe13882b5f4b4bfd482cf4cd7f5147cc0722e23c832",
+      "record_key_hex": "0xc4be8c359450b2a25b0b3b4e90d5f4c9df9b7fd886a6b55d982aa96cde0e5435",
+      "signature_hex": "0x8428ec2bd336dc035e20aa8083ca6188cd3a29a22f70dd23e025f3e1c3deab43af42f295f2fd2a1de53b0675d66195b010e424bd3520b440f1f915a48772b56b"
+    },
+    {
+      "name": "GetDeltaProposal_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 7,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100077f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x24ba023773ae05a01d329ff138000dcf30b4d5cde3f1bdb763878310dfb76c6a",
+      "record_key_hex": "0xfa1e3e2f46652643055dc55bcc5943b46797be449826627762e28c0fd1585746",
+      "signature_hex": "0x6efa9f17df9e882431a8ff8d320c547ed68f5d6c4b9cd7d4fe24d0a4d543fab1c7720ef3bad5f2b4d71bea22b75fea991ac4e8cfb597067a4080a77227f5adad"
+    },
+    {
+      "name": "GetDeltaProposal_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 7,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200077f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x7fa7e2040a6a8eb0bb91e0b4b0cbca212cffabffaedfbcea7cba9654eec5a480",
+      "record_key_hex": "0xee5930eaaa766f5d6c614ed659804b1293481847b463096074c0b93816b362c0",
+      "signature_hex": "0x120b42954b3d1e63ee831e9171d75496fbf049ce47a463ba5a70d089db99b3a22e0b0c469ece5428e583b0051e9b302927f168c719a11c3725f3cbf7e65a8b06"
+    },
+    {
+      "name": "PushDelta_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 8,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100087f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xc5ee37a087cc214e6a90a93173fe646b8b8749a577c48c4b391f876ba6b17fe3",
+      "record_key_hex": "0x0ffdcadc9623676165b2aee0e41e875635d84b0b0e758af3700dc0799191bb32",
+      "signature_hex": "0x239f3aea52b828e082d49b005e135ff5409c57ce9407b187c43f867dc9929f9150fd931dc0b6da7ee57fc16c31f8dd4bb2dc74369241379238ceca7c719ed6b9"
+    },
+    {
+      "name": "PushDelta_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 8,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200087f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xb7061b75b7ae6f0bf11cdb85f43bd22e5eae3b46ef64f1dbb11a36d2f572253e",
+      "record_key_hex": "0x7e522f3bd1943cc041914e4445ace7c90d1b5a7ab99791d5a56d6bf04440b2b6",
+      "signature_hex": "0xff4d1b9f5bcda7028244ba7c36342cc594ccc7d854b9edd472ea563841cdb52d56cc4f416262f9248f98cab1168a382e66a779023c4c75003fb50523754e4225"
+    },
+    {
+      "name": "PushDeltaProposal_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 9,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020100097f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xed689961f0cb1102c90ae0cd69ef0ce05992a13b790ef92d7ed2172ccfe7ce21",
+      "record_key_hex": "0x348b0a0df45ca2de25f9b0bff9e8de0c540014b2a38c0d341e0fdc2e0be545e9",
+      "signature_hex": "0x77ab1246977ecaef20aa4d24fb5111cbf4f66e069df041bd6dba6dcdc46e3f1f813a6e79a4b5f3665f43cdc827197af632e83d1f51715202b0f3c60da776c3a9"
+    },
+    {
+      "name": "PushDeltaProposal_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 9,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f524551554553540000020200097f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x0db57cb3844a716f8c91d347a0a5d72e8adfb4f7c453ab972a2464bad2286826",
+      "record_key_hex": "0xb0ded81dc47e29a424800bb59865f747b82206a3d94ccb8cad468bb1696209a1",
+      "signature_hex": "0x24f9db6c26f99a059b6e1e69eddb1e1d9522896ffcdceced1deaf3deb444682709b393daaf79121e465f5abc58518c69174e8799fda0633bf659bbc3579da632"
+    },
+    {
+      "name": "SignDeltaProposal_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 10,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000201000a7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x3f5365e09c9b76e49ce32efdfb13379d17660229faee59c059edfca836ae255e",
+      "record_key_hex": "0x0911a3e40c05cdbdc2f26948ed84792b6676a053dff3cb51359e06d5b4570ad0",
+      "signature_hex": "0xb101bd03e3e2261bfc6f3caf9d77603643d4291ad4930517d0e0502f94cbfe6f07eea7b7f5c427ad339f1adaec057f4281ec601f5710f6130f36e2a450c07bde"
+    },
+    {
+      "name": "SignDeltaProposal_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 10,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000202000a7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x9ef4cca9a47cf81e478a5173d38e3ae4ec547865f198cb6eddce477a418d8dba",
+      "record_key_hex": "0x81a2bb94e61750997feb0c1418409386bdfb742d9ae232f94e3c16b2000541c8",
+      "signature_hex": "0x9c467272d28607c12c48bddbfc692f9aa9c15156f714ed27a83ebd9b7ba0587783f8fa0671f8b40642e9f04f31b2a650b8fcc835834017ed405e6c831192acd9"
+    },
+    {
+      "name": "ExecuteDeltaProposal_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 11,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000201000b7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xcef471e3ab9035af5dcbf3da6d95a32afbc16ac5d48c4d2f24fa85a66ae0a63f",
+      "record_key_hex": "0xb2866d868aa8c692bd6d07616e78381a8d18ef81f9eecf2707751e28cefa796e",
+      "signature_hex": "0x25fff060db97bdeafafc244cf9c5bc98a8d8fcbb5fd8552885cc01169b5cd7283e46b5ce18b1cae197ca42ebcc3bc3b6e5e0491352ef25863b0a0d862d7cb152"
+    },
+    {
+      "name": "ExecuteDeltaProposal_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 11,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000202000b7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xcba9912e6cf80c7467a7248c2ff5d071c6e7452195f6194eff4ba8b86bd46dab",
+      "record_key_hex": "0x50db06f7b260f196a390a1f9dc1506a86285aabacba7aaf1558b4dfc315a18ad",
+      "signature_hex": "0x80ef3fc1021fd3f076108012eebc6f08691be55aa4588aa5dd013948d72a074fb916de484a94d75938a08e8819da823208aab27fbc1ea6893179c8b2e565f731"
+    },
+    {
+      "name": "GetDeltaProposalExecution_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 12,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000201000c7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x3e903a00801ac283828b470b38ffd8c57bed7df1e3e75d20b231e4fa96352700",
+      "record_key_hex": "0xa1a1c347cb3c582db9172cf0cf9e941abf7d78c5505577f3ec0b890a983055cb",
+      "signature_hex": "0x5c16d5101c817366852b748c68506f0fd858803bececbd790bbecaaf01309de0c530ec883970a9813178bae0869525d1a6cfc44f18422050ddfaeaf4c84fbb73"
+    },
+    {
+      "name": "GetDeltaProposalExecution_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 12,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000202000c7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xc78892855af803724058d1369cfba0ec75654c0ffdd42e93123a52676e5ac4fa",
+      "record_key_hex": "0x70a7b7b201305b9f4a6f4ee3ec161e10386475172d0bbbab4923857c3dafbb50",
+      "signature_hex": "0x49cab30bb1d280bdea721409ebe659ddb4cbda02d76766b3ea0f6502f6a6c78a2f6da0b3392e8251f89d3233345fa2500dc7c57d3da8e4a784423acb20490e46"
+    },
+    {
+      "name": "GetCurrentExecution_http",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 1,
+      "operation": 13,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000201000d7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0xf9f899f730af61a8c1ef9a6e92214ee82aaa25327938f6e3ada58c507e088b27",
+      "record_key_hex": "0xd87cdb71caebdfca41ce7b45e1e086fa3fd540c84bdb4e3a038c9f8279eade14",
+      "signature_hex": "0x69bfeae9785e9edf9832e3f9753adbcd81806264584dbc357dc17a11b209afa0cd9aa9f25b0fe9c613d77421686525c3dc1bb02545b0604f21f7d62dd35b9f57"
+    },
+    {
+      "name": "GetCurrentExecution_grpc",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x7b226163636f756e745f6964223a223078386138613861386138613861386130313061386138613861386138613861227d",
+      "transport": 2,
+      "operation": 13,
+      "request_word_hex": "0x7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f5245515545535400000202000d7f8d45c63289919f1ef9a10c7f5c5b8467e87dbd125ae7e5d01ecccb22b157c8",
+      "signed_digest_hex": "0x2dec178e0dae5966e80452e89469b78fe4baa4fbbd324faabaa1c529b226bf37",
+      "record_key_hex": "0x3c3e1ca1b36c547d34bb926b6062da10b47208721f1851a32ba8c0183050d5a4",
+      "signature_hex": "0x097d3353b2790b0fed02db2dc3941032198465b330d9264e19e1d28dc2904f6b282cbe99dec2fb4e934023e861252cf894b17daebaca515a7932a79126917739"
+    },
+    {
+      "name": "empty_payload",
+      "account_id_hex": "0x8a8a8a8a8a8a8a010a8a8a8a8a8a8a",
+      "timestamp_ms": 1767225600000,
+      "payload_hex": "0x",
+      "transport": 1,
+      "operation": 1,
+      "request_word_hex": "0xb4b98b2c2913ec4ddbeca656cba1abe55b96604b01e4e311f0ce5a5168261f98",
+      "envelope_hex": "0x475541524449414e5f53455353494f4e5f52455155455354000002010001b4b98b2c2913ec4ddbeca656cba1abe55b96604b01e4e311f0ce5a5168261f98",
+      "signed_digest_hex": "0x189611f97acc9a829b16913c7a537bca8a30689fa437868aee663da802e463cb",
+      "record_key_hex": "0x99bb77e18443a32420fe059ddc17a7e2455aef26ed7c7dc80393413be18e1474",
+      "signature_hex": "0x07acb8fca5496b37a872026bfbaad86a9b209180c18095b69d1ef03d0f00f5b64f5a9d9100dbc2f7f52a285238fc59f8e797f998dbe135f4743651fa56f1ba7c"
+    }
+  ]
+}

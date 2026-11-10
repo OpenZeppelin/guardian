@@ -228,6 +228,13 @@ impl StorageBackend for EncryptedStorage {
             .collect()
     }
 
+    async fn pull_state_heads_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<HashMap<String, StateHead>, String> {
+        self.inner.pull_state_heads_batch(account_ids).await
+    }
+
     async fn pull_delta(&self, account_id: &str, nonce: u64) -> Result<DeltaObject, String> {
         let delta = self.inner.pull_delta(account_id, nonce).await?;
         self.decrypt_delta(delta)

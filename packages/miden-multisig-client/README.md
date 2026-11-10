@@ -430,6 +430,22 @@ Page logout is not revocation: a script that stole the key keeps it, so use
 Revoke-all ends the sessions already registered with Guardian, and a page that
 got a grant signed can register it for up to about 10 minutes afterwards.
 
+Sessions sign the version 2 request format (`x-auth-format: session-v2`),
+which binds each request to its transport and route. Upgrade the Guardian
+and this SDK together: `startSession` and `resumeSession` throw
+`UnsupportedAuthVersionError` (from `@openzeppelin/guardian-client`) when the
+Guardian does not report `requestAuthVersion: 2`, and a Guardian of this
+version answers session requests from older SDKs with
+`unsupported_auth_version`. Neither falls back to the wallet. Stored session
+keys and grants from earlier releases keep working, with no new wallet
+prompt. Session reads must be within 60 s of server time and session writes
+within 5 minutes; a request outside its window fails with
+`timestamp_out_of_window` and the session is kept. A custom
+`SessionRequestSigner` must implement the new `signRequest(operation, ...)`,
+`nextTimestamp` and `writeSequencer` members (see the
+`@openzeppelin/guardian-client` README). See
+[`docs/MIDEN_COMPATIBILITY.md`](https://github.com/OpenZeppelin/guardian/blob/main/docs/MIDEN_COMPATIBILITY.md).
+
 ### Load an Existing Multisig
 
 The configuration is automatically detected from the account's on-chain storage:
@@ -549,6 +565,19 @@ the executing party cannot change it. Omitted, the approval never expires,
 which is the Miden default, except on a `guardian_executable` client (see
 [Execute Through Guardian](#execute-through-guardian)).
 
+All methods also accept `signOnCreate` (default `false`). Set, the proposer
+signs the summary while creating the proposal and the approval is pushed with
+it, as the Rust SDK always does: no separate `signProposal` call is needed, so
+the chain sync, the re-execution and the GUARDIAN round trip of signing are
+skipped, and a proposal that needs one approval comes back `ready`. Leave it
+unset to create the proposal unsigned and approve it later, for example when
+the signer is a wallet that prompts for each signature.
+`createSwitchGuardianProposalOffline` always signs and ignores it, and the
+raw `createProposal` takes no options and always creates the proposal unsigned.
+A typed `create*Proposal` returns its proposal `unchecked`, as the Rust SDK
+does: the client does not re-execute the summary it has just derived, and
+executing the proposal verifies it first.
+
 > **Breaking change (issue #387):** these methods previously took `nonce` (and
 > `newThreshold`) as positional parameters. Passing the old positional form
 > now throws at runtime instead of silently applying defaults.
@@ -660,8 +689,8 @@ summary and records the outcome in `proposal.verification`:
 `{ status: 'unchecked' }`, `{ status: 'verified' }`, or
 `{ status: 'failed', retryable, message }`. A proposal that fails the
 check is still returned, so one stale or corrupt proposal cannot hide the
-others; only the check itself writes `verified`, and a freshly parsed or
-imported proposal is `unchecked`. `retryable: true` means the
+others; only the check itself writes `verified`, and a freshly parsed,
+imported or created proposal is `unchecked`. `retryable: true` means the
 re-execution hit a transient node error and the proposal may verify on
 the next sync; `retryable: false` means it cannot be reproduced (tampered
 metadata, for example) and has to be re-proposed. Verification is deliberately not part of `status`: a fully

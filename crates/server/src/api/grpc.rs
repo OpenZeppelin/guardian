@@ -540,9 +540,11 @@ impl Guardian for GuardianService {
         )
         .await
         .map_err(Status::from)?;
+        let policy = result.request_policy;
         Ok(Response::new(CreateSessionResponse {
             signer_commitment: result.signer_commitment,
             expires_at: result.expires_at.to_rfc3339(),
+            request_auth_version: u32::from(policy.request_auth_version),
         }))
     }
 

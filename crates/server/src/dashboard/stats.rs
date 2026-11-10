@@ -43,10 +43,11 @@
 //!    aborts the walk and leaves the previous snapshot published.
 //! 3. Vaults are decoded on the blocking pool, once per commitment: an
 //!    account whose state commitment matches the previous snapshot
-//!    reuses its decoded vault (every state blob is still read and
-//!    decrypted each walk; only the `Account` deserialization is
-//!    skipped). Only successful decodes are reused, so a repaired blob
-//!    is picked up on the next walk.
+//!    reuses its decoded vault without its state being read: the walk
+//!    reads commitments first and fetches (and decrypts) full state only
+//!    for accounts whose commitment changed or that have nothing to
+//!    reuse. Only successful decodes are reused, so a repaired blob is
+//!    picked up on the next walk.
 //! 4. Inventory aggregates (`delta_status_counts`,
 //!    `in_flight_proposal_count`, `latest_activity`) are read through
 //!    the storage aggregate methods; each is marked degraded on failure
@@ -877,7 +878,11 @@ pub async fn build_payload(
 
     // Only successful decodes are carried over: a corrupt or missing
     // row is re-read every walk so a repair is picked up without any
-    // commitment change.
+    // commitment change. One account of every chunk, the first that decoded
+    // last time, is always read; when it does not decode, the whole chunk is
+    // read again without reuse, so a storage key that stops decrypting fails
+    // every account and the systemic-failure guard below keeps the previous
+    // snapshot.
     let reusable: HashMap<&str, (&str, &VaultSummary)> = previous
         .map(|p| {
             p.records
@@ -905,53 +910,118 @@ pub async fn build_payload(
         if cancel.is_cancelled() {
             return Err("dashboard stats walk cancelled: lease lost".to_string());
         }
-        let mut states = read_states_chunk(storage, chunk, &mut vault_outcomes).await?;
-        let mut to_decode = Vec::new();
-        for id in chunk {
-            let Some(state) = states.remove(id) else {
-                continue;
+        let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
+        let heads = match storage.pull_state_heads_batch(&refs).await {
+            Ok(heads) => Some(heads),
+            Err(error) => {
+                tracing::warn!(
+                    target: "dashboard.stats",
+                    %error,
+                    accounts = chunk.len(),
+                    "dashboard stats: batched state heads failed; reading every state in the chunk"
+                );
+                None
+            }
+        };
+        let sample = chunk
+            .iter()
+            .map(String::as_str)
+            .find(|id| reusable.contains_key(id))
+            .or_else(|| chunk.first().map(String::as_str));
+        let mut reuse = true;
+        loop {
+            let unchanged = |id: &str| -> Option<(&str, &VaultSummary)> {
+                if !reuse || Some(id) == sample {
+                    return None;
+                }
+                let (commitment, vault) = reusable.get(id)?;
+                let head = heads.as_ref()?.get(id)?;
+                (head.commitment == *commitment).then_some((*commitment, *vault))
             };
-            match reusable.get(id.as_str()) {
-                Some((commitment, vault)) if *commitment == state.commitment => {
+            let changed: Vec<String> = chunk
+                .iter()
+                .filter(|id| unchanged(id).is_none())
+                .cloned()
+                .collect();
+            let mut states = if changed.is_empty() {
+                HashMap::new()
+            } else {
+                read_states_chunk(storage, &changed, &mut vault_outcomes).await?
+            };
+            let mut to_decode = Vec::new();
+            for id in chunk {
+                if let Some((commitment, vault)) = unchanged(id) {
                     vault_outcomes.insert(
                         id.clone(),
                         VaultOutcome::Decoded {
-                            vault: (*vault).clone(),
+                            vault: vault.clone(),
                         },
                     );
+                    commitments.insert(id.clone(), commitment.to_string());
+                    continue;
                 }
-                _ => to_decode.push((id.clone(), state.state_json)),
+                let Some(state) = states.remove(id) else {
+                    continue;
+                };
+                match reusable.get(id.as_str()) {
+                    Some((commitment, vault)) if reuse && *commitment == state.commitment => {
+                        vault_outcomes.insert(
+                            id.clone(),
+                            VaultOutcome::Decoded {
+                                vault: (*vault).clone(),
+                            },
+                        );
+                    }
+                    _ => to_decode.push((id.clone(), state.state_json)),
+                }
+                commitments.insert(id.clone(), state.commitment);
             }
-            commitments.insert(id.clone(), state.commitment);
-        }
-        if to_decode.is_empty() {
-            continue;
-        }
-        let decoded = tokio::task::spawn_blocking(move || {
-            to_decode
-                .into_iter()
-                .map(|(id, state_json)| {
-                    let outcome = match decode_vault(&state_json) {
-                        Ok(vault) => VaultOutcome::Decoded { vault },
-                        Err(error) => {
-                            tracing::warn!(
-                                target: "dashboard.stats",
-                                account_id = %id,
-                                %error,
-                                "dashboard stats: stored Miden account did not decode"
-                            );
-                            VaultOutcome::Skipped {
-                                reason: SkipReason::StateUndecodable,
-                            }
-                        }
-                    };
-                    (id, outcome)
+            if !to_decode.is_empty() {
+                let decoded = tokio::task::spawn_blocking(move || {
+                    to_decode
+                        .into_iter()
+                        .map(|(id, state_json)| {
+                            let outcome = match decode_vault(&state_json) {
+                                Ok(vault) => VaultOutcome::Decoded { vault },
+                                Err(error) => {
+                                    tracing::warn!(
+                                        target: "dashboard.stats",
+                                        account_id = %id,
+                                        %error,
+                                        "dashboard stats: stored Miden account did not decode"
+                                    );
+                                    VaultOutcome::Skipped {
+                                        reason: SkipReason::StateUndecodable,
+                                    }
+                                }
+                            };
+                            (id, outcome)
+                        })
+                        .collect::<Vec<_>>()
                 })
-                .collect::<Vec<_>>()
-        })
-        .await
-        .map_err(|e| format!("vault decode task failed: {e}"))?;
-        vault_outcomes.extend(decoded);
+                .await
+                .map_err(|e| format!("vault decode task failed: {e}"))?;
+                vault_outcomes.extend(decoded);
+            }
+            let sample_undecodable = sample.is_some_and(|id| {
+                matches!(
+                    vault_outcomes.get(id),
+                    Some(VaultOutcome::Skipped {
+                        reason: SkipReason::StateUndecodable
+                    })
+                )
+            });
+            let reused_any = chunk.iter().any(|id| unchanged(id).is_some());
+            if sample_undecodable && reused_any {
+                for id in chunk {
+                    vault_outcomes.remove(id);
+                    commitments.remove(id);
+                }
+                reuse = false;
+                continue;
+            }
+            break;
+        }
     }
 
     // A per-record corruption verdict is only trustworthy in isolation.
@@ -1920,6 +1990,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn build_payload_does_not_read_state_of_accounts_whose_commitment_is_unchanged() {
+        let state = create_test_app_state().await;
+        for id in ["acc-0", "acc-a", "acc-b"] {
+            state
+                .metadata
+                .set(metadata(
+                    id,
+                    falcon(&["0x1"]),
+                    NetworkConfig::miden_default(),
+                    "2026-09-10T00:00:00Z",
+                ))
+                .await
+                .unwrap();
+        }
+        let storage: Arc<dyn StorageBackend> = Arc::new(
+            MockStorageBackend::new().with_pull_state_head(crate::state_object::StateHead {
+                commitment: "0xunchanged".to_string(),
+                nonce: Some(1),
+            }),
+        );
+        let sentinel = decoded(&[("0xsentinel", 7)], &[]);
+        let mut prev_a = record(
+            "acc-a",
+            Some("2026-09-10T00:00:00Z"),
+            "miden_falcon",
+            1,
+            AccountLifecycle::Active,
+            sentinel.clone(),
+        );
+        prev_a.state_commitment = Some("0xunchanged".to_string());
+        let mut prev_b = prev_a.clone();
+        prev_b.account_id = "acc-b".to_string();
+        let previous = snapshot(ts("2026-09-11T00:00:00Z"), vec![prev_a, prev_b]);
+
+        let (_, payload) = build_payload(
+            &storage,
+            &state.metadata,
+            &state.clock,
+            Some(&previous),
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(by_id(&payload)["acc-b"].vault, sentinel);
+        for id in ["acc-0", "acc-a"] {
+            assert!(
+                !matches!(by_id(&payload)[id].vault, VaultOutcome::Decoded { .. }),
+                "{id} is read (no previous vault, or the chunk's sample), and this mock has no state"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn build_payload_reuses_decoded_vaults_only_and_recovers_repaired_blobs() {
         let state = create_test_app_state().await;
         let f1 = faucet(0x11);
@@ -2321,6 +2446,86 @@ mod tests {
             &metadata_store,
             &clock,
             Some(&snapshot(ts("2026-09-11T00:00:00Z"), vec![prev])),
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("systemic"), "{err}");
+    }
+
+    /// A key that stops decrypting fails the chunk's sample; the chunk is then
+    /// read again without reusing cached vaults, so every account fails and
+    /// the systemic-failure guard keeps the previous snapshot.
+    #[tokio::test]
+    async fn build_payload_does_not_let_cached_vaults_mask_a_systemic_key_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain: Arc<dyn StorageBackend> = Arc::new(
+            FilesystemService::new(dir.path().to_path_buf())
+                .await
+                .unwrap(),
+        );
+        let encrypted: Arc<dyn StorageBackend> = Arc::new(EncryptedStorage::new(
+            plain.clone(),
+            Arc::new(Aes256GcmCipher::new(provider(3, "k1"))),
+        ));
+        let f1 = faucet(0x11);
+        let ids = ["acc-a", "acc-b", "acc-c"];
+        for (i, id) in ids.iter().enumerate() {
+            encrypted
+                .submit_state(&miden_state(id, i as u8 + 1, &[(f1, 10)]))
+                .await
+                .unwrap();
+        }
+        let listing = || {
+            ids.iter()
+                .map(|id| {
+                    metadata(
+                        id,
+                        falcon(&["0x1"]),
+                        NetworkConfig::miden_default(),
+                        "2026-09-10T00:00:00Z",
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let names = || ids.iter().map(|id| id.to_string()).collect::<Vec<_>>();
+        let metadata_store: Arc<dyn MetadataStore> = Arc::new(
+            MockMetadataStore::new()
+                .with_list(Ok(names()))
+                .with_list(Ok(names()))
+                .with_list_paged(Ok(listing()))
+                .with_list_paged(Ok(listing())),
+        );
+        let clock: Arc<dyn Clock> = Arc::new(MockClock::fixed("2026-09-15T12:00:00Z"));
+
+        let (as_of, payload) = build_payload(
+            &encrypted,
+            &metadata_store,
+            &clock,
+            None,
+            None,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            payload
+                .records
+                .iter()
+                .all(|r| matches!(r.vault, VaultOutcome::Decoded { .. }))
+        );
+        let previous = snapshot(as_of, payload.records);
+
+        let wrong_key: Arc<dyn StorageBackend> = Arc::new(EncryptedStorage::new(
+            plain,
+            Arc::new(Aes256GcmCipher::new(provider(3, "k2"))),
+        ));
+        let err = build_payload(
+            &wrong_key,
+            &metadata_store,
+            &clock,
+            Some(&previous),
             None,
             &CancellationToken::new(),
         )

@@ -851,6 +851,11 @@ impl Rotation {
         Duration::from_secs_f64(spread).max(self.min_spacing)
     }
 
+    /// Whether the rate cap could walk twice this fleet within one rotation.
+    fn fits_rotation_with_headroom(&self, fleet_size: usize) -> bool {
+        self.min_spacing.as_secs_f64() * (2 * fleet_size) as f64 <= self.rotation.as_secs_f64()
+    }
+
     /// When the rotation has something to do next, while no walk runs:
     /// the next walk, or an earlier retry round.
     fn idle_until(&self) -> Instant {
@@ -904,6 +909,15 @@ impl Rotation {
                     requested_by_block_watch = self.requested,
                     "Release sweep rotation started"
                 );
+                if !self.fits_rotation_with_headroom(fleet_size) {
+                    tracing::warn!(
+                        fleet_size,
+                        max_rate_per_second = config.max_rate_per_second,
+                        rotation_seconds = config.rotation_seconds,
+                        "Release sweep rate cap leaves less than 2x headroom for this fleet; \
+                         raise GUARDIAN_RELEASE_SWEEP_MAX_RATE_PER_SECOND or the rotation"
+                    );
+                }
             }
             self.buffer.extend(page);
         }
@@ -1167,6 +1181,13 @@ mod tests {
         assert_eq!(rotation.spacing_for(100_000), Duration::from_millis(250));
         // An empty fleet does not divide by zero.
         assert_eq!(rotation.spacing_for(0), Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn default_rate_cap_walks_a_hundred_thousand_accounts_with_double_headroom() {
+        let rotation = Rotation::new(&ReleaseSweepConfig::default());
+        assert!(rotation.fits_rotation_with_headroom(100_000));
+        assert!(!rotation.fits_rotation_with_headroom(150_000));
     }
 
     #[tokio::test(start_paused = true)]

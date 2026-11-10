@@ -1,3 +1,7 @@
+import {
+  SESSION_REQUEST_VERSION,
+  assertSupportedSessionPolicy,
+} from './session-request.js';
 import type {
   CanonicalNonce,
   CosignerSignature,
@@ -295,10 +299,20 @@ export function toServerCreateSessionRequest(req: CreateSessionRequest): ServerC
   };
 }
 
+/**
+ * Throws `UnsupportedAuthVersionError` unless the server reports the
+ * session request version this client signs: such a server would refuse
+ * every session request.
+ */
 export function fromServerCreateSessionResponse(
   server: ServerCreateSessionResponse
 ): CreateSessionResponse {
-  return { signerCommitment: server.signer_commitment, expiresAt: server.expires_at };
+  assertSupportedSessionPolicy({ requestAuthVersion: server.request_auth_version });
+  return {
+    signerCommitment: server.signer_commitment,
+    expiresAt: server.expires_at,
+    requestAuthVersion: SESSION_REQUEST_VERSION,
+  };
 }
 
 export function toServerDeltaProposalRequest(req: DeltaProposalRequest): ServerDeltaProposalRequest {
