@@ -212,6 +212,26 @@ export interface CreateProposalOptions {
    * Omitted, the approval never expires (the upstream default).
    */
   approvalExpirationDelta?: number;
+  /**
+   * Sign the proposal while creating it, as the Rust SDK always does: the
+   * proposer's approval rides on the push, so no separate
+   * {@link Multisig.signProposal} call (with its chain sync, re-execution and
+   * GUARDIAN round trip) is needed. A 1-of-N account's proposal comes back
+   * `ready`. Defaults to `false`: the proposal is created unsigned and the
+   * proposer approves it later. `createSwitchGuardianProposalOffline` ignores
+   * it, since an offline proposal is always signed by its proposer.
+   */
+  signOnCreate?: boolean;
+}
+
+/**
+ * How {@link Multisig} pushes a new proposal: whether its summary was derived
+ * here from the request built alongside its metadata or handed in by the
+ * caller, and whether the proposer's approval rides on the push.
+ */
+interface ProposalCreation {
+  summary: 'built_here' | 'caller_supplied';
+  signOnCreate: boolean;
 }
 
 export interface CreateSignerProposalOptions extends CreateProposalOptions {
@@ -1385,34 +1405,79 @@ export class Multisig {
     }
     await this.refreshConfigFromStore();
     this.assertKeySchemeMatches();
-    return this.pushProposal(nonce, txSummaryBase64, metadata, undefined);
+    return this.pushProposal(nonce, txSummaryBase64, metadata, undefined, {
+      summary: 'caller_supplied',
+      signOnCreate: false,
+    });
   }
 
   /**
    * Push a proposal to GUARDIAN and parse the reply against the signer config
    * the caller refreshed from the store.
+   *
+   * A summary this client derived from the request it built alongside
+   * `metadata` (`built_here`) is checked only against the commitment GUARDIAN
+   * returns and stays `unchecked`, as the Rust SDK leaves a proposal it built:
+   * re-executing it would rebuild the request this client has just built, and
+   * executing it verifies it first. A `caller_supplied` summary and metadata
+   * pair is re-executed to verify its binding. A proposal created with
+   * `signOnCreate` must come back carrying the proposer's approval; GUARDIAN
+   * answers a push of a proposal it already holds with the stored copy, which
+   * drops the pushed signature.
    */
   private async pushProposal(
     nonce: number,
     txSummaryBase64: string,
     metadata: ProposalMetadata,
     transactionRequest: TransactionRequestEnvelope | undefined,
+    creation: ProposalCreation,
   ): Promise<Proposal> {
     const guardianMetadata = ProposalMetadataCodec.toGuardian(metadata);
+    const commitment = normalizeHexWord(computeCommitmentFromTxSummary(txSummaryBase64));
+    const signatures = creation.signOnCreate
+      ? [
+          {
+            signerId: normalizeHexWord(this.signer.commitment),
+            signature: await buildGuardianSignatureFromSigner(this.signer, commitment),
+          },
+        ]
+      : [];
 
     const response = await this.guardian.pushDeltaProposal({
       accountId: this._accountId,
       nonce,
       deltaPayload: {
         txSummary: { data: txSummaryBase64 },
-        signatures: [],
+        signatures,
         metadata: guardianMetadata,
         ...(transactionRequest ? { transactionRequest } : {}),
       },
     });
 
     const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
-    await this.verifyProposalMetadataBinding(proposal);
+    switch (creation.summary) {
+      case 'built_here':
+        if (proposal.id !== commitment) {
+          throw new Error(
+            `GUARDIAN returned proposal commitment ${proposal.id} but expected ${commitment}`,
+          );
+        }
+        break;
+      case 'caller_supplied':
+        await this.verifyProposalMetadataBinding(proposal);
+        break;
+    }
+    if (
+      creation.signOnCreate &&
+      !proposal.signatures.some(
+        (entry) => normalizeHexWord(entry.signerId) === normalizeHexWord(this.signer.commitment),
+      )
+    ) {
+      throw new Error(
+        `GUARDIAN returned proposal ${proposal.id} without the proposer's approval; ` +
+          'it already held this proposal, so approve it with signProposal',
+      );
+    }
     this.proposals.set(proposal.id, proposal);
     this.guardianKnownProposalIds.add(proposal.id);
 
@@ -1438,6 +1503,7 @@ export class Multisig {
   async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
     const proposal = this.getLocalProposal(proposalId);
     if (proposal?.verification.status === 'unchecked') {
+      await this.syncChain();
       await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
     }
     assertGuardianMayExecute(proposalId, proposal);
@@ -1547,7 +1613,10 @@ export class Multisig {
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**
@@ -1606,7 +1675,10 @@ export class Multisig {
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**
@@ -1653,7 +1725,10 @@ export class Multisig {
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   async createUpdateProcedureThresholdProposal(
@@ -1705,7 +1780,10 @@ export class Multisig {
       description: action,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**
@@ -1737,7 +1815,10 @@ export class Multisig {
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
     const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, undefined);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, undefined, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**
@@ -1934,7 +2015,10 @@ export class Multisig {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**
@@ -1961,9 +2045,9 @@ export class Multisig {
       throw new Error('Amount must be greater than 0');
     }
 
-    // Forward everything but the nonce, so a note option added to
+    // Forward everything but the nonce and the signing choice, so a note option added to
     // CreateP2idProposalOptions can't be silently dropped before the builder.
-    const { nonce: _nonce, ...noteOptions } = options;
+    const { nonce: _nonce, signOnCreate: _signOnCreate, ...noteOptions } = options;
     const { request, salt } = await buildP2idTransactionRequest(
       this.midenClient,
       this._accountId,
@@ -1993,7 +2077,10 @@ export class Multisig {
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**
@@ -2798,7 +2885,10 @@ export class Multisig {
       requiredSignatures: this.getEffectiveThreshold('custom'),
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest, {
+      summary: 'built_here',
+      signOnCreate: options.signOnCreate === true,
+    });
   }
 
   /**

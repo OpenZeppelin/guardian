@@ -113,14 +113,15 @@ export interface CreateAccountInput {
   procedureThresholds?: ProcedureThreshold[];
 }
 
-export type CreateProposalInput =
+export type CreateProposalInput = { signOnCreate?: boolean } & (
   | { type: 'add_signer'; commitment: string; increaseThreshold?: boolean }
   | { type: 'remove_signer'; signerCommitment: string; newThreshold?: number }
   | { type: 'change_threshold'; newThreshold: number }
   | { type: 'update_procedure_threshold'; procedure: ProcedureName; threshold: number }
   | { type: 'consume_notes'; noteIds: string[] }
   | { type: 'p2id'; recipientId: string; faucetId: string; amount: string | number; noteType?: 'public' | 'private' }
-  | { type: 'switch_guardian'; newGuardianEndpoint: string; newGuardianPubkey: string };
+  | { type: 'switch_guardian'; newGuardianEndpoint: string; newGuardianPubkey: string }
+);
 
 export interface CreateCustomProposalInput {
   recipientId: string;
@@ -1201,6 +1202,7 @@ export function useSmokeHarness(): {
           throw new Error('No multisig account is loaded');
         }
 
+        const signOnCreate = input.signOnCreate === true;
         let result:
           | { proposal: Proposal; proposals: Proposal[] }
           | undefined;
@@ -1211,6 +1213,7 @@ export function useSmokeHarness(): {
               currentMultisig,
               normalizeCommitment(input.commitment),
               input.increaseThreshold ?? false,
+              signOnCreate,
             );
             break;
           case 'remove_signer':
@@ -1218,20 +1221,22 @@ export function useSmokeHarness(): {
               currentMultisig,
               normalizeCommitment(input.signerCommitment),
               input.newThreshold,
+              signOnCreate,
             );
             break;
           case 'change_threshold':
-            result = await createChangeThresholdProposal(currentMultisig, input.newThreshold);
+            result = await createChangeThresholdProposal(currentMultisig, input.newThreshold, signOnCreate);
             break;
           case 'update_procedure_threshold':
             result = await createUpdateProcedureThresholdProposal(
               currentMultisig,
               input.procedure,
               input.threshold,
+              signOnCreate,
             );
             break;
           case 'consume_notes':
-            result = await createConsumeNotesProposal(currentMultisig, input.noteIds);
+            result = await createConsumeNotesProposal(currentMultisig, input.noteIds, signOnCreate);
             break;
           case 'p2id':
             result = await createP2idProposal(
@@ -1240,6 +1245,8 @@ export function useSmokeHarness(): {
               input.faucetId.trim(),
               BigInt(input.amount),
               input.noteType === 'private' ? NoteType.Private : undefined,
+              undefined,
+              signOnCreate,
             );
             break;
           case 'switch_guardian':
@@ -1247,6 +1254,7 @@ export function useSmokeHarness(): {
               currentMultisig,
               input.newGuardianEndpoint.trim(),
               normalizeCommitment(input.newGuardianPubkey),
+              signOnCreate,
             );
             break;
         }
