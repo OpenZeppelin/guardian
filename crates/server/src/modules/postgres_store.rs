@@ -780,12 +780,7 @@ mod tests {
         let start = store.version().await.unwrap();
 
         store
-            .seed_instance(
-                &module,
-                true,
-                &json!({ "recipient_denylist": ["0xaaa"] }),
-                t0,
-            )
+            .seed_instance(&module, true, &json!({ "denylist": ["0xaaa"] }), t0)
             .await
             .unwrap();
         store
@@ -795,7 +790,7 @@ mod tests {
         store
             .set_global(
                 &module,
-                json!({ "recipient_denylist": ["0xaaa", "0xddd"] }),
+                json!({ "denylist": ["0xaaa", "0xddd"] }),
                 &change(t0),
             )
             .await
@@ -804,7 +799,7 @@ mod tests {
             .set_layer(
                 &account,
                 &module,
-                Some(json!({ "recipient_denylist": ["0xccc"] })),
+                Some(json!({ "denylist": ["0xccc"] })),
                 &change(t0),
             )
             .await
@@ -830,12 +825,9 @@ mod tests {
             .unwrap();
         assert_eq!(
             instance.global_params,
-            json!({ "recipient_denylist": ["0xaaa", "0xddd"] })
+            json!({ "denylist": ["0xaaa", "0xddd"] })
         );
-        assert_eq!(
-            instance.seeded_params,
-            json!({ "recipient_denylist": ["0xaaa"] })
-        );
+        assert_eq!(instance.seeded_params, json!({ "denylist": ["0xaaa"] }));
 
         let rows = other_replica.account_params(&account).await.unwrap();
         assert_eq!(rows.len(), 2);

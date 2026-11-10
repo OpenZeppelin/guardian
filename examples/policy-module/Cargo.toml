@@ -3,7 +3,7 @@ name = "guardian-policy-module"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "basic-policy served as a standalone Guardian policy module over gRPC"
+description = "The Guardian's built-in policies served as a standalone policy module over gRPC"
 
 [[bin]]
 name = "policy-module"

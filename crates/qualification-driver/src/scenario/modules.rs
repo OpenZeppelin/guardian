@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use guardian_client::{ClientError, GuardianClient, ModuleRefusal};
-use guardian_module_sdk::basic_policy::BasicPolicy;
+use guardian_module_sdk::policies::SignerPolicy;
 use miden_multisig_client::{MultisigError, TransactionType};
 use serde_json::{Value, json};
 
@@ -23,6 +23,7 @@ use crate::fixtures::Fixtures;
 
 /// The instances the stack's catalog declares.
 const GATE: &str = "qual-gate";
+const CAP: &str = "qual-cap";
 const SWITCH: &str = "qual-switch";
 const REMOTE: &str = "qual-remote";
 
@@ -53,8 +54,8 @@ macro_rules! settled {
     }};
 }
 
-fn refuse_added_signers() -> Value {
-    json!({ "signer_check": "all", "signer_allowlist": [UNLISTED_SIGNER] })
+fn refuse_every_signer() -> Value {
+    json!({ "check": "all", "allowlist": [UNLISTED_SIGNER] })
 }
 
 /// The operator API, logged in as the operator holding `policies:write`.
@@ -278,10 +279,7 @@ pub async fn assert_refusal(runner: &Runner) -> ActionOutcome {
     };
     let account = fixtures.account_id.clone();
 
-    if let Err(outcome) = operator
-        .assign(&account, GATE, refuse_added_signers())
-        .await
-    {
+    if let Err(outcome) = operator.assign(&account, GATE, refuse_every_signer()).await {
         return outcome;
     }
     let refused = first_failure([
@@ -310,7 +308,7 @@ pub async fn assert_refusal(runner: &Runner) -> ActionOutcome {
 }
 
 /// The remote policy module the driver serves for the stack's `qual-remote` instance:
-/// `basic-policy` over TLS, with the bearer token the Guardian reads from its secrets backend.
+/// `signer-policy` over TLS, with the bearer token the Guardian reads from its secrets backend.
 struct RemoteModule {
     shutdown: tokio::sync::oneshot::Sender<()>,
     server: tokio::task::JoinHandle<()>,
@@ -338,7 +336,7 @@ impl RemoteModule {
         let identity = tonic::transport::Identity::from_pem(read("cert.pem")?, read("key.pem")?);
         let token = String::from_utf8_lossy(&read("token")?).trim().to_string();
 
-        let service = guardian_module_sdk::serve::serve(BasicPolicy)
+        let service = guardian_module_sdk::serve::serve(SignerPolicy)
             .instance(REMOTE, token)
             .into_service();
         let listener = tokio::net::TcpListener::bind(("0.0.0.0", port))
@@ -422,7 +420,7 @@ async fn remote_lifecycle(
         return (outcome, Some(module));
     }
     if let Err(outcome) = operator
-        .assign(account, REMOTE, refuse_added_signers())
+        .assign(account, REMOTE, refuse_every_signer())
         .await
     {
         return (outcome, Some(module));
@@ -497,7 +495,7 @@ pub async fn assert_break_glass(runner: &Runner) -> ActionOutcome {
         return outcome;
     }
     if let Err(outcome) = operator
-        .assign(&account, SWITCH, refuse_added_signers())
+        .assign(&account, SWITCH, refuse_every_signer())
         .await
     {
         return outcome;
@@ -574,9 +572,9 @@ pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
     };
     let mut limit = serde_json::Map::new();
     limit.insert(faucet.to_hex(), json!(super::live::P2ID_AMOUNT.to_string()));
-    let cap = json!({ "max_amount_per_tx": limit });
+    let cap = json!({ "max_per_transaction": limit });
     if let Err(outcome) = operator
-        .assign(&session.account_id.to_string(), GATE, cap.clone())
+        .assign(&session.account_id.to_string(), CAP, cap.clone())
         .await
     {
         return outcome;
@@ -590,7 +588,7 @@ pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
             ));
         }
     };
-    match policies.iter().find(|policy| policy.module_id == GATE) {
+    match policies.iter().find(|policy| policy.module_id == CAP) {
         Some(policy)
             if [&policy.params, &policy.account_layer]
                 .iter()
@@ -599,10 +597,10 @@ pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
             ActionOutcome::Passed
         }
         Some(policy) => ActionOutcome::failed_product(format!(
-            "the account's policies list {GATE} without the cap it was assigned: {policy:?}"
+            "the account's policies list {CAP} without the cap it was assigned: {policy:?}"
         )),
         None => ActionOutcome::failed_product(format!(
-            "the account's policies do not list the {GATE} it was assigned: {policies:?}"
+            "the account's policies do not list the {CAP} it was assigned: {policies:?}"
         )),
     }
 }
@@ -651,9 +649,9 @@ fn expect_cap_denied(what: &str, result: Result<(), MultisigError>) -> ActionOut
             module: Some(module),
             reason_code,
             ..
-        }) if module == GATE && reason_code == "amount_cap_exceeded" => ActionOutcome::Passed,
+        }) if module == CAP && reason_code == "amount_cap_exceeded" => ActionOutcome::Passed,
         Err(error) => ActionOutcome::failed_product(format!(
-            "{what} was refused, but not by {GATE} for amount_cap_exceeded: {error}"
+            "{what} was refused, but not by {CAP} for amount_cap_exceeded: {error}"
         )),
     }
 }

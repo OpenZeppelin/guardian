@@ -715,7 +715,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Arc;
 
-    use guardian_module_sdk::basic_policy::BasicPolicy;
+    use guardian_module_sdk::policies::RecipientPolicy;
     use serde_json::json;
 
     use super::*;
@@ -756,17 +756,17 @@ mod tests {
             Arc::new(metadata),
         );
         let hooks = [HookName::BeforeTransactionApproved];
-        let mut optional = instance("optional", &hooks, OnError::Deny, Arc::new(BasicPolicy));
+        let mut optional = instance("optional", &hooks, OnError::Deny, Arc::new(RecipientPolicy));
         optional.config.scope = Scope::Assigned;
-        let mut secret = instance("vendor", &hooks, OnError::Deny, Arc::new(BasicPolicy));
+        let mut secret = instance("vendor", &hooks, OnError::Deny, Arc::new(RecipientPolicy));
         secret.config.file_managed_params = true;
         secret.config.operator_can_disable = false;
         state.modules = Some(pipeline(vec![
             instance_with_params(
                 "blocklist",
                 &hooks,
-                Arc::new(BasicPolicy),
-                json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
+                Arc::new(RecipientPolicy),
+                json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
             ),
             optional,
             secret,
@@ -834,7 +834,7 @@ mod tests {
             "screening",
             &[HookName::BeforeTransactionApproved],
             OnError::Deny,
-            Arc::new(BasicPolicy),
+            Arc::new(RecipientPolicy),
         );
         screening.config.scope = Scope::Default;
         instances.push(screening);
@@ -925,7 +925,7 @@ mod tests {
             &operator(),
             ACCOUNT,
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
+            Some(json!({ "denylist": ["0x000000000000000000000000000bbb"] })),
             "OP-1",
             None,
         )
@@ -1029,7 +1029,7 @@ mod tests {
             &operator(),
             "0xAcC",
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
+            Some(json!({ "denylist": ["0x000000000000000000000000000bbb"] })),
             "OP-1",
             None,
         )
@@ -1067,7 +1067,7 @@ mod tests {
             .set_layer(
                 ACCOUNT,
                 "optional",
-                Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
+                Some(json!({ "denylist": ["0x000000000000000000000000000bbb"] })),
                 &Change {
                     operator: "0xop",
                     reason: "written while optional applied to every account",
@@ -1123,7 +1123,7 @@ mod tests {
                 "optional",
                 &hooks,
                 OnError::Deny,
-                Arc::new(BasicPolicy),
+                Arc::new(RecipientPolicy),
             )],
             store,
         )));
@@ -1189,7 +1189,7 @@ mod tests {
             &operator(),
             ACCOUNT,
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
+            Some(json!({ "denylist": ["0x000000000000000000000000000bbb"] })),
             "OP-2",
             None,
         )
@@ -1214,7 +1214,7 @@ mod tests {
             &state,
             &operator,
             "blocklist",
-            json!({ "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }),
+            json!({ "denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }),
             "OP-90",
             None,
         )
@@ -1225,7 +1225,7 @@ mod tests {
             &operator,
             ACCOUNT,
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000ccc"] })),
+            Some(json!({ "denylist": ["0x000000000000000000000000000ccc"] })),
             "OP-91",
             None,
         )
@@ -1235,12 +1235,12 @@ mod tests {
         assert_eq!(
             entry.global_params,
             Some(
-                json!({ "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] })
+                json!({ "denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] })
             )
         );
         assert_eq!(
             entry.account_layer,
-            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000ccc"] }))
+            Some(json!({ "denylist": ["0x000000000000000000000000000ccc"] }))
         );
 
         let history = history(&state, "blocklist", None, None)
@@ -1264,7 +1264,7 @@ mod tests {
                 &state,
                 &operator(),
                 "blocklist",
-                json!({ "recipient_denylist": [format!("0x{n:030x}")] }),
+                json!({ "denylist": [format!("0x{n:030x}")] }),
                 &format!("OP-{n}"),
                 None,
             )
@@ -1298,7 +1298,7 @@ mod tests {
     #[tokio::test]
     async fn params_over_the_size_cap_are_refused_before_the_module_is_called() {
         let state = state();
-        let huge = json!({ "recipient_denylist": vec!["0x".repeat(40); 4_000] });
+        let huge = json!({ "denylist": vec!["0x".repeat(40); 4_000] });
         let refused = set_global(&state, &operator(), "blocklist", huge, "OP-9", None).await;
         assert!(
             matches!(&refused, Err(GuardianError::InvalidInput(message)) if message.contains("GUARDIAN_MODULE_PARAMS_MAX_BYTES")),
@@ -1392,7 +1392,7 @@ mod tests {
             .seed_instance(
                 "blocklist",
                 true,
-                &json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
+                &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                 "t0",
             )
             .await
@@ -1437,7 +1437,7 @@ mod tests {
             ACCOUNT,
             vec![Assigned {
                 module_id: "optional".into(),
-                params: json!({ "recipient_denylist": ["0x000000000000000000000000000eee"] }),
+                params: json!({ "denylist": ["0x000000000000000000000000000eee"] }),
             }],
             "customer request",
             None,

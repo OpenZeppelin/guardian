@@ -1,8 +1,8 @@
 #[path = "../examples/note_policy/mod.rs"]
 mod note_policy;
 
-use guardian_module_sdk::basic_policy::BasicPolicy;
 use guardian_module_sdk::conformance::Suite;
+use guardian_module_sdk::policies::{CodePolicy, RecipientPolicy, SignerPolicy, SpendingLimit};
 use guardian_module_sdk::proto::guardian_module_client::GuardianModuleClient;
 use guardian_module_sdk::proto::{asset, hook_request};
 use guardian_module_sdk::serve::serve;
@@ -23,7 +23,9 @@ const TOKEN: &str = "secret-token";
 async fn start_remote() -> Channel {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let service = serve(BasicPolicy).instance(INSTANCE, TOKEN).into_service();
+    let service = serve(SpendingLimit)
+        .instance(INSTANCE, TOKEN)
+        .into_service();
     tokio::spawn(async move {
         Server::builder()
             .add_service(service)
@@ -110,12 +112,15 @@ fn registration(params: serde_json::Value, signers: &[&str]) -> HookRequest {
     }
 }
 
+const FAUCET: &str = "0x0000000000000000000000000000aa";
+const SIGNER: &str = "0x0000000000000000000000000000000000000000000000000000000000000051";
+const BAD_SIGNER: &str = "0x0000000000000000000000000000000000000000000000000000000000000bad";
+const CODE: &str = "0x00000000000000000000000000000000000000000000000000000000000000c1";
+
 #[tokio::test]
-async fn basic_policy_conforms() {
-    let cap = json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "1000" } });
-    let signers = json!({ "signer_check": "added", "signer_denylist": ["0x0000000000000000000000000000000000000000000000000000000000000bad"] });
-    let code = json!({ "code_check": "all", "allowed_code_commitments": ["0x00000000000000000000000000000000000000000000000000000000000000c1"] });
-    Suite::new(BasicPolicy)
+async fn spending_limit_conforms() {
+    let cap = json!({ "max_per_transaction": { FAUCET: "1000" } });
+    Suite::new(SpendingLimit)
         .allows("under the cap", payment(&[500], cap.clone()))
         .denies_with(
             "split over the cap",
@@ -123,41 +128,116 @@ async fn basic_policy_conforms() {
             "amount_cap_exceeded",
         )
         .allows("at the cap", payment(&[1000], cap))
-        .denies(
-            "recipient not allowed",
-            payment(&[1], json!({ "recipient_allowlist": ["0x0000000000000000000000000007e4"] })),
+        .denies_with(
+            "an asset that is not allowed",
+            payment(
+                &[1],
+                json!({ "allowed_assets": ["0x0000000000000000000000000000bb"] }),
+            ),
+            "asset_not_allowed",
         )
-        .denies(
-            "recipient denied, generic",
-            payment(&[1], json!({ "recipient_denylist": ["0x0000000000000000000000000000a1"] })),
+        .fails(
+            "params a module cannot read",
+            payment(&[1], json!({ "max_per_transaction": { FAUCET: "ten" } })),
         )
-        .denies(
-            "denied signer added",
-            with_views(
-                payment(&[1], signers.clone()),
-                &["0x0000000000000000000000000000000000000000000000000000000000000051"],
-                &["0x0000000000000000000000000000000000000000000000000000000000000051", "0x0000000000000000000000000000000000000000000000000000000000000bad"],
+        .valid_params(json!({}))
+        .valid_params(
+            json!({ "max_per_transaction": { FAUCET: "1000" }, "allowed_assets": [FAUCET] }),
+        )
+        .invalid_params(json!({ "unknown": 1 }))
+        .invalid_params(json!({ "max_per_transaction": { FAUCET: "ten" } }))
+        .invalid_params(json!({ "denylist": [] }))
+        .run()
+        .await
+        .assert_conformant();
+}
+
+#[tokio::test]
+async fn recipient_policy_conforms() {
+    Suite::new(RecipientPolicy)
+        .allows(
+            "a listed recipient",
+            payment(
+                &[1],
+                json!({ "allowlist": ["0x0000000000000000000000000000a1"] }),
             ),
         )
+        .denies_with(
+            "a recipient not allowed",
+            payment(
+                &[1],
+                json!({ "allowlist": ["0x0000000000000000000000000007e4"] }),
+            ),
+            "recipient_not_allowed",
+        )
+        .denies_with(
+            "a blocked recipient",
+            payment(
+                &[1],
+                json!({ "denylist": ["0x0000000000000000000000000000a1"] }),
+            ),
+            "recipient_blocked",
+        )
+        .valid_params(json!({ "denylist": [] }))
+        .valid_params(
+            json!({ "denylist": ["0x0000000000000000000000000000a1"], "deny_unknown": false }),
+        )
+        .invalid_params(json!({ "allowlist": [], "denylist": [] }))
+        .invalid_params(json!({ "deny_unknown": true }))
+        .run()
+        .await
+        .assert_conformant();
+}
+
+#[tokio::test]
+async fn signer_policy_conforms() {
+    let signers = json!({ "check": "added", "denylist": [BAD_SIGNER] });
+    Suite::new(SignerPolicy)
+        .denies_with(
+            "a denied signer added",
+            with_views(
+                payment(&[1], signers.clone()),
+                &[SIGNER],
+                &[SIGNER, BAD_SIGNER],
+            ),
+            "signer_not_allowed",
+        )
         .allows(
-            "listed code",
-            with_views(payment(&[1], code.clone()), &["0x0000000000000000000000000000000000000000000000000000000000000051"], &["0x0000000000000000000000000000000000000000000000000000000000000051"]),
+            "no signer added",
+            with_views(payment(&[1], signers.clone()), &[SIGNER], &[SIGNER]),
         )
         .denies(
             "registration with a denied signer",
-            registration(signers, &["0x0000000000000000000000000000000000000000000000000000000000000bad"]),
+            registration(signers, &[BAD_SIGNER]),
         )
-        .request("registration on listed code", registration(code, &["0x0000000000000000000000000000000000000000000000000000000000000051"]))
-        .fails(
-            "params a module cannot read",
-            payment(&[1], json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "ten" } })),
+        .valid_params(json!({ "allowlist": [SIGNER] }))
+        .invalid_params(json!({ "allowlist": [], "denylist": [] }))
+        .invalid_params(json!({ "check": "all" }))
+        .run()
+        .await
+        .assert_conformant();
+}
+
+#[tokio::test]
+async fn code_policy_conforms() {
+    let code = json!({ "check": "all", "allowed": [CODE] });
+    Suite::new(CodePolicy)
+        .allows(
+            "listed code",
+            with_views(payment(&[1], code.clone()), &[SIGNER], &[SIGNER]),
         )
-        .valid_params(json!({}))
-        .valid_params(json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "1000" }, "recipient_denylist": [] }))
-        .valid_params(json!({ "code_check": "changed", "allowed_code_commitments": ["0x00000000000000000000000000000000000000000000000000000000000000c1"] }))
-        .invalid_params(json!({ "unknown": 1 }))
-        .invalid_params(json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "ten" } }))
-        .invalid_params(json!({ "signer_allowlist": [], "signer_denylist": [] }))
+        .allows("registration on listed code", registration(code, &[SIGNER]))
+        .denies_with(
+            "registration on code that is not listed",
+            registration(
+                json!({ "allowed": ["0x00000000000000000000000000000000000000000000000000000000000000c2"] }),
+                &[SIGNER],
+            ),
+            "code_not_allowed",
+        )
+        .valid_params(json!({ "check": "changed", "allowed": [CODE] }))
+        .invalid_params(json!({ "check": "all" }))
+        .invalid_params(json!({ "allowed": ["0xc1"] }))
         .run()
         .await
         .assert_conformant();
@@ -230,7 +310,7 @@ async fn loopback_evaluate_round_trip() {
     let mut client = GuardianModuleClient::new(start_remote().await);
     let request = payment(
         &[500],
-        json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "1000" } }),
+        json!({ "max_per_transaction": { "0x0000000000000000000000000000aa": "1000" } }),
     );
     for _ in 0..50 {
         client
@@ -250,7 +330,7 @@ async fn loopback_evaluate_round_trip() {
     samples.sort();
     let local_started = std::time::Instant::now();
     for _ in 0..1000 {
-        BasicPolicy.evaluate(&request).await.unwrap();
+        SpendingLimit.evaluate(&request).await.unwrap();
     }
     println!(
         "remote p50 {:?} p99 {:?}; in-process mean {:?}",

@@ -1,14 +1,32 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use guardian_module_sdk::basic_policy::BasicPolicy;
+use std::sync::Arc;
+
+use guardian_module_sdk::Module;
+use guardian_module_sdk::policies::{CodePolicy, RecipientPolicy, SignerPolicy, SpendingLimit};
 use guardian_module_sdk::serve::serve;
 use tonic::transport::{Certificate, Identity, Server, ServerTlsConfig};
 
-const USAGE: &str = "usage: policy-module [--listen ADDR] --instance ID TOKEN_FILE [--instance ...]
+const USAGE: &str =
+    "usage: policy-module --kind KIND [--listen ADDR] --instance ID TOKEN_FILE [--instance ...]
                      [--tls-cert PEM --tls-key PEM [--client-ca PEM]] [--insecure]";
 
+/// The built-in policy this process serves, as the Guardian's catalog names it.
+fn policy(kind: &str) -> Result<Arc<dyn Module>, String> {
+    match kind {
+        "spending-limit" => Ok(Arc::new(SpendingLimit)),
+        "recipient-policy" => Ok(Arc::new(RecipientPolicy)),
+        "signer-policy" => Ok(Arc::new(SignerPolicy)),
+        "code-policy" => Ok(Arc::new(CodePolicy)),
+        other => Err(format!(
+            "unknown kind {other}; one of spending-limit, recipient-policy, signer-policy, code-policy"
+        )),
+    }
+}
+
 struct Args {
+    kind: String,
     listen: SocketAddr,
     instances: Vec<(String, PathBuf)>,
     tls_cert: Option<PathBuf>,
@@ -20,6 +38,7 @@ struct Args {
 impl Args {
     fn parse() -> Result<Self, String> {
         let mut parsed = Self {
+            kind: String::new(),
             listen: SocketAddr::from(([127, 0, 0, 1], 7443)),
             instances: Vec::new(),
             tls_cert: None,
@@ -33,6 +52,7 @@ impl Args {
         };
         while let Some(arg) = args.next() {
             match arg.as_str() {
+                "--kind" => parsed.kind = value(&mut args, "--kind")?,
                 "--listen" => {
                     parsed.listen = value(&mut args, "--listen")?
                         .parse()
@@ -50,6 +70,9 @@ impl Args {
                 "--help" | "-h" => return Err(USAGE.into()),
                 other => return Err(format!("unknown argument {other}\n{USAGE}")),
             }
+        }
+        if parsed.kind.is_empty() {
+            return Err(format!("--kind is required\n{USAGE}"));
         }
         if parsed.instances.is_empty() {
             return Err(format!("at least one --instance is required\n{USAGE}"));
@@ -115,7 +138,7 @@ async fn main() -> std::process::ExitCode {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse()?;
-    let mut module = serve(BasicPolicy);
+    let mut module = serve(policy(&args.kind)?);
     for (id, token_file) in &args.instances {
         let token = std::fs::read_to_string(token_file)
             .map_err(|e| format!("cannot read token file {}: {e}", token_file.display()))?;
@@ -135,7 +158,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let ids: Vec<&str> = args.instances.iter().map(|(id, _)| id.as_str()).collect();
     println!(
-        "basic-policy listening on {} ({transport}), instances: {}",
+        "{} listening on {} ({transport}), instances: {}",
+        args.kind,
         args.listen,
         ids.join(", ")
     );

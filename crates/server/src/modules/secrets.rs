@@ -242,7 +242,7 @@ timeout_ms = 20
 params = {params}
 "#,
                 kind = if extra.is_empty() {
-                    "basic-policy"
+                    "vendor-screening"
                 } else {
                     "grpc"
                 },
@@ -336,7 +336,7 @@ tls = { client_cert_secret = "risk-cert", client_key_secret = "risk-key" }"#,
             r#"{ api_key = { "$secret" = "has space" } }"#,
         ] {
             let text = format!(
-                "[[module]]\nid = \"m\"\nkind = \"basic-policy\"\nscope = \"all\"\nhooks = [\"before_transaction_approved\"]\ntimeout_ms = 20\nparams = {params}\n"
+                "[[module]]\nid = \"m\"\nkind = \"vendor-screening\"\nscope = \"all\"\nhooks = [\"before_transaction_approved\"]\ntimeout_ms = 20\nparams = {params}\n"
             );
             assert!(Catalog::parse(&text, None).is_err(), "{params}");
         }

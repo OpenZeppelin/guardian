@@ -315,7 +315,7 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, StatusCode, header};
-    use guardian_module_sdk::basic_policy::BasicPolicy;
+    use guardian_module_sdk::policies::RecipientPolicy;
     use guardian_shared::hex::FromHex;
     use miden_protocol::Word;
     use serde_json::json;
@@ -416,13 +416,13 @@ mod tests {
         state.modules = Some(pipeline(vec![instance_with_params(
             "blocklist",
             &[HookName::BeforeTransactionApproved],
-            Arc::new(BasicPolicy),
-            json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
+            Arc::new(RecipientPolicy),
+            json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
         )]));
         let app = create_router(state);
         let support_cookie = login(&app, &support).await;
         let admin_cookie = login(&app, &admin).await;
-        let body = json!({ "params": { "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }, "reason": "OP-90" });
+        let body = json!({ "params": { "denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }, "reason": "OP-90" });
 
         let (status, _) = send(
             &app,
@@ -442,7 +442,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{view}");
         assert_eq!(
-            view["params"]["recipient_denylist"][1],
+            view["params"]["denylist"][1],
             "0x000000000000000000000000000ddd"
         );
 
@@ -493,7 +493,7 @@ mod tests {
         state.modules = Some(pipeline(vec![instance_with_params(
             "risk-scorer",
             &[HookName::BeforeTransactionApproved],
-            Arc::new(BasicPolicy),
+            Arc::new(RecipientPolicy),
             json!({}),
         )]));
         state

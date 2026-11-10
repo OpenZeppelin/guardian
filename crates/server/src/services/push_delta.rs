@@ -2318,8 +2318,8 @@ mod tests {
         crate::modules::testing::instance_with_params(
             "caps",
             &[HookName::BeforeTransactionApproved],
-            Arc::new(guardian_module_sdk::basic_policy::BasicPolicy),
-            serde_json::json!({ "max_amount_per_tx": { USDC: "1000" } }),
+            Arc::new(guardian_module_sdk::policies::SpendingLimit),
+            serde_json::json!({ "max_per_transaction": { USDC: "1000" } }),
         )
     }
 

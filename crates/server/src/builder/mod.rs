@@ -445,7 +445,8 @@ impl ServerBuilder {
     /// Registers a policy module kind that runs in this process, so catalog entries
     /// (`GUARDIAN_MODULES_CONFIG`) can name it in `kind`. The module shares the process that
     /// holds the acknowledgement keys, so register only code you have reviewed. `build` fails
-    /// if the name is already taken, including by the first-party `basic-policy` and `grpc`.
+    /// if the name is already taken, including by the first-party policies (`spending-limit`,
+    /// `recipient-policy`, `signer-policy`, `code-policy`) and `grpc`.
     ///
     /// # Example
     /// ```ignore

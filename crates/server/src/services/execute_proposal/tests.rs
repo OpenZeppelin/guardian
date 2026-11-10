@@ -1339,8 +1339,8 @@ async fn a_guardian_execution_over_a_mandatory_cap_is_refused_before_anything_is
     let cap = crate::modules::testing::instance_with_params(
         "caps",
         &[crate::modules::catalog::HookName::BeforeTransactionApproved],
-        Arc::new(guardian_module_sdk::basic_policy::BasicPolicy),
-        serde_json::json!({ "max_amount_per_tx": { USDC: "1000" } }),
+        Arc::new(guardian_module_sdk::policies::SpendingLimit),
+        serde_json::json!({ "max_per_transaction": { USDC: "1000" } }),
     );
     let paying_5000 = guardian_module_sdk::MidenTransaction {
         output_notes: vec![guardian_module_sdk::OutputNote {

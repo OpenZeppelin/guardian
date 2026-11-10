@@ -149,7 +149,7 @@ step_budget = "90s"
 required = true
 core = false
 
-# Rust only: the driver serves the remote module (basic-policy over TLS, its token read from the
+# Rust only: the driver serves the remote module (signer-policy over TLS, its token read from the
 # Guardian's file secrets backend), so the scenario can take it down. Fail-closed while down,
 # naming the instance, and disabling it lets the account through.
 [[scenario]]

@@ -1,4 +1,4 @@
-# basic-policy as a standalone Guardian policy module. Build from the repository root:
+# The built-in policies as a standalone Guardian policy module. Build from the repository root:
 #   docker build -f examples/policy-module/Dockerfile -t guardian-policy-module .
 FROM rust:1.98.1-bookworm AS builder
 

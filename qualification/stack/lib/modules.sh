@@ -46,17 +46,25 @@ qual_write_module_catalog() {
 
 [[module]]
 id = "qual-gate"
-kind = "basic-policy"
+kind = "signer-policy"
+scope = "assigned"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 200
+on_error = "deny"
+
+[[module]]
+id = "qual-cap"
+kind = "spending-limit"
 scope = "assigned"
 hooks = ["before_proposal_created", "before_transaction_approved"]
 timeout_ms = 200
 on_error = "deny"
 disclosure = "params"
-description = "Qualification rules for the accounts a scenario assigns"
+description = "Qualification spending cap for the accounts a scenario assigns"
 
 [[module]]
 id = "qual-switch"
-kind = "basic-policy"
+kind = "signer-policy"
 scope = "assigned"
 hooks = ["before_proposal_created"]
 timeout_ms = 200

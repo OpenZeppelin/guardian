@@ -3,7 +3,9 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use guardian_module_sdk::basic_policy::{self, BasicPolicy};
+use guardian_module_sdk::policies::{
+    self, CodePolicy, RecipientPolicy, SignerPolicy, SpendingLimit,
+};
 use guardian_module_sdk::{
     DescribeRequest, Module, ModuleError, ModuleFactory, ModuleInfo, ModuleInstanceConfig,
     PROTOCOL_VERSION, capability,
@@ -20,11 +22,13 @@ pub struct Instance {
     pub build: Option<String>,
 }
 
-struct BasicPolicyFactory;
+/// A first-party policy: stateless, so every instance of the kind shares one module; each
+/// call carries its instance's params.
+struct FirstParty(Arc<dyn Module>);
 
-impl ModuleFactory for BasicPolicyFactory {
+impl ModuleFactory for FirstParty {
     fn create(&self, _instance: &ModuleInstanceConfig) -> Result<Arc<dyn Module>, ModuleError> {
-        Ok(Arc::new(BasicPolicy))
+        Ok(self.0.clone())
     }
 }
 
@@ -47,9 +51,17 @@ impl Registry {
         let mut registry = Self {
             factories: HashMap::new(),
         };
-        registry
-            .factories
-            .insert(basic_policy::KIND.into(), Arc::new(BasicPolicyFactory));
+        let policies: [(&str, Arc<dyn Module>); 4] = [
+            (policies::spending_limit::KIND, Arc::new(SpendingLimit)),
+            (policies::recipient_policy::KIND, Arc::new(RecipientPolicy)),
+            (policies::signer_policy::KIND, Arc::new(SignerPolicy)),
+            (policies::code_policy::KIND, Arc::new(CodePolicy)),
+        ];
+        for (kind, module) in policies {
+            registry
+                .factories
+                .insert(kind.into(), Arc::new(FirstParty(module)));
+        }
         registry
             .factories
             .insert("grpc".into(), Arc::new(GrpcFactory));
@@ -57,7 +69,7 @@ impl Registry {
     }
 
     /// Adds a kind the catalog can name. A kind is registered once; the first-party names
-    /// (`basic-policy`, `grpc`) cannot be replaced.
+    /// (the four policies and `grpc`) cannot be replaced.
     pub fn register(
         &mut self,
         kind: impl Into<String>,
@@ -486,7 +498,7 @@ enabled = ENABLED
 
     impl ModuleFactory for StubFactory {
         fn create(&self, _: &ModuleInstanceConfig) -> Result<Arc<dyn Module>, ModuleError> {
-            Ok(Arc::new(BasicPolicy))
+            Ok(Arc::new(RecipientPolicy))
         }
     }
 
@@ -532,7 +544,7 @@ timeout_ms = 50
     #[test]
     fn a_kind_name_is_taken_once() {
         let mut registry = Registry::first_party();
-        for taken in [basic_policy::KIND, "grpc"] {
+        for taken in policies::KINDS.into_iter().chain(["grpc"]) {
             assert!(registry.register(taken, Arc::new(StubFactory)).is_err());
         }
         registry

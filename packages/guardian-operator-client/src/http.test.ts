@@ -2299,7 +2299,7 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
       scope: 'all',
       circuit: 'closed',
       operatorCanDisable: true,
-      params: { max_amount_per_tx: { '0xaa': '5' } },
+      params: { max_per_transaction: { '0xaa': '5' } },
     });
     expect(catalog.undeclared).toEqual([{ moduleId: 'retired', enabled: false, params: {} }]);
     expect(mockFetch).toHaveBeenCalledWith(
@@ -2368,10 +2368,10 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
     const client = new GuardianOperatorHttpClient('https://guardian.example');
 
     mockFetch.mockResolvedValueOnce(okJson(INSTANCE));
-    await client.setModuleGlobalParams('caps', { max_amount_per_tx: {} }, 'OP-4');
+    await client.setModuleGlobalParams('caps', { max_per_transaction: {} }, 'OP-4');
     expect(mockFetch).toHaveBeenLastCalledWith(
       'https://guardian.example/dashboard/modules/caps/params',
-      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ params: { max_amount_per_tx: {} }, reason: 'OP-4' }) }),
+      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ params: { max_per_transaction: {} }, reason: 'OP-4' }) }),
     );
 
     mockFetch.mockResolvedValueOnce(okJson({ ...INSTANCE, enabled: false }));
@@ -2766,17 +2766,17 @@ describe('GuardianOperatorHttpClient — account pause/unpause', () => {
 
 const INSTANCE = {
         module_id: 'caps',
-        kind: 'basic-policy',
+        kind: 'spending-limit',
         scope: 'all',
         hooks: ['before_transaction_approved'],
         enabled: true,
         catalog_enabled: true,
         enabled_drift: false,
         operator_can_disable: true,
-        params: { max_amount_per_tx: { '0xaa': '5' } },
+        params: { max_per_transaction: { '0xaa': '5' } },
         params_drift: false,
         file_managed_params: false,
-        build: 'basic-policy 0.19.0',
+        build: 'spending-limit 0.19.0',
         disclosure: 'params',
         description: 'At most 5 per transaction',
         client_reason: 'full',

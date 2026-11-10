@@ -14,13 +14,13 @@
 //!
 //! ```no_run
 //! # async fn example(request: guardian_module_sdk::HookRequest, blocked: guardian_module_sdk::HookRequest) {
-//! use guardian_module_sdk::basic_policy::BasicPolicy;
+//! use guardian_module_sdk::policies::RecipientPolicy;
 //! use guardian_module_sdk::conformance::Suite;
 //!
-//! Suite::new(BasicPolicy)
+//! Suite::new(RecipientPolicy)
 //!     .allows("small payment", request)
 //!     .denies_with("payment to a blocked recipient", blocked, "recipient_blocked")
-//!     .valid_params(serde_json::json!({ "recipient_denylist": [] }))
+//!     .valid_params(serde_json::json!({ "denylist": [] }))
 //!     .invalid_params(serde_json::json!({ "unknown": 1 }))
 //!     .run()
 //!     .await

@@ -2,9 +2,9 @@
 
 use std::sync::Arc;
 
-pub mod basic_policy;
 #[cfg(feature = "conformance")]
 pub mod conformance;
+pub mod policies;
 pub mod serve;
 
 pub use async_trait::async_trait;

@@ -769,7 +769,9 @@ impl Guardian for MockGuardianService {
                 module_id: "caps".into(),
                 hooks: vec!["before_transaction_approved".into()],
                 description: "At most 5 per transaction".into(),
-                params: Some(r#"{"max_amount_per_tx":{"0xaa":"5"}}"#.into()),
+                params: Some(
+                    r#"{"max_per_transaction":{"0x0000000000000000000000000000aa":"5"}}"#.into(),
+                ),
                 account_layer: None,
             }],
             error_code: String::new(),

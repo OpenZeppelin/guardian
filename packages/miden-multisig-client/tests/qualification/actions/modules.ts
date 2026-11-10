@@ -7,6 +7,7 @@ import type { ActionContext, ActionOutcome } from '../runner.js';
 
 /** The instance the stack's catalog declares for rules a scenario assigns. */
 export const GATE = 'qual-gate';
+export const CAP = 'qual-cap';
 
 /**
  * A signer commitment nobody holds. Checked against every signer, an allowlist
@@ -75,7 +76,7 @@ export async function assertRefusal(context: ActionContext): Promise<ActionOutco
   };
 
   const assigned = await setAccountModules(context, accountId, [
-    { moduleId: GATE, params: { signer_check: 'all', signer_allowlist: [UNLISTED_SIGNER] } },
+    { moduleId: GATE, params: { check: 'all', allowlist: [UNLISTED_SIGNER] } },
   ]);
   if (assigned) return assigned;
 

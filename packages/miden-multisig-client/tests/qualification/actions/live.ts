@@ -26,7 +26,7 @@ import {
   type LiveSession,
   type Scheme,
 } from '../live.js';
-import { GATE, expectDenied } from './modules.js';
+import { CAP, expectDenied } from './modules.js';
 import { setAccountModules, setAccountPaused } from './operator.js';
 import type { ActionContext, ActionOutcome } from '../runner.js';
 
@@ -3423,7 +3423,7 @@ export async function abandonStrandedHeadAndRecover(
 }
 
 /**
- * Assigns the stack's `qual-gate` module to the scenario's account with a cap
+ * Assigns the stack's `qual-cap` module to the scenario's account with a cap
  * of exactly what `asset-send` sends, and reads it back through the account's
  * own policy listing. Mirrors `assign_cap` in the Rust driver.
  */
@@ -3435,18 +3435,18 @@ export async function assignModuleCap(context: ActionContext, scenarioId: string
   if (!session.faucetId) {
     return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so there is no asset to cap' };
   }
-  const cap = { max_amount_per_tx: { [session.faucetId]: P2ID_AMOUNT.toString() } };
-  const assigned = await setAccountModules(context, session.accountId, [{ moduleId: GATE, params: cap }]);
+  const cap = { max_per_transaction: { [session.faucetId]: P2ID_AMOUNT.toString() } };
+  const assigned = await setAccountModules(context, session.accountId, [{ moduleId: CAP, params: cap }]);
   if (assigned) return assigned;
 
   try {
     const policies = await session.multisig.getPolicies();
-    const policy = policies.find((entry) => entry.moduleId === GATE);
+    const policy = policies.find((entry) => entry.moduleId === CAP);
     if (!policy) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `the account's policies do not list the ${GATE} it was assigned: ${JSON.stringify(policies)}`,
+        reason: `the account's policies do not list the ${CAP} it was assigned: ${JSON.stringify(policies)}`,
       };
     }
     const expected = JSON.stringify(cap);
@@ -3454,7 +3454,7 @@ export async function assignModuleCap(context: ActionContext, scenarioId: string
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `the account's policies list ${GATE} without the cap it was assigned: ${JSON.stringify(policy)}`,
+        reason: `the account's policies list ${CAP} without the cap it was assigned: ${JSON.stringify(policy)}`,
       };
     }
     return { kind: 'passed' };
@@ -3485,7 +3485,7 @@ export async function assertModuleCapRefuses(_context: ActionContext, scenarioId
   const overCheck = await expectDenied(
     'the check of a payment over the cap',
     () => proposeWhenSettled(() => multisig.checkTransaction(send(P2ID_AMOUNT + 1n))),
-    GATE,
+    CAP,
     'amount_cap_exceeded',
   );
   if (overCheck.kind !== 'passed') return overCheck;
@@ -3495,7 +3495,7 @@ export async function assertModuleCapRefuses(_context: ActionContext, scenarioId
       proposeWhenSettled(() =>
         multisig.createP2idProposal(session.treasuryId!, session.faucetId!, P2ID_AMOUNT + 1n),
       ),
-    GATE,
+    CAP,
     'amount_cap_exceeded',
   );
   if (over.kind !== 'passed') return over;

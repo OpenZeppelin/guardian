@@ -549,15 +549,15 @@ mod tests {
     const VALID: &str = r#"
 [[module]]
 id = "caps"
-kind = "basic-policy"
+kind = "spending-limit"
 scope = "all"
 hooks = ["before_transaction_approved", "before_proposal_created"]
 timeout_ms = 20
-params = { max_amount_per_tx = { "0x0000000000000000000000000000aa" = "1000" } }
+params = { max_per_transaction = { "0x0000000000000000000000000000aa" = "1000" } }
 
 [[module]]
 id = "signers"
-kind = "basic-policy"
+kind = "signer-policy"
 scope = "assigned"
 hooks = ["before_account_registered"]
 timeout_ms = 20
@@ -569,7 +569,7 @@ on_error = "allow"
             .iter()
             .map(|(id, scope, timeout_ms)| {
                 format!(
-                    "[[module]]\nid = \"{id}\"\nkind = \"basic-policy\"\nscope = \"{scope}\"\n\
+                    "[[module]]\nid = \"{id}\"\nkind = \"spending-limit\"\nscope = \"{scope}\"\n\
                      hooks = [\"before_transaction_approved\"]\ntimeout_ms = {timeout_ms}\n\n"
                 )
             })
@@ -655,7 +655,7 @@ on_error = "allow"
             ),
             (
                 "grpc without endpoint",
-                VALID.replacen(r#"kind = "basic-policy""#, r#"kind = "grpc""#, 1),
+                VALID.replacen(r#"kind = "spending-limit""#, r#"kind = "grpc""#, 1),
             ),
             (
                 "empty id",
@@ -682,7 +682,7 @@ on_error = "allow"
                 r#"
 [[module]]
 id = "vendor"
-kind = "basic-policy"
+kind = "vendor-screening"
 scope = "{scope}"
 hooks = ["before_transaction_approved"]
 timeout_ms = 20
@@ -698,7 +698,7 @@ params = {{ api_key = {{ "$secret" = "vendor-key" }} }}
     #[test]
     fn params_with_secret_references_are_file_managed() {
         let text = VALID.replacen(
-            r#"params = { max_amount_per_tx = { "0x0000000000000000000000000000aa" = "1000" } }"#,
+            r#"params = { max_per_transaction = { "0x0000000000000000000000000000aa" = "1000" } }"#,
             r#"params = { api_key = { "$secret" = "x" } }"#,
             1,
         );
@@ -842,7 +842,7 @@ timeout_ms = 20
                 r#"
 [[module]]
 id = "vendor"
-kind = "basic-policy"
+kind = "vendor-screening"
 scope = "all"
 hooks = ["before_transaction_approved"]
 timeout_ms = 20

@@ -1177,7 +1177,7 @@ mod tests {
                 r#"
 [[module]]
 id = "caps"
-kind = "basic-policy"
+kind = "spending-limit"
 scope = "all"
 hooks = ["before_transaction_approved"]
 timeout_ms = 50
@@ -1221,7 +1221,7 @@ params = {params}
         let now = "2026-10-15T00:00:00Z".to_string();
         let started = ModulePipeline::new(
             "local",
-            caps_catalog(r#"{ max_amount_per_txx = {} }"#),
+            caps_catalog(r#"{ max_per_transactionx = {} }"#),
             &registry,
             store.clone(),
             now.clone(),
@@ -1231,8 +1231,9 @@ params = {params}
         assert!(started.is_err());
         assert!(store.instances().await.unwrap().is_empty());
 
-        let fixed =
-            caps_catalog(r#"{ max_amount_per_tx = { "0x0000000000000000000000000000aa" = "5" } }"#);
+        let fixed = caps_catalog(
+            r#"{ max_per_transaction = { "0x0000000000000000000000000000aa" = "5" } }"#,
+        );
         let started = ModulePipeline::new(
             "local",
             fixed,
@@ -1247,7 +1248,7 @@ params = {params}
             started.instances()[0]
                 .build
                 .as_deref()
-                .is_some_and(|build| build.starts_with("basic-policy"))
+                .is_some_and(|build| build.starts_with("spending-limit"))
         );
         assert_eq!(store.instances().await.unwrap().len(), 1);
     }
@@ -1261,14 +1262,14 @@ params = {params}
             .seed_instance(
                 "caps",
                 true,
-                &serde_json::json!({ "max_amount_per_tx": {} }),
+                &serde_json::json!({ "max_per_transaction": {} }),
                 &now,
             )
             .await
             .unwrap();
         ModulePipeline::new(
             "local",
-            caps_catalog(r#"{ max_amount_per_txx = {} }"#),
+            caps_catalog(r#"{ max_per_transactionx = {} }"#),
             &registry,
             store.clone(),
             now.clone(),
@@ -1289,7 +1290,7 @@ params = {params}
             )
             .await
             .unwrap();
-        let valid_seed = caps_catalog(r#"{ max_amount_per_tx = {} }"#);
+        let valid_seed = caps_catalog(r#"{ max_per_transaction = {} }"#);
         assert!(
             ModulePipeline::new(
                 "local",
@@ -1996,7 +1997,7 @@ params = { old_name = 1000 }
         use super::*;
         use crate::modules::store::Change;
         use crate::modules::testing::instance_with_params;
-        use guardian_module_sdk::basic_policy::BasicPolicy;
+        use guardian_module_sdk::policies::RecipientPolicy;
         use guardian_module_sdk::proto::hook_request;
         use guardian_module_sdk::{
             MidenTransaction, OutputNote, TransactionProjection, TransactionSubject,
@@ -2024,8 +2025,8 @@ params = { old_name = 1000 }
             ModulePipeline::from_instances(vec![instance_with_params(
                 "blocklist",
                 &[HOOK],
-                std::sync::Arc::new(BasicPolicy),
-                json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
+                std::sync::Arc::new(RecipientPolicy),
+                json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
             )])
         }
 
@@ -2057,7 +2058,7 @@ params = { old_name = 1000 }
                 .set_layer(
                     "0xacc",
                     "blocklist",
-                    Some(json!({ "recipient_denylist": ["0x000000000000000000000000000ccc"] })),
+                    Some(json!({ "denylist": ["0x000000000000000000000000000ccc"] })),
                     &change(),
                 )
                 .await
@@ -2115,7 +2116,7 @@ params = { old_name = 1000 }
                 .seed_instance(
                     "blocklist",
                     true,
-                    &json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
+                    &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                     "t0",
                 )
                 .await
@@ -2124,7 +2125,7 @@ params = { old_name = 1000 }
                 .store()
                 .set_global(
                     "blocklist",
-                    json!({ "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }),
+                    json!({ "denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }),
                     &change(),
                 )
                 .await
@@ -2145,7 +2146,7 @@ params = { old_name = 1000 }
                 .seed_instance(
                     "blocklist",
                     true,
-                    &json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
+                    &json!({ "denylist": ["0x000000000000000000000000000aaa"] }),
                     "t0",
                 )
                 .await
@@ -2590,7 +2591,7 @@ mod failure_handling_tests {
         let healthy = crate::modules::testing::instance_with_params(
             "caps",
             &[HOOK],
-            Arc::new(guardian_module_sdk::basic_policy::BasicPolicy),
+            Arc::new(guardian_module_sdk::policies::RecipientPolicy),
             serde_json::json!({}),
         );
         let (down, _) = hanging("screening", OnError::Deny, Duration::from_millis(20));

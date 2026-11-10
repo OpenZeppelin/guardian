@@ -189,7 +189,7 @@ mod tests {
             r#"
 [[module]]
 id = "caps"
-kind = "basic-policy"
+kind = "spending-limit"
 scope = "all"
 hooks = ["before_transaction_approved"]
 timeout_ms = 20
