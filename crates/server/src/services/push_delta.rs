@@ -2312,7 +2312,7 @@ mod tests {
         );
     }
 
-    const USDC: &str = "0xaa00";
+    const USDC: &str = "0x00000000000000000000000000aa00";
 
     fn cap_of_1000() -> crate::modules::registry::Instance {
         crate::modules::testing::instance_with_params(

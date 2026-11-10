@@ -4,16 +4,22 @@
 //! loopback gRPC, with two instances on one service, and checks that it answers `Describe`
 //! for protocol version 1, validates params the same way on both transports, returns the same
 //! outcome for every request on both transports, keeps `evaluate` free of side effects
-//! (repeated, reordered and concurrent evaluations agree), returns well-formed decisions, and
-//! accepts a request at the Guardian's size cap.
+//! (repeated, reordered and concurrent evaluations agree), returns well-formed decisions,
+//! answers each request as the suite says it must, and accepts a request at the Guardian's size
+//! cap.
+//!
+//! Consistency alone is not conformance: a module that allows everything is consistent. The
+//! suite therefore needs at least one request the module must deny ([`Suite::denies`] or
+//! [`Suite::denies_with`]), and checks every stated expectation.
 //!
 //! ```no_run
-//! # async fn example(request: guardian_module_sdk::HookRequest) {
+//! # async fn example(request: guardian_module_sdk::HookRequest, blocked: guardian_module_sdk::HookRequest) {
 //! use guardian_module_sdk::basic_policy::BasicPolicy;
 //! use guardian_module_sdk::conformance::Suite;
 //!
 //! Suite::new(BasicPolicy)
-//!     .request("small payment", request)
+//!     .allows("small payment", request)
+//!     .denies_with("payment to a blocked recipient", blocked, "recipient_blocked")
 //!     .valid_params(serde_json::json!({ "recipient_denylist": [] }))
 //!     .invalid_params(serde_json::json!({ "unknown": 1 }))
 //!     .run()
@@ -51,9 +57,45 @@ const PADDING_ENCODING: &str = "conformance.padding";
 
 type Outcome = Result<Decision, tonic::Code>;
 
+/// What a request must be answered with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Expected {
+    Allow,
+    Deny,
+    DenyWith(String),
+    Error,
+}
+
+impl Expected {
+    fn met_by(&self, outcome: &Outcome) -> bool {
+        match (self, outcome) {
+            (Expected::Allow, Ok(decision)) => decision.effect == Effect::Allow as i32,
+            (Expected::Deny, Ok(decision)) => decision.effect == Effect::Deny as i32,
+            (Expected::DenyWith(code), Ok(decision)) => {
+                decision.effect == Effect::Deny as i32 && &decision.reason_code == code
+            }
+            (Expected::Error, Err(_)) => true,
+            (_, _) => false,
+        }
+    }
+}
+
+impl fmt::Display for Expected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Expected::Allow => write!(f, "an allow"),
+            Expected::Deny => write!(f, "a deny"),
+            Expected::DenyWith(code) => write!(f, "a deny with reason code {code}"),
+            Expected::Error => write!(f, "an error"),
+        }
+    }
+}
+
 pub struct Suite<M> {
     module: Arc<M>,
     requests: Vec<(String, HookRequest)>,
+    /// One entry per request: what it must be answered with, when the suite says.
+    expected: Vec<Option<Expected>>,
     valid_params: Vec<serde_json::Value>,
     invalid_params: Vec<serde_json::Value>,
     request_max_bytes: usize,
@@ -64,16 +106,54 @@ impl<M: Module + 'static> Suite<M> {
         Self {
             module: Arc::new(module),
             requests: Vec::new(),
+            expected: Vec::new(),
             valid_params: Vec::new(),
             invalid_params: Vec::new(),
             request_max_bytes: DEFAULT_REQUEST_MAX_BYTES,
         }
     }
 
-    /// A request the module must answer the same way on every transport and every time.
-    /// The suite sets `instance_id`; everything else is sent as given.
-    pub fn request(mut self, name: impl Into<String>, request: HookRequest) -> Self {
+    /// A request the module must answer the same way on every transport and every time,
+    /// whatever the answer is. The suite sets `instance_id`; everything else is sent as given.
+    pub fn request(self, name: impl Into<String>, request: HookRequest) -> Self {
+        self.expecting(name, request, None)
+    }
+
+    /// A request the module must allow.
+    pub fn allows(self, name: impl Into<String>, request: HookRequest) -> Self {
+        self.expecting(name, request, Some(Expected::Allow))
+    }
+
+    /// A request the module must deny. Every suite needs one: a module that refuses nothing
+    /// answers consistently too.
+    pub fn denies(self, name: impl Into<String>, request: HookRequest) -> Self {
+        self.expecting(name, request, Some(Expected::Deny))
+    }
+
+    /// A request the module must deny with `reason_code`.
+    pub fn denies_with(
+        self,
+        name: impl Into<String>,
+        request: HookRequest,
+        reason_code: impl Into<String>,
+    ) -> Self {
+        self.expecting(name, request, Some(Expected::DenyWith(reason_code.into())))
+    }
+
+    /// A request the module cannot judge and must answer with an error, so the instance's
+    /// `on_error` decides, never an allow.
+    pub fn fails(self, name: impl Into<String>, request: HookRequest) -> Self {
+        self.expecting(name, request, Some(Expected::Error))
+    }
+
+    fn expecting(
+        mut self,
+        name: impl Into<String>,
+        request: HookRequest,
+        expected: Option<Expected>,
+    ) -> Self {
         self.requests.push((name.into(), request));
+        self.expected.push(expected);
         self
     }
 
@@ -99,6 +179,17 @@ impl<M: Module + 'static> Suite<M> {
         if self.requests.is_empty() {
             report.fail("setup", "", "the suite needs at least one request");
         }
+        if !self
+            .expected
+            .iter()
+            .any(|expected| matches!(expected, Some(Expected::Deny | Expected::DenyWith(_))))
+        {
+            report.fail(
+                "setup",
+                "",
+                "the suite needs at least one request the module must deny (`denies` or `denies_with`): a module that refuses nothing would conform otherwise",
+            );
+        }
         if self.valid_params.is_empty() {
             report.fail(
                 "setup",
@@ -120,6 +211,7 @@ impl<M: Module + 'static> Suite<M> {
         self.check_params(&remote, &mut report).await;
         let baseline = self.check_transport(&remote, &mut report).await;
         self.check_decisions(&baseline, &mut report);
+        self.check_expectations(&baseline, &mut report);
         self.check_purity(&baseline, &mut report).await;
         self.check_instances(&remote, &baseline, &mut report).await;
         self.check_size_cap(&remote, &mut report).await;
@@ -294,6 +386,21 @@ impl<M: Module + 'static> Suite<M> {
             let Ok(decision) = outcome else { continue };
             if let Err(detail) = well_formed(decision) {
                 report.fail("decision", name, detail);
+            }
+        }
+    }
+
+    fn check_expectations(&self, baseline: &[Outcome], report: &mut Report) {
+        for (((name, _), expected), outcome) in
+            self.requests.iter().zip(&self.expected).zip(baseline)
+        {
+            let Some(expected) = expected else { continue };
+            if !expected.met_by(outcome) {
+                report.fail(
+                    "expectation",
+                    name,
+                    format!("expected {expected}, got {outcome:?}"),
+                );
             }
         }
     }
@@ -668,7 +775,7 @@ mod tests {
 
     fn suite<M: Module + 'static>(module: M) -> Suite<M> {
         Suite::new(module)
-            .request("payment", transaction())
+            .denies("payment", transaction())
             .valid_params(json!({}))
             .invalid_params(json!({ "x": 1 }))
     }
@@ -682,6 +789,51 @@ mod tests {
     #[tokio::test]
     async fn a_well_behaved_module_conforms() {
         suite(Fixed(Decision::deny("blocked", "no")))
+            .run()
+            .await
+            .assert_conformant();
+    }
+
+    #[tokio::test]
+    async fn a_module_that_allows_everything_does_not_conform() {
+        let always_allows = || Fixed(Decision::allow());
+        let unstated = Suite::new(always_allows())
+            .request("payment", transaction())
+            .valid_params(json!({}))
+            .invalid_params(json!({ "x": 1 }))
+            .run()
+            .await;
+        assert_eq!(checks(&unstated), vec!["setup"], "{unstated}");
+
+        let stated = suite(always_allows()).run().await;
+        assert_eq!(checks(&stated), vec!["expectation"], "{stated}");
+    }
+
+    #[tokio::test]
+    async fn each_expectation_is_checked() {
+        let denies = || Fixed(Decision::deny("blocked", "no"));
+        let wrong_code = Suite::new(denies())
+            .denies_with("payment", transaction(), "amount_cap_exceeded")
+            .valid_params(json!({}))
+            .invalid_params(json!({ "x": 1 }))
+            .run()
+            .await;
+        assert_eq!(checks(&wrong_code), vec!["expectation"], "{wrong_code}");
+
+        let wrong_outcome = suite(denies())
+            .allows("allowed payment", transaction())
+            .fails("unjudgeable payment", transaction())
+            .run()
+            .await;
+        assert_eq!(wrong_outcome.failures().len(), 2, "{wrong_outcome}");
+        assert_eq!(
+            checks(&wrong_outcome),
+            vec!["expectation"],
+            "{wrong_outcome}"
+        );
+
+        suite(denies())
+            .denies_with("coded payment", transaction(), "blocked")
             .run()
             .await
             .assert_conformant();
@@ -705,7 +857,7 @@ mod tests {
     #[tokio::test]
     async fn accepting_invalid_params_is_caught() {
         let report = Suite::new(Counting(AtomicU64::new(0)))
-            .request("payment", transaction())
+            .denies("payment", transaction())
             .valid_params(json!({}))
             .invalid_params(json!({ "x": 1 }))
             .run()

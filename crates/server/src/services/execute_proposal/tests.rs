@@ -1335,7 +1335,7 @@ async fn an_approving_module_lets_the_execution_through_and_is_recorded_on_the_d
 #[tokio::test]
 async fn a_guardian_execution_over_a_mandatory_cap_is_refused_before_anything_is_proved() {
     use guardian_shared::execution::ModuleDenial;
-    const USDC: &str = "0xaa00";
+    const USDC: &str = "0x00000000000000000000000000aa00";
     let cap = crate::modules::testing::instance_with_params(
         "caps",
         &[crate::modules::catalog::HookName::BeforeTransactionApproved],

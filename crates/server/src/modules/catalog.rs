@@ -553,7 +553,7 @@ kind = "basic-policy"
 scope = "all"
 hooks = ["before_transaction_approved", "before_proposal_created"]
 timeout_ms = 20
-params = { max_amount_per_tx = { "0xaa" = "1000" } }
+params = { max_amount_per_tx = { "0x0000000000000000000000000000aa" = "1000" } }
 
 [[module]]
 id = "signers"
@@ -698,7 +698,7 @@ params = {{ api_key = {{ "$secret" = "vendor-key" }} }}
     #[test]
     fn params_with_secret_references_are_file_managed() {
         let text = VALID.replacen(
-            r#"params = { max_amount_per_tx = { "0xaa" = "1000" } }"#,
+            r#"params = { max_amount_per_tx = { "0x0000000000000000000000000000aa" = "1000" } }"#,
             r#"params = { api_key = { "$secret" = "x" } }"#,
             1,
         );

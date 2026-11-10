@@ -54,10 +54,10 @@ fn payment(amounts: &[u64], params: serde_json::Value) -> HookRequest {
         .map(|(i, amount)| OutputNote {
             note_id: format!("0x{i}"),
             assets: vec![Asset {
-                faucet_id: "0xaa".into(),
+                faucet_id: "0x0000000000000000000000000000aa".into(),
                 value: Some(asset::Value::FungibleAmount(amount.to_string())),
             }],
-            p2id_target: Some("0xa1".into()),
+            p2id_target: Some("0x0000000000000000000000000000a1".into()),
             ..Default::default()
         })
         .collect();
@@ -85,15 +85,24 @@ fn view(signers: &[&str], code: &str) -> AccountView {
 }
 
 fn with_views(mut request: HookRequest, before: &[&str], after: &[&str]) -> HookRequest {
-    request.before = Some(view(before, "0xc1"));
-    request.after = Some(view(after, "0xc1"));
+    request.before = Some(view(
+        before,
+        "0x00000000000000000000000000000000000000000000000000000000000000c1",
+    ));
+    request.after = Some(view(
+        after,
+        "0x00000000000000000000000000000000000000000000000000000000000000c1",
+    ));
     request
 }
 
 fn registration(params: serde_json::Value, signers: &[&str]) -> HookRequest {
     HookRequest {
         params: serde_json::to_vec(&params).unwrap(),
-        after: Some(view(signers, "0xc1")),
+        after: Some(view(
+            signers,
+            "0x00000000000000000000000000000000000000000000000000000000000000c1",
+        )),
         subject: Some(hook_request::Subject::Registration(RegistrationSubject {
             initial_state: Some(AccountStateProjection::miden(MidenAccountState::default())),
         })),
@@ -103,47 +112,51 @@ fn registration(params: serde_json::Value, signers: &[&str]) -> HookRequest {
 
 #[tokio::test]
 async fn basic_policy_conforms() {
-    let cap = json!({ "max_amount_per_tx": { "0xaa": "1000" } });
-    let signers = json!({ "signer_check": "added", "signer_denylist": ["0xbad"] });
-    let code = json!({ "code_check": "all", "allowed_code_commitments": ["0xc1"] });
+    let cap = json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "1000" } });
+    let signers = json!({ "signer_check": "added", "signer_denylist": ["0x0000000000000000000000000000000000000000000000000000000000000bad"] });
+    let code = json!({ "code_check": "all", "allowed_code_commitments": ["0x00000000000000000000000000000000000000000000000000000000000000c1"] });
     Suite::new(BasicPolicy)
-        .request("under the cap", payment(&[500], cap.clone()))
-        .request("split over the cap", payment(&[600, 600], cap.clone()))
-        .request("at the cap", payment(&[1000], cap))
-        .request(
+        .allows("under the cap", payment(&[500], cap.clone()))
+        .denies_with(
+            "split over the cap",
+            payment(&[600, 600], cap.clone()),
+            "amount_cap_exceeded",
+        )
+        .allows("at the cap", payment(&[1000], cap))
+        .denies(
             "recipient not allowed",
-            payment(&[1], json!({ "recipient_allowlist": ["0x07e4"] })),
+            payment(&[1], json!({ "recipient_allowlist": ["0x0000000000000000000000000007e4"] })),
         )
-        .request(
+        .denies(
             "recipient denied, generic",
-            payment(&[1], json!({ "recipient_denylist": ["0xa1"] })),
+            payment(&[1], json!({ "recipient_denylist": ["0x0000000000000000000000000000a1"] })),
         )
-        .request(
+        .denies(
             "denied signer added",
             with_views(
                 payment(&[1], signers.clone()),
-                &["0x51"],
-                &["0x51", "0xbad"],
+                &["0x0000000000000000000000000000000000000000000000000000000000000051"],
+                &["0x0000000000000000000000000000000000000000000000000000000000000051", "0x0000000000000000000000000000000000000000000000000000000000000bad"],
             ),
         )
-        .request(
+        .allows(
             "listed code",
-            with_views(payment(&[1], code.clone()), &["0x51"], &["0x51"]),
+            with_views(payment(&[1], code.clone()), &["0x0000000000000000000000000000000000000000000000000000000000000051"], &["0x0000000000000000000000000000000000000000000000000000000000000051"]),
         )
-        .request(
+        .denies(
             "registration with a denied signer",
-            registration(signers, &["0xbad"]),
+            registration(signers, &["0x0000000000000000000000000000000000000000000000000000000000000bad"]),
         )
-        .request("registration on listed code", registration(code, &["0x51"]))
-        .request(
+        .request("registration on listed code", registration(code, &["0x0000000000000000000000000000000000000000000000000000000000000051"]))
+        .fails(
             "params a module cannot read",
-            payment(&[1], json!({ "max_amount_per_tx": { "0xaa": "ten" } })),
+            payment(&[1], json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "ten" } })),
         )
         .valid_params(json!({}))
-        .valid_params(json!({ "max_amount_per_tx": { "0xaa": "1000" }, "recipient_denylist": [] }))
-        .valid_params(json!({ "code_check": "changed", "allowed_code_commitments": ["0xc1"] }))
+        .valid_params(json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "1000" }, "recipient_denylist": [] }))
+        .valid_params(json!({ "code_check": "changed", "allowed_code_commitments": ["0x00000000000000000000000000000000000000000000000000000000000000c1"] }))
         .invalid_params(json!({ "unknown": 1 }))
-        .invalid_params(json!({ "max_amount_per_tx": { "0xaa": "ten" } }))
+        .invalid_params(json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "ten" } }))
         .invalid_params(json!({ "signer_allowlist": [], "signer_denylist": [] }))
         .run()
         .await
@@ -178,25 +191,31 @@ async fn note_policy_conforms() {
     let one = json!({ "max_payment_notes": 1 });
     let private = json!({ "deny_private_notes": true });
     Suite::new(note_policy::NotePolicy)
-        .request(
+        .allows(
             "one payment and the fee note",
             notes(
                 vec![note(NoteType::Public, false), note(NoteType::Public, true)],
                 one.clone(),
             ),
         )
-        .request(
+        .denies(
             "two payments",
             notes(
                 vec![note(NoteType::Public, false), note(NoteType::Public, false)],
                 one,
             ),
         )
-        .request(
+        .denies(
             "a private payment",
             notes(vec![note(NoteType::Private, false)], private),
         )
-        .request("registration", registration(json!({}), &["0x51"]))
+        .request(
+            "registration",
+            registration(
+                json!({}),
+                &["0x0000000000000000000000000000000000000000000000000000000000000051"],
+            ),
+        )
         .valid_params(json!({ "max_payment_notes": 1, "deny_private_notes": true }))
         .valid_params(json!({}))
         .invalid_params(json!({ "max_notes": 1 }))
@@ -209,7 +228,10 @@ async fn note_policy_conforms() {
 #[ignore = "timing report for the prototype gates; run with --ignored --nocapture"]
 async fn loopback_evaluate_round_trip() {
     let mut client = GuardianModuleClient::new(start_remote().await);
-    let request = payment(&[500], json!({ "max_amount_per_tx": { "0xaa": "1000" } }));
+    let request = payment(
+        &[500],
+        json!({ "max_amount_per_tx": { "0x0000000000000000000000000000aa": "1000" } }),
+    );
     for _ in 0..50 {
         client
             .evaluate(authorized(request.clone(), TOKEN))

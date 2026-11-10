@@ -132,8 +132,8 @@ use guardian_module_sdk::conformance::Suite;
 #[tokio::test]
 async fn conforms() {
     Suite::new(NoPrivateNotes)
-        .request("public payment", public_payment())
-        .request("private payment", private_payment())
+        .allows("public payment", public_payment())
+        .denies("private payment", private_payment())
         .valid_params(serde_json::json!({}))
         .invalid_params(serde_json::json!({ "x": 1 }))
         .run()
@@ -145,7 +145,9 @@ async fn conforms() {
 The suite serves the module over loopback gRPC with two instances, and checks
 `Describe`, params validation on both transports, identical answers in process
 and over gRPC, repeated, reordered and concurrent evaluations, the shape of
-every decision, per-instance tokens and a request at the size cap.
+every decision, the outcome each request is stated to have (`allows`, `denies`,
+`denies_with`, `fails`), per-instance tokens and a request at the size cap. It
+needs at least one request the module must deny.
 
 ## Further reading
 
