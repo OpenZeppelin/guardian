@@ -1,7 +1,8 @@
 crates/server/src/services/release_on_switch.rs release_if_guardian_switched 58154d671cc4879b
 crates/server/src/services/release_on_switch.rs release_switched_account 0a8d56a29871f92b
 crates/server/src/services/account_status.rs ensure_account_active_metadata b7303e5276ca4f67
-crates/server/src/services/push_delta.rs push_delta b0170443193b6575
+crates/server/src/services/push_delta.rs push_delta ec924647e7c55a81
+crates/server/src/services/push_delta.rs run 17815b0a4b4255f3
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal 0c8f49373a1294d1
 crates/server/src/services/configure_account.rs configure_account 5c4fab922c06281b
 crates/server/src/services/configure_account.rs stored_state_landed f1082399d583be3f

@@ -135,7 +135,9 @@ impl Reconstructor {
             .await
             .map_err(|e| ReconstructError::Task(format!("reconstruction gate closed: {e}")))?;
 
+        let span = tracing::Span::current();
         match tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             let _admission = admission;
             let _cpu = cpu;
             op()
