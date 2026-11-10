@@ -1271,6 +1271,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
           modules: {
             catalog_hash: '0xcatalog',
             params_version: 4,
+            account_params_version: 2,
             failed_open: [{ module_id: 'screening', layer: 'global', failure: 'circuit_open' }],
             signed_at: '2026-11-09T10:00:00+00:00',
             submitter: '0xsigner',
@@ -1283,6 +1284,7 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     expect(approved.modules).toEqual({
       catalogHash: '0xcatalog',
       paramsVersion: 4,
+      accountParamsVersion: 2,
       failedOpen: [{ moduleId: 'screening', layer: 'global', failure: 'circuit_open' }],
       signedAt: '2026-11-09T10:00:00+00:00',
       submitter: '0xsigner',
@@ -2321,6 +2323,7 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
   it('reads and writes an account module set', async () => {
     const view = {
       account_id: 'acc-1',
+      account_params_version: 3,
       modules: [
         { module_id: 'caps', scope: 'all', enabled: true, orphaned: false, global_params: {}, account_layer: { cap: 1 } },
         { module_id: 'screening', scope: 'default', enabled: true, orphaned: false, params: { list: 'eu' } },
@@ -2338,6 +2341,7 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
     ]);
     expect(modules.modules[0].accountLayer).toEqual({ cap: 1 });
     expect(modules.modules[1].globalParams).toBeNull();
+    expect(modules.accountParamsVersion).toBe(3);
 
     mockFetch.mockResolvedValueOnce(okJson(view));
     await client.setAccountModules('acc-1', [{ moduleId: 'screening', params: { list: 'eu' } }], 'OP-1');
@@ -2388,18 +2392,18 @@ describe('GuardianOperatorHttpClient — account pausing (feature 001)', () => {
       okJson({
         module_id: 'caps',
         entries: [
-          { version: 9, account_id: 'acc-1', previous: null, new: { cap: 1 }, operator: '0xop', reason: 'OP-2', at: 't9' },
-          { version: 8, previous: { a: 1 }, new: { a: 2 }, operator: '0xop', reason: 'OP-1', at: 't8' },
+          { id: 12, version: 1, account_id: 'acc-1', previous: null, new: { cap: 1 }, operator: '0xop', reason: 'OP-2', at: 't9' },
+          { id: 11, version: 8, previous: { a: 1 }, new: { a: 2 }, operator: '0xop', reason: 'OP-1', at: 't8' },
         ],
       }),
     );
-    const history = await client.getModuleParamsHistory('caps', { before: 10, limit: 2 });
-    expect(history.entries.map((entry) => [entry.version, entry.accountId, entry.previous])).toEqual([
-      [9, 'acc-1', null],
-      [8, null, { a: 1 }],
+    const history = await client.getModuleParamsHistory('caps', { before: 13, limit: 2 });
+    expect(history.entries.map((entry) => [entry.id, entry.version, entry.accountId, entry.previous])).toEqual([
+      [12, 1, 'acc-1', null],
+      [11, 8, null, { a: 1 }],
     ]);
     expect(mockFetch).toHaveBeenLastCalledWith(
-      'https://guardian.example/dashboard/modules/caps/params/history?before=10&limit=2',
+      'https://guardian.example/dashboard/modules/caps/params/history?before=13&limit=2',
       expect.objectContaining({ method: 'GET' }),
     );
   });

@@ -86,7 +86,9 @@ pub async fn account_modules(
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 #[into_params(parameter_in = Query)]
 pub struct HistoryQuery {
+    /// Only entries whose `id` is below this one, to page backwards.
     before: Option<u64>,
+    /// At most this many entries (1 to 1,000; default 100).
     limit: Option<usize>,
 }
 

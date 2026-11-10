@@ -62,6 +62,12 @@ pub struct AccountModule {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HistoryEntry {
+    /// The entry's place in the history, increasing in write order: the cursor a page of
+    /// history is read below.
+    #[serde(default)]
+    pub id: u64,
+    /// The params version the write committed as: the instance params version for an entry
+    /// without `account_id`, that account's params version for one with it.
     pub version: u64,
     pub module_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,7 +96,10 @@ pub struct Change<'a> {
 }
 
 /// Module state every replica reads. Each write updates its rows and appends the history in
-/// one transaction; the highest history version is the params version.
+/// one transaction. There are two kinds of params version: the instance params version moves
+/// with every write to the instance rows and keys each replica's instance cache, and each
+/// account's params version moves with every write to that account's rows. A write to one
+/// account therefore never invalidates a cache or waits for a write to another account.
 #[async_trait]
 pub trait ModuleStore: Send + Sync {
     /// Inserts the instance row the first time `module_id` is seen; later calls do nothing.
@@ -105,9 +114,9 @@ pub trait ModuleStore: Send + Sync {
     async fn instances(&self) -> Result<Vec<InstanceRow>, String>;
 
     /// Switches an instance on or off for every account. Recorded in the history as
-    /// `{"enabled": previous}` to `{"enabled": new}`, so the version moves and caches refresh.
-    /// Like every operator write, returns the params version the write committed as, so the
-    /// audit entry of the write names that version and not one read afterwards.
+    /// `{"enabled": previous}` to `{"enabled": new}`, so the instance params version moves and
+    /// caches refresh. Like every operator write, returns the version the write committed as,
+    /// so the audit entry of the write names that version and not one read afterwards.
     async fn set_enabled(
         &self,
         module_id: &str,
@@ -136,8 +145,9 @@ pub trait ModuleStore: Send + Sync {
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String>;
 
-    /// What one evaluation reads, as of one params version: the account's rows and, unless
-    /// `cached_version` is that version, the instance rows.
+    /// What one evaluation reads, in one read: the instance params version, the account's
+    /// params version and rows and, unless `cached_version` is the instance params version,
+    /// the instance rows.
     async fn snapshot(
         &self,
         account_id: &str,
@@ -149,6 +159,8 @@ pub trait ModuleStore: Send + Sync {
     /// account and can be large.
     async fn account_modules(&self) -> Result<Vec<AccountModule>, String>;
 
+    /// Sets or removes the account's layer on a `scope = all` instance. Returns the account
+    /// params version the write committed as.
     async fn set_layer(
         &self,
         account_id: &str,
@@ -157,6 +169,8 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<u64, String>;
 
+    /// Replaces the account's assignment. Returns the account params version the write
+    /// committed as.
     async fn set_assignment(
         &self,
         account_id: &str,
@@ -164,9 +178,10 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<u64, String>;
 
-    /// Writes `modules` as the account's assignment only when it has neither an assignment nor
-    /// any assignment history, which is how `default` instances reach a newly registered
-    /// account; an operator's earlier write always wins. Returns whether it wrote.
+    /// Writes `modules` as the account's assignment only when it has no assignment and no
+    /// write has touched its rows yet (account params version 0), which is how `default`
+    /// instances reach a newly registered account; an operator's earlier write always wins.
+    /// Returns whether it wrote.
     async fn seed_assignment(
         &self,
         account_id: &str,
@@ -174,7 +189,8 @@ pub trait ModuleStore: Send + Sync {
         change: &Change<'_>,
     ) -> Result<bool, String>;
 
-    /// The module's history, newest first: at most `limit` entries below version `before`.
+    /// The module's history, newest first: at most `limit` entries whose `id` is below
+    /// `before`.
     async fn history(
         &self,
         module_id: &str,
@@ -182,13 +198,15 @@ pub trait ModuleStore: Send + Sync {
         limit: usize,
     ) -> Result<Vec<HistoryEntry>, String>;
 
-    async fn version(&self) -> Result<u64, String>;
+    /// The instance params version: the version of the latest write to the instance rows.
+    async fn instance_version(&self) -> Result<u64, String>;
 }
 
 /// See [`ModuleStore::snapshot`].
 #[derive(Debug, Clone)]
 pub struct ModuleSnapshot {
-    pub version: u64,
+    pub instance_version: u64,
+    pub account_version: u64,
     pub instances: Option<Vec<InstanceRow>>,
     pub account_params: Vec<AccountParamsRow>,
 }
@@ -198,11 +216,46 @@ struct Tables {
     instances: BTreeMap<String, InstanceRow>,
     account_params: Vec<AccountParamsRow>,
     history: Vec<HistoryEntry>,
+    instance_version: u64,
+    account_versions: BTreeMap<String, u64>,
 }
 
 impl Tables {
-    fn version(&self) -> u64 {
-        self.history.last().map_or(0, |entry| entry.version)
+    fn instance_version(&self) -> u64 {
+        self.instance_version
+    }
+
+    fn account_version(&self, account_id: &str) -> u64 {
+        self.account_versions.get(account_id).copied().unwrap_or(0)
+    }
+
+    /// Moves the version a write commits as, once per write however many history entries it
+    /// appends: the instance version for `None`, that account's for `Some`.
+    fn bump(&mut self, account_id: Option<&str>) -> u64 {
+        let version = match account_id {
+            None => &mut self.instance_version,
+            Some(account_id) => self
+                .account_versions
+                .entry(account_id.to_string())
+                .or_default(),
+        };
+        *version += 1;
+        *version
+    }
+
+    /// The versions a state file without them implies: the highest of each scope's history
+    /// entries.
+    fn versions_from_history(&mut self) {
+        for entry in &self.history {
+            let version = match entry.account_id.as_deref() {
+                None => &mut self.instance_version,
+                Some(account_id) => self
+                    .account_versions
+                    .entry(account_id.to_string())
+                    .or_default(),
+            };
+            *version = (*version).max(entry.version);
+        }
     }
 
     fn account_rows(&self, account_id: &str) -> Vec<AccountParamsRow> {
@@ -218,14 +271,16 @@ impl Tables {
 
     fn append(
         &mut self,
+        version: u64,
         module_id: &str,
         account_id: Option<&str>,
         previous: serde_json::Value,
         new: serde_json::Value,
         change: &Change<'_>,
     ) {
-        let version = self.version() + 1;
+        let id = self.history.len() as u64 + 1;
         self.history.push(HistoryEntry {
+            id,
             version,
             module_id: module_id.to_string(),
             account_id: account_id.map(str::to_string),
@@ -256,6 +311,10 @@ struct Snapshot {
     instances: Vec<InstanceRow>,
     account_params: Vec<AccountParamsRow>,
     history: Vec<HistoryEntry>,
+    #[serde(default)]
+    instance_version: u64,
+    #[serde(default)]
+    account_versions: BTreeMap<String, u64>,
 }
 
 /// The filesystem backend's copy of the three tables.
@@ -278,6 +337,8 @@ fn write_snapshot(dir: &std::path::Path, tables: &Tables) -> Result<(), String> 
         instances: tables.instances.values().cloned().collect(),
         account_params: tables.account_params.clone(),
         history: tables.history.clone(),
+        instance_version: tables.instance_version,
+        account_versions: tables.account_versions.clone(),
     };
     let json = serde_json::to_vec_pretty(&snapshot).map_err(|e| e.to_string())?;
     let path = dir.join(STATE_FILE);
@@ -304,15 +365,23 @@ impl FsModuleStore {
         std::fs::create_dir_all(&dir)
             .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
         let snapshot = read_snapshot(&dir)?;
-        let tables = Tables {
+        let mut tables = Tables {
             instances: snapshot
                 .instances
                 .into_iter()
                 .map(|row| (row.module_id.clone(), row))
                 .collect(),
             account_params: snapshot.account_params,
-            history: snapshot.history,
+            history: snapshot
+                .history
+                .into_iter()
+                .zip(1u64..)
+                .map(|(entry, id)| HistoryEntry { id, ..entry })
+                .collect(),
+            instance_version: snapshot.instance_version,
+            account_versions: snapshot.account_versions,
         };
+        tables.versions_from_history();
         Ok(Self {
             tables: RwLock::new(tables),
             dir: Some(dir),
@@ -367,7 +436,9 @@ impl ModuleStore for FsModuleStore {
                 reason: "seeded from the catalog file",
                 at: at.to_string(),
             };
+            let version = tables.bump(None);
             tables.append(
+                version,
                 module_id,
                 None,
                 serde_json::Value::Null,
@@ -396,14 +467,16 @@ impl ModuleStore for FsModuleStore {
             let previous = std::mem::replace(&mut row.enabled, enabled);
             row.updated_at = change.at.clone();
             row.updated_by = change.operator.to_string();
+            let version = tables.bump(None);
             tables.append(
+                version,
                 module_id,
                 None,
                 serde_json::json!({ "enabled": previous }),
                 serde_json::json!({ "enabled": enabled }),
                 change,
             );
-            Ok(tables.version())
+            Ok(version)
         })
     }
 
@@ -428,8 +501,9 @@ impl ModuleStore for FsModuleStore {
             let previous = std::mem::replace(&mut row.global_params, params.clone());
             row.updated_at = change.at.clone();
             row.updated_by = change.operator.to_string();
-            tables.append(module_id, None, previous, params, change);
-            Ok(tables.version())
+            let version = tables.bump(None);
+            tables.append(version, module_id, None, previous, params, change);
+            Ok(version)
         })
     }
 
@@ -451,8 +525,9 @@ impl ModuleStore for FsModuleStore {
             let previous = std::mem::replace(&mut row.global_params, params.clone());
             row.updated_at = change.at.clone();
             row.updated_by = change.operator.to_string();
-            tables.append(module_id, None, previous, params, change);
-            Ok(Some(tables.version()))
+            let version = tables.bump(None);
+            tables.append(version, module_id, None, previous, params, change);
+            Ok(Some(version))
         })
     }
 
@@ -466,10 +541,11 @@ impl ModuleStore for FsModuleStore {
         cached_version: Option<u64>,
     ) -> Result<ModuleSnapshot, String> {
         Ok(self.read(|tables| {
-            let version = tables.version();
+            let instance_version = tables.instance_version();
             ModuleSnapshot {
-                version,
-                instances: (cached_version != Some(version))
+                instance_version,
+                account_version: tables.account_version(account_id),
+                instances: (cached_version != Some(instance_version))
                     .then(|| tables.instances.values().cloned().collect()),
                 account_params: tables.account_rows(account_id),
             }
@@ -498,6 +574,7 @@ impl ModuleStore for FsModuleStore {
         change: &Change<'_>,
     ) -> Result<u64, String> {
         self.write(|tables| {
+            let version = tables.bump(Some(account_id));
             let previous = tables.row_params(account_id, module_id, ParamsKind::Layer);
             tables.account_params.retain(|row| {
                 !(row.account_id == account_id
@@ -516,13 +593,14 @@ impl ModuleStore for FsModuleStore {
                 });
             }
             tables.append(
+                version,
                 module_id,
                 Some(account_id),
                 previous,
                 params.unwrap_or_default(),
                 change,
             );
-            Ok(tables.version())
+            Ok(version)
         })
     }
 
@@ -553,10 +631,11 @@ impl ModuleStore for FsModuleStore {
                     updated_by: change.operator.to_string(),
                 });
             }
+            let version = tables.bump(Some(account_id));
             for (module_id, before, after) in assignment_changes(&previous, &modules) {
-                tables.append(&module_id, Some(account_id), before, after, change);
+                tables.append(version, &module_id, Some(account_id), before, after, change);
             }
-            Ok(tables.version())
+            Ok(version)
         })
     }
 
@@ -571,11 +650,7 @@ impl ModuleStore for FsModuleStore {
                 .account_params
                 .iter()
                 .any(|row| row.account_id == account_id && row.kind == ParamsKind::Assignment);
-            let history = tables
-                .history
-                .iter()
-                .any(|entry| entry.account_id.as_deref() == Some(account_id));
-            if assigned || history || modules.is_empty() {
+            if assigned || tables.account_version(account_id) != 0 || modules.is_empty() {
                 return Ok(false);
             }
             for (position, assigned) in modules.iter().enumerate() {
@@ -589,8 +664,9 @@ impl ModuleStore for FsModuleStore {
                     updated_by: change.operator.to_string(),
                 });
             }
+            let version = tables.bump(Some(account_id));
             for (module_id, before, after) in assignment_changes(&[], &modules) {
-                tables.append(&module_id, Some(account_id), before, after, change);
+                tables.append(version, &module_id, Some(account_id), before, after, change);
             }
             Ok(true)
         })
@@ -608,15 +684,15 @@ impl ModuleStore for FsModuleStore {
                 .iter()
                 .rev()
                 .filter(|entry| entry.module_id == module_id)
-                .filter(|entry| before.is_none_or(|before| entry.version < before))
+                .filter(|entry| before.is_none_or(|before| entry.id < before))
                 .take(limit)
                 .cloned()
                 .collect()
         }))
     }
 
-    async fn version(&self) -> Result<u64, String> {
-        Ok(self.read(Tables::version))
+    async fn instance_version(&self) -> Result<u64, String> {
+        Ok(self.read(Tables::instance_version))
     }
 }
 
@@ -679,7 +755,15 @@ mod tests {
         let rows = store.instances().await.unwrap();
         assert_eq!(rows[0].global_params, json!({ "a": 2 }));
         assert_eq!(rows[0].seeded_params, json!({ "a": 1 }));
-        assert_eq!(store.version().await.unwrap(), 2);
+        assert_eq!(store.instance_version().await.unwrap(), 2);
+    }
+
+    async fn account_version(store: &FsModuleStore, account_id: &str) -> u64 {
+        store
+            .snapshot(account_id, None)
+            .await
+            .unwrap()
+            .account_version
     }
 
     #[tokio::test]
@@ -695,20 +779,12 @@ mod tests {
                 params: json!({}),
             }]
         };
-        let writes = [
+        let instance_writes = [
             store
                 .set_global("caps", json!({ "a": 1 }), &change())
                 .await
                 .unwrap(),
             store.set_enabled("caps", false, &change()).await.unwrap(),
-            store
-                .set_layer("0xacc", "caps", Some(json!({})), &change())
-                .await
-                .unwrap(),
-            store
-                .set_assignment("0xother", assigned(), &change())
-                .await
-                .unwrap(),
             store
                 .set_global_if("caps", &json!({ "a": 1 }), json!({ "a": 2 }), &change())
                 .await
@@ -716,10 +792,25 @@ mod tests {
                 .expect("the expectation holds"),
         ];
         assert!(
-            writes.windows(2).all(|pair| pair[0] < pair[1]),
-            "later writes commit as later versions: {writes:?}"
+            instance_writes.windows(2).all(|pair| pair[0] < pair[1]),
+            "later instance writes commit as later versions: {instance_writes:?}"
         );
-        assert_eq!(writes.last(), Some(&store.version().await.unwrap()));
+        assert_eq!(
+            instance_writes.last(),
+            Some(&store.instance_version().await.unwrap())
+        );
+        let account_writes = [
+            store
+                .set_layer("0xacc", "caps", Some(json!({})), &change())
+                .await
+                .unwrap(),
+            store
+                .set_assignment("0xacc", assigned(), &change())
+                .await
+                .unwrap(),
+        ];
+        assert_eq!(account_writes, [1, 2], "each account counts its own writes");
+        assert_eq!(account_version(&store, "0xacc").await, 2);
         assert_eq!(
             store
                 .set_global_if("caps", &json!({ "a": 1 }), json!({ "a": 3 }), &change())
@@ -727,6 +818,111 @@ mod tests {
                 .unwrap(),
             None,
             "a stale expectation writes nothing and reports no version"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_write_moves_its_version_once_whatever_it_changes() {
+        let store = FsModuleStore::in_memory();
+        let assigned = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| Assigned {
+                    module_id: id.to_string(),
+                    params: json!({ "id": id }),
+                })
+                .collect::<Vec<_>>()
+        };
+        let copied = store
+            .seed_assignment("0xacc", assigned(&["a", "b", "c"]), &change())
+            .await
+            .unwrap();
+        assert!(copied);
+        assert_eq!(
+            account_version(&store, "0xacc").await,
+            1,
+            "one copy, one version"
+        );
+        for id in ["a", "b", "c"] {
+            let entries = store.history(id, None, 1).await.unwrap();
+            assert_eq!(
+                entries[0].version, 1,
+                "the entries of one write share its version"
+            );
+        }
+        let unchanged = store
+            .set_assignment("0xacc", assigned(&["a", "b", "c"]), &change())
+            .await
+            .unwrap();
+        assert_eq!(
+            unchanged, 2,
+            "a write that changes nothing still commits as a version"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_operator_write_that_changed_nothing_still_blocks_the_default_copy() {
+        let store = FsModuleStore::in_memory();
+        store
+            .set_assignment("0xacc", Vec::new(), &change())
+            .await
+            .unwrap();
+        assert!(
+            store
+                .history("screening", None, 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let copied = store
+            .seed_assignment(
+                "0xacc",
+                vec![Assigned {
+                    module_id: "screening".into(),
+                    params: json!({}),
+                }],
+                &change(),
+            )
+            .await
+            .unwrap();
+        assert!(!copied, "the operator wrote the account first");
+        assert!(store.account_params("0xacc").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_account_write_moves_only_that_accounts_version() {
+        let store = FsModuleStore::in_memory();
+        store
+            .seed_instance("caps", true, &json!({}), "t0")
+            .await
+            .unwrap();
+        let instance_version = store.instance_version().await.unwrap();
+        store
+            .set_layer("0xacc", "caps", Some(json!({ "b": 1 })), &change())
+            .await
+            .unwrap();
+        assert_eq!(
+            store.instance_version().await.unwrap(),
+            instance_version,
+            "replicas keep their instance cache"
+        );
+        assert_eq!(account_version(&store, "0xacc").await, 1);
+        assert_eq!(account_version(&store, "0xother").await, 0);
+        let snapshot = store
+            .snapshot("0xacc", Some(instance_version))
+            .await
+            .unwrap();
+        assert!(
+            snapshot.instances.is_none(),
+            "the cached instance rows are current"
+        );
+        store
+            .set_global("caps", json!({ "a": 1 }), &change())
+            .await
+            .unwrap();
+        assert_eq!(
+            account_version(&store, "0xacc").await,
+            1,
+            "an instance write leaves every account's version"
         );
     }
 
@@ -742,7 +938,7 @@ mod tests {
         let history = store.history("caps", None, 10).await.unwrap();
         assert_eq!(history[0].previous, json!({ "enabled": true }));
         assert_eq!(history[0].new, json!({ "enabled": false }));
-        assert_eq!(store.version().await.unwrap(), 2);
+        assert_eq!(store.instance_version().await.unwrap(), 2);
         assert!(
             store
                 .set_enabled("unknown", false, &change())
@@ -766,12 +962,16 @@ mod tests {
             .set_assignment("0xacc", assigned(&["a", "b"]), &change())
             .await
             .unwrap();
-        let version = store.version().await.unwrap();
+        let version = account_version(&store, "0xacc").await;
         store
             .set_assignment("0xacc", assigned(&["b", "a"]), &change())
             .await
             .unwrap();
-        assert!(store.version().await.unwrap() > version);
+        assert_eq!(
+            account_version(&store, "0xacc").await,
+            version + 1,
+            "two modules moved, one write"
+        );
         assert_eq!(store.history("a", None, 10).await.unwrap().len(), 2);
         let order: Vec<_> = store
             .account_params("0xacc")
@@ -816,13 +1016,13 @@ mod tests {
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].previous, json!({ "b": 1 }));
         let older = store
-            .history("blocklist", Some(history[0].version), 1)
+            .history("blocklist", Some(history[0].id), 1)
             .await
             .unwrap();
         assert_eq!(
             older,
             vec![history[1].clone()],
-            "paged below a version, newest first"
+            "paged below an entry, newest first"
         );
     }
 
@@ -868,6 +1068,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_state_file_without_versions_takes_them_from_its_history() {
+        let dir = std::env::temp_dir().join(format!("modules_{:016x}", rand::random::<u64>()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let entry = |id: u64, version: u64, account_id: Option<&str>| {
+            json!({
+                "id": id, "version": version, "module_id": "caps", "account_id": account_id,
+                "previous": null, "new": {}, "operator": "0xop", "reason": "r", "at": "t"
+            })
+        };
+        let old_file = json!({
+            "instances": [],
+            "account_params": [],
+            "history": [entry(1, 1, None), entry(2, 2, Some("0xacc")), entry(3, 3, None)],
+        });
+        std::fs::write(dir.join(STATE_FILE), old_file.to_string()).unwrap();
+        let store = FsModuleStore::open(dir.clone()).unwrap();
+        assert_eq!(store.instance_version().await.unwrap(), 3);
+        assert_eq!(account_version(&store, "0xacc").await, 2);
+        assert!(
+            !store
+                .seed_assignment(
+                    "0xacc",
+                    vec![Assigned {
+                        module_id: "caps".into(),
+                        params: json!({}),
+                    }],
+                    &change(),
+                )
+                .await
+                .unwrap(),
+            "an account with history keeps its operator's choices"
+        );
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_version_moved_by_a_write_that_changed_nothing_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("modules_{:016x}", rand::random::<u64>()));
+        {
+            let store = FsModuleStore::open(dir.clone()).unwrap();
+            store
+                .set_assignment("0xacc", Vec::new(), &change())
+                .await
+                .unwrap();
+        }
+        let reopened = FsModuleStore::open(dir.clone()).unwrap();
+        assert_eq!(account_version(&reopened, "0xacc").await, 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
     async fn tables_survive_a_restart() {
         let dir = std::env::temp_dir().join(format!("modules_{:016x}", rand::random::<u64>()));
         {
@@ -884,7 +1135,16 @@ mod tests {
         assert!(dir.join(STATE_FILE).exists());
         assert!(!dir.join(STATE_FILE).with_extension("tmp").exists());
         let reopened = FsModuleStore::open(dir.clone()).unwrap();
-        assert_eq!(reopened.version().await.unwrap(), 2);
+        assert_eq!(reopened.instance_version().await.unwrap(), 1);
+        assert_eq!(account_version(&reopened, "0xacc").await, 1);
+        let ids: Vec<u64> = reopened
+            .history("caps", None, 10)
+            .await
+            .unwrap()
+            .iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(ids, [2, 1], "entries keep their place across a restart");
         assert_eq!(reopened.account_params("0xacc").await.unwrap().len(), 1);
         std::fs::remove_dir_all(dir).ok();
     }

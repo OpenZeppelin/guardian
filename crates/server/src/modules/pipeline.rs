@@ -19,7 +19,10 @@ use crate::error::GuardianError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evaluation {
     pub catalog_hash: String,
+    /// The instance params version: global params and enabled flags.
     pub params_version: u64,
+    /// The account's params version: its layers and assignment.
+    pub account_params_version: u64,
     pub failed_open: Vec<FailedOpen>,
 }
 
@@ -43,6 +46,7 @@ impl Evaluation {
             "submitter": submitter,
             "catalog_hash": self.catalog_hash,
             "params_version": self.params_version,
+            "account_params_version": self.account_params_version,
             "failed_open": self.failed_open,
         });
         if let Some(fields) = payload.as_object_mut() {
@@ -107,6 +111,14 @@ struct OverBudget {
     worst_case: std::time::Duration,
 }
 
+/// What one evaluation reads: see [`ModulePipeline::snapshot`].
+pub(super) struct Snapshot {
+    pub params_version: u64,
+    pub account_params_version: u64,
+    pub rows: Rows,
+    pub account_rows: Vec<AccountParamsRow>,
+}
+
 #[derive(Default)]
 struct Cache {
     version: Option<u64>,
@@ -121,6 +133,7 @@ pub struct Plan<'a> {
     network_id: &'static str,
     catalog_hash: String,
     params_version: u64,
+    account_params_version: u64,
     views: Arc<ViewCache>,
     limits: Limits,
     breakers: Arc<Breakers>,
@@ -649,13 +662,17 @@ impl ModulePipeline {
     }
 
     /// The stored `(global params, enabled)` rows, cached per replica and refreshed when the
-    /// params version moves. One version read per call.
+    /// instance params version moves. One version read per call.
     pub(super) async fn rows(&self) -> Result<Rows, GuardianError> {
         Ok(self.versioned_rows().await?.1)
     }
 
     async fn versioned_rows(&self) -> Result<(u64, Rows), GuardianError> {
-        let version = self.store.version().await.map_err(Self::store_error)?;
+        let version = self
+            .store
+            .instance_version()
+            .await
+            .map_err(Self::store_error)?;
         if let Ok(cache) = self.cache.read()
             && cache.version == Some(version)
         {
@@ -679,14 +696,11 @@ impl ModulePipeline {
         Ok((version, rows))
     }
 
-    /// The global rows and one account's rows as of a single params version, read in one store
+    /// The global rows and one account's rows with their two params versions, read in one store
     /// call. Without it a request could combine a new global rule with an old account layer, a
     /// combination no operator ever configured. The instance rows come from the cache when it
-    /// holds the version the store reports.
-    pub(super) async fn snapshot(
-        &self,
-        account_id: &str,
-    ) -> Result<(u64, Rows, Vec<AccountParamsRow>), GuardianError> {
+    /// holds the instance params version the store reports.
+    pub(super) async fn snapshot(&self, account_id: &str) -> Result<Snapshot, GuardianError> {
         let cached = self
             .cache
             .read()
@@ -707,7 +721,7 @@ impl ModulePipeline {
                 );
                 if let Ok(mut cache) = self.cache.write() {
                     *cache = Cache {
-                        version: Some(snapshot.version),
+                        version: Some(snapshot.instance_version),
                         rows: rows.clone(),
                     };
                 }
@@ -720,7 +734,12 @@ impl ModulePipeline {
                 ));
             }
         };
-        Ok((snapshot.version, rows, snapshot.account_params))
+        Ok(Snapshot {
+            params_version: snapshot.instance_version,
+            account_params_version: snapshot.account_version,
+            rows,
+            account_rows: snapshot.account_params,
+        })
     }
 
     pub(super) fn global_params_in(rows: &Rows, instance: &Instance) -> serde_json::Value {
@@ -793,7 +812,12 @@ impl ModulePipeline {
         if !relevant {
             return Ok((None, Vec::new()));
         }
-        let (params_version, rows, account_rows) = self.snapshot(&account_id).await?;
+        let Snapshot {
+            params_version,
+            account_params_version,
+            rows,
+            account_rows,
+        } = self.snapshot(&account_id).await?;
         let defaults: Vec<Assigned> = if first_registration {
             self.instances
                 .iter()
@@ -858,6 +882,7 @@ impl ModulePipeline {
             network_id: self.network_id,
             catalog_hash: self.catalog_hash.clone(),
             params_version,
+            account_params_version,
             views: self.views.clone(),
             limits: self.limits,
             breakers: self.breakers.clone(),
@@ -955,6 +980,7 @@ impl Plan<'_> {
             network_id: _,
             catalog_hash,
             params_version,
+            account_params_version,
             views: _,
             limits,
             breakers,
@@ -964,6 +990,7 @@ impl Plan<'_> {
         let mut approval = Evaluation {
             catalog_hash,
             params_version,
+            account_params_version,
             failed_open: Vec::new(),
         };
         let request_id = format!("{:032x}", rand::random::<u128>());
@@ -1058,6 +1085,7 @@ impl Plan<'_> {
                         message = %decision.message,
                         catalog_hash = %approval.catalog_hash,
                         params_version = approval.params_version,
+                        account_params_version = approval.account_params_version,
                         client_reason = ?instance.config.client_reason,
                         "Policy module denied the request"
                     );

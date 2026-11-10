@@ -862,7 +862,8 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    `Policy module denied the request` with `request_id`, `module`,
    `account_id`, `hook`, `submitter`, `reason_code`, `layer` (`global` or
    `account`), the module's `message` (never sent to clients),
-   `catalog_hash`, `params_version` and `client_reason`. A denial with
+   `catalog_hash`, `params_version`, `account_params_version` and
+   `client_reason`. A denial with
    `meta.reason_code = "policy_denied"` and no `module` comes from an instance
    with `client_reason = "generic"`; only this log line names it. The
    `request_id` is also in the module's request, so the module's own logs can

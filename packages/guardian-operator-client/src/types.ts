@@ -475,7 +475,10 @@ export interface DashboardDeltaModuleFailedOpen {
 export interface DashboardDeltaModuleApproval {
   /** SHA-256 of the catalog file the approving replica loaded. */
   catalogHash: string;
+  /** The instance params version: every instance's global params and enabled flag. */
   paramsVersion: number;
+  /** The account's params version: its layers and assignment. */
+  accountParamsVersion: number;
   failedOpen: DashboardDeltaModuleFailedOpen[];
   /** RFC 3339 time the Guardian signed. */
   signedAt: string;
@@ -909,6 +912,8 @@ export interface UndeclaredModuleInstance {
 
 export interface ModuleCatalog {
   catalogHash: string;
+  /** The instance params version: moves with every write to an instance's global params or
+   * enabled flag, never with a write to one account. */
   paramsVersion: number;
   modules: ModuleInstance[];
   undeclared: UndeclaredModuleInstance[];
@@ -931,6 +936,8 @@ export interface AccountModuleEntry {
 
 export interface AccountModules {
   accountId: string;
+  /** The account's params version: moves with every write to its layers or assignment. */
+  accountParamsVersion: number;
   modules: AccountModuleEntry[];
 }
 
@@ -940,6 +947,11 @@ export interface ModuleAssignment {
 }
 
 export interface ModuleParamsHistoryEntry {
+  /** The entry's place in the history, increasing in write order: pass it as `before` to
+   * read the page after this entry. */
+  id: number;
+  /** The version the change committed as: the instance params version for a global change,
+   * the account's params version for a per-account one. */
   version: number;
   /** The account a per-account change applied to; `null` for a global change. */
   accountId: string | null;
@@ -959,7 +971,7 @@ export interface ModuleParamsHistory {
 }
 
 export interface ModuleParamsHistoryOptions {
-  /** Only changes with a version below this one, to page backwards. */
+  /** Only entries whose `id` is below this one, to page backwards. */
   before?: number;
   /** At most this many entries (1 to 1,000; the server defaults to 100). */
   limit?: number;

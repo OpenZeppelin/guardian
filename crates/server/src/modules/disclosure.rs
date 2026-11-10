@@ -30,7 +30,9 @@ impl ModulePipeline {
     /// whose catalog entry discloses nothing.
     pub async fn disclosed(&self, account_id: &str) -> Result<Vec<PolicyEntry>, GuardianError> {
         let account_id = account_id.to_ascii_lowercase();
-        let (_, rows, account_rows) = self.snapshot(&account_id).await?;
+        let super::pipeline::Snapshot {
+            rows, account_rows, ..
+        } = self.snapshot(&account_id).await?;
         let entry = |instance: &super::registry::Instance,
                      params: Option<serde_json::Value>,
                      account_layer: Option<serde_json::Value>| {

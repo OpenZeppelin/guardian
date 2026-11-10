@@ -65,11 +65,15 @@ Assignments are created for `default` instances in the same transaction as the c
 
 #### `module_params_history`
 
-Append-only: `id` (primary key), `version`, `module_id`, `account_id` (null for global), `previous`, `new`, `operator`, `reason`, `at`. Rows of one write share its `version`.
+Append-only: `id` (primary key, the order the history is listed and paged in), `version`, `module_id`, `account_id` (null for global), `previous`, `new`, `operator`, `reason`, `at`. Rows of one write share its `version`: the instance params version for a global row, the account's params version for an account row.
 
 #### `module_state_version`
 
-One row holding the params version. Every write takes its lock first, increments it, updates its rows and appends the history in one transaction, so writes serialize and the version moves in commit order; replicas key their cache on it. On the filesystem backend all tables are one file, `module_state.json`, replaced atomically.
+One row holding the instance params version. Every write to `module_instances` takes its lock first, increments it, updates its rows and appends the history in one transaction, so instance writes serialize and the version moves in commit order; replicas key their instance cache on it.
+
+#### `module_account_version`
+
+One row per account a write has touched: `account_id` (primary key) and the account's params version. Every write to an account's rows in `module_account_params`, including the default copy at registration, takes that row's lock, increments it, updates the rows and appends the history in one transaction, so writes to one account serialize while writes to different accounts never wait for each other, and no account write moves the instance version. On the filesystem backend all tables are one file, `module_state.json`, replaced atomically, and each version is the highest of its history rows.
 
 ### Delta additions (both backends)
 
@@ -77,7 +81,7 @@ The approval record is `metadata.modules` on the signed delta (`ModuleApproval`)
 
 | Field | Set when | Notes |
 |---|---|---|
-| `catalog_hash`, `params_version`, `failed_open` | The Guardian signs the delta after modules ran | The configuration the modules ran with; `failed_open` lists module, layer and failure kind, omitted when empty. Allowed evaluations are derived from the catalog, not stored |
+| `catalog_hash`, `params_version`, `account_params_version`, `failed_open` | The Guardian signs the delta after modules ran | The configuration the modules ran with; `failed_open` lists module, layer and failure kind, omitted when empty. Allowed evaluations are derived from the catalog, not stored |
 | `signed_at` | Fixed before the pipeline runs | RFC 3339; the accounting clock, sent as `accounting_time` and repeated in `pending` and `CommitEvent` (M2b) |
 | `submitter` | At signing | Verified signer commitment of the request being acked |
 | `proposer` | At signing | From `ProposalContext`; omitted when no proposal matched |

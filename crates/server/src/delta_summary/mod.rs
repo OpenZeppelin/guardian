@@ -64,13 +64,16 @@ pub struct DeltaMetadata {
 }
 
 /// The policy modules' approval of a signed delta: the configuration they ran with, when and for
-/// whom. Allowed evaluations are not listed: the catalog, params version and account determine
+/// whom. Allowed evaluations are not listed: the catalog, the two params versions and the account determine
 /// which modules ran, so only failures let through by `on_error = allow` are kept.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct ModuleApproval {
     /// SHA-256 of the catalog file the approving replica loaded.
     pub catalog_hash: String,
+    /// The instance params version: every instance's global params and enabled flag.
     pub params_version: u64,
+    /// The account's params version: its layers and assignment.
+    pub account_params_version: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_open: Vec<FailedOpen>,
     /// RFC 3339 time the Guardian signed, the accounting time the modules evaluated with.

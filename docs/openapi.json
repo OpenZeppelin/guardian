@@ -2252,6 +2252,7 @@
           {
             "name": "before",
             "in": "query",
+            "description": "Only entries whose `id` is below this one, to page backwards.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -2262,6 +2263,7 @@
           {
             "name": "limit",
             "in": "query",
+            "description": "At most this many entries (1 to 1,000; default 100).",
             "required": false,
             "schema": {
               "type": "integer",
@@ -5637,11 +5639,18 @@
         "type": "object",
         "required": [
           "account_id",
+          "account_params_version",
           "modules"
         ],
         "properties": {
           "account_id": {
             "type": "string"
+          },
+          "account_params_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The account's params version: moves with every write to its layers or assignment, and\nis recorded with each delta the account's modules approve.",
+            "minimum": 0
           },
           "modules": {
             "type": "array",
@@ -8482,14 +8491,21 @@
       },
       "ModuleApproval": {
         "type": "object",
-        "description": "The policy modules' approval of a signed delta: the configuration they ran with, when and for\nwhom. Allowed evaluations are not listed: the catalog, params version and account determine\nwhich modules ran, so only failures let through by `on_error = allow` are kept.",
+        "description": "The policy modules' approval of a signed delta: the configuration they ran with, when and for\nwhom. Allowed evaluations are not listed: the catalog, the two params versions and the account determine\nwhich modules ran, so only failures let through by `on_error = allow` are kept.",
         "required": [
           "catalog_hash",
           "params_version",
+          "account_params_version",
           "signed_at",
           "submitter"
         ],
         "properties": {
+          "account_params_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The account's params version: its layers and assignment.",
+            "minimum": 0
+          },
           "catalog_hash": {
             "type": "string",
             "description": "SHA-256 of the catalog file the approving replica loaded."
@@ -8503,6 +8519,7 @@
           "params_version": {
             "type": "integer",
             "format": "int64",
+            "description": "The instance params version: every instance's global params and enabled flag.",
             "minimum": 0
           },
           "proposer": {

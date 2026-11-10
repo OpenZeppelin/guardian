@@ -901,6 +901,7 @@ mod tests {
                 "modules": {
                     "catalog_hash": "0xc1",
                     "params_version": 3,
+                    "account_params_version": 1,
                     "failed_open": [{ "module_id": "screening", "layer": "global", "failure": "timeout" }],
                     "signed_at": "2026-11-09T00:00:00Z",
                     "submitter": "0xs1",

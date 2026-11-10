@@ -73,7 +73,7 @@ module is skipped without waiting for its timeout.
    ```
 
    Requests stop calling it on every replica at once. Deltas signed meanwhile
-   name the catalog and params version they were approved under in the
+   name the catalog and the two params versions they were approved under in the
    `modules` field of `GET /dashboard/accounts/{account_id}/deltas/{nonce}`, so
    the gap is auditable.
 3. When the module is healthy again, enable it. Enabling runs `Describe` and
@@ -107,7 +107,7 @@ the replica that answered.
 Symptoms: `403 GUARDIAN_MODULE_DENIED` with a `reason_code` that should not
 apply; the `info` log line `Policy module denied the request` names the
 `module`, `layer`, `reason_code`, the module's `message`, and the
-`params_version` it decided under.
+`params_version` and `account_params_version` it decided under.
 
 1. Find the change: `admin GET /modules/{id}/params/history` lists every
    params write with its previous and new value, operator and reason. A

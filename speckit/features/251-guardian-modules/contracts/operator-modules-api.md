@@ -12,7 +12,7 @@
 | `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | M2a | `ParamsBody` | 200 `ModuleInstanceView` |
 | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | M2a | `ParamsBody` | 200 `AccountModulesView` |
 | `DELETE /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | M2a | `ReasonBody` | 200 `AccountModulesView` |
-| `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | M2a | `?before=<version>&limit=<n>`, newest first | 200 `ParamsHistory` |
+| `GET /dashboard/modules/{module_id}/params/history` | `dashboard:read` | M2a | `?before=<id>&limit=<n>`, newest first | 200 `ParamsHistory` |
 | `POST /dashboard/modules/{module_id}/enable` | `policies:write` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
 | `POST /dashboard/modules/{module_id}/disable` | `policies:write` or `modules:disable` | M2a | `ReasonBody` | 200 `ModuleInstanceView` |
 | `POST /dashboard/modules/{module_id}/resync` | `policies:write` | M2b | `ResyncBody` | 200 `ResyncResult` |
@@ -49,7 +49,7 @@ ModuleInstanceView {
   circuit: "closed" | "open" | "half_open"   // on the replica that answered
 }
 UndeclaredInstanceView { module_id: string, enabled: bool, params: object }  // stored, no longer in the catalog; never evaluated
-ModuleCatalogView     { catalog_hash: string, params_version: number, modules: ModuleInstanceView[], undeclared: UndeclaredInstanceView[] }
+ModuleCatalogView     { catalog_hash: string, params_version: number, modules: ModuleInstanceView[], undeclared: UndeclaredInstanceView[] }  // params_version: the instance params version
 
 AccountModuleEntry {
   module_id: string,
@@ -60,10 +60,10 @@ AccountModuleEntry {
   account_layer?: object,       // scope = all: this account's layer, when set
   params?: object               // default / assigned: this account's own params
 }                               // secret references are shown unresolved
-AccountModulesView    { account_id: string, modules: AccountModuleEntry[] }   // evaluation order
+AccountModulesView    { account_id: string, account_params_version: number, modules: AccountModuleEntry[] }   // evaluation order
 
 ResyncResult          { module_id: string, account_ids: string[] }            // pairs cleared
-ParamsHistory         { module_id: string, entries: [{ version: number, account_id?: string, previous: object, new: object, operator: string, reason: string, at: string }] }
+ParamsHistory         { module_id: string, entries: [{ id: number, version: number, account_id?: string, previous: object, new: object, operator: string, reason: string, at: string }] }
 ```
 
 ## Errors

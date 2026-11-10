@@ -134,6 +134,7 @@ pub(crate) async fn acknowledge_applied(
             account_id = %delta.account_id,
             catalog_hash = %approval.catalog_hash,
             params_version = approval.params_version,
+            account_params_version = approval.account_params_version,
             "Delta has no metadata to record its module approval in"
         ),
         (None, None) => {}
@@ -221,6 +222,7 @@ async fn approve(
         Some(ModuleApproval {
             catalog_hash: evaluation.catalog_hash,
             params_version: evaluation.params_version,
+            account_params_version: evaluation.account_params_version,
             failed_open: evaluation.failed_open,
             signed_at: signed_at.to_rfc3339(),
             submitter: submitter.commitment.to_string(),

@@ -70,7 +70,8 @@ pub const MODULES_DISABLE: &str = "modules.disable";
 /// A policy module evaluation at proposal creation or account registration let through a
 /// module failure because the instance is `on_error = "allow"`. System-initiated
 /// (`operator_identity` is `system`). `payload` carries `hook`, `submitter`, `catalog_hash`,
-/// `params_version` and `failed_open` (`module_id`, `layer`, `failure`), plus the
+/// `params_version`, `account_params_version` and `failed_open` (`module_id`, `layer`,
+/// `failure`), plus the
 /// `proposal_id` at proposal creation. A transaction's skips are stored with its signed delta
 /// instead (`modules.failed_open` on the dashboard delta detail).
 pub const MODULES_FAILED_OPEN: &str = "modules.failed_open";

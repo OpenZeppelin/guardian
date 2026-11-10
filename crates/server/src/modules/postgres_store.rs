@@ -75,6 +75,8 @@ struct AccountParamsSql {
 #[derive(QueryableByName)]
 struct HistorySql {
     #[diesel(sql_type = BigInt)]
+    id: i64,
+    #[diesel(sql_type = BigInt)]
     version: i64,
     #[diesel(sql_type = Text)]
     module_id: String,
@@ -104,11 +106,32 @@ struct ParamsSql {
     params: serde_json::Value,
 }
 
-/// Takes the module write lock and returns the version this write commits as.
+/// Takes the instance write lock and returns the instance params version this write commits
+/// as.
 async fn bump(conn: &mut AsyncPgConnection) -> Result<i64, diesel::result::Error> {
     let rows: Vec<VersionSql> = diesel::sql_query(
         "UPDATE module_state_version SET version = version + 1 RETURNING version",
     )
+    .load(conn)
+    .await?;
+    rows.into_iter()
+        .next()
+        .map(|row| row.version)
+        .ok_or(diesel::result::Error::NotFound)
+}
+
+/// Takes the write lock of one account's rows and returns the account params version this
+/// write commits as. Writes to other accounts and to the instance rows do not wait for it.
+async fn bump_account(
+    conn: &mut AsyncPgConnection,
+    account_id: &str,
+) -> Result<i64, diesel::result::Error> {
+    let rows: Vec<VersionSql> = diesel::sql_query(
+        "INSERT INTO module_account_version (account_id, version) VALUES ($1, 1) \
+         ON CONFLICT (account_id) DO UPDATE SET version = module_account_version.version + 1 \
+         RETURNING version",
+    )
+    .bind::<Text, _>(account_id)
     .load(conn)
     .await?;
     rows.into_iter()
@@ -163,13 +186,13 @@ diesel::define_sql_function! {
     fn guardian_module_snapshot(
         account_id: Text,
         cached_version: Nullable<BigInt>,
-    ) -> Record<(BigInt, Nullable<Jsonb>, Jsonb)>;
+    ) -> Record<(BigInt, BigInt, Nullable<Jsonb>, Jsonb)>;
 }
 
 diesel::define_sql_function! {
     /// Typed so the statement is prepared once per connection: the default-module copy of a
-    /// first registration is one call, which holds the module state lock for that call only
-    /// (see the migration).
+    /// first registration is one call, which locks only that account's version row, for that
+    /// call only (see the migration).
     fn guardian_module_seed_assignment(
         account_id: Text,
         modules: Jsonb,
@@ -440,7 +463,8 @@ impl ModuleStore for PgModuleStore {
         cached_version: Option<u64>,
     ) -> Result<ModuleSnapshot, String> {
         let mut conn = self.conn().await?;
-        let (version, instances, account_params): (
+        let (instance_version, account_version, instances, account_params): (
+            i64,
             i64,
             Option<serde_json::Value>,
             serde_json::Value,
@@ -452,7 +476,8 @@ impl ModuleStore for PgModuleStore {
         .await
         .map_err(|e| format!("module snapshot: {e}"))?;
         Ok(ModuleSnapshot {
-            version: version as u64,
+            instance_version: instance_version as u64,
+            account_version: account_version as u64,
             instances: instances
                 .map(serde_json::from_value)
                 .transpose()
@@ -503,7 +528,7 @@ impl ModuleStore for PgModuleStore {
         let (account_id, module_id) = (account_id.to_string(), module_id.to_string());
         conn.transaction::<i64, diesel::result::Error, _>(|conn| {
             async move {
-                let version = bump(conn).await?;
+                let version = bump_account(conn, &account_id).await?;
                 let previous: Vec<ParamsSql> = diesel::sql_query(
                     "DELETE FROM module_account_params WHERE account_id = $1 AND module_id = $2 \
                      AND kind = 'layer' RETURNING params",
@@ -563,7 +588,7 @@ impl ModuleStore for PgModuleStore {
         let account_id = account_id.to_string();
         conn.transaction::<i64, diesel::result::Error, _>(|conn| {
             async move {
-                let version = bump(conn).await?;
+                let version = bump_account(conn, &account_id).await?;
                 let removed: Vec<AccountParamsSql> = diesel::sql_query(
                     "DELETE FROM module_account_params WHERE account_id = $1 \
                      AND kind = 'assignment' RETURNING account_id, module_id, kind, position, \
@@ -661,9 +686,9 @@ impl ModuleStore for PgModuleStore {
     ) -> Result<Vec<HistoryEntry>, String> {
         let mut conn = self.conn().await?;
         let rows: Vec<HistorySql> = diesel::sql_query(
-            "SELECT version, module_id, account_id, previous_params, new_params, operator, reason, \
-             changed_at FROM module_params_history WHERE module_id = $1 \
-             AND ($2::BIGINT IS NULL OR version < $2) ORDER BY version DESC, id DESC LIMIT $3",
+            "SELECT id, version, module_id, account_id, previous_params, new_params, operator, \
+             reason, changed_at FROM module_params_history WHERE module_id = $1 \
+             AND ($2::BIGINT IS NULL OR id < $2) ORDER BY id DESC LIMIT $3",
         )
         .bind::<Text, _>(module_id)
         .bind::<Nullable<BigInt>, _>(before.map(|before| before as i64))
@@ -674,6 +699,7 @@ impl ModuleStore for PgModuleStore {
         Ok(rows
             .into_iter()
             .map(|row| HistoryEntry {
+                id: row.id as u64,
                 version: row.version as u64,
                 module_id: row.module_id,
                 account_id: row.account_id,
@@ -686,7 +712,7 @@ impl ModuleStore for PgModuleStore {
             .collect())
     }
 
-    async fn version(&self) -> Result<u64, String> {
+    async fn instance_version(&self) -> Result<u64, String> {
         let mut conn = self.conn().await?;
         let rows: Vec<VersionSql> = diesel::sql_query("SELECT version FROM module_state_version")
             .load(&mut conn)
@@ -712,9 +738,13 @@ mod tests {
         }
     }
 
+    async fn account_version(store: &PgModuleStore, account: &str) -> u64 {
+        store.snapshot(account, None).await.unwrap().account_version
+    }
+
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
-    async fn a_snapshot_reads_one_version_and_skips_rows_the_cache_holds() {
+    async fn a_snapshot_reads_both_versions_and_skips_rows_the_cache_holds() {
         let url = test_database_url().await;
         let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
         let t0 = "2026-11-09T00:00:00Z";
@@ -724,13 +754,18 @@ mod tests {
             .seed_instance(&module, true, &json!({ "cap": 1000 }), t0)
             .await
             .unwrap();
+        let instance_version = store.instance_version().await.unwrap();
         store
             .set_layer(&account, &module, Some(json!({ "cap": 100 })), &change(t0))
             .await
             .unwrap();
 
         let fresh = store.snapshot(&account, None).await.unwrap();
-        assert_eq!(fresh.version, store.version().await.unwrap());
+        assert_eq!(
+            fresh.instance_version, instance_version,
+            "an account write leaves the instance version, so no cache is invalidated"
+        );
+        assert_eq!(fresh.account_version, 1);
         let instances = fresh.instances.expect("no cached version");
         let row = instances
             .iter()
@@ -741,7 +776,10 @@ mod tests {
         assert_eq!(fresh.account_params[0].params, json!({ "cap": 100 }));
         assert_eq!(fresh.account_params[0].kind, ParamsKind::Layer);
 
-        let cached = store.snapshot(&account, Some(fresh.version)).await.unwrap();
+        let cached = store
+            .snapshot(&account, Some(fresh.instance_version))
+            .await
+            .unwrap();
         assert!(cached.instances.is_none(), "the cache holds this version");
         assert_eq!(cached.account_params, fresh.account_params);
 
@@ -749,8 +787,15 @@ mod tests {
             .set_global(&module, json!({ "cap": 10 }), &change(t0))
             .await
             .unwrap();
-        let moved = store.snapshot(&account, Some(fresh.version)).await.unwrap();
-        assert!(moved.version > fresh.version);
+        let moved = store
+            .snapshot(&account, Some(fresh.instance_version))
+            .await
+            .unwrap();
+        assert!(moved.instance_version > fresh.instance_version);
+        assert_eq!(
+            moved.account_version, 1,
+            "an instance write leaves the account's"
+        );
         let row = moved
             .instances
             .expect("a stale cache gets the rows")
@@ -758,14 +803,9 @@ mod tests {
             .find(|row| row.module_id == module)
             .unwrap();
         assert_eq!(row.global_params, json!({ "cap": 10 }));
-        assert!(
-            store
-                .snapshot("0xnobody", None)
-                .await
-                .unwrap()
-                .account_params
-                .is_empty()
-        );
+        let nobody = store.snapshot("0xnobody", None).await.unwrap();
+        assert!(nobody.account_params.is_empty());
+        assert_eq!(nobody.account_version, 0);
     }
 
     #[tokio::test]
@@ -777,7 +817,7 @@ mod tests {
         let t0 = "2026-10-15T00:00:00Z";
         let module = format!("blocklist-{}", rand::random::<u32>());
         let account = format!("0xacc{}", rand::random::<u32>());
-        let start = store.version().await.unwrap();
+        let start = store.instance_version().await.unwrap();
 
         store
             .seed_instance(&module, true, &json!({ "denylist": ["0xaaa"] }), t0)
@@ -795,7 +835,7 @@ mod tests {
             )
             .await
             .unwrap();
-        store
+        let layer = store
             .set_layer(
                 &account,
                 &module,
@@ -804,7 +844,7 @@ mod tests {
             )
             .await
             .unwrap();
-        store
+        let assignment = store
             .set_assignment(
                 &account,
                 vec![Assigned {
@@ -815,6 +855,11 @@ mod tests {
             )
             .await
             .unwrap();
+        assert_eq!(
+            (layer, assignment),
+            (1, 2),
+            "the account counts its own writes"
+        );
 
         let instance = other_replica
             .instances()
@@ -837,15 +882,19 @@ mod tests {
         assert_eq!(history.len(), 3);
         assert_eq!(history[0].account_id.as_deref(), Some(account.as_str()));
         let older = other_replica
-            .history(&module, Some(history[0].version), 1)
+            .history(&module, Some(history[0].id), 1)
             .await
             .unwrap();
         assert_eq!(
             older,
             vec![history[1].clone()],
-            "paged below a version, newest first"
+            "paged below an entry, newest first"
         );
-        assert_eq!(other_replica.version().await.unwrap(), start + 4);
+        assert_eq!(
+            other_replica.instance_version().await.unwrap(),
+            start + 2,
+            "the seed and the global write; the account's writes have their own version"
+        );
 
         store
             .set_layer(&account, &module, None, &change(t0))
@@ -875,14 +924,14 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
-    async fn concurrent_writes_serialize_and_the_version_follows_commit_order() {
+    async fn concurrent_writes_to_an_account_serialize_and_its_version_counts_them() {
         let url = test_database_url().await;
         let store = std::sync::Arc::new(PgModuleStore::new(
             build_postgres_pool_lazy(&url, 8).expect("pool"),
         ));
         let account = format!("0xacc{}", rand::random::<u32>());
         let t0 = "2026-10-15T00:00:00Z";
-        let before = store.version().await.unwrap();
+        let before = store.instance_version().await.unwrap();
         let writes = (0..8).map(|n| {
             let store = store.clone();
             let account = account.clone();
@@ -904,7 +953,8 @@ mod tests {
         }
         let rows = store.account_params(&account).await.unwrap();
         assert_eq!(rows.len(), 1, "one replacement wins, never a union");
-        assert!(store.version().await.unwrap() >= before + 8);
+        assert_eq!(account_version(&store, &account).await, 8);
+        assert_eq!(store.instance_version().await.unwrap(), before);
     }
 
     #[tokio::test]
@@ -926,7 +976,7 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let before = store.version().await.unwrap();
+        assert_eq!(account_version(&store, &account).await, 1);
         assert!(
             !store
                 .seed_assignment(&account, copy(), &change(t0))
@@ -935,8 +985,8 @@ mod tests {
             "an existing assignment is kept"
         );
         assert_eq!(
-            store.version().await.unwrap(),
-            before,
+            account_version(&store, &account).await,
+            1,
             "a refused copy does not move the version"
         );
         store
@@ -955,13 +1005,128 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn an_operator_write_that_changed_nothing_still_blocks_the_default_copy() {
+        let url = test_database_url().await;
+        let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
+        let account = format!("0xnoop{}", rand::random::<u32>());
+        store
+            .set_assignment(&account, Vec::new(), &change("2026-11-10T00:00:00Z"))
+            .await
+            .unwrap();
+        let copied = store
+            .seed_assignment(
+                &account,
+                vec![Assigned {
+                    module_id: "screening".into(),
+                    params: json!({}),
+                }],
+                &change("2026-11-10T00:00:00Z"),
+            )
+            .await
+            .unwrap();
+        assert!(!copied, "the operator wrote the account first");
+        assert!(store.account_params(&account).await.unwrap().is_empty());
+        assert_eq!(account_version(&store, &account).await, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn concurrent_default_copies_of_one_account_write_once() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PgModuleStore::new(
+            build_postgres_pool_lazy(&url, 8).expect("pool"),
+        ));
+        let account = format!("0xrace{}", rand::random::<u32>());
+        let copies = (0..8).map(|n| {
+            let store = store.clone();
+            let account = account.clone();
+            tokio::spawn(async move {
+                store
+                    .seed_assignment(
+                        &account,
+                        vec![Assigned {
+                            module_id: "screening".into(),
+                            params: json!({ "copy": n }),
+                        }],
+                        &change("2026-11-10T00:00:00Z"),
+                    )
+                    .await
+                    .unwrap()
+            })
+        });
+        let mut written = 0;
+        for copy in copies {
+            written += usize::from(copy.await.unwrap());
+        }
+        assert_eq!(written, 1, "exactly one registration copies the defaults");
+        assert_eq!(store.account_params(&account).await.unwrap().len(), 1);
+        assert_eq!(account_version(&store, &account).await, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_default_copy_racing_an_operator_write_never_overwrites_it() {
+        let url = test_database_url().await;
+        let store = std::sync::Arc::new(PgModuleStore::new(
+            build_postgres_pool_lazy(&url, 4).expect("pool"),
+        ));
+        for _ in 0..10 {
+            let account = format!("0xrace{}", rand::random::<u32>());
+            let operator = Assigned {
+                module_id: "operator-choice".into(),
+                params: json!({ "set_by": "operator" }),
+            };
+            let seed = {
+                let (store, account) = (store.clone(), account.clone());
+                tokio::spawn(async move {
+                    store
+                        .seed_assignment(
+                            &account,
+                            vec![Assigned {
+                                module_id: "screening".into(),
+                                params: json!({ "set_by": "catalog" }),
+                            }],
+                            &change("2026-11-10T00:00:00Z"),
+                        )
+                        .await
+                        .unwrap()
+                })
+            };
+            let write = {
+                let (store, account, operator) = (store.clone(), account.clone(), operator.clone());
+                tokio::spawn(async move {
+                    store
+                        .set_assignment(&account, vec![operator], &change("2026-11-10T00:00:00Z"))
+                        .await
+                        .unwrap()
+                })
+            };
+            let (copied, _) = (seed.await.unwrap(), write.await.unwrap());
+            let rows = store.account_params(&account).await.unwrap();
+            assert_eq!(
+                rows.iter()
+                    .map(|row| (row.module_id.as_str(), &row.params))
+                    .collect::<Vec<_>>(),
+                vec![(operator.module_id.as_str(), &operator.params)],
+                "the operator's assignment stands whichever write committed first"
+            );
+            assert_eq!(
+                account_version(&store, &account).await,
+                1 + u64::from(copied),
+                "one version per write that committed"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn a_default_copy_keeps_its_order_and_records_each_module() {
         let url = test_database_url().await;
         let store = PgModuleStore::new(build_postgres_pool_lazy(&url, 2).expect("pool"));
         let run = rand::random::<u32>();
         let account = format!("0xorder{run}");
         let (second, first) = (format!("a-second-{run}"), format!("z-first-{run}"));
-        let before = store.version().await.unwrap();
+        let instance_version = store.instance_version().await.unwrap();
         assert!(
             store
                 .seed_assignment(
@@ -981,8 +1146,13 @@ mod tests {
                 .await
                 .unwrap()
         );
-        let version = store.version().await.unwrap();
-        assert_eq!(version, before + 1, "one copy is one version");
+        let version = account_version(&store, &account).await;
+        assert_eq!(version, 1, "one copy is one version");
+        assert_eq!(
+            store.instance_version().await.unwrap(),
+            instance_version,
+            "a registration does not touch the instance version"
+        );
         let rows = store.account_params(&account).await.unwrap();
         assert_eq!(
             rows.iter()
@@ -1022,7 +1192,7 @@ mod tests {
             .set_global(&module, json!({ "new_name": 100 }), &change(t0))
             .await
             .unwrap();
-        let before = store.version().await.unwrap();
+        let before = store.instance_version().await.unwrap();
         assert_eq!(
             store
                 .set_global_if(
@@ -1037,7 +1207,7 @@ mod tests {
             "the stale expectation does not write"
         );
         assert_eq!(
-            store.version().await.unwrap(),
+            store.instance_version().await.unwrap(),
             before,
             "and does not move the version"
         );

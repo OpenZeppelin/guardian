@@ -2318,6 +2318,7 @@ function parseModuleApproval(value: unknown, context: string): DashboardDeltaMod
   return {
     catalogHash: requireString(record, 'catalog_hash', context),
     paramsVersion: requireInteger(record, 'params_version', context),
+    accountParamsVersion: requireInteger(record, 'account_params_version', context),
     failedOpen: failedOpen.map((entry, i) => {
       const entryContext = `${context}.failed_open[${i}]`;
       const failure = asRecord(entry, entryContext);
@@ -2619,6 +2620,7 @@ function parseAccountModules(value: unknown): AccountModules {
   const record = asRecord(value, context);
   return {
     accountId: requireString(record, 'account_id', context),
+    accountParamsVersion: requireInteger(record, 'account_params_version', context),
     modules: requireArray(record, 'modules', context).map((entry) => {
       const item = asRecord(entry, `${context}.modules`);
       const itemContext = `${context}.modules`;
@@ -2644,6 +2646,7 @@ function parseModuleParamsHistory(value: unknown): ModuleParamsHistory {
       const item = asRecord(entry, `${context}.entries`);
       const itemContext = `${context}.entries`;
       return {
+        id: requireInteger(item, 'id', itemContext),
         version: requireInteger(item, 'version', itemContext),
         accountId: optionalString(item, 'account_id', itemContext),
         previous: nullableParams(item, 'previous', itemContext),

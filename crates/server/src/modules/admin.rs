@@ -79,6 +79,9 @@ pub struct AccountModuleEntry {
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AccountModulesView {
     pub account_id: String,
+    /// The account's params version: moves with every write to its layers or assignment, and
+    /// is recorded with each delta the account's modules approve.
+    pub account_params_version: u64,
     pub modules: Vec<AccountModuleEntry>,
 }
 
@@ -177,7 +180,7 @@ async fn existing_account(state: &AppState, account_id: &str) -> Result<String> 
 async fn version(pipeline: &ModulePipeline) -> Result<u64> {
     pipeline
         .store()
-        .version()
+        .instance_version()
         .await
         .map_err(GuardianError::StorageError)
 }
@@ -289,11 +292,12 @@ pub async fn account_view(state: &AppState, account_id: &str) -> Result<AccountM
 /// The modules of the account whose module rows are keyed `account_id`.
 async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesView> {
     let pipeline = pipeline(state)?;
-    let rows = pipeline
-        .store()
-        .account_params(account_id)
-        .await
-        .map_err(GuardianError::StorageError)?;
+    let super::pipeline::Snapshot {
+        account_params_version,
+        rows: instance_rows,
+        account_rows: rows,
+        ..
+    } = pipeline.snapshot(account_id).await?;
     let mut modules = Vec::new();
     for instance in pipeline
         .instances()
@@ -303,9 +307,9 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
         modules.push(AccountModuleEntry {
             module_id: instance.config.id.clone(),
             scope: "all",
-            enabled: pipeline.enabled(instance).await?,
+            enabled: ModulePipeline::enabled_in(&instance_rows, instance),
             orphaned: false,
-            global_params: Some(pipeline.global_params(instance).await?),
+            global_params: Some(ModulePipeline::global_params_in(&instance_rows, instance)),
             account_layer: rows
                 .iter()
                 .find(|row| row.kind == ParamsKind::Layer && row.module_id == instance.config.id)
@@ -335,7 +339,7 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
         modules.push(AccountModuleEntry {
             scope: instance.map_or("assigned", |instance| scope_name(instance.config.scope)),
             enabled: match instance {
-                Some(instance) => pipeline.enabled(instance).await?,
+                Some(instance) => ModulePipeline::enabled_in(&instance_rows, instance),
                 None => false,
             },
             orphaned: instance.is_none(),
@@ -347,6 +351,7 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
     }
     Ok(AccountModulesView {
         account_id: account_id.to_string(),
+        account_params_version,
         modules,
     })
 }
@@ -354,8 +359,8 @@ async fn view_of(state: &AppState, account_id: &str) -> Result<AccountModulesVie
 const HISTORY_PAGE_DEFAULT: usize = 100;
 const HISTORY_PAGE_MAX: usize = 1_000;
 
-/// The instance's params changes, newest first: those with a version below `before` when set,
-/// at most `limit` (default 100, at most 1,000).
+/// The instance's params changes, global and per account, newest first: those whose `id` is
+/// below `before` when set, at most `limit` (default 100, at most 1,000).
 pub async fn history(
     state: &AppState,
     module_id: &str,
@@ -584,7 +589,7 @@ pub async fn set_layer(
         )
         .await
         .map_err(GuardianError::StorageError)?;
-    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
+    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "account_params_version": committed });
     audit(
         state,
         operator,
@@ -697,8 +702,7 @@ pub async fn set_assignment(
         .set_assignment(&account_id, to_store, &change(state, operator, reason))
         .await
         .map_err(GuardianError::StorageError)?;
-    let payload =
-        serde_json::json!({ "reason": reason, "modules": assigned, "params_version": committed });
+    let payload = serde_json::json!({ "reason": reason, "modules": assigned, "account_params_version": committed });
     audit(
         state,
         operator,

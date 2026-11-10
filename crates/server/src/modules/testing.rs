@@ -421,7 +421,7 @@ impl super::store::ModuleStore for RacingStore {
         self.inner.history(module_id, before, limit).await
     }
 
-    async fn version(&self) -> Result<u64, String> {
-        self.inner.version().await
+    async fn instance_version(&self) -> Result<u64, String> {
+        self.inner.instance_version().await
     }
 }

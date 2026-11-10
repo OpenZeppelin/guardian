@@ -121,7 +121,7 @@ async fn load(
     };
     let network_id = crate::metadata::network::MidenNetworkType::from(network).as_str();
     let pipeline = ModulePipeline::new(network_id, catalog, registry, store, now, limits).await?;
-    let version = pipeline.store().version().await?;
+    let version = pipeline.store().instance_version().await?;
     let (over_budget, orphaned) = pipeline.report_stored_assignments().await?;
     let builds = pipeline
         .instances()

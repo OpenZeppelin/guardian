@@ -370,22 +370,34 @@ in the params history and the audit log. A walkthrough is in the
 
 Which configuration approved a signed delta is on its detail,
 `GET /dashboard/accounts/{account_id}/deltas/{nonce}`, in the `modules` field:
-`catalog_hash`, `params_version`, `signed_at`, `submitter`, `proposer`, and
-under `failed_open` each module failure an `on_error = "allow"` instance let
+`catalog_hash`, `params_version`, `account_params_version`, `signed_at`,
+`submitter`, `proposer`, and under `failed_open` each module failure an `on_error = "allow"` instance let
 through (`module_id`, `layer`, `failure`). It is absent when no module ran for
 the delta, and client routes never return it. The same skips at proposal
 creation and account registration, where nothing is signed, are written to the
 audit log as `modules.failed_open` events (`operator_identity` `system`, with
-the hook, submitter, catalog hash, params version and, for a proposal, its
-`proposal_id`). Operator writes are audited with the params version they
-committed as, or `null` for an enable or disable that changed nothing.
+the hook, submitter, catalog hash, both params versions and, for a proposal,
+its `proposal_id`). Operator writes are audited with the version they
+committed as (`params_version` for an instance write, `account_params_version`
+for a write to one account), or `null` for an enable or disable that changed
+nothing.
+
+There are two params versions. `params_version` moves with every write to an
+instance (its global params or its enabled flag) and is what each replica keys
+its instance cache on; `GET /dashboard/modules` reports it. Each account has its
+own `account_params_version`, which moves with every write to that account's
+layers or assignment, including the default copy at registration;
+`GET /dashboard/accounts/{account_id}/modules` reports it. A write to one
+account therefore neither waits for writes to other accounts nor makes any
+replica reload its instances. The params history gives each entry an `id`, in
+write order, and the `version` it committed as; page it with `before=<id>`.
 `GET /dashboard/info` reports the
 catalog hash this replica loaded as `backend.module_catalog_hash`.
 
 | Endpoint | Permission | Body |
 |---|---|---|
 | `GET /dashboard/modules` | `dashboard:read` | |
-| `GET /dashboard/modules/{module_id}/params/history?before=<version>&limit=<n>` | `dashboard:read` | |
+| `GET /dashboard/modules/{module_id}/params/history?before=<id>&limit=<n>` | `dashboard:read` | |
 | `GET /dashboard/accounts/{account_id}/modules` | `dashboard:read` | |
 | `PUT /dashboard/modules/{module_id}/params` | `policies:write_global` | `{"params": {...}, "reason": "..."}` |
 | `PUT /dashboard/accounts/{account_id}/modules/{module_id}/params` | `policies:write` | `{"params": {...}, "reason": "..."}` |

@@ -504,6 +504,7 @@ mod tests {
         let approval = ModuleApproval {
             catalog_hash: "0xcatalog".into(),
             params_version: 4,
+            account_params_version: 2,
             failed_open: vec![crate::delta_summary::FailedOpen {
                 module_id: "screening".into(),
                 layer: "global".into(),
