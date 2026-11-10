@@ -7,7 +7,7 @@ crates/server/src/storage/mod.rs gate_candidate_submission 99785be2d52ca367
 crates/server/src/storage/postgres.rs submit_candidate e060bdbb989ca363
 crates/server/src/storage/postgres.rs submit_delta_proposal b679915e671eb474
 crates/server/src/storage/filesystem.rs submit_candidate 83549e868e6f5e25
-crates/server/src/network/miden/mod.rs verify_delta 0f121467477a893b
+crates/server/src/network/miden/mod.rs verify_delta a39265f9bf7ea323
 crates/server/src/network/miden/mod.rs delta_proposal_id 0bb59c0e0a3438ba
 crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 02f72218c5298266
 crates/server/src/jobs/canonicalization/processor.rs retain_candidate 813bb75dd428ee39
