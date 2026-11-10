@@ -19,10 +19,12 @@ pub const WALLET_SIGNATURE_REQUIRED_CODE: &str = "wallet_signature_required";
 pub const UNSUPPORTED_AUTH_VERSION_CODE: &str = "unsupported_auth_version";
 const AUTHENTICATION_FAILED_CODE: &str = "authentication_failed";
 
-/// A policy module refused the request.
+/// A policy module refused the request, or the Guardian refused one too large for its modules to
+/// judge (`reason_code = request_too_large`).
 pub const MODULE_DENIED_CODE: &str = "GUARDIAN_MODULE_DENIED";
 
-/// A fail-closed policy module could not decide; retryable.
+/// A fail-closed policy module could not decide, or the Guardian could not build the request a
+/// module judges; retryable.
 pub const MODULE_UNAVAILABLE_CODE: &str = "GUARDIAN_MODULE_UNAVAILABLE";
 
 /// A refusal by one of the Guardian's policy modules. `module` is the operator-chosen

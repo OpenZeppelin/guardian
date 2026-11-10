@@ -200,7 +200,7 @@ An operator with a module it wrote or audited runs it inside the Guardian proces
 - **Proposer attribution**: when two cosigners create the same proposal, the first creator remains its proposer on every storage backend. When proposal lookup fails because of a storage fault, that is a module failure, never "no proposer".
 - **Missing proposer at approval** (offline push, single-key account, proposal already removed): the proposer is empty; a rule that must hold treats it as unknown and refuses.
 - **Forged metadata**: proposer-supplied labels and fields never change a decision; only the decoded effect does.
-- **Oversized requests**: a request too large to send counts as a module failure without the call being made.
+- **Oversized requests**: a request too large to send is refused without the call being made, whatever the instance's `on_error` (revised 2026-11-10: a requester can pad a request, so it must not switch fail-open instances off).
 - **Rolling deploys**: replicas may briefly run different configurations; each signed transaction records which configuration approved it.
 - **Removed instances**: an account assignment naming an instance no longer configured is kept, skipped, and reported, and becomes active again if the instance returns.
 - **Over-budget assignments** after a deploy that raised timeouts are reported at startup without blocking it; the runtime budget enforces the limit.
@@ -260,7 +260,7 @@ Slice tags show where each requirement is first delivered. Wire formats, field n
 - **FR-035** [M2a]: The first creator of a proposal MUST remain its proposer on every storage backend. Proposal creation and signature updates MUST be separate operations: a duplicate creation keeps the stored proposal, while adding a cosigner signature updates it, on both backends.
 - **FR-036** [M2a]: Proposer-supplied proposal metadata MUST be passed only as explicitly untrusted data, and no typed copy of proposer-asserted values (amounts, recipients, signers) may be provided.
 - **FR-037** [M2a]: Each request MUST identify the instance being called, so one remote service can back several instances with separate state and credentials.
-- **FR-038** [M2a]: Each request MUST be bounded in size; an oversized request counts as a module failure without the call being made.
+- **FR-038** [M2a]: Each request MUST be bounded in size; an oversized request is refused without the call being made, whatever the instance's `on_error`.
 - **FR-039** [M2a]: Requests MUST name the account's network within its family (for example mainnet or testnet), the account views MUST carry the account's code commitment and exported procedure roots and only the procedure threshold overrides its code can apply, and transaction projections MUST carry the reference block, the expiration block only when one is set, and a new code commitment when the transaction replaces the account's code. Requests MUST say whether the submitter acted through a delegated session key, at proposal creation and at the ack of a push or a Guardian execution. The reference policy MUST be able to restrict accounts to listed code commitments, at registration and on code replacement.
 
 ### Decisions and errors

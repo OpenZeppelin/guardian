@@ -2343,10 +2343,11 @@ mod tests {
         );
     }
 
-    /// A transaction the network cannot project for the modules is a module failure, so the
-    /// instance's `on_error` decides, never a hard error of the push.
+    /// A transaction the network cannot project for the modules is refused as unavailable, a
+    /// retryable module refusal rather than a hard error of the push, and a fail-open instance
+    /// does not let it through: the requester shapes the transaction.
     #[tokio::test]
-    async fn a_transaction_that_cannot_be_projected_is_decided_by_on_error() {
+    async fn a_transaction_that_cannot_be_projected_is_refused_even_by_a_fail_open_module() {
         let (refused, storage, _, _) =
             push_on_projected(Some(cap_of_1000()), None, stored_proposal_labelled("p2id")).await;
         assert!(
@@ -2357,17 +2358,13 @@ mod tests {
 
         let mut lenient = cap_of_1000();
         lenient.config.on_error = crate::modules::catalog::OnError::Allow;
-        let (allowed, _, _, _) =
+        let (still_refused, storage, _, _) =
             push_on_projected(Some(lenient), None, stored_proposal_labelled("p2id")).await;
-        let failed_open = allowed
-            .expect("on_error = allow lets the push through")
-            .delta
-            .metadata
-            .and_then(|metadata| metadata.modules)
-            .expect("the approval is recorded")
-            .failed_open;
-        assert_eq!(failed_open.len(), 1);
-        assert_eq!(failed_open[0].failure, "request_unavailable");
+        assert!(
+            matches!(still_refused, Err(GuardianError::ModuleUnavailable { .. })),
+            "{still_refused:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
     }
 
     const USDC: &str = "0x00000000000000000000000000aa00";
@@ -2492,17 +2489,14 @@ mod tests {
         assert!(storage.get_submit_delta_calls().is_empty());
 
         let module = crate::modules::testing::StubModule::allowing();
-        let (result, _, _) =
+        let (result, storage, _) =
             push_with_modules_when(module.clone(), lookup_fails, OnError::Allow).await;
-        let approval = result
-            .expect("fail-open lets the push through")
-            .delta
-            .metadata
-            .and_then(|metadata| metadata.modules)
-            .expect("the approval is recorded");
+        assert!(
+            matches!(result, Err(GuardianError::ModuleUnavailable { .. })),
+            "a request that cannot be built is refused even by a fail-open module: {result:?}"
+        );
         assert_eq!(module.calls(), 0);
-        assert_eq!(approval.failed_open.len(), 1);
-        assert_eq!(approval.failed_open[0].failure, "request_unavailable");
+        assert!(storage.get_submit_delta_calls().is_empty());
     }
 
     #[tokio::test]

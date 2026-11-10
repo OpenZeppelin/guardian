@@ -24,12 +24,13 @@ For every instance in the catalog, know which path stops it:
 | `operator_can_disable = false`, `on_error = "allow"` | None needed for an outage: failures continue (recorded on the delta). A module that denies wrongly needs a params change or a deploy | Next request |
 | `operator_can_disable = false`, `on_error = "deny"` | A deploy: change the catalog and restart | A rollout |
 
-- Use `on_error = "allow"` only where skipping the instance is acceptable for
-  any transaction, not only during an outage: a transaction whose request the
-  Guardian cannot build or send (an account view it cannot read, a request over
-  `GUARDIAN_MODULE_REQUEST_MAX_BYTES`) is a module failure too, and a fail-open
-  instance is then skipped for it (recorded in the delta's `modules.failed_open`,
-  read from `GET /dashboard/accounts/{account_id}/deltas/{nonce}`).
+- `on_error = "allow"` skips the instance only when the module itself fails
+  (timeout, error, invalid decision, open circuit), which the delta records in
+  `modules.failed_open` (`GET /dashboard/accounts/{account_id}/deltas/{nonce}`).
+  A request the Guardian cannot build (an account view it cannot read, a failed
+  read) or one over `GUARDIAN_MODULE_REQUEST_MAX_BYTES` is refused whatever
+  `on_error` says, since a requester can cause either on purpose; both are
+  counted in `guardian_module_request_refused_total{module, reason}`.
 - Give the on-call operator `modules:disable`. It allows disabling instances
   marked `operator_can_disable` and nothing else, so it is safe to hand out
   more widely than `policies:write` ([permissions](../DASHBOARD.md#permission-vocabulary)).

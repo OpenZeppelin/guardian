@@ -28,7 +28,8 @@ pub enum MultisigError {
     #[error("GUARDIAN server error: {0}")]
     GuardianServer(String),
 
-    /// A GUARDIAN policy module refused the request. Final: retrying the same request
+    /// A GUARDIAN policy module refused the request, or GUARDIAN refused one too large for its
+    /// modules to judge (`reason_code = request_too_large`). Final: retrying the same request
     /// gets the same answer.
     #[error("GUARDIAN policy {}denied the request: {reason_code}{}", module.as_deref().map(|module| format!("module {module} ")).unwrap_or_default(), layer.as_deref().map(|layer| format!(" ({layer} layer)")).unwrap_or_default())]
     ModuleDenied {
@@ -40,7 +41,8 @@ pub enum MultisigError {
         client_message: Option<String>,
     },
 
-    /// A fail-closed GUARDIAN policy module could not decide. Retryable.
+    /// A fail-closed GUARDIAN policy module could not decide, or GUARDIAN could not build the
+    /// request a module judges. Retryable.
     /// `module` is absent for an instance whose denials are generic.
     #[error("a GUARDIAN policy module is unavailable; try again shortly")]
     ModuleUnavailable { module: Option<String> },

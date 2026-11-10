@@ -89,7 +89,7 @@ pub struct ModuleApproval {
 pub struct FailedOpen {
     pub module_id: String,
     pub layer: String,
-    /// `timeout`, `error`, `invalid_decision`, `request_unavailable` or `circuit_open`; the
+    /// `timeout`, `error`, `invalid_decision` or `circuit_open`; the
     /// detail is logged.
     pub failure: String,
 }

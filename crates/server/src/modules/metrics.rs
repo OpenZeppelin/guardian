@@ -33,6 +33,17 @@ pub fn evaluated(module: &str, outcome: Outcome, took: Duration) {
     .record(took.as_secs_f64());
 }
 
+/// A request refused before the module was called, because it could not be built or exceeds
+/// the size cap.
+pub fn request_refused(module: &str, reason: &'static str) {
+    metrics::counter!(
+        names::MODULE_REQUEST_REFUSED_TOTAL,
+        names::LABEL_MODULE => module.to_string(),
+        names::LABEL_REASON => reason
+    )
+    .increment(1);
+}
+
 pub fn failed_open(module: &str) {
     metrics::counter!(names::MODULE_FAIL_OPEN_TOTAL, names::LABEL_MODULE => module.to_string())
         .increment(1);

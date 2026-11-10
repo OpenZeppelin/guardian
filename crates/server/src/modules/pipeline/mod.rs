@@ -141,8 +141,11 @@ enum Failure {
     InvalidDecision(String),
     /// No `effect`, or a value this Guardian does not know: never read as an allow.
     UnknownEffect(i32),
+    /// The request could not be built: an account view or the projection could not be
+    /// extracted, or the stored state could not be read. Never let through by `on_error`.
     RequestUnavailable(String),
-    /// The encoded request exceeds the size cap; it is not sent.
+    /// The encoded request exceeds the size cap; it is not sent. Never let through by
+    /// `on_error`.
     RequestTooLarge(usize),
     /// The instance's breaker is open; the module is not called.
     CircuitOpen,
@@ -158,7 +161,50 @@ impl Failure {
             Failure::CircuitOpen => "circuit_open",
         }
     }
+
+    /// The refusal for a failure the request itself causes, whatever the instance's
+    /// `on_error`: a requester can make a request that cannot be built or that exceeds the size
+    /// cap, so letting either through would let the requester switch fail-open instances off.
+    /// `on_error` covers only the module's own failures. A request that could not be built is
+    /// refused as unavailable, since its cause can be transient (the chain fee not loaded yet);
+    /// one over the cap is denied, since resending it cannot succeed. Returns the refusal and
+    /// its `reason` for `guardian_module_request_refused_total`, or `None` for the module's own
+    /// failures.
+    fn refusal(&self, instance: &Instance, layer: Layer) -> Option<(GuardianError, &'static str)> {
+        let generic = instance.config.client_reason == ClientReason::Generic;
+        match self {
+            Failure::RequestUnavailable(_) => Some((
+                GuardianError::ModuleUnavailable {
+                    module: (!generic).then(|| instance.config.id.clone()),
+                },
+                "unavailable",
+            )),
+            Failure::RequestTooLarge(_) if generic => {
+                Some((GuardianError::ModuleDeniedGeneric, "too_large"))
+            }
+            Failure::RequestTooLarge(_) => Some((
+                GuardianError::ModuleDenied {
+                    module: instance.config.id.clone(),
+                    reason_code: REQUEST_TOO_LARGE.to_string(),
+                    layer: layer.as_str().to_string(),
+                    client_message: Some(REQUEST_TOO_LARGE_MESSAGE.to_string()),
+                },
+                "too_large",
+            )),
+            Failure::Error(_)
+            | Failure::Rejected(_)
+            | Failure::Timeout
+            | Failure::InvalidDecision(_)
+            | Failure::UnknownEffect(_)
+            | Failure::CircuitOpen => None,
+        }
+    }
 }
+
+/// The reason code of the denial for a request over `GUARDIAN_MODULE_REQUEST_MAX_BYTES`.
+const REQUEST_TOO_LARGE: &str = "request_too_large";
+const REQUEST_TOO_LARGE_MESSAGE: &str =
+    "This request is too large for this Guardian's policy modules to judge.";
 
 impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -740,13 +786,19 @@ fn effect(decision: &Decision) -> Option<Effect> {
     }
 }
 
-/// Applies the instance's `on_error`: a refusal for `deny`, the failed-open record for `allow`.
+/// Refuses a failure the request causes ([`Failure::refusal`]); otherwise applies the
+/// instance's `on_error`: a refusal for `deny`, the failed-open record for `allow`.
 fn fail(
     instance: &Instance,
     layer: Layer,
     account_id: &str,
     failure: &Failure,
 ) -> Result<Option<FailedOpen>, GuardianError> {
+    if let Some((refusal, reason)) = failure.refusal(instance, layer) {
+        super::metrics::request_refused(&instance.config.id, reason);
+        tracing::warn!(module = %instance.config.id, account_id, %failure, "Policy module request could not be judged; refusing whatever on_error says");
+        return Err(refusal);
+    }
     match instance.config.on_error {
         OnError::Deny => {
             tracing::warn!(module = %instance.config.id, account_id, %failure, "Policy module failed; refusing");
@@ -1065,7 +1117,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_build_failure_applies_each_failure_mode() {
+    async fn a_request_that_cannot_be_built_is_refused_whatever_on_error_says() {
         let closed = pipeline(vec![instance(
             "caps",
             &[HOOK],
@@ -1087,9 +1139,12 @@ mod tests {
             StubModule::allowing(),
         )]);
         assert!(
-            open.run(HOOK, "0xacc", || Err("view failed".into()))
-                .await
-                .is_ok()
+            matches!(
+                open.run(HOOK, "0xacc", || Err("view failed".into())).await,
+                Err(GuardianError::ModuleUnavailable { .. })
+            ),
+            "a requester must not be able to switch a fail-open module off by making the \
+             request unbuildable"
         );
     }
 
@@ -1573,7 +1628,73 @@ mod failure_handling_tests {
     }
 
     #[tokio::test]
-    async fn an_oversized_request_is_a_module_failure_and_is_not_sent() {
+    async fn an_oversized_request_is_denied_and_not_sent_whatever_on_error_says() {
+        for on_error in [OnError::Deny, OnError::Allow] {
+            let module = StubModule::allowing();
+            let pipeline = ModulePipeline::from_instances(vec![instance(
+                "screening",
+                &[HOOK],
+                on_error,
+                module.clone(),
+            )])
+            .with_limits(Limits {
+                request_max_bytes: 64,
+                ..Limits::default()
+            });
+            let refused = pipeline
+                .run(HOOK, "0xacc", || {
+                    Ok(HookRequest {
+                        submitter: "0x".repeat(64),
+                        ..Default::default()
+                    })
+                })
+                .await;
+            assert!(
+                matches!(
+                    refused,
+                    Err(GuardianError::ModuleDenied { ref module, ref reason_code, .. })
+                        if module == "screening" && reason_code == "request_too_large"
+                ),
+                "{on_error:?}: {refused:?}"
+            );
+            assert_eq!(module.calls(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_generic_instance_refuses_without_naming_itself() {
+        let mut generic = instance("screening", &[HOOK], OnError::Allow, StubModule::allowing());
+        generic.config.client_reason = crate::modules::catalog::ClientReason::Generic;
+        let pipeline = ModulePipeline::from_instances(vec![generic]).with_limits(Limits {
+            request_max_bytes: 64,
+            ..Limits::default()
+        });
+        let oversized = pipeline
+            .run(HOOK, "0xacc", || {
+                Ok(HookRequest {
+                    submitter: "0x".repeat(64),
+                    ..Default::default()
+                })
+            })
+            .await;
+        assert!(
+            matches!(oversized, Err(GuardianError::ModuleDeniedGeneric)),
+            "{oversized:?}"
+        );
+        let unbuildable = pipeline
+            .run(HOOK, "0xacc", || Err("view failed".into()))
+            .await;
+        assert!(
+            matches!(
+                unbuildable,
+                Err(GuardianError::ModuleUnavailable { module: None })
+            ),
+            "{unbuildable:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refused_requests_never_open_the_circuit() {
         let module = StubModule::allowing();
         let pipeline = ModulePipeline::from_instances(vec![instance(
             "screening",
@@ -1583,21 +1704,31 @@ mod failure_handling_tests {
         )])
         .with_limits(Limits {
             request_max_bytes: 64,
+            breaker_failures: 1,
             ..Limits::default()
         });
-        let refused = pipeline
-            .run(HOOK, "0xacc", || {
-                Ok(HookRequest {
-                    submitter: "0x".repeat(64),
-                    ..Default::default()
+        for _ in 0..3 {
+            let _ = pipeline
+                .run(HOOK, "0xacc", || {
+                    Ok(HookRequest {
+                        submitter: "0x".repeat(64),
+                        ..Default::default()
+                    })
                 })
-            })
-            .await;
-        assert!(matches!(
-            refused,
-            Err(GuardianError::ModuleUnavailable { .. })
-        ));
-        assert_eq!(module.calls(), 0);
+                .await;
+            let _ = pipeline
+                .run(HOOK, "0xacc", || Err("view failed".into()))
+                .await;
+        }
+        assert_eq!(
+            pipeline.breakers().state("screening"),
+            CircuitState::Closed,
+            "a requester's refused requests say nothing about whether the module is up"
+        );
+        run(&pipeline)
+            .await
+            .expect("the next request reaches the module");
+        assert_eq!(module.calls(), 1);
     }
 
     #[tokio::test]

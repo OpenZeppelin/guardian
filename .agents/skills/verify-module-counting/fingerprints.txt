@@ -1,5 +1,5 @@
 docs/rfcs/0002-guardian-modules.md 3.3 3109f5b03a7caef3
-docs/rfcs/0002-guardian-modules.md 3.4 c2ae5a4f05b457bd
+docs/rfcs/0002-guardian-modules.md 3.4 0d8093392237114f
 crates/server/src/services/push_delta.rs push_delta 20863182e67af49d
 crates/server/src/storage/mod.rs gate_candidate_submission 99785be2d52ca367
 crates/server/src/storage/mod.rs classify_chain_position ebe38e956458a637

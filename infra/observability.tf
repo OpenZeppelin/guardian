@@ -401,6 +401,12 @@ locals {
             dimensions = [["module"]]
           },
           {
+            # Requests refused before a module was called, whatever its on_error: `reason` is
+            # `unavailable` (the request could not be built) or `too_large`.
+            metric_name_selectors = ["^guardian_module_request_refused_total$"]
+            dimensions            = [["module"], ["module", "reason"]]
+          },
+          {
             metric_name_selectors = ["^guardian_module_catalog_info$"]
             dimensions            = [["catalog_hash"]]
           },

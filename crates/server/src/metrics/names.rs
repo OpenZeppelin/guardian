@@ -163,6 +163,7 @@ pub const DASHBOARD_STATS_REFRESH_DURATION_SECONDS: &str =
 
 pub const MODULE_EVALUATE_DURATION_SECONDS: &str = "guardian_module_evaluate_duration_seconds";
 pub const MODULE_FAIL_OPEN_TOTAL: &str = "guardian_module_fail_open_total";
+pub const MODULE_REQUEST_REFUSED_TOTAL: &str = "guardian_module_request_refused_total";
 pub const MODULE_UP: &str = "guardian_module_up";
 pub const MODULE_CIRCUIT_OPEN: &str = "guardian_module_circuit_open";
 pub const MODULE_ENABLED: &str = "guardian_module_enabled";
@@ -771,6 +772,12 @@ pub const REGISTRY: &[MetricDef] = &[
         kind: MetricKind::Counter,
         labels: &[LABEL_MODULE],
         help: "Policy module failures a fail-open instance let through, by instance.",
+    },
+    MetricDef {
+        name: MODULE_REQUEST_REFUSED_TOTAL,
+        kind: MetricKind::Counter,
+        labels: &[LABEL_MODULE, LABEL_REASON],
+        help: "Requests refused without calling a policy module, whatever its on_error, because the Guardian could not build them (reason unavailable) or they exceed the size cap (reason too_large), by instance.",
     },
     MetricDef {
         name: MODULE_UP,

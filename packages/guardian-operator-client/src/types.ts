@@ -465,7 +465,7 @@ export interface DashboardDeltaModuleFailedOpen {
   moduleId: string;
   /** `global` or `account`. */
   layer: string;
-  /** `timeout`, `error`, `invalid_decision`, `request_unavailable` or
+  /** `timeout`, `error`, `invalid_decision` or
    * `circuit_open`. */
   failure: string;
 }
