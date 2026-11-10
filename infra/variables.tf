@@ -1015,6 +1015,32 @@ variable "guardian_tx_prover_timeout_secs" {
   }
 }
 
+variable "guardian_modules_config" {
+  description = "Path of the policy module catalog inside the server image, injected as GUARDIAN_MODULES_CONFIG. Empty runs without policy modules. The published image carries no catalog: build an image FROM it that copies yours in, and deploy that image. The catalog is deploy configuration, so a change to it is a new image and a new task definition."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.guardian_modules_config == "" || startswith(var.guardian_modules_config, "/")
+    error_message = "guardian_modules_config must be an absolute path inside the image."
+  }
+}
+
+variable "guardian_module_secret_names" {
+  description = "Secrets Manager secret names the policy module catalog references (auth.token_secret, tls.client_cert_secret, tls.client_key_secret and $secret params). The ECS task runtime role is granted secretsmanager:GetSecretValue on each, and GUARDIAN_MODULE_SECRET_PROVIDER is set to aws so the dev stage reads them the same way as prod. The secrets themselves are created and rotated by the operator."
+  type        = list(string)
+  default     = []
+  validation {
+    condition = alltrue([
+      for name in var.guardian_module_secret_names : can(regex("^[A-Za-z0-9/_+=.@-]{1,512}$", name))
+    ])
+    error_message = "Each guardian_module_secret_names entry is a secret name of 1 to 512 letters, digits and /_+=.@- characters, not an ARN."
+  }
+  validation {
+    condition     = length(var.guardian_module_secret_names) == 0 || var.guardian_modules_config != ""
+    error_message = "guardian_module_secret_names needs guardian_modules_config: without a catalog nothing reads the secrets."
+  }
+}
+
 variable "guardian_execution_lease_secs" {
   description = "Optional override for GUARDIAN_EXECUTION_LEASE_SECS, the execution lease length (server default 120, at most 3600)"
   type        = number

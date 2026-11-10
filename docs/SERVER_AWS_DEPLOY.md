@@ -301,6 +301,45 @@ aws_region = "us-east-1"
 # cloudflare_api_token = "..."
 ```
 
+## Policy modules
+
+Policy modules ([guide](./guides/policy-modules/README.md)) are off unless the
+server is given a catalog. The catalog is a file the server reads once at
+startup, and the published image carries none, so on this stack it travels in
+the image:
+
+1. Build an image from the published one that copies your catalog in, push it
+   to the stack's ECR repository and deploy it as the server image:
+
+   ```dockerfile
+   FROM ghcr.io/openzeppelin/guardian:<version>
+   COPY modules.toml /etc/guardian/modules.toml
+   ```
+
+2. Point the server at it and name the secrets the catalog references:
+
+   ```hcl
+   guardian_modules_config      = "/etc/guardian/modules.toml"
+   guardian_module_secret_names = ["guardian/modules/screening-token"]
+   ```
+
+`guardian_modules_config` sets `GUARDIAN_MODULES_CONFIG`.
+`guardian_module_secret_names` grants the task runtime role
+`secretsmanager:GetSecretValue` on exactly those secrets and sets
+`GUARDIAN_MODULE_SECRET_PROVIDER=aws`. Create each secret before the deploy
+that enables its instance ([`runbooks/secrets.md`](./runbooks/secrets.md#policy-module-secrets)):
+an enabled instance whose secret cannot be read stops startup.
+
+The catalog is deploy configuration. A change to it is a new image and a new
+task definition, which is the review bar wanted for adding, removing or
+reconfiguring an instance; params, enabled flags and account assignments
+change at run time through the [operator API](./DASHBOARD.md#policy-modules)
+and live in the database. A remote module must be reachable from the task's
+subnets; the stack does not deploy modules.
+
+A catalog that is set but empty, or declares no module, stops startup. To run
+without modules again, clear `guardian_modules_config`.
+
 ## Database TLS verification
 
 By default the server `DATABASE_URL` uses `sslmode=require` — the connection is

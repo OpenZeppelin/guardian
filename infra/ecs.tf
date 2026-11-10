@@ -312,6 +312,18 @@ resource "aws_ecs_task_definition" "server" {
               value = tostring(var.guardian_execution_lease_secs)
             }
           ] : [],
+          var.guardian_modules_config != "" ? [
+            {
+              name  = "GUARDIAN_MODULES_CONFIG"
+              value = var.guardian_modules_config
+            }
+          ] : [],
+          length(var.guardian_module_secret_names) > 0 ? [
+            {
+              name  = "GUARDIAN_MODULE_SECRET_PROVIDER"
+              value = "aws"
+            }
+          ] : [],
           var.guardian_execution_reconcile_interval_secs != null ? [
             {
               name  = "GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS"

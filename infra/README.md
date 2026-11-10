@@ -257,6 +257,8 @@ aws ecr delete-repository --repository-name "$ECR_REPO_NAME" --force --region "$
 | `guardian_proving_enabled` | `null` | Overrides `GUARDIAN_PROVING_ENABLED`; `false` refuses execution requests while executions in flight still settle |
 | `guardian_tx_prover_timeout_secs` | `null` | Overrides `GUARDIAN_TX_PROVER_TIMEOUT_SECS` (server default 300) |
 | `guardian_execution_lease_secs` | `null` | Overrides `GUARDIAN_EXECUTION_LEASE_SECS` (server default 120, at most 3600) |
+| `guardian_modules_config` | `""` | Absolute path of the policy module catalog inside the server image, injected as `GUARDIAN_MODULES_CONFIG`. Empty runs without policy modules. The published image carries no catalog, so deploy an image built from it that copies yours in |
+| `guardian_module_secret_names` | `[]` | Secrets Manager secret names the catalog references. The task runtime role gets `secretsmanager:GetSecretValue` on each, and `GUARDIAN_MODULE_SECRET_PROVIDER=aws` is set. Needs `guardian_modules_config`; the secrets are created and rotated by the operator |
 | `guardian_execution_reconcile_interval_secs` | `null` | Overrides `GUARDIAN_EXECUTION_RECONCILE_INTERVAL_SECS` (server default 30; must stay below the lease) |
 | `guardian_execution_expiration_horizon_blocks` | `null` | Overrides `GUARDIAN_EXECUTION_EXPIRATION_HORIZON_BLOCKS` (server default 512, at least 256) |
 | `guardian_execution_max_concurrent` | `null` | Overrides `GUARDIAN_EXECUTION_MAX_CONCURRENT`, a memory safety bound on executions one task holds at once (server default 64, at least 1); raise it only with `server_memory` |

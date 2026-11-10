@@ -545,9 +545,11 @@ server reads them once, when it creates the instances, through the provider
 [remote module guide](../guides/policy-modules/remote.md#credentials).
 
 - **AWS (`aws`).** A name is a Secrets Manager secret id holding a secret
-  string. The reference Terraform does not create these secrets or grant the
-  task access to them: create each secret, then grant the ECS task runtime role
-  `secretsmanager:GetSecretValue` on it before enabling the instance.
+  string. The reference Terraform does not create these secrets: create each
+  one, then list its name in `guardian_module_secret_names`, which grants the
+  ECS task runtime role `secretsmanager:GetSecretValue` on it
+  ([deploy guide](../SERVER_AWS_DEPLOY.md#policy-modules)), before enabling
+  the instance.
 - **Files (`file`).** A name is a relative path below
   `GUARDIAN_MODULE_SECRET_DIR` (the catalog's directory when unset). The server
   refuses a file readable by group or others, as it does for ACK key files; a
