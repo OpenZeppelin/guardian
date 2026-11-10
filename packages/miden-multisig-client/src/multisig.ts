@@ -1477,6 +1477,7 @@ export class Multisig {
   async requestGuardianExecution(proposalId: string): Promise<ProposalExecution> {
     const proposal = this.getLocalProposal(proposalId);
     if (proposal?.verification.status === 'unchecked') {
+      await this.syncChain();
       await this.verifyProposalMetadataBinding(proposal).catch(() => undefined);
     }
     assertGuardianMayExecute(proposalId, proposal);

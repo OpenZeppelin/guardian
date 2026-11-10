@@ -10908,6 +10908,7 @@ describe('Multisig', () => {
 
     it('verifies an unchecked proposal before sending it, and refuses it when that fails', async () => {
       const { multisig, execute } = holding(publicP2id, { status: 'unchecked' });
+      const sync = vi.spyOn(multisig as any, 'syncChain').mockResolvedValue(undefined);
       const check = vi
         .spyOn(multisig as any, 'checkProposalMetadataBinding')
         .mockRejectedValueOnce(new Error('metadata does not rebuild the summary'))
@@ -10916,6 +10917,8 @@ describe('Multisig', () => {
       const error = await multisig.requestGuardianExecution(proposalId).catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ProposalNotHeldLocallyError);
       expect(execute).not.toHaveBeenCalled();
+      expect(sync).toHaveBeenCalledTimes(1);
+      expect(sync.mock.invocationCallOrder[0]).toBeLessThan(check.mock.invocationCallOrder[0]);
 
       (multisig as any).proposals.get(proposalId).verification = { status: 'unchecked' };
       await expect(multisig.requestGuardianExecution(proposalId)).resolves.toBe(accepted);
