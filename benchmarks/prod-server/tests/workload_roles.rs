@@ -92,3 +92,33 @@ fn target_profiles_load_with_roles() {
         assert_eq!(roles.cosigners_per_writer, 3);
     }
 }
+
+#[test]
+fn devnet_bench_profiles_load_with_session_roles() {
+    for (name, readers, users) in [
+        ("devnet-bench-r1-1k.toml", 2_000, 2_010),
+        ("devnet-bench-r2-2500.toml", 5_000, 5_025),
+        ("devnet-bench-r3-5k.toml", 10_000, 10_050),
+        ("devnet-bench-r4-7500.toml", 15_000, 15_075),
+        ("devnet-bench-r5-10k.toml", 20_000, 20_100),
+        ("devnet-bench-sustained-10k.toml", 20_000, 100_000),
+    ] {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("profiles")
+            .join(name);
+        let config = guardian_prod_benchmarks::config::RunConfig::load_from_path(&path)
+            .expect("profile loads");
+        assert_eq!(config.users, users, "{name}");
+        assert!(
+            matches!(&config.credential, Credential::Session { network } if network == "devnet"),
+            "{name}"
+        );
+        let roles = config.roles.expect("roles configured");
+        assert_eq!(
+            (roles.readers, roles.writers),
+            (readers, readers / 200),
+            "{name}"
+        );
+        assert_eq!(roles.read_mode, ReadMode::NonceThenStateOnChange);
+    }
+}
