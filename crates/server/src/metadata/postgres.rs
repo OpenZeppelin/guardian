@@ -982,7 +982,7 @@ impl MetadataStore for PostgresMetadataStore {
         }
         let mut conn = self
             .pool
-            .get_timed(crate::metrics::labels::PoolKind::Metadata)
+            .get()
             .await
             .map_err(|e| format!("Failed to get connection: {e}"))?;
 
