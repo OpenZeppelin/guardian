@@ -26,6 +26,7 @@ const GATE: &str = "qual-gate";
 const CAP: &str = "qual-cap";
 const SWITCH: &str = "qual-switch";
 const REMOTE: &str = "qual-remote";
+const RECIPIENT: &str = "qual-recipient";
 
 /// A signer commitment nobody holds. Checked against every signer, an allowlist of only this
 /// refuses every transaction of the fixture account.
@@ -554,6 +555,33 @@ async fn assert_switch_survived(operator: &Operator<'_>) -> ActionOutcome {
 /// Assigns the gate to the scenario's account with a cap of exactly what `asset-send` sends,
 /// and reads it back through the account's own policy listing.
 pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
+    assign_to_funded_account(runner, CAP, |faucet| {
+        let mut limit = serde_json::Map::new();
+        limit.insert(faucet.to_hex(), json!(super::live::P2ID_AMOUNT.to_string()));
+        json!({ "max_per_transaction": limit })
+    })
+    .await
+}
+
+/// Assigns `qual-recipient` to the scenario's account with a denylist naming the funding
+/// faucet, an account the scenario never pays, and reads it back through the account's own
+/// policy listing. `deny_unknown` is left unset, so it is on.
+pub async fn assign_recipient_denylist(runner: &Runner) -> ActionOutcome {
+    assign_to_funded_account(
+        runner,
+        RECIPIENT,
+        |faucet| json!({ "denylist": [faucet.to_hex()] }),
+    )
+    .await
+}
+
+/// Assigns `module` to the scenario's account with the params `params` builds from the funding
+/// faucet, and checks the account's own policy listing shows them.
+async fn assign_to_funded_account(
+    runner: &Runner,
+    module: &str,
+    params: impl FnOnce(miden_protocol::account::AccountId) -> Value,
+) -> ActionOutcome {
     let Some(fixtures) = runner.fixtures.as_ref() else {
         return ActionOutcome::failed_setup("the server fixtures were not loaded");
     };
@@ -563,18 +591,16 @@ pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
     };
     let Some(faucet) = session.faucet else {
         return ActionOutcome::failed_setup(
-            "the account was never funded, so there is no asset to cap",
+            "the account was never funded, so there is no asset to build the params from",
         );
     };
     let operator = match Operator::login(runner, fixtures).await {
         Ok(operator) => operator,
         Err(outcome) => return outcome,
     };
-    let mut limit = serde_json::Map::new();
-    limit.insert(faucet.to_hex(), json!(super::live::P2ID_AMOUNT.to_string()));
-    let cap = json!({ "max_per_transaction": limit });
+    let params = params(faucet);
     if let Err(outcome) = operator
-        .assign(&session.account_id.to_string(), CAP, cap.clone())
+        .assign(&session.account_id.to_string(), module, params.clone())
         .await
     {
         return outcome;
@@ -588,19 +614,19 @@ pub async fn assign_cap(runner: &Runner) -> ActionOutcome {
             ));
         }
     };
-    match policies.iter().find(|policy| policy.module_id == CAP) {
+    match policies.iter().find(|policy| policy.module_id == module) {
         Some(policy)
             if [&policy.params, &policy.account_layer]
                 .iter()
-                .any(|params| params.as_ref() == Some(&cap)) =>
+                .any(|listed| listed.as_ref() == Some(&params)) =>
         {
             ActionOutcome::Passed
         }
         Some(policy) => ActionOutcome::failed_product(format!(
-            "the account's policies list {CAP} without the cap it was assigned: {policy:?}"
+            "the account's policies list {module} without the params it was assigned: {policy:?}"
         )),
         None => ActionOutcome::failed_product(format!(
-            "the account's policies do not list the {CAP} it was assigned: {policies:?}"
+            "the account's policies do not list the {module} it was assigned: {policies:?}"
         )),
     }
 }
@@ -624,12 +650,22 @@ pub async fn assert_cap_refuses(runner: &Runner) -> ActionOutcome {
     let client = &mut session.clients[0];
 
     let over_check = settled!(client.check_transaction(send(amount + 1)));
-    let over_check = expect_cap_denied("the check of a payment over the cap", over_check.map(drop));
+    let over_check = expect_module_denied(
+        "the check of a payment over the cap",
+        over_check.map(drop),
+        CAP,
+        "amount_cap_exceeded",
+    );
     if !matches!(over_check, ActionOutcome::Passed) {
         return over_check;
     }
     let over = settled!(client.propose_transaction(send(amount + 1)));
-    let over = expect_cap_denied("a payment over the cap", over.map(drop));
+    let over = expect_module_denied(
+        "a payment over the cap",
+        over.map(drop),
+        CAP,
+        "amount_cap_exceeded",
+    );
     if !matches!(over, ActionOutcome::Passed) {
         return over;
     }
@@ -642,16 +678,70 @@ pub async fn assert_cap_refuses(runner: &Runner) -> ActionOutcome {
     }
 }
 
-fn expect_cap_denied(what: &str, result: Result<(), MultisigError>) -> ActionOutcome {
+/// A payment to the blocked recipient is refused by the dry-run check and at creation, naming
+/// the module and `recipient_blocked`; a payment to the treasury, which the denylist does not
+/// name, passes the check. That transaction also carries the fee note, which has no recipient
+/// a denylist can check, so it passing shows the fee note is not read as a payment.
+pub async fn assert_recipient_refuses(runner: &Runner) -> ActionOutcome {
+    let mut guard = runner.session.lock().await;
+    let Some(session) = guard.as_mut() else {
+        return ActionOutcome::failed_setup("no account has been created in this scenario");
+    };
+    let (Some(faucet), Some(treasury)) = (session.faucet, session.treasury) else {
+        return ActionOutcome::failed_setup(
+            "the account was never funded, so it holds nothing to send",
+        );
+    };
+    let amount = super::live::P2ID_AMOUNT;
+    let client = &mut session.clients[0];
+
+    let blocked_check =
+        settled!(client.check_transaction(TransactionType::transfer(faucet, faucet, amount)));
+    let blocked_check = expect_module_denied(
+        "the check of a payment to the blocked recipient",
+        blocked_check.map(drop),
+        RECIPIENT,
+        "recipient_blocked",
+    );
+    if !matches!(blocked_check, ActionOutcome::Passed) {
+        return blocked_check;
+    }
+    let blocked =
+        settled!(client.propose_transaction(TransactionType::transfer(faucet, faucet, amount)));
+    let blocked = expect_module_denied(
+        "a payment to the blocked recipient",
+        blocked.map(drop),
+        RECIPIENT,
+        "recipient_blocked",
+    );
+    if !matches!(blocked, ActionOutcome::Passed) {
+        return blocked;
+    }
+    match settled!(client.check_transaction(TransactionType::transfer(treasury, faucet, amount))) {
+        Ok(_) => ActionOutcome::Passed,
+        Err(error) => ActionOutcome::failed_product(format!(
+            "the check of a payment to a recipient the denylist does not name was refused, so \
+             the fee note may be read as a payment to an unknown recipient: {error}"
+        )),
+    }
+}
+
+/// A multisig SDK call refused by `expected_module` for `expected_reason`.
+fn expect_module_denied(
+    what: &str,
+    result: Result<(), MultisigError>,
+    expected_module: &str,
+    expected_reason: &str,
+) -> ActionOutcome {
     match result {
         Ok(()) => ActionOutcome::failed_product(format!("{what} was accepted")),
         Err(MultisigError::ModuleDenied {
             module: Some(module),
             reason_code,
             ..
-        }) if module == CAP && reason_code == "amount_cap_exceeded" => ActionOutcome::Passed,
+        }) if module == expected_module && reason_code == expected_reason => ActionOutcome::Passed,
         Err(error) => ActionOutcome::failed_product(format!(
-            "{what} was refused, but not by {CAP} for amount_cap_exceeded: {error}"
+            "{what} was refused, but not by {expected_module} for {expected_reason}: {error}"
         )),
     }
 }

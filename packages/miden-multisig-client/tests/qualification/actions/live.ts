@@ -26,7 +26,7 @@ import {
   type LiveSession,
   type Scheme,
 } from '../live.js';
-import { CAP, expectDenied } from './modules.js';
+import { CAP, RECIPIENT, expectDenied } from './modules.js';
 import { setAccountModules, setAccountPaused } from './operator.js';
 import type { ActionContext, ActionOutcome } from '../runner.js';
 
@@ -3428,33 +3428,62 @@ export async function abandonStrandedHeadAndRecover(
  * own policy listing. Mirrors `assign_cap` in the Rust driver.
  */
 export async function assignModuleCap(context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  return assignToFundedAccount(context, scenarioId, CAP, (faucetId) => ({
+    max_per_transaction: { [faucetId]: P2ID_AMOUNT.toString() },
+  }));
+}
+
+/**
+ * Assigns the stack's `qual-recipient` module to the scenario's account with a
+ * denylist naming the funding faucet, an account the scenario never pays, and
+ * reads it back through the account's own policy listing. `deny_unknown` is
+ * left unset, so it is on. Mirrors `assign_recipient_denylist` in the Rust
+ * driver.
+ */
+export async function assignModuleRecipientDenylist(
+  context: ActionContext,
+  scenarioId: string,
+): Promise<ActionOutcome> {
+  return assignToFundedAccount(context, scenarioId, RECIPIENT, (faucetId) => ({ denylist: [faucetId] }));
+}
+
+async function assignToFundedAccount(
+  context: ActionContext,
+  scenarioId: string,
+  moduleId: string,
+  params: (faucetId: string) => Record<string, unknown>,
+): Promise<ActionOutcome> {
   const session = sessions.get(scenarioId);
   if (!session?.multisig || !session.accountId) {
     return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
   }
   if (!session.faucetId) {
-    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so there is no asset to cap' };
+    return {
+      kind: 'failed',
+      classification: 'setup',
+      reason: 'the account was never funded, so there is no asset to build the params from',
+    };
   }
-  const cap = { max_per_transaction: { [session.faucetId]: P2ID_AMOUNT.toString() } };
-  const assigned = await setAccountModules(context, session.accountId, [{ moduleId: CAP, params: cap }]);
+  const assignedParams = params(session.faucetId);
+  const assigned = await setAccountModules(context, session.accountId, [{ moduleId, params: assignedParams }]);
   if (assigned) return assigned;
 
   try {
     const policies = await session.multisig.getPolicies();
-    const policy = policies.find((entry) => entry.moduleId === CAP);
+    const policy = policies.find((entry) => entry.moduleId === moduleId);
     if (!policy) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `the account's policies do not list the ${CAP} it was assigned: ${JSON.stringify(policies)}`,
+        reason: `the account's policies do not list the ${moduleId} it was assigned: ${JSON.stringify(policies)}`,
       };
     }
-    const expected = JSON.stringify(cap);
+    const expected = JSON.stringify(assignedParams);
     if (JSON.stringify(policy.params) !== expected && JSON.stringify(policy.accountLayer) !== expected) {
       return {
         kind: 'failed',
         classification: 'product',
-        reason: `the account's policies list ${CAP} without the cap it was assigned: ${JSON.stringify(policy)}`,
+        reason: `the account's policies list ${moduleId} without the params it was assigned: ${JSON.stringify(policy)}`,
       };
     }
     return { kind: 'passed' };
@@ -3508,6 +3537,56 @@ export async function assertModuleCapRefuses(_context: ActionContext, scenarioId
       kind: 'failed',
       classification: 'product',
       reason: `the check of a payment of exactly the cap was refused, so the fee may count as a payment: ${String(error)}`,
+    };
+  }
+}
+
+/**
+ * A payment to the blocked recipient is refused by the dry-run check and at
+ * creation, naming the module and `recipient_blocked`; a payment to the
+ * treasury, which the denylist does not name, passes the check. That
+ * transaction also carries the fee note, which has no recipient a denylist can
+ * check, so it passing shows the fee note is not read as a payment. Mirrors
+ * `assert_recipient_refuses` in the Rust driver.
+ */
+export async function assertModuleRecipientRefuses(_context: ActionContext, scenarioId: string): Promise<ActionOutcome> {
+  const session = sessions.get(scenarioId);
+  if (!session?.multisig) {
+    return { kind: 'failed', classification: 'setup', reason: 'no account has been created in this scenario' };
+  }
+  if (!session.faucetId || !session.treasuryId) {
+    return { kind: 'failed', classification: 'setup', reason: 'the account was never funded, so it holds nothing to send' };
+  }
+  const multisig = session.multisig;
+  const faucetId = session.faucetId;
+  const pay = (recipientId: string) =>
+    ({ type: 'p2id', recipientId, faucetId, amount: P2ID_AMOUNT }) as const;
+
+  const blockedCheck = await expectDenied(
+    'the check of a payment to the blocked recipient',
+    () => proposeWhenSettled(() => multisig.checkTransaction(pay(faucetId))),
+    RECIPIENT,
+    'recipient_blocked',
+  );
+  if (blockedCheck.kind !== 'passed') return blockedCheck;
+  const blocked = await expectDenied(
+    'a payment to the blocked recipient',
+    () => proposeWhenSettled(() => multisig.createP2idProposal(faucetId, faucetId, P2ID_AMOUNT)),
+    RECIPIENT,
+    'recipient_blocked',
+  );
+  if (blocked.kind !== 'passed') return blocked;
+
+  try {
+    await proposeWhenSettled(() => multisig.checkTransaction(pay(session.treasuryId!)));
+    return { kind: 'passed' };
+  } catch (error) {
+    return {
+      kind: 'failed',
+      classification: 'product',
+      reason:
+        'the check of a payment to a recipient the denylist does not name was refused, so the fee note may be ' +
+        `read as a payment to an unknown recipient: ${String(error)}`,
     };
   }
 }

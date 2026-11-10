@@ -784,6 +784,25 @@ step_budget = "480s"
 required = true
 core = false
 
+# A recipient denylist on a real transaction. The denylist names the funding faucet, which the
+# scenario never pays: a payment to it is refused at the check and at creation, and a payment
+# to the treasury passes, is signed by GUARDIAN after the approval hook runs again, and lands.
+# `deny_unknown` is on by default once the denylist names anyone, and the fee note has no
+# recipient a denylist can check, so a fee note read as a payment would refuse the send.
+[[scenario]]
+id = "live-module-recipient-1of1-ecdsa"
+title = "A recipient denylist refuses a payment to a blocked account, and a payment elsewhere lands with its fee"
+profile = "live"
+sdk = "both"
+runtime = "server-side"
+scheme = "ecdsa"
+shape = "1-of-1"
+mode = "online"
+actions = ["account-create", "account-register", "asset-transfer", "note-consume", "module-recipient-assign", "module-recipient-refuses", "asset-send", "proposal-sign", "proposal-execute", "asset-send-assert"]
+step_budget = "480s"
+required = true
+core = false
+
 # The config-writing procedures encode the signature scheme into the advice
 # payload they build, and two scheme-binding defects have already been found
 # here (F8, F13). Running membership changes on one scheme only would leave an

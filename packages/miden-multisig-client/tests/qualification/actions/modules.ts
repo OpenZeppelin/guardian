@@ -8,6 +8,7 @@ import type { ActionContext, ActionOutcome } from '../runner.js';
 /** The instance the stack's catalog declares for rules a scenario assigns. */
 export const GATE = 'qual-gate';
 export const CAP = 'qual-cap';
+export const RECIPIENT = 'qual-recipient';
 
 /**
  * A signer commitment nobody holds. Checked against every signer, an allowlist

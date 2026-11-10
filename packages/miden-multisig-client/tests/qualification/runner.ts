@@ -201,6 +201,10 @@ async function runLiveAction(
       return live.assignModuleCap(context, scenario.id);
     case 'module-cap-refuses':
       return live.assertModuleCapRefuses(context, scenario.id);
+    case 'module-recipient-assign':
+      return live.assignModuleRecipientDenylist(context, scenario.id);
+    case 'module-recipient-refuses':
+      return live.assertModuleRecipientRefuses(context, scenario.id);
     default:
       return null;
   }

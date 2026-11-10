@@ -63,6 +63,16 @@ disclosure = "params"
 description = "Qualification spending cap for the accounts a scenario assigns"
 
 [[module]]
+id = "qual-recipient"
+kind = "recipient-policy"
+scope = "assigned"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 200
+on_error = "deny"
+disclosure = "params"
+description = "Qualification recipient denylist for the accounts a scenario assigns"
+
+[[module]]
 id = "qual-switch"
 kind = "signer-policy"
 scope = "assigned"

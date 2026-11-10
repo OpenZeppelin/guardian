@@ -85,7 +85,7 @@ gitignored directories, and tears it down afterwards:
 | A fourth Guardian that offers execution, `server-executing` | a configured prover and a database of its own (`guardian_executing`), so execution requests get past the capability gate in the deterministic profile |
 | A fifth Guardian that queues chained candidates, `server-queue` | `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` set to `2` in the deterministic profile and `4` in the live one (`QUAL_QUEUE_DEPTH` overrides it), the main server's acknowledgement identity, and a database of its own, so the candidate queue (issue #17) is qualified as an operator opts into it while the main server keeps the default of one in-flight candidate |
 | Operator allowlist | generated from the server fixtures via `qualification-driver operator-keys`, so the identities the scenarios sign with cannot drift from the ones the server accepts |
-| Policy module catalog | `lib/modules.sh` writes the main server's catalog per run: three in-process instances (`qual-gate` and `qual-switch` of kind `signer-policy`, `qual-cap` of kind `spending-limit`) and one remote `grpc` instance, all scoped `assigned` so no other scenario meets them. The remote one points at a module the Rust driver serves on the host (`host.docker.internal`, on `QUAL_MODULE_PORT`) over TLS, with a certificate a per-run CA signs and a bearer token the server reads through the file secrets backend |
+| Policy module catalog | `lib/modules.sh` writes the main server's catalog per run: four in-process instances (`qual-gate` and `qual-switch` of kind `signer-policy`, `qual-cap` of kind `spending-limit`, `qual-recipient` of kind `recipient-policy`) and one remote `grpc` instance, all scoped `assigned` so no other scenario meets them. The remote one points at a module the Rust driver serves on the host (`host.docker.internal`, on `QUAL_MODULE_PORT`) over TLS, with a certificate a per-run CA signs and a bearer token the server reads through the file secrets backend |
 | Guardian execution | the live profile points the server at the network's public prover (`https://tx-prover.<network>.miden.io`, overridable with `QUAL_TX_PROVER_URL`), so it offers execution; the deterministic stack configures none, so execution must be refused |
 | Postgres password | random per run |
 | Ports | picked per run, so concurrent runs do not collide |
@@ -301,7 +301,7 @@ testnet run of this line fails them along with everything else on 0.17.
 
 ### Policy modules
 
-Four scenarios cover policy modules ([RFC 0002](./rfcs/0002-guardian-modules.md)). Every
+Five scenarios cover policy modules ([RFC 0002](./rfcs/0002-guardian-modules.md)). Every
 instance in the stack's catalog is scoped `assigned`, so it applies only to an account a
 scenario assigns it to through the operator API, and the operator in the allowlist holds
 `policies:write` for that.
@@ -328,6 +328,14 @@ scenario assigns it to through the operator API, and the operator in the allowli
   transaction, and lands. The funding asset is the network's fee asset, so a fee note counted
   as a payment would push the capped send over the cap and fail it. Devnet's pairs exclude it
   for the window reason above.
+- `live-module-recipient-1of1-ecdsa` (live, both SDKs, required on testnet): `qual-recipient`
+  gives the account a denylist naming the funding faucet, which the scenario never pays, and
+  the account's own policy listing shows it. A payment to the faucet is refused at the check
+  and at creation with `recipient_blocked`; a payment to the treasury passes, is signed by
+  GUARDIAN at execution after the approval hook runs on the real transaction, and lands. The
+  denylist names someone, so `deny_unknown` is on, and the fee note has no recipient a
+  denylist can check: a fee note read as a payment would refuse the send. Devnet's pairs
+  exclude it for the same window reason.
 
 The deterministic scenarios propose the first threshold-only fixture delta (`queue_1`), not
 `delta_1`: the fixture generator adds `delta_1`'s signer without the approver scheme entry a

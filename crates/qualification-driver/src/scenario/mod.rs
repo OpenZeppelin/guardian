@@ -374,6 +374,12 @@ impl Runner {
                 }
                 Action::ModuleCapAssign => Some(modules::assign_cap(self).await),
                 Action::ModuleCapRefuses => Some(modules::assert_cap_refuses(self).await),
+                Action::ModuleRecipientAssign => {
+                    Some(modules::assign_recipient_denylist(self).await)
+                }
+                Action::ModuleRecipientRefuses => {
+                    Some(modules::assert_recipient_refuses(self).await)
+                }
                 _ => None,
             }
         } else {

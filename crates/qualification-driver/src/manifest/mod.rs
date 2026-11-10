@@ -211,6 +211,8 @@ pub enum Action {
     ModuleBreakGlass,
     ModuleCapAssign,
     ModuleCapRefuses,
+    ModuleRecipientAssign,
+    ModuleRecipientRefuses,
     Unknown(String),
 }
 
@@ -295,6 +297,8 @@ impl From<String> for Action {
             "module-break-glass" => Self::ModuleBreakGlass,
             "module-cap-assign" => Self::ModuleCapAssign,
             "module-cap-refuses" => Self::ModuleCapRefuses,
+            "module-recipient-assign" => Self::ModuleRecipientAssign,
+            "module-recipient-refuses" => Self::ModuleRecipientRefuses,
             other => Self::Unknown(other.to_string()),
         }
     }
