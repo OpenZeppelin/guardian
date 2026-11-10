@@ -994,6 +994,9 @@ export class GuardianHttpClient {
     requestPayload: unknown,
     mode: AuthMode = 'wallet'
   ): Promise<Response> {
+    if (requestPayload instanceof RequestAuthPayload) {
+      throw new Error('fetchAuthenticated signs the request payload itself; a tagged payload goes through fetchSigned');
+    }
     return this.fetchSigned(path, init, accountId, RequestAuthPayload.fromRequest(requestPayload), mode);
   }
 
