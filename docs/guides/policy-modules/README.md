@@ -77,9 +77,9 @@ Cosigners use two client endpoints:
   creation would return. At most `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` (30)
   checks per account and signer per minute.
 
-The multisig SDKs wrap both: Rust `get_policies` and `check_transaction`,
-TypeScript `getPolicies` and `checkTransaction`, which build the transaction
-exactly as proposing it would.
+The multisig SDKs wrap both: Rust `get_policies`, `check_transaction` and
+`check_custom_transaction`, TypeScript `getPolicies` and `checkTransaction`,
+which build the transaction exactly as proposing it would.
 
 An instance whose catalog params contain secret references cannot use
 `disclosure = "params"`: the server refuses to start, since the reference

@@ -218,8 +218,26 @@ export type CheckableTransaction =
       options?: CreateProposalOptions;
     };
 
-/** Thrown inside a check once the payload is built, so nothing after the push runs. */
-const CHECKED = Symbol('checked');
+/**
+ * A proposal built for the account and not yet sent: what GUARDIAN would store. A check and a
+ * push send the same draft, so a check answers for exactly the proposal a push would create.
+ */
+interface ProposalDraft {
+  nonce: number;
+  txSummaryBase64: string;
+  metadata: ProposalMetadata;
+  transactionRequest: TransactionRequestEnvelope | undefined;
+}
+
+/** The payload GUARDIAN receives for `draft`. It carries no approval: a proposer signs later. */
+function deltaPayloadOf(draft: ProposalDraft) {
+  return {
+    txSummary: { data: draft.txSummaryBase64 },
+    signatures: [],
+    metadata: ProposalMetadataCodec.toGuardian(draft.metadata),
+    ...(draft.transactionRequest ? { transactionRequest: draft.transactionRequest } : {}),
+  };
+}
 
 export interface CreateProposalOptions {
   /**
@@ -1412,7 +1430,7 @@ export class Multisig {
     }
     await this.refreshConfigFromStore();
     this.assertKeySchemeMatches();
-    return this.pushProposal(nonce, txSummaryBase64, metadata, undefined);
+    return this.pushDraft({ nonce, txSummaryBase64, metadata, transactionRequest: undefined });
   }
 
   /**
@@ -1432,68 +1450,68 @@ export class Multisig {
    * account and signer. Mirrors the Rust `MultisigClient::check_transaction`.
    */
   async checkTransaction(transaction: CheckableTransaction): Promise<CheckProposalResult> {
-    let result: CheckProposalResult | undefined;
-    const checking = Object.create(this) as Multisig;
-    (checking as unknown as { pushProposal: Multisig['pushProposal'] }).pushProposal = async (
-      nonce,
-      txSummaryBase64,
-      metadata,
-      transactionRequest,
-    ) => {
-      result = await this.guardian.checkDeltaProposal({
-        accountId: this._accountId,
-        nonce,
-        deltaPayload: {
-          txSummary: { data: txSummaryBase64 },
-          signatures: [],
-          metadata: ProposalMetadataCodec.toGuardian(metadata),
-          ...(transactionRequest ? { transactionRequest } : {}),
-        },
-      });
-      throw CHECKED;
-    };
-    try {
-      await proposeOn(checking, transaction);
-    } catch (error) {
-      if (error !== CHECKED) {
-        throw error;
-      }
-    }
-    if (!result) {
-      throw new Error('the transaction was not built, so it was not checked');
-    }
-    return result;
+    const draft = await this.draftFor(transaction);
+    return this.guardian.checkDeltaProposal({
+      accountId: this._accountId,
+      nonce: draft.nonce,
+      deltaPayload: deltaPayloadOf(draft),
+    });
   }
 
   /**
-   * Push a proposal to GUARDIAN and parse the reply against the signer config
-   * the caller refreshed from the store.
+   * Push a drafted proposal to GUARDIAN and parse the reply against the signer config the
+   * caller refreshed from the store.
    */
-  private async pushProposal(
-    nonce: number,
-    txSummaryBase64: string,
-    metadata: ProposalMetadata,
-    transactionRequest: TransactionRequestEnvelope | undefined,
-  ): Promise<Proposal> {
-    const guardianMetadata = ProposalMetadataCodec.toGuardian(metadata);
-
+  private async pushDraft(draft: ProposalDraft): Promise<Proposal> {
     const response = await this.guardian.pushDeltaProposal({
       accountId: this._accountId,
-      nonce,
-      deltaPayload: {
-        txSummary: { data: txSummaryBase64 },
-        signatures: [],
-        metadata: guardianMetadata,
-        ...(transactionRequest ? { transactionRequest } : {}),
-      },
+      nonce: draft.nonce,
+      deltaPayload: deltaPayloadOf(draft),
     });
 
-    const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, metadata);
+    const proposal = this.proposalFactory().fromDelta(response.delta, response.commitment, draft.metadata);
     await this.verifyProposalMetadataBinding(proposal);
     this.proposals.set(proposal.id, proposal);
     this.guardianKnownProposalIds.add(proposal.id);
 
     return proposal;
+  }
+
+  /** Drafts `transaction` as its typed `create*Proposal` method would, without sending it. */
+  private draftFor(transaction: CheckableTransaction): Promise<ProposalDraft> {
+    switch (transaction.type) {
+      case 'p2id':
+        return this.draftP2id(
+          transaction.recipientId,
+          transaction.faucetId,
+          transaction.amount,
+          transaction.options,
+        );
+      case 'addSigner':
+        return this.draftAddSigner(transaction.newSigner, transaction.options);
+      case 'removeSigner':
+        return this.draftRemoveSigner(transaction.signer, transaction.options);
+      case 'changeThreshold':
+        return this.draftChangeThreshold(transaction.newThreshold, transaction.options);
+      case 'updateProcedureThreshold':
+        return this.draftUpdateProcedureThreshold(
+          transaction.procedure,
+          transaction.threshold,
+          transaction.options,
+        );
+      case 'consumeNotes':
+        return this.draftConsumeNotes(transaction.noteIds, transaction.options);
+      case 'custom':
+        return this.draftCustom(
+          transaction.transactionRequestBytes,
+          transaction.proposalType,
+          transaction.options,
+        );
+      default: {
+        const unreachable: never = transaction;
+        throw new Error(`Unknown transaction ${JSON.stringify(unreachable)}`);
+      }
+    }
   }
 
   /**
@@ -1586,6 +1604,14 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftAddSigner(newSigner, options, legacyArgs));
+  }
+
+  private async draftAddSigner(
+    newSigner: SignerInput,
+    options: CreateSignerProposalOptions = {},
+    legacyArgs: never[] = [],
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createAddSignerProposal', options, legacyArgs);
     this.assertKeySchemeMatches();
@@ -1624,7 +1650,7 @@ export class Multisig {
       description: `Add signer ${newCommitment.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1639,6 +1665,14 @@ export class Multisig {
     options: CreateSignerProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftRemoveSigner(signerToRemove, options, legacyArgs));
+  }
+
+  private async draftRemoveSigner(
+    signerToRemove: string,
+    options: CreateSignerProposalOptions = {},
+    legacyArgs: never[] = [],
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createRemoveSignerProposal', options, legacyArgs);
     this.assertKeySchemeMatches();
@@ -1683,7 +1717,7 @@ export class Multisig {
       description: `Remove signer ${signerToRemove.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1696,6 +1730,13 @@ export class Multisig {
     newThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftChangeThreshold(newThreshold, options));
+  }
+
+  private async draftChangeThreshold(
+    newThreshold: number,
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createChangeThresholdProposal', options);
     this.assertKeySchemeMatches();
@@ -1730,7 +1771,7 @@ export class Multisig {
       description: `Change threshold from ${this.threshold} to ${newThreshold}`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   async createUpdateProcedureThresholdProposal(
@@ -1738,6 +1779,14 @@ export class Multisig {
     targetThreshold: number,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftUpdateProcedureThreshold(targetProcedure, targetThreshold, options));
+  }
+
+  private async draftUpdateProcedureThreshold(
+    targetProcedure: ProcedureName,
+    targetThreshold: number,
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createUpdateProcedureThresholdProposal', options);
     this.assertKeySchemeMatches();
@@ -1782,7 +1831,7 @@ export class Multisig {
       description: action,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -1814,7 +1863,12 @@ export class Multisig {
     // sign/execute (which fetch from GUARDIAN) can find it. To leave an
     // unreachable GUARDIAN, use createSwitchGuardianProposalOffline instead.
     const proposalNonce = await this.resolveProposalNonce('createSwitchGuardianProposal', options);
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, undefined);
+    return this.pushDraft({
+      nonce: proposalNonce,
+      txSummaryBase64: summaryBase64,
+      metadata,
+      transactionRequest: undefined,
+    });
   }
 
   /**
@@ -1951,6 +2005,13 @@ export class Multisig {
     noteIds: string[],
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftConsumeNotes(noteIds, options));
+  }
+
+  private async draftConsumeNotes(
+    noteIds: string[],
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     assertProposalOptionsBag('createConsumeNotesProposal', options);
     if (noteIds.length === 0) {
       throw new Error('At least one note ID is required');
@@ -2011,7 +2072,7 @@ export class Multisig {
       throw new ConsumeNotesMetadataOversizeError(MAX_CONSUME_NOTES_METADATA_BYTES, metadataSize);
     }
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -2031,6 +2092,16 @@ export class Multisig {
     options: CreateP2idProposalOptions = {},
     ...legacyArgs: never[]
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftP2id(recipientId, faucetId, amount, options, legacyArgs));
+  }
+
+  private async draftP2id(
+    recipientId: string,
+    faucetId: string,
+    amount: bigint,
+    options: CreateP2idProposalOptions = {},
+    legacyArgs: never[] = [],
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createP2idProposal', options, legacyArgs);
     this.assertKeySchemeMatches();
@@ -2070,7 +2141,7 @@ export class Multisig {
       description: `Send ${amount} of asset ${faucetId.slice(0, 10)}... to ${recipientId.slice(0, 10)}...`,
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -2844,6 +2915,14 @@ export class Multisig {
     proposalType: string,
     options: CreateProposalOptions = {},
   ): Promise<Proposal> {
+    return this.pushDraft(await this.draftCustom(transactionRequestBytes, proposalType, options));
+  }
+
+  private async draftCustom(
+    transactionRequestBytes: Uint8Array,
+    proposalType: string,
+    options: CreateProposalOptions = {},
+  ): Promise<ProposalDraft> {
     await this.refreshConfigFromStore();
     assertProposalOptionsBag('createCustomProposal', options);
     this.assertKeySchemeMatches();
@@ -2875,7 +2954,7 @@ export class Multisig {
       requiredSignatures: this.getEffectiveThreshold('custom'),
     };
 
-    return this.pushProposal(proposalNonce, summaryBase64, metadata, transactionRequest);
+    return { nonce: proposalNonce, txSummaryBase64: summaryBase64, metadata, transactionRequest };
   }
 
   /**
@@ -3951,40 +4030,4 @@ function decodeEmbeddedConsumeNotes(metadata: ConsumeNotesProposalMetadata): Not
     decoded.push(note);
   }
   return decoded;
-}
-
-function proposeOn(multisig: Multisig, transaction: CheckableTransaction): Promise<Proposal> {
-  switch (transaction.type) {
-    case 'p2id':
-      return multisig.createP2idProposal(
-        transaction.recipientId,
-        transaction.faucetId,
-        transaction.amount,
-        transaction.options,
-      );
-    case 'addSigner':
-      return multisig.createAddSignerProposal(transaction.newSigner, transaction.options);
-    case 'removeSigner':
-      return multisig.createRemoveSignerProposal(transaction.signer, transaction.options);
-    case 'changeThreshold':
-      return multisig.createChangeThresholdProposal(transaction.newThreshold, transaction.options);
-    case 'updateProcedureThreshold':
-      return multisig.createUpdateProcedureThresholdProposal(
-        transaction.procedure,
-        transaction.threshold,
-        transaction.options,
-      );
-    case 'consumeNotes':
-      return multisig.createConsumeNotesProposal(transaction.noteIds, transaction.options);
-    case 'custom':
-      return multisig.createCustomProposal(
-        transaction.transactionRequestBytes,
-        transaction.proposalType,
-        transaction.options,
-      );
-    default: {
-      const unreachable: never = transaction;
-      throw new Error(`Unknown transaction ${JSON.stringify(unreachable)}`);
-    }
-  }
 }

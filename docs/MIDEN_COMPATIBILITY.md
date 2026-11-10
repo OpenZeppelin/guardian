@@ -738,7 +738,7 @@ deployment without one behaves as before. With one:
   - Neither enum is `#[non_exhaustive]`, so an exhaustive `match` over either
     stops compiling until the new variants are handled.
 - **New calls.** `get_policies` / `getPolicies`, `check_transaction` /
-  `checkTransaction`, session operations 14 (`GetPolicies`) and 15
+  `checkTransaction`, Rust `check_custom_transaction`, session operations 14 (`GetPolicies`) and 15
   (`CheckDeltaProposal`), and the operator client's module routes and the
   `policies:write_global` and `modules:disable` permissions. An operator client
   from 0.18.x fails to parse a session that holds either permission.

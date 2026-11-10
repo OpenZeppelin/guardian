@@ -13,6 +13,7 @@ pub use auth_args::{
     proposal_auth_args, proposer_auth_args, summary_approval_expiration_block_num, summary_salt,
     synced_fee_faucet_id,
 };
+pub(crate) use builder::ProposalDraft;
 pub use builder::{ProposalBuilder, ProposalCheck, ProposalOptions};
 pub use configuration::{
     build_update_procedure_threshold_transaction_request, build_update_signers_transaction_request,

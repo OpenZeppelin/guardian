@@ -810,9 +810,16 @@ matching create call would and ask the Guardian whether it would be accepted.
 Nothing is stored, no proposal slot is taken and no signature is sent. The
 result's `complete` is false when a module that opts out of checks was
 skipped. The answer is advisory, since approval still decides, and checks are
-rate limited per account and signer. The transaction types each SDK can check
-differ today: TypeScript checks every typed creator and `custom` but not a
-Guardian switch; Rust checks every `TransactionType` except custom.
+rate limited per account and signer. Both SDKs check every typed creator and
+custom proposals (`check_custom_transaction` in Rust, `{ type: 'custom' }` in
+TypeScript). A Guardian switch is checkable only in Rust, but a switch is never
+gated by modules anyway.
+
+A check and a creation build the proposal the same way: each create call first
+drafts the proposal locally (summary, metadata and payload, no signature) and
+then either sends that draft to the check route or pushes it. Rust adds the
+proposer's signature to a push; TypeScript pushes it unsigned and the proposer
+signs afterwards, as for any other approval. A check never carries a signature.
 
 **Typed refusals.** A refusal from a check, at creation, at push or at
 registration carries the same information in both SDKs:

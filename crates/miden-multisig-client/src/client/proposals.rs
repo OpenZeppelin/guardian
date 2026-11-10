@@ -83,8 +83,8 @@ use crate::execution::{
 use crate::keystore::{proposal_public_key_hex, word_from_hex};
 use crate::proposal::{Proposal, TransactionType, is_builtin_proposal_type};
 use crate::transaction::{
-    ProposalBuilder, ProposalCheck, ProposalOptions, deserialize_transaction_request,
-    execute_for_summary_at_tip, proposal_auth_args, word_to_hex,
+    ProposalBuilder, ProposalCheck, ProposalDraft, ProposalOptions,
+    deserialize_transaction_request, execute_for_summary_at_tip, proposal_auth_args, word_to_hex,
 };
 
 impl MultisigClient {
@@ -543,6 +543,38 @@ impl MultisigClient {
         transaction_request_bytes: &[u8],
         proposal_type: &str,
     ) -> Result<Proposal> {
+        let draft = self
+            .draft_custom_transaction(transaction_request_bytes, proposal_type)
+            .await?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        let proposal = draft
+            .push(&mut guardian_client, self.key_manager.as_ref())
+            .await?;
+        self.known_proposals
+            .record(proposal.tx_summary.account_delta().id(), &proposal);
+        Ok(proposal)
+    }
+
+    /// Asks GUARDIAN whether a custom transaction would be accepted as a proposal: it is built
+    /// exactly as [`Self::propose_custom_transaction`] builds it, but nothing is stored. Mirrors
+    /// [`Self::check_transaction`] for the transactions the SDK does not model.
+    pub async fn check_custom_transaction(
+        &mut self,
+        transaction_request_bytes: &[u8],
+        proposal_type: &str,
+    ) -> Result<ProposalCheck> {
+        let draft = self
+            .draft_custom_transaction(transaction_request_bytes, proposal_type)
+            .await?;
+        let mut guardian_client = self.create_authenticated_guardian_client().await?;
+        draft.check(&mut guardian_client).await
+    }
+
+    async fn draft_custom_transaction(
+        &mut self,
+        transaction_request_bytes: &[u8],
+        proposal_type: &str,
+    ) -> Result<ProposalDraft> {
         let proposal_type = proposal_type.trim().to_lowercase();
         if proposal_type.is_empty() {
             return Err(MultisigError::InvalidConfig(
@@ -572,7 +604,6 @@ impl MultisigClient {
         let tx_request = deserialize_transaction_request(transaction_request_bytes)?;
         let tx_summary =
             execute_for_summary_at_tip(&mut self.miden_client, account_id, tx_request).await?;
-        let tx_commitment = tx_summary.to_commitment();
 
         let required_signatures = account.threshold()? as usize;
 
@@ -589,32 +620,12 @@ impl MultisigClient {
                 self.execution_mode
                     .attachment_of_bytes(transaction_request_bytes),
             )
-            .with_signature(self.key_manager.as_ref(), tx_commitment)
             .with_custom_metadata(proposal_type.to_string())
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
-        let mut guardian_client = self.create_authenticated_guardian_client().await?;
-        let response = guardian_client
-            .push_delta_proposal(&account_id, nonce, &payload.to_json())
-            .await
-            .map_err(MultisigError::proposal_push)?;
-
         let proposal = Proposal::new(tx_summary, nonce, TransactionType::Custom, metadata);
-
-        if !proposal
-            .id
-            .trim_start_matches("0x")
-            .eq_ignore_ascii_case(response.commitment.trim_start_matches("0x"))
-        {
-            return Err(MultisigError::GuardianServer(format!(
-                "GUARDIAN returned proposal commitment {} but expected {}",
-                response.commitment, proposal.id
-            )));
-        }
-
-        self.known_proposals.record(account_id, &proposal);
-        Ok(proposal)
+        Ok(ProposalDraft::new(proposal, payload))
     }
 
     /// Assembles the validated execution advice for a threshold-met custom

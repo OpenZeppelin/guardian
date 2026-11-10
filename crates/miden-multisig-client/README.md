@@ -814,6 +814,8 @@ let check = client.check_transaction(TransactionType::transfer(recipient, faucet
 // check.complete is false when a module that opts out of checks was skipped
 ```
 
+`check_custom_transaction` does the same for a producer-built transaction.
+
 The answer is advisory: approval still decides, and the Guardian rate limits
 checks per account and signer. A refusal, from a check, at creation, push or
 registration, is `MultisigError::ModuleDenied { module, reason_code, layer,

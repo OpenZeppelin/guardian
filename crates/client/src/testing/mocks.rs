@@ -40,6 +40,8 @@ pub struct MockGuardianHandle {
     calls: Arc<StdMutex<Vec<String>>>,
     /// Every `push_delta_proposal` request body, in arrival order.
     push_delta_proposal_requests: Arc<StdMutex<Vec<PushDeltaProposalRequest>>>,
+    /// Every `check_delta_proposal` request body, in arrival order.
+    check_delta_proposal_requests: Arc<StdMutex<Vec<CheckDeltaProposalRequest>>>,
     /// Every `abandon_delta_candidate` request body, in arrival order.
     abandon_requests: Arc<StdMutex<Vec<AbandonDeltaCandidateRequest>>>,
     /// Every `execute_delta_proposal` request with the auth metadata it carried, in arrival
@@ -63,6 +65,11 @@ impl MockGuardianHandle {
     /// Every `push_delta_proposal` request received so far.
     pub fn pushed_proposals(&self) -> Vec<PushDeltaProposalRequest> {
         self.push_delta_proposal_requests.lock().unwrap().clone()
+    }
+
+    /// Every `check_delta_proposal` request received so far.
+    pub fn checked_proposals(&self) -> Vec<CheckDeltaProposalRequest> {
+        self.check_delta_proposal_requests.lock().unwrap().clone()
     }
 
     /// Every `abandon_delta_candidate` request received so far.
@@ -733,6 +740,11 @@ impl Guardian for MockGuardianService {
         request: Request<CheckDeltaProposalRequest>,
     ) -> Result<Response<CheckDeltaProposalResponse>, Status> {
         self.record_call("check_delta_proposal");
+        self.handle
+            .check_delta_proposal_requests
+            .lock()
+            .unwrap()
+            .push(request.get_ref().clone());
         if request.get_ref().nonce == 0 {
             return Err(Status::with_details(
                 tonic::Code::PermissionDenied,

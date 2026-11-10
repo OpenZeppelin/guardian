@@ -147,17 +147,19 @@ impl ProposalPayload {
 
     /// Adds the proposer's signature.
     pub fn with_signature(
-        self,
+        mut self,
         key_manager: &dyn KeyManager,
         message: miden_protocol::Word,
     ) -> Self {
-        self.with_proposer_signature(Some(proposer_signature(key_manager, message)))
-    }
-
-    /// Adds the proposer's signature when there is one: a check of a proposal carries none,
-    /// since nothing it checks is stored.
-    pub fn with_proposer_signature(mut self, signature: Option<DeltaSignature>) -> Self {
-        self.signatures.extend(signature);
+        let signature_hex = key_manager.sign_word_hex(message);
+        self.signatures.push(DeltaSignature {
+            signer_id: key_manager.commitment_hex(),
+            signature: ProposalSignature::from_scheme(
+                key_manager.scheme(),
+                signature_hex,
+                proposal_public_key_hex(key_manager),
+            ),
+        });
         self
     }
 
@@ -327,21 +329,6 @@ impl ProposalPayload {
     /// Converts to JSON value for sending to GUARDIAN.
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("ProposalPayload should always serialize")
-    }
-}
-
-/// The proposer's signature over `message`, the commitment of the proposal's summary.
-pub(crate) fn proposer_signature(
-    key_manager: &dyn KeyManager,
-    message: miden_protocol::Word,
-) -> DeltaSignature {
-    DeltaSignature {
-        signer_id: key_manager.commitment_hex(),
-        signature: ProposalSignature::from_scheme(
-            key_manager.scheme(),
-            key_manager.sign_word_hex(message),
-            proposal_public_key_hex(key_manager),
-        ),
     }
 }
 
