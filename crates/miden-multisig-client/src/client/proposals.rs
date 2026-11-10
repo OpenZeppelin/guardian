@@ -823,10 +823,12 @@ impl MultisigClient {
     ) -> Result<ProposalCheck> {
         self.sync().await?;
         let account = self.require_account()?.clone();
+        self.ensure_key_scheme_matches(&account)?;
         let mut guardian_client = self.create_authenticated_guardian_client().await?;
         let node_rpc = self.node_rpc_client();
         ProposalBuilder::new(transaction_type)
             .with_options(options)
+            .with_execution_mode(self.execution_mode)
             .check(
                 &mut self.miden_client,
                 &node_rpc,
@@ -913,7 +915,9 @@ impl MultisigClient {
             Err(
                 error @ (MultisigError::GuardianConnection(_)
                 | MultisigError::GuardianServer(_)
-                | MultisigError::GuardianProposalRefused { .. }),
+                | MultisigError::GuardianProposalRefused { .. }
+                | MultisigError::ModuleDenied { .. }
+                | MultisigError::ModuleUnavailable { .. }),
             ) => {
                 if transaction_type.supports_offline_execution() {
                     let exported = self.create_proposal_offline(transaction_type).await?;

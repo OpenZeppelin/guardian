@@ -210,6 +210,16 @@ impl ProposalBuilder {
         })
     }
 
+    /// The proposer's approval of a proposal that will be created. A check sends none: nothing
+    /// it checks is stored, so it must not hand GUARDIAN a signature that authorizes it.
+    fn proposer_signature(
+        &self,
+        key_manager: &dyn KeyManager,
+        tx_commitment: Word,
+    ) -> Option<guardian_shared::DeltaSignature> {
+        (!self.dry_run).then(|| crate::payload::proposer_signature(key_manager, tx_commitment))
+    }
+
     /// Creates the proposal on GUARDIAN, or only checks it in a dry run. Returns the
     /// commitment GUARDIAN reports for a created proposal, none for a check.
     async fn send(
@@ -223,7 +233,7 @@ impl ProposalBuilder {
             let response = guardian_client
                 .check_delta_proposal(account_id, nonce, payload)
                 .await
-                .map_err(|e| MultisigError::guardian("failed to check proposal", e))?;
+                .map_err(MultisigError::proposal_push)?;
             if let Ok(mut checked) = self.checked.lock() {
                 *checked = Some(ProposalCheck {
                     complete: response.complete,
@@ -456,7 +466,7 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_add_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -567,7 +577,7 @@ impl ProposalBuilder {
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_threshold_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -683,7 +693,7 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_remove_signer_metadata(
                 new_threshold,
                 signer_commitments_hex.clone(),
@@ -780,7 +790,7 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_payment_metadata(
                 recipient.to_string(),
                 faucet_id.to_string(),
@@ -902,7 +912,7 @@ impl ProposalBuilder {
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_note_consumption_metadata_v2(note_ids_hex, notes_base64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 
@@ -1007,7 +1017,7 @@ impl ProposalBuilder {
         // Build the payload using ProposalPayload
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_guardian_update_metadata(
                 word_to_hex(&new_guardian_pubkey),
                 new_guardian_endpoint.clone(),
@@ -1088,7 +1098,7 @@ impl ProposalBuilder {
 
         let payload = ProposalPayload::new(&tx_summary)
             .with_transaction_request(attachment)
-            .with_signature(key_manager, tx_commitment)
+            .with_proposer_signature(self.proposer_signature(key_manager, tx_commitment))
             .with_procedure_threshold_metadata(procedure, new_threshold as u64, word_to_hex(&salt))
             .with_required_signatures(required_signatures);
 
