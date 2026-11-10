@@ -2897,7 +2897,7 @@
               },
               {
                 "$ref": "#/components/schemas/ModuleApproval",
-                "description": "The policy module configuration that approved this delta, for operators: absent when no\nmodule ran, and never included in client API responses."
+                "description": "The policy module configuration that approved this delta, for operators: absent when no\nmodule ran, never included in client API responses, and served to operators on the\ndashboard delta detail."
               }
             ]
           },
@@ -3327,7 +3327,7 @@
         "properties": {
           "failure": {
             "type": "string",
-            "description": "`timeout`, `error`, `invalid_decision` or `request_unavailable`; the detail is logged."
+            "description": "`timeout`, `error`, `invalid_decision`, `request_unavailable` or `circuit_open`; the\ndetail is logged."
           },
           "layer": {
             "type": "string"

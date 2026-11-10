@@ -817,6 +817,16 @@
               }
             }
           },
+          "400": {
+            "description": "No policy modules are configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No operator session",
             "content": {
@@ -838,7 +848,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -912,7 +922,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -942,7 +952,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -1027,7 +1037,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -1057,7 +1067,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -1140,7 +1150,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -1170,7 +1180,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -1817,6 +1827,16 @@
               }
             }
           },
+          "400": {
+            "description": "No policy modules are configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "No operator session",
             "content": {
@@ -1838,7 +1858,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -1914,7 +1934,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -1944,7 +1964,17 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The catalog does not mark the instance operator_can_disable",
             "content": {
               "application/json": {
                 "schema": {
@@ -2020,7 +2050,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -2050,7 +2080,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2071,6 +2101,16 @@
           },
           "429": {
             "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The module failed its startup checks; nothing changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -2126,7 +2166,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -2156,7 +2196,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -2241,7 +2281,7 @@
             }
           },
           "400": {
-            "description": "Invalid params, reason or assignment",
+            "description": "Invalid params, reason or assignment, or no policy modules are configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -2271,7 +2311,7 @@
             }
           },
           "404": {
-            "description": "Account or module not found, or no modules configured",
+            "description": "Account or module not found",
             "content": {
               "application/json": {
                 "schema": {
@@ -6840,6 +6880,17 @@
               "$ref": "#/components/schemas/DecodedNote"
             }
           },
+          "modules": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ModuleApproval",
+                "description": "The policy module configuration that approved this delta: the catalog and params version\nit was judged under and the module failures an `on_error = allow` instance let through.\nAbsent when no module ran."
+              }
+            ]
+          },
           "new_commitment": {
             "type": [
               "string",
@@ -7705,7 +7756,7 @@
               },
               {
                 "$ref": "#/components/schemas/ModuleApproval",
-                "description": "The policy module configuration that approved this delta, for operators: absent when no\nmodule ran, and never included in client API responses."
+                "description": "The policy module configuration that approved this delta, for operators: absent when no\nmodule ran, never included in client API responses, and served to operators on the\ndashboard delta detail."
               }
             ]
           },
@@ -8271,7 +8322,7 @@
         "properties": {
           "failure": {
             "type": "string",
-            "description": "`timeout`, `error`, `invalid_decision` or `request_unavailable`; the detail is logged."
+            "description": "`timeout`, `error`, `invalid_decision`, `request_unavailable` or `circuit_open`; the\ndetail is logged."
           },
           "layer": {
             "type": "string"
