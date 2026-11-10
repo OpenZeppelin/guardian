@@ -57,7 +57,8 @@ pub struct DeltaMetadata {
     pub proposal: Option<ProposalMetadata>,
 
     /// The policy module configuration that approved this delta, for operators: absent when no
-    /// module ran, and never included in client API responses.
+    /// module ran, never included in client API responses, and served to operators on the
+    /// dashboard delta detail.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modules: Option<ModuleApproval>,
 }
@@ -85,7 +86,8 @@ pub struct ModuleApproval {
 pub struct FailedOpen {
     pub module_id: String,
     pub layer: String,
-    /// `timeout`, `error`, `invalid_decision` or `request_unavailable`; the detail is logged.
+    /// `timeout`, `error`, `invalid_decision`, `request_unavailable` or `circuit_open`; the
+    /// detail is logged.
     pub failure: String,
 }
 
