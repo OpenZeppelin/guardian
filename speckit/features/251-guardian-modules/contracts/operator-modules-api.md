@@ -90,4 +90,4 @@ Contract tests in `crates/server` and `packages/guardian-operator-client` pin ev
 
 ## Implementation status (M2a)
 
-All M2a routes exist with the shapes above. `PUT` writes are refused when the account's worst case could exceed the evaluation budget. Not built yet: `resync` (M2b), the operator client methods and the OpenAPI entries for these routes (tasks T044, T045).
+All M2a routes exist with the shapes above. `PUT` writes are refused when the account's worst case could exceed the evaluation budget. The operator client methods and the OpenAPI entries exist (tasks T044, T045). Not built yet: `resync` (M2b).

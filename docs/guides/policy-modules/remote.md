@@ -53,7 +53,7 @@ cp docs/guides/policy-modules/remote.toml .guardian/
 Replace the faucet placeholder, set `GUARDIAN_MODULES_CONFIG=.guardian/remote.toml`
 in the guide's `.env`, and start the server as in the setup. The module must
 already be running: an enabled instance that cannot be reached stops startup.
-The log line lists `caps-remote=basic-policy 0.18.1`.
+The log line lists `caps-remote=basic-policy <version>`.
 
 `auth.token_secret` names a secret in the Guardian's secrets backend (see
 [Credentials](#credentials)); here the `file` provider reads it from
@@ -64,10 +64,10 @@ The log line lists `caps-remote=basic-policy 0.18.1`.
 | Test | How | Expected |
 |---|---|---|
 | Remote refusal | Pay 4 | Refused by `caps-remote` (cap 3); the in-process `caps` (cap 5) allows it |
-| Remote params | `admin PUT /modules/caps-remote/params '{"params":{"max_amount_per_tx":{"0xFAUCET":"1"}},"reason":"test"}'`, then pay 2 | Refused; the module was not restarted |
+| Remote params | `admin PUT /modules/caps-remote/params '{"params":{"max_amount_per_tx":{"<faucet id in 0x hex>":"1"}},"reason":"test"}'`, then pay 2 | Refused; the module was not restarted |
 | Module down, fail closed | Stop the module, pay 1 | `503 GUARDIAN_MODULE_UNAVAILABLE`, module `caps-remote` |
 | Switch it off while down | `admin POST /modules/caps-remote/disable '{"reason":"module down"}'`, pay 1 | Allowed; start the module again and `/enable` (which re-runs `Describe` and `ValidateParams`) |
-| Fail open | Set `on_error = "allow"`, restart the Guardian, stop the module, pay 1 | Allowed; the delta's `metadata.modules.failed_open` names `caps-remote` |
+| Fail open | Set `on_error = "allow"`, restart the Guardian, stop the module, pay 1 | Allowed; the delta's `modules.failed_open` on the dashboard delta detail names `caps-remote` |
 | Wrong token | Start the module with a different token file, restart the Guardian | Startup fails: the module rejects `Describe` |
 
 ## Transport security
@@ -109,7 +109,10 @@ stays disabled. Changing a secret takes effect at the next restart.
 
 ## What a remote module cannot do
 
-It cannot sign, change its own params or hooks, or see secrets: catalog params
-with secret references are refused for remote kinds. The worst a compromised
+It cannot sign, change its hooks, or see secrets: catalog params with secret
+references are refused for remote kinds. It can rewrite the params it is given
+into its own normalized form when they are validated (at startup, on enable
+and on every operator write), within the params size cap; the Guardian stores
+that form, and with `disclosure = "params"` cosigners see it. The worst a compromised
 or failing remote module can do is refuse (or, with `on_error = "allow"`, be
 skipped), and the operator can switch it off if the catalog allows it.

@@ -872,7 +872,8 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    `module`, `account_id` and the failure: the module's error, `timed out`,
    an invalid reason code or unknown effect, a request over
    `GUARDIAN_MODULE_REQUEST_MAX_BYTES`, or an open circuit. A fail-open
-   failure is also recorded on the signed delta (`metadata.modules.failed_open`)
+   failure is also recorded on the signed delta (`modules.failed_open` on
+   `GET /dashboard/accounts/{account_id}/deltas/{nonce}`)
    and counted in `guardian_module_fail_open_total`.
 3. **Module health.** `guardian_module_up` is 0 after a failed `Describe`
    health probe (`Policy module health probe failed` at `warn`), and
@@ -882,8 +883,9 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
    shows in `guardian_module_evaluate_duration_seconds` and as `timed out`
    failures: compare with the instance's `timeout_ms` and
    `GUARDIAN_MODULE_EVALUATION_BUDGET_MS`.
-4. **Params.** `GET /dashboard/modules/{id}` shows the params in force, the
-   account's layer or assignment, and `params_drift`; the history route shows
+4. **Params.** `GET /dashboard/modules` shows each instance's params in force
+   and `params_drift`, and `GET /dashboard/accounts/{account_id}/modules` the
+   account's layer or assignment; the history route shows
    who changed them and why. A change through the operator API applies on the
    next request.
 

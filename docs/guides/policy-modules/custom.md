@@ -93,7 +93,7 @@ The rules are in [RFC 0002 section 3.5](../../rfcs/0002-guardian-modules.md#35-p
 |---|---|---|
 | `before_proposal_created` | Before a multisig proposal is stored, and in dry runs | `transaction` |
 | `before_transaction_approved` | Before the Guardian signs a pushed delta or a Guardian execution: the one that enforces, since transactions signed offline skip proposals | `transaction` |
-| `before_account_registered` | When an account is first configured on this Guardian | `registration` |
+| `before_account_registered` | On every `/configure` of an account: its first configuration on this Guardian and each later re-configuration | `registration` |
 
 A module lists the hooks it supports in `describe`; the catalog subscribes each
 instance to some of them, and the Guardian refuses an instance subscribed to a
@@ -104,19 +104,19 @@ hook its module does not list.
 | `request_id` | Unique per hook invocation and shared by every module called in it; log it to join your logs with the Guardian's |
 | `hook` | Which hook is calling |
 | `dry_run` | `true` for a policy check: nothing is stored or signed whatever you decide (see [Dry runs](#dry-runs)) |
-| `network`, `network_id` | `"miden"`, and `"mainnet"`, `"testnet"`, `"devnet"`, `"cedar"` or `"local"` |
+| `network`, `network_id` | `"miden"`, and the network this Guardian serves: `"mainnet"`, `"testnet"`, `"devnet"`, `"cedar"` or `"local"`. It comes from the Guardian's own configuration, never from the account's registration |
 | `account_id`, `instance_id` | The account, and the catalog id of the instance being called |
 | `params` | UTF-8 JSON: the instance's global params, the account's layer on its second pass, or the account's own params for a `default` or `assigned` instance. Read them on every call; they change without restarting the module |
 | `accounting_time` | The time recorded with the transaction if it is signed; at `before_proposal_created` and in a dry run, the evaluation time |
 | `submitter`, `submitter_session` | The verified signer commitment that authenticated the request, and whether it did so through a session key it delegated |
-| `before` | The account as the Guardian holds it; absent at `before_account_registered` |
+| `before` | The account as the Guardian holds it. At `before_account_registered` it is absent for a first configuration and set to the stored state for a re-configuration, so "no `before`" means "new to this Guardian", not "registration" |
 | `after` | The account as it will be if every module allows |
 | `subject.transaction.projection` | The decoded transaction; read the Miden variant with `subject.miden()` |
 | `subject.transaction.proposer` | The verified signer commitment that created the matching proposal; empty when there is none |
 | `subject.transaction.unverified_metadata` | UTF-8 JSON the proposer asserted; never base a decision on it alone |
 | `subject.transaction.raw` | The transaction in its network's own encoding (`encoding = "miden.transaction_summary"`), for modules that decode it themselves; tied to the Guardian's Miden version |
 | `subject.transaction.pending` | Empty until commit notifications ship (M2b) |
-| `subject.registration.initial_state` | The account about to be accepted: vault and storage slots |
+| `subject.registration.initial_state` | The account about to be accepted: its whole vault and every storage slot, map entries included. Read the Miden variant with `subject.miden()` |
 
 An account view (`before`, `after`) carries the account `commitment`, its
 `signer_commitments` with each signer's scheme in `signer_schemes` (`auth_scheme`
@@ -124,15 +124,22 @@ is `"falcon"`, `"ecdsa"` or `"mixed"`), `default_threshold` (absent for
 single-key accounts), `procedure_thresholds`, `code_commitment` and the
 `procedure_roots` the code exports.
 
-The Miden projection has the `nonce_delta`, the `reference_block` and optional
-`expiration_block`, `vault_changes` (asset and direction), `output_notes`
+The Miden projection has the `nonce_delta`, the `bound_block` (the block the
+summary binds; the transaction executes against it or a later one), the
+optional `expiration_delta` (blocks after the block it executes against, set by
+its script, so not an absolute height), the optional
+`approval_expiration_block` (the block at which the cosigners' approval
+lapses; use this one for "valid until"), `vault_changes` (asset and
+direction), `output_notes`
 (`note_type`, assets, `p2id_target` for known P2ID and P2IDE scripts,
 `tx_fee`), `input_notes`, `storage_changes` by slot name, and
 `new_code_commitment` when the transaction replaces the account's code.
 Amounts are decimal strings. Skip the fee note (`tx_fee = true`) when counting
 payments: every transaction pays its fee through an output note. The Guardian
-sets `tx_fee` only on the one note the fee payment creates, never on another
-note that merely uses the fee script, so treat every other note as a payment.
+sets `tx_fee` only on the one note the fee payment creates, and only while it
+carries no more of the fee asset than a transaction can owe (64 times the
+chain's base fee), never on another note that merely uses the fee script, so
+treat every other note as a payment.
 
 Projections are tagged by network (`TransactionProjection`, `oneof network`).
 Miden is the only network today; read it with `subject.miden()` and return a

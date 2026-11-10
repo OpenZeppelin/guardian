@@ -368,6 +368,20 @@ they cannot add, remove or reconfigure an instance. Every write takes a
 in the params history and the audit log. A walkthrough is in the
 [policy modules guide](./guides/policy-modules/README.md).
 
+Which configuration approved a signed delta is on its detail,
+`GET /dashboard/accounts/{account_id}/deltas/{nonce}`, in the `modules` field:
+`catalog_hash`, `params_version`, `signed_at`, `submitter`, `proposer`, and
+under `failed_open` each module failure an `on_error = "allow"` instance let
+through (`module_id`, `layer`, `failure`). It is absent when no module ran for
+the delta, and client routes never return it. The same skips at proposal
+creation and account registration, where nothing is signed, are written to the
+audit log as `modules.failed_open` events (`operator_identity` `system`, with
+the hook, submitter, catalog hash, params version and, for a proposal, its
+`proposal_id`). Operator writes are audited with the params version they
+committed as, or `null` for an enable or disable that changed nothing.
+`GET /dashboard/info` reports the
+catalog hash this replica loaded as `backend.module_catalog_hash`.
+
 | Endpoint | Permission | Body |
 |---|---|---|
 | `GET /dashboard/modules` | `dashboard:read` | |
@@ -388,8 +402,11 @@ account's other assignments; a `scope = assigned` one applies only where it
 is assigned. Disabling an instance the catalog does not mark
 `operator_can_disable` returns `409 GUARDIAN_MODULE_NOT_DISABLEABLE`.
 
-Writes are refused with `400 invalid_input` when the params exceed
-`GUARDIAN_MODULE_PARAMS_MAX_BYTES`, or when they would take the account's modules
+Writes are refused with `400 invalid_input` when the `reason` is longer than
+512 characters, when the params exceed
+`GUARDIAN_MODULE_PARAMS_MAX_BYTES`, when a layer is written for a module the
+account still has in its assignment (left from before a catalog change made it
+`scope = all`; remove it from the assignment first), or when they would take the account's modules
 over the evaluation budget at a hook where they are not already that far over
 (each `all` instance, again for its layer, plus each assigned one). A write that
 keeps or lowers the cost always passes, so an account a deploy pushed over the

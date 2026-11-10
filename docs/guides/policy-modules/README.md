@@ -5,8 +5,8 @@ rules, and your own checks, consulted before the Guardian signs. A module only
 answers allow or deny. A deny refuses the Guardian's acknowledgement, so the
 transaction cannot execute; a module can never produce a signature.
 
-> **Prototype.** Modules are implemented on the
-> [`251-modules-prototype`](https://github.com/OpenZeppelin/guardian/tree/251-modules-prototype)
+> **Not released yet.** Modules are implemented on the
+> [`251-modules-m2a`](https://github.com/OpenZeppelin/guardian/tree/251-modules-m2a)
 > branch and are not in a release. The design is
 > [RFC 0002](../../rfcs/0002-guardian-modules.md). No published image includes
 > modules yet, so this guide runs the server from source instead of Docker
@@ -98,7 +98,7 @@ In
 
 ## Setup
 
-Run everything from the repository root, on the prototype branch.
+Run everything from the repository root, on the `251-modules-m2a` branch.
 
 ### 1. Operator key
 
@@ -124,7 +124,9 @@ cp docs/guides/policy-modules/.env.example docs/guides/policy-modules/.env
 ```
 
 Edit `.guardian/built-in.toml` for your network: replace `0xREPLACE_WITH_FAUCET_ID`
-with the faucet id of an asset you hold. The other pages swap in
+with the faucet id of an asset you hold, in `0x` hex form. The server does not
+start until you do: `basic-policy` refuses an id that is not hex, since a
+placeholder or a bech32 address would never match a transaction. The other pages swap in
 `remote.toml` or `custom.toml` by changing `GUARDIAN_MODULES_CONFIG` in the
 guide's `.env`.
 
@@ -141,7 +143,7 @@ module state then goes to `GUARDIAN_METADATA_PATH/modules/module_state.json`.
 Look for this line in the log:
 
 ```
-Policy modules loaded catalog_hash=0x… params_version=… builds=caps=basic-policy 0.18.1, …
+Policy modules loaded catalog_hash=0x… params_version=… builds=caps=basic-policy <version>, …
 ```
 
 The ports are fixed at 3000 (HTTP) and 50051 (gRPC); stop any other Guardian
@@ -183,7 +185,7 @@ Any client works; refusals are plain Guardian errors.
 | See what applies to an account | `admin GET /accounts/{account_id}/modules` |
 | Switch an instance off or on | `admin POST /modules/{id}/disable '{"reason":"..."}'`, then `/enable` |
 | See every change | `admin GET /modules/{id}/params/history` |
-| See which configuration approved a delta | `admin GET /accounts/{account_id}/deltas/{nonce}`, field `metadata.modules` |
+| See which configuration approved a delta | `admin GET /accounts/{account_id}/deltas/{nonce}`, field `modules` |
 
 Every write is validated by the module before it is stored; invalid params
 return `400` and change nothing.
@@ -196,7 +198,8 @@ For outages, a module that refuses too much, and break-glass steps, see the
 | Symptom | Cause |
 |---|---|
 | `cannot read module catalog` | `GUARDIAN_MODULES_CONFIG` is relative to the directory you started the server in; start from the repository root. |
-| `module caps: invalid params: …` at startup | The catalog's seed params, or the stored params on a later start, fail the module's validation. Fix the catalog; nothing is stored until every instance passes. |
+| `module caps: invalid params: …` at startup | The catalog's seed params fail the module's validation on a first start: fix the catalog; nothing is stored until every instance passes. On a later start it is the stored params that fail (the catalog's are no longer read): see the [runbook](../../runbooks/policy-modules.md). |
+| `GUARDIAN_MODULES_CONFIG is set but empty` or `declares no module` at startup | An empty value or an empty catalog would silently run without any policy. Point the variable at a catalog, or unset it to run without modules. |
 | `module caps-remote: …` at startup | An enabled remote module is unreachable or rejected the token. Start the module first, or set `enabled = false` until it runs. |
 | `relation "module_state_version" does not exist` | A Postgres database that ran an earlier prototype migration. Drop the `module_*` tables and the `20261015000001` row in `__diesel_schema_migrations`, then restart. |
 | `login failed: no session cookie` | The server did not load the key: check `GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE` and the `public_key` in it. |

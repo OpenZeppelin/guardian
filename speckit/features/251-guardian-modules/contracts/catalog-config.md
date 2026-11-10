@@ -8,7 +8,6 @@
 |---|---|---|---|
 | `GUARDIAN_MODULES_CONFIG` | unset | M2a | Path to the catalog TOML; unset disables the feature |
 | `GUARDIAN_MODULES_STATE` | `<GUARDIAN_METADATA_PATH>/modules` | M2a | Filesystem backend only: directory of the module state file; Postgres keeps module state in its tables |
-| `GUARDIAN_MODULE_TIMEOUT_MAX_MS` | `1000` | M2a | Upper bound for any instance `timeout_ms` |
 | `GUARDIAN_MODULE_PARAMS_MAX_BYTES` | `65536` | M2a | Largest params value (JCS-encoded) accepted at startup or through the operator API |
 | `GUARDIAN_MODULE_CHECK_RATE_PER_MIN` | `30` | M2a | Dry-run checks per minute per account and signer (RFC 0002 section 2.7) |
 | `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` | `1000` | M2a | Total module time per hook invocation |
@@ -79,7 +78,7 @@ A secret that cannot be read fails the instance's creation: startup stops for an
 
 ## `basic-policy` params (M2a)
 
-Every id is written in `0x` hex form (case-insensitive); `validate_params` refuses any other form, such as a bech32 address, which would never match a request.
+Every id is written in `0x` hex form (case-insensitive); `validate_params` refuses any other form, such as a bech32 address or a placeholder that is not hex digits, which would never match a request. A modifier without the list it modifies (`deny_unknown_recipients`, `signer_check`, `code_check`) and a cap naming one faucet twice are refused too.
 
 | Param | Type | Effect |
 |---|---|---|

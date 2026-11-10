@@ -28,7 +28,8 @@ For every instance in the catalog, know which path stops it:
   any transaction, not only during an outage: a transaction whose request the
   Guardian cannot build or send (an account view it cannot read, a request over
   `GUARDIAN_MODULE_REQUEST_MAX_BYTES`) is a module failure too, and a fail-open
-  instance is then skipped for it (recorded in `metadata.modules.failed_open`).
+  instance is then skipped for it (recorded in the delta's `modules.failed_open`,
+  read from `GET /dashboard/accounts/{account_id}/deltas/{nonce}`).
 - Give the on-call operator `modules:disable`. It allows disabling instances
   marked `operator_can_disable` and nothing else, so it is safe to hand out
   more widely than `policies:write` ([permissions](../DASHBOARD.md#permission-vocabulary)).
@@ -71,8 +72,9 @@ module is skipped without waiting for its timeout.
    ```
 
    Requests stop calling it on every replica at once. Deltas signed meanwhile
-   name the catalog and params version they were approved under in
-   `metadata.modules`, so the gap is auditable.
+   name the catalog and params version they were approved under in the
+   `modules` field of `GET /dashboard/accounts/{account_id}/deltas/{nonce}`, so
+   the gap is auditable.
 3. When the module is healthy again, enable it. Enabling runs `Describe` and
    `ValidateParams` first and returns `503 GUARDIAN_MODULE_UNAVAILABLE`
    without changing anything if they fail:
@@ -160,8 +162,10 @@ it after enabling.
 
 - Re-enable what was disabled, with a reason that references the incident.
 - Check `guardian_module_fail_open_total` for the window: deltas signed while
-  a fail-open module was failing carry `metadata.modules.failed_open` naming
-  it.
+  a fail-open module was failing carry `modules.failed_open` naming it on the
+  dashboard delta detail. Proposals created and accounts registered past a
+  failing fail-open module are in the audit log as `modules.failed_open`
+  events.
 - If the outage showed that an instance should not stop approvals, change its
   `on_error` or `operator_can_disable` in the catalog now, not during the
   next one.

@@ -17,7 +17,7 @@ One `[[module]]` entry of the catalog file ([contracts/catalog-config.md](./cont
 | `endpoint` | Remote kinds only: `grpc://` (TLS) or `grpc+insecure://` (plain text, loopback hosts only, never in prod) |
 | `scope` | `all`, `default` or `assigned` |
 | `hooks` | Non-empty subset of the gate and notify hooks; each must be in the module's `describe` |
-| `timeout_ms` | Required, 1 to `GUARDIAN_MODULE_TIMEOUT_MAX_MS` |
+| `timeout_ms` | Required, 1 to 1000 |
 | `on_error` | `deny` (default) or `allow` |
 | `auth` | Remote kinds; mandatory in prod; secret reference for the bearer token, optional mTLS |
 | `params` | Seed for the instance's global params, written to the metadata store the first time the id is seen; JSON object; `$secret` references only for in-process kinds (such an instance's global params stay file-managed); validated by `validate_params` |
@@ -73,7 +73,7 @@ One row holding the params version. Every write takes its lock first, increments
 
 ### Delta additions (both backends)
 
-The approval record is `metadata.modules` on the signed delta (`ModuleApproval`), stored with the delta's metadata (JSONB on Postgres, JSON on the filesystem), so it needs no migration. Like the rest of `metadata` it is served on the HTTP delta and dashboard routes, not over gRPC. Written only when a module ran for the delta.
+The approval record is `metadata.modules` on the signed delta (`ModuleApproval`), stored with the delta's metadata (JSONB on Postgres, JSON on the filesystem), so it needs no migration. Operators read it as `modules` on the dashboard delta detail (`GET /dashboard/accounts/{account_id}/deltas/{nonce}`); it is stripped from every client delta response and is not carried over gRPC. Written only when a module ran for the delta.
 
 | Field | Set when | Notes |
 |---|---|---|

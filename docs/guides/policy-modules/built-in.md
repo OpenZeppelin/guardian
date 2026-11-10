@@ -10,8 +10,17 @@ and scope. Do the [setup](./README.md#setup) first; the catalog is
 All params are optional; an instance with none allows everything. Write every
 id (faucet, recipient, signer commitment, code commitment) in the `0x` hex form
 the Guardian reports, not as a bech32 address: params with another form are
-refused, since such an id would never match and its rule would not apply.
-Case does not matter.
+refused, since such an id would never match and its rule would not apply. So
+is anything else that is not hex digits after `0x`, such as a placeholder left
+in an example catalog. Case does not matter, and a cap that names the same
+faucet twice in different case is refused.
+
+A param that only modifies another is refused without it:
+`deny_unknown_recipients` needs `recipient_denylist`, `signer_check` needs a
+signer list and `code_check` needs `allowed_code_commitments`. This matters for
+account layers, which are evaluated with their own params: a layer of
+`{"deny_unknown_recipients": true}` alone would do nothing, so it is not
+accepted.
 
 | Param | Value | Refuses with | Notes |
 |---|---|---|---|
@@ -69,7 +78,7 @@ has both.
 
 ```sh
 admin PUT /accounts/ACCOUNT/modules/caps/params \
-  '{"params":{"max_amount_per_tx":{"0xFAUCET":"2"}},"reason":"test"}'
+  '{"params":{"max_amount_per_tx":{"<faucet id in 0x hex>":"2"}},"reason":"test"}'
 admin GET /accounts/ACCOUNT/modules
 ```
 

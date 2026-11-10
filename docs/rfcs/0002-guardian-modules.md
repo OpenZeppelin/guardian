@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| **Status** | Accepted. Milestone M2a (section 7) is implemented on branch `251-modules-m2a`, not yet merged to `main`; M2b and M2c have not started. Comments are still welcome; protocol version 1 is frozen, so a change to it is a new capability or a new version (section 3.5) |
+| **Status** | Accepted. Milestone M2a (section 7) is implemented on branch `251-modules-m2a`, not yet merged to `main`; M2b and M2c have not started. Comments are still welcome; protocol version 1 is not frozen yet: it freezes with the first published `guardian-module-sdk` release (section 7) |
 | **Depends on** | [RFC 0001](./0001-server-side-transaction-execution.md) (server-side transaction execution, merged in PR #510): the execution worker is the second caller of the pipeline |
 | **Feature** | [#251](https://github.com/OpenZeppelin/guardian/issues/251) ("Modularization: middleware architecture and pluggable modules"); first consumer [#182](https://github.com/OpenZeppelin/guardian/issues/182) (policy evaluation). [#252](https://github.com/OpenZeppelin/guardian/issues/252) (x402 facilitator) is a later consumer: its payment-policy half (caps, allowlists, replay) fits `before_transaction_approved` and `after_transaction_committed`, its facilitator half (`/verify`, `/settle`, a flow that starts and waits) does not fit allow/deny and is future work (section 7) |
 | **Audience** | Operators, module authors, integrators, and anyone reviewing the Guardian trust model |
 | **Working artifacts** | [`speckit/features/251-guardian-modules/`](../../speckit/features/251-guardian-modules/spec.md): the specification, written alongside this RFC; the plan, the M2a tasks (`tasks.md`) and the prototype record (`tasks-p0.md`) |
-| **Revision** | 31 (2026-11-09): `tx_fee` marks only the fee note `pay_fee` creates (section 3.1); changes in Appendix C |
+| **Revision** | 32 (2026-11-10): protocol version 1 reopened and corrected after a review of the M2a implementation; changes in Appendix C |
 | **Review sought** | Review of the M2a implementation before it merges; comments on M2b (commit notifications, stateful modules) and M2c (operator-built kinds) |
 | **Code baseline** | `main` at `ca503704`; execution-path citations read on `254-execution-impl` at `29c722b4` (PR #510, since merged to `main` as `1100f3a4`) and kept as dated evidence. Miden pins: protocol and standards 0.17.1. Appendices B and C cite the baselines of their revisions. Prototype findings (2026-10-13 to 2026-10-15) in `speckit/features/251-guardian-modules/research.md` |
 
@@ -166,11 +166,11 @@ Each catalog entry:
 | `endpoint` | Remote kinds only: `grpc://…`, always TLS (`https://…` for `http` once it ships). Plain text needs the explicit `grpc+insecure://…` scheme and a loopback host, and is refused in the prod stage (section 5.2) |
 | `scope` | `all`, `default` or `assigned` (see scopes below) |
 | `hooks` | Subset of the hooks in section 2.3 |
-| `timeout_ms` | Required; from 1 to `GUARDIAN_MODULE_TIMEOUT_MAX_MS` (default 1000) |
+| `timeout_ms` | Required; from 1 to 1000 |
 | `on_error` | `deny` (default) or `allow` (section 4) |
 | `auth` | Remote kinds only, mandatory in the prod stage: `token_secret`, the secret name of the bearer token (section 5.2) |
 | `tls` | Remote kinds only, optional: `ca_file` (PEM bundle for a private CA, relative to the catalog's directory; the system roots otherwise) and `client_cert_secret` and `client_key_secret`, secret names, for mTLS (section 5.2) |
-| `params` | Initial global parameters as a JSON object, written to the metadata store the first time the instance id is seen and managed through the operator API afterwards (see layered parameters below) (TOML tables in the catalog are converted to JSON). Modules receive params as UTF-8 JSON bytes in RFC 8785 canonical form (JCS). The decoded bytes are identical on every transport: in process and over gRPC they arrive as raw bytes, while over `http` (once it ships) the proto3 JSON mapping carries them as a base64 string that decodes to the same bytes (likewise `int64` fields arrive as decimal strings and `Timestamp` fields as RFC 3339 strings, per the standard mapping). See "Parameters and secrets" below |
+| `params` | Initial global parameters as a JSON object, written to the metadata store the first time the instance id is seen and managed through the operator API afterwards (see layered parameters below) (TOML tables in the catalog are converted to JSON). Modules receive params as UTF-8 JSON bytes, compact and with object keys sorted (not full RFC 8785 canonicalization: numbers and strings are as `serde_json` writes them). The decoded bytes are identical on every transport: in process and over gRPC they arrive as raw bytes, while over `http` (once it ships) the proto3 JSON mapping carries them as a base64 string that decodes to the same bytes (likewise `int64` fields arrive as decimal strings and `Timestamp` fields as RFC 3339 strings, per the standard mapping). See "Parameters and secrets" below |
 | `require_fresh_state_ms` | Optional maximum notify lag in milliseconds (section 3.3) |
 | `enabled` | Default `true`. A one-time seed, read only the first time an instance id is seen; afterwards the runtime flag in the metadata store governs and later edits of this field have no effect (see runtime changes below) |
 | `disclosure`, `description`, `client_reason`, `dry_run` | What the account's cosigners may learn about the instance: the policy summary, generic or full denials, and the dry-run check (section 2.7). Defaults disclose nothing beyond today's denials |
@@ -325,10 +325,10 @@ This revision specifies the operator API only; no operator dashboard page is pla
 **Runtime changes without a restart.** The catalog file is read only at startup. Hot reload was considered and rejected (section 8): on ECS, the production target, configuration reaches tasks through the task definition and image, so there is no file to change without a deploy; file watching is unreliable across network and container mounts; and with several replicas a reload reaches one process, so for a newly added `all` module the other replicas keep signing without it. The needs behind a reload are met by state in the metadata store instead, which every replica reads, so a change applies to all replicas at once:
 
 - **Global params, account layers and per-account assignment** (above).
-- **Seed rule for `enabled`.** The catalog's `enabled` value is written to the metadata store only the first time an instance id is seen. After that the stored flag is the only switch: a redeploy that changes `enabled` in the file changes nothing, and the server logs a warning at startup when the file and the stored flag differ, lists the instance with `"enabled_drift": true` in `GET /dashboard/modules`, and exports `guardian_module_enabled_drift{module}`. Removing an instance from the catalog stops it but keeps its stored flag; adding the same id back resumes with that stored flag, not the file's value. The file is therefore not the switch for an existing instance; the operator API is.
-- **Runtime enable and disable of declared instances.** `POST /dashboard/modules/{module_id}/enable` (permission `policies:write`) and `/disable` (`policies:write` or `modules:disable`), each with a required reason and an audit record, switch evaluation on or off for every account. The two directions carry different risk. Enabling only tightens policy and is always allowed, so an operator can declare an instance with `enabled = false` and switch it on later without a restart. Disabling loosens policy: an API that could disable any module would let a stolen operator session switch off sanctions screening for every account, which undoes invariant 4. It is therefore allowed only for instances with `operator_can_disable = true`. An instance declared with `enabled = false` and `operator_can_disable = false` is deliberately one-way: a staged rollout that an operator can switch on once and cannot switch off from a session; compliance instances leave the flag off, while advisory modules such as a fail-open risk scorer can turn it on as an emergency stop for a faulty module. The flag lives in `module_instances`, and the pipeline reads it per evaluation through the per-replica cache, so a switch reaches every replica on its next evaluation; it is also the flag that decides at startup whether an instance failing its checks stops the server. `guardian_module_disabled{module}` is exported for alarms. A disabled instance is skipped by `evaluate` but keeps receiving `notify`, so its state is current when it is enabled.
+- **Seed rule for `enabled`.** The catalog's `enabled` value is written to the metadata store only the first time an instance id is seen. After that the stored flag is the only switch: a redeploy that changes `enabled` in the file changes nothing, and the server logs a warning at startup when the file and the stored flag differ, lists the instance with `"enabled_drift": true` in `GET /dashboard/modules`, and exports `guardian_module_config_drift{module}`. Removing an instance from the catalog stops it but keeps its stored flag; adding the same id back resumes with that stored flag, not the file's value. The file is therefore not the switch for an existing instance; the operator API is.
+- **Runtime enable and disable of declared instances.** `POST /dashboard/modules/{module_id}/enable` (permission `policies:write`) and `/disable` (`policies:write` or `modules:disable`), each with a required reason and an audit record, switch evaluation on or off for every account. The two directions carry different risk. Enabling only tightens policy and is always allowed, so an operator can declare an instance with `enabled = false` and switch it on later without a restart. Disabling loosens policy: an API that could disable any module would let a stolen operator session switch off sanctions screening for every account, which undoes invariant 4. It is therefore allowed only for instances with `operator_can_disable = true`. An instance declared with `enabled = false` and `operator_can_disable = false` is deliberately one-way: a staged rollout that an operator can switch on once and cannot switch off from a session; compliance instances leave the flag off, while advisory modules such as a fail-open risk scorer can turn it on as an emergency stop for a faulty module. The flag lives in `module_instances`, and the pipeline reads it per evaluation through the per-replica cache, so a switch reaches every replica on its next evaluation; it is also the flag that decides at startup whether an instance failing its checks stops the server. `guardian_module_enabled{module}` (0 when disabled) is exported for alarms. A disabled instance is skipped by `evaluate` but keeps receiving `notify`, so its state is current when it is enabled.
 
-Only adding an instance, removing one, or changing its kind, endpoint, auth, hooks, timeout or `on_error` needs a deploy, and deploy review is the bar wanted for those changes. A rolling deploy still leaves replicas on different catalogs for its duration, so each replica exports the hash of the catalog it loaded (`guardian_module_catalog_info{hash}` and in `/dashboard/info`) and logs each instance's module build (`name version` from `describe`) at startup, also shown in `GET /dashboard/modules`. The catalog file itself lives in the deploy repository, where its hash finds it.
+Only adding an instance, removing one, or changing its kind, endpoint, auth, hooks, timeout or `on_error` needs a deploy, and deploy review is the bar wanted for those changes. A rolling deploy still leaves replicas on different catalogs for its duration, so each replica exports the hash of the catalog it loaded (`guardian_module_catalog_info{catalog_hash}` and in `/dashboard/info`) and logs each instance's module build (`name version` from `describe`) at startup, also shown in `GET /dashboard/modules`. The catalog file itself lives in the deploy repository, where its hash finds it.
 
 **Evaluation trace.** Every delta the Guardian signs after modules ran records which configuration approved it, shown in the dashboard delta detail and not exposed through the client API:
 
@@ -336,9 +336,9 @@ Only adding an instance, removing one, or changing its kind, endpoint, auth, hoo
 |---|---|
 | `catalog_hash` | SHA-256 of the catalog file the approving replica loaded |
 | `params_version` | The params version the evaluation read; the history replayed to it gives every global param, layer, assignment and enabled flag |
-| `failed_open` | Each evaluation that failed and was let through by `on_error = allow`: module, layer and failure kind (`timeout`, `error`, `invalid_decision`, `request_unavailable`); omitted when empty, the detail goes to the log |
+| `failed_open` | Each evaluation that failed and was let through by `on_error = allow`: module, layer and failure kind (`timeout`, `error`, `invalid_decision`, `request_unavailable`, `circuit_open`); omitted when empty, the detail goes to the log |
 
-Allowed evaluations are not listed: the catalog, the params version and the account determine which modules ran. Denials create no delta. Each is logged with `request_id`, account, hook, module, layer, `reason_code`, the module's `message`, the catalog hash and the params version, so "why was this account refused" is answered from the logs; M2a has no API for denials, and a durable decision log is future work (section 7). A durable record of module builds per configuration, a hash of the request and the inputs not stored elsewhere (accounting time, proposer) are added with the replay tool that would consume them.
+Allowed evaluations are not listed: the catalog, the params version and the account determine which modules ran. Proposal creation and registration sign no delta, so a failure let through there is written to the audit log instead, as a `modules.failed_open` event with the hook, submitter, catalog hash, params version, the failures and, for a proposal, its id. Denials create no delta. Each is logged with `request_id`, account, hook, module, layer, `reason_code`, the module's `message`, the catalog hash and the params version, so "why was this account refused" is answered from the logs; M2a has no API for denials, and a durable decision log is future work (section 7). A durable record of module builds per configuration, a hash of the request and the inputs not stored elsewhere (accounting time, proposer) are added with the replay tool that would consume them.
 
 **Order:** `scope = all` modules in catalog order, each with its global layer first and the account's layer, if any, right after it; then the account's stored assignment in its stored order. Copied `default` modules are stored first, in catalog order, and the operator may reorder them afterwards. Evaluation stops at the first deny. `all` modules always run before the account's own modules, so when an `all` module denies, `meta.module` names it and any account-level module that would also have denied is never called. Operators debugging per-account policy should check the `all` modules first.
 
@@ -428,11 +428,11 @@ There are two ways to use a module someone else wrote, for example a crate publi
 ```rust
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    guardian_module_sdk::serve(acme_sanctions::AcmeSanctions::from_env()?)
-        .grpc("0.0.0.0:7443")
+    guardian_module_sdk::serve::serve(acme_sanctions::AcmeSanctions::from_env()?)
         .instance("sanctions-ofac", std::fs::read_to_string("/run/secrets/module_token")?.trim())
-        .run()
-        .await
+        .run("0.0.0.0:7443".parse()?)
+        .await?;
+    Ok(())
 }
 ```
 
@@ -600,7 +600,7 @@ message HookRequest {
   Hook hook = 2;
   bool dry_run = 3;                   // a policy check: nothing is stored or signed whatever the decision (section 2.7)
   string network = 4;                 // network family: "miden"
-  string network_id = 5;              // the account's network within the family: "mainnet", "testnet", "devnet", "cedar" or "local" (section 3.1)
+  string network_id = 5;              // the network this Guardian serves within the family: "mainnet", "testnet", "devnet", "cedar" or "local"; from its own configuration, never from the request (section 3.1)
   string account_id = 6;
   string instance_id = 7;             // catalog id of the instance being called
   bytes params = 8;                   // UTF-8 JSON, params of the layer being evaluated (global, account layer, or the account's own for default/assigned)
@@ -651,21 +651,20 @@ enum PendingState {
 }
 
 message RegistrationSubject {
-  AccountStateProjection initial_state = 1;  // the account about to be accepted, per network
+  AccountStateProjection initial_state = 1;  // the account about to be accepted, per network: its whole vault and storage
 }
 
 enum Effect {
-  EFFECT_UNSPECIFIED = 0;             // a module that does not set `effect`: `allow` decides
+  EFFECT_UNSPECIFIED = 0;             // never a decision: a module failure
   EFFECT_ALLOW = 1;
   EFFECT_DENY = 2;
 }
 
 message Decision {
-  bool allow = 1;                     // read only when effect is unspecified
+  Effect effect = 1;                  // unspecified, or a value the Guardian does not know, is a module failure
   string reason_code = 2;             // required on a deny; ignored on an allow
   string message = 3;                 // logged, never forwarded to clients
-  Effect effect = 4;                  // wins over allow when set; a value the Guardian does not know is a module failure
-  string client_message = 5;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it (section 2.7)
+  string client_message = 4;          // optional, plain text, at most 256 characters; forwarded only where the instance allows it (section 2.7)
 }
 
 // A transaction as its network describes it. One variant per network; a module reads the
@@ -690,14 +689,15 @@ message RawTransaction {
 }
 
 message MidenTransaction {
-  int64 nonce_delta = 1;
-  uint32 reference_block = 2;         // the block the transaction was executed against
-  optional uint32 expiration_block = 3;  // absent when the transaction sets no expiration (section 3.1)
+  uint64 nonce_delta = 1;
+  uint32 bound_block = 2;             // the block the summary binds; the transaction executes against this block or a later one (section 3.1)
+  optional uint32 expiration_delta = 3;  // blocks after the block the transaction executes against at which it expires; absent when its script sets none. Not an absolute height: that block is not known at approval (section 3.1)
   repeated VaultChange vault_changes = 4;
   repeated OutputNote output_notes = 5;
   repeated InputNote input_notes = 6;
   repeated StorageChange storage_changes = 7;
   optional string new_code_commitment = 8;  // set when the transaction replaces the account's code (section 3.1)
+  optional uint64 approval_expiration_block = 9;  // the block at which the cosigners' approval of this transaction lapses; absent when it never lapses (section 3.1)
 }
 
 message MidenAccountState {
@@ -721,7 +721,7 @@ message OutputNote {
   repeated Asset assets = 5;
   string script_root = 6;
   optional string p2id_target = 7;    // set only for known P2ID / P2IDE scripts
-  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note)
+  bool tx_fee = 8;                    // the fee note pay_fee creates; not a payment (section 3.1: set only for that one note, and only while it carries no more of the fee asset than a transaction can owe)
 }
 enum NoteType { NOTE_TYPE_UNSPECIFIED = 0; NOTE_TYPE_PUBLIC = 1; NOTE_TYPE_PRIVATE = 2; }
 
@@ -785,9 +785,9 @@ message Gap {
 
 **Request identity.** `request_id` is unique per hook invocation and shared by every module and layer called in it, so a module's logs can be joined with the Guardian's denial log (section 2.2, "Evaluation trace"). A client retry is a new invocation with a new id. It is for correlation only: `evaluate` has no side effects (section 2.1), so there is nothing to deduplicate.
 
-**Network.** `network` names the network family (`miden`); `network_id` names the account's network within it (`mainnet`, `testnet`, `devnet`, `cedar` or `local`), taken from the account's registered network configuration, since one Guardian can serve accounts on several Miden networks. A module must not infer the network from an address prefix: Cedar shares mainnet's bech32 prefix and a local node shares devnet's (`crates/server/src/metadata/network.rs:29-43`) **[READ]**.
+**Network.** `network` names the network family (`miden`); `network_id` names the network this Guardian serves within it (`mainnet`, `testnet`, `devnet`, `cedar` or `local`), taken from the Guardian's own configuration (`GUARDIAN_NETWORK_TYPE`). It is never the `network_type` an account was registered with: that field is optional in `/configure`, defaults to `local`, and is chosen by the registrant, so a policy keyed on it could be steered by the account it judges. A module must not infer the network from an address prefix: Cedar shares mainnet's bech32 prefix and a local node shares devnet's (`crates/server/src/metadata/network.rs:29-43`) **[READ]**.
 
-**Expiration and code.** `reference_block` is the summary's block number and `expiration_block` is `reference_block + expiration_delta`; a transaction without an expiration has an expiration delta of 0, and `expiration_block` is then absent rather than equal to the reference block, so a module can tell "never expires" from "expires now" and compute the validity window. `new_code_commitment` is set when the transaction's account delta carries a code patch, which the Guardian applies like any other change today (`merge_account_deltas`, `crates/server/src/network/miden/mod.rs:873`) **[READ]**; a module that pins account code denies on it (section 3.2).
+**Blocks, expiration and code.** `bound_block` is the block the summary binds; the transaction executes against that block or a later one, which is not known when the Guardian approves. `expiration_delta` is the delta the transaction's script sets, counted from the block it executes against, so it is not an absolute height and is absent when the script sets none. `approval_expiration_block` is the absolute block at which the cosigners' approval of this summary lapses (the summary's first user parameter), absent when the approval never lapses: it is the bound a module uses for "this approval is valid until". `new_code_commitment` is set when the transaction's account delta carries a code patch, which the Guardian applies like any other change today (`merge_account_deltas`, `crates/server/src/network/miden/mod.rs:873`) **[READ]**; a module that pins account code denies on it (section 3.2).
 
 **Registration cost.** `RegistrationSubject.initial_state` is built from the account `configure_account` already decodes to read its state head (`get_state_head`, `crates/server/src/services/configure_account.rs:184`) **[READ]**. Building the vault and storage projection from it is new work on the registration path, and the implementation should build it only when a module that declares `before_account_registered` will be called.
 
@@ -797,7 +797,7 @@ message Gap {
 
 `p2id_target` is set only when the note script root is a known P2ID or P2IDE script. Recipient-based policies are enforceable because `TransactionSummary.output_notes` is a collection of `RawOutputNote::Full(Note) | Partial(PartialNote)` (`miden-protocol-0.17.1/src/transaction/tx_summary.rs:31-39`, `outputs/notes.rs:190`) **[READ]**: a full note carries recipient, assets and script even when its type is private. A partial note exposes only the recipient digest, so it is marked `partial = true` and a recipient policy must decide what to do with an unknown recipient.
 
-**The fee is a note.** In Miden 0.17 `pay_fee` creates a public `TX_FEE` output note funded from the account's vault (`miden-standards-0.17.1/src/account/auth/singlesig.rs:45`) **[READ]**. Listed as an ordinary note, the fee looks like a payment: in the prototype a cap on the fee asset refused every transaction, consuming notes included, and a recipient allowlist would refuse every transaction too, since the fee note has no P2ID recipient. The Guardian therefore marks it with `OutputNote.tx_fee`, and policies treat it as the fee, not a payment. The script alone does not identify the fee: `TX_FEE` is a standard script that any transaction script can use (`tx_fee::create_output_note` is public), with any assets, and anyone can consume the note, so a note marked by its script would move funds past every recipient, asset and amount rule. `tx_fee` is set only for the note `pay_fee` creates, recognized by everything `pay_fee` fixes: it is the transaction's only `TX_FEE` note, its serial number is `TxFeeNote::derive_serial_number(account, nonce before the transaction, block the summary binds)`, and it carries one fungible asset of the chain's fee faucet, which the Guardian reads once from the node's protocol configuration. Any other `TX_FEE` note, and every `TX_FEE` note when the transaction has more than one or the fee faucet is not known yet, is an ordinary output note. A zero fee creates no fee note.
+**The fee is a note.** In Miden 0.17 `pay_fee` creates a public `TX_FEE` output note funded from the account's vault (`miden-standards-0.17.1/src/account/auth/singlesig.rs:45`) **[READ]**. Listed as an ordinary note, the fee looks like a payment: in the prototype a cap on the fee asset refused every transaction, consuming notes included, and a recipient allowlist would refuse every transaction too, since the fee note has no P2ID recipient. The Guardian therefore marks it with `OutputNote.tx_fee`, and policies treat it as the fee, not a payment. The script alone does not identify the fee: `TX_FEE` is a standard script that any transaction script can use (`tx_fee::create_output_note` is public), with any assets, and anyone can consume the note, so a note marked by its script would move funds past every recipient, asset and amount rule. `tx_fee` is set only for the note `pay_fee` creates, recognized by everything `pay_fee` fixes: it is the transaction's only `TX_FEE` note, its serial number is `TxFeeNote::derive_serial_number(account, nonce before the transaction, block the summary binds)`, and it carries one fungible asset of the chain's fee faucet, no more of it than a transaction can owe. The Guardian reads the fee faucet and the verification base fee from the node's latest block header and its protocol configuration, and reads them again once that read is a minute old. The fee is the base fee times `ilog2(cycles) + 1`, which stays below 32 for any cycle count the kernel accepts, so the bound is 64 times the base fee: a note over it is a payment. On a chain whose base fee is zero `pay_fee` creates no note, so no note is marked there; otherwise a transaction script could create the one `TX_FEE` note itself, with the derivable serial number and any amount. Any other `TX_FEE` note, and every `TX_FEE` note when the transaction has more than one, is an ordinary output note. While the fee asset has never been read, a transaction that carries a `TX_FEE`-script note cannot be projected, so each instance's `on_error` applies (`GUARDIAN_MODULE_UNAVAILABLE` for a fail-closed one) instead of the note being judged as a payment and denied for good.
 
 #### `basic-policy` rules
 
@@ -963,7 +963,6 @@ Remote modules are run by other teams and vendors and upgrade on their own sched
 
 | Capability | Meaning |
 |---|---|
-| `decision.effect` | The Guardian reads `Decision.effect` |
 | `params.normalization` | The Guardian stores `ParamsVerdict.normalized_params` |
 | `notify` | The Guardian builds `pending` and delivers `Notify` and `NotifyGap` (M2b, section 3.4) |
 
@@ -971,7 +970,7 @@ A stateful module requires `notify`, and a module that requires it is also refus
 
 **Supported range.** A Guardian accepts its current protocol version and, once a newer major exists, the previous one for a deprecation window of one Guardian release. For a module on the previous version it builds that version's request shape, logs a warning at startup and exports `guardian_module_protocol_deprecated{module}`, so operators see which modules to upgrade before the window closes. Two or more versions behind, or ahead of the Guardian, is refused. Version 1 is the only version until M2a freezes it, so the range is a single version for now.
 
-**Decisions.** `Decision.effect` makes the outcome explicit, so later effects (for example a request for additional approval, section 7) can be added without a new protocol version. A module that predates the field leaves it unspecified and `allow` decides. An effect the Guardian does not recognise is a module failure, so `on_error` applies: a newer module cannot loosen policy on an older Guardian by returning something the Guardian does not understand.
+**Decisions.** `Decision.effect` makes the outcome explicit, so later effects (for example a request for additional approval, section 7) can be added without a new protocol version. A decision that sets no effect, or one the Guardian does not recognise, is a module failure, so `on_error` applies: a newer module cannot loosen policy on an older Guardian by returning something the Guardian does not understand.
 
 **Parameter migration.** Params belong to the module, which changes their shape between its own releases. `ValidateParams` may return `normalized_params`: the params in the module's current shape. The Guardian stores what the module returns. At startup and before enabling an instance, when the module normalizes the stored global params, the Guardian writes them with a history entry by `module:<name> <version>` and reason "params migrated by the module", so an upgrade is a recorded data change instead of a startup failure. Operator writes store the normalized form too, and the response shows what was stored. Account layers and assignments are migrated when they are next written; until then the module receives them in the shape they were stored in, so a module must keep accepting the shapes of its previous release. Normalized params are subject to the same rules as the input: a JSON object, and no secret references through the operator API.
 
@@ -1021,9 +1020,9 @@ Modules run in sequence, so their timeouts add up, while the execution worker ho
 
 Without a breaker, a module that is down costs its full `timeout_ms` on every request until an operator acts, for fail-closed and fail-open instances alike. Each replica therefore keeps a breaker per instance:
 
-- **Closed** (normal): calls go through. `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures (default 5) open it. Timeouts, transport errors and malformed decisions count as failures; a deny is an answer, not a failure, and resets the count.
+- **Closed** (normal): calls go through. `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures (default 5) open it. Timeouts, transport errors and malformed decisions count as failures; a deny is an answer, not a failure, and resets the count. So does a request the module rejects as one it cannot judge (`ModuleError::InvalidRequest`, gRPC `INVALID_ARGUMENT`): the instance's `on_error` applies to that request, but it says nothing about whether the module is up, so one account's unjudgeable requests cannot stop the module for every account. A timeout does not count when earlier modules in the same invocation left the call less than its `timeout_ms`, and nothing a dry-run check does counts or resets anything, since a cosigner sends it without anyone's signature.
 - **Open**: `evaluate` is not called; the module is treated as failed for every account and its `on_error` applies at once, so a fail-closed module refuses with `GUARDIAN_MODULE_UNAVAILABLE` without waiting and a fail-open module is skipped.
-- **Half-open**: a successful health probe moves an open breaker here. The next real evaluation is sent; success closes the breaker, failure opens it again.
+- **Half-open**: a successful health probe moves an open breaker here. One real evaluation at a time is sent as the trial, and requests arriving meanwhile, and every dry-run check, are treated as while open; an answer closes the breaker, a failure opens it again, and a trial that never reports back (its request was dropped) is replaced at the next successful probe.
 
 The health probe is a `Describe` call every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` (default 5000) for every enabled instance, open breaker or not, under the instance's `timeout_ms`. It sets `guardian_module_up{module}`, so an outage raises an alarm before traffic finds it, and it also detects a module whose `protocol_version` changed under a running Guardian (treated as a failure). A module receives about one `Describe` per instance per replica every interval, so it answers `Describe` from memory, without calling a vendor or a database. Breaker state is per replica and in memory: replicas converge independently within a few requests, and nothing about it is stored. Until they do, a fail-open instance can be skipped on one replica and called on another; `failed_open` in the evaluation trace records each skip (section 2.2). `guardian_module_circuit_open{module}` is exported, and `GET /dashboard/modules` shows the answering replica's state. Notify delivery is unaffected; it has its own retry with backoff (section 3.3). In-process kinds go through the same breaker, so a kind that calls a vendor API behaves like a remote one.
 
@@ -1093,7 +1092,7 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 
 **Freeze criteria.** Version 1 freezes only once the prototype implements, with tests, the protocol surface added in revision 24 that is so far derived from reading code: the renumbered proto, registration before the claim (new account, unfinished claim, lost claim), `network_id`, `code_commitment` and `procedure_roots` with effective-override filtering (non-zero, exported, not the auth procedure), `reference_block` and the optional `expiration_block`, `new_code_commitment`, `submitter_session`, `dry_run` with approval instances in the check, and the `allowed_code_commitments` rule with `code_check`. Extraction details are where the prototype found errors before (the fee note, single-key views), so these are measured against real accounts, not only fixtures.
 
-**Frozen.** The freeze criteria were met on 2026-11-09 at `e4efd839` on the M2a branch `251-modules-m2a`: every field and behaviour listed above is implemented with tests, except `proposer_session`, removed in revision 27 (section 3.2). From then on `guardian.module.v1` changes only additively (section 3.5).
+**Not frozen yet.** The freeze criteria were met on 2026-11-09 at `e4efd839` on the M2a branch `251-modules-m2a` and revision 28 declared version 1 frozen. A review of the implementation the next day found fields that did not carry what they said (`network_id`, `reference_block`, `expiration_block`), one that was never sent (`RegistrationSubject.initial_state`) and a legacy `Decision.allow` in a protocol with no predecessor, so revision 32 reopened it: nothing had been published or deployed, which is the only point at which a freeze costs anything to undo. Version 1 freezes with the first published `guardian-module-sdk` release; from then on `guardian.module.v1` changes only additively (section 3.5). The messages no M2a code produces or consumes (`Notify`, `NotifyGap`, `CommitEvent`, `Gap`, `PendingTransaction`) stay in the proto as the M2b design and may still change until M2b implements them.
 
 **M2a: stateless gates.**
 
@@ -1206,6 +1205,7 @@ None. Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
+| 32 | 2026-11-10 | review of the M2a implementation. Protocol version 1 reopened (section 7): `Decision.allow` and the `decision.effect` capability removed, a decision without an effect is a module failure (section 3.5); `MidenTransaction.reference_block` and `expiration_block` replaced by `bound_block`, `expiration_delta` and `approval_expiration_block`, and `nonce_delta` made unsigned (section 3.1); `network_id` is the Guardian's configured network, not the account's registered one (section 3.1); `RegistrationSubject.initial_state` is sent; `tx_fee` is set only while the fee note carries no more of the fee asset than a transaction can owe, 64 times the chain's verification base fee, and for no note on a chain that charges nothing (section 3.1). Breaker: requests a module rejects do not count, a module whose timeout is the whole budget can open it, half-open sends one trial at a time, dry-run checks neither probe nor close it (section 4.4). Fail-open skips at proposal creation and registration, where no delta is signed, are recorded as `modules.failed_open` audit events; operator writes are audited with the params version they committed as (section 2.2). Body corrected to the implementation: metric names, the fixed 1000 ms timeout cap, params encoding, the `circuit_open` failure kind |
 | 31 | 2026-11-09 | failures of dry-run checks do not count toward the circuit breaker, since a cosigner sends them without anyone's signature (section 4.4); the per-account budget check refuses only writes that raise an over-budget cost (section 4.3); `GUARDIAN_MODULE_UNAVAILABLE` and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` omit `module` for an instance whose denials are generic (section 4.1); `metadata.modules` is kept out of client delta responses (section 2.2). `OutputNote.tx_fee` set only for the fee note `pay_fee` creates (section 3.1): the only `TX_FEE` note, with the derived serial number and one asset of the chain's fee faucet. Revisions 20 to 30 set it for any note with the `TX_FEE` script, which a transaction script can create with any assets, so the flag let funds past every `basic-policy` rule. No wire change; the field's meaning is narrowed |
 | 30 | 2026-11-09 | the secrets backend named: `GUARDIAN_MODULE_SECRET_PROVIDER` selects AWS Secrets Manager (the prod default) or owner-only files below `GUARDIAN_MODULE_SECRET_DIR`, read once when the instances are created; a secret that cannot be read fails creation, with the enabled/disabled rule of section 2.2. Field names fixed as `auth.token_secret`, `tls.client_cert_secret` and `tls.client_key_secret`; a secret name is 1 to 512 characters of letters, digits and `/_+=.@-`, and a `$secret` object has no other key (section 2.2). In-process factories read `$secret` values from `ModuleInstanceConfig::secret`. No protocol change |
 | 29 | 2026-11-09 | M2a implementation of `scope = default`: the copy is written right after the claim, only into an account with no assignment and no assignment history, under the module state lock, instead of in the claim's transaction on Postgres and before the claim on the filesystem; a crash in between is repaired by the unfinished-claim retry, so both backends follow one rule and no transaction spans the metadata and module stores (section 2.3). No protocol change |
