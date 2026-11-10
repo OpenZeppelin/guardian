@@ -16,6 +16,8 @@ use super::registry::Instance;
 pub enum Behaviour {
     Decide(Decision),
     Fail,
+    /// Refuses the request as one it cannot judge.
+    Reject,
     Hang,
     Panic,
     /// Blocks its thread instead of awaiting, like a module doing synchronous work.
@@ -76,6 +78,7 @@ impl Module for StubModule {
         match &self.behaviour {
             Behaviour::Decide(decision) => Ok(decision.clone()),
             Behaviour::Fail => Err(ModuleError::Unavailable("stub down".into())),
+            Behaviour::Reject => Err(ModuleError::InvalidRequest("stub cannot judge".into())),
             Behaviour::Hang => {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 Ok(Decision::allow())
@@ -232,12 +235,12 @@ impl RacingStore {
         for write in writes {
             match write {
                 RacingWrite::Global(module, params) => {
-                    self.inner.set_global(module, params, &change).await?
+                    self.inner.set_global(module, params, &change).await?;
                 }
                 RacingWrite::Layer(account, module, params) => {
                     self.inner
                         .set_layer(account, module, params, &change)
-                        .await?
+                        .await?;
                 }
             }
         }
@@ -284,7 +287,7 @@ impl super::store::ModuleStore for RacingStore {
         module_id: &str,
         enabled: bool,
         change: &super::store::Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.inner.set_enabled(module_id, enabled, change).await
     }
 
@@ -293,7 +296,7 @@ impl super::store::ModuleStore for RacingStore {
         module_id: &str,
         params: serde_json::Value,
         change: &super::store::Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.inner.set_global(module_id, params, change).await
     }
 
@@ -303,7 +306,7 @@ impl super::store::ModuleStore for RacingStore {
         expected: &serde_json::Value,
         params: serde_json::Value,
         change: &super::store::Change<'_>,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         let writes = std::mem::take(&mut *self.before_set_global_if.lock().unwrap());
         self.commit(writes).await?;
         self.inner
@@ -341,7 +344,7 @@ impl super::store::ModuleStore for RacingStore {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &super::store::Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.inner
             .set_layer(account_id, module_id, params, change)
             .await
@@ -352,7 +355,7 @@ impl super::store::ModuleStore for RacingStore {
         account_id: &str,
         modules: Vec<super::store::Assigned>,
         change: &super::store::Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.inner.set_assignment(account_id, modules, change).await
     }
 

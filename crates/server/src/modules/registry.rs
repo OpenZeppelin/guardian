@@ -190,13 +190,20 @@ impl std::fmt::Display for CallError {
 
 /// Runs one module call on its own task, so a panic in the module becomes an error instead of
 /// unwinding through the request, and the timeout holds even when an in-process module blocks
-/// instead of awaiting. A call that times out is aborted at its next await point.
+/// instead of awaiting. A call that times out, or whose caller goes away, is aborted at its next
+/// await point.
 pub async fn isolated<T: Send + 'static>(
     timeout: std::time::Duration,
     call: impl std::future::Future<Output = Result<T, ModuleError>> + Send + 'static,
 ) -> Result<T, CallError> {
-    let mut task = tokio::spawn(call);
-    match tokio::time::timeout(timeout, &mut task).await {
+    struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+    impl<T> Drop for AbortOnDrop<T> {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+    let mut task = AbortOnDrop(tokio::spawn(call));
+    match tokio::time::timeout(timeout, &mut task.0).await {
         Ok(Ok(result)) => result.map_err(CallError::Module),
         Ok(Err(error)) => Err(CallError::Panicked(match error.try_into_panic() {
             Ok(payload) => payload
@@ -206,10 +213,7 @@ pub async fn isolated<T: Send + 'static>(
                 .unwrap_or_else(|| "non-string panic payload".into()),
             Err(error) => error.to_string(),
         })),
-        Err(_) => {
-            task.abort();
-            Err(CallError::Timeout)
-        }
+        Err(_) => Err(CallError::Timeout),
     }
 }
 
@@ -219,10 +223,7 @@ pub async fn isolated<T: Send + 'static>(
 pub const MIN_PROTOCOL_VERSION: u32 = PROTOCOL_VERSION;
 
 /// Optional protocol features this Guardian provides.
-pub const CAPABILITIES: &[&str] = &[
-    capability::DECISION_EFFECT,
-    capability::PARAMS_NORMALIZATION,
-];
+pub const CAPABILITIES: &[&str] = &[capability::PARAMS_NORMALIZATION];
 
 /// What the Guardian tells a module in `Describe`.
 pub fn describe_request() -> DescribeRequest {
@@ -384,8 +385,18 @@ enabled = ENABLED
             Catalog::parse(text, None).expect("guide catalog parses");
         }
         let built_in = include_str!("../../../../docs/guides/policy-modules/built-in.toml");
-        let instances = Registry::first_party()
+        let unedited = Registry::first_party()
             .instantiate(&catalog(built_in), &HashMap::new())
+            .await
+            .err()
+            .expect("the guide catalog does not start until its placeholder is replaced");
+        assert!(unedited.contains("not an id in 0x hex form"), "{unedited}");
+        let edited = built_in.replace(
+            "0xREPLACE_WITH_FAUCET_ID",
+            "0x0a1b2c3d4e5f60718293a4b5c6d7e8",
+        );
+        let instances = Registry::first_party()
+            .instantiate(&catalog(&edited), &HashMap::new())
             .await
             .expect("the built-in guide catalog passes the startup checks")
             .instances;
@@ -547,7 +558,7 @@ params = { old_name = 5 }
         assert!(error.contains("requires capability pending.v2"), "{error}");
 
         let mut stub = crate::modules::testing::ProtocolStub::new();
-        stub.required_capabilities = vec![capability::DECISION_EFFECT.into()];
+        stub.required_capabilities = vec![capability::PARAMS_NORMALIZATION.into()];
         assert!(load(stub).await.is_ok());
     }
 

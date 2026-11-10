@@ -25,6 +25,8 @@ impl CircuitState {
 struct Breaker {
     state: CircuitState,
     consecutive_failures: u32,
+    /// A half-open breaker's one trial call is out and has not reported back.
+    trial_in_flight: bool,
 }
 
 impl Default for Breaker {
@@ -32,13 +34,23 @@ impl Default for Breaker {
         Self {
             state: CircuitState::Closed,
             consecutive_failures: 0,
+            trial_in_flight: false,
         }
     }
 }
 
+/// Who is asking to call a module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Caller {
+    /// A request that leads to a signature or a stored proposal.
+    Request,
+    /// A policy check: it neither tests a recovering module nor changes a breaker.
+    DryRun,
+}
+
 /// One breaker per instance id. A closed breaker opens after `threshold` consecutive failures; an
-/// open one skips the module until a successful probe moves it to half-open, where the next real
-/// call closes it on an answer or opens it again on a failure.
+/// open one skips the module until a successful probe moves it to half-open, where one real call
+/// at a time is let through: it closes the breaker on an answer or opens it again on a failure.
 pub struct Breakers {
     threshold: u32,
     by_instance: Mutex<HashMap<String, Breaker>>,
@@ -60,10 +72,23 @@ impl Breakers {
             .unwrap_or(CircuitState::Closed)
     }
 
-    /// Whether the module may be called; an open breaker applies the instance's `on_error` at
-    /// once instead.
-    pub fn admits(&self, instance: &str) -> bool {
-        self.state(instance) != CircuitState::Open
+    /// Whether the module may be called now; when not, the instance's `on_error` applies at
+    /// once instead. A half-open breaker admits one request at a time as its trial, and a caller
+    /// admitted that way must report back with [`Self::answered`] or [`Self::failed`].
+    pub fn admit(&self, instance: &str, caller: Caller) -> bool {
+        let Ok(mut breakers) = self.by_instance.lock() else {
+            return false;
+        };
+        let Some(breaker) = breakers.get_mut(instance) else {
+            return true;
+        };
+        match (breaker.state, caller) {
+            (CircuitState::Closed, _) => true,
+            (CircuitState::Open, _) | (CircuitState::HalfOpen, Caller::DryRun) => false,
+            (CircuitState::HalfOpen, Caller::Request) => {
+                !std::mem::replace(&mut breaker.trial_in_flight, true)
+            }
+        }
     }
 
     /// The module answered, allow or deny: a deny is an answer, not a failure.
@@ -81,16 +106,20 @@ impl Breakers {
                     breaker.state = CircuitState::Open;
                 }
             }
-            CircuitState::HalfOpen | CircuitState::Open => breaker.state = CircuitState::Open,
+            CircuitState::HalfOpen | CircuitState::Open => {
+                breaker.state = CircuitState::Open;
+                breaker.trial_in_flight = false;
+            }
         });
     }
 
-    /// A health probe succeeded: an open breaker lets the next real call through.
+    /// A health probe succeeded: an open breaker lets the next real call through, and a
+    /// half-open one whose trial never reported back (its request was dropped) lets another.
     pub fn probe_succeeded(&self, instance: &str) {
-        self.update(instance, |breaker| {
-            if breaker.state == CircuitState::Open {
-                breaker.state = CircuitState::HalfOpen;
-            }
+        self.update(instance, |breaker| match breaker.state {
+            CircuitState::Open => breaker.state = CircuitState::HalfOpen,
+            CircuitState::HalfOpen => breaker.trial_in_flight = false,
+            CircuitState::Closed => {}
         });
     }
 
@@ -128,10 +157,34 @@ mod tests {
         breakers.answered("m");
         breakers.failed("m");
         breakers.failed("m");
-        assert!(breakers.admits("m"), "an answer reset the count");
+        assert!(
+            breakers.admit("m", Caller::Request),
+            "an answer reset the count"
+        );
         breakers.failed("m");
         assert_eq!(breakers.state("m"), CircuitState::Open);
-        assert!(!breakers.admits("m"));
+        assert!(!breakers.admit("m", Caller::Request));
+    }
+
+    #[test]
+    fn a_half_open_breaker_admits_one_trial_at_a_time_and_no_dry_run() {
+        let breakers = Breakers::new(1);
+        breakers.failed("m");
+        breakers.probe_succeeded("m");
+        assert!(!breakers.admit("m", Caller::DryRun));
+        assert!(breakers.admit("m", Caller::Request));
+        assert!(
+            !breakers.admit("m", Caller::Request),
+            "the trial is still out"
+        );
+        breakers.probe_succeeded("m");
+        assert!(
+            breakers.admit("m", Caller::Request),
+            "a later probe replaces a trial that never reported back"
+        );
+        breakers.answered("m");
+        assert!(breakers.admit("m", Caller::Request));
+        assert!(breakers.admit("m", Caller::DryRun));
     }
 
     #[test]
@@ -140,7 +193,7 @@ mod tests {
         breakers.failed("m");
         breakers.probe_succeeded("m");
         assert_eq!(breakers.state("m"), CircuitState::HalfOpen);
-        assert!(breakers.admits("m"));
+        assert!(breakers.admit("m", Caller::Request));
         breakers.failed("m");
         assert_eq!(breakers.state("m"), CircuitState::Open);
         breakers.probe_succeeded("m");
@@ -154,7 +207,7 @@ mod tests {
         breakers.probe_succeeded("a");
         assert_eq!(breakers.state("a"), CircuitState::Closed);
         breakers.failed("a");
-        assert!(!breakers.admits("a"));
-        assert!(breakers.admits("b"));
+        assert!(!breakers.admit("a", Caller::Request));
+        assert!(breakers.admit("b", Caller::Request));
     }
 }

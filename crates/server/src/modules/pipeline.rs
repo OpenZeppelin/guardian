@@ -6,7 +6,7 @@ use super::catalog::{Catalog, ClientReason, HookName, OnError, Scope};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
-use super::breaker::{Breakers, CircuitState};
+use super::breaker::{Breakers, Caller, CircuitState};
 use super::limits::Limits;
 use super::registry::{CallError, Instance, Registry, isolated};
 use super::request::ViewCache;
@@ -21,6 +21,44 @@ pub struct Evaluation {
     pub catalog_hash: String,
     pub params_version: u64,
     pub failed_open: Vec<FailedOpen>,
+}
+
+impl Evaluation {
+    /// Records the failures `on_error = allow` let through at a hook that signs nothing, so they
+    /// are kept somewhere other than the log. A transaction's are stored with its signed delta
+    /// instead. `subject` adds what the hook judged, a proposal id for one.
+    pub fn audit_failed_open(
+        &self,
+        auditor: &dyn crate::audit::Auditor,
+        hook: HookName,
+        account_id: &str,
+        submitter: &str,
+        subject: serde_json::Map<String, serde_json::Value>,
+    ) {
+        if self.failed_open.is_empty() {
+            return;
+        }
+        let mut payload = serde_json::json!({
+            "hook": hook.as_str(),
+            "submitter": submitter,
+            "catalog_hash": self.catalog_hash,
+            "params_version": self.params_version,
+            "failed_open": self.failed_open,
+        });
+        if let Some(fields) = payload.as_object_mut() {
+            fields.extend(subject);
+        }
+        auditor.record(crate::audit::AuditEvent {
+            operator_identity: crate::services::release_on_switch::SYSTEM_OPERATOR_IDENTITY
+                .to_string(),
+            action_kind: crate::audit::kinds::MODULES_FAILED_OPEN,
+            target_account_id: Some(account_id.to_string()),
+            payload,
+            outcome: crate::audit::AuditOutcome::Success,
+            error_code: None,
+            client_ip: None,
+        });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +84,8 @@ pub struct ModulePipeline {
     limits: Limits,
     breakers: Arc<Breakers>,
     pub catalog_hash: String,
+    /// The network this Guardian serves, as modules receive it in `network_id`.
+    network_id: &'static str,
     /// Instances whose stored seed differs from the catalog's params, as of startup.
     seed_drift: HashSet<String>,
     /// Accounts over the budget and orphaned assignment rows, as of the last report.
@@ -65,6 +105,7 @@ pub struct Plan<'a> {
     hook: HookName,
     account_id: String,
     modules: Vec<(&'a Instance, serde_json::Value, Layer)>,
+    network_id: &'static str,
     catalog_hash: String,
     params_version: u64,
     views: Arc<ViewCache>,
@@ -76,9 +117,12 @@ pub struct Plan<'a> {
 
 enum Failure {
     Error(String),
+    /// The module refused this request as one it cannot judge: its failure for this request,
+    /// which says nothing about whether the module is up.
+    Rejected(String),
     Timeout,
     InvalidDecision(String),
-    /// An `effect` value this Guardian does not know: never read as an allow.
+    /// No `effect`, or a value this Guardian does not know: never read as an allow.
     UnknownEffect(i32),
     RequestUnavailable(String),
     /// The encoded request exceeds the size cap; it is not sent.
@@ -90,7 +134,7 @@ enum Failure {
 impl Failure {
     fn kind(&self) -> &'static str {
         match self {
-            Failure::Error(_) => "error",
+            Failure::Error(_) | Failure::Rejected(_) => "error",
             Failure::Timeout => "timeout",
             Failure::InvalidDecision(_) | Failure::UnknownEffect(_) => "invalid_decision",
             Failure::RequestUnavailable(_) | Failure::RequestTooLarge(_) => "request_unavailable",
@@ -103,6 +147,7 @@ impl std::fmt::Display for Failure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Failure::Error(message) => write!(f, "{message}"),
+            Failure::Rejected(message) => write!(f, "module rejected the request: {message}"),
             Failure::Timeout => write!(f, "timed out"),
             Failure::InvalidDecision(code) => write!(f, "invalid reason code {code:?}"),
             Failure::UnknownEffect(value) => write!(f, "unknown decision effect {value}"),
@@ -132,6 +177,7 @@ impl ModulePipeline {
     }
 
     pub async fn new(
+        network_id: &'static str,
         mut catalog: Catalog,
         registry: &Registry,
         store: Arc<dyn ModuleStore>,
@@ -226,7 +272,7 @@ impl ModulePipeline {
                     },
                 )
                 .await?;
-            if migrated {
+            if migrated.is_some() {
                 tracing::info!(module = %instance.config.id, %operator, "Module normalized its stored global params; stored the migrated form");
             } else {
                 tracing::warn!(module = %instance.config.id, "Global params changed while the module migrated them; kept the newer value, migration retries next start");
@@ -240,6 +286,7 @@ impl ModulePipeline {
             breakers: Arc::new(Breakers::new(limits.breaker_failures)),
             limits,
             catalog_hash: catalog.hash,
+            network_id,
             seed_drift,
             assignment_report: std::sync::Mutex::new((0, 0)),
         })
@@ -266,9 +313,16 @@ impl ModulePipeline {
             limits: Limits::default(),
             breakers: Arc::new(Breakers::new(Limits::default().breaker_failures)),
             catalog_hash: String::new(),
+            network_id: "local",
             seed_drift: HashSet::new(),
             assignment_report: std::sync::Mutex::new((0, 0)),
         }
+    }
+
+    #[cfg(test)]
+    pub fn with_network(mut self, network_id: &'static str) -> Self {
+        self.network_id = network_id;
+        self
     }
 
     #[cfg(test)]
@@ -599,15 +653,12 @@ impl ModulePipeline {
         let subscribed = |rows: &Rows, instance: &&Instance| {
             instance.config.hooks.contains(&hook) && Self::enabled_in(rows, instance)
         };
-        if !first_registration {
-            let (_, rows) = self.versioned_rows().await?;
-            if !self
-                .instances
-                .iter()
-                .any(|instance| subscribed(&rows, &instance))
-            {
-                return Ok((None, Vec::new()));
-            }
+        let relevant = self.instances.iter().any(|instance| {
+            instance.config.hooks.contains(&hook)
+                || first_registration && instance.config.scope == Scope::Default
+        });
+        if !relevant {
+            return Ok((None, Vec::new()));
         }
         let (params_version, rows, account_rows) = self.snapshot(&account_id).await?;
         let defaults: Vec<Assigned> = if first_registration {
@@ -671,6 +722,7 @@ impl ModulePipeline {
             hook,
             account_id,
             modules,
+            network_id: self.network_id,
             catalog_hash: self.catalog_hash.clone(),
             params_version,
             views: self.views.clone(),
@@ -747,6 +799,11 @@ impl ModulePipeline {
 }
 
 impl Plan<'_> {
+    /// The network this Guardian serves, for this plan's request.
+    pub fn network_id(&self) -> &'static str {
+        self.network_id
+    }
+
     /// The replica's account view cache, for building this plan's request.
     pub fn views(&self) -> Arc<ViewCache> {
         self.views.clone()
@@ -762,6 +819,7 @@ impl Plan<'_> {
             hook,
             account_id,
             modules,
+            network_id: _,
             catalog_hash,
             params_version,
             views: _,
@@ -793,7 +851,13 @@ impl Plan<'_> {
             }
         };
 
+        let caller = if dry_run {
+            Caller::DryRun
+        } else {
+            Caller::Request
+        };
         let deadline = tokio::time::Instant::now() + limits.budget;
+        let mut called_before = false;
         for (instance, params, layer) in modules {
             let id = instance.config.id.as_str();
             let mut request = base.clone();
@@ -803,12 +867,12 @@ impl Plan<'_> {
 
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             let size = prost::Message::encoded_len(&request);
-            let unsent = if !breakers.admits(id) {
-                Some(Failure::CircuitOpen)
-            } else if size > limits.request_max_bytes {
+            let unsent = if size > limits.request_max_bytes {
                 Some(Failure::RequestTooLarge(size))
             } else if remaining.is_zero() {
                 Some(Failure::Timeout)
+            } else if !breakers.admit(id, caller) {
+                Some(Failure::CircuitOpen)
             } else {
                 None
             };
@@ -824,8 +888,10 @@ impl Plan<'_> {
                 continue;
             }
 
-            // A call the budget cuts short counts as a timeout, but is not the module's failure.
-            let cut_by_budget = remaining < instance.config.timeout;
+            // A call that earlier modules left less than its timeout counts as a timeout, but is
+            // not the module's failure. The first call always has its whole share.
+            let cut_by_budget = called_before && remaining < instance.config.timeout;
+            called_before = true;
             let module = instance.module.clone();
             let started = tokio::time::Instant::now();
             let outcome = isolated(instance.config.timeout.min(remaining), async move {
@@ -835,14 +901,18 @@ impl Plan<'_> {
             let took = started.elapsed();
             let failure = match outcome.map(|decision| (effect(&decision), decision)) {
                 Ok((Some(Effect::Allow), _)) => {
-                    breakers.answered(id);
+                    if !dry_run {
+                        breakers.answered(id);
+                    }
                     super::metrics::evaluated(id, super::metrics::Outcome::Allow, took);
                     continue;
                 }
                 Ok((Some(Effect::Deny), decision))
                     if is_valid_reason_code(&decision.reason_code) =>
                 {
-                    breakers.answered(id);
+                    if !dry_run {
+                        breakers.answered(id);
+                    }
                     super::metrics::evaluated(id, super::metrics::Outcome::Deny, took);
                     tracing::info!(
                         request_id = %request_id,
@@ -870,6 +940,9 @@ impl Plan<'_> {
                 }
                 Ok((Some(_), decision)) => Failure::InvalidDecision(decision.reason_code),
                 Ok((None, decision)) => Failure::UnknownEffect(decision.effect),
+                Err(CallError::Module(guardian_module_sdk::ModuleError::InvalidRequest(
+                    message,
+                ))) => Failure::Rejected(message),
                 Err(CallError::Module(error)) => Failure::Error(error.to_string()),
                 Err(CallError::Panicked(message)) => {
                     Failure::Error(format!("module panicked: {message}"))
@@ -877,10 +950,15 @@ impl Plan<'_> {
                 Err(CallError::Timeout) => Failure::Timeout,
             };
             super::metrics::evaluated(id, super::metrics::Outcome::Error, took);
-            // A dry run is sent by a cosigner without anyone's signature, so its failures do not
-            // count toward opening the breaker for every account.
-            if !dry_run && !(cut_by_budget && matches!(failure, Failure::Timeout)) {
-                breakers.failed(id);
+            // The breaker stops calls to a module that is down for every account, so only
+            // failures that say so count: not a dry run's, which a cosigner sends without anyone's
+            // signature, not a request the module rejected, and not a budget cut.
+            if !dry_run {
+                match failure {
+                    Failure::Rejected(_) => breakers.answered(id),
+                    Failure::Timeout if cut_by_budget => {}
+                    _ => breakers.failed(id),
+                }
             }
             approval
                 .failed_open
@@ -906,14 +984,12 @@ fn client_message(text: &str) -> Option<String> {
     (!capped.is_empty()).then_some(capped)
 }
 
-/// What a decision asks for. A module that predates `effect` leaves it unspecified and the
-/// legacy `allow` decides; a value this Guardian does not know is `None`.
+/// What a decision asks for: `None` for a decision that sets no effect or one this Guardian
+/// does not know, neither of which is ever read as an allow.
 fn effect(decision: &Decision) -> Option<Effect> {
     match Effect::try_from(decision.effect) {
-        Ok(Effect::Unspecified) if decision.allow => Some(Effect::Allow),
-        Ok(Effect::Unspecified) => Some(Effect::Deny),
+        Ok(Effect::Unspecified) | Err(_) => None,
         Ok(effect) => Some(effect),
-        Err(_) => None,
     }
 }
 
@@ -1011,6 +1087,7 @@ params = {params}
         let registry = Registry::first_party();
         let now = "2026-10-15T00:00:00Z".to_string();
         let started = ModulePipeline::new(
+            "local",
             caps_catalog(r#"{ max_amount_per_txx = {} }"#),
             &registry,
             store.clone(),
@@ -1023,6 +1100,7 @@ params = {params}
 
         let fixed = caps_catalog(r#"{ max_amount_per_tx = { "0xaa" = "5" } }"#);
         let started = ModulePipeline::new(
+            "local",
             fixed,
             &registry,
             store.clone(),
@@ -1055,6 +1133,7 @@ params = {params}
             .await
             .unwrap();
         ModulePipeline::new(
+            "local",
             caps_catalog(r#"{ max_amount_per_txx = {} }"#),
             &registry,
             store.clone(),
@@ -1079,6 +1158,7 @@ params = {params}
         let valid_seed = caps_catalog(r#"{ max_amount_per_tx = {} }"#);
         assert!(
             ModulePipeline::new(
+                "local",
                 valid_seed,
                 &registry,
                 store,
@@ -1213,9 +1293,8 @@ params = {params}
         )])
     }
 
-    fn decision(allow: bool, reason_code: &str, effect: i32) -> Behaviour {
+    fn decision(reason_code: &str, effect: i32) -> Behaviour {
         Behaviour::Decide(Decision {
-            allow,
             reason_code: reason_code.into(),
             effect,
             ..Default::default()
@@ -1223,36 +1302,32 @@ params = {params}
     }
 
     #[tokio::test]
-    async fn the_effect_decides_and_an_unknown_one_is_a_failure() {
-        let denied = |behaviour| async {
-            matches!(
-                run(&pipeline_with(OnError::Deny, behaviour)).await,
-                Err(GuardianError::ModuleDenied { .. })
-            )
-        };
-        assert!(
-            denied(decision(false, "legacy_deny", Effect::Unspecified as i32)).await,
-            "a module without effect: allow = false still denies"
-        );
-        assert!(
-            denied(decision(true, "explicit_deny", Effect::Deny as i32)).await,
-            "effect wins over allow"
-        );
+    async fn the_effect_decides_and_a_missing_or_unknown_one_is_a_failure() {
+        assert!(matches!(
+            run(&pipeline_with(
+                OnError::Deny,
+                decision("explicit_deny", Effect::Deny as i32)
+            ))
+            .await,
+            Err(GuardianError::ModuleDenied { .. })
+        ));
         assert!(
             run(&pipeline_with(
                 OnError::Deny,
-                decision(false, "", Effect::Allow as i32)
+                decision("", Effect::Allow as i32)
             ))
             .await
             .is_ok()
         );
-        assert!(
-            matches!(
-                run(&pipeline_with(OnError::Deny, decision(true, "", 99))).await,
-                Err(GuardianError::ModuleUnavailable { .. })
-            ),
-            "an effect this Guardian does not know is never read as an allow"
-        );
+        for effect in [Effect::Unspecified as i32, 99] {
+            assert!(
+                matches!(
+                    run(&pipeline_with(OnError::Deny, decision("", effect))).await,
+                    Err(GuardianError::ModuleUnavailable { .. })
+                ),
+                "effect {effect} is never read as an allow"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1284,6 +1359,7 @@ params = { old_name = 5 }
             let store: Arc<dyn ModuleStore> =
                 Arc::new(super::super::store::FsModuleStore::in_memory());
             ModulePipeline::new(
+                "local",
                 catalog.clone(),
                 &registry,
                 store.clone(),
@@ -1331,6 +1407,7 @@ params = { old_name = 5 }
         let now = "2026-10-16T00:00:00Z".to_string();
 
         ModulePipeline::new(
+            "local",
             catalog(),
             &registry,
             store.clone(),
@@ -1359,6 +1436,7 @@ params = { old_name = 5 }
             .await
             .unwrap();
         ModulePipeline::new(
+            "local",
             catalog(),
             &registry,
             store.clone(),
@@ -1512,6 +1590,7 @@ params = { old_name = 1000 }
         )];
 
         ModulePipeline::new(
+            "local",
             catalog,
             &registry,
             store.clone(),
@@ -1950,6 +2029,45 @@ mod failure_handling_tests {
             }
         }
         assert_eq!(pipeline.breakers().state("screening"), CircuitState::Closed);
+    }
+
+    #[tokio::test]
+    async fn a_request_the_module_rejects_does_not_open_the_circuit() {
+        let pipeline = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            StubModule::new(Behaviour::Reject),
+        )])
+        .with_limits(Limits {
+            breaker_failures: 2,
+            ..Limits::default()
+        });
+        for _ in 0..4 {
+            assert!(matches!(
+                run(&pipeline).await,
+                Err(GuardianError::ModuleUnavailable { .. })
+            ));
+        }
+        assert_eq!(
+            pipeline.breakers().state("screening"),
+            CircuitState::Closed,
+            "one account's unjudgeable requests do not stop the module for every account"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_module_whose_timeout_is_the_whole_budget_still_opens_the_circuit() {
+        let (hung, _) = hanging("screening", OnError::Deny, Duration::from_millis(40));
+        let pipeline = ModulePipeline::from_instances(vec![hung]).with_limits(Limits {
+            budget: Duration::from_millis(40),
+            breaker_failures: 2,
+            ..Limits::default()
+        });
+        for _ in 0..2 {
+            assert!(run(&pipeline).await.is_err());
+        }
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);
     }
 
     #[tokio::test]

@@ -16,8 +16,11 @@ use super::catalog::Transport;
 
 /// Server authentication against the instance's CA, or the system roots without one; the
 /// client identity, when set, adds mutual TLS.
-fn tls_config(tls: Option<&guardian_module_sdk::ModuleTls>) -> ClientTlsConfig {
-    let config = ClientTlsConfig::new();
+fn tls_config(
+    tls: Option<&guardian_module_sdk::ModuleTls>,
+    handshake_timeout: std::time::Duration,
+) -> ClientTlsConfig {
+    let config = ClientTlsConfig::new().timeout(handshake_timeout);
     let Some(tls) = tls else {
         return config.with_native_roots();
     };
@@ -34,6 +37,11 @@ fn tls_config(tls: Option<&guardian_module_sdk::ModuleTls>) -> ClientTlsConfig {
     }
 }
 
+/// A module host that vanishes without closing the connection is noticed within this interval
+/// plus the timeout, instead of when the kernel gives up retransmitting.
+const KEEP_ALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+const KEEP_ALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 pub struct GrpcFactory;
 
 impl ModuleFactory for GrpcFactory {
@@ -49,7 +57,7 @@ impl ModuleFactory for GrpcFactory {
                 let uri = endpoint.replacen(Transport::TLS_SCHEME, "https://", 1);
                 Endpoint::from_shared(uri)
                     .map_err(|e| invalid(format!("invalid endpoint: {e}")))?
-                    .tls_config(tls_config(instance.tls.as_ref()))
+                    .tls_config(tls_config(instance.tls.as_ref(), instance.timeout))
                     .map_err(|e| invalid(format!("invalid tls settings: {e}")))?
             }
             Transport::PlaintextLoopback => {
@@ -57,7 +65,14 @@ impl ModuleFactory for GrpcFactory {
                 Endpoint::from_shared(uri).map_err(|e| invalid(format!("invalid endpoint: {e}")))?
             }
         };
-        let channel = endpoint.connect_timeout(instance.timeout).connect_lazy();
+        let channel = endpoint
+            .connect_timeout(instance.timeout)
+            .timeout(instance.timeout)
+            .http2_keep_alive_interval(KEEP_ALIVE_INTERVAL)
+            .keep_alive_timeout(KEEP_ALIVE_TIMEOUT)
+            .keep_alive_while_idle(true)
+            .tcp_keepalive(Some(KEEP_ALIVE_INTERVAL))
+            .connect_lazy();
         let authorization = instance
             .auth_token
             .as_ref()
@@ -102,6 +117,7 @@ fn module_error(status: tonic::Status) -> ModuleError {
         tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown => {
             ModuleError::Unavailable(status.message().to_string())
         }
+        tonic::Code::InvalidArgument => ModuleError::InvalidRequest(status.message().to_string()),
         _ => ModuleError::Internal(format!("{}: {}", status.code(), status.message())),
     }
 }
