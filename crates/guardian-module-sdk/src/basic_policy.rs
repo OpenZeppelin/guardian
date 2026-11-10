@@ -42,8 +42,12 @@ pub struct Params {
     pub recipient_allowlist: Option<Vec<String>>,
     #[serde(default)]
     pub recipient_denylist: Option<Vec<String>>,
+    /// Whether a payment note whose recipient cannot be identified (a partial note, or one
+    /// that is neither P2ID nor P2IDE) is refused by the denylist. Unset, it is refused
+    /// whenever the denylist names anyone: otherwise a blocked recipient is paid by wrapping
+    /// the payment in a note the Guardian cannot read.
     #[serde(default)]
-    pub deny_unknown_recipients: bool,
+    pub deny_unknown_recipients: Option<bool>,
     #[serde(default)]
     pub signer_allowlist: Option<Vec<String>>,
     #[serde(default)]
@@ -155,7 +159,7 @@ impl TryFrom<Params> for Policy {
                 ));
             }
         }
-        if params.deny_unknown_recipients && params.recipient_denylist.is_none() {
+        if params.deny_unknown_recipients.is_some() && params.recipient_denylist.is_none() {
             return Err(
                 "deny_unknown_recipients applies to recipient_denylist, which is not set".into(),
             );
@@ -205,7 +209,12 @@ impl TryFrom<Params> for Policy {
                 .as_deref()
                 .map(|list| ids("recipient_denylist", IdKind::Account, list))
                 .transpose()?,
-            deny_unknown_recipients: params.deny_unknown_recipients,
+            deny_unknown_recipients: params.deny_unknown_recipients.unwrap_or(
+                params
+                    .recipient_denylist
+                    .as_ref()
+                    .is_some_and(|list| !list.is_empty()),
+            ),
             signers,
             signer_check: params.signer_check.unwrap_or_default(),
             code: params
@@ -694,13 +703,34 @@ mod tests {
             ],
             ..Default::default()
         };
-        assert!(decide(&tx_request(params, unknown.clone())).await.allows());
-
-        let strict = json!({ "recipient_denylist": ["0x000000000000000000000000000bad"], "deny_unknown_recipients": true });
         assert_eq!(
-            decide(&tx_request(strict, unknown)).await.reason_code,
+            decide(&tx_request(params, unknown.clone()))
+                .await
+                .reason_code,
             "recipient_blocked",
-            "an unknown recipient refused by the denylist rule reports that rule"
+            "a recipient the denylist cannot check is refused: a blocked one could hide there"
+        );
+
+        let lenient = json!({ "recipient_denylist": ["0x000000000000000000000000000bad"], "deny_unknown_recipients": false });
+        assert!(
+            decide(&tx_request(lenient, unknown.clone())).await.allows(),
+            "the operator opted out"
+        );
+
+        let nobody_listed = json!({ "recipient_denylist": [] });
+        assert!(
+            decide(&tx_request(nobody_listed, unknown.clone()))
+                .await
+                .allows(),
+            "an empty denylist has nobody to hide"
+        );
+
+        let strict_anyway = json!({ "recipient_denylist": [], "deny_unknown_recipients": true });
+        assert_eq!(
+            decide(&tx_request(strict_anyway, unknown))
+                .await
+                .reason_code,
+            "recipient_blocked"
         );
     }
 
@@ -966,6 +996,7 @@ mod tests {
             json!({ "signer_allowlist": ["0x000000000000000000000000000051"] }),
             json!({ "allowed_code_commitments": [format!("0x{}", "c".repeat(63))] }),
             json!({ "deny_unknown_recipients": true }),
+            json!({ "deny_unknown_recipients": false }),
             json!({ "signer_check": "all" }),
             json!({ "code_check": "all" }),
         ] {

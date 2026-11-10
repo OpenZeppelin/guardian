@@ -25,13 +25,19 @@ account layers, which are evaluated with their own params: a layer of
 `{"deny_unknown_recipients": true}` alone would do nothing, so it is not
 accepted.
 
+The `blocklist` instance in the guide's catalog starts with an empty
+`recipient_denylist`, which refuses nothing. Once a recipient is listed,
+globally or in an account's layer, notes without a checkable recipient are
+refused for the accounts that list applies to, unless the same params set
+`deny_unknown_recipients` to `false`.
+
 | Param | Value | Refuses with | Notes |
 |---|---|---|---|
 | `max_amount_per_tx` | `{ "<faucet id>": "<amount>" }` | `amount_cap_exceeded` | Gross amount per asset across the transaction's payment notes, in base units. The fee note is not a payment. |
 | `asset_allowlist` | `["<faucet id>", ...]` | `asset_not_allowed` | Assets sent in payment notes and received in input notes. |
 | `recipient_allowlist` | `["<account id>", ...]` | `recipient_not_allowed` | P2ID and P2IDE targets. |
 | `recipient_denylist` | `["<account id>", ...]` | `recipient_blocked` | |
-| `deny_unknown_recipients` | `true` / `false` | `recipient_blocked` | With `recipient_denylist`: also refuses payment notes whose recipient the Guardian cannot identify (not P2ID or P2IDE). |
+| `deny_unknown_recipients` | `true` / `false`; unset, `true` once the denylist names anyone | `recipient_blocked` | With `recipient_denylist`: also refuses payment notes whose recipient the Guardian cannot identify (a partial note, or one that is not P2ID or P2IDE). On by default as soon as the list is not empty, since a blocked recipient could otherwise be paid through a note the Guardian cannot read. Set it to `false` for accounts that must create custom-script notes, such as swaps. |
 | `signer_allowlist` or `signer_denylist` | `["<signer commitment>", ...]` | `signer_not_allowed` | Mutually exclusive. |
 | `signer_check` | `"added"` (default) or `"all"` | | `added` checks only signers a transaction adds; `all` checks every signer after it. |
 | `allowed_code_commitments` | `["<code commitment>", ...]` | `code_not_allowed` | Pins accounts to account code you reviewed. The Guardian does not check an account's code itself, so a module verdict is only as good as the code that requires the Guardian's signature. |
