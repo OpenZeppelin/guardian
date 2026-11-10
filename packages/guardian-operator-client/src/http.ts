@@ -12,6 +12,7 @@ import type {
   DashboardDeltaDecodeWarning,
   DashboardDeltaDecodedAsset,
   DashboardDeltaDecodedNote,
+  DashboardDeltaModuleApproval,
   DashboardDeltaDetail,
   DashboardDeltaEntry,
   DashboardDeltaNoteCounts,
@@ -948,6 +949,8 @@ const KNOWN_OPERATOR_PERMISSIONS: ReadonlySet<string> = new Set<OperatorPermissi
   'dashboard:read',
   'accounts:pause',
   'policies:write',
+  'policies:write_global',
+  'modules:disable',
   'stats:refresh',
 ]);
 
@@ -2292,6 +2295,9 @@ function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
       `${ctx}.proposal`,
     );
   }
+  if (record.modules !== undefined && record.modules !== null) {
+    detail.modules = parseModuleApproval(record.modules, `${ctx}.modules`);
+  }
   if (Array.isArray(record.decode_warnings) && record.decode_warnings.length > 0) {
     detail.decodeWarnings = (record.decode_warnings as unknown[]).map((w, i) =>
       parseDecodeWarning(w, `${ctx}.decode_warnings[${i}]`),
@@ -2301,6 +2307,30 @@ function parseDeltaDetail(value: unknown): DashboardDeltaDetail {
     detail.rawTransactionSummary = record.raw_transaction_summary;
   }
   return detail;
+}
+
+function parseModuleApproval(value: unknown, context: string): DashboardDeltaModuleApproval {
+  const record = asRecord(value, context);
+  const failedOpen = record.failed_open === undefined ? [] : record.failed_open;
+  if (!Array.isArray(failedOpen)) {
+    throw new GuardianOperatorContractError(context, 'failed_open must be an array when present');
+  }
+  return {
+    catalogHash: requireString(record, 'catalog_hash', context),
+    paramsVersion: requireInteger(record, 'params_version', context),
+    failedOpen: failedOpen.map((entry, i) => {
+      const entryContext = `${context}.failed_open[${i}]`;
+      const failure = asRecord(entry, entryContext);
+      return {
+        moduleId: requireString(failure, 'module_id', entryContext),
+        layer: requireString(failure, 'layer', entryContext),
+        failure: requireString(failure, 'failure', entryContext),
+      };
+    }),
+    signedAt: requireString(record, 'signed_at', context),
+    submitter: requireString(record, 'submitter', context),
+    proposer: optionalString(record, 'proposer', context),
+  };
 }
 
 function parseDecodedNoteArray(

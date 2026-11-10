@@ -11,7 +11,9 @@ export type { ListAccountsOptions, PaginationOptions, ParsedErrorBody } from './
 export {
   ACCOUNTS_PAUSE,
   DASHBOARD_READ,
+  MODULES_DISABLE,
   POLICIES_WRITE,
+  POLICIES_WRITE_GLOBAL,
   STATS_REFRESH,
 } from './permissions.js';
 
@@ -51,6 +53,8 @@ export type {
   DashboardDeltaDecodedAsset,
   DashboardDeltaDecodedNote,
   DashboardDeltaDetail,
+  DashboardDeltaModuleApproval,
+  DashboardDeltaModuleFailedOpen,
   DashboardDeltaEntry,
   DashboardDeltaNoteCounts,
   DashboardDeltaNoteTag,

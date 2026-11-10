@@ -446,6 +446,9 @@ export interface DashboardDeltaDetail {
   category?: DashboardDeltaCategory;
   /** Operator-stated proposal intent for multisig commits. */
   proposal?: DashboardDeltaProposalMetadata;
+  /** The policy module configuration that approved this delta. Absent when
+   * no module ran. */
+  modules?: DashboardDeltaModuleApproval;
   inputNotes: DashboardDeltaDecodedNote[];
   outputNotes: DashboardDeltaDecodedNote[];
   vaultChanges: DashboardDeltaVaultChange[];
@@ -455,6 +458,31 @@ export interface DashboardDeltaDetail {
   decodeWarnings?: DashboardDeltaDecodeWarning[];
   /** Present only when the request used `?include=raw`. */
   rawTransactionSummary?: string;
+}
+
+/** A module failure an `on_error = "allow"` instance let through. */
+export interface DashboardDeltaModuleFailedOpen {
+  moduleId: string;
+  /** `global` or `account`. */
+  layer: string;
+  /** `timeout`, `error`, `invalid_decision`, `request_unavailable` or
+   * `circuit_open`. */
+  failure: string;
+}
+
+/** The policy modules' approval of a signed delta: the configuration they
+ * ran with, when and for whom. */
+export interface DashboardDeltaModuleApproval {
+  /** SHA-256 of the catalog file the approving replica loaded. */
+  catalogHash: string;
+  paramsVersion: number;
+  failedOpen: DashboardDeltaModuleFailedOpen[];
+  /** RFC 3339 time the Guardian signed. */
+  signedAt: string;
+  /** The cosigner the acknowledgment was evaluated for. */
+  submitter: string;
+  /** The matching proposal's creator; null when no stored proposal matched. */
+  proposer: string | null;
 }
 
 export interface DashboardDeltaEntry {

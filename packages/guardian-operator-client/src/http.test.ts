@@ -1251,6 +1251,46 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     });
   }
 
+  it('parses the policy module approval of a delta, and leaves it unset when no module ran', async () => {
+    const base = {
+      account_id: '0xacc',
+      nonce: 7,
+      status: 'canonical',
+      status_timestamp: '2026-11-09T10:00:00Z',
+      prev_commitment: '0xaaaa',
+      new_commitment: '0xbbbb',
+      input_notes: [],
+      output_notes: [],
+      vault_changes: [],
+      storage_changes: [],
+    };
+    mockFetch
+      .mockResolvedValueOnce(
+        okJson({
+          ...base,
+          modules: {
+            catalog_hash: '0xcatalog',
+            params_version: 4,
+            failed_open: [{ module_id: 'screening', layer: 'global', failure: 'circuit_open' }],
+            signed_at: '2026-11-09T10:00:00+00:00',
+            submitter: '0xsigner',
+          },
+        }),
+      )
+      .mockResolvedValueOnce(okJson(base));
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+    const approved = await client.getAccountDeltaDetail('0xacc', 7);
+    expect(approved.modules).toEqual({
+      catalogHash: '0xcatalog',
+      paramsVersion: 4,
+      failedOpen: [{ moduleId: 'screening', layer: 'global', failure: 'circuit_open' }],
+      signedAt: '2026-11-09T10:00:00+00:00',
+      submitter: '0xsigner',
+      proposer: null,
+    });
+    expect((await client.getAccountDeltaDetail('0xacc', 7)).modules).toBeUndefined();
+  });
+
   it('parses the per-signer schemes of a mixed update-signers proposal (issue #563)', async () => {
     mockFetch.mockResolvedValueOnce(
       signerChangeDetail({

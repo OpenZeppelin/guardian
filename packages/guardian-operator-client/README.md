@@ -476,6 +476,11 @@ const canPause = permissions.includes(ACCOUNTS_PAUSE);
 const canRead = permissions.includes(DASHBOARD_READ);
 ```
 
+The constants cover every permission the server defines: `DASHBOARD_READ`,
+`ACCOUNTS_PAUSE`, `POLICIES_WRITE`, `POLICIES_WRITE_GLOBAL` (policy module
+global params), `MODULES_DISABLE` (disabling a module instance the catalog
+marks `operator_can_disable`) and `STATS_REFRESH`.
+
 The session endpoint re-reads permissions from the allowlist on every
 call, so allowlist edits take effect without re-login. The server is
 still the source of truth on every mutating endpoint — the client
