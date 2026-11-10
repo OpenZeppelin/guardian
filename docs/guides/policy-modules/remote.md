@@ -4,9 +4,9 @@ A remote module is its own service that implements the `GuardianModule` gRPC
 API from
 [`guardian_module_v1.proto`](../../../crates/guardian-module-sdk/proto/guardian_module_v1.proto).
 The Guardian finds it through the catalog's `endpoint`, and the module
-describes itself when the Guardian asks. This page runs `basic-policy` as a
-remote service, so the only difference from the [built-in](./built-in.md) page
-is the transport. Do the [setup](./README.md#setup) first; the catalog is
+describes itself when the Guardian asks. This page runs the built-in
+`spending-limit` policy as a remote service, so the only difference from the
+[built-in](./built-in.md) page is the transport. Do the [setup](./README.md#setup) first; the catalog is
 [`remote.toml`](./remote.toml).
 
 ## How the Guardian talks to it
@@ -35,12 +35,13 @@ call:
 
 ```sh
 (umask 077; openssl rand -hex 32 > .guardian/caps.token)
-cargo run -p guardian-policy-module -- \
+cargo run -p guardian-policy-module -- --kind spending-limit \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
 The module is [`examples/policy-module`](../../../examples/policy-module/README.md),
-built on the SDK's serve harness. It accepts a call only for an instance id it
+built on the SDK's serve harness; `--kind` picks which of the four built-in
+policies it serves. It accepts a call only for an instance id it
 knows, with that instance's token. One process can host several instances, each
 with its own token: repeat `--instance`.
 
@@ -57,7 +58,7 @@ cannot be reached stops startup. Once the instance has started here, a later
 start during a module outage succeeds with the instance unavailable (its
 accounts get `GUARDIAN_MODULE_UNAVAILABLE`, or skip it with
 `on_error = "allow"`) until a health probe passes its startup checks.
-The log line lists `caps-remote=basic-policy <version>`.
+The log line lists `caps-remote=spending-limit <version>`.
 
 `auth.token_secret` names a secret in the Guardian's secrets backend (see
 [Credentials](#credentials)); here the `file` provider reads it from
@@ -68,7 +69,7 @@ The log line lists `caps-remote=basic-policy <version>`.
 | Test | How | Expected |
 |---|---|---|
 | Remote refusal | Pay 4 | Refused by `caps-remote` (cap 3); the in-process `caps` (cap 5) allows it |
-| Remote params | `admin PUT /modules/caps-remote/params '{"params":{"max_amount_per_tx":{"<faucet id in 0x hex>":"1"}},"reason":"test"}'`, then pay 2 | Refused; the module was not restarted |
+| Remote params | `admin PUT /modules/caps-remote/params '{"params":{"max_per_transaction":{"<faucet id in 0x hex>":"1"}},"reason":"test"}'`, then pay 2 | Refused; the module was not restarted |
 | Module down, fail closed | Stop the module, pay 1 | `503 GUARDIAN_MODULE_UNAVAILABLE`, module `caps-remote` |
 | Switch it off while down | `admin POST /modules/caps-remote/disable '{"reason":"module down"}'`, pay 1 | Allowed; start the module again and `/enable` (which re-runs `Describe` and `ValidateParams`) |
 | Fail open | Set `on_error = "allow"`, restart the Guardian, stop the module, pay 1 | Allowed; the delta's `modules.failed_open` on the dashboard delta detail names `caps-remote` |

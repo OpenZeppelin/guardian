@@ -21,9 +21,9 @@ operator endpoints and permissions.
 
 | Page | Module runs | Use it for |
 |---|---|---|
-| [Built-in](./built-in.md) | Inside the Guardian process (`basic-policy`) | Caps, asset and recipient lists, signer rules, with no extra service |
+| [Built-in](./built-in.md) | Inside the Guardian process (`spending-limit`, `recipient-policy`, `signer-policy`, `code-policy`) | Spending caps and allowed assets, recipient lists, signer lists, code pinning, with no extra service |
 | [Remote](./remote.md) | As its own service over gRPC | A module operated, scaled or upgraded apart from the Guardian, or by another team |
-| [Custom](./custom.md) | Your code, written with `guardian-module-sdk`, served over gRPC or compiled into your own server build | Rules `basic-policy` cannot express |
+| [Custom](./custom.md) | Your code, written with `guardian-module-sdk`, served over gRPC or compiled into your own server build | Rules the built-in policies cannot express |
 
 ## How evaluation works
 
@@ -125,7 +125,7 @@ cp docs/guides/policy-modules/.env.example docs/guides/policy-modules/.env
 
 Edit `.guardian/built-in.toml` for your network: replace `0xREPLACE_WITH_FAUCET_ID`
 with the faucet id of an asset you hold, in `0x` hex form. The server does not
-start until you do: `basic-policy` refuses an id that is not hex, since a
+start until you do: the built-in policies refuse an id that is not hex, since a
 placeholder or a bech32 address would never match a transaction. The other pages swap in
 `remote.toml` or `custom.toml` by changing `GUARDIAN_MODULES_CONFIG` in the
 guide's `.env`.
@@ -143,7 +143,7 @@ module state then goes to `GUARDIAN_METADATA_PATH/modules/module_state.json`.
 Look for this line in the log:
 
 ```
-Policy modules loaded catalog_hash=0x… params_version=… builds=caps=basic-policy <version>, …
+Policy modules loaded catalog_hash=0x… params_version=… builds=caps=spending-limit <version>, …
 ```
 
 The ports are fixed at 3000 (HTTP) and 50051 (gRPC); stop any other Guardian

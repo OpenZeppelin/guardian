@@ -145,7 +145,7 @@ First-party kinds, registered by the official binary (through `ServerBuilder::fr
 |---|---|---|---|
 | `grpc` | Remote | `endpoint = "grpc://host:port"` (TLS), `auth` | Calls a service implementing `guardian.module.v1.GuardianModule` |
 | `http` | Remote | `endpoint = "https://host[:port]"`, `auth` | Not in M2; added if operators ask for it (section 7). Same messages in the proto3 JSON mapping at `GET /v1/describe`, `POST /v1/validate-params`, `POST /v1/evaluate`, `POST /v1/notify`, `POST /v1/notify-gap`. HTTP 404 or 501 from `/v1/notify-gap` is treated like gRPC `UNIMPLEMENTED` (section 3.3) |
-| `basic-policy` | In process | none | Reference policy: recipient allowlist and denylist, asset allowlist, per-transaction amount cap, signer allowlist or denylist, account code allowlist. Stateless: supports `before_transaction_approved`, `before_proposal_created` and `before_account_registered` (section 2.3). Rules and reason codes in section 3.1, "`basic-policy` rules" |
+| `spending-limit`, `recipient-policy`, `signer-policy`, `code-policy` | In process | none | Reference policies, one concern each: a per-transaction amount cap per asset and an asset allowlist; a recipient allowlist or denylist; a signer allowlist or denylist; an account code allowlist. Stateless. The first two support `before_proposal_created` and `before_transaction_approved`, the other two also `before_account_registered` (section 2.3). Params, rules and reason codes in section 3.1, "Built-in policies" |
 
 Operator-registered kinds run in process (section 2.5). The proto in section 3 is the single schema for both remote kinds, so there is one schema to version. A conformance suite in `guardian-module-sdk` runs the same cases against in-process and gRPC modules (and HTTP modules once that kind ships) and asserts identical decisions. Deferring `http` keeps the first suite free of the proto3 JSON mapping rules (base64 `bytes`, decimal-string `int64`, RFC 3339 timestamps); `grpc://` endpoints already meet R3's "registered by URL".
 
@@ -179,12 +179,12 @@ Each catalog entry:
 ```toml
 [[module]]
 id = "spend-cap"
-kind = "basic-policy"
+kind = "spending-limit"
 scope = "default"
 hooks = ["before_transaction_approved"]
 timeout_ms = 50
 on_error = "deny"
-params = { max_amount_per_tx = { "0x5e0f...c3" = "1000000" } }
+params = { max_per_transaction = { "0x5e0f...c3" = "1000000" } }
 
 [[module]]
 id = "risk-vendor"
@@ -223,7 +223,7 @@ Two rules keep `default` predictable:
   ```json
   {
     "modules": [
-      { "module_id": "spend-cap", "params": { "max_amount_per_tx": { "0x5e0f...c3": "500000" } } }
+      { "module_id": "spend-cap", "params": { "max_per_transaction": { "0x5e0f...c3": "500000" } } }
     ],
     "reason": "Raise treasury cap, ticket OP-42"
   }
@@ -235,8 +235,8 @@ Two rules keep `default` predictable:
   ```json
   {
     "modules": [
-      { "module_id": "compliance-caps", "scope": "all", "enabled": true, "global_params": { "max_amount_per_tx": { "0x5e0f...c3": "10000" } }, "account_layer": { "max_amount_per_tx": { "0x5e0f...c3": "2000" } } },
-      { "module_id": "spend-cap", "scope": "default", "enabled": true, "params": { "max_amount_per_tx": { "0x5e0f...c3": "500000" } } },
+      { "module_id": "compliance-caps", "scope": "all", "enabled": true, "global_params": { "max_per_transaction": { "0x5e0f...c3": "10000" } }, "account_layer": { "max_per_transaction": { "0x5e0f...c3": "2000" } } },
+      { "module_id": "spend-cap", "scope": "default", "enabled": true, "params": { "max_per_transaction": { "0x5e0f...c3": "500000" } } },
       { "module_id": "legacy-risk", "scope": "assigned", "orphaned": true, "params": { "threshold": 70 } }
     ]
   }
@@ -279,20 +279,20 @@ Two rules keep `default` predictable:
 ```toml
 [[module]]
 id = "blocklist"
-kind = "basic-policy"
+kind = "recipient-policy"
 scope = "all"
 hooks = ["before_proposal_created", "before_transaction_approved"]
 timeout_ms = 50
 on_error = "deny"
-params = { recipient_denylist = ["0xaaa...", "0xbbb..."] }
+params = { denylist = ["0xaaa...", "0xbbb..."] }
 ```
 
 ```http
 PUT /dashboard/modules/blocklist/params
-{ "params": { "recipient_denylist": ["0xaaa...", "0xbbb...", "0xddd..."] }, "reason": "Add 0xddd, ticket OP-90" }
+{ "params": { "denylist": ["0xaaa...", "0xbbb...", "0xddd..."] }, "reason": "Add 0xddd, ticket OP-90" }
 
 PUT /dashboard/accounts/0x7bfb...a1/modules/blocklist/params
-{ "params": { "recipient_denylist": ["0xccc..."] }, "reason": "Customer block, ticket OP-91" }
+{ "params": { "denylist": ["0xccc..."] }, "reason": "Customer block, ticket OP-91" }
 ```
 
 That account is then checked against `0xaaa`, `0xbbb` and `0xddd` by the global layer and against `0xccc` by its own; every other account only against the global list.
@@ -375,22 +375,22 @@ Account self-service configuration is out of scope for this revision (section 7)
 - **The verdict is current, not final.** For stateful modules the answer can change between creation and the ack: a window fills or resets. A proposal that passed can still be refused at the ack, and one that was refused can be created again later. Open proposals are not part of `pending`; counting them would let proposals nobody intends to execute reserve an account's budget. Two proposals that each fit the remaining budget can both be created, and the ack refuses the second.
 - **Disclosure.** Instances subscribed to this hook receive proposals that may never execute, which widens what a vendor sees (invariant 5).
 
-**Example: a signer allowlist.** An operator wants every account's signers drawn from a list of vetted keys. A signer change writes public key commitments into the multisig map slot `miden::standards::auth::multisig::approver_public_keys`, and the threshold lives in `miden::standards::auth::multisig::threshold_config` (`crates/contracts/tests/auth/multisig.rs:39-40`, `crates/server/src/delta_summary/projection.rs:429`) **[READ]**. The module does not parse those slots: the Guardian decodes them into `before` and `after` (section 3.2), so `basic-policy` runs one rule at every hook. Which signers it checks is a param, because both policies are useful:
+**Example: a signer allowlist.** An operator wants every account's signers drawn from a list of vetted keys. A signer change writes public key commitments into the multisig map slot `miden::standards::auth::multisig::approver_public_keys`, and the threshold lives in `miden::standards::auth::multisig::threshold_config` (`crates/contracts/tests/auth/multisig.rs:39-40`, `crates/server/src/delta_summary/projection.rs:429`) **[READ]**. The module does not parse those slots: the Guardian decodes them into `before` and `after` (section 3.2), so `signer-policy` runs one rule at every hook. Which signers it checks is a param, because both policies are useful:
 
-- `signer_check = "added"` checks the signers `after` adds, `after.signer_commitments` minus `before.signer_commitments` (all of them at registration, where `before` is absent). Signers that predate the list are kept and do not block unrelated transactions.
-- `signer_check = "all"` checks every signer in `after`, so once the list is in force an account whose current signers are not all on it can do nothing until its signers are replaced.
+- `check = "added"` checks the signers `after` adds, `after.signer_commitments` minus `before.signer_commitments` (all of them at registration, where `before` is absent). Signers that predate the list are kept and do not block unrelated transactions.
+- `check = "all"` checks every signer in `after`, so once the list is in force an account whose current signers are not all on it can do nothing until its signers are replaced.
 
-Each checked signer is matched against `signer_allowlist` or `signer_denylist`. The module compares states, not the proposal type, so adding, replacing and updating signers are all covered whatever `unverified_metadata` claims. One instance subscribes to three hooks, because each closes a different path:
+Each checked signer is matched against the instance's `allowlist` or `denylist`. The module compares states, not the proposal type, so adding, replacing and updating signers are all covered whatever `unverified_metadata` claims. One instance subscribes to three hooks, because each closes a different path:
 
 ```toml
 [[module]]
-id = "signer-policy"
-kind = "basic-policy"
+id = "vetted-signers"
+kind = "signer-policy"
 scope = "all"
 hooks = ["before_proposal_created", "before_transaction_approved", "before_account_registered"]
 timeout_ms = 20
 on_error = "deny"
-params = { signer_check = "all", signer_allowlist = ["0x…", "0x…"] }
+params = { check = "all", allowlist = ["0x…", "0x…"] }
 ```
 
 - `before_proposal_created` refuses the proposal before any cosigner signs it or it takes a slot.
@@ -415,7 +415,7 @@ Rust code cannot be loaded into a running binary safely, so whether a module nee
 
 | Module | Official image | Guardian rebuild |
 |---|---|---|
-| First-party in-process kinds (`basic-policy` and later first-party kinds) | Included | No; declare instances in the catalog |
+| First-party in-process kinds (the four built-in policies and later first-party kinds) | Included | No; declare instances in the catalog |
 | Remote modules, any author and language (kind `grpc`; `http` later) | Supported | No; run the module as its own service |
 | Third-party or operator-written in-process kinds | Not included | Yes; custom build through `ServerBuilder` |
 
@@ -533,7 +533,7 @@ A cosigner learns that a module refuses a transaction when the proposal is creat
   "account_id": "0x7bfb...a1",
   "policies": [
     { "module_id": "recipients", "hooks": ["before_proposal_created", "before_transaction_approved"], "description": "Payments only to the treasury's approved counterparties" },
-    { "module_id": "spend-cap", "hooks": ["before_transaction_approved"], "description": "At most 500,000 USDC per transaction", "params": { "max_amount_per_tx": { "0x5e0f...c3": "500000" } } }
+    { "module_id": "spend-cap", "hooks": ["before_transaction_approved"], "description": "At most 500,000 USDC per transaction", "params": { "max_per_transaction": { "0x5e0f...c3": "500000" } } }
   ]
 }
 ```
@@ -799,20 +799,20 @@ message Gap {
 
 **The fee is a note.** In Miden 0.17 `pay_fee` creates a public `TX_FEE` output note funded from the account's vault (`miden-standards-0.17.1/src/account/auth/singlesig.rs:45`) **[READ]**. Listed as an ordinary note, the fee looks like a payment: in the prototype a cap on the fee asset refused every transaction, consuming notes included, and a recipient allowlist would refuse every transaction too, since the fee note has no P2ID recipient. The Guardian therefore marks it with `OutputNote.tx_fee`, and policies treat it as the fee, not a payment. The script alone does not identify the fee: `TX_FEE` is a standard script that any transaction script can use (`tx_fee::create_output_note` is public), with any assets, and anyone can consume the note, so a note marked by its script would move funds past every recipient, asset and amount rule. `tx_fee` is set only for the note `pay_fee` creates, recognized by everything `pay_fee` fixes: it is the transaction's only `TX_FEE` note, its serial number is `TxFeeNote::derive_serial_number(account, nonce before the transaction, block the summary binds)`, and it carries one fungible asset of the chain's fee faucet, no more of it than a transaction can owe. The Guardian reads the fee faucet and the verification base fee from the node's latest block header and its protocol configuration, and reads them again once that read is a minute old. The fee is the base fee times `ilog2(cycles) + 1`, which stays below 32 for any cycle count the kernel accepts, so the bound is 64 times the base fee: a note over it is a payment. On a chain whose base fee is zero `pay_fee` creates no note, so no note is marked there; otherwise a transaction script could create the one `TX_FEE` note itself, with the derivable serial number and any amount. Any other `TX_FEE` note, and every `TX_FEE` note when the transaction has more than one, is an ordinary output note. While the fee asset has never been read, a transaction that carries a `TX_FEE`-script note cannot be projected, so each instance's `on_error` applies (`GUARDIAN_MODULE_UNAVAILABLE` for a fail-closed one) instead of the note being judged as a payment and denied for good.
 
-#### `basic-policy` rules
+#### Built-in policies
 
-The reference kind reads only the projection and the account views. Each rule denies with a fixed `reason_code` and a fixed `client_message` that names the rule, never a list entry or a limit, so an instance with `client_reason = "full"` tells the user what to change without disclosing params the operator kept back (`disclosure`, section 2.7):
+Four first-party kinds, one concern each, so an instance carries only the params of the rule it enforces, and a kind refuses params that belong to another. Each kind supports only the hooks where its rule can refuse something, so a catalog that subscribes it to another hook does not start. They read only the projection and the account views. Each rule denies with a fixed `reason_code` and a fixed `client_message` that names the rule, never a list entry or a limit, so an instance with `client_reason = "full"` tells the user what to change without disclosing params the operator kept back (`disclosure`, section 2.7):
 
-| Param | Rule | `reason_code` |
-|---|---|---|
-| `recipient_allowlist` | Every payment note's `p2id_target` is listed. A partial note, or one whose script is not a known P2ID or P2IDE script (no `p2id_target`), is refused, since its recipient cannot be checked | `recipient_not_allowed` |
-| `recipient_denylist` | No payment note's `p2id_target` is listed. A partial or non-P2ID note is refused as well once the list names anyone, since a blocked recipient could otherwise be paid through a note the denylist cannot check; `deny_unknown_recipients = false` opts out, and `true` applies it to an empty list too | `recipient_blocked` |
-| `asset_allowlist` | Every asset sent in a payment note or received in an input note is listed; vault changes are not used, because they cannot tell a fee from a payment | `asset_not_allowed` |
-| `max_amount_per_tx` | Per listed faucet, the gross amount leaving the account (the sum of that faucet's fungible amounts over every output note, full or partial) is at most the cap. Amounts of different assets are not comparable, so the cap is per asset; input notes do not offset it, so a payment cannot be split across notes or netted against a receive; faucets not listed are uncapped; non-fungible assets are governed only by `asset_allowlist` | `amount_cap_exceeded` |
-| `signer_allowlist` or `signer_denylist`, with `signer_check` | The checked signers (section 2.3, signer allowlist example) are all on the allowlist, or none is on the denylist; an instance sets at most one of the two | `signer_not_allowed` |
-| `allowed_code_commitments`, with `code_check` | `code_check = "changed"` (default): at registration `after.code_commitment` is listed, and on a transaction `new_code_commitment`, when set, is listed. Code an account already runs is kept until it changes, as `signer_check = "added"` keeps signers: an account registered before the instance existed passes until it replaces its code or re-registers. `code_check = "all"`: `after.code_commitment` is listed at every gate hook, so once the list is in force an account on unlisted code can do nothing but upgrade to listed code. Pins the account to code the operator has reviewed (invariant 6) | `code_not_allowed` |
+| Kind (hooks) | Param | Rule | `reason_code` |
+|---|---|---|---|
+| `spending-limit` (proposal creation, transaction approval) | `max_per_transaction` | Per listed faucet, the gross amount leaving the account (the sum of that faucet's fungible amounts over every output note, full or partial) is at most the cap. Amounts of different assets are not comparable, so the cap is per asset; input notes do not offset it, so a payment cannot be split across notes or netted against a receive; faucets not listed are uncapped; non-fungible assets are governed only by `allowed_assets`. Limits over a period need module state (M2b) and belong to this kind | `amount_cap_exceeded` |
+| | `allowed_assets` | Every asset sent in a payment note or received in an input note is listed; vault changes are not used, because they cannot tell a fee from a payment | `asset_not_allowed` |
+| `recipient-policy` (proposal creation, transaction approval) | `allowlist` | Every payment note's `p2id_target` is listed. A partial note, or one whose script is not a known P2ID or P2IDE script (no `p2id_target`), is refused, since its recipient cannot be checked. Excludes `denylist` | `recipient_not_allowed` |
+| | `denylist`, with `deny_unknown` | No payment note's `p2id_target` is listed. A partial or non-P2ID note is refused as well once the list names anyone, since a blocked recipient could otherwise be paid through a note the denylist cannot check; `deny_unknown = false` opts out, and `true` applies it to an empty list too | `recipient_blocked` |
+| `signer-policy` (registration, proposal creation, transaction approval) | `allowlist` or `denylist`, with `check` | The checked signers (section 2.3, signer allowlist example) are all on the allowlist, or none is on the denylist; an instance sets at most one of the two | `signer_not_allowed` |
+| `code-policy` (registration, proposal creation, transaction approval) | `allowed`, with `check` | `check = "changed"` (default): at registration `after.code_commitment` is listed, and on a transaction `new_code_commitment`, when set, is listed. Code an account already runs is kept until it changes, as `check = "added"` keeps signers: an account registered before the instance existed passes until it replaces its code or re-registers. `check = "all"`: `after.code_commitment` is listed at every gate hook, so once the list is in force an account on unlisted code can do nothing but upgrade to listed code. Pins the account to code the operator has reviewed (invariant 6) | `code_not_allowed` |
 
-The fee note (`tx_fee`) is excluded from every recipient, asset and amount rule. At `before_account_registered` there is no transaction, so only the signer and code rules apply; the transaction rules pass. A transaction request without a Miden projection is not judged: the module returns an error, as for any transaction it cannot judge (section 3.1), so the instance's `on_error` applies.
+The fee note (`tx_fee`) is excluded from every recipient, asset and amount rule. A request a kind cannot judge, such as a transaction without a Miden projection, is not judged: the module returns an error, as for any transaction it cannot judge (section 3.1), so the instance's `on_error` applies.
 
 ### 3.2 Account views and proposal context
 
@@ -1037,7 +1037,7 @@ The health probe is a `Describe` call every `GUARDIAN_MODULE_PROBE_INTERVAL_MS` 
 3. **Exit is never gated.** `SwitchGuardian` executes on chain without a Guardian acknowledgement, so no module can keep an account from leaving. A module may deny the best-effort push of the switch delta to the old Guardian; the release sweep then detects the switch from chain.
 4. **Structure is reviewed, parameters are audited.** Only the catalog file, applied by a deploy, adds, removes or reconfigures module instances (kind, endpoint, authentication, TLS, hooks, scope, timeout, `on_error`), so no session can point the approval path or transaction data at a new destination. Params are operator-managed: operator sessions change global params (`policies:write_global`), account layers and per-account assignments, every change with a reason, an audit record and a history entry. Loosening a rule through params is an operator decision the audit trail records, not something the Guardian prevents; what it does prevent is a per-account change weakening an `all` rule, since an account layer only adds restrictions. `scope = all` instances cannot be removed from an account, only instances the catalog marks `operator_can_disable` can be disabled, and resync accepts dropped history explicitly.
 5. **Disclosure.** Every external module receives the full transaction details of each account it applies to, including, for instances subscribed to `before_proposal_created` and for every instance a dry-run check reaches, transactions that are never executed, and the proposer's free-text `description` in `unverified_metadata`. This is a change to the trust boundary in `docs/CONCEPTS.md` and operators must treat module vendors as data processors. The operator and module author guides (section 7) say which request fields can carry personal data, ask vendors to document retention and processing location, and note that the Guardian's own logs hold the module's `message` for every denial.
-6. **A verdict assumes the account's code.** Modules judge the transaction and the account views; the account's code decides whether the Guardian's signature is required at all. The Guardian does not verify that code (section 3.2), so an operator who relies on module verdicts as a custody control pins the code with a module, through `code_commitment` at registration and `new_code_commitment` on every transaction. `basic-policy` does this with `allowed_code_commitments` (section 3.1); `code_check = "all"` also covers accounts registered before the rule existed. Without such a rule, a code upgrade can remove the Guardian requirement from an account and no module runs for it again.
+6. **A verdict assumes the account's code.** Modules judge the transaction and the account views; the account's code decides whether the Guardian's signature is required at all. The Guardian does not verify that code (section 3.2), so an operator who relies on module verdicts as a custody control pins the code with a module, through `code_commitment` at registration and `new_code_commitment` on every transaction. `code-policy` does this with `allowed` (section 3.1); `check = "all"` also covers accounts registered before the rule existed. Without such a rule, a code upgrade can remove the Guardian requirement from an account and no module runs for it again.
 
 ### 5.2 Transport authentication
 
@@ -1105,7 +1105,7 @@ The first enclave step allows in-process kinds only; the attested tier follows o
 - Evaluation budget (`GUARDIAN_MODULE_EVALUATION_BUDGET_MS`) with the startup checks in section 4.3, circuit breaker and health probe (section 4.4), request size cap (section 3.4), and the module metrics.
 - `GUARDIAN_MODULE_DENIED` and `GUARDIAN_MODULE_UNAVAILABLE` in the server and both SDKs, on proposal creation as well as on the ack.
 - Policy discovery (section 2.7): the `disclosure`, `description`, `client_reason` and `dry_run` catalog fields, generic denials, `Decision.client_message`, the policy summary and dry-run check on the client API with their rate limit, and the SDK methods named in section 2.7 in both base clients and both multisig SDKs. The error contract and the protocol field must land before version 1 freezes; the two endpoints may follow in an M2a point release.
-- Reference module `basic-policy` (recipient allowlist and denylist, asset allowlist, per-transaction amount cap, signer allowlist or denylist with `signer_check`, account code allowlist), shipped as a first-party in-process kind and, through the `serve` harness, as a standalone gRPC service in `examples/policy-module/`.
+- Reference policies `spending-limit`, `recipient-policy`, `signer-policy` and `code-policy` (per-transaction amount cap and asset allowlist; recipient allowlist or denylist; signer allowlist or denylist; account code allowlist), shipped as first-party in-process kinds and, through the `serve` harness, as a standalone gRPC service in `examples/policy-module/`.
 - Account view extraction with explicit errors for unsupported auth state, effective procedure overrides, code commitment and procedure roots; `network_id`, `reference_block` and `new_code_commitment` in the projection (section 3.1); `submitter_session` (section 3.2); the params size cap (section 2.2); the `ProposalContext` lookup, first-creator-wins proposal storage on both backends (on `main`, `admit_delta_proposal` refuses an existing commitment on both), and the requester carried from the execution request to the ack (section 3.2).
 - Acceptance cases: a denial at proposal creation stores nothing and takes no slot; a proposal that passes creation and is denied at the ack; a transaction signed offline and pushed without a stored proposal is enforced at the ack; forged `unverified_metadata` does not change a decision; a failed account view extraction applies `on_error`. Creation denials are exercised through `guardian-client` (Rust and TypeScript) and both multisig SDKs.
 - Docs: configuration, trust boundary in concepts, troubleshooting codes (including the denial log fields, section 2.2), the break-glass runbook (section 4.2), data-protection guidance for operators and vendors (invariant 5), and a module author guide for remote modules.
@@ -1205,7 +1205,7 @@ None. Questions resolved in earlier revisions are kept below with their answers.
 
 | Revision | Date | Changes |
 |---|---|---|
-| 32 | 2026-11-10 | review of the M2a implementation. Protocol version 1 reopened (section 7): `Decision.allow` and the `decision.effect` capability removed, a decision without an effect is a module failure (section 3.5); `MidenTransaction.reference_block` and `expiration_block` replaced by `bound_block`, `expiration_delta` and `approval_expiration_block`, and `nonce_delta` made unsigned (section 3.1); `network_id` is the Guardian's configured network, not the account's registered one (section 3.1); `RegistrationSubject.initial_state` is sent; `tx_fee` is set only while the fee note carries no more of the fee asset than a transaction can owe, 64 times the chain's verification base fee, and for no note on a chain that charges nothing (section 3.1). Breaker: requests a module rejects do not count, a module whose timeout is the whole budget can open it, half-open sends one trial at a time, dry-run checks neither probe nor close it (section 4.4). Fail-open skips at proposal creation and registration, where no delta is signed, are recorded as `modules.failed_open` audit events; operator writes are audited with the params version they committed as (section 2.2). A health probe that finds a module incompatible opens its breaker at once and one that gets no answer counts as a failed call (section 4.4). Startup: a known instance whose module does not answer starts unavailable instead of stopping the server, and an instance the catalog declares enabled and not operator-disableable is enabled even when stored as disabled (section 2.2). `basic-policy`: per-field id lengths, and `deny_unknown_recipients` defaults to on once the denylist names anyone (section 3.1). The conformance suite checks stated outcomes and needs a request the module must deny. Body corrected to the implementation: metric names, the fixed 1000 ms timeout cap, params encoding, the `circuit_open` failure kind |
+| 32 | 2026-11-10 | review of the M2a implementation. Protocol version 1 reopened (section 7): `Decision.allow` and the `decision.effect` capability removed, a decision without an effect is a module failure (section 3.5); `MidenTransaction.reference_block` and `expiration_block` replaced by `bound_block`, `expiration_delta` and `approval_expiration_block`, and `nonce_delta` made unsigned (section 3.1); `network_id` is the Guardian's configured network, not the account's registered one (section 3.1); `RegistrationSubject.initial_state` is sent; `tx_fee` is set only while the fee note carries no more of the fee asset than a transaction can owe, 64 times the chain's verification base fee, and for no note on a chain that charges nothing (section 3.1). Breaker: requests a module rejects do not count, a module whose timeout is the whole budget can open it, half-open sends one trial at a time, dry-run checks neither probe nor close it (section 4.4). Fail-open skips at proposal creation and registration, where no delta is signed, are recorded as `modules.failed_open` audit events; operator writes are audited with the params version they committed as (section 2.2). A health probe that finds a module incompatible opens its breaker at once and one that gets no answer counts as a failed call (section 4.4). Startup: a known instance whose module does not answer starts unavailable instead of stopping the server, and an instance the catalog declares enabled and not operator-disableable is enabled even when stored as disabled (section 2.2). `basic-policy`: per-field id lengths, and `deny_unknown_recipients` defaults to on once the denylist names anyone (section 3.1). The conformance suite checks stated outcomes and needs a request the module must deny. `basic-policy` is split into four kinds with short param names: `spending-limit` (`max_per_transaction`, `allowed_assets`), `recipient-policy` (`allowlist`, `denylist`, `deny_unknown`), `signer-policy` (`allowlist`, `denylist`, `check`) and `code-policy` (`allowed`, `check`), each supporting only the hooks where its rule can refuse (section 3.1). Body corrected to the implementation: metric names, the fixed 1000 ms timeout cap, params encoding, the `circuit_open` failure kind |
 | 31 | 2026-11-09 | failures of dry-run checks do not count toward the circuit breaker, since a cosigner sends them without anyone's signature (section 4.4); the per-account budget check refuses only writes that raise an over-budget cost (section 4.3); `GUARDIAN_MODULE_UNAVAILABLE` and `GUARDIAN_EXECUTION_MODULE_UNAVAILABLE` omit `module` for an instance whose denials are generic (section 4.1); `metadata.modules` is kept out of client delta responses (section 2.2). `OutputNote.tx_fee` set only for the fee note `pay_fee` creates (section 3.1): the only `TX_FEE` note, with the derived serial number and one asset of the chain's fee faucet. Revisions 20 to 30 set it for any note with the `TX_FEE` script, which a transaction script can create with any assets, so the flag let funds past every `basic-policy` rule. No wire change; the field's meaning is narrowed |
 | 30 | 2026-11-09 | the secrets backend named: `GUARDIAN_MODULE_SECRET_PROVIDER` selects AWS Secrets Manager (the prod default) or owner-only files below `GUARDIAN_MODULE_SECRET_DIR`, read once when the instances are created; a secret that cannot be read fails creation, with the enabled/disabled rule of section 2.2. Field names fixed as `auth.token_secret`, `tls.client_cert_secret` and `tls.client_key_secret`; a secret name is 1 to 512 characters of letters, digits and `/_+=.@-`, and a `$secret` object has no other key (section 2.2). In-process factories read `$secret` values from `ModuleInstanceConfig::secret`. No protocol change |
 | 29 | 2026-11-09 | M2a implementation of `scope = default`: the copy is written right after the claim, only into an account with no assignment and no assignment history, under the module state lock, instead of in the claim's transaction on Postgres and before the claim on the filesystem; a crash in between is repaired by the unfinished-claim retry, so both backends follow one rule and no transaction spans the metadata and module stores (section 2.3). No protocol change |

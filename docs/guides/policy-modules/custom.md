@@ -3,7 +3,7 @@
 Write your own module against `guardian-module-sdk`, then either serve it over
 gRPC or compile it into your own server build. The worked example,
 [`note_policy/mod.rs`](../../../crates/guardian-module-sdk/examples/note_policy/mod.rs),
-is a module `basic-policy` cannot express: it limits how many payment notes a
+is a module the built-in policies cannot express: it limits how many payment notes a
 transaction creates and can refuse private notes, whose recipients the
 Guardian cannot see. The same code runs both ways. Do the
 [setup](./README.md#setup) first.
@@ -199,8 +199,9 @@ ServerBuilder::new()
 ```
 
 The factory gets each catalog instance's configuration and returns the module.
-`build` fails if the kind name is already taken, including by `basic-policy`
-or `grpc`. Run the example build:
+`build` fails if the kind name is already taken, including by a built-in
+policy (`spending-limit`, `recipient-policy`, `signer-policy`, `code-policy`) or
+`grpc`. Run the example build:
 
 ```sh
 cp docs/guides/policy-modules/custom-in-process.toml .guardian/
@@ -270,7 +271,7 @@ module cannot judge), that one instance's token is refused for another,
 and that a request at the 2 MiB size cap goes through. A suite needs at least
 one request the module must deny: a module that allows everything answers
 consistently too, so consistency alone does not conform. A module written in
-another language can port these cases to its own tests. `note-policy` and `basic-policy` run it in
+another language can port these cases to its own tests. `note-policy` and the four built-in policies run it in
 [`tests/conformance.rs`](../../../crates/guardian-module-sdk/tests/conformance.rs).
 
 ## Shipping your module

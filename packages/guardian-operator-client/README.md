@@ -300,8 +300,8 @@ const catalog = await client.listModules();
 // catalog.modules: [{ moduleId, scope, enabled, circuit, params, paramsDrift, ... }]
 // catalog.undeclared: stored instances the catalog no longer declares
 
-await client.setModuleGlobalParams('blocklist', { recipient_denylist: ['0x0a1b2c3d4e5f60718293a4b5c6d7e8'] }, 'OP-90'); // policies:write_global
-await client.setAccountModuleLayer(accountId, 'blocklist', { recipient_denylist: ['0x1c2d3e4f5a6b70819203b4c5d6e7f8'] }, 'OP-91'); // policies:write
+await client.setModuleGlobalParams('blocklist', { denylist: ['0x0a1b2c3d4e5f60718293a4b5c6d7e8'] }, 'OP-90'); // policies:write_global
+await client.setAccountModuleLayer(accountId, 'blocklist', { denylist: ['0x1c2d3e4f5a6b70819203b4c5d6e7f8'] }, 'OP-91'); // policies:write
 await client.removeAccountModuleLayer(accountId, 'blocklist', 'OP-92');
 await client.setAccountModules(accountId, [{ moduleId: 'treasury-allowlist', params: {} }], 'OP-93');
 await client.disableModule('risk-scorer', 'incident'); // policies:write or modules:disable

@@ -9,13 +9,22 @@ How to see the feature working locally and which checks prove each slice. Comman
 ```bash
 cat > /tmp/modules.toml <<'EOF'
 [[module]]
-id = "caps-and-signers"
-kind = "basic-policy"
+id = "caps"
+kind = "spending-limit"
+scope = "all"
+hooks = ["before_proposal_created", "before_transaction_approved"]
+timeout_ms = 20
+on_error = "deny"
+params = { max_per_transaction = { "0x<demo faucet>" = "1000" } }
+
+[[module]]
+id = "signers"
+kind = "signer-policy"
 scope = "all"
 hooks = ["before_proposal_created", "before_transaction_approved", "before_account_registered"]
 timeout_ms = 20
 on_error = "deny"
-params = { max_amount_per_tx = { "0x<demo faucet>" = "1000" }, signer_check = "added", signer_allowlist = ["0x<demo signer 1>", "0x<demo signer 2>"] }
+params = { check = "added", allowlist = ["0x<demo signer 1>", "0x<demo signer 2>"] }
 EOF
 
 GUARDIAN_MODULES_CONFIG=/tmp/modules.toml cargo run -p guardian-server --bin server
@@ -71,8 +80,8 @@ GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=.guardian/operators.json \
 
 ADMIN="cargo run -q -p guardian-server --example modules_admin -- --key .guardian/operator.key"
 $ADMIN GET /modules
-$ADMIN PUT /modules/blocklist/params '{"params":{"recipient_denylist":["0x<account id 1>","0x<account id 2>"]},"reason":"extend global list"}'
-$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"recipient_denylist":["0x<account id 3>"]},"reason":"customer block"}'
+$ADMIN PUT /modules/blocklist/params '{"params":{"denylist":["0x<account id 1>","0x<account id 2>"]},"reason":"extend global list"}'
+$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"denylist":["0x<account id 3>"]},"reason":"customer block"}'
 $ADMIN GET /accounts/0xACCOUNT/modules
 $ADMIN GET /modules/blocklist/params/history
 $ADMIN DELETE /accounts/0xACCOUNT/modules/blocklist/params '{"reason":"lift customer block"}'

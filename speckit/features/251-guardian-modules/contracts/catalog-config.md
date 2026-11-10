@@ -22,14 +22,14 @@
 ```toml
 [[module]]
 id = "signer-policy"                  # required, unique
-kind = "basic-policy"                 # required, registered kind
+kind = "signer-policy"                # required, registered kind
 scope = "all"                         # all | default | assigned
 hooks = ["before_proposal_created", "before_transaction_approved", "before_account_registered"]
 timeout_ms = 20                       # required
 on_error = "deny"                     # deny (default) | allow
 enabled = true                        # seed only
 operator_can_disable = false
-params = { signer_check = "all", signer_allowlist = ["0x…"] }  # seed for the global params
+params = { check = "all", allowlist = ["0x…"] }  # seed for the global params
 
 [[module]]
 id = "risk-vendor"
@@ -74,23 +74,23 @@ A secret that cannot be read fails the instance's creation: startup stops for an
 
 ## Kinds
 
-`basic-policy` (in process) and `grpc` (remote) ship with the Guardian. A custom build registers more in-process kinds with `ServerBuilder::with_module_kind(name, factory)` (M2c, prototyped in #554); a catalog entry names one in `kind`, with no `endpoint`. A kind name is taken once, and the first-party names cannot be replaced. The stock binary refuses a catalog that names a kind it does not know.
+Four in-process policies (`spending-limit`, `recipient-policy`, `signer-policy`, `code-policy`) and `grpc` (remote) ship with the Guardian. A custom build registers more in-process kinds with `ServerBuilder::with_module_kind(name, factory)` (M2c, prototyped in #554); a catalog entry names one in `kind`, with no `endpoint`. A kind name is taken once, and the first-party names cannot be replaced. The stock binary refuses a catalog that names a kind it does not know.
 
-## `basic-policy` params (M2a)
+## Built-in policy params
 
-Every id is written in `0x` hex form (case-insensitive); `validate_params` refuses any other form, such as a bech32 address or a placeholder that is not hex digits, which would never match a request, and an id of the wrong length (30 hex digits for a faucet or recipient, 64 for a signer or code commitment). A modifier without the list it modifies (`deny_unknown_recipients`, `signer_check`, `code_check`) and a cap naming one faucet twice are refused too.
+Every id is written in `0x` hex form (case-insensitive) at its kind's length (30 hex digits for a faucet or recipient, 64 for a signer or code commitment); `validate_params` refuses any other form, such as a bech32 address or a placeholder. A kind refuses fields that belong to another, a modifier without the list it modifies, and a cap naming one faucet twice. A kind supports only the hooks listed, and startup refuses an instance subscribed to another.
 
-| Param | Type | Effect |
-|---|---|---|
-| `max_amount_per_tx` | map faucet id to decimal string | For each listed faucet, deny if the gross amount sent exceeds it: the sum of that faucet's fungible amounts over every output note, full or partial. Input notes consumed in the same transaction do not offset it, the fee note (`tx_fee`) is not counted, faucets not listed are uncapped, non-fungible assets are not counted (use `asset_allowlist`) |
-| `recipient_allowlist` | list of account ids | Deny a payment note whose `p2id_target` is not listed; partial or non-P2ID notes deny |
-| `recipient_denylist` | list of account ids | Deny a payment note whose `p2id_target` is listed |
-| `deny_unknown_recipients` | bool; unset, `true` when `recipient_denylist` is not empty | With `recipient_denylist`, also deny partial and non-P2ID payment notes, whose recipient cannot be checked |
-| `asset_allowlist` | list of faucet ids | Deny an unlisted faucet among assets sent in payment notes or received in input notes; the fee note (`tx_fee`) is not checked |
-| `signer_allowlist` / `signer_denylist` | list of signer commitments | Check signers per `signer_check`; at most one of the two |
-| `signer_check` | `added` (default) or `all` | `added`: signers in `after` not in `before`; `all`: every signer in `after` |
-| `allowed_code_commitments` | list of code commitments | Code allowlist, checked per `code_check` |
-| `code_check` | `changed` (default) or `all` | `changed`: `after.code_commitment` at registration and `new_code_commitment` when a transaction replaces code; `all`: `after.code_commitment` at every gate hook |
+| Kind | Param | Type | Effect |
+|---|---|---|---|
+| `spending-limit` (proposal, transaction) | `max_per_transaction` | map faucet id to decimal string | For each listed faucet, deny if the gross amount the transaction's payment notes send exceeds it; the fee note (`tx_fee`) is not a payment |
+| | `allowed_assets` | list of faucet ids | Deny an unlisted faucet among assets sent in payment notes or received in input notes |
+| `recipient-policy` (proposal, transaction) | `allowlist` | list of account ids | Deny a payment note whose `p2id_target` is not listed; partial or non-P2ID notes deny. Excludes `denylist` |
+| | `denylist` | list of account ids | Deny a payment note whose `p2id_target` is listed. Excludes `allowlist` |
+| | `deny_unknown` | bool; unset, `true` when `denylist` is not empty | With `denylist`, also deny partial and non-P2ID payment notes, whose recipient cannot be checked |
+| `signer-policy` (registration, proposal, transaction) | `allowlist` / `denylist` | list of signer commitments | Check signers per `check`; at most one of the two |
+| | `check` | `added` (default) or `all` | `added`: signers in `after` not in `before`; `all`: every signer in `after` |
+| `code-policy` (registration, proposal, transaction) | `allowed` | list of code commitments | Code allowlist, checked per `check` |
+| | `check` | `changed` (default) or `all` | `changed`: `after.code_commitment` at registration and `new_code_commitment` when a transaction replaces code; `all`: `after.code_commitment` at every hook |
 
 `params` in the file seed the global params once (section "Layered parameters" of RFC 0002 section 2.2); afterwards they are changed through the operator API, and a changed file value is reported as drift. Per-account settings never live in this file.
 

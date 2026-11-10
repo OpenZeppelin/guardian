@@ -1,10 +1,11 @@
 # Policy module example
 
-`basic-policy`, the Guardian's built-in policy kind, served as its own process
-over gRPC through the `serve` harness of
+One of the Guardian's built-in policies (`spending-limit`, `recipient-policy`,
+`signer-policy` or `code-policy`, chosen with `--kind`) served as its own
+process over gRPC through the `serve` harness of
 [`guardian-module-sdk`](../../crates/guardian-module-sdk). Use it to try a
-remote module, or as the starting point for one: replace `BasicPolicy` with
-your own `Module`.
+remote module, or as the starting point for one: replace the policy with your
+own `Module`.
 
 The Guardian side is a catalog entry of kind `grpc`; see the
 [remote module guide](../../docs/guides/policy-modules/remote.md) and its
@@ -19,7 +20,7 @@ with, carrying that instance's token.
 ```sh
 mkdir -p .guardian
 (umask 077; openssl rand -hex 32 > .guardian/caps.token)
-cargo run -p guardian-policy-module -- \
+cargo run -p guardian-policy-module -- --kind spending-limit \
   --listen 127.0.0.1:7443 --instance caps-remote .guardian/caps.token
 ```
 
@@ -36,7 +37,7 @@ stage. The module refuses a plain-text listener on any other address unless
 `--insecure` is given.
 
 ```sh
-policy-module --listen 0.0.0.0:7443 \
+policy-module --kind spending-limit --listen 0.0.0.0:7443 \
   --instance caps-remote /run/secrets/caps.token \
   --tls-cert /run/secrets/module.pem --tls-key /run/secrets/module.key
 ```
@@ -56,7 +57,7 @@ Build from the repository root:
 ```sh
 docker build -f examples/policy-module/Dockerfile -t guardian-policy-module .
 docker run --rm -p 7443:7443 -v "$PWD/secrets:/run/secrets:ro" guardian-policy-module \
-  --listen 0.0.0.0:7443 \
+  --kind spending-limit --listen 0.0.0.0:7443 \
   --instance caps-remote /run/secrets/caps.token \
   --tls-cert /run/secrets/module.pem --tls-key /run/secrets/module.key
 ```
@@ -68,6 +69,6 @@ must be readable by it.
 
 The SDK's conformance suite runs a module in process and over gRPC and checks
 that both give the same answers, that `evaluate` has no side effects, and that
-a request at the Guardian's size cap goes through. `basic-policy` runs it in
+a request at the Guardian's size cap goes through. The built-in policies run it in
 [`crates/guardian-module-sdk/tests/conformance.rs`](../../crates/guardian-module-sdk/tests/conformance.rs);
 the same `Suite` works for your own module with the `conformance` feature.

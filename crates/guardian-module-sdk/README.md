@@ -14,8 +14,9 @@ The crate has:
   version 1 is frozen: new features arrive as named capabilities.
 - `serve`, a gRPC harness that exposes any `Module` as a remote service with a
   bearer token per instance.
-- `basic_policy`, the Guardian's built-in policy kind (amount caps, recipient
-  and asset lists, signer rules, code pinning), as a reference.
+- `policies`, the Guardian's built-in policy kinds, one concern each, as a
+  reference: `SpendingLimit` (caps and allowed assets), `RecipientPolicy`,
+  `SignerPolicy` and `CodePolicy`.
 - `conformance` (feature `conformance`), a suite that checks a module before
   it is deployed.
 
