@@ -295,7 +295,7 @@ A hook pipeline the server consults before it approves anything
 ([RFC 0002](../rfcs/0002-guardian-modules.md),
 [guide](../guides/policy-modules/README.md)). It is off unless
 `GUARDIAN_MODULES_CONFIG` names a catalog file, and `AppState.modules` is then
-the one [`ModulePipeline`](../../crates/server/src/modules/pipeline.rs) every
+the one [`ModulePipeline`](../../crates/server/src/modules/pipeline/mod.rs) every
 request path uses.
 
 | File | Purpose |
@@ -304,7 +304,9 @@ request path uses.
 | [`registry.rs`](../../crates/server/src/modules/registry.rs), [`grpc_kind.rs`](../../crates/server/src/modules/grpc_kind.rs) | Turns catalog entries into module instances: in-process kinds registered on the builder, or the remote `grpc` kind. Runs the startup and health checks (`Describe`, params validation). |
 | [`secrets.rs`](../../crates/server/src/modules/secrets.rs) | Resolves the tokens, client certificates and `$secret` params a catalog names, from AWS Secrets Manager or owner-only files. |
 | [`store.rs`](../../crates/server/src/modules/store.rs), [`postgres_store.rs`](../../crates/server/src/modules/postgres_store.rs) | The mutable state: enabled flags, global params, account layers and assignments, params history, an instance params version moved by instance writes and a version per account moved by that account's writes. Files on a filesystem build, tables on Postgres. |
-| [`pipeline.rs`](../../crates/server/src/modules/pipeline.rs) | Plans which instances run for an account at a hook (one store read) and runs them in order under the evaluation budget; applies `on_error`; returns what the evaluation ran with. |
+| [`pipeline/mod.rs`](../../crates/server/src/modules/pipeline/mod.rs) | Plans which instances run for an account at a hook (one store read) and runs them in order under the evaluation budget; applies `on_error`; returns what the evaluation ran with. |
+| [`pipeline/startup.rs`](../../crates/server/src/modules/pipeline/startup.rs) | Builds the pipeline once at startup: applies the stored flags and params to the catalog, builds and checks the instances, then seeds new instances, enables those the catalog requires and stores params a module migrated. Nothing is written if an instance fails its checks. |
+| [`pipeline/budget.rs`](../../crates/server/src/modules/pipeline/budget.rs), [`pipeline/probe.rs`](../../crates/server/src/modules/pipeline/probe.rs) | The per-account budget check on operator writes and the over-budget recount; the health probe loop and the state gauges. |
 | [`breaker.rs`](../../crates/server/src/modules/breaker.rs), [`limits.rs`](../../crates/server/src/modules/limits.rs) | Per-instance circuit breakers fed by calls and by the `Describe` probe; the budget, size caps and probe interval. |
 | [`request.rs`](../../crates/server/src/modules/request.rs), [`network/miden/module_views.rs`](../../crates/server/src/network/miden/module_views.rs) | Builds what a module receives: account views before and after, the transaction projection, the registration state. Views are cached by state commitment. |
 | [`admin.rs`](../../crates/server/src/modules/admin.rs), [`api/dashboard_modules.rs`](../../crates/server/src/api/dashboard_modules.rs) | Operator writes and views behind `/dashboard/modules*` and `/dashboard/accounts/{id}/modules*`. |
