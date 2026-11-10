@@ -78,7 +78,7 @@ A secret that cannot be read fails the instance's creation: startup stops for an
 
 ## `basic-policy` params (M2a)
 
-Every id is written in `0x` hex form (case-insensitive); `validate_params` refuses any other form, such as a bech32 address or a placeholder that is not hex digits, which would never match a request. A modifier without the list it modifies (`deny_unknown_recipients`, `signer_check`, `code_check`) and a cap naming one faucet twice are refused too.
+Every id is written in `0x` hex form (case-insensitive); `validate_params` refuses any other form, such as a bech32 address or a placeholder that is not hex digits, which would never match a request, and an id of the wrong length (30 hex digits for a faucet or recipient, 64 for a signer or code commitment). A modifier without the list it modifies (`deny_unknown_recipients`, `signer_check`, `code_check`) and a cap naming one faucet twice are refused too.
 
 | Param | Type | Effect |
 |---|---|---|

@@ -36,6 +36,19 @@ What it does **not** back up:
   encryption is enabled, a database backup without the key is ciphertext:
   keep an out-of-band copy of the key secret per
   [`secrets.md`](./secrets.md).
+- **The policy module catalog and module secrets.** The catalog file
+  (`GUARDIAN_MODULES_CONFIG`) is deploy configuration, not database content:
+  keep it in the deploy repository, where the catalog hash recorded with each
+  signed delta finds the exact version. Module tokens and client keys live in
+  Secrets Manager under the names the catalog gives them and are not recreated
+  by Terraform.
+
+Policy module state is in the database, so the backups above cover it: which
+instances are enabled, their global params, each account's layers and
+assignments, and the params history (`module_instances`,
+`module_account_params`, `module_params_history`, `module_state_version`).
+A filesystem build keeps the same state in `module_state.json` under
+`GUARDIAN_MODULES_STATE`; back that directory up with the metadata directory.
 
 ## Verify backups (do this now, not during an incident)
 
@@ -308,6 +321,16 @@ failing verification. A device holding the account re-onboards via
 `/configure`, which re-registers it with the state that device currently holds;
 other cosigner devices then sync from the guardian. Accounts with no
 post-restore-point activity are unaffected.
+
+Policy module state rewinds with the rest. Operator writes made after the
+restore point are gone: a disable or enable, a params change, an account's
+layer or assignment. Compare `GET /dashboard/modules` and the params history
+with the audit log of the lost window (the log fallback keeps the events the
+database lost) and repeat the writes that should stand, with a reason that
+references the restore. An account that re-registers after the restore is a
+first registration again, so it receives the current `default` modules, not
+the assignment it had. Start the restored server with the same catalog file
+as before; a different one changes which instances are declared.
 
 ## Logical backups (optional)
 

@@ -878,8 +878,13 @@ Guardian execution ends `failed` with `GUARDIAN_EXECUTION_MODULE_DENIED` or
 3. **Module health.** `guardian_module_up` is 0 after a failed `Describe`
    health probe (`Policy module health probe failed` at `warn`), and
    `guardian_module_circuit_open` is 1 while this replica skips the module
-   after `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures; the next
-   successful probe lets a call through again. A module that is up but slow
+   after `GUARDIAN_MODULE_BREAKER_FAILURES` consecutive failures (failed
+   calls and unanswered probes both count); the next successful probe lets a
+   call through again. `Policy module is incompatible with this Guardian` at
+   `warn` means the module answered `Describe` with a protocol version,
+   capability or hook set the Guardian cannot use, usually after the module
+   was redeployed: its circuit opens at once and stays open until the module
+   is fixed or the instance is reconfigured. A module that is up but slow
    shows in `guardian_module_evaluate_duration_seconds` and as `timed out`
    failures: compare with the instance's `timeout_ms` and
    `GUARDIAN_MODULE_EVALUATION_BUDGET_MS`.

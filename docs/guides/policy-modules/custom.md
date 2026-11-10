@@ -249,8 +249,8 @@ use guardian_module_sdk::conformance::Suite;
 #[tokio::test]
 async fn note_policy_conforms() {
     Suite::new(NotePolicy)
-        .request("one payment", one_payment())
-        .request("two payments", two_payments())
+        .allows("one payment", one_payment())
+        .denies_with("two payments", two_payments(), "too_many_payment_notes")
         .valid_params(serde_json::json!({ "max_payment_notes": 1 }))
         .invalid_params(serde_json::json!({ "max_notes": 1 }))
         .run()
@@ -264,8 +264,12 @@ params validate the same over both transports and that normalized params
 validate to themselves, that every request gets the same answer in process and
 over gRPC, repeated, in reverse order and concurrently (so `evaluate` keeps no
 state), that every deny has a valid `reason_code` and a plain `client_message`
-of at most 256 characters, that one instance's token is refused for another,
-and that a request at the 2 MiB size cap goes through. A module written in
+of at most 256 characters, that each request is answered as the suite states
+(`allows`, `denies`, `denies_with` a reason code, or `fails` for a request the
+module cannot judge), that one instance's token is refused for another,
+and that a request at the 2 MiB size cap goes through. A suite needs at least
+one request the module must deny: a module that allows everything answers
+consistently too, so consistency alone does not conform. A module written in
 another language can port these cases to its own tests. `note-policy` and `basic-policy` run it in
 [`tests/conformance.rs`](../../../crates/guardian-module-sdk/tests/conformance.rs).
 

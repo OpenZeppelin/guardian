@@ -58,8 +58,9 @@ Symptoms: clients get `503 GUARDIAN_MODULE_UNAVAILABLE` with `meta.module`
 `guardian_module_up{module}` is 0; `Policy module health probe failed` and
 `Policy module failed; refusing` at `warn`;
 `guardian_module_circuit_open{module}` is 1 once a replica has seen
-`GUARDIAN_MODULE_BREAKER_FAILURES` (5) failures in a row (dry-run checks do not
-count), after which the
+`GUARDIAN_MODULE_BREAKER_FAILURES` (5) failures in a row (failed calls and
+unanswered probes count, dry-run checks do not), or at once when a probe finds
+the module incompatible with this Guardian, after which the
 module is skipped without waiting for its timeout.
 
 1. Check the module itself (its process, endpoint, certificate, token). A
@@ -133,7 +134,9 @@ Symptoms: `timed out` failures, the p99 of
 - `guardian_module_over_budget_accounts` counts accounts whose modules could
   exceed the budget (logged at startup with their worst hook). Remove
   assignments or account layers from those accounts, or lower the
-  instances' `timeout_ms` with a deploy.
+  instances' `timeout_ms` with a deploy. The count, like
+  `guardian_module_orphaned_assignments`, is taken again every minute, so it
+  drops within a minute of the fix.
 - Raising `GUARDIAN_MODULE_EVALUATION_BUDGET_MS` needs a restart and must stay
   below the execution reservation lease (the prod stage refuses to start
   otherwise), and client request timeouts must exceed it.

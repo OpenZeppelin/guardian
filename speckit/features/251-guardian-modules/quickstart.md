@@ -71,8 +71,8 @@ GUARDIAN_OPERATOR_PUBLIC_KEYS_FILE=.guardian/operators.json \
 
 ADMIN="cargo run -q -p guardian-server --example modules_admin -- --key .guardian/operator.key"
 $ADMIN GET /modules
-$ADMIN PUT /modules/blocklist/params '{"params":{"recipient_denylist":["0xaaa","0xddd"]},"reason":"extend global list"}'
-$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"recipient_denylist":["0xccc"]},"reason":"customer block"}'
+$ADMIN PUT /modules/blocklist/params '{"params":{"recipient_denylist":["0x<account id 1>","0x<account id 2>"]},"reason":"extend global list"}'
+$ADMIN PUT /accounts/0xACCOUNT/modules/blocklist/params '{"params":{"recipient_denylist":["0x<account id 3>"]},"reason":"customer block"}'
 $ADMIN GET /accounts/0xACCOUNT/modules
 $ADMIN GET /modules/blocklist/params/history
 $ADMIN DELETE /accounts/0xACCOUNT/modules/blocklist/params '{"reason":"lift customer block"}'

@@ -12,8 +12,11 @@ id (faucet, recipient, signer commitment, code commitment) in the `0x` hex form
 the Guardian reports, not as a bech32 address: params with another form are
 refused, since such an id would never match and its rule would not apply. So
 is anything else that is not hex digits after `0x`, such as a placeholder left
-in an example catalog. Case does not matter, and a cap that names the same
-faucet twice in different case is refused.
+in an example catalog, and an id of the wrong length: a faucet or a recipient
+is an account id of 30 hex digits, a signer or code commitment is 64, so an id
+cut short when it was pasted, or an account id where a commitment belongs, is
+caught when the params are validated. Case does not matter, and a cap that
+names the same faucet twice in different case is refused.
 
 A param that only modifies another is refused without it:
 `deny_unknown_recipients` needs `recipient_denylist`, `signer_check` needs a
