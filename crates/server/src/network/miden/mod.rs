@@ -316,14 +316,11 @@ impl MidenNetworkClient {
     ) -> Result<AppliedState, String> {
         let account_delta = tx_summary.account_delta();
 
-        if let Ok(account) = prev_account.as_ref()
-            && account.id() != account_delta.id()
-        {
-            return Err(format!(
-                "account delta ID mismatch: expected {}, got {}",
-                account.id().to_hex(),
-                account_delta.id().to_hex()
-            ));
+        // An undecodable prior state skips the ID check: a creation delta then builds the
+        // account from the delta alone. Only `apply_delta` passes an undecodable prior state;
+        // `verify_and_apply_delta` decodes it first.
+        if let Ok(account) = prev_account.as_ref() {
+            guardian_shared::account_delta::ensure_delta_targets(account, account_delta)?;
         }
         let is_full_state =
             !account_delta.code().is_empty() && prev_account.as_ref().map_or(true, Account::is_new);
@@ -521,13 +518,7 @@ impl NetworkClient for MidenNetworkClient {
     ) -> Result<(), String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account = Account::from_json(prev_state_json)?;
-        if account.id() != tx_summary.account_delta().id() {
-            return Err(format!(
-                "account delta ID mismatch: expected {}, got {}",
-                account.id().to_hex(),
-                tx_summary.account_delta().id().to_hex()
-            ));
-        }
+        guardian_shared::account_delta::ensure_delta_targets(&account, tx_summary.account_delta())?;
         Self::ensure_prev_commitment(&account, prev_commitment)
     }
 
@@ -2379,10 +2370,8 @@ mod tests {
 
         let delta_payload = tx_summary.to_json();
 
-        // Full-state deltas read prev_state_json only for the pre-tx guardian
-        // selector; an unparseable prev state falls back to guardian-disabled
-        // (with a warn), which is fine here — this account has no guardian
-        // component, so the empty prev state exercises exactly that fallback.
+        // An undecodable prior state takes the creation path without the
+        // account ID check; the empty prior state exercises that branch.
         let empty_prev_state = serde_json::json!({});
 
         let applied = client
@@ -2415,39 +2404,34 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_creation_delta_of_another_account_is_refused() {
-        use miden_protocol::Felt;
-        use miden_protocol::account::delta::AccountVaultDelta;
+    fn wallet_builder(seed: u8) -> miden_protocol::account::AccountBuilder {
         use miden_protocol::account::{AccountBuilder, AccountType};
-        use miden_protocol::account::{AccountCodePatch, AccountDelta};
         use miden_standards::account::auth::NoAuth;
         use miden_standards::account::wallets::BasicWallet;
 
-        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
-        let build = |seed: u8| {
-            AccountBuilder::new([seed; 32])
-                .account_type(AccountType::Public)
-                .with_component(BasicWallet)
-                .with_component(NoAuth)
-                .build()
-                .expect("Failed to build account")
-        };
-        let stored = build(0xAB);
-        let other = build(0xCD);
-        assert!(stored.is_new());
-        assert_ne!(stored.id(), other.id());
+        AccountBuilder::new([seed; 32])
+            .account_type(AccountType::Public)
+            .with_component(BasicWallet)
+            .with_component(NoAuth)
+    }
 
-        let creation_of_other = AccountDelta::new(
-            other.id(),
-            miden_protocol::account::AccountStoragePatch::default(),
+    fn summary_payload(
+        account_id: AccountId,
+        code: Option<miden_protocol::account::AccountCode>,
+    ) -> serde_json::Value {
+        use miden_protocol::account::delta::AccountVaultDelta;
+        use miden_protocol::account::{AccountCodePatch, AccountDelta, AccountStoragePatch};
+
+        let delta = AccountDelta::new(
+            account_id,
+            AccountStoragePatch::default(),
             AccountVaultDelta::default(),
-            AccountCodePatch::new(Some(other.code().clone())),
+            AccountCodePatch::new(code),
             Felt::new_unchecked(1),
         )
         .expect("Failed to create delta");
-        let payload = TransactionSummary::new(
-            creation_of_other,
+        TransactionSummary::new(
+            delta,
             InputNotes::new(Vec::new()).expect("empty input notes"),
             RawOutputNotes::new(Vec::new()).expect("empty output notes"),
             miden_protocol::block::BlockNumber::from(0),
@@ -2455,19 +2439,80 @@ mod tests {
             0,
             TransactionSummaryUserParams::new([Felt::ZERO; 6]),
         )
-        .to_json();
+        .to_json()
+    }
 
+    fn assert_refused_on_every_path(stored: &Account, payload: &serde_json::Value) {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
         let stored_json = stored.to_json();
         let stored_commitment = format!("0x{}", hex::encode(stored.to_commitment().as_bytes()));
         for refused in [
             client
-                .verify_and_apply_delta(&stored_commitment, &stored_json, &payload)
+                .verify_and_apply_delta(&stored_commitment, &stored_json, payload)
                 .map(|_| ()),
-            client.verify_delta(&stored_commitment, &stored_json, &payload),
-            client.apply_delta(&stored_json, &payload).map(|_| ()),
+            client.verify_delta(&stored_commitment, &stored_json, payload),
+            client.apply_delta(&stored_json, payload).map(|_| ()),
         ] {
-            let error = refused.expect_err("another account's creation delta must be refused");
+            let error = refused.expect_err("another account's delta must be refused");
             assert!(error.contains("account delta ID mismatch"), "{error}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_creation_delta_of_another_account_is_refused() {
+        let stored = wallet_builder(0xAB)
+            .build()
+            .expect("Failed to build account");
+        let other = wallet_builder(0xCD)
+            .build()
+            .expect("Failed to build account");
+        assert!(stored.is_new());
+        assert_ne!(stored.id(), other.id());
+
+        assert_refused_on_every_path(
+            &stored,
+            &summary_payload(other.id(), Some(other.code().clone())),
+        );
+    }
+
+    #[tokio::test]
+    async fn an_update_delta_of_another_account_is_refused() {
+        let stored = wallet_builder(0xAB)
+            .build_existing()
+            .expect("Failed to build account");
+        let other = wallet_builder(0xCD)
+            .build_existing()
+            .expect("Failed to build account");
+        assert!(!stored.is_new());
+        assert_ne!(stored.id(), other.id());
+
+        assert_refused_on_every_path(&stored, &summary_payload(other.id(), None));
+    }
+
+    #[tokio::test]
+    async fn a_creation_delta_of_the_stored_account_is_applied() {
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let stored = wallet_builder(0xAB)
+            .build()
+            .expect("Failed to build account");
+        assert!(stored.is_new());
+        let stored_json = stored.to_json();
+        let stored_commitment = format!("0x{}", hex::encode(stored.to_commitment().as_bytes()));
+        let payload = summary_payload(stored.id(), Some(stored.code().clone()));
+
+        client
+            .verify_delta(&stored_commitment, &stored_json, &payload)
+            .expect("a creation delta of the stored account must verify");
+        let applied = client
+            .apply_delta(&stored_json, &payload)
+            .expect("a creation delta of the stored account must apply");
+        let verified_and_applied = client
+            .verify_and_apply_delta(&stored_commitment, &stored_json, &payload)
+            .expect("a creation delta of the stored account must verify and apply");
+
+        assert_eq!(applied.commitment, verified_and_applied.commitment);
+        assert_eq!(applied.nonce, Some(1));
+        let account = Account::from_json(&applied.state_json).expect("applied state decodes");
+        assert_eq!(account.id(), stored.id());
     }
 }
