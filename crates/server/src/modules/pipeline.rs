@@ -8,7 +8,7 @@ use std::sync::{Arc, RwLock};
 
 use super::breaker::{Breakers, Caller, CircuitState};
 use super::limits::Limits;
-use super::registry::{CallError, Instance, Registry, isolated};
+use super::registry::{CallError, Instance, Registry, Unhealthy, isolated};
 use super::request::ViewCache;
 use super::store::{AccountParamsRow, Assigned, ModuleStore, ParamsKind};
 use crate::delta_summary::FailedOpen;
@@ -93,6 +93,16 @@ pub struct ModulePipeline {
 }
 
 pub(super) type Rows = Arc<HashMap<String, (serde_json::Value, bool)>>;
+
+/// How often the probe loop recounts the over-budget accounts and orphaned rows.
+const ASSIGNMENT_REPORT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// An account whose stored modules could take longer than the evaluation budget.
+struct OverBudget {
+    account_id: String,
+    hook: HookName,
+    worst_case: std::time::Duration,
+}
 
 #[derive(Default)]
 struct Cache {
@@ -340,12 +350,12 @@ impl ModulePipeline {
         &self.breakers
     }
 
-    /// The hook with the largest worst-case module time for an account whose module rows are
-    /// `rows`, and that time: every `scope = all` instance, once more for an account layer on
+    /// The hook with the largest worst-case module time for an account whose rows name
+    /// `modules`, and that time: every `scope = all` instance, once more for an account layer on
     /// it, plus every listed instance. Disabled instances count, since enabling needs no further
     /// check; a row naming an instance the catalog no longer declares costs nothing.
-    pub fn worst_case(&self, rows: &[AccountParamsRow]) -> (HookName, std::time::Duration) {
-        self.costs(rows)
+    fn worst_case(&self, modules: &[(&str, ParamsKind)]) -> (HookName, std::time::Duration) {
+        self.costs(modules)
             .into_iter()
             .max_by_key(|(_, total)| *total)
             .unwrap_or((
@@ -354,11 +364,13 @@ impl ModulePipeline {
             ))
     }
 
-    /// The summed timeouts of the module calls an account with `rows` makes at each gate hook.
-    fn costs(&self, rows: &[AccountParamsRow]) -> Vec<(HookName, std::time::Duration)> {
+    /// The summed timeouts of the module calls an account naming `modules` makes at each gate
+    /// hook.
+    fn costs(&self, modules: &[(&str, ParamsKind)]) -> Vec<(HookName, std::time::Duration)> {
         let calls = |id: &str, kind: ParamsKind| {
-            rows.iter()
-                .filter(|row| row.kind == kind && row.module_id == id)
+            modules
+                .iter()
+                .filter(|(module_id, named)| *named == kind && *module_id == id)
                 .count() as u32
         };
         HookName::GATES
@@ -382,7 +394,6 @@ impl ModulePipeline {
             .collect()
     }
 
-    /// Refuses an account whose modules, with `rows` stored, could exceed the evaluation budget.
     /// Refuses a write that would take the account's modules over the budget at a hook where
     /// they are not already at least that far over. A write that keeps or lowers the cost passes,
     /// so an account a deploy pushed over the budget can still be brought back under it.
@@ -391,7 +402,14 @@ impl ModulePipeline {
         current: &[AccountParamsRow],
         proposed: &[AccountParamsRow],
     ) -> Result<(), GuardianError> {
-        for ((hook, total), (_, now)) in self.costs(proposed).into_iter().zip(self.costs(current)) {
+        let named = |rows: &[AccountParamsRow]| -> Vec<(HookName, std::time::Duration)> {
+            let modules: Vec<(&str, ParamsKind)> = rows
+                .iter()
+                .map(|row| (row.module_id.as_str(), row.kind))
+                .collect();
+            self.costs(&modules)
+        };
+        for ((hook, total), (_, now)) in named(proposed).into_iter().zip(named(current)) {
             if total > self.limits.budget && total > now {
                 return Err(GuardianError::InvalidInput(format!(
                     "the account's modules at {} would take up to {} ms, over the evaluation budget of {} ms",
@@ -404,33 +422,75 @@ impl ModulePipeline {
         Ok(())
     }
 
-    /// Logs every account whose stored modules exceed the budget, without refusing to start: a
-    /// deploy that raised a timeout must not become an outage. Returns the count of those
-    /// accounts and of stored rows naming an instance the catalog no longer declares.
-    pub async fn report_stored_assignments(&self) -> Result<(usize, usize), String> {
-        let rows = self.store.all_account_params().await?;
+    /// The accounts whose stored modules exceed the budget, each with its worst hook and that
+    /// hook's time, and the count of stored rows naming an instance the catalog no longer
+    /// declares. One scan of which module each account row names, without params.
+    async fn scan_assignments(&self) -> Result<(Vec<OverBudget>, usize), String> {
+        let rows = self.store.account_modules().await?;
         let orphaned = rows
             .iter()
             .filter(|row| self.instance(&row.module_id).is_none())
             .count();
-        let mut over = 0;
-        for account in rows.chunk_by(|a, b| a.account_id == b.account_id) {
-            let (hook, total) = self.worst_case(account);
-            if total > self.limits.budget {
-                over += 1;
-                tracing::warn!(
-                    account_id = %account[0].account_id,
-                    hook = hook.as_str(),
-                    worst_case_ms = total.as_millis() as u64,
-                    budget_ms = self.limits.budget.as_millis() as u64,
-                    "Account's policy modules exceed the evaluation budget; the runtime budget applies"
-                );
+        let over = rows
+            .chunk_by(|a, b| a.account_id == b.account_id)
+            .filter_map(|account| {
+                let modules: Vec<(&str, ParamsKind)> = account
+                    .iter()
+                    .map(|row| (row.module_id.as_str(), row.kind))
+                    .collect();
+                let (hook, worst_case) = self.worst_case(&modules);
+                (worst_case > self.limits.budget).then(|| OverBudget {
+                    account_id: account[0].account_id.clone(),
+                    hook,
+                    worst_case,
+                })
+            })
+            .collect();
+        Ok((over, orphaned))
+    }
+
+    /// The over-budget account count and the orphaned row count as last counted.
+    #[cfg(test)]
+    pub fn assignment_report(&self) -> (usize, usize) {
+        self.assignment_report
+            .lock()
+            .map(|report| *report)
+            .unwrap_or_default()
+    }
+
+    fn record_assignment_report(&self, over_budget: usize, orphaned: usize) {
+        if let Ok(mut report) = self.assignment_report.lock() {
+            *report = (over_budget, orphaned);
+        }
+    }
+
+    /// Logs every account whose stored modules exceed the budget, without refusing to start: a
+    /// deploy that raised a timeout must not become an outage. Returns the count of those
+    /// accounts and of stored rows naming an instance the catalog no longer declares.
+    pub async fn report_stored_assignments(&self) -> Result<(usize, usize), String> {
+        let (over, orphaned) = self.scan_assignments().await?;
+        for account in &over {
+            tracing::warn!(
+                account_id = %account.account_id,
+                hook = account.hook.as_str(),
+                worst_case_ms = account.worst_case.as_millis() as u64,
+                budget_ms = self.limits.budget.as_millis() as u64,
+                "Account's policy modules exceed the evaluation budget; the runtime budget applies"
+            );
+        }
+        self.record_assignment_report(over.len(), orphaned);
+        Ok((over.len(), orphaned))
+    }
+
+    /// Recounts the over-budget accounts and orphaned rows for the gauges, so they follow what
+    /// operators change after startup: an alarm clears once the assignment is fixed.
+    pub async fn refresh_assignment_report(&self) {
+        match self.scan_assignments().await {
+            Ok((over, orphaned)) => self.record_assignment_report(over.len(), orphaned),
+            Err(error) => {
+                tracing::warn!(%error, "Stored module assignments not recounted; the gauges keep their last values");
             }
         }
-        if let Ok(mut report) = self.assignment_report.lock() {
-            *report = (over, orphaned);
-        }
-        Ok((over, orphaned))
     }
 
     /// Sets the state gauges from the stored rows and this replica's breakers. Run on every probe,
@@ -456,7 +516,10 @@ impl ModulePipeline {
     }
 
     /// One health probe of every enabled instance: `Describe` under its timeout, with the startup
-    /// checks. A healthy module half-opens an open breaker so the next real call is sent.
+    /// checks. A healthy module half-opens an open breaker so the next real call is sent. One
+    /// that does not answer counts as a failed call toward its breaker. One that answers with a
+    /// protocol version, capability or hook set this Guardian cannot work with opens its breaker
+    /// at once: its decisions are not trusted until a probe passes again.
     pub async fn probe(&self) {
         let Ok(rows) = self.rows().await else {
             return;
@@ -469,13 +532,17 @@ impl ModulePipeline {
             let healthy =
                 super::registry::describe_healthy(&instance.config, &instance.module).await;
             super::metrics::up(&instance.config.id, healthy.is_ok());
+            let id = instance.config.id.as_str();
             match healthy {
-                Ok(_) => self.breakers.probe_succeeded(&instance.config.id),
-                Err(error) => tracing::warn!(
-                    module = %instance.config.id,
-                    %error,
-                    "Policy module health probe failed"
-                ),
+                Ok(_) => self.breakers.probe_succeeded(id),
+                Err(Unhealthy::Unreachable(error)) => {
+                    tracing::warn!(module = id, %error, "Policy module health probe failed");
+                    self.breakers.failed(id);
+                }
+                Err(Unhealthy::Incompatible(error)) => {
+                    tracing::warn!(module = id, %error, "Policy module is incompatible with this Guardian; its circuit is open until a probe passes");
+                    self.breakers.probe_incompatible(id);
+                }
             }
         }
     }
@@ -485,8 +552,13 @@ impl ModulePipeline {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(self.limits.probe_interval);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut counted = tokio::time::Instant::now();
             loop {
                 interval.tick().await;
+                if counted.elapsed() >= ASSIGNMENT_REPORT_INTERVAL {
+                    self.refresh_assignment_report().await;
+                    counted = tokio::time::Instant::now();
+                }
                 self.probe().await;
             }
         })
@@ -1098,7 +1170,8 @@ params = {params}
         assert!(started.is_err());
         assert!(store.instances().await.unwrap().is_empty());
 
-        let fixed = caps_catalog(r#"{ max_amount_per_tx = { "0xaa" = "5" } }"#);
+        let fixed =
+            caps_catalog(r#"{ max_amount_per_tx = { "0x0000000000000000000000000000aa" = "5" } }"#);
         let started = ModulePipeline::new(
             "local",
             fixed,
@@ -1712,7 +1785,7 @@ params = { old_name = 1000 }
                 "blocklist",
                 &[HOOK],
                 std::sync::Arc::new(BasicPolicy),
-                json!({ "recipient_denylist": ["0xaaa"] }),
+                json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
             )])
         }
 
@@ -1744,24 +1817,36 @@ params = { old_name = 1000 }
                 .set_layer(
                     "0xacc",
                     "blocklist",
-                    Some(json!({ "recipient_denylist": ["0xccc"] })),
+                    Some(json!({ "recipient_denylist": ["0x000000000000000000000000000ccc"] })),
                     &change(),
                 )
                 .await
                 .unwrap();
 
             assert_eq!(
-                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000aaa")
+                    .await
+                    .as_deref(),
                 Some("global")
             );
             assert_eq!(
-                layer_of(&pipeline, "0xacc", "0xccc").await.as_deref(),
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000ccc")
+                    .await
+                    .as_deref(),
                 Some("account")
             );
-            assert_eq!(layer_of(&pipeline, "0xacc", "0xbbb").await, None);
-            assert_eq!(layer_of(&pipeline, "0xother", "0xccc").await, None);
             assert_eq!(
-                layer_of(&pipeline, "0xother", "0xaaa").await.as_deref(),
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000bbb").await,
+                None
+            );
+            assert_eq!(
+                layer_of(&pipeline, "0xother", "0x000000000000000000000000000ccc").await,
+                None
+            );
+            assert_eq!(
+                layer_of(&pipeline, "0xother", "0x000000000000000000000000000aaa")
+                    .await
+                    .as_deref(),
                 Some("global")
             );
         }
@@ -1775,7 +1860,9 @@ params = { old_name = 1000 }
                 .await
                 .unwrap();
             assert_eq!(
-                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000aaa")
+                    .await
+                    .as_deref(),
                 Some("global")
             );
         }
@@ -1788,7 +1875,7 @@ params = { old_name = 1000 }
                 .seed_instance(
                     "blocklist",
                     true,
-                    &json!({ "recipient_denylist": ["0xaaa"] }),
+                    &json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
                     "t0",
                 )
                 .await
@@ -1797,13 +1884,15 @@ params = { old_name = 1000 }
                 .store()
                 .set_global(
                     "blocklist",
-                    json!({ "recipient_denylist": ["0xaaa", "0xddd"] }),
+                    json!({ "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }),
                     &change(),
                 )
                 .await
                 .unwrap();
             assert_eq!(
-                layer_of(&pipeline, "0xany", "0xddd").await.as_deref(),
+                layer_of(&pipeline, "0xany", "0x000000000000000000000000000ddd")
+                    .await
+                    .as_deref(),
                 Some("global")
             );
         }
@@ -1816,13 +1905,15 @@ params = { old_name = 1000 }
                 .seed_instance(
                     "blocklist",
                     true,
-                    &json!({ "recipient_denylist": ["0xaaa"] }),
+                    &json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
                     "t0",
                 )
                 .await
                 .unwrap();
             assert_eq!(
-                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000aaa")
+                    .await
+                    .as_deref(),
                 Some("global")
             );
             pipeline
@@ -1830,7 +1921,10 @@ params = { old_name = 1000 }
                 .set_enabled("blocklist", false, &change())
                 .await
                 .unwrap();
-            assert_eq!(layer_of(&pipeline, "0xacc", "0xaaa").await, None);
+            assert_eq!(
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000aaa").await,
+                None
+            );
             assert!(!pipeline.applies(HOOK, "0xacc").await.unwrap());
             pipeline
                 .store()
@@ -1838,7 +1932,9 @@ params = { old_name = 1000 }
                 .await
                 .unwrap();
             assert_eq!(
-                layer_of(&pipeline, "0xacc", "0xaaa").await.as_deref(),
+                layer_of(&pipeline, "0xacc", "0x000000000000000000000000000aaa")
+                    .await
+                    .as_deref(),
                 Some("global")
             );
         }
@@ -2169,6 +2265,84 @@ mod failure_handling_tests {
             run(&pipeline).await,
             Err(GuardianError::ModuleDenied { module, .. }) if module == "caps"
         ));
+    }
+
+    #[tokio::test]
+    async fn a_module_that_turns_incompatible_is_not_trusted_until_a_probe_passes() {
+        let mut stub = crate::modules::testing::ProtocolStub::new();
+        stub.protocol_version = guardian_module_sdk::PROTOCOL_VERSION + 1;
+        let pipeline = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            Arc::new(stub),
+        )]);
+        run(&pipeline)
+            .await
+            .expect("the module allows until a probe finds it incompatible");
+        pipeline.probe().await;
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);
+        assert!(matches!(
+            run(&pipeline).await,
+            Err(GuardianError::ModuleUnavailable { .. })
+        ));
+        pipeline.probe().await;
+        assert_eq!(
+            pipeline.breakers().state("screening"),
+            CircuitState::Open,
+            "it stays open while the probe keeps failing"
+        );
+    }
+
+    /// Allows every request but never answers `Describe`.
+    struct Undescribed;
+
+    #[async_trait::async_trait]
+    impl guardian_module_sdk::Module for Undescribed {
+        async fn describe(
+            &self,
+            _: &guardian_module_sdk::DescribeRequest,
+        ) -> Result<guardian_module_sdk::ModuleInfo, guardian_module_sdk::ModuleError> {
+            Err(guardian_module_sdk::ModuleError::Unavailable(
+                "no answer".into(),
+            ))
+        }
+
+        async fn validate_params(
+            &self,
+            _: &[u8],
+        ) -> Result<guardian_module_sdk::ParamsVerdict, guardian_module_sdk::ModuleError> {
+            Ok(guardian_module_sdk::ParamsVerdict::ok())
+        }
+
+        async fn evaluate(
+            &self,
+            _: &HookRequest,
+        ) -> Result<guardian_module_sdk::Decision, guardian_module_sdk::ModuleError> {
+            Ok(guardian_module_sdk::Decision::allow())
+        }
+    }
+
+    #[tokio::test]
+    async fn probes_a_module_does_not_answer_count_toward_its_breaker() {
+        let pipeline = ModulePipeline::from_instances(vec![instance(
+            "screening",
+            &[HOOK],
+            OnError::Deny,
+            Arc::new(Undescribed),
+        )])
+        .with_limits(Limits {
+            breaker_failures: 2,
+            ..Limits::default()
+        });
+        pipeline.probe().await;
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Closed);
+        pipeline.probe().await;
+        assert_eq!(
+            pipeline.breakers().state("screening"),
+            CircuitState::Open,
+            "no request had to find the module down"
+        );
     }
 
     #[tokio::test]

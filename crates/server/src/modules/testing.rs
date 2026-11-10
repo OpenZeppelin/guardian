@@ -323,8 +323,8 @@ impl super::store::ModuleStore for RacingStore {
         self.inner.account_params(account_id).await
     }
 
-    async fn all_account_params(&self) -> Result<Vec<super::store::AccountParamsRow>, String> {
-        self.inner.all_account_params().await
+    async fn account_modules(&self) -> Result<Vec<super::store::AccountModule>, String> {
+        self.inner.account_modules().await
     }
 
     async fn seed_assignment(

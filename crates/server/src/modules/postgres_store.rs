@@ -9,8 +9,8 @@ use diesel_async::scoped_futures::ScopedFutureExt;
 use diesel_async::{AsyncConnection, AsyncPgConnection, RunQueryDsl};
 
 use super::store::{
-    AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleSnapshot, ModuleStore,
-    ParamsKind, assignment_changes,
+    AccountModule, AccountParamsRow, Assigned, Change, HistoryEntry, InstanceRow, ModuleSnapshot,
+    ModuleStore, ParamsKind, assignment_changes,
 };
 
 pub struct PgModuleStore {
@@ -449,16 +449,33 @@ impl ModuleStore for PgModuleStore {
         })
     }
 
-    async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String> {
+    async fn account_modules(&self) -> Result<Vec<AccountModule>, String> {
+        #[derive(QueryableByName)]
+        struct AccountModuleSql {
+            #[diesel(sql_type = Text)]
+            account_id: String,
+            #[diesel(sql_type = Text)]
+            module_id: String,
+            #[diesel(sql_type = Text)]
+            kind: String,
+        }
         let mut conn = self.conn().await?;
-        let rows: Vec<AccountParamsSql> = diesel::sql_query(
-            "SELECT account_id, module_id, kind, position, params, updated_at, updated_by \
-             FROM module_account_params ORDER BY account_id, position, module_id",
+        let rows: Vec<AccountModuleSql> = diesel::sql_query(
+            "SELECT account_id, module_id, kind FROM module_account_params \
+             ORDER BY account_id, position, module_id",
         )
         .load(&mut conn)
         .await
-        .map_err(|e| format!("all account module params: {e}"))?;
-        rows.into_iter().map(account_params_row).collect()
+        .map_err(|e| format!("account modules: {e}"))?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(AccountModule {
+                    account_id: row.account_id,
+                    module_id: row.module_id,
+                    kind: ParamsKind::parse(&row.kind)?,
+                })
+            })
+            .collect()
     }
 
     async fn set_layer(

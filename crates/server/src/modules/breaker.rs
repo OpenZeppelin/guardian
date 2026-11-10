@@ -113,6 +113,17 @@ impl Breakers {
         });
     }
 
+    /// A health probe found the module answering `Describe` with a protocol version, a required
+    /// capability or a hook set this Guardian cannot work with. Its decisions are not trusted
+    /// from here on, whatever it answered before: the breaker opens at once and stays open
+    /// until a probe passes again.
+    pub fn probe_incompatible(&self, instance: &str) {
+        self.update(instance, |breaker| {
+            breaker.state = CircuitState::Open;
+            breaker.trial_in_flight = false;
+        });
+    }
+
     /// A health probe succeeded: an open breaker lets the next real call through, and a
     /// half-open one whose trial never reported back (its request was dropped) lets another.
     pub fn probe_succeeded(&self, instance: &str) {
@@ -199,6 +210,16 @@ mod tests {
         breakers.probe_succeeded("m");
         breakers.answered("m");
         assert_eq!(breakers.state("m"), CircuitState::Closed);
+    }
+
+    #[test]
+    fn an_incompatible_probe_opens_a_closed_breaker_until_a_probe_passes() {
+        let breakers = Breakers::new(5);
+        breakers.probe_incompatible("m");
+        assert_eq!(breakers.state("m"), CircuitState::Open);
+        assert!(!breakers.admit("m", Caller::Request));
+        breakers.probe_succeeded("m");
+        assert!(breakers.admit("m", Caller::Request));
     }
 
     #[test]

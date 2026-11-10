@@ -766,7 +766,7 @@ mod tests {
                 "blocklist",
                 &hooks,
                 Arc::new(BasicPolicy),
-                json!({ "recipient_denylist": ["0xaaa"] }),
+                json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
             ),
             optional,
             secret,
@@ -925,7 +925,7 @@ mod tests {
             &operator(),
             ACCOUNT,
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0xbbb"] })),
+            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
             "OP-1",
             None,
         )
@@ -994,6 +994,18 @@ mod tests {
                 .unwrap(),
             (1, 0)
         );
+
+        set_assignment(&state, &operator(), ACCOUNT, Vec::new(), "OP-2", None)
+            .await
+            .expect("removing the assignment brings the account back under the budget");
+        let modules = state.modules.as_ref().unwrap();
+        assert_eq!(modules.assignment_report(), (1, 0), "not recounted yet");
+        modules.refresh_assignment_report().await;
+        assert_eq!(
+            modules.assignment_report(),
+            (0, 0),
+            "the recount follows the operator's fix, so the alarm clears"
+        );
     }
 
     #[tokio::test]
@@ -1017,7 +1029,7 @@ mod tests {
             &operator(),
             "0xAcC",
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0xbbb"] })),
+            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
             "OP-1",
             None,
         )
@@ -1055,7 +1067,7 @@ mod tests {
             .set_layer(
                 ACCOUNT,
                 "optional",
-                Some(json!({ "recipient_denylist": ["0xbbb"] })),
+                Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
                 &Change {
                     operator: "0xop",
                     reason: "written while optional applied to every account",
@@ -1177,7 +1189,7 @@ mod tests {
             &operator(),
             ACCOUNT,
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0xbbb"] })),
+            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000bbb"] })),
             "OP-2",
             None,
         )
@@ -1202,7 +1214,7 @@ mod tests {
             &state,
             &operator,
             "blocklist",
-            json!({ "recipient_denylist": ["0xaaa", "0xddd"] }),
+            json!({ "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] }),
             "OP-90",
             None,
         )
@@ -1213,7 +1225,7 @@ mod tests {
             &operator,
             ACCOUNT,
             "blocklist",
-            Some(json!({ "recipient_denylist": ["0xccc"] })),
+            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000ccc"] })),
             "OP-91",
             None,
         )
@@ -1222,11 +1234,13 @@ mod tests {
         let entry = &view.modules[0];
         assert_eq!(
             entry.global_params,
-            Some(json!({ "recipient_denylist": ["0xaaa", "0xddd"] }))
+            Some(
+                json!({ "recipient_denylist": ["0x000000000000000000000000000aaa", "0x000000000000000000000000000ddd"] })
+            )
         );
         assert_eq!(
             entry.account_layer,
-            Some(json!({ "recipient_denylist": ["0xccc"] }))
+            Some(json!({ "recipient_denylist": ["0x000000000000000000000000000ccc"] }))
         );
 
         let history = history(&state, "blocklist", None, None)
@@ -1250,7 +1264,7 @@ mod tests {
                 &state,
                 &operator(),
                 "blocklist",
-                json!({ "recipient_denylist": [format!("0x{n}")] }),
+                json!({ "recipient_denylist": [format!("0x{n:030x}")] }),
                 &format!("OP-{n}"),
                 None,
             )
@@ -1378,7 +1392,7 @@ mod tests {
             .seed_instance(
                 "blocklist",
                 true,
-                &json!({ "recipient_denylist": ["0xaaa"] }),
+                &json!({ "recipient_denylist": ["0x000000000000000000000000000aaa"] }),
                 "t0",
             )
             .await
@@ -1423,7 +1437,7 @@ mod tests {
             ACCOUNT,
             vec![Assigned {
                 module_id: "optional".into(),
-                params: json!({ "recipient_denylist": ["0xeee"] }),
+                params: json!({ "recipient_denylist": ["0x000000000000000000000000000eee"] }),
             }],
             "customer request",
             None,

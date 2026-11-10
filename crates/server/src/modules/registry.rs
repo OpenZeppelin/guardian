@@ -253,24 +253,50 @@ pub async fn check(
     Ok(Checked { info, params })
 }
 
+/// Why a module failed [`describe_healthy`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unhealthy {
+    /// `Describe` did not answer: the module may be down.
+    Unreachable(String),
+    /// `Describe` answered with something this Guardian cannot work with, so the module's
+    /// decisions cannot be trusted either.
+    Incompatible(String),
+}
+
+impl std::fmt::Display for Unhealthy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Unhealthy::Unreachable(detail) | Unhealthy::Incompatible(detail) => {
+                write!(f, "{detail}")
+            }
+        }
+    }
+}
+
+impl From<Unhealthy> for String {
+    fn from(unhealthy: Unhealthy) -> Self {
+        unhealthy.to_string()
+    }
+}
+
 /// `Describe` under the instance's timeout, refused when the module speaks a protocol version
 /// outside the supported range, requires a capability this Guardian lacks, or no longer supports
 /// a configured hook. The startup checks and the periodic health probe share it.
 pub async fn describe_healthy(
     config: &InstanceConfig,
     module: &Arc<dyn Module>,
-) -> Result<ModuleInfo, String> {
+) -> Result<ModuleInfo, Unhealthy> {
     let describing = module.clone();
     let info = isolated(config.timeout, async move {
         describing.describe(&describe_request()).await
     })
     .await
-    .map_err(|e| format!("describe {e}"))?;
+    .map_err(|e| Unhealthy::Unreachable(format!("describe {e}")))?;
     if !(MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&info.protocol_version) {
-        return Err(format!(
+        return Err(Unhealthy::Incompatible(format!(
             "unsupported protocol version {}; this Guardian accepts {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}",
             info.protocol_version
-        ));
+        )));
     }
     if info.protocol_version < PROTOCOL_VERSION {
         tracing::warn!(module = %config.id, protocol_version = info.protocol_version, current = PROTOCOL_VERSION, "Module speaks a deprecated protocol version");
@@ -280,13 +306,15 @@ pub async fn describe_healthy(
         .iter()
         .find(|required| !CAPABILITIES.contains(&required.as_str()))
     {
-        return Err(format!(
+        return Err(Unhealthy::Incompatible(format!(
             "module requires capability {missing}, which this Guardian does not provide"
-        ));
+        )));
     }
     for hook in &config.hooks {
         if !info.hooks.contains(&(hook.proto() as i32)) {
-            return Err(format!("module does not support hook {hook:?}"));
+            return Err(Unhealthy::Incompatible(format!(
+                "module does not support hook {hook:?}"
+            )));
         }
     }
     Ok(info)

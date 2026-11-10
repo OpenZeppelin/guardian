@@ -52,6 +52,14 @@ pub struct AccountParamsRow {
     pub updated_by: String,
 }
 
+/// One row of an account, without its params: which module it names and how.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountModule {
+    pub account_id: String,
+    pub module_id: String,
+    pub kind: ParamsKind,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HistoryEntry {
     pub version: u64,
@@ -136,8 +144,10 @@ pub trait ModuleStore: Send + Sync {
         cached_version: Option<u64>,
     ) -> Result<ModuleSnapshot, String>;
 
-    /// Every account's rows, ordered by account and position; a startup scan, not a hot path.
-    async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String>;
+    /// Which module every account row names, ordered by account. A scan for the budget and
+    /// orphan report, never read on a request path; it carries no params, which are copied per
+    /// account and can be large.
+    async fn account_modules(&self) -> Result<Vec<AccountModule>, String>;
 
     async fn set_layer(
         &self,
@@ -466,11 +476,17 @@ impl ModuleStore for FsModuleStore {
         }))
     }
 
-    async fn all_account_params(&self) -> Result<Vec<AccountParamsRow>, String> {
+    async fn account_modules(&self) -> Result<Vec<AccountModule>, String> {
         Ok(self.read(|tables| {
-            let mut rows = tables.account_params.clone();
+            let mut rows: Vec<&AccountParamsRow> = tables.account_params.iter().collect();
             rows.sort_by(|a, b| (&a.account_id, a.position).cmp(&(&b.account_id, b.position)));
-            rows
+            rows.into_iter()
+                .map(|row| AccountModule {
+                    account_id: row.account_id.clone(),
+                    module_id: row.module_id.clone(),
+                    kind: row.kind,
+                })
+                .collect()
         }))
     }
 
