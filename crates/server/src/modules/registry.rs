@@ -1,6 +1,6 @@
 //! Module kinds and instance creation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use guardian_module_sdk::basic_policy::{self, BasicPolicy};
@@ -33,6 +33,9 @@ impl ModuleFactory for BasicPolicyFactory {
 pub struct Instantiated {
     pub instances: Vec<Instance>,
     pub normalized: HashMap<String, serde_json::Value>,
+    /// Enabled instances whose module did not answer its startup checks and that start
+    /// unavailable: their checks run again on each health probe.
+    pub unreachable: HashSet<String>,
 }
 
 pub struct Registry {
@@ -70,15 +73,23 @@ impl Registry {
 
     /// Creates every instance and checks it against the params that will apply (`effective`,
     /// keyed by instance id; the catalog's when absent). An enabled instance that cannot be
-    /// created, is unsupported, unreachable or misconfigured stops startup; a disabled one is
-    /// logged and kept disabled.
+    /// created, is unsupported or misconfigured stops startup; a disabled one is logged and
+    /// kept disabled.
+    ///
+    /// An enabled instance whose module does not answer starts unavailable when it is `known`
+    /// (it ran on an earlier start), so a module's outage does not keep the Guardian from
+    /// restarting: its accounts follow `on_error` until a health probe passes the checks. One
+    /// that is new to this Guardian must answer, so a wrong endpoint in a new catalog entry is
+    /// found when it is deployed.
     pub async fn instantiate(
         &self,
         catalog: &Catalog,
         effective: &HashMap<String, serde_json::Value>,
+        known: &HashSet<String>,
     ) -> Result<Instantiated, String> {
         let mut instances = Vec::with_capacity(catalog.instances.len());
         let mut normalized = HashMap::new();
+        let mut unreachable = HashSet::new();
         for config in &catalog.instances {
             let mut config = config.clone();
             let params = effective.get(&config.id).unwrap_or(&config.params);
@@ -87,7 +98,7 @@ impl Registry {
                     .await
                     .map(|checked| (module.clone(), checked))
                     .map_err(|error| (error, Some(module))),
-                Err(error) => Err((error, None)),
+                Err(error) => Err((Unhealthy::Incompatible(error), None)),
             };
             let (module, build) = match ready {
                 Ok((module, checked)) => {
@@ -99,13 +110,23 @@ impl Registry {
                         Some(format!("{} {}", checked.info.name, checked.info.version)),
                     )
                 }
+                Err((Unhealthy::Unreachable(error), Some(module)))
+                    if config.enabled && known.contains(&config.id) =>
+                {
+                    tracing::warn!(module = %config.id, %error, "Enabled module did not answer its startup checks; it starts unavailable and its accounts follow on_error until a health probe passes");
+                    unreachable.insert(config.id.clone());
+                    (module, None)
+                }
                 Err((error, _)) if config.enabled => {
                     return Err(format!("module {}: {error}", config.id));
                 }
                 Err((error, module)) => {
                     tracing::warn!(module = %config.id, %error, "Disabled module failed its startup checks");
                     config.enabled = false;
-                    (module.unwrap_or_else(|| Arc::new(Unavailable(error))), None)
+                    (
+                        module.unwrap_or_else(|| Arc::new(Unavailable(error.to_string()))),
+                        None,
+                    )
                 }
             };
             instances.push(Instance {
@@ -117,6 +138,7 @@ impl Registry {
         Ok(Instantiated {
             instances,
             normalized,
+            unreachable,
         })
     }
 
@@ -247,26 +269,45 @@ pub async fn check(
     config: &InstanceConfig,
     module: &Arc<dyn Module>,
     params: &serde_json::Value,
-) -> Result<Checked, String> {
+) -> Result<Checked, Unhealthy> {
     let info = describe_healthy(config, module).await?;
     let params = validate_params(module, params, config.timeout).await?;
     Ok(Checked { info, params })
 }
 
-/// Why a module failed [`describe_healthy`].
+/// Why a module failed its checks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Unhealthy {
-    /// `Describe` did not answer: the module may be down.
+    /// The module did not answer: it may be down.
     Unreachable(String),
-    /// `Describe` answered with something this Guardian cannot work with, so the module's
-    /// decisions cannot be trusted either.
+    /// The module answered, but with something this Guardian cannot work with (it refused the
+    /// call, or speaks another protocol version, requires a capability this Guardian lacks or
+    /// no longer supports a configured hook), so its decisions cannot be trusted either.
     Incompatible(String),
+    /// The module refuses the params that would apply to it.
+    InvalidParams(String),
+}
+
+impl Unhealthy {
+    /// A call that produced no result: no answer in time, or the module reporting itself
+    /// unavailable, is unreachable; anything else is an answer this Guardian cannot use.
+    fn call(name: &str, error: CallError) -> Self {
+        let detail = format!("{name} {error}");
+        match error {
+            CallError::Timeout | CallError::Module(ModuleError::Unavailable(_)) => {
+                Unhealthy::Unreachable(detail)
+            }
+            CallError::Module(_) | CallError::Panicked(_) => Unhealthy::Incompatible(detail),
+        }
+    }
 }
 
 impl std::fmt::Display for Unhealthy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Unhealthy::Unreachable(detail) | Unhealthy::Incompatible(detail) => {
+            Unhealthy::Unreachable(detail)
+            | Unhealthy::Incompatible(detail)
+            | Unhealthy::InvalidParams(detail) => {
                 write!(f, "{detail}")
             }
         }
@@ -291,7 +332,7 @@ pub async fn describe_healthy(
         describing.describe(&describe_request()).await
     })
     .await
-    .map_err(|e| Unhealthy::Unreachable(format!("describe {e}")))?;
+    .map_err(|e| Unhealthy::call("describe", e))?;
     if !(MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION).contains(&info.protocol_version) {
         return Err(Unhealthy::Incompatible(format!(
             "unsupported protocol version {}; this Guardian accepts {MIN_PROTOCOL_VERSION} to {PROTOCOL_VERSION}",
@@ -327,24 +368,29 @@ pub async fn validate_params(
     module: &Arc<dyn Module>,
     params: &serde_json::Value,
     timeout: std::time::Duration,
-) -> Result<serde_json::Value, String> {
-    let bytes = serde_json::to_vec(params).map_err(|e| e.to_string())?;
+) -> Result<serde_json::Value, Unhealthy> {
+    let bytes = serde_json::to_vec(params).map_err(|e| Unhealthy::InvalidParams(e.to_string()))?;
     let validating = module.clone();
     let verdict = isolated(
         timeout,
         async move { validating.validate_params(&bytes).await },
     )
     .await
-    .map_err(|e| format!("validate_params {e}"))?;
+    .map_err(|e| Unhealthy::call("validate_params", e))?;
     if !verdict.ok {
-        return Err(format!("invalid params: {}", verdict.message));
+        return Err(Unhealthy::InvalidParams(format!(
+            "invalid params: {}",
+            verdict.message
+        )));
     }
     if verdict.normalized_params.is_empty() {
         return Ok(params.clone());
     }
     match serde_json::from_slice::<serde_json::Value>(&verdict.normalized_params) {
         Ok(normalized) if normalized.is_object() => Ok(normalized),
-        _ => Err("normalized params are not a JSON object".into()),
+        _ => Err(Unhealthy::Incompatible(
+            "normalized params are not a JSON object".into(),
+        )),
     }
 }
 
@@ -384,6 +430,7 @@ enabled = ENABLED
                 .instantiate(
                     &catalog(&entry.replace("ENABLED", "false")),
                     &HashMap::new(),
+                    &HashSet::new(),
                 )
                 .await
                 .expect("a disabled instance does not block startup")
@@ -397,7 +444,11 @@ enabled = ENABLED
     async fn enabled_instances_that_cannot_be_created_stop_startup() {
         for entry in [UNKNOWN_KIND, BAD_ENDPOINT] {
             let result = Registry::first_party()
-                .instantiate(&catalog(&entry.replace("ENABLED", "true")), &HashMap::new())
+                .instantiate(
+                    &catalog(&entry.replace("ENABLED", "true")),
+                    &HashMap::new(),
+                    &HashSet::new(),
+                )
                 .await;
             assert!(result.is_err());
         }
@@ -414,7 +465,7 @@ enabled = ENABLED
         }
         let built_in = include_str!("../../../../docs/guides/policy-modules/built-in.toml");
         let unedited = Registry::first_party()
-            .instantiate(&catalog(built_in), &HashMap::new())
+            .instantiate(&catalog(built_in), &HashMap::new(), &HashSet::new())
             .await
             .err()
             .expect("the guide catalog does not start until its placeholder is replaced");
@@ -424,7 +475,7 @@ enabled = ENABLED
             "0x0a1b2c3d4e5f60718293a4b5c6d7e8",
         );
         let instances = Registry::first_party()
-            .instantiate(&catalog(&edited), &HashMap::new())
+            .instantiate(&catalog(&edited), &HashMap::new(), &HashSet::new())
             .await
             .expect("the built-in guide catalog passes the startup checks")
             .instances;
@@ -463,7 +514,7 @@ timeout_ms = 50
             .register("house-policy", Arc::new(StubFactory))
             .unwrap();
         let instances = registry
-            .instantiate(&catalog(CUSTOM), &HashMap::new())
+            .instantiate(&catalog(CUSTOM), &HashMap::new(), &HashSet::new())
             .await
             .unwrap()
             .instances;
@@ -471,7 +522,7 @@ timeout_ms = 50
         assert!(instances[0].config.enabled);
         assert!(
             Registry::first_party()
-                .instantiate(&catalog(CUSTOM), &HashMap::new())
+                .instantiate(&catalog(CUSTOM), &HashMap::new(), &HashSet::new())
                 .await
                 .is_err(),
             "unregistered, the same catalog stops startup"
@@ -501,7 +552,7 @@ timeout_ms = 50
             .register("house-policy", Arc::new(PanickingFactory))
             .unwrap();
         let error = registry
-            .instantiate(&catalog(CUSTOM), &HashMap::new())
+            .instantiate(&catalog(CUSTOM), &HashMap::new(), &HashSet::new())
             .await
             .err()
             .unwrap();
@@ -541,7 +592,7 @@ params = { old_name = 5 }
             )
             .unwrap();
         registry
-            .instantiate(&catalog(PROTOCOL_CATALOG), &HashMap::new())
+            .instantiate(&catalog(PROTOCOL_CATALOG), &HashMap::new(), &HashSet::new())
             .await
     }
 
@@ -556,7 +607,7 @@ params = { old_name = 5 }
             )
             .unwrap();
         registry
-            .instantiate(&catalog(PROTOCOL_CATALOG), &HashMap::new())
+            .instantiate(&catalog(PROTOCOL_CATALOG), &HashMap::new(), &HashSet::new())
             .await
             .unwrap();
         let sent = stub.described_with.lock().unwrap().clone().unwrap();

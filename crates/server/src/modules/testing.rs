@@ -190,6 +190,59 @@ impl Module for ProtocolStub {
     }
 }
 
+/// Allows every request while up; while `down`, answers nothing, like a module whose host is
+/// gone.
+pub struct Outage {
+    pub down: std::sync::atomic::AtomicBool,
+    pub evaluations: AtomicUsize,
+}
+
+impl Outage {
+    pub fn new(down: bool) -> Arc<Self> {
+        Arc::new(Self {
+            down: std::sync::atomic::AtomicBool::new(down),
+            evaluations: AtomicUsize::new(0),
+        })
+    }
+
+    pub fn set_down(&self, down: bool) {
+        self.down.store(down, Ordering::SeqCst);
+    }
+
+    fn reachable(&self) -> Result<(), ModuleError> {
+        if self.down.load(Ordering::SeqCst) {
+            Err(ModuleError::Unavailable("module host is down".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[async_trait]
+impl Module for Outage {
+    async fn describe(&self, _guardian: &DescribeRequest) -> Result<ModuleInfo, ModuleError> {
+        self.reachable()?;
+        Ok(ModuleInfo {
+            name: "outage-stub".into(),
+            version: "1".into(),
+            protocol_version: PROTOCOL_VERSION,
+            hooks: vec![guardian_module_sdk::Hook::BeforeTransactionApproved as i32],
+            ..Default::default()
+        })
+    }
+
+    async fn validate_params(&self, _params: &[u8]) -> Result<ParamsVerdict, ModuleError> {
+        self.reachable()?;
+        Ok(ParamsVerdict::ok())
+    }
+
+    async fn evaluate(&self, _request: &HookRequest) -> Result<Decision, ModuleError> {
+        self.reachable()?;
+        self.evaluations.fetch_add(1, Ordering::SeqCst);
+        Ok(Decision::allow())
+    }
+}
+
 /// Hands out one prepared module for every instance of its kind.
 pub struct FixedFactory(pub Arc<dyn Module>);
 

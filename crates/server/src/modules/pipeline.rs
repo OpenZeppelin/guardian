@@ -90,6 +90,9 @@ pub struct ModulePipeline {
     seed_drift: HashSet<String>,
     /// Accounts over the budget and orphaned assignment rows, as of the last report.
     assignment_report: std::sync::Mutex<(usize, usize)>,
+    /// Instances that started without passing their startup checks because their module did
+    /// not answer. Each health probe runs the checks again until they pass.
+    unchecked: std::sync::Mutex<HashSet<String>>,
 }
 
 pub(super) type Rows = Arc<HashMap<String, (serde_json::Value, bool)>>;
@@ -208,8 +211,10 @@ impl ModulePipeline {
             .into_iter()
             .map(|row| (row.module_id, (row.global_params, row.enabled)))
             .collect();
+        let known: HashSet<String> = stored.keys().cloned().collect();
         let mut effective = HashMap::new();
         let mut seed_drift = HashSet::new();
+        let mut enabled_by_catalog = Vec::new();
         for config in &mut catalog.instances {
             let Some((params, enabled)) = stored.get(&config.id) else {
                 continue;
@@ -221,10 +226,18 @@ impl ModulePipeline {
             {
                 seed_drift.insert(config.id.clone());
             }
-            if *enabled != config.catalog_enabled {
+            // The stored flag is the switch, with one exception: an instance the catalog
+            // declares enabled and not operator-disableable cannot be left off by a disable
+            // that was allowed under an earlier catalog. Switching it on only tightens policy.
+            let catalog_requires_it =
+                !*enabled && config.catalog_enabled && !config.operator_can_disable;
+            if catalog_requires_it {
+                tracing::warn!(module = %config.id, "Stored flag disables an instance the catalog declares enabled and not operator-disableable; enabling it");
+                enabled_by_catalog.push(config.id.clone());
+            } else if *enabled != config.catalog_enabled {
                 tracing::warn!(module = %config.id, enabled, "Catalog `enabled` differs from the stored runtime flag; the stored flag applies");
             }
-            config.enabled = *enabled;
+            config.enabled = *enabled || catalog_requires_it;
             if !config.file_managed_params && *params != config.params {
                 tracing::warn!(module = %config.id, "Catalog params differ from the operator-managed global params; the stored params apply");
                 effective.insert(config.id.clone(), params.clone());
@@ -233,7 +246,21 @@ impl ModulePipeline {
         let super::registry::Instantiated {
             instances,
             normalized,
-        } = registry.instantiate(&catalog, &effective).await?;
+            unreachable,
+        } = registry.instantiate(&catalog, &effective, &known).await?;
+        for module_id in enabled_by_catalog {
+            store
+                .set_enabled(
+                    &module_id,
+                    true,
+                    &super::store::Change {
+                        operator: "catalog",
+                        reason: "the catalog declares the instance enabled and not operator-disableable",
+                        at: now.clone(),
+                    },
+                )
+                .await?;
+        }
         for config in catalog
             .instances
             .iter()
@@ -288,12 +315,17 @@ impl ModulePipeline {
                 tracing::warn!(module = %instance.config.id, "Global params changed while the module migrated them; kept the newer value, migration retries next start");
             }
         }
+        let breakers = Arc::new(Breakers::new(limits.breaker_failures));
+        for module_id in &unreachable {
+            breakers.hold_open(module_id);
+        }
         Ok(Self {
             instances,
             store,
             cache: RwLock::new(Cache::default()),
             views: Arc::default(),
-            breakers: Arc::new(Breakers::new(limits.breaker_failures)),
+            breakers,
+            unchecked: std::sync::Mutex::new(unreachable),
             limits,
             catalog_hash: catalog.hash,
             network_id,
@@ -326,6 +358,7 @@ impl ModulePipeline {
             network_id: "local",
             seed_drift: HashSet::new(),
             assignment_report: std::sync::Mutex::new((0, 0)),
+            unchecked: std::sync::Mutex::default(),
         }
     }
 
@@ -529,19 +562,47 @@ impl ModulePipeline {
             if !Self::enabled_in(&rows, instance) {
                 continue;
             }
-            let healthy =
-                super::registry::describe_healthy(&instance.config, &instance.module).await;
-            super::metrics::up(&instance.config.id, healthy.is_ok());
             let id = instance.config.id.as_str();
+            let unchecked = self
+                .unchecked
+                .lock()
+                .is_ok_and(|unchecked| unchecked.contains(id));
+            // An instance that started without its startup checks runs all of them here, the
+            // params that apply included, before any call is let through.
+            let healthy = if unchecked {
+                super::registry::check(
+                    &instance.config,
+                    &instance.module,
+                    &Self::global_params_in(&rows, instance),
+                )
+                .await
+                .map(|_| ())
+            } else {
+                super::registry::describe_healthy(&instance.config, &instance.module)
+                    .await
+                    .map(|_| ())
+            };
+            super::metrics::up(id, healthy.is_ok());
             match healthy {
-                Ok(_) => self.breakers.probe_succeeded(id),
+                Ok(()) => {
+                    if unchecked {
+                        if let Ok(mut unchecked) = self.unchecked.lock() {
+                            unchecked.remove(id);
+                        }
+                        tracing::info!(
+                            module = id,
+                            "Policy module passed the startup checks it could not be reached for"
+                        );
+                    }
+                    self.breakers.probe_succeeded(id);
+                }
                 Err(Unhealthy::Unreachable(error)) => {
                     tracing::warn!(module = id, %error, "Policy module health probe failed");
                     self.breakers.failed(id);
                 }
-                Err(Unhealthy::Incompatible(error)) => {
-                    tracing::warn!(module = id, %error, "Policy module is incompatible with this Guardian; its circuit is open until a probe passes");
-                    self.breakers.probe_incompatible(id);
+                Err(Unhealthy::Incompatible(error) | Unhealthy::InvalidParams(error)) => {
+                    tracing::warn!(module = id, %error, "Policy module cannot be used by this Guardian; its circuit is open until a probe passes");
+                    self.breakers.hold_open(id);
                 }
             }
         }
@@ -1450,6 +1511,185 @@ params = { old_name = 5 }
                 "kept the catalog params instead of {normalized}"
             );
         }
+    }
+
+    const OUTAGE_CATALOG: &str = r#"
+[[module]]
+id = "screening"
+kind = "outage-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+"#;
+
+    async fn start_with(
+        module: Arc<crate::modules::testing::Outage>,
+        catalog: &str,
+        store: Arc<dyn ModuleStore>,
+    ) -> Result<ModulePipeline, String> {
+        let mut registry = Registry::first_party();
+        registry
+            .register(
+                "outage-stub",
+                Arc::new(crate::modules::testing::FixedFactory(module)),
+            )
+            .unwrap();
+        ModulePipeline::new(
+            "local",
+            Catalog::parse(catalog, None).unwrap(),
+            &registry,
+            store,
+            "2026-11-10T00:00:00Z".to_string(),
+            crate::modules::limits::Limits::default(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_known_instance_whose_module_is_down_starts_unavailable_and_recovers_on_a_probe() {
+        use std::sync::atomic::Ordering;
+        let module = crate::modules::testing::Outage::new(false);
+        let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
+        start_with(module.clone(), OUTAGE_CATALOG, store.clone())
+            .await
+            .expect("the first start passes the checks and makes the instance known");
+
+        module.set_down(true);
+        let pipeline = start_with(module.clone(), OUTAGE_CATALOG, store)
+            .await
+            .expect("a module outage does not keep the Guardian from restarting");
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Open);
+        assert!(
+            matches!(
+                run(&pipeline).await,
+                Err(GuardianError::ModuleUnavailable { .. })
+            ),
+            "its accounts are refused meanwhile, not approved"
+        );
+
+        pipeline.probe().await;
+        assert_eq!(
+            pipeline.breakers().state("screening"),
+            CircuitState::Open,
+            "still down"
+        );
+
+        module.set_down(false);
+        pipeline.probe().await;
+        assert_eq!(
+            pipeline.breakers().state("screening"),
+            CircuitState::HalfOpen
+        );
+        run(&pipeline).await.expect("the module decides again");
+        assert_eq!(pipeline.breakers().state("screening"), CircuitState::Closed);
+        assert_eq!(module.evaluations.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn an_instance_new_to_this_guardian_must_answer_at_startup() {
+        let module = crate::modules::testing::Outage::new(true);
+        let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
+        let refused = start_with(module, OUTAGE_CATALOG, store.clone())
+            .await
+            .err()
+            .expect("a wrong endpoint in a new catalog entry is found at deploy time");
+        assert!(refused.contains("screening"), "{refused}");
+        assert!(store.instances().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_known_instance_that_answers_incompatibly_still_stops_startup() {
+        use crate::modules::testing::{FixedFactory, ProtocolStub};
+        const CATALOG: &str = r#"
+[[module]]
+id = "screening"
+kind = "protocol-stub"
+scope = "all"
+hooks = ["before_transaction_approved"]
+timeout_ms = 50
+"#;
+        let start = |protocol_version: u32, store: Arc<dyn ModuleStore>| async move {
+            let mut stub = ProtocolStub::new();
+            stub.protocol_version = protocol_version;
+            let mut registry = Registry::first_party();
+            registry
+                .register("protocol-stub", Arc::new(FixedFactory(Arc::new(stub))))
+                .unwrap();
+            ModulePipeline::new(
+                "local",
+                Catalog::parse(CATALOG, None).unwrap(),
+                &registry,
+                store,
+                "2026-11-10T00:00:00Z".to_string(),
+                crate::modules::limits::Limits::default(),
+            )
+            .await
+        };
+        let store: Arc<dyn ModuleStore> = Arc::new(super::super::store::FsModuleStore::in_memory());
+        start(guardian_module_sdk::PROTOCOL_VERSION, store.clone())
+            .await
+            .unwrap();
+        assert!(
+            start(guardian_module_sdk::PROTOCOL_VERSION + 1, store)
+                .await
+                .is_err(),
+            "only a module that does not answer may start unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_instance_the_catalog_requires_is_enabled_at_startup() {
+        let disabled_in_store = || async {
+            let store: Arc<dyn ModuleStore> =
+                Arc::new(super::super::store::FsModuleStore::in_memory());
+            store
+                .seed_instance("screening", false, &serde_json::json!({}), "t0")
+                .await
+                .unwrap();
+            store
+        };
+
+        let store = disabled_in_store().await;
+        let pipeline = start_with(
+            crate::modules::testing::Outage::new(false),
+            OUTAGE_CATALOG,
+            store.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            store.instances().await.unwrap()[0].enabled,
+            "enabled and not operator-disableable in the catalog: a stored disable does not stand"
+        );
+        let history = store.history("screening", None, 10).await.unwrap();
+        assert_eq!(history[0].operator, "catalog");
+        assert_eq!(history[0].new, serde_json::json!({ "enabled": true }));
+        assert!(
+            pipeline
+                .applies(HookName::BeforeTransactionApproved, "0xacc")
+                .await
+                .unwrap()
+        );
+
+        let store = disabled_in_store().await;
+        let disableable = format!("{OUTAGE_CATALOG}operator_can_disable = true\n");
+        let pipeline = start_with(
+            crate::modules::testing::Outage::new(false),
+            &disableable,
+            store.clone(),
+        )
+        .await
+        .unwrap();
+        assert!(
+            !store.instances().await.unwrap()[0].enabled,
+            "an operator may hold a disableable instance off, so the stored flag stands"
+        );
+        assert!(
+            !pipeline
+                .applies(HookName::BeforeTransactionApproved, "0xacc")
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
