@@ -1,7 +1,6 @@
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{Credentials, RequestAuthFormat};
-use crate::modules::request::StateRef;
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{
     ProposalMatch, Submitter, acknowledge_applied, apply_to_base, lookup_matching_proposal,
@@ -212,10 +211,6 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let acknowledged = acknowledge_applied(
         state,
         &scheme,
-        StateRef {
-            commitment: &tail.commitment,
-            json: &tail.state_json,
-        },
         &params.delta,
         applied,
         Submitter {
@@ -2201,6 +2196,21 @@ mod tests {
         String,
         MockNetworkClient,
     ) {
+        push_on_projected(module, Some(projection), proposal).await
+    }
+
+    /// [`push_on`] where the network decodes the transaction to `projection`, or fails to
+    /// project it when `None`.
+    async fn push_on_projected(
+        module: Option<crate::modules::registry::Instance>,
+        projection: Option<guardian_module_sdk::MidenTransaction>,
+        proposal: impl FnOnce(&str) -> std::result::Result<DeltaObject, String>,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        String,
+        MockNetworkClient,
+    ) {
         use crate::delta_object::DeltaStatus;
         use crate::modules::testing::pipeline;
         use crate::state_object::StateObject;
@@ -2235,8 +2245,11 @@ mod tests {
                     signer_commitments: vec![signer_commitment.clone()],
                     ..Default::default()
                 },
-                projection,
+                projection.clone().unwrap_or_default(),
             );
+        if projection.is_none() {
+            *network.module_projection.lock().unwrap() = None;
+        }
         let metadata = MockMetadataStore::new().with_get(Ok(Some(AccountMetadata {
             account_id: account_id.clone(),
             auth: Auth::MidenFalconRpo {
@@ -2303,13 +2316,58 @@ mod tests {
             stored_proposal_labelled("p2id"),
         )
         .await;
-        assert!(
+        assert_eq!(
             gated
                 .module_decodes
-                .load(std::sync::atomic::Ordering::SeqCst)
-                > 0,
-            "the same push with a module does build them"
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "the same push with a module builds both views and the projection, once each"
         );
+        let (_, _, _, elsewhere) = push_on(
+            Some(crate::modules::testing::instance(
+                "proposals-only",
+                &[HookName::BeforeProposalCreated],
+                crate::modules::catalog::OnError::Deny,
+                crate::modules::testing::StubModule::allowing(),
+            )),
+            paying(500),
+            stored_proposal_labelled("p2id"),
+        )
+        .await;
+        assert_eq!(
+            elsewhere
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "a module on another hook builds nothing for a push"
+        );
+    }
+
+    /// A transaction the network cannot project for the modules is a module failure, so the
+    /// instance's `on_error` decides, never a hard error of the push.
+    #[tokio::test]
+    async fn a_transaction_that_cannot_be_projected_is_decided_by_on_error() {
+        let (refused, storage, _, _) =
+            push_on_projected(Some(cap_of_1000()), None, stored_proposal_labelled("p2id")).await;
+        assert!(
+            matches!(refused, Err(GuardianError::ModuleUnavailable { .. })),
+            "{refused:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+
+        let mut lenient = cap_of_1000();
+        lenient.config.on_error = crate::modules::catalog::OnError::Allow;
+        let (allowed, _, _, _) =
+            push_on_projected(Some(lenient), None, stored_proposal_labelled("p2id")).await;
+        let failed_open = allowed
+            .expect("on_error = allow lets the push through")
+            .delta
+            .metadata
+            .and_then(|metadata| metadata.modules)
+            .expect("the approval is recorded")
+            .failed_open;
+        assert_eq!(failed_open.len(), 1);
+        assert_eq!(failed_open[0].failure, "request_unavailable");
     }
 
     const USDC: &str = "0x00000000000000000000000000aa00";

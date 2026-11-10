@@ -261,7 +261,6 @@ impl ModulePipeline {
             instances,
             store,
             cache: RwLock::new(Cache::default()),
-            views: Arc::default(),
             breakers,
             unchecked: std::sync::Mutex::new(unreachable),
             limits,

@@ -13,7 +13,6 @@ use std::sync::{Arc, RwLock};
 use super::breaker::{Breakers, Caller};
 use super::limits::Limits;
 use super::registry::{CallError, Instance, isolated};
-use super::request::ViewCache;
 use super::store::{AccountParamsRow, Assigned, ModuleStore, ParamsKind};
 use crate::delta_summary::FailedOpen;
 use crate::error::GuardianError;
@@ -88,7 +87,6 @@ pub struct ModulePipeline {
     instances: Vec<Instance>,
     store: Arc<dyn ModuleStore>,
     cache: RwLock<Cache>,
-    views: Arc<ViewCache>,
     limits: Limits,
     breakers: Arc<Breakers>,
     pub catalog_hash: String,
@@ -128,7 +126,6 @@ pub struct Plan<'a> {
     catalog_hash: String,
     params_version: u64,
     account_params_version: u64,
-    views: Arc<ViewCache>,
     limits: Limits,
     breakers: Arc<Breakers>,
     /// A policy check: every request says so, and nothing is stored whatever the decision.
@@ -203,7 +200,6 @@ impl ModulePipeline {
             instances,
             store,
             cache: RwLock::new(Cache::default()),
-            views: Arc::default(),
             limits: Limits::default(),
             breakers: Arc::new(Breakers::new(Limits::default().breaker_failures)),
             catalog_hash: String::new(),
@@ -480,7 +476,6 @@ impl ModulePipeline {
             catalog_hash: self.catalog_hash.clone(),
             params_version,
             account_params_version,
-            views: self.views.clone(),
             limits: self.limits,
             breakers: self.breakers.clone(),
             dry_run: false,
@@ -559,11 +554,6 @@ impl Plan<'_> {
         self.network_id
     }
 
-    /// The replica's account view cache, for building this plan's request.
-    pub fn views(&self) -> Arc<ViewCache> {
-        self.views.clone()
-    }
-
     /// Runs the planned modules in order and returns the configuration they ran with. If
     /// `build` fails, every module counts as failed and its `on_error` applies.
     pub async fn run(
@@ -578,7 +568,6 @@ impl Plan<'_> {
             catalog_hash,
             params_version,
             account_params_version,
-            views: _,
             limits,
             breakers,
             dry_run,

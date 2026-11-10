@@ -302,6 +302,14 @@ impl MidenNetworkClient {
         Ok(account)
     }
 
+    /// The chain fee [`NetworkClient::load_fee_faucet`] last loaded, if any.
+    fn chain_fee(&self) -> Option<module_views::ChainFee> {
+        self.fee
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(fee, _)| *fee))
+    }
+
     fn ensure_prev_commitment(account: &Account, prev_commitment: &str) -> Result<(), String> {
         let current_commitment = account.to_commitment();
         let current_commitment_hex = format!("0x{}", hex::encode(current_commitment.as_bytes()));
@@ -575,24 +583,30 @@ impl NetworkClient for MidenNetworkClient {
         Self::apply_summary(Ok(account), &tx_summary)
     }
 
-    fn apply_delta_with_module_views(
+    fn apply_delta_with_module_inputs(
         &self,
         prev_commitment: Option<&str>,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
-    ) -> Result<(AppliedState, crate::network::ModuleViews), String> {
+    ) -> Result<(AppliedState, crate::network::ModuleInputs), String> {
         let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account = Account::from_json(prev_state_json)?;
         if let Some(prev_commitment) = prev_commitment {
             Self::ensure_prev_commitment(&account, prev_commitment)?;
         }
         let before = module_views::module_account_of(&account);
+        let transaction = module_views::module_transaction_of(
+            &tx_summary,
+            account.nonce().as_canonical_u64(),
+            self.chain_fee(),
+        );
         let applied = Self::applied_account(Ok(account), &tx_summary)?;
-        let views = crate::network::ModuleViews {
+        let inputs = crate::network::ModuleInputs {
             before,
             after: module_views::module_account_of(&applied),
+            transaction,
         };
-        Ok((Self::applied_state(&applied), views))
+        Ok((Self::applied_state(&applied), inputs))
     }
 
     fn merge_deltas(
@@ -971,17 +985,28 @@ impl NetworkClient for MidenNetworkClient {
         module_views::account_state(state_json)
     }
 
+    fn module_account_inputs(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> crate::network::ModuleAccountInputs {
+        match Account::from_json(state_json) {
+            Ok(account) => crate::network::ModuleAccountInputs {
+                view: module_views::module_account_of(&account),
+                state: module_views::account_state_of(&account),
+            },
+            Err(error) => crate::network::ModuleAccountInputs {
+                view: Err(error.clone()),
+                state: Err(error),
+            },
+        }
+    }
+
     fn module_transaction(
         &self,
         tx_summary: &serde_json::Value,
         initial_nonce: u64,
     ) -> Result<crate::network::ModuleTransaction, String> {
-        let fee = self
-            .fee
-            .read()
-            .ok()
-            .and_then(|fee| fee.as_ref().map(|(fee, _)| *fee));
-        module_views::module_transaction(tx_summary, initial_nonce, fee)
+        module_views::module_transaction(tx_summary, initial_nonce, self.chain_fee())
     }
 
     async fn load_fee_faucet(&self) -> Result<(), String> {
@@ -2403,7 +2428,7 @@ mod tests {
         );
 
         let (applied, views) = client
-            .apply_delta_with_module_views(Some(&prev_commitment), &account_json, delta_payload)
+            .apply_delta_with_module_inputs(Some(&prev_commitment), &account_json, delta_payload)
             .unwrap();
         assert_eq!(
             applied,
@@ -2413,16 +2438,25 @@ mod tests {
         );
         assert!(views.before.is_ok());
         assert_eq!(views.before, client.module_account_view(&account_json));
+        assert_eq!(
+            views.transaction,
+            client.module_transaction(delta_payload, views.before.as_ref().unwrap().nonce),
+            "the projection from the apply decode is the one a separate decode builds"
+        );
         // The fixture delta adds an approver key without its scheme entry, which the standard
         // multisig always writes, so both paths must refuse the resulting view alike.
         assert_eq!(views.after, client.module_account_view(&applied.state_json));
         let (unverified, _) = client
-            .apply_delta_with_module_views(None, &account_json, delta_payload)
+            .apply_delta_with_module_inputs(None, &account_json, delta_payload)
             .unwrap();
         assert_eq!(unverified, applied);
         assert!(
             client
-                .apply_delta_with_module_views(Some("0xnot_the_base"), &account_json, delta_payload)
+                .apply_delta_with_module_inputs(
+                    Some("0xnot_the_base"),
+                    &account_json,
+                    delta_payload
+                )
                 .is_err()
         );
     }
@@ -2623,7 +2657,7 @@ mod tests {
                 .map(|_| ()),
             client.verify_delta(&stored_commitment, &stored_json, &payload),
             client
-                .apply_delta_with_module_views(Some(&stored_commitment), &stored_json, &payload)
+                .apply_delta_with_module_inputs(Some(&stored_commitment), &stored_json, &payload)
                 .map(|_| ()),
             client.apply_delta(&stored_json, &payload).map(|_| ()),
         ] {

@@ -44,7 +44,11 @@ pub fn module_account_of(account: &Account) -> Result<crate::network::ModuleAcco
 
 /// The whole vault and storage of an account, as a registration's subject carries them.
 pub fn account_state(state_json: &serde_json::Value) -> Result<MidenAccountState, String> {
-    let account = Account::from_json(state_json)?;
+    account_state_of(&Account::from_json(state_json)?)
+}
+
+/// [`account_state`] of an account already decoded.
+pub fn account_state_of(account: &Account) -> Result<MidenAccountState, String> {
     Ok(MidenAccountState {
         vault: account
             .vault()
@@ -317,9 +321,18 @@ pub fn module_transaction(
 ) -> Result<crate::network::ModuleTransaction, String> {
     let summary = TransactionSummary::from_json(tx_summary)
         .map_err(|e| format!("transaction summary does not decode: {e}"))?;
+    module_transaction_of(&summary, initial_nonce, fee)
+}
+
+/// [`module_transaction`] of a summary already decoded.
+pub fn module_transaction_of(
+    summary: &TransactionSummary,
+    initial_nonce: u64,
+    fee: Option<ChainFee>,
+) -> Result<crate::network::ModuleTransaction, String> {
     let fee_note = match fee {
-        Some(fee) => fee_note(&summary, initial_nonce, fee),
-        None if tx_fee_notes(&summary).next().is_some() => {
+        Some(fee) => fee_note(summary, initial_nonce, fee),
+        None if tx_fee_notes(summary).next().is_some() => {
             return Err(
                 "the chain's fee asset is unknown, so the transaction's fee note cannot be told \
                  from a payment"
@@ -329,7 +342,7 @@ pub fn module_transaction(
         None => None,
     };
     Ok(crate::network::ModuleTransaction {
-        projection: projection_from_summary(&summary, fee_note)?,
+        projection: projection_from_summary(summary, fee_note)?,
         raw_tx_summary: summary.to_bytes(),
     })
 }

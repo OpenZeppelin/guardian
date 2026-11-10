@@ -3,7 +3,7 @@ use crate::delta_object::{CosignerSignature, DeltaObject, DeltaStatus};
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{Credentials, RequestAuthFormat};
 use crate::modules::HookName;
-use crate::modules::request::{self, ProposalContext, StateRef, TransactionInput};
+use crate::modules::request::{self, ProposalContext, TransactionInput};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::execution_codec::TransactionRequestEnvelope;
@@ -332,8 +332,13 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
         ),
         (None, None) => (Vec::new(), true),
     };
-    // With modules to run, one decode verifies the delta against the tail and builds the
-    // account views they receive; without, the delta is only verified.
+    // With modules to run, one decode verifies the delta against the tail and builds what they
+    // receive, after the chain fee is loaded; without, the delta is only verified.
+    if !plans.is_empty()
+        && let Err(error) = state.network_client.load_fee_faucet().await
+    {
+        tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
+    }
     let applied = {
         let client = state.network_client.clone();
         let prev_commitment = tail.commitment.clone();
@@ -344,7 +349,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
             .run(move || {
                 if evaluate {
                     client
-                        .apply_delta_with_module_views(
+                        .apply_delta_with_module_inputs(
                             Some(&prev_commitment),
                             &prev_state_json,
                             &tx_summary,
@@ -399,10 +404,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
     let mut evaluations = Vec::new();
-    if let Some((after, module_views)) = applied {
-        if let Err(error) = state.network_client.load_fee_faucet().await {
-            tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
-        }
+    if let Some((_, inputs)) = applied {
         let proposal = ProposalContext {
             proposer: proposer_id.clone(),
             metadata: delta_payload
@@ -410,35 +412,20 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                 .cloned()
                 .unwrap_or(serde_json::Value::Null),
         };
-        let views = plans[0].views();
-        let network_id = plans[0].network_id();
-        views.seed(&tail.commitment, module_views.before);
-        views.seed(&after.commitment, module_views.after);
         for plan in plans {
+            let network_id = plan.network_id();
             plan.run(|| {
-                request::transaction_request(
-                    state.network_client.as_ref(),
-                    &views,
-                    TransactionInput {
-                        network_id,
-                        account_id: &account_id,
-                        submitter: &proposer_id,
-                        submitter_session: credentials_session,
-                        auth: &resolved.metadata.auth,
-                        network_config: &resolved.metadata.network_config,
-                        before: StateRef {
-                            commitment: &tail.commitment,
-                            json: &tail.state_json,
-                        },
-                        after: StateRef {
-                            commitment: &after.commitment,
-                            json: &after.state_json,
-                        },
-                        tx_summary,
-                        proposal: Some(proposal.clone()),
-                        accounting_time: state.clock.now(),
-                    },
-                )
+                request::transaction_request(TransactionInput {
+                    network_id,
+                    account_id: &account_id,
+                    submitter: &proposer_id,
+                    submitter_session: credentials_session,
+                    auth: &resolved.metadata.auth,
+                    network_config: &resolved.metadata.network_config,
+                    inputs: inputs.clone(),
+                    proposal: Some(proposal.clone()),
+                    accounting_time: state.clock.now(),
+                })
             })
             .await
             .map(|evaluation| evaluations.push(evaluation))?;

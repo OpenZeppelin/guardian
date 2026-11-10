@@ -8,8 +8,9 @@ use crate::delta_summary::ModuleApproval;
 use crate::error::Result;
 use crate::metadata::AccountMetadata;
 use crate::modules::HookName;
+use crate::modules::pipeline::Plan;
 use crate::modules::request::{self, StateRef, TransactionInput};
-use crate::network::{AppliedState, ModuleViews};
+use crate::network::{AppliedState, ModuleInputs};
 use crate::state::AppState;
 
 /// A delta verified against the account's current state and acknowledged by Guardian, not yet
@@ -44,58 +45,66 @@ pub(crate) async fn acknowledge_delta(
     let applied = apply_to_base(state, base.commitment, base.json, delta).await?;
     let proposal_match =
         lookup_matching_proposal(state, &delta.account_id, delta.nonce, &delta.delta_payload).await;
-    acknowledge_applied(
-        state,
-        scheme,
-        base,
-        delta,
-        applied,
-        submitter,
-        &proposal_match,
-    )
-    .await
+    acknowledge_applied(state, scheme, delta, applied, submitter, &proposal_match).await
 }
 
-/// A delta applied to the state it builds on, with the policy module views of both states when
-/// modules are configured, built from the same decode.
-pub(crate) struct Applied {
+/// A delta applied to the state it builds on, with the `before_transaction_approved` plan for
+/// the account and, when there is one, the inputs its modules receive, built from the same
+/// decode. Only [`apply_to_base`] builds it, so no caller can reach the ack with a delta whose
+/// modules were left out.
+pub(crate) struct Applied<'a> {
     pub state: AppliedState,
-    pub views: Option<ModuleViews>,
+    modules: Option<(Plan<'a>, ModuleInputs)>,
 }
 
 /// Verifies `delta` against the state it builds on and applies it, without signing anything.
-pub(crate) async fn apply_to_base(
-    state: &AppState,
+/// When a module applies to the account, the same decode builds what it receives, after the
+/// chain fee is loaded, so request assembly decodes nothing.
+pub(crate) async fn apply_to_base<'a>(
+    state: &'a AppState,
     base_commitment: &str,
     base_state_json: &serde_json::Value,
     delta: &DeltaObject,
-) -> Result<Applied> {
+) -> Result<Applied<'a>> {
+    let plan = match state.modules.as_deref() {
+        Some(modules) => {
+            modules
+                .plan(HookName::BeforeTransactionApproved, &delta.account_id)
+                .await?
+        }
+        None => None,
+    };
+    if plan.is_some()
+        && let Err(error) = state.network_client.load_fee_faucet().await
+    {
+        tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
+    }
     let client = state.network_client.clone();
     let prev_commitment = base_commitment.to_string();
     let prev_state_json = base_state_json.clone();
     let delta_payload = Arc::new(delta.delta_payload.clone());
-    let with_views = state.modules.is_some();
-    crate::network::reconstructor()
+    let with_inputs = plan.is_some();
+    let (applied, inputs) = crate::network::reconstructor()
         .run(move || {
-            if with_views {
+            if with_inputs {
                 client
-                    .apply_delta_with_module_views(
+                    .apply_delta_with_module_inputs(
                         Some(&prev_commitment),
                         &prev_state_json,
                         &delta_payload,
                     )
-                    .map(|(state, views)| Applied {
-                        state,
-                        views: Some(views),
-                    })
+                    .map(|(state, inputs)| (state, Some(inputs)))
             } else {
                 client
                     .verify_and_apply_delta(&prev_commitment, &prev_state_json, &delta_payload)
-                    .map(|state| Applied { state, views: None })
+                    .map(|state| (state, None))
             }
         })
-        .await
-        .map_err(Into::into)
+        .await?;
+    Ok(Applied {
+        state: applied,
+        modules: plan.zip(inputs),
+    })
 }
 
 /// Runs the `before_transaction_approved` policy modules on a delta already applied by
@@ -105,26 +114,16 @@ pub(crate) async fn apply_to_base(
 pub(crate) async fn acknowledge_applied(
     state: &AppState,
     scheme: &SignatureScheme,
-    base: StateRef<'_>,
     delta: &DeltaObject,
-    applied: Applied,
+    applied: Applied<'_>,
     submitter: Submitter<'_>,
     proposal_match: &ProposalMatch,
 ) -> Result<AcknowledgedDelta> {
     let Applied {
         state: applied,
-        views,
+        modules,
     } = applied;
-    let approval = approve(
-        state,
-        base,
-        delta,
-        &applied,
-        views,
-        submitter,
-        proposal_match,
-    )
-    .await?;
+    let approval = approve(state, delta, modules, submitter, proposal_match).await?;
     let matching_proposal = proposal_match.payload();
     let mut derived_metadata =
         crate::delta_summary::build_metadata(&delta.delta_payload, matching_proposal);
@@ -158,20 +157,12 @@ pub(crate) async fn acknowledge_applied(
 /// the account. A proposal lookup that failed is a module failure, never an absent proposer.
 async fn approve(
     state: &AppState,
-    base: StateRef<'_>,
     delta: &DeltaObject,
-    applied: &AppliedState,
-    module_views: Option<ModuleViews>,
+    modules: Option<(Plan<'_>, ModuleInputs)>,
     submitter: Submitter<'_>,
     proposal_match: &ProposalMatch,
 ) -> Result<Option<ModuleApproval>> {
-    let Some(modules) = state.modules.as_deref() else {
-        return Ok(None);
-    };
-    let Some(plan) = modules
-        .plan(HookName::BeforeTransactionApproved, &delta.account_id)
-        .await?
-    else {
+    let Some((plan, inputs)) = modules else {
         return Ok(None);
     };
     let proposal = match proposal_match {
@@ -185,37 +176,20 @@ async fn approve(
         .and_then(|context| context.as_ref())
         .map(|context| context.proposer.clone())
         .unwrap_or_default();
-    if let Err(error) = state.network_client.load_fee_faucet().await {
-        tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
-    }
     let signed_at = state.clock.now();
-    let views = plan.views();
     let network_id = plan.network_id();
-    if let Some(module_views) = module_views {
-        views.seed(base.commitment, module_views.before);
-        views.seed(&applied.commitment, module_views.after);
-    }
     plan.run(|| {
-        request::transaction_request(
-            state.network_client.as_ref(),
-            &views,
-            TransactionInput {
-                network_id,
-                account_id: &delta.account_id,
-                submitter: submitter.commitment,
-                submitter_session: submitter.session,
-                auth: &submitter.account.auth,
-                network_config: &submitter.account.network_config,
-                before: base,
-                after: StateRef {
-                    commitment: &applied.commitment,
-                    json: &applied.state_json,
-                },
-                tx_summary: &delta.delta_payload,
-                proposal: proposal?,
-                accounting_time: signed_at,
-            },
-        )
+        request::transaction_request(TransactionInput {
+            network_id,
+            account_id: &delta.account_id,
+            submitter: submitter.commitment,
+            submitter_session: submitter.session,
+            auth: &submitter.account.auth,
+            network_config: &submitter.account.network_config,
+            inputs,
+            proposal: proposal?,
+            accounting_time: signed_at,
+        })
     })
     .await
     .map(|evaluation| {

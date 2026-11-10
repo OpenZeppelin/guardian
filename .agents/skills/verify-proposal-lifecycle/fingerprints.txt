@@ -1,6 +1,6 @@
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal f3273779e9d7758f
-crates/server/src/services/push_delta_proposal.rs propose 176b2f353a59dcef
-crates/server/src/services/push_delta.rs push_delta 5885e2ee0d38c7d0
+crates/server/src/services/push_delta_proposal.rs propose e751b2d36d64d1e1
+crates/server/src/services/push_delta.rs push_delta 20863182e67af49d
 crates/server/src/services/ack_delta_internal.rs lookup_matching_proposal 9b5ac8501f9abe75
 crates/server/src/services/candidate_chain.rs load_for_admission ed7abd9edcc81e9f
 crates/server/src/services/candidate_chain.rs tail_commitment 5c8c7de27c6e876e

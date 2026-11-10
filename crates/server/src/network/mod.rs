@@ -270,10 +270,6 @@ pub struct TransactionSearch {
     pub resume_from_block: u32,
 }
 
-/// The state [`NetworkClient::apply_delta`] produced: the new state blob,
-/// plus the commitment, nonce, and auth bindings of the account it encodes,
-/// read off the account the method already holds so a caller persisting or
-/// inspecting the state never decodes the blob again (issue #328).
 /// An account as policy modules see it, with its nonce: the fee note a transaction creates
 /// derives its serial number from the nonce of the state it starts from.
 #[derive(Debug, Clone, PartialEq)]
@@ -282,13 +278,29 @@ pub struct ModuleAccount {
     pub nonce: u64,
 }
 
-/// Policy module account views of a delta's base state and of the state it produces.
+/// What policy modules receive about a delta, built from the decode that verifies and applies
+/// it: the account views of its base state and of the state it produces, and the transaction.
+/// Each part that cannot be extracted is kept as its error, which the modules' `on_error`
+/// then decides; it is never a failure of the application.
 #[derive(Debug, Clone)]
-pub struct ModuleViews {
+pub struct ModuleInputs {
     pub before: Result<ModuleAccount, String>,
     pub after: Result<ModuleAccount, String>,
+    pub transaction: Result<ModuleTransaction, String>,
 }
 
+/// What policy modules receive about an account state at registration, from one decode: the
+/// account view and the whole vault and storage.
+#[derive(Debug, Clone)]
+pub struct ModuleAccountInputs {
+    pub view: Result<ModuleAccount, String>,
+    pub state: Result<guardian_module_sdk::MidenAccountState, String>,
+}
+
+/// The state [`NetworkClient::apply_delta`] produced: the new state blob,
+/// plus the commitment, nonce, and auth bindings of the account it encodes,
+/// read off the account the method already holds so a caller persisting or
+/// inspecting the state never decodes the blob again (issue #328).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppliedState {
     pub state_json: serde_json::Value,
@@ -400,27 +412,33 @@ pub trait NetworkClient: Send + Sync {
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;
 
-    /// [`Self::verify_and_apply_delta`] when `prev_commitment` is set, otherwise
-    /// [`Self::apply_delta`], with the policy module views of the base and of the result built
-    /// from the same decode. A view that cannot be extracted is returned as its error, never as
-    /// a failure of the application.
-    fn apply_delta_with_module_views(
+    /// Verifies (when `prev_commitment` is given) and applies `delta_payload`, and builds what
+    /// policy modules receive about it from the same decode. Called inside the reconstruction
+    /// task, so request assembly decodes nothing. The transaction's fee note is told apart with
+    /// the chain fee [`Self::load_fee_faucet`] loaded before.
+    fn apply_delta_with_module_inputs(
         &self,
         prev_commitment: Option<&str>,
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
-    ) -> Result<(AppliedState, ModuleViews), String> {
+    ) -> Result<(AppliedState, ModuleInputs), String> {
         let applied = match prev_commitment {
             Some(prev_commitment) => {
                 self.verify_and_apply_delta(prev_commitment, prev_state_json, delta_payload)?
             }
             None => self.apply_delta(prev_state_json, delta_payload)?,
         };
-        let views = ModuleViews {
-            before: self.module_account_view(prev_state_json),
+        let before = self.module_account_view(prev_state_json);
+        let transaction = before
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|before| self.module_transaction(delta_payload, before.nonce));
+        let inputs = ModuleInputs {
+            before,
             after: self.module_account_view(&applied.state_json),
+            transaction,
         };
-        Ok((applied, views))
+        Ok((applied, inputs))
     }
 
     /// Merge multiple deltas
@@ -565,6 +583,15 @@ pub trait NetworkClient: Send + Sync {
     fn module_account_view(&self, state_json: &serde_json::Value) -> Result<ModuleAccount, String> {
         let _ = state_json;
         Err("policy modules are not supported on this network".into())
+    }
+
+    /// The account view and the whole vault and storage of one state, from one decode, as a
+    /// registration's request carries them. Called inside the reconstruction task.
+    fn module_account_inputs(&self, state_json: &serde_json::Value) -> ModuleAccountInputs {
+        ModuleAccountInputs {
+            view: self.module_account_view(state_json),
+            state: self.module_account_state(state_json),
+        }
     }
 
     /// The account's whole vault and storage, as a registration's subject carries them.

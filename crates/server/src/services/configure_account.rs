@@ -3,7 +3,7 @@ use crate::metadata::NetworkConfig;
 use crate::metadata::auth::{Auth, Credentials};
 use crate::metadata::{AccountMetadata, ClearTransition};
 use crate::modules::HookName;
-use crate::modules::request::{self, RegistrationInput, StateRef};
+use crate::modules::request::{self, RegistrationInput};
 use crate::network::{RpcReadMode, StateVerification};
 use crate::services::{consume_auth_timestamp, validate_request_timestamp};
 use crate::state::AppState;
@@ -246,7 +246,6 @@ pub async fn configure_account(
         state,
         &params,
         &signer_commitment,
-        &head,
         existing.is_some() && !unfinished_claim,
         first_registration,
     )
@@ -300,7 +299,6 @@ pub async fn configure_account(
             state,
             &params,
             &signer_commitment,
-            &head,
             has_stored_state(state, &params.account_id).await,
             false,
         )
@@ -629,7 +627,6 @@ async fn approve_registration(
     state: &AppState,
     params: &ConfigureAccountParams,
     signer_commitment: &str,
-    head: &StateHead,
     stored: bool,
     first_registration: bool,
 ) -> Result<Vec<crate::modules::store::Assigned>> {
@@ -657,32 +654,34 @@ async fn approve_registration(
         } else {
             None
         };
-        let views = plan.views();
+        // Both states are decoded once, inside the reconstruction task, so request assembly
+        // decodes nothing on the async path.
+        let client = state.network_client.clone();
+        let initial_json = params.initial_state.clone();
+        let stored_json = stored_state.map(|stored| stored.map(|stored| stored.state_json));
+        let (initial, stored) = crate::network::reconstructor()
+            .run(move || {
+                Ok((
+                    client.module_account_inputs(&initial_json),
+                    stored_json
+                        .map(|stored| stored.and_then(|json| client.module_account_view(&json))),
+                ))
+            })
+            .await?;
         let network_id = plan.network_id();
         let evaluation = plan
             .run(|| {
-                let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
-                request::registration_request(
-                    state.network_client.as_ref(),
-                    &views,
-                    RegistrationInput {
-                        network_id,
-                        account_id: &params.account_id,
-                        submitter: signer_commitment,
-                        submitter_session: false,
-                        auth: &params.auth,
-                        network_config: &params.network_config,
-                        stored_state: stored_state.map(|stored| StateRef {
-                            commitment: &stored.commitment,
-                            json: &stored.state_json,
-                        }),
-                        initial_state: StateRef {
-                            commitment: &head.commitment,
-                            json: &params.initial_state,
-                        },
-                        accounting_time: state.clock.now(),
-                    },
-                )
+                request::registration_request(RegistrationInput {
+                    network_id,
+                    account_id: &params.account_id,
+                    submitter: signer_commitment,
+                    submitter_session: false,
+                    auth: &params.auth,
+                    network_config: &params.network_config,
+                    stored,
+                    initial,
+                    accounting_time: state.clock.now(),
+                })
             })
             .await?;
         evaluation.audit_failed_open(
