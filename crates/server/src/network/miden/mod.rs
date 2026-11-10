@@ -316,6 +316,15 @@ impl MidenNetworkClient {
     ) -> Result<AppliedState, String> {
         let account_delta = tx_summary.account_delta();
 
+        if let Ok(account) = prev_account.as_ref()
+            && account.id() != account_delta.id()
+        {
+            return Err(format!(
+                "account delta ID mismatch: expected {}, got {}",
+                account.id().to_hex(),
+                account_delta.id().to_hex()
+            ));
+        }
         let is_full_state =
             !account_delta.code().is_empty() && prev_account.as_ref().map_or(true, Account::is_new);
         let base_account = if is_full_state {
@@ -510,8 +519,15 @@ impl NetworkClient for MidenNetworkClient {
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
     ) -> Result<(), String> {
-        TransactionSummary::from_json(delta_payload)?;
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account = Account::from_json(prev_state_json)?;
+        if account.id() != tx_summary.account_delta().id() {
+            return Err(format!(
+                "account delta ID mismatch: expected {}, got {}",
+                account.id().to_hex(),
+                tx_summary.account_delta().id().to_hex()
+            ));
+        }
         Self::ensure_prev_commitment(&account, prev_commitment)
     }
 
@@ -2397,5 +2413,61 @@ mod tests {
             client.account_nonce(&applied.state_json).unwrap(),
             applied.nonce
         );
+    }
+
+    #[tokio::test]
+    async fn a_creation_delta_of_another_account_is_refused() {
+        use miden_protocol::Felt;
+        use miden_protocol::account::delta::AccountVaultDelta;
+        use miden_protocol::account::{AccountBuilder, AccountType};
+        use miden_protocol::account::{AccountCodePatch, AccountDelta};
+        use miden_standards::account::auth::NoAuth;
+        use miden_standards::account::wallets::BasicWallet;
+
+        let client = MidenNetworkClient::lazy_for_test(NetworkType::MidenTestnet);
+        let build = |seed: u8| {
+            AccountBuilder::new([seed; 32])
+                .account_type(AccountType::Public)
+                .with_component(BasicWallet)
+                .with_component(NoAuth)
+                .build()
+                .expect("Failed to build account")
+        };
+        let stored = build(0xAB);
+        let other = build(0xCD);
+        assert!(stored.is_new());
+        assert_ne!(stored.id(), other.id());
+
+        let creation_of_other = AccountDelta::new(
+            other.id(),
+            miden_protocol::account::AccountStoragePatch::default(),
+            AccountVaultDelta::default(),
+            AccountCodePatch::new(Some(other.code().clone())),
+            Felt::new_unchecked(1),
+        )
+        .expect("Failed to create delta");
+        let payload = TransactionSummary::new(
+            creation_of_other,
+            InputNotes::new(Vec::new()).expect("empty input notes"),
+            RawOutputNotes::new(Vec::new()).expect("empty output notes"),
+            miden_protocol::block::BlockNumber::from(0),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new([Felt::ZERO; 6]),
+        )
+        .to_json();
+
+        let stored_json = stored.to_json();
+        let stored_commitment = format!("0x{}", hex::encode(stored.to_commitment().as_bytes()));
+        for refused in [
+            client
+                .verify_and_apply_delta(&stored_commitment, &stored_json, &payload)
+                .map(|_| ()),
+            client.verify_delta(&stored_commitment, &stored_json, &payload),
+            client.apply_delta(&stored_json, &payload).map(|_| ()),
+        ] {
+            let error = refused.expect_err("another account's creation delta must be refused");
+            assert!(error.contains("account delta ID mismatch"), "{error}");
+        }
     }
 }
