@@ -301,6 +301,16 @@ label span {
   margin-top: 0.5rem;
 }
 
+.json-input {
+  font-family: "IBM Plex Mono", "SFMono-Regular", monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+}
+
+.account-card label + label {
+  margin-top: 0.75rem;
+}
+
 .muted {
   color: rgba(19, 33, 38, 0.45);
   font-style: italic;
