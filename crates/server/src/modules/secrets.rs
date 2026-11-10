@@ -128,9 +128,13 @@ impl SecretRefs {
             }
         };
         let auth_token = match &self.token {
-            Some(name) => Some(SecretString::from(
-                read(name).await?.expose_secret().trim().to_owned(),
-            )),
+            Some(name) => {
+                let token = read(name).await?.expose_secret().trim().to_owned();
+                if token.is_empty() {
+                    return Err(format!("secret {name}: the token is empty"));
+                }
+                Some(SecretString::from(token))
+            }
             None => None,
         };
         let tls = match &self.tls {

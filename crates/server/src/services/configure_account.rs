@@ -318,7 +318,7 @@ pub async fn configure_account(
         && !default_copies.is_empty()
         && let Some(modules) = state.modules.as_deref()
     {
-        modules
+        let copied = modules
             .store()
             .seed_assignment(
                 &params.account_id.to_ascii_lowercase(),
@@ -331,6 +331,12 @@ pub async fn configure_account(
             )
             .await
             .map_err(GuardianError::StorageError)?;
+        if !copied {
+            tracing::info!(
+                account_id = %params.account_id,
+                "Default modules not copied: the account already has module assignments or module history"
+            );
+        }
     }
 
     // The replay-state row has an FK to account metadata, which the claim
@@ -652,30 +658,40 @@ async fn approve_registration(
             None
         };
         let views = plan.views();
-        plan.run(|| {
-            let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
-            request::registration_request(
-                state.network_client.as_ref(),
-                &views,
-                RegistrationInput {
-                    account_id: &params.account_id,
-                    submitter: signer_commitment,
-                    submitter_session: false,
-                    auth: &params.auth,
-                    network_config: &params.network_config,
-                    stored_state: stored_state.map(|stored| StateRef {
-                        commitment: &stored.commitment,
-                        json: &stored.state_json,
-                    }),
-                    initial_state: StateRef {
-                        commitment: &head.commitment,
-                        json: &params.initial_state,
+        let network_id = plan.network_id();
+        let evaluation = plan
+            .run(|| {
+                let stored_state = stored_state.as_ref().map(|r| r.as_ref()).transpose()?;
+                request::registration_request(
+                    state.network_client.as_ref(),
+                    &views,
+                    RegistrationInput {
+                        network_id,
+                        account_id: &params.account_id,
+                        submitter: signer_commitment,
+                        submitter_session: false,
+                        auth: &params.auth,
+                        network_config: &params.network_config,
+                        stored_state: stored_state.map(|stored| StateRef {
+                            commitment: &stored.commitment,
+                            json: &stored.state_json,
+                        }),
+                        initial_state: StateRef {
+                            commitment: &head.commitment,
+                            json: &params.initial_state,
+                        },
+                        accounting_time: state.clock.now(),
                     },
-                    accounting_time: state.clock.now(),
-                },
-            )
-        })
-        .await?;
+                )
+            })
+            .await?;
+        evaluation.audit_failed_open(
+            state.auditor.as_ref(),
+            HookName::BeforeAccountRegistered,
+            &params.account_id,
+            signer_commitment,
+            serde_json::Map::new(),
+        );
     }
     Ok(default_copies)
 }
@@ -3544,6 +3560,7 @@ mod tests {
         metadata: MockMetadataStore,
         module: Arc<crate::modules::testing::StubModule>,
         modules: Arc<crate::modules::ModulePipeline>,
+        audited: Vec<crate::audit::AuditEvent>,
     }
 
     async fn configure_with_module(
@@ -3603,6 +3620,8 @@ mod tests {
             create_test_app_state(network_client, storage.clone(), metadata.clone()).await;
         let modules = pipeline(instances);
         state.modules = Some(modules.clone());
+        let auditor = crate::testing::helpers::CapturingAuditor::new();
+        state.auditor = Arc::new(auditor.clone());
 
         let result = configure_account(
             &state,
@@ -3623,7 +3642,41 @@ mod tests {
             metadata,
             module,
             modules,
+            audited: auditor.snapshot(),
         }
+    }
+
+    #[tokio::test]
+    async fn a_failure_let_through_at_registration_is_audited() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule, instance};
+
+        let module = StubModule::new(Behaviour::Fail);
+        let failing = instance(
+            "signers",
+            &[HookName::BeforeAccountRegistered],
+            OnError::Allow,
+            module.clone(),
+        );
+        let run = configure_with_modules(|_| None, vec![failing], module).await;
+        assert!(run.result.is_ok(), "{:?}", run.result);
+        let skipped: Vec<_> = run
+            .audited
+            .iter()
+            .filter(|event| event.action_kind == crate::audit::kinds::MODULES_FAILED_OPEN)
+            .collect();
+        assert_eq!(skipped.len(), 1, "{:?}", run.audited);
+        assert_eq!(skipped[0].payload["hook"], "before_account_registered");
+        assert_eq!(skipped[0].payload["failed_open"][0]["module_id"], "signers");
+
+        let clean = configure_with_module(|_| None, StubModule::allowing()).await;
+        assert!(clean.result.is_ok());
+        assert!(
+            clean
+                .audited
+                .iter()
+                .all(|event| event.action_kind != crate::audit::kinds::MODULES_FAILED_OPEN)
+        );
     }
 
     fn existing_account(

@@ -252,7 +252,7 @@ impl ModuleStore for PgModuleStore {
         module_id: &str,
         enabled: bool,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         #[derive(QueryableByName)]
         struct EnabledSql {
             #[diesel(sql_type = Bool)]
@@ -261,7 +261,7 @@ impl ModuleStore for PgModuleStore {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let module_id = module_id.to_string();
-        conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
             async move {
                 let version = bump(conn).await?;
                 let previous: Vec<EnabledSql> = diesel::sql_query(
@@ -296,11 +296,12 @@ impl ModuleStore for PgModuleStore {
                     changed_at,
                 )
                 .await?;
-                Ok(())
+                Ok(version)
             }
             .scope_boxed()
         })
         .await
+        .map(|version| version as u64)
         .map_err(|e| format!("set enabled: {e}"))
     }
 
@@ -309,11 +310,11 @@ impl ModuleStore for PgModuleStore {
         module_id: &str,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let module_id = module_id.to_string();
-        conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
             async move {
                 let version = bump(conn).await?;
                 let previous: Vec<ParamsSql> = diesel::sql_query(
@@ -345,11 +346,12 @@ impl ModuleStore for PgModuleStore {
                     conn, version, &module_id, None, &previous, &params, change, changed_at,
                 )
                 .await?;
-                Ok(())
+                Ok(version)
             }
             .scope_boxed()
         })
         .await
+        .map(|version| version as u64)
         .map_err(|e| format!("set global params: {e}"))
     }
 
@@ -359,12 +361,12 @@ impl ModuleStore for PgModuleStore {
         expected: &serde_json::Value,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let (module_id, expected) = (module_id.to_string(), expected.clone());
         let written = conn
-            .transaction::<(), diesel::result::Error, _>(|conn| {
+            .transaction::<i64, diesel::result::Error, _>(|conn| {
                 async move {
                     let version = bump(conn).await?;
                     let current: Vec<ParamsSql> = diesel::sql_query(
@@ -394,14 +396,14 @@ impl ModuleStore for PgModuleStore {
                         conn, version, &module_id, None, &previous, &params, change, changed_at,
                     )
                     .await?;
-                    Ok(())
+                    Ok(version)
                 }
                 .scope_boxed()
             })
             .await;
         match written {
-            Ok(()) => Ok(true),
-            Err(diesel::result::Error::RollbackTransaction) => Ok(false),
+            Ok(version) => Ok(Some(version as u64)),
+            Err(diesel::result::Error::RollbackTransaction) => Ok(None),
             Err(e) => Err(format!("set global params: {e}")),
         }
     }
@@ -465,11 +467,11 @@ impl ModuleStore for PgModuleStore {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let (account_id, module_id) = (account_id.to_string(), module_id.to_string());
-        conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
             async move {
                 let version = bump(conn).await?;
                 let previous: Vec<ParamsSql> = diesel::sql_query(
@@ -511,11 +513,12 @@ impl ModuleStore for PgModuleStore {
                     changed_at,
                 )
                 .await?;
-                Ok(())
+                Ok(version)
             }
             .scope_boxed()
         })
         .await
+        .map(|version| version as u64)
         .map_err(|e| format!("set account layer: {e}"))
     }
 
@@ -524,11 +527,11 @@ impl ModuleStore for PgModuleStore {
         account_id: &str,
         modules: Vec<Assigned>,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         let changed_at = at(change)?;
         let mut conn = self.conn().await?;
         let account_id = account_id.to_string();
-        conn.transaction::<(), diesel::result::Error, _>(|conn| {
+        conn.transaction::<i64, diesel::result::Error, _>(|conn| {
             async move {
                 let version = bump(conn).await?;
                 let removed: Vec<AccountParamsSql> = diesel::sql_query(
@@ -579,11 +582,12 @@ impl ModuleStore for PgModuleStore {
                     )
                     .await?;
                 }
-                Ok(())
+                Ok(version)
             }
             .scope_boxed()
         })
         .await
+        .map(|version| version as u64)
         .map_err(|e| format!("set assignment: {e}"))
     }
 
@@ -980,8 +984,8 @@ mod tests {
             .await
             .unwrap();
         let before = store.version().await.unwrap();
-        assert!(
-            !store
+        assert_eq!(
+            store
                 .set_global_if(
                     &module,
                     &json!({ "old_name": 1000 }),
@@ -990,6 +994,7 @@ mod tests {
                 )
                 .await
                 .unwrap(),
+            None,
             "the stale expectation does not write"
         );
         assert_eq!(
@@ -997,7 +1002,7 @@ mod tests {
             before,
             "and does not move the version"
         );
-        assert!(
+        assert_eq!(
             store
                 .set_global_if(
                     &module,
@@ -1006,7 +1011,9 @@ mod tests {
                     &change(t0)
                 )
                 .await
-                .unwrap()
+                .unwrap(),
+            Some(before + 1),
+            "a write reports the version it committed as"
         );
         let row = store
             .instances()

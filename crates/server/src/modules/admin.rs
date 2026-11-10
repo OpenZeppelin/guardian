@@ -111,9 +111,16 @@ fn instance<'a>(pipeline: &'a ModulePipeline, module_id: &str) -> Result<&'a Ins
         })
 }
 
+const MAX_REASON_CHARS: usize = 512;
+
 fn require_reason(reason: &str) -> Result<()> {
     if reason.trim().is_empty() {
         return Err(GuardianError::InvalidInput("reason is required".into()));
+    }
+    if reason.chars().count() > MAX_REASON_CHARS {
+        return Err(GuardianError::InvalidInput(format!(
+            "reason exceeds {MAX_REASON_CHARS} character limit"
+        )));
     }
     Ok(())
 }
@@ -386,6 +393,7 @@ pub async fn enable(
     require_reason(reason)?;
     let pipeline = pipeline(state)?;
     let instance = instance(pipeline, module_id)?;
+    let mut committed = None;
     if !pipeline.enabled(instance).await? {
         let params = pipeline.global_params(instance).await?;
         let checked = super::registry::check(&instance.config, &instance.module, &params)
@@ -421,18 +429,20 @@ pub async fn enable(
                 )
                 .await
                 .map_err(GuardianError::StorageError)?;
-            if !migrated {
+            if migrated.is_none() {
                 tracing::warn!(module = %module_id, "Global params changed while the module migrated them; kept the newer value");
             }
         }
-        pipeline
-            .store()
-            .set_enabled(module_id, true, &change(state, operator, reason))
-            .await
-            .map_err(GuardianError::StorageError)?;
+        committed = Some(
+            pipeline
+                .store()
+                .set_enabled(module_id, true, &change(state, operator, reason))
+                .await
+                .map_err(GuardianError::StorageError)?,
+        );
         super::metrics::enabled(module_id, true);
     }
-    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": version(pipeline).await? });
+    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
         state,
         operator,
@@ -460,15 +470,18 @@ pub async fn disable(
             module: module_id.to_string(),
         });
     }
+    let mut committed = None;
     if pipeline.enabled(instance).await? {
-        pipeline
-            .store()
-            .set_enabled(module_id, false, &change(state, operator, reason))
-            .await
-            .map_err(GuardianError::StorageError)?;
+        committed = Some(
+            pipeline
+                .store()
+                .set_enabled(module_id, false, &change(state, operator, reason))
+                .await
+                .map_err(GuardianError::StorageError)?,
+        );
         super::metrics::enabled(module_id, false);
     }
-    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": version(pipeline).await? });
+    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
         state,
         operator,
@@ -497,12 +510,12 @@ pub async fn set_global(
         )));
     }
     let params = validated(pipeline, instance, &params).await?;
-    pipeline
+    let committed = pipeline
         .store()
         .set_global(module_id, params, &change(state, operator, reason))
         .await
         .map_err(GuardianError::StorageError)?;
-    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": version(pipeline).await? });
+    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
         state,
         operator,
@@ -541,6 +554,15 @@ pub async fn set_layer(
         .account_params(&account_id)
         .await
         .map_err(GuardianError::StorageError)?;
+    if params.is_some()
+        && current
+            .iter()
+            .any(|row| row.kind == ParamsKind::Assignment && row.module_id == module_id)
+    {
+        return Err(GuardianError::InvalidInput(format!(
+            "module {module_id}: the account still has it assigned from when it applied only to assigned accounts; remove it from the account's assignment first"
+        )));
+    }
     let mut rows = current.clone();
     rows.retain(|row| !(row.kind == ParamsKind::Layer && row.module_id == module_id));
     if let Some(params) = &params {
@@ -552,7 +574,7 @@ pub async fn set_layer(
         ));
     }
     pipeline.check_budget(&current, &rows)?;
-    pipeline
+    let committed = pipeline
         .store()
         .set_layer(
             &account_id,
@@ -562,7 +584,7 @@ pub async fn set_layer(
         )
         .await
         .map_err(GuardianError::StorageError)?;
-    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": version(pipeline).await? });
+    let payload = serde_json::json!({ "module_id": module_id, "reason": reason, "params_version": committed });
     audit(
         state,
         operator,
@@ -666,13 +688,17 @@ pub async fn set_assignment(
         )
     }));
     pipeline.check_budget(&current, &rows)?;
-    pipeline
+    let assigned: Vec<String> = to_store
+        .iter()
+        .map(|assigned| assigned.module_id.clone())
+        .collect();
+    let committed = pipeline
         .store()
         .set_assignment(&account_id, to_store, &change(state, operator, reason))
         .await
         .map_err(GuardianError::StorageError)?;
     let payload =
-        serde_json::json!({ "reason": reason, "params_version": version(pipeline).await? });
+        serde_json::json!({ "reason": reason, "modules": assigned, "params_version": committed });
     audit(
         state,
         operator,
@@ -1059,6 +1085,68 @@ mod tests {
             .await
             .expect("a stale layer can be deleted whatever the instance's scope is now");
         assign().await.expect("then the module can be assigned");
+    }
+
+    #[tokio::test]
+    async fn a_layer_is_refused_while_the_module_is_still_assigned_to_the_account() {
+        let mut state = state();
+        let operator = operator();
+        set_assignment(
+            &state,
+            &operator,
+            ACCOUNT,
+            vec![Assigned {
+                module_id: "optional".into(),
+                params: json!({}),
+            }],
+            "OP-1",
+            None,
+        )
+        .await
+        .unwrap();
+        let hooks = [HookName::BeforeTransactionApproved];
+        let store = state.modules.as_ref().unwrap().store_handle();
+        state.modules = Some(Arc::new(ModulePipeline::from_instances_with_store(
+            vec![instance(
+                "optional",
+                &hooks,
+                OnError::Deny,
+                Arc::new(BasicPolicy),
+            )],
+            store,
+        )));
+        let layer = set_layer(
+            &state,
+            &operator,
+            ACCOUNT,
+            "optional",
+            Some(json!({})),
+            "OP-2",
+            None,
+        )
+        .await;
+        assert!(
+            matches!(layer, Err(GuardianError::InvalidInput(message)) if message.contains("remove it from the account's assignment first")),
+            "the scope change left an assignment row for the module"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reason_longer_than_the_limit_is_refused() {
+        let state = state();
+        let refused = set_layer(
+            &state,
+            &operator(),
+            ACCOUNT,
+            "blocklist",
+            Some(json!({})),
+            &"r".repeat(MAX_REASON_CHARS + 1),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(refused, Err(GuardianError::InvalidInput(message)) if message.contains("character limit"))
+        );
     }
 
     #[tokio::test]

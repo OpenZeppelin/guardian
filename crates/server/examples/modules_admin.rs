@@ -18,9 +18,20 @@ fn load_key(path: &str) -> Result<SecretKey, Error> {
     Ok(SecretKey::read_from_bytes(&bytes)?)
 }
 
+/// Writes the operator key readable by its owner only, and never over an existing file.
+fn write_private(path: &str, contents: &str) -> Result<(), Error> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
 fn keygen(path: &str) -> Result<(), Error> {
     let key = SecretKey::new();
-    std::fs::write(path, hex::encode(key.to_bytes()))?;
+    write_private(path, &hex::encode(key.to_bytes()))?;
     let public_key = key.public_key();
     println!("key written to {path}");
     println!("commitment: {}", public_key.to_commitment().into_hex());

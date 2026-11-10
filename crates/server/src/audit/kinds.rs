@@ -67,6 +67,14 @@ pub const MODULES_ENABLE: &str = "modules.enable";
 /// An operator disabled a policy module instance.
 pub const MODULES_DISABLE: &str = "modules.disable";
 
+/// A policy module evaluation at proposal creation or account registration let through a
+/// module failure because the instance is `on_error = "allow"`. System-initiated
+/// (`operator_identity` is `system`). `payload` carries `hook`, `submitter`, `catalog_hash`,
+/// `params_version` and `failed_open` (`module_id`, `layer`, `failure`), plus the
+/// `proposal_id` at proposal creation. A transaction's skips are stored with its signed delta
+/// instead (`modules.failed_open` on the dashboard delta detail).
+pub const MODULES_FAILED_OPEN: &str = "modules.failed_open";
+
 /// All registered kinds in v1, for tests and introspection. Append
 /// new consts above and add them to this slice in the same commit.
 pub const ALL_KINDS: &[&str] = &[
@@ -81,6 +89,7 @@ pub const ALL_KINDS: &[&str] = &[
     MODULES_ASSIGNMENT,
     MODULES_ENABLE,
     MODULES_DISABLE,
+    MODULES_FAILED_OPEN,
 ];
 
 #[cfg(test)]
@@ -103,6 +112,7 @@ mod tests {
                 MODULES_ASSIGNMENT,
                 MODULES_ENABLE,
                 MODULES_DISABLE,
+                MODULES_FAILED_OPEN,
             ]
         );
     }

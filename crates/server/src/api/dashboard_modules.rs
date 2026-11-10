@@ -52,9 +52,10 @@ async fn body<T: serde::de::DeserializeOwned>(
     security(("operator_session" = [])),
     responses(
         (status = 200, description = "Module instances with their runtime state", body = ModuleCatalogView),
+        (status = 400, description = "No policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn list_modules(State(state): State<AppState>) -> Result<Json<ModuleCatalogView>> {
@@ -69,9 +70,10 @@ pub async fn list_modules(State(state): State<AppState>) -> Result<Json<ModuleCa
     params(("account_id" = String, Path, description = "Account identifier")),
     responses(
         (status = 200, description = "The account's effective module set, in evaluation order", body = AccountModulesView),
+        (status = 400, description = "No policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn account_modules(
@@ -96,10 +98,10 @@ pub struct HistoryQuery {
     params(("module_id" = String, Path, description = "Module instance id"), HistoryQuery),
     responses(
         (status = 200, description = "Params changes, newest first", body = ParamsHistoryView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing dashboard:read permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn params_history(
@@ -121,10 +123,10 @@ pub async fn params_history(
     request_body = ParamsBody,
     responses(
         (status = 200, description = "Global params stored", body = ModuleInstanceView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write_global permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_global_params(
@@ -155,10 +157,11 @@ pub async fn set_global_params(
     request_body = ReasonBody,
     responses(
         (status = 200, description = "Instance enabled", body = ModuleInstanceView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
+        (status = 503, description = "The module failed its startup checks; nothing changed", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn enable_module(
@@ -182,10 +185,11 @@ pub async fn enable_module(
     request_body = ReasonBody,
     responses(
         (status = 200, description = "Instance disabled", body = ModuleInstanceView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write or modules:disable permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
+        (status = 409, description = "The catalog does not mark the instance operator_can_disable", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn disable_module(
@@ -209,10 +213,10 @@ pub async fn disable_module(
     request_body = ParamsBody,
     responses(
         (status = 200, description = "Account layer stored", body = AccountModulesView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_account_layer(
@@ -244,10 +248,10 @@ pub async fn set_account_layer(
     request_body = ReasonBody,
     responses(
         (status = 200, description = "Account layer removed", body = AccountModulesView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn remove_account_layer(
@@ -279,10 +283,10 @@ pub async fn remove_account_layer(
     request_body = AssignmentBody,
     responses(
         (status = 200, description = "Assignment stored", body = AccountModulesView),
-        (status = 400, description = "Invalid params, reason or assignment", body = crate::openapi::ApiErrorResponse),
+        (status = 400, description = "Invalid params, reason or assignment, or no policy modules are configured", body = crate::openapi::ApiErrorResponse),
         (status = 401, description = "No operator session", body = crate::openapi::ApiErrorResponse),
         (status = 403, description = "Missing policies:write permission", body = crate::openapi::ApiErrorResponse),
-        (status = 404, description = "Account or module not found, or no modules configured", body = crate::openapi::ApiErrorResponse),
+        (status = 404, description = "Account or module not found", body = crate::openapi::ApiErrorResponse),
     )
 )]
 pub async fn set_assignment(

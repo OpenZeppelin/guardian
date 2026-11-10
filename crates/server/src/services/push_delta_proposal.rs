@@ -398,6 +398,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
     }
     tracing::Span::current().record("signer_count", cosigner_sigs.len());
 
+    let mut evaluations = Vec::new();
     if let Some((after, module_views)) = applied {
         if let Err(error) = state.network_client.load_fee_faucet().await {
             tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
@@ -410,6 +411,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                 .unwrap_or(serde_json::Value::Null),
         };
         let views = plans[0].views();
+        let network_id = plans[0].network_id();
         views.seed(&tail.commitment, module_views.before);
         views.seed(&after.commitment, module_views.after);
         for plan in plans {
@@ -418,6 +420,7 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                     state.network_client.as_ref(),
                     &views,
                     TransactionInput {
+                        network_id,
                         account_id: &account_id,
                         submitter: &proposer_id,
                         submitter_session: credentials_session,
@@ -437,7 +440,8 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
                     },
                 )
             })
-            .await?;
+            .await
+            .map(|evaluation| evaluations.push(evaluation))?;
         }
     }
     if mode == Mode::DryRun {
@@ -489,6 +493,19 @@ async fn propose(state: &AppState, params: PushDeltaProposalParams, mode: Mode) 
             )
             .increment(1);
             tracing::info!("Delta proposal created");
+            if let DeltaStatus::Pending { proposer_id, .. } = &delta_proposal.status {
+                for evaluation in &evaluations {
+                    evaluation.audit_failed_open(
+                        state.auditor.as_ref(),
+                        HookName::BeforeProposalCreated,
+                        &account_id,
+                        proposer_id,
+                        [("proposal_id".to_string(), commitment.clone().into())]
+                            .into_iter()
+                            .collect(),
+                    );
+                }
+            }
             delta_proposal
         }
         ProposalWrite::AlreadyStored => {
@@ -2595,6 +2612,63 @@ mod tests {
             propose_with_module(module, HookName::BeforeProposalCreated).await;
         assert!(matches!(result, Err(GuardianError::ModuleDenied { .. })));
         assert!(storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_failure_let_through_at_creation_is_audited_and_a_clean_creation_is_not() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule};
+        use crate::testing::helpers::CapturingAuditor;
+
+        let auditor = CapturingAuditor::new();
+        let (mut state, storage, params, proposer) = module_setup(
+            StubModule::new(Behaviour::Fail),
+            HookName::BeforeProposalCreated,
+            |instance| instance.config.on_error = OnError::Allow,
+        );
+        state.auditor = Arc::new(auditor.clone());
+        let created = push_delta_proposal(&state, params)
+            .await
+            .expect("a fail-open module does not stop the proposal");
+        assert_eq!(storage.get_submit_delta_proposal_calls().len(), 1);
+        let events = auditor.snapshot();
+        assert_eq!(events.len(), 1, "{events:?}");
+        let event = &events[0];
+        assert_eq!(event.action_kind, crate::audit::kinds::MODULES_FAILED_OPEN);
+        assert_eq!(event.operator_identity, "system");
+        assert_eq!(event.payload["hook"], "before_proposal_created");
+        assert_eq!(event.payload["submitter"], proposer);
+        assert_eq!(event.payload["proposal_id"], created.commitment);
+        assert_eq!(event.payload["failed_open"][0]["module_id"], "caps");
+        assert_eq!(event.payload["failed_open"][0]["failure"], "error");
+
+        let clean = CapturingAuditor::new();
+        let (mut state, _, params, _) = module_setup(
+            StubModule::allowing(),
+            HookName::BeforeProposalCreated,
+            |_| {},
+        );
+        state.auditor = Arc::new(clean.clone());
+        push_delta_proposal(&state, params).await.unwrap();
+        assert!(clean.snapshot().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_check_audits_nothing() {
+        use crate::modules::catalog::OnError;
+        use crate::modules::testing::{Behaviour, StubModule};
+        use crate::testing::helpers::CapturingAuditor;
+
+        let auditor = CapturingAuditor::new();
+        let (mut state, storage, params, _) = module_setup(
+            StubModule::new(Behaviour::Fail),
+            HookName::BeforeProposalCreated,
+            |instance| instance.config.on_error = OnError::Allow,
+        );
+        state.auditor = Arc::new(auditor.clone());
+        check_proposal(&state, params).await.unwrap();
+        assert!(storage.get_submit_delta_proposal_calls().is_empty());
+        assert!(auditor.snapshot().is_empty());
     }
 
     #[tokio::test]

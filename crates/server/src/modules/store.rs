@@ -98,30 +98,33 @@ pub trait ModuleStore: Send + Sync {
 
     /// Switches an instance on or off for every account. Recorded in the history as
     /// `{"enabled": previous}` to `{"enabled": new}`, so the version moves and caches refresh.
+    /// Like every operator write, returns the params version the write committed as, so the
+    /// audit entry of the write names that version and not one read afterwards.
     async fn set_enabled(
         &self,
         module_id: &str,
         enabled: bool,
         change: &Change<'_>,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
 
     async fn set_global(
         &self,
         module_id: &str,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
 
-    /// Replaces the global params only while they still equal `expected`, and returns whether
-    /// it wrote. For writes derived from a value read earlier (a module migrating params), so
-    /// an operator's newer write is never overwritten.
+    /// Replaces the global params only while they still equal `expected`, and returns the
+    /// version it committed as, or `None` when it did not write. For writes derived from a
+    /// value read earlier (a module migrating params), so an operator's newer write is never
+    /// overwritten.
     async fn set_global_if(
         &self,
         module_id: &str,
         expected: &serde_json::Value,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<bool, String>;
+    ) -> Result<Option<u64>, String>;
 
     async fn account_params(&self, account_id: &str) -> Result<Vec<AccountParamsRow>, String>;
 
@@ -142,14 +145,14 @@ pub trait ModuleStore: Send + Sync {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &Change<'_>,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
 
     async fn set_assignment(
         &self,
         account_id: &str,
         modules: Vec<Assigned>,
         change: &Change<'_>,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
 
     /// Writes `modules` as the account's assignment only when it has neither an assignment nor
     /// any assignment history, which is how `default` instances reach a newly registered
@@ -374,7 +377,7 @@ impl ModuleStore for FsModuleStore {
         module_id: &str,
         enabled: bool,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.write(|tables| {
             let row = tables
                 .instances
@@ -390,7 +393,7 @@ impl ModuleStore for FsModuleStore {
                 serde_json::json!({ "enabled": enabled }),
                 change,
             );
-            Ok(())
+            Ok(tables.version())
         })
     }
 
@@ -399,7 +402,7 @@ impl ModuleStore for FsModuleStore {
         module_id: &str,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.write(|tables| {
             let row = tables
                 .instances
@@ -416,7 +419,7 @@ impl ModuleStore for FsModuleStore {
             row.updated_at = change.at.clone();
             row.updated_by = change.operator.to_string();
             tables.append(module_id, None, previous, params, change);
-            Ok(())
+            Ok(tables.version())
         })
     }
 
@@ -426,20 +429,20 @@ impl ModuleStore for FsModuleStore {
         expected: &serde_json::Value,
         params: serde_json::Value,
         change: &Change<'_>,
-    ) -> Result<bool, String> {
+    ) -> Result<Option<u64>, String> {
         self.write(|tables| {
             let Some(row) = tables
                 .instances
                 .get_mut(module_id)
                 .filter(|row| row.global_params == *expected)
             else {
-                return Ok(false);
+                return Ok(None);
             };
             let previous = std::mem::replace(&mut row.global_params, params.clone());
             row.updated_at = change.at.clone();
             row.updated_by = change.operator.to_string();
             tables.append(module_id, None, previous, params, change);
-            Ok(true)
+            Ok(Some(tables.version()))
         })
     }
 
@@ -477,7 +480,7 @@ impl ModuleStore for FsModuleStore {
         module_id: &str,
         params: Option<serde_json::Value>,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.write(|tables| {
             let previous = tables.row_params(account_id, module_id, ParamsKind::Layer);
             tables.account_params.retain(|row| {
@@ -503,7 +506,7 @@ impl ModuleStore for FsModuleStore {
                 params.unwrap_or_default(),
                 change,
             );
-            Ok(())
+            Ok(tables.version())
         })
     }
 
@@ -512,7 +515,7 @@ impl ModuleStore for FsModuleStore {
         account_id: &str,
         modules: Vec<Assigned>,
         change: &Change<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.write(|tables| {
             let previous: Vec<AccountParamsRow> = tables
                 .account_params
@@ -537,7 +540,7 @@ impl ModuleStore for FsModuleStore {
             for (module_id, before, after) in assignment_changes(&previous, &modules) {
                 tables.append(&module_id, Some(account_id), before, after, change);
             }
-            Ok(())
+            Ok(tables.version())
         })
     }
 
@@ -661,6 +664,54 @@ mod tests {
         assert_eq!(rows[0].global_params, json!({ "a": 2 }));
         assert_eq!(rows[0].seeded_params, json!({ "a": 1 }));
         assert_eq!(store.version().await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn each_write_reports_the_version_it_committed_as() {
+        let store = FsModuleStore::in_memory();
+        store
+            .seed_instance("caps", true, &json!({}), "t0")
+            .await
+            .unwrap();
+        let assigned = || {
+            vec![Assigned {
+                module_id: "caps".into(),
+                params: json!({}),
+            }]
+        };
+        let writes = [
+            store
+                .set_global("caps", json!({ "a": 1 }), &change())
+                .await
+                .unwrap(),
+            store.set_enabled("caps", false, &change()).await.unwrap(),
+            store
+                .set_layer("0xacc", "caps", Some(json!({})), &change())
+                .await
+                .unwrap(),
+            store
+                .set_assignment("0xother", assigned(), &change())
+                .await
+                .unwrap(),
+            store
+                .set_global_if("caps", &json!({ "a": 1 }), json!({ "a": 2 }), &change())
+                .await
+                .unwrap()
+                .expect("the expectation holds"),
+        ];
+        assert!(
+            writes.windows(2).all(|pair| pair[0] < pair[1]),
+            "later writes commit as later versions: {writes:?}"
+        );
+        assert_eq!(writes.last(), Some(&store.version().await.unwrap()));
+        assert_eq!(
+            store
+                .set_global_if("caps", &json!({ "a": 1 }), json!({ "a": 3 }), &change())
+                .await
+                .unwrap(),
+            None,
+            "a stale expectation writes nothing and reports no version"
+        );
     }
 
     #[tokio::test]

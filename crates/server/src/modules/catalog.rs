@@ -172,6 +172,15 @@ pub enum ClientReason {
 }
 
 const DESCRIPTION_MAX_CHARS: usize = 500;
+const INSTANCE_ID_MAX_CHARS: usize = 64;
+
+/// An instance id is a metric label, a log field and a path segment of the operator routes.
+fn valid_instance_id(id: &str) -> bool {
+    (1..=INSTANCE_ID_MAX_CHARS).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -393,6 +402,11 @@ impl Catalog {
         let mut instances = Vec::with_capacity(file.modules.len());
         for entry in file.modules {
             let id = entry.id;
+            if !valid_instance_id(&id) {
+                return Err(format!(
+                    "module {id:?}: an id is 1 to {INSTANCE_ID_MAX_CHARS} characters of a-z, 0-9, '_' or '-'"
+                ));
+            }
             if !seen.insert(id.clone()) {
                 return Err(format!("module {id}: duplicate id"));
             }
@@ -440,6 +454,11 @@ impl Catalog {
             if remote && contains_secret_reference(&params) {
                 return Err(format!(
                     "module {id}: secret references are not allowed in remote module params"
+                ));
+            }
+            if entry.scope == Scope::Default && contains_secret_reference(&params) {
+                return Err(format!(
+                    "module {id}: scope = \"default\" copies its params into each new account, and secret references cannot be stored per account; use scope \"all\" or \"assigned\""
                 ));
             }
             if entry.disclosure == Disclosure::Params && contains_secret_reference(&params) {
@@ -638,10 +657,42 @@ on_error = "allow"
                 "grpc without endpoint",
                 VALID.replacen(r#"kind = "basic-policy""#, r#"kind = "grpc""#, 1),
             ),
+            (
+                "empty id",
+                VALID.replacen(r#"id = "caps""#, r#"id = """#, 1),
+            ),
+            (
+                "id that is not a path segment",
+                VALID.replacen(r#"id = "caps""#, r#"id = "Caps/v2""#, 1),
+            ),
+            (
+                "id over the length limit",
+                VALID.replacen(r#"id = "caps""#, &format!("id = \"{}\"", "a".repeat(65)), 1),
+            ),
         ];
         for (name, text) in cases {
             assert!(parse(&text).is_err(), "{name} should be rejected");
         }
+    }
+
+    #[test]
+    fn default_instances_cannot_hold_secret_references() {
+        let catalog = |scope: &str| {
+            format!(
+                r#"
+[[module]]
+id = "vendor"
+kind = "basic-policy"
+scope = "{scope}"
+hooks = ["before_transaction_approved"]
+timeout_ms = 20
+params = {{ api_key = {{ "$secret" = "vendor-key" }} }}
+"#
+            )
+        };
+        assert!(parse(&catalog("all")).is_ok());
+        let refused = parse(&catalog("default")).unwrap_err();
+        assert!(refused.contains("copies its params"), "{refused}");
     }
 
     #[test]
