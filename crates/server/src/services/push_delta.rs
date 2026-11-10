@@ -3,7 +3,8 @@ use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{Credentials, RequestAuthFormat};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{
-    ProposalMatch, acknowledge_applied, apply_to_base, lookup_matching_proposal,
+    ProposalMatch, acknowledge_applied, apply_to_base, ensure_labelled_with_applied_nonce,
+    lookup_matching_proposal,
 };
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
@@ -90,17 +91,17 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     //   guardian key until it promotes (409; `ensure_tail_keeps_auth`,
     //   judged on the replayed tail, so it runs after the replay and in
     //   the request path only; its docs say why that is race-safe);
-    // - behind a queued candidate, its nonce must be the nonce the delta
-    //   leaves the account at (409): the queue orders, gates and looks up
-    //   candidates by that label, so a timestamp label would sort past
-    //   every real nonce and refuse each correctly labelled successor
-    //   until it promoted. Request path only, after `apply_delta`, like
-    //   the auth binding: the storage gate does not repeat it, and a
-    //   delta that fails it never reaches the lock. A candidate admitted
-    //   after the queue was read moves the tail, so the lock-side
-    //   position check refuses this delta as competing. With nothing
-    //   queued the label is not checked, so older clients that label
-    //   with a timestamp keep working at the head.
+    // - at every depth, its nonce must be the nonce the delta leaves the
+    //   account at (400 `invalid_delta`, issue #518): the nonce is the
+    //   row's key and the order of the history, `/delta/since` and the
+    //   queue, so a timestamp label would sort past every real nonce
+    //   (and, behind a queued candidate, refuse each correctly labelled
+    //   successor until it promoted). Waiting does not fix a label, so
+    //   this is not a pending conflict. Request path only, after
+    //   `apply_delta`, like the auth binding: the storage gate does not
+    //   repeat it, and a delta that fails it never reaches the lock. A
+    //   candidate admitted after the queue was read moves the tail, so
+    //   the lock-side position check refuses this delta as competing.
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &params.delta.account_id,
@@ -194,18 +195,7 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     }
 
     let applied = apply_to_base(state, &tail.commitment, &tail.state_json, &params.delta).await?;
-    if !chain.is_empty()
-        && let Some(applied_nonce) = applied.nonce
-        && applied_nonce != params.delta.nonce
-    {
-        tracing::info!(
-            account_id = %params.delta.account_id,
-            nonce = params.delta.nonce,
-            applied_nonce,
-            "Chained delta is not labelled with the nonce it produces; rejecting as pending-delta conflict"
-        );
-        return Err(GuardianError::ConflictPendingDelta);
-    }
+    ensure_labelled_with_applied_nonce(&params.delta, &applied)?;
     // The account verifies acknowledgements under its GUARDIAN's scheme.
     let scheme = resolved.metadata.auth.guardian_scheme();
     let acknowledged = acknowledge_applied(
@@ -971,20 +961,25 @@ mod tests {
     #[tokio::test]
     async fn chained_delta_labelled_with_another_nonce_is_refused() {
         // A timestamp label behind a queued candidate would sort past
-        // every real nonce and become the tail.
+        // every real nonce and become the tail. Waiting for the queue does
+        // not fix a label, so it is an invalid delta, not a conflict.
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let (result, storage, _) = push_against_queue_with(
-            4,
-            vec![queued(account_id, 1, "0xbase", "0xc1")],
-            request(account_id, 1_791_279_079_000, "0xc1"),
-            producing_nonce(2),
-        )
-        .await;
-        assert!(
-            matches!(result, Err(GuardianError::ConflictPendingDelta)),
-            "{result:?}"
-        );
-        assert!(storage.get_submit_delta_calls().is_empty());
+        for label in [3, 1_791_279_079_000] {
+            let (result, storage, _) = push_against_queue_with(
+                4,
+                vec![queued(account_id, 1, "0xbase", "0xc1")],
+                request(account_id, label, "0xc1"),
+                producing_nonce(2),
+            )
+            .await;
+            assert!(
+                matches!(&result, Err(GuardianError::InvalidDelta(message))
+                    if message.contains(&format!("delta nonce {label} "))
+                        && message.contains("account nonce 2 ")),
+                "label {label}: {result:?}"
+            );
+            assert!(storage.get_submit_delta_calls().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -1001,23 +996,100 @@ mod tests {
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
     }
 
+    /// Network answers for a delta on the canonical state, with nothing
+    /// queued, that leaves the account at nonce 1.
+    fn head_producing_nonce_one(network: MockNetworkClient) -> MockNetworkClient {
+        network.apply_delta_responses.lock().unwrap().clear();
+        network.with_applied_state(Ok(applied(serde_json::json!({"step": 1}), "0xc1", 1)))
+    }
+
     #[tokio::test]
-    async fn head_delta_label_is_not_checked_against_the_nonce_it_produces() {
-        // Nothing queued: an older client labelling with a timestamp keeps
-        // working, as it did before the queue existed.
+    async fn head_delta_labelled_with_another_nonce_is_refused() {
+        // Issue #518: with nothing queued the label is checked too. A
+        // timestamp (the TypeScript SDK's default through 0.18.0), a gap,
+        // the base's own nonce, and labels past `i64::MAX`, which Postgres
+        // would store as negative and sort first, are all refused.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        for label in [0, 2, 1_791_279_079_000, i64::MAX as u64 + 1, u64::MAX] {
+            let (result, storage, _) = push_against_queue_with(
+                4,
+                Vec::new(),
+                request(account_id, label, "0xbase"),
+                head_producing_nonce_one,
+            )
+            .await;
+            assert!(
+                matches!(&result, Err(GuardianError::InvalidDelta(message))
+                    if message.contains(&format!("delta nonce {label} "))
+                        && message.contains("account nonce 1 ")),
+                "label {label}: {result:?}"
+            );
+            assert!(
+                storage.get_submit_delta_calls().is_empty(),
+                "label {label}: nothing is stored"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn head_delta_labelled_with_the_nonce_it_produces_is_admitted() {
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let (result, storage, _) = push_against_queue_with(
             4,
             Vec::new(),
-            request(account_id, 1_791_279_079_000, "0xbase"),
-            |network| {
-                network.apply_delta_responses.lock().unwrap().clear();
-                network.with_applied_state(Ok(applied(serde_json::json!({"step": 1}), "0xc1", 1)))
+            request(account_id, 1, "0xbase"),
+            head_producing_nonce_one,
+        )
+        .await;
+        let result = result.expect("a correctly labelled head delta is admitted");
+        assert_eq!(result.delta.nonce, 1);
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn head_delta_label_is_checked_without_canonicalization() {
+        // Optimistic mode writes the delta canonical at once, so the rule
+        // holds there too, before the state or the delta row is written.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(account_id);
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(stored_state(account_id, "0xbase")))
+            .with_pull_delta_proposal(Err("no matching proposal".to_string()))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = head_producing_nonce_one(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_verify_delta(Ok(())),
+        );
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(active_metadata(account_id, &signer_commitment))))
+            .with_get(Ok(Some(active_metadata(account_id, &signer_commitment))));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+        assert!(state.canonicalization.is_none(), "optimistic mode");
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta: request(account_id, 1_791_279_079_000, "0xbase"),
+                credentials: Credentials::signature(
+                    signer_pubkey,
+                    signer_signature,
+                    signer_timestamp,
+                ),
             },
         )
         .await;
-        result.expect("a head delta is admitted whatever its label");
-        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        assert!(
+            matches!(result, Err(GuardianError::InvalidDelta(_))),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert!(storage.get_submit_state_calls().is_empty());
     }
 
     fn binding(signers: &[&str]) -> crate::network::AuthBinding {

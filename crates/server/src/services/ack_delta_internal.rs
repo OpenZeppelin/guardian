@@ -4,7 +4,7 @@ use std::sync::Arc;
 use guardian_shared::SignatureScheme;
 
 use crate::delta_object::DeltaObject;
-use crate::error::Result;
+use crate::error::{GuardianError, Result};
 use crate::network::AppliedState;
 use crate::state::AppState;
 
@@ -28,9 +28,40 @@ pub(crate) async fn acknowledge_delta(
     delta: &DeltaObject,
 ) -> Result<AcknowledgedDelta> {
     let applied = apply_to_base(state, base_commitment, base_state_json, delta).await?;
+    ensure_labelled_with_applied_nonce(delta, &applied)?;
     let proposal_match =
         lookup_matching_proposal(state, &delta.account_id, delta.nonce, &delta.delta_payload).await;
     acknowledge_applied(state, scheme, delta, applied, proposal_match.payload()).await
+}
+
+/// Refuses a delta whose `nonce` is not the account nonce it leaves the account at (issue
+/// #518). The nonce is the delta's storage key (`UNIQUE(account_id, nonce)`), the order of the
+/// history, `/delta/since` and the candidate queue, and the lookup key of `getDelta` and
+/// `abandonCandidate`, so a label the client chose freely (a timestamp, a gap, a value past
+/// `i64::MAX`, which Postgres stores as negative) puts the delta out of chain order in every
+/// one of them. The rule holds at every queue depth and for every writer of a delta row, so the
+/// rows are in chain order by construction. Rows written before the rule keep their labels. A
+/// network without account nonces has nothing to compare.
+pub(crate) fn ensure_labelled_with_applied_nonce(
+    delta: &DeltaObject,
+    applied: &AppliedState,
+) -> Result<()> {
+    match applied.nonce {
+        Some(applied_nonce) if applied_nonce != delta.nonce => {
+            tracing::info!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                applied_nonce,
+                "Delta is not labelled with the nonce it leaves the account at; refusing it"
+            );
+            Err(GuardianError::InvalidDelta(format!(
+                "delta nonce {} is not the account nonce {applied_nonce} the delta leaves the \
+                 account at",
+                delta.nonce
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Verifies `delta` against the state it builds on and applies it, without signing anything.

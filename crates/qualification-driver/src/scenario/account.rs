@@ -762,11 +762,13 @@ pub async fn assert_execution_refusals(runner: &Runner) -> ActionOutcome {
             "registering the fixture account on the executing GUARDIAN: {error}"
         ));
     }
-    for (payload, nonce) in [
-        (&without_request, 2),
-        (&executable, fixtures.proposal_nonce()),
-    ] {
-        if let Err(error) = client.push_delta_proposal(&id, nonce, payload).await {
+    // Both at the account's next nonce: GUARDIAN records a proposal under no other label
+    // (issue #518), and the two summaries differ, so they are two proposals.
+    for payload in [&without_request, &executable] {
+        if let Err(error) = client
+            .push_delta_proposal(&id, fixtures.proposal_nonce(), payload)
+            .await
+        {
             return ActionOutcome::failed_setup(format!("pushing a fixture proposal: {error}"));
         }
     }

@@ -36,11 +36,11 @@ next transaction for the account builds on the state that candidate already
 claimed, so its acknowledgement is refused with `conflict_pending_delta`. A new
 proposal is refused the same way up front: at the default queue depth of one
 because the queue is full, and on a deeper queue
-(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1) because its nonce is not
-the stuck candidate's plus one, which a proposal built on the canonical state
+(`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1) because its nonce does
+not exceed the stuck candidate's, which a proposal built on the canonical state
 (the one `/state` serves, labelled with the account's next nonce as both SDKs
-do) never carries; a TypeScript SDK proposal from 0.18.0 or earlier carries
-a timestamp label and is refused there too (see
+do) never does; a TypeScript SDK proposal from 0.18.0 or earlier carries
+a timestamp label and is refused with `invalid_delta` at any depth (see
 [`CONFIGURATION.md`](./CONFIGURATION.md)). Release the candidate
 before proposing again, with `abandon_candidate(nonce, proposal_id)` /
 `abandonCandidate(nonce, proposalId)` (see [`MULTISIG_SDK.md`](./MULTISIG_SDK.md)), or wait
@@ -967,7 +967,7 @@ come from
 | Code | HTTP | First check |
 |---|---|---|
 | `account_already_exists` | 409 | `/configure` called twice for the same account. |
-| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, a delta behind a queued candidate is labelled with a nonce other than the one it leaves the account at (a client labelling with a timestamp), the proposal's nonce is not the newest queued candidate's plus one, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. A parked (`retained` or client-abandoned) delta does not refuse a Guardian execution request. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
+| `conflict_pending_delta` | 409 | The account's candidate queue is full (one candidate by default, `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT`), the delta builds on a state another in-flight candidate already claimed, the delta's nonce does not exceed the newest queued candidate's, the proposal's nonce does not exceed the newest queued candidate's, the newest queued candidate changes the account's signer set or guardian key, or a queued candidate's predecessor left the queue and the worker has not swept it yet. A parked (`retained` or client-abandoned) delta does not refuse a Guardian execution request. Wait for the queue to drain and resync; with queueing enabled, the client that holds the newest candidate's post-state can chain the next delta on it with the next nonce. |
 | `conflict_pending_proposal` | 409 | Pending proposals exist; resolve before pushing a direct delta. |
 | `pending_proposals_limit` | 409 | Account hit `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` (default 20). |
 | `proposal_already_signed` | 409 | This signer already signed this proposal. |
@@ -1015,7 +1015,7 @@ fails as `GUARDIAN_EXECUTION_NODE_UNAVAILABLE`, not as a binding mismatch.
 |---|---|---|
 | `invalid_input` | 400 | Generic validation failure; the message explains. |
 | `invalid_account_id` | 400 | Malformed account ID. |
-| `invalid_delta` | 400 | Delta payload failed schema or commitment validation. |
+| `invalid_delta` | 400 | Delta payload failed schema or commitment validation. Also a delta or proposal labelled with the wrong nonce (issue #518): a delta's `nonce` must be the account nonce it leaves the account at, and a proposal's the account's next nonce (the newest queued candidate's plus one, or the canonical nonce plus one with nothing queued). The response carries only the code; the server logs the refusal at `info` with the label and the expected nonce (`next_nonce` for a proposal, `applied_nonce` for a delta). Both SDKs label this way by default (the TypeScript SDK since 0.18.1, which used `Date.now()` before), so check an explicit `nonce` option or a custom client. A proposer whose state is behind GUARDIAN's, or ahead of it because GUARDIAN has not recorded a landing yet, is refused the same way: resync and retry. A Guardian execution request for a proposal an earlier release recorded under another label gets it too: create the proposal again. |
 | `invalid_commitment` | 400 | Commitment string isn't a valid hex hash. |
 | `commitment_mismatch` | 400 | `prev_commitment` doesn't match server's view; use `GetDeltaSince` to catch up. On `ConfigureAccount` for an existing account: the submitted state is older than the stored one, which the chain already reached, or a delta was promoted while the request ran; `expected` is the commitment now stored. Re-read the account's state and retry. |
 | `state_not_on_chain` | 409 | `ConfigureAccount` that must submit the account's on-chain state (a first registration past nonce 0, a released account, a key the stored auth does not list, or a state other than the stored one) submitted a state the chain does not hold yet (typically right after submitting a guardian switch back or a signer change). Retryable: register again once the transaction lands. After a guardian switch both SDKs wait for the chain to hold the switched state (about 45 seconds at most, with no wallet signature) before they register, and do not retry the registration; if it persists, check that the transaction landed, or that the client is not submitting a state the chain has already moved past (sync and register again). |

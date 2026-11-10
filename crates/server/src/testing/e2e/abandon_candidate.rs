@@ -336,14 +336,17 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
     );
 
     // The issue's 409 loop: every new proposal is refused while the
-    // stranded candidate holds the account.
+    // stranded candidate holds the account. The proposal is the one the
+    // client makes once it knows its transaction died: on the base the
+    // candidate built on, at the nonce the candidate holds, which is the
+    // account's next nonce again once the slot is released (issue #518).
     let proposal_payload = setup.proposal_payload();
     let creds = setup.credentials();
     let refused = push_delta_proposal(
         &setup.state,
         PushDeltaProposalParams {
             account_id: setup.account_id_hex.clone(),
-            nonce: setup.candidate_nonce + 1,
+            nonce: setup.candidate_nonce,
             delta_payload: proposal_payload.clone(),
             credentials: creds,
         },
@@ -380,7 +383,7 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         &setup.state,
         PushDeltaProposalParams {
             account_id: setup.account_id_hex.clone(),
-            nonce: setup.candidate_nonce + 1,
+            nonce: setup.candidate_nonce,
             delta_payload: proposal_payload.clone(),
             credentials: creds,
         },
@@ -430,7 +433,7 @@ async fn test_stranded_candidate_locks_account_until_abandoned() {
         &setup.state,
         PushDeltaProposalParams {
             account_id: setup.account_id_hex.clone(),
-            nonce: setup.candidate_nonce + 1,
+            nonce: setup.candidate_nonce,
             delta_payload: proposal_payload,
             credentials: creds,
         },

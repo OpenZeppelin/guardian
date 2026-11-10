@@ -209,6 +209,32 @@ pub async fn request_execution(
             actual: proposal.prev_commitment,
         });
     }
+    // The candidate this execution admits is labelled with the proposal's
+    // nonce, and a delta row must carry the nonce it leaves the account at
+    // (issue #518). Proposals are recorded only at that nonce now, so this
+    // refuses one an earlier release recorded under another label (a
+    // timestamp) before anything is reserved or executed.
+    if let Some(next_nonce) = crate::services::candidate_chain::next_canonical_nonce(
+        state,
+        state.storage.as_ref(),
+        &current_state,
+    )
+    .await?
+        && proposal.nonce != next_nonce
+    {
+        tracing::info!(
+            %account_id,
+            %proposal_id,
+            nonce = proposal.nonce,
+            next_nonce,
+            "execution refused: the proposal is not labelled with the account's next nonce"
+        );
+        return Err(GuardianError::InvalidDelta(format!(
+            "proposal nonce {} is not the account's next nonce {next_nonce}; create the \
+             proposal again",
+            proposal.nonce
+        )));
+    }
     let input = ExecutionInput {
         account_id: account_id.clone(),
         state_json: current_state.state_json,

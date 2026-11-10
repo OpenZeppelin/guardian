@@ -127,7 +127,7 @@ Paths are relative to `crates/server/src/`.
 | Model action | Code |
 |---|---|
 | `Gate`, `Unchained`, `Position` | `storage/mod.rs` `gate_candidate_submission`, `first_unchained_candidate`, `classify_chain_position` |
-| `ClientBuild`, `ClientLabel` | `services/push_delta.rs` `push_delta` (delta built on some base; label rule behind a queued candidate) |
+| `ClientBuild`, `ClientLabel` | `services/push_delta.rs` `push_delta` (delta built on some base; label = applied nonce at every depth, `ack_delta_internal.rs` `ensure_labelled_with_applied_nonce`, issue #518) |
 | `ClientSubmit`, `ClientCommit` | `storage/postgres.rs` `submit_candidate` (one transaction; visible at COMMIT) |
 | `ClientSubmit`, `ClientFsFlag` | `storage/filesystem.rs` `submit_candidate` (row write, then `set_has_pending_candidate`, both under `delta_write_lock`) |
 | `Abandon` | `storage/*` `request_candidate_abandon` |

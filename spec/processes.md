@@ -3,12 +3,12 @@
 ## Services overview
 
 - **configure_account**: creates a Miden account by validating the provided network configuration and auth policy, then storing account metadata and the initial state with its commitment and account nonce. Every entry in `auth.cosigner_commitments` must be a canonical commitment (`0x` plus 64 lowercase hex digits) and the list must be non-empty and duplicate-free. The account must be a guarded multisig: a state without the multisig threshold slot is rejected as `InvalidInput`. The list must exactly match the signer map extracted from `initial_state`, including the map's canonical (index) order, every approver must have a supported scheme in the state's approver scheme map, and each cosigner's declared scheme must match it, since the stored auth is the authorization source of truth for every later request, so any mismatch is rejected as `InvalidInput`. The state's GUARDIAN slot must hold this server's ACK commitment for the auth's GUARDIAN scheme and its GUARDIAN scheme slot must store that scheme (`AuthorizationFailed` otherwise); every scheme the auth uses must be allowed by `GUARDIAN_ALLOWED_ACCOUNT_SCHEMES` for a new account, and every scheme a reconfiguration adds to the stored auth for an existing one. The state is stored only when `initial_state` is the account's current on-chain state (`StateNotOnChain` until the chain holds it, retryable; one head read decides, so a state the chain has moved past is refused the same way; `RpcUnavailable` when the chain cannot be read), with two exceptions that need no chain read: a first configuration at nonce 0, whose seed binds it to the account id and whose vault must be empty (`InvalidInput` otherwise), judged before the signer check so a claim another key left behind cannot block it, and a stored cosigner of an active account re-registering the state already stored. A first configuration past nonce 0, a released account, a key the stored auth does not list, and any state other than the stored one all need the chain. The decision and the write guard use one read of the stored state. A configuration that skipped the chain read clears a release written while it ran only once its state proves to be the chain head; otherwise the release stands and the request fails with `StateNotOnChain`. The check runs after the request's replay timestamp is consumed, so a replay is refused before any chain read. A new account is first claimed by inserting its metadata row only if none exists; the request's replay timestamp is then consumed before any state is written, for new and existing accounts alike. Of two concurrent first configurations exactly one creates the account and the other is judged as a reconfiguration of it, so a retry or replay of the same signed request is refused with `authentication_replay` before it writes; one from a different signer passes its own replay check and reconfigures the account it lost to. A storage failure after the claim leaves metadata without stored state: the account is not listed by lookup and is skipped by the release sweep, and a retry of the same account id finishes it as a first configuration, held to the new-account scheme policy and counted as a creation. EVM accounts are not configured through this service.
-- **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). When the tail account is a multisig, the acknowledgement is refused with `insufficient_signatures` unless a matching pending proposal (the same transaction summary commitment) carries verified cosigner signatures from the account's approvers, each under the scheme the tail state stores for its approver (an approver it stores no supported scheme for is not counted; a state without the approver scheme map at all leaves the scheme unchecked), counted once per key, at least as many as the lowest threshold the account permits for any transaction: the default threshold, or a lower override on one of the account's non-auth procedures. The chain skips the auth procedure and never calls a root the account does not export, so overrides on either are ignored. This floor is a denial-of-service guard, not the authorization rule. The chain requires the threshold of the procedures the transaction calls, which the summary does not show, so the gate never asks for more than the chain will and never refuses a transaction the chain would accept. A push that meets the floor but not the chain's requirement is acknowledged, refused on chain, and holds a candidate slot until canonicalization drops it; on an account with no per-procedure override below the default, that takes the default threshold of cosigners. The `proposal_type` label plays no part. A storage fault while loading that proposal refuses the push. The gate runs before the delta is verified or applied. `/configure` registers only guarded multisig accounts. A session-signed push meets the same gate; on a tail without the multisig auth (an account registered before `/configure` required it) it is refused with `wallet_signature_required`, while a wallet-signed push there is acknowledged without the gate as before. EVM accounts do not support `push_delta` in v1.
+- **push_delta**: verifies a Miden delta against the tail of the account's candidate queue (the canonical state when nothing is queued, always so at the default depth of one), computes the new state's commitment and account nonce, refuses the delta with `400 invalid_delta` unless its `nonce` is that account nonce (at every queue depth, issue #518), attaches an acknowledgement, and either enqueues it as a candidate (canonicalization enabled) or immediately applies it and marks it canonical (optimistic mode). When the tail account is a multisig, the acknowledgement is refused with `insufficient_signatures` unless a matching pending proposal (the same transaction summary commitment) carries verified cosigner signatures from the account's approvers, each under the scheme the tail state stores for its approver (an approver it stores no supported scheme for is not counted; a state without the approver scheme map at all leaves the scheme unchecked), counted once per key, at least as many as the lowest threshold the account permits for any transaction: the default threshold, or a lower override on one of the account's non-auth procedures. The chain skips the auth procedure and never calls a root the account does not export, so overrides on either are ignored. This floor is a denial-of-service guard, not the authorization rule. The chain requires the threshold of the procedures the transaction calls, which the summary does not show, so the gate never asks for more than the chain will and never refuses a transaction the chain would accept. A push that meets the floor but not the chain's requirement is acknowledged, refused on chain, and holds a candidate slot until canonicalization drops it; on an account with no per-procedure override below the default, that takes the default threshold of cosigners. The `proposal_type` label plays no part. A storage fault while loading that proposal refuses the push. The gate runs before the delta is verified or applied. `/configure` registers only guarded multisig accounts. A session-signed push meets the same gate; on a tail without the multisig auth (an account registered before `/configure` required it) it is refused with `wallet_signature_required`, while a wallet-signed push there is acknowledged without the gate as before. EVM accounts do not support `push_delta` in v1.
 - **get_state**: authenticates and returns the latest persisted account state.
 - **get_canonical_nonce**: authenticates and returns the account nonce and commitment stored with the latest persisted account state, without loading the state blob, so a client can skip `get_state` when that nonce is below its local nonce, or equal to it at the same commitment (issue #191). A state stored before nonces were kept is decoded once, and its nonce is backfilled onto the row only while the row still holds that state.
 - **get_delta**: authenticates and returns a specific delta by nonce.
 - **get_delta_since**: authenticates, fetches deltas after a given nonce (excluding discarded), merges their payloads via the network client, and returns a single merged delta snapshot.
-- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. It is refused with `409 conflict_pending_delta` when its delta could never be admitted: while the queue is full, when a queue exists and its nonce is not the newest queued candidate's plus one, or when the newest queued candidate changes the account's signer set, a signer's scheme, or the guardian key or its scheme. The metadata is stored as sent apart from normalizing `proposal_type`, `description`, `amount` and `required_signatures`; client fields such as `bound_block_num` pass through unread.
+- **push_delta_proposal**: creates a pending Miden proposal by validating `tx_summary` against the tail of the account's candidate queue (the canonical state when nothing is queued) and deriving IDs through the Miden network client. Its `nonce` must be the account's next nonce, the label its delta will carry: the newest queued candidate's plus one, or the canonical state's account nonce plus one when nothing is queued (issue #518). It is refused with `409 conflict_pending_delta` when its delta could not be admitted until the queue drains: while the queue is full, when its nonce is at or below the newest queued candidate's, or when the newest queued candidate changes the account's signer set, a signer's scheme, or the guardian key or its scheme; and with `400 invalid_delta` when its nonce is otherwise not the next nonce. The metadata is stored as sent apart from normalizing `proposal_type`, `description`, `amount` and `required_signatures`; client fields such as `bound_block_num` pass through unread.
 - **sign_delta_proposal**: appends one signer signature to a pending Miden proposal. The signature must verify for one of the account's cosigners, under the scheme the account registers that cosigner with; otherwise it is refused with `invalid_proposal_signature`. The append commits only if the proposal is unchanged since it was read, and otherwise is applied again to the current proposal, so concurrent signings never drop each other's approval (the multisig push gate counts the stored approvals).
 - **evm_session**: issues an EIP-712 wallet challenge, recovers the EOA with `ecrecover`, consumes the nonce once, and creates a cookie-backed session.
 - **evm_accounts**: registers EVM smart accounts under `/evm/accounts` by validating the cookie session signer, server-owned chain config, ERC-7579 validator installation, and signer snapshot before storing account metadata without state or acknowledgement data.
@@ -202,11 +202,13 @@ sequenceDiagram
     S->>ST: pull_state_commitment(account_id)\n(a promotion may have raced the two reads)
     S->>ST: on a change: pull_state + pull_candidate_deltas again
   end
-  alt the queue is full, does not chain from the canonical state,\nor a queue exists and nonce is not the newest queued candidate's plus one
+  alt the queue is full, does not chain from the canonical state,\nor a queue exists and nonce is at or below the newest queued candidate's
     S-->>C: 409 ConflictPendingDelta
+  else nonce is not the next nonce (the newest queued candidate's plus one,\nor with nothing queued the stored account nonce plus one,\ndecoded from the state when the row does not store it)
+    S-->>C: 400 InvalidDelta
   else
     S->>ST: pull_pending_proposals(account_id)
-    alt viable proposals (pinned to the tail, nonce above the tail's) reach the limit
+    alt viable proposals (pinned to the tail at the next nonce) reach the limit
       S-->>C: 409 PendingProposalsLimit
     else
       S->>S: replay queued payloads onto the canonical state\n(tail state; no-op when the queue is empty)
@@ -361,16 +363,21 @@ sequenceDiagram
   than on a proposal label, since a direct push changes signers without
   one): requests stay authorized against the canonical signer set until
   that candidate promotes, and a successor this server acknowledges behind
-  a queued guardian switch could never land; and last, a delta behind a
-  queued candidate whose label is not the nonce it leaves the account at
-  (checked on the request path only, once the delta is applied and before
-  the storage gate runs, so one that fails never reaches the lock: a
-  timestamp label would sort past every real nonce and refuse each
-  correctly labelled successor until it promoted; with nothing queued the
-  label is not checked, so a client that labels with a timestamp still
-  works at the head), all with `409
+  a queued guardian switch could never land, all with `409
   conflict_pending_delta`; a delta building on a state the server does not
   know gets `400 commitment_mismatch` against the canonical commitment.
+  Last, at every depth, a delta whose label is not the nonce it leaves the
+  account at gets `400 invalid_delta` (issue #518; checked on the request
+  path only, once the delta is applied and before the storage gate runs,
+  so one that fails never reaches the lock). The label is the row's key
+  and the order of the history, `/delta/since` and the queue, so the rule
+  keeps every new row in chain order: a timestamp label would sort past
+  every real nonce (and, behind a queued candidate, refuse each correctly
+  labelled successor until it promoted), and a label past `i64::MAX` would
+  be stored as negative by Postgres and sort first. No wait fixes a label,
+  so it is not a pending conflict. Rows admitted before the rule keep
+  their labels; a candidate queued under a timestamp holds the tail until
+  it promotes, since no real nonce exceeds it.
   Both storage backends re-evaluate the chain-position rules under the
   account lock, so two racing submissions cannot both extend the tail and
   nothing is admitted behind an orphan; the binding and label rules are
@@ -383,10 +390,15 @@ sequenceDiagram
   chains, or an empty one that a delta on another base or a proposal is
   judged against) and re-validates against the fresh state. Proposals are
   pinned to the tail as well (their `prev_commitment` is the tail
-  commitment) and are refused up front when their delta could never be
-  admitted: while the queue is full, when a queue exists and their nonce
-  is not the tail's plus one, or behind a tail that changes the signer set
-  or guardian key. Both SDKs label a proposal with the account's next
+  commitment), carry the label their delta will be pushed with, and are
+  refused up front when their delta could never be admitted: with `409
+  conflict_pending_delta` while the queue is full, when a queue exists and
+  their nonce is at or below the tail's, or behind a tail that changes
+  the signer set or guardian key; and with `400 invalid_delta` when their
+  nonce is otherwise not the next one, the tail's plus one or, with
+  nothing queued, the canonical account nonce plus one (issue #518; read
+  from the stored state, decoded once when the row predates stored
+  nonces). Both SDKs label a proposal with the account's next
   nonce (the TypeScript SDK since 0.18.1; earlier
   releases used a timestamp, which the rule refuses), so a proposal built
   on the tail carries the tail's nonce plus one, and one built on the
@@ -394,16 +406,20 @@ sequenceDiagram
   the cosigner on another device proposing while this device's candidate
   is queued. The queue therefore serves the device that pushed the newest
   candidate; every other cosigner is refused until it drains, as at depth
-  one. The server cannot tell which state a summary was built on, so the
-  nonce rule and, at execution, the SDKs keep a proposal from executing
-  anywhere but on the tail: both SDKs refuse to execute a proposal pinned
+  one. With nothing queued, a proposer behind the canonical state, or one
+  ahead of it because a landing has not been recorded yet, is refused
+  until it and the server agree on the account's nonce. The server cannot
+  tell which state a summary was built on, only which nonce it was
+  labelled from, so the nonce rule and, at execution, the SDKs keep a
+  proposal from executing anywhere but on the tail: both SDKs refuse to execute a proposal pinned
   to a state the client does not hold (TypeScript 0.18.0 and earlier
   pushed the pinned base regardless, and the Rust SDK through 0.18.3
   executed on its own state without the check; a switch proposal is
   checked while the pre-switch GUARDIAN serves it), and both push the state they
-  executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail with a nonce above the
-  tail's) count toward the pending-proposal limit, which is checked before
-  the tail replay. Promotion of the oldest candidate
+  executed on, which the delta gate refuses unless it is the tail. Only viable proposals (pinned to the tail at the next nonce; a
+  proposal an earlier release recorded there under another label no
+  longer executes) count toward the pending-proposal limit, which is
+  checked before the tail replay. Promotion of the oldest candidate
   moves the canonical state *along* the chain, so the tail commitment —
   and every proposal pinned to it — stays valid while the queue drains.
   A queued payload that no longer replays (an upgrade changed delta
@@ -639,9 +655,14 @@ the proposal stores no request (`GUARDIAN_PROPOSAL_MISSING_TRANSACTION_REQUEST`)
 execution holds the account
 (`GUARDIAN_EXECUTION_CONFLICT`), a client candidate is pending, the proposal builds on a state other
 than the account's current one (`commitment_mismatch`; the proposal can never execute),
+the proposal's nonce is not the account's next nonce (`invalid_delta`, issue #518: the candidate
+it would admit is labelled with that nonce, so only a proposal an earlier release recorded under
+another label, such as a timestamp, meets this; create it again),
 or the valid, distinct cosigner signatures fall short of the effective per-procedure threshold
 (`GUARDIAN_PROPOSAL_NOT_READY`). The checks run in that order, so a proposal that must execute
-locally is told so even while another execution holds the account.
+locally is told so even while another execution holds the account. The worker holds the same rule
+when it acknowledges the delta it reproduced: one that leaves the account at another nonce than the
+proposal's fails as `GUARDIAN_EXECUTION_BINDING_MISMATCH` before the boundary.
 
 A proposal is a guardian switch when it is labelled `switch_guardian` or when the
 `TransactionSummary` the cosigners signed changes the guardian public key slot. The label is not

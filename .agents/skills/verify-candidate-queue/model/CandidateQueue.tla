@@ -152,7 +152,9 @@ Init ==
 
 (* The label is the delta's `nonce` column: the account nonce it leaves   *)
 (* the account at, or a timestamp (TypeScript SDK 0.18.0 and earlier),     *)
-(* modeled as a value above every real nonce.                              *)
+(* modeled as a value above every real nonce. Rows a server before #518    *)
+(* admitted under a timestamp are not modeled: the model starts from an    *)
+(* account whose rows all carry real nonces.                               *)
 ClientBuild(c) ==
     /\ cpc[c] = "idle"
     /\ created < MaxDeltas
@@ -167,13 +169,14 @@ ClientBuild(c) ==
     /\ cpc' = [cpc EXCEPT ![c] = "label"]
     /\ UNCHANGED <<chain, stored, rows, flag, acked, lock, archive, zombie, csup, wvars>>
 
-(* services/push_delta.rs: behind a queued candidate the label must be the *)
-(* nonce the delta leaves the account at; judged on the request path's own *)
-(* read of the queue, before the storage gate.                             *)
+(* services/push_delta.rs (ensure_labelled_with_applied_nonce, issue      *)
+(* #518): at every depth the label must be the nonce the delta leaves the  *)
+(* account at; judged on the request path once the delta is applied,       *)
+(* before the storage gate. A timestamp label never reaches the gate.     *)
 ClientLabel(c) ==
     /\ cpc[c] = "label"
     /\ cpc' = [cpc EXCEPT ![c] =
-                 IF Queue # <<>> /\ cd[c].nonce # cnonce[cd[c].new] THEN "idle" ELSE "submit"]
+                 IF cd[c].nonce # cnonce[cd[c].new] THEN "idle" ELSE "submit"]
     /\ UNCHANGED <<chain, stored, rows, flag, acked, cnonce, created, lock, archive, zombie, cd, csup, wvars>>
 
 (* storage/postgres.rs + storage/filesystem.rs submit_candidate: take the  *)

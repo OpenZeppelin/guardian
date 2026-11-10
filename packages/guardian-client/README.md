@@ -167,9 +167,8 @@ If an approved transaction died client-side after guardian approval, its
 candidate keeps the account locked: new proposals and deltas answer
 `409 conflict_pending_delta` while the account's candidate queue (one
 candidate by default) is full, when they build on the state that candidate
-already claimed, or when their nonce does not extend the queue (a proposal's
-must be the newest queued candidate's plus one), and any candidate queued
-behind it can never land. Record an
+already claimed, or when their nonce does not exceed the newest queued
+candidate's, and any candidate queued behind it can never land. Record an
 abandon intent and poll for the resolution:
 
 ```typescript
@@ -289,6 +288,11 @@ const result = await client.pushDelta({
   status: { status: 'pending', timestamp: '...', proposer_id: '0x...', cosigner_sigs: [] },
 });
 ```
+
+`nonce` is the account nonce the transaction leaves the account at: the
+current account nonce plus one (`1` above, for an account at nonce 0). A
+proposal carries the nonce its delta will be pushed with. Guardian 0.19.0
+and later refuse any other label with `invalid_delta`.
 
 ### Execute a Proposal Through Guardian
 

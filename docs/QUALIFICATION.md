@@ -817,9 +817,13 @@ ships), far beyond any step budget.
 
 **Proposal nonces.** Both SDKs label a proposal with the account's next nonce
 (the TypeScript SDK used `Date.now()` through 0.18.0), and GUARDIAN records
-a proposal behind a queued candidate only at that candidate's nonce plus one,
-which is what stops a cosigner on the canonical state from proposing something
-doomed behind another device's candidate. The candidate-queue scenarios use the
+a proposal only at the account's next nonce: behind a queued candidate, that
+candidate's nonce plus one, which is what stops a cosigner on the canonical
+state from proposing something doomed behind another device's candidate; with
+nothing queued, the canonical nonce plus one (issue #518). A delta's label must
+be the nonce it leaves the account at, at every depth. Every scenario labels
+from the account's state, so a pass shows no SDK path chooses another label;
+the refusals themselves are covered by the server's unit and end-to-end tests. The candidate-queue scenarios use the
 SDK defaults on both legs. The stranded-head scenario's TypeScript leg also
 labels a proposal past the head explicitly, as an integration computing its own
 nonces might, to show that a proposal GUARDIAN did record behind the head is
