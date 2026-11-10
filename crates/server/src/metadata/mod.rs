@@ -404,6 +404,34 @@ pub trait MetadataStore: Send + Sync {
     /// Number of accounts [`Self::list_release_sweep_ids`] would walk
     /// (same filter), for pacing one release-sweep rotation.
     async fn count_release_sweep_accounts(&self) -> Result<usize, String>;
+
+    /// Which of `ids` (account ids a committed block updated) this server
+    /// guards: unreleased Miden accounts, split into those the release
+    /// sweep can act on (the filter of [`Self::list_release_sweep_ids`])
+    /// and those with a candidate in flight, which belong to the push path
+    /// for now. Ids this server does not know, released accounts and EVM
+    /// rows are in neither list. Block watch (issue #585) calls this once
+    /// per block; implementations bound the size of each statement.
+    async fn filter_release_sweep_ids(
+        &self,
+        ids: &[String],
+    ) -> Result<ReleaseSweepMembership, String>;
+}
+
+/// Ids per statement of [`MetadataStore::filter_release_sweep_ids`] and
+/// [`crate::storage::StorageBackend::pull_state_commitments_batch`]: a
+/// block can update thousands of accounts, and one bounded statement per
+/// chunk keeps the parameter list and the plan predictable.
+pub const MEMBERSHIP_CHUNK: usize = 1_000;
+
+/// Outcome of [`MetadataStore::filter_release_sweep_ids`], each list in the
+/// order of the ids asked about.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReleaseSweepMembership {
+    /// Unreleased Miden accounts with no candidate in flight.
+    pub sweepable: Vec<String>,
+    /// Unreleased Miden accounts with a candidate in flight.
+    pub pending_candidate: Vec<String>,
 }
 
 /// Outcome of [`MetadataStore::clear_released_if_state`].

@@ -761,6 +761,35 @@ export interface DashboardReleaseSweepConfig {
   confirmations: number;
 }
 
+/** Block watch (issue #585): the committed-block feed that drives switch
+ * detection. The feed runs on the release sweep lease holder only; every
+ * replica reports the shared cursor and backlog, and only the holder the
+ * live transport, tip and lag. */
+export interface DashboardBlockWatchInfo {
+  /** Configured transport: `"auto"` (the stream, polling when it is
+   * unavailable), `"stream"` or `"poll"`. */
+  transportMode: 'auto' | 'stream' | 'poll';
+  /** Transport of the open block source on this replica; `null` on a
+   * replica without the feed, or between reconnect attempts. */
+  transport: 'stream' | 'poll' | null;
+  /** The last block fully processed (the shared cursor); `null` before
+   * the first block or when the store could not be read. */
+  lastBlock: number | null;
+  /** The node's committed tip as this replica's feed last saw it. */
+  chainTip: number | null;
+  /** `chainTip - lastBlock` on the feed's holder; `null` elsewhere. */
+  lagBlocks: number | null;
+  /** Observations awaiting a release-detector visit; `null` when the
+   * store could not be read. */
+  pendingObservations: number | null;
+  /** Tip read interval of the polling transport, in seconds. */
+  pollSeconds: number;
+  /** No block for this long reopens the source, in seconds. */
+  stallSeconds: number;
+  /** Largest gap replayed on (re)start. */
+  maxCatchupBlocks: number;
+}
+
 /** Backend configuration snapshot. */
 export interface DashboardBackendInfo {
   /** `"filesystem"` or `"postgres"` based on the server's compiled
@@ -771,9 +800,12 @@ export interface DashboardBackendInfo {
   supportedAckSchemes: string[];
   /** `null` in optimistic-commit mode. */
   canonicalization: DashboardCanonicalizationConfig | null;
-  /** Release sweep settings; `null` when the sweep is disabled, absent
-   * on servers predating it. */
+  /** Release sweep rotation settings; `null` when the rotation is
+   * disabled, absent on servers predating it. */
   releaseSweep?: DashboardReleaseSweepConfig | null;
+  /** Block watch state; `null` when block watch is disabled, absent on
+   * servers predating it. */
+  blockWatch?: DashboardBlockWatchInfo | null;
 }
 
 export interface DashboardInfoResponse {

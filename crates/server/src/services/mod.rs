@@ -185,9 +185,11 @@ pub async fn resolve_account_allowing_session(
 }
 
 /// [`resolve_account_allowing_session`] for read routes: the account's
-/// metadata may come from a copy the metadata store has just confirmed is
-/// current, so a signer removal or other change is honored on the next
-/// request. Routes that write must use [`resolve_account_allowing_session`].
+/// metadata may come from a cached copy at or above the version the database
+/// reported after the request's last wait (a session read re-reads it with
+/// the session), so a signer removal committed before that point refuses the
+/// request and one committed after it is honored on the next request. Routes
+/// that write must use [`resolve_account_allowing_session`].
 pub async fn resolve_account_for_read(
     state: &AppState,
     account_id: &str,
@@ -432,13 +434,25 @@ fn admit_read_record(
     Err(GuardianError::AuthenticationReplay)
 }
 
-/// Account and session lookups for stores that admit session reads locally.
+/// State head, account and session lookups for stores that admit session
+/// reads locally.
 struct StateSessionReadLookups<'a> {
     state: &'a AppState,
 }
 
 #[async_trait::async_trait]
 impl crate::coordination::read_records::SessionReadLookups for StateSessionReadLookups<'_> {
+    async fn head(
+        &self,
+        account_id: &str,
+    ) -> std::result::Result<Option<crate::state_object::StateHead>, String> {
+        match self.state.storage.pull_state_head(account_id).await {
+            Ok(head) => Ok(Some(head)),
+            Err(error) if crate::storage::is_storage_not_found(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn account_exists(&self, account_id: &str) -> std::result::Result<bool, String> {
         Ok(self
             .state
@@ -1169,6 +1183,7 @@ mod tests {
             ack,
             canonicalization: None,
             release_sweep: None,
+            block_watch: None,
             clock: Arc::new(clock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

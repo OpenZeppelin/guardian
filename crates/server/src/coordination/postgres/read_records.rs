@@ -354,6 +354,73 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn two_replicas_dropping_fenced_partitions_at_once_both_succeed() {
+        let (first, second) = (store().await, store().await);
+        first.maintain(0, 600_000, 3_600_000).await.unwrap();
+        let mut held = first.pool.get().await.expect("conn");
+        #[derive(QueryableByName)]
+        struct Ddl {
+            #[diesel(sql_type = Text)]
+            sql: String,
+        }
+        let fenced_partition: Ddl = diesel::sql_query(
+            "SELECT format('CREATE TABLE IF NOT EXISTS session_read_seen_%s PARTITION OF \
+             session_read_seen FOR VALUES FROM (%s) TO (%s)', s, s, s + w) AS sql \
+             FROM (SELECT (f.watermark_ms / p.w) * p.w - p.w AS s, p.w FROM replay_fence f, \
+             (SELECT guardian_session_read_partition_ms() AS w) p \
+             WHERE f.fence = 'session_read') b",
+        )
+        .get_result(&mut held)
+        .await
+        .unwrap();
+        for sql in [
+            &fenced_partition.sql,
+            "BEGIN",
+            "SELECT guardian_drop_fenced_session_read_partitions()",
+        ] {
+            diesel::sql_query(sql).execute(&mut held).await.expect(sql);
+        }
+
+        let second_drop = async {
+            let mut conn = second.pool.get().await.expect("conn");
+            diesel::sql_query("SELECT guardian_drop_fenced_session_read_partitions()")
+                .execute(&mut conn)
+                .await
+        };
+        let release_after_the_second_waits = async {
+            let waiters = "SELECT count(*) AS watermark FROM pg_locks WHERE NOT granted \
+                 AND (locktype = 'relation' OR (locktype = 'advisory' \
+                 AND ((classid::bigint << 32) | objid::bigint) = 7310317003))";
+            let mut waited = false;
+            for _ in 0..80 {
+                let mut conn = first.pool.get().await.expect("conn");
+                let count = diesel::sql_query(waiters)
+                    .get_result::<Watermark>(&mut conn)
+                    .await
+                    .unwrap()
+                    .watermark;
+                if count >= 1 {
+                    waited = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            diesel::sql_query("COMMIT")
+                .execute(&mut held)
+                .await
+                .expect("COMMIT");
+            waited
+        };
+        let (dropped, waited) = tokio::join!(second_drop, release_after_the_second_waits);
+        assert!(waited, "the second drop never waited on the first");
+        assert!(
+            dropped.is_ok(),
+            "the second replica's drop failed: {dropped:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
     async fn a_missing_fence_row_fails_closed() {
         let store = store().await;
         store.maintain(0, 600_000, 3_600_000).await.unwrap();
@@ -397,6 +464,12 @@ mod admission_tests {
 
     #[async_trait]
     impl SessionReadLookups for NoLookups {
+        async fn head(
+            &self,
+            _account_id: &str,
+        ) -> Result<Option<crate::state_object::StateHead>, String> {
+            unreachable!("Postgres admits session reads in one call")
+        }
         async fn account_exists(&self, _account_id: &str) -> Result<bool, String> {
             unreachable!("Postgres admits session reads in one call")
         }
@@ -721,6 +794,26 @@ mod admission_tests {
                 conn
             }
         };
+        let blocked = |waiters: i64| {
+            let store = &store;
+            async move {
+                for _ in 0..200 {
+                    let mut conn = store.pool.get().await.expect("conn");
+                    let waiting = diesel::sql_query(
+                        "SELECT count(*) AS watermark FROM pg_locks WHERE NOT granted",
+                    )
+                    .get_result::<Watermark>(&mut conn)
+                    .await
+                    .unwrap()
+                    .watermark;
+                    if waiting >= waiters {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                panic!("{waiters} admission(s) never blocked on the held lock");
+            }
+        };
         let expiring = "clock_timestamp() + interval '2 seconds'";
         let window_only = ReadRule::WindowOnly(TimestampWindow {
             past_ms: 60_000,
@@ -746,6 +839,7 @@ mod admission_tests {
         assert_live(session).await;
         let mut lock = hold("LOCK TABLE account_metadata IN ACCESS EXCLUSIVE MODE").await;
         let release = async {
+            blocked(1).await;
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             diesel::sql_query("COMMIT")
                 .execute(&mut lock)
@@ -766,7 +860,7 @@ mod admission_tests {
             (rand::random(), rand::random());
         let mut fence = hold("SELECT pg_advisory_xact_lock(7310317001)").await;
         let revoke_then_release = async {
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            blocked(2).await;
             exec(
                 &store,
                 &format!(
@@ -798,17 +892,178 @@ mod admission_tests {
             after_revoke,
             SessionReadAdmission::Inactive(InactiveSession::Revoked)
         );
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO states (account_id, state_json, commitment, created_at, updated_at, nonce) \
+                 VALUES ('{account_id}', '{{}}', '0xhead', now(), now(), 7)"
+            ),
+        )
+        .await;
+        let served_session = new_session("now() + interval '1 hour'").await;
+        let recorded_session = new_session("now() + interval '1 hour'").await;
+        assert_live(served_session).await;
+        assert_live(recorded_session).await;
+        let head_key: ReadRecordKey = rand::random();
+        let mut head_lock = hold("LOCK TABLE states IN ACCESS EXCLUSIVE MODE").await;
+        let revoke_both_then_release = async {
+            blocked(2).await;
+            for session in [served_session, recorded_session] {
+                exec(
+                    &store,
+                    &format!(
+                        "UPDATE auth_sessions SET revoked_at = now() WHERE token_digest = '\\x{}'",
+                        hex::encode(session)
+                    ),
+                )
+                .await;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            diesel::sql_query("COMMIT")
+                .execute(&mut head_lock)
+                .await
+                .expect("COMMIT");
+        };
+        let (served_after_head_wait, recorded_after_head_wait, ()) = tokio::join!(
+            admit(served_session, window_only),
+            admit(recorded_session, record(head_key)),
+            revoke_both_then_release,
+        );
+        assert_eq!(
+            served_after_head_wait,
+            SessionReadAdmission::Inactive(InactiveSession::Revoked)
+        );
+        assert_eq!(
+            recorded_after_head_wait,
+            SessionReadAdmission::Inactive(InactiveSession::Revoked)
+        );
+
         let mut conn = store.pool.get().await.expect("conn");
         let left = diesel::sql_query(format!(
             "SELECT count(*) AS watermark FROM session_read_seen \
-             WHERE record_key IN ('\\x{}', '\\x{}')",
+             WHERE record_key IN ('\\x{}', '\\x{}', '\\x{}')",
             hex::encode(expired_key),
-            hex::encode(revoked_key)
+            hex::encode(revoked_key),
+            hex::encode(head_key)
         ))
         .get_result::<Watermark>(&mut conn)
         .await
         .unwrap()
         .watermark;
         assert_eq!(left, 0, "a refused read leaves no record");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres; run ./scripts/test-postgres.sh"]
+    async fn a_signer_change_while_admission_waits_returns_the_new_metadata_version() {
+        let url = test_database_url().await;
+        let store = PgReadRecords::new(build_postgres_pool_lazy(&url, 4).expect("pool"));
+        store.maintain(0, 600_000, 3_600_000).await.unwrap();
+        let account_id = format!("0xsigners{}", chrono::Utc::now().timestamp_micros());
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO account_metadata \
+                 (account_id, auth, network_config, created_at, updated_at, has_pending_candidate) \
+                 VALUES ('{account_id}', '{{\"MidenFalconRpo\":{{\"cosigner_commitments\":[\"0x1\"]}}}}', \
+                 '{{\"kind\":\"miden\"}}', now(), now(), false)"
+            ),
+        )
+        .await;
+        let subject = serde_json::to_string(&SessionSubject::Miden {
+            signer_commitment: "0x1".to_string(),
+            origin: String::new(),
+            guardian_commitment: "0x2".to_string(),
+            network: "devnet".to_string(),
+        })
+        .unwrap();
+        let session: [u8; 32] = rand::random();
+        exec(
+            &store,
+            &format!(
+                "INSERT INTO auth_sessions (realm, token_digest, subject, issued_at, expires_at, revoked_at) \
+                 VALUES ('miden', '\\x{}', '{subject}', now(), now() + interval '1 hour', NULL)",
+                hex::encode(session)
+            ),
+        )
+        .await;
+        let scalar = |sql: String| {
+            let store = &store;
+            async move {
+                let mut conn = store.pool.get().await.expect("conn");
+                diesel::sql_query(sql)
+                    .get_result::<Watermark>(&mut conn)
+                    .await
+                    .unwrap()
+                    .watermark
+            }
+        };
+        let version_sql = format!(
+            "SELECT auth_version AS watermark FROM account_metadata WHERE account_id = '{account_id}'"
+        );
+        let before = scalar(version_sql.clone()).await;
+        let now = scalar("SELECT guardian_db_now_ms() AS watermark".to_string()).await;
+
+        let mut fence = store.pool.get().await.expect("conn");
+        for sql in ["BEGIN", "SELECT pg_advisory_xact_lock(7310317001)"] {
+            diesel::sql_query(sql).execute(&mut fence).await.expect(sql);
+        }
+        let remove_signer_then_release = async {
+            let fence_waiters = "SELECT count(*) AS watermark FROM pg_locks \
+                 WHERE locktype = 'advisory' AND NOT granted \
+                 AND ((classid::bigint << 32) | objid::bigint) = 7310317001";
+            let mut waited = false;
+            for _ in 0..200 {
+                if scalar(fence_waiters.to_string()).await >= 1 {
+                    waited = true;
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            assert!(waited, "the admission never waited on the read fence");
+            exec(
+                &store,
+                &format!(
+                    "UPDATE account_metadata SET auth = \
+                     '{{\"MidenFalconRpo\":{{\"cosigner_commitments\":[\"0x3\"]}}}}' \
+                     WHERE account_id = '{account_id}'"
+                ),
+            )
+            .await;
+            diesel::sql_query("COMMIT")
+                .execute(&mut fence)
+                .await
+                .expect("COMMIT");
+        };
+        let clock = MockClock::default();
+        let admit = store.admit_session_read(
+            &NoLookups,
+            SessionReadRequest {
+                account_id: &account_id,
+                session_key: session,
+                rule: ReadRule::Record {
+                    key: rand::random(),
+                    skew_ms: 300_000,
+                },
+                timestamp_ms: now,
+                clock: &clock,
+                head: HeadRead::Include,
+            },
+        );
+        let (admission, ()) = tokio::join!(admit, remove_signer_then_release);
+        let after = scalar(version_sql).await;
+        assert!(after > before, "the signer change bumps the version");
+        match admission.unwrap() {
+            SessionReadAdmission::Live {
+                metadata_version,
+                outcome: ReadRecordOutcome::Recorded,
+                ..
+            } => assert_eq!(
+                metadata_version,
+                Some(after),
+                "the grant is checked against the signer set after the wait"
+            ),
+            other => panic!("expected a recorded read, got {other:?}"),
+        }
     }
 }

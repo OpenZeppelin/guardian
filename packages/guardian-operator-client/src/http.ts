@@ -26,6 +26,7 @@ import type {
   DashboardErrorCodeOrRaw,
   DashboardGlobalDeltaEntry,
   DashboardGlobalProposalEntry,
+  DashboardBlockWatchInfo,
   DashboardInfoResponse,
   DashboardProposalEntry,
   DashboardStatsOptions,
@@ -986,6 +987,15 @@ function parseDashboardInfo(value: unknown): DashboardInfoResponse {
     };
   }
 
+  // Optional (issue #585): absent on servers predating block watch, null
+  // when it is disabled.
+  const blockWatchField = backendRecord.block_watch;
+  if (blockWatchField === null) {
+    backend.blockWatch = null;
+  } else if (blockWatchField !== undefined) {
+    backend.blockWatch = parseBlockWatchInfo(blockWatchField);
+  }
+
   const accountsByAuthMethod = requireCountMap(
     requireField(record, 'accounts_by_auth_method', 'dashboard info'),
     'dashboard info.accounts_by_auth_method',
@@ -1469,6 +1479,54 @@ function parseStateStatus(
     context,
     `expected state_status to be "available" or "unavailable", got ${JSON.stringify(value)}`,
   );
+}
+
+function parseBlockWatchInfo(value: unknown): DashboardBlockWatchInfo {
+  const context = 'dashboard info.backend.block_watch';
+  const record = asRecord(value, context);
+  const transportMode = requireString(record, 'transport_mode', context);
+  if (transportMode !== 'auto' && transportMode !== 'stream' && transportMode !== 'poll') {
+    throw new GuardianOperatorContractError(
+      context,
+      'field "transport_mode" must be "auto", "stream" or "poll"',
+    );
+  }
+  const transport = requireNullableString(record, 'transport', context);
+  if (transport !== null && transport !== 'stream' && transport !== 'poll') {
+    throw new GuardianOperatorContractError(
+      context,
+      'field "transport" must be "stream", "poll" or null',
+    );
+  }
+  return {
+    transportMode,
+    transport,
+    lastBlock: requireNullableInteger(record, 'last_block', context),
+    chainTip: requireNullableInteger(record, 'chain_tip', context),
+    lagBlocks: requireNullableInteger(record, 'lag_blocks', context),
+    pendingObservations: requireNullableInteger(record, 'pending_observations', context),
+    pollSeconds: requireInteger(record, 'poll_seconds', context),
+    stallSeconds: requireInteger(record, 'stall_seconds', context),
+    maxCatchupBlocks: requireInteger(record, 'max_catchup_blocks', context),
+  };
+}
+
+function requireNullableInteger(
+  record: Record<string, unknown>,
+  key: string,
+  context: string,
+): number | null {
+  const value = requireField(record, key, context);
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== 'number' || !Number.isInteger(value)) {
+    throw new GuardianOperatorContractError(
+      context,
+      `field "${key}" must be an integer or null`,
+    );
+  }
+  return value;
 }
 
 function asRecord(value: unknown, context: string): Record<string, unknown> {

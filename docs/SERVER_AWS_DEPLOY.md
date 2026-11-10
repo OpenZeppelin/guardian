@@ -1031,7 +1031,7 @@ Most traffic from session-v2 clients is the canonical nonce poll: a client
 polls each account's nonce (one poll every 2 s per active user in the
 benchmark profiles) and fetches full state only when it changes. Measured
 on AWS with the window-only nonce poll (`benchmarks/prod-server/results/2026-11-04-devnet-317-bench.md`,
-"Deployed runs of the window-only nonce poll"), each 1,000 nonce polls/s
+"Window-only nonce poll on AWS"), each 1,000 nonce polls/s
 cost about:
 
 - **0.2 vCPU of database** on Graviton3 (`db.m7g`), one call per poll;
@@ -1167,15 +1167,15 @@ The stack deploys with ECS rolling updates (`deployment_minimum_healthy_percent 
    ./scripts/aws-deploy.sh deploy
    ```
    The embedded migrations run on the first new task and are additive; old tasks keep working against them during the overlap.
-3. Wait for the rollout to finish: `aws ecs describe-services` lists a single `PRIMARY` deployment with `rolloutState` `COMPLETED`. Until then a session request can be refused depending on which task serves it; clients see it as a failed request and retry.
+3. Wait for the rollout to finish: `aws ecs describe-services` lists a single `PRIMARY` deployment with `rolloutState` `COMPLETED`. Until then a session started on a new task can reach an old one, which refuses it (HTTP 401 `authentication_failed`, gRPC `INVALID_ARGUMENT`). The TypeScript SDK then ends that session and signs with the wallet until the app starts a new session; the Rust SDK returns the error and the next request on a new task succeeds. Only sessions started during the overlap are affected.
 4. Confirm the new version is serving:
    ```bash
    curl -s https://<host>/status | jq '.sessions'
    ```
    It reports `request_auth_version: 2`.
-5. Watch `guardian_auth_rejections_total` by `reason` and `guardian_session_reads_total` by `kind` and `outcome` in Grafana. A rise in `timestamp_window` rejections points at client clocks more than 60 s off; `outside_window` on the `window_only` kind is the canonical nonce poll.
+5. Watch `guardian_auth_rejections_total` by `reason` and `guardian_session_reads_total` by `kind` and `outcome` in Grafana. A rise in `timestamp_window` rejections points at client clocks more than 60 s off (30 s fast for the canonical nonce poll); `outside_window` on the `window_only` kind is the canonical nonce poll.
 
-To roll back, redeploy the previous image digest. The rollback is explicit, not silent: upgraded SDKs refuse to start or resume a session against the older server, and sessions already running have their requests refused until they are started again after the server is upgraded once more. Plan a rollback window accordingly.
+To roll back, redeploy the previous image digest. The rollback is explicit, not silent: upgraded SDKs refuse to start a session against the older server, TypeScript sessions already running end on their next request and fall back to the wallet, and Rust sessions already running have their requests refused until the server is upgraded once more. Wallet-signed requests keep working. Plan a rollback window accordingly.
 
 ## Migrating An Existing ECS-Postgres Stack
 

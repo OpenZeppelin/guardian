@@ -624,17 +624,26 @@ only; wallet-signed requests, session grants and logout are unchanged.
   `INVALID_ARGUMENT`), so browser apps on an older SDK lose session requests
   until they upgrade. An upgraded SDK refuses a Guardian that does not report
   `request_auth_version: 2` when it starts a session. Neither side falls back
-  to the other format or to the wallet.
+  to the other format.
 - Existing grants and stored session keys keep working after the SDK
   upgrade: the grant format and key usages are unchanged, so no new wallet
   prompt is needed.
-- Cut a server fleet over as a whole (drained or blue/green). Replicas of
-  both versions behind one endpoint would refuse each other's session
-  requests intermittently.
+- An earlier release answers a version 2 session request with
+  `authentication_failed` (HTTP 401) on HTTP and `INVALID_ARGUMENT` on gRPC.
+  The TypeScript SDK reads that as a rejected session: it drops the session
+  key and signs later requests with the wallet until the app starts a new
+  session. The Rust SDK returns the error to the caller and keeps the
+  session. This happens only while a request can reach an earlier release:
+  during a rolling update that overlaps both versions (a session started on
+  a new replica, then served by an old one) and after a rollback.
+- Cut a server fleet over as a whole (drained or blue/green) to avoid it. On a
+  rolling update the exposure is the overlap: sessions started during it may
+  end and be started again.
 - Rolling the server back to an earlier release fails explicitly rather
-  than silently: upgraded SDKs refuse to start or resume a session against
-  it (`UnsupportedAuthVersion`), and a session already running has its
-  requests refused until it is started again after the server is upgraded.
+  than silently: upgraded SDKs refuse to start a session against it
+  (`UnsupportedAuthVersion`), a TypeScript session already running ends on
+  its next request and falls back to the wallet, and a Rust session already
+  running has its requests refused until the server is upgraded again.
   Wallet-signed requests keep working across the rollback.
 - Each signed session read is accepted
   once, in any order, so parallel and reordered reads no longer fail with
@@ -650,7 +659,7 @@ only; wallet-signed requests, session grants and logout are unchanged.
   same session key, and its reads are admitted by the record like any other
   session's. No new wallet prompt is needed.
 - Session reads must carry a timestamp within 60 s of server time (5 minutes
-  before), and the canonical nonce poll at most 60 s behind and 30 s ahead;
+  before this release), and the canonical nonce poll at most 60 s behind and 30 s ahead;
   wallet requests and session writes keep 5 minutes. A client whose
   clock is more than a minute off gets `timestamp_out_of_window` on session
   reads and keeps its session: sync its clock.

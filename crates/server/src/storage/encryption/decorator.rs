@@ -167,6 +167,29 @@ impl StorageBackend for EncryptedStorage {
         self.inner.pull_state_commitment(account_id).await
     }
 
+    async fn pull_state_commitments_batch(
+        &self,
+        account_ids: &[&str],
+    ) -> Result<HashMap<String, String>, String> {
+        self.inner.pull_state_commitments_batch(account_ids).await
+    }
+
+    // Delta commitments are stored in the clear (only payloads are
+    // encrypted).
+    async fn filter_canonical_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        self.inner.filter_canonical_post_states(pairs).await
+    }
+
+    async fn filter_candidate_post_states(
+        &self,
+        pairs: &[(&str, &str)],
+    ) -> Result<std::collections::HashSet<(String, String)>, String> {
+        self.inner.filter_candidate_post_states(pairs).await
+    }
+
     async fn replace_state(
         &self,
         state: &StateObject,

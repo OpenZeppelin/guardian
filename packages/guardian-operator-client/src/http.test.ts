@@ -772,6 +772,91 @@ describe('GuardianOperatorHttpClient — per-account history', () => {
     await expect(client.getDashboardInfo()).rejects.toThrow(/release_sweep/);
   });
 
+  it('decodes block watch, disabled, absent, and on a replica without the feed', async () => {
+    const info = (blockWatch: Record<string, unknown>) => ({
+      service_status: 'healthy',
+      environment: 'devnet',
+      build: {
+        version: '0.18.3',
+        git_commit: 'abcdef123456',
+        profile: 'release',
+        started_at: '2026-11-02T10:00:00Z',
+      },
+      backend: {
+        storage: 'postgres',
+        supported_ack_schemes: ['ecdsa', 'falcon'],
+        ...blockWatch,
+      },
+      total_account_count: 1,
+      accounts_by_auth_method: {},
+      latest_activity: null,
+      delta_status_counts: {
+        candidate: 0,
+        canonical: 0,
+        retained: 0,
+        discarded: 0,
+      },
+      in_flight_proposal_count: 0,
+      degraded_aggregates: [],
+    });
+    const holder = {
+      transport_mode: 'auto',
+      transport: 'stream',
+      last_block: 574041,
+      chain_tip: 574042,
+      lag_blocks: 1,
+      pending_observations: 0,
+      poll_seconds: 3,
+      stall_seconds: 60,
+      max_catchup_blocks: 10000,
+    };
+    const client = new GuardianOperatorHttpClient('https://guardian.example');
+
+    mockFetch.mockResolvedValueOnce(okJson(info({ block_watch: holder })));
+    expect((await client.getDashboardInfo()).backend.blockWatch).toEqual({
+      transportMode: 'auto',
+      transport: 'stream',
+      lastBlock: 574041,
+      chainTip: 574042,
+      lagBlocks: 1,
+      pendingObservations: 0,
+      pollSeconds: 3,
+      stallSeconds: 60,
+      maxCatchupBlocks: 10000,
+    });
+
+    // A replica without the feed reports the shared cursor only.
+    mockFetch.mockResolvedValueOnce(
+      okJson(
+        info({
+          block_watch: { ...holder, transport: null, chain_tip: null, lag_blocks: null },
+        }),
+      ),
+    );
+    expect((await client.getDashboardInfo()).backend.blockWatch).toMatchObject({
+      transport: null,
+      lastBlock: 574041,
+      chainTip: null,
+      lagBlocks: null,
+    });
+
+    mockFetch.mockResolvedValueOnce(okJson(info({ block_watch: null })));
+    expect((await client.getDashboardInfo()).backend.blockWatch).toBeNull();
+
+    mockFetch.mockResolvedValueOnce(okJson(info({})));
+    expect((await client.getDashboardInfo()).backend.blockWatch).toBeUndefined();
+
+    for (const broken of [
+      { ...holder, transport: 'grpc' },
+      { ...holder, transport_mode: 'Stream' },
+      { ...holder, last_block: '574041' },
+      { transport_mode: 'auto' },
+    ]) {
+      mockFetch.mockResolvedValueOnce(okJson(info({ block_watch: broken })));
+      await expect(client.getDashboardInfo()).rejects.toThrow(/block_watch/);
+    }
+  });
+
   it('passes limit and cursor query params for delta listing', async () => {
     mockFetch.mockResolvedValueOnce(
       okJson({ items: [], next_cursor: null }),

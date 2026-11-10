@@ -5321,6 +5321,17 @@
           "supported_ack_schemes"
         ],
         "properties": {
+          "block_watch": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DashboardBlockWatchInfo",
+                "description": "Block watch state; `None` when block watch is disabled."
+              }
+            ]
+          },
           "canonicalization": {
             "oneOf": [
               {
@@ -5339,7 +5350,7 @@
               },
               {
                 "$ref": "#/components/schemas/DashboardReleaseSweepConfig",
-                "description": "Release sweep settings; `None` when the sweep is disabled."
+                "description": "Release sweep rotation settings; `None` when the rotation is\ndisabled."
               }
             ]
           },
@@ -5353,6 +5364,83 @@
               "type": "string"
             },
             "description": "Acknowledgement signature schemes wired into the server's\n`AckRegistry`. Stable order (alphabetic) so clients can rely on\nthe listing."
+          }
+        }
+      },
+      "DashboardBlockWatchInfo": {
+        "type": "object",
+        "description": "Block watch (issue #585): the committed-block feed that drives switch\ndetection. The feed runs on the release sweep lease holder only; every\nreplica reports the shared cursor and backlog, and only the holder the\nlive transport, tip and lag.",
+        "required": [
+          "transport_mode",
+          "poll_seconds",
+          "stall_seconds",
+          "max_catchup_blocks"
+        ],
+        "properties": {
+          "chain_tip": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The node's committed tip as this replica's feed last saw it; `null`\nwithout a feed.",
+            "minimum": 0
+          },
+          "lag_blocks": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "`chain_tip - last_block` on the feed's holder; `null` elsewhere.",
+            "minimum": 0
+          },
+          "last_block": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The last block block watch fully processed (the shared cursor);\n`null` before the first block, or when the store could not be read.",
+            "minimum": 0
+          },
+          "max_catchup_blocks": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Largest gap replayed on (re)start; a larger one starts at the tip\nand requests one rotation.",
+            "minimum": 0
+          },
+          "pending_observations": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Observations awaiting a release-detector visit; `null` when the\nstore could not be read.",
+            "minimum": 0
+          },
+          "poll_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tip read interval of the polling transport, in seconds.",
+            "minimum": 0
+          },
+          "stall_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "No block for this long reopens the source, in seconds.",
+            "minimum": 0
+          },
+          "transport": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Transport of this replica's open block source (`\"stream\"` or\n`\"poll\"`); `null` on a replica that does not hold the feed, or\nbetween reconnect attempts."
+          },
+          "transport_mode": {
+            "type": "string",
+            "description": "Configured transport: `\"auto\"` (the stream, polling when it is\nunavailable), `\"stream\"` or `\"poll\"`."
           }
         }
       },

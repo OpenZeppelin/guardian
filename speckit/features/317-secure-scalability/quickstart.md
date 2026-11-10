@@ -33,17 +33,22 @@ Expect: Rust and TypeScript produce identical `envelope_hex`,
 ## 2. Server replay policy (US1, US3)
 
 ```bash
-cargo test -p guardian-server auth::session_v2
-cargo test -p guardian-server replay_fence
-# Postgres (ignored tests, live DB per repo convention)
-DATABASE_URL=postgres://... cargo test -p guardian-server \
-  --features integration -- --ignored session_read_seen
+# Session request auth over HTTP, nonce poll included (integration tests)
+cargo test -p guardian-server --lib --features integration -- \
+  testing::integration::session_http testing::integration::canonical_nonce_http
+# Read records (in-memory and file stores)
+cargo test -p guardian-server --lib -- coordination::read_records
+# Postgres: every ignored Postgres test, including the read-record admission,
+# the nonce serving call and the session floor fence; the helper enables the
+# `postgres` feature and refuses an empty selection
+DATABASE_URL=postgres://guardian:guardian@localhost:5432/guardian_test ./scripts/test-postgres.sh
 ```
 
 Check:
 
 - 50 parallel identical-timestamp distinct reads: all accepted.
-- Resend of an accepted read or write (either S form, other replica): rejected `authentication_replay`.
+- Resend of an accepted recorded read or a write (either S form, other replica): rejected `authentication_replay`.
+- Resend of a session-signed canonical nonce poll: accepted again while the session is live and the timestamp is at most 60 s behind and 30 s ahead of server time; refused with `timestamp_out_of_window` outside that window, and with the session's code after revocation or expiry. A wallet-signed nonce poll resend is still `authentication_replay`.
 - Read with `ts <= watermark` after a forced purge: rejected.
 - Same credentials on another operation or transport: `authentication_failed`.
 - `x-auth-format: session`: `unsupported_auth_version`, HTTP 400 / gRPC `INVALID_ARGUMENT`.
@@ -55,7 +60,6 @@ Check:
 .claude/skills/verify-auth-replay/check.sh --deep
 .claude/skills/verify-candidate-queue/check.sh
 .claude/skills/verify-worker-lease/check.sh
-docs/architecture/scalability/tla/run.sh
 ```
 
 Expect: `expected.txt` updated so every cell passes, including the former
@@ -95,9 +99,13 @@ refresher duration.
 ## 7. Target benchmark (US5, US6, success criteria)
 
 ```bash
-cargo run -p guardian-prod-benchmarks -- preflight --profile profiles/target-317.toml
-# distributed ECS run, then
-cargo run -p guardian-prod-benchmarks -- aggregate --run-id <id>
+cargo run -p guardian-prod-benchmarks -- preflight \
+  --profile benchmarks/prod-server/profiles/target-317-mix.toml
+# distributed ECS run; it collects the worker artifacts and aggregates them
+./scripts/run-prod-benchmark-ecs.sh \
+  --profile benchmarks/prod-server/profiles/target-317-mix.toml --workers 8
+# repeat with target-317-full-state.toml for the full get_state leg, and
+# target-317-mix-wallet.toml for the same load under wallet credentials
 ```
 
 Profile: 100,000 accounts, 20,000 readers polling every 2 s (nonce poll,

@@ -40,8 +40,15 @@ A session the Rust SDK registered before refusing is logged out.
 
 Version 2 fixes how requests are judged, so it is the only field clients
 need: each signed session read is admitted once, in any order, within 60 s
-of server time; session writes advance a per-key timestamp floor within
-5 minutes. (Earlier drafts also advertised `read_replay_policy` and
+of server time, except the canonical nonce poll; session writes advance a
+per-key timestamp floor within 5 minutes. The session-signed canonical nonce
+poll (`GetCanonicalNonce`, `GET /state/nonce`) is accepted every time while
+its session is live and its timestamp is at most 60 s behind and 30 s ahead
+of server time, and leaves no record, so version 2 is not an at-most-once
+guarantee for that operation. This exception was accepted in security
+review on 2026-11-05 ([decision](../decision-nonce-read-window.md)) and
+applies to no other session read. A wallet-signed nonce poll
+keeps its floor. (Earlier drafts also advertised `read_replay_policy` and
 `read_timestamp_skew_ms`; with one fixed policy they told clients nothing the
 version does not, and they were removed before release.)
 
@@ -56,7 +63,7 @@ a new grant.
 | HTTP | 401 |
 | gRPC | `UNAUTHENTICATED` |
 | Retryable | No |
-| When | The request timestamp is outside its window (60 s for session reads, 5 minutes otherwise), on arrival or by the store's clock at its replay check |
+| When | The request timestamp is outside its window (60 s for session reads, 60 s behind and 30 s ahead for the session nonce poll, 5 minutes otherwise), on arrival or by the store's clock at its replay or serving check |
 | SDK behaviour | The session is kept; the client's clock must be fixed |
 
 ## Error code `unsupported_auth_version`

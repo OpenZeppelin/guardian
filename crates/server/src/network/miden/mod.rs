@@ -1,4 +1,5 @@
 pub mod account_inspector;
+pub mod block_feed;
 pub mod execution;
 
 use crate::metadata::auth::{Auth, Credentials};
@@ -917,7 +918,7 @@ impl NetworkClient for MidenNetworkClient {
 
 /// Outbound chain-node RPC metrics for one call (`operation` is the static
 /// RPC method name, a closed set).
-fn record_rpc(operation: &'static str, started: std::time::Instant, ok: bool) {
+pub(crate) fn record_rpc(operation: &'static str, started: std::time::Instant, ok: bool) {
     metrics::counter!(
         crate::metrics::names::MIDEN_RPC_REQUESTS_TOTAL,
         crate::metrics::names::LABEL_OPERATION => operation,

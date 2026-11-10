@@ -5,7 +5,7 @@
 **Status**: Draft
 **Input**: User description: "Based on gap-analysis.md and on session-auth-rfc.md start working on specification for perf improvements. We should go with options that are okay for security."
 **Tracking issue**: [#317](https://github.com/OpenZeppelin/guardian/issues/317)
-**Design inputs**: [gap analysis](../../../docs/architecture/scalability/gap-analysis.md), [session-auth RFC](../../../docs/architecture/scalability/session-auth-rfc.md), [session replay design model](../../../docs/architecture/scalability/tla/README.md)
+**Design inputs** (archived on #317): [gap analysis](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667740111), [session-auth RFC](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667740923), [session replay design model](https://github.com/OpenZeppelin/guardian/issues/317#issuecomment-6667741734)
 
 ## Context
 
@@ -44,13 +44,15 @@ security properties**. In particular:
   capture.
   One exception, recorded in
   [decision-nonce-read-window.md](./decision-nonce-read-window.md) and
-  pending security review: the session-signed canonical nonce poll is
+  accepted in security review: the session-signed canonical nonce poll is
   accepted every time inside a window of 60 s behind and 30 s ahead of server
   time. A copy reveals only the account's current nonce and commitment, never
   state, and is never accepted for another operation.
 - Authorization is always decided against current, authoritative data.
   Signer removal, session revocation and expiry take effect on the next
-  request on every replica.
+  request on every replica. A session read checks the session and the
+  signer set after its last database wait, so a change committed while the
+  read waits refuses it.
 - Decrypted account state is never held in long-lived memory.
 - Every request is bound to the operation it was signed for, closing the
   latent hazard where reads (and potentially writes) share signed payloads.
@@ -360,10 +362,12 @@ job's duration and its effect on concurrent request latency.
 - **Duplicate store unavailable**: reads fail closed rather than skipping
   the duplicate check.
 - **Mixed fleet during cutover**: v1 and v2 servers behind one endpoint
-  would cause intermittent failures; cutover is homogeneous (drained or
-  blue/green).
-- **Rollback to a v1 server**: the v2 SDK fails explicitly and does not
-  downgrade signatures.
+  refuse each other's session requests. A drained or blue/green cutover
+  avoids it; on a rolling update, a session started during the overlap may
+  end (TypeScript falls back to the wallet) and is started again.
+- **Rollback to a v1 server**: the v2 SDK refuses to start a session and
+  does not downgrade signatures; running TypeScript sessions end and fall
+  back to the wallet, running Rust sessions have their requests refused.
 - **Legacy nonce backfill on a read**: remains an internal guarded repair
   and is measured separately from replay writes.
 - **Metadata version bumped mid-request**: a request authorized before a

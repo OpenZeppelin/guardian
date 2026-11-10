@@ -154,9 +154,17 @@ depth (issue #17; `1`, the default, means no queueing):
 `has_pending_candidate` on an account means *at least one* candidate is
 queued, and `candidate` rows for one account may number up to this
 depth. `backend.release_sweep`
-exposes the release sweep settings (`rotation_seconds`,
+exposes the release sweep rotation settings (`rotation_seconds`,
 `max_rate_per_second`, `recheck_seconds`, `confirmations`, issue
-#434; `null` when the sweep is disabled). A `released_at` set by the
+#434; `null` when the rotation is disabled). `backend.block_watch`
+(issue #585; `null` when block watch is disabled) reports the
+committed-block feed: `transport_mode` (`auto`, `stream`, `poll`), the
+shared cursor `last_block` and the observation backlog
+`pending_observations` (on every replica), the settings
+`poll_seconds`, `stall_seconds` and `max_catchup_blocks`, and, on the
+replica holding the release sweep lease only, the open `transport`
+(`stream` or `poll`), the `chain_tip` it last saw and `lag_blocks`
+(`null` elsewhere). A `released_at` set by the
 sweep rather than by a canonicalized switch delta is distinguishable on
 the audit trail: the `accounts.release` row carries
 `detected_by: proposal_match` (with the `proposal_id` the chain proved
@@ -167,7 +175,12 @@ same, with the `delta_nonce` of a switch delta canonicalization
 retained or the client abandoned) or `detected_by: chain_sweep` (with
 the on-chain / stored commitment pair) instead of `detected_by: delta`
 and the delta nonce. The sweep writes `detected_by: delta` itself only
-for a canonicalized switch delta whose own release write failed.
+for a canonicalized switch delta whose own release write failed. Every
+`accounts.release` row also says what found the switch: `source:
+"push_path"`, `"rotation"` (the walk of the fleet or a confirmation
+re-check) or `"block_watch"`, the last with the `observed_block_num` of
+the block that showed the account move (when the candidate match found
+the post-state at that block, `switch_block_num` is that block too).
 
 ## Aggregate stats
 

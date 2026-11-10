@@ -988,6 +988,17 @@ behavior.
 | `guardian_release_sweep_rotations_total` | counter | `outcome` (`completed`/`partial`) |
 | `guardian_release_sweep_rotation_duration_seconds` | histogram | — |
 | `guardian_release_sweep_accounts_total` | counter | `outcome` (`released`/`confirming`/`still_bound`/`own_key_mismatch`/`storage_opaque`/`no_binding`/`chain_behind_stored`/`probe_failed`) |
+| `guardian_block_watch_blocks_total` | counter | `transport` (`stream`/`poll`) |
+| `guardian_block_watch_last_block` | gauge | — |
+| `guardian_block_watch_lag_blocks` | gauge | — |
+| `guardian_block_watch_account_updates_total` | counter | `outcome` (`not_guarded`/`skipped_pending_candidate`/`at_stored`/`own_history`/`unfinished_configuration`/`observed`/`undecodable`) |
+| `guardian_block_watch_observations_pending` | gauge | — |
+| `guardian_block_watch_observations_long_waiting` | gauge | — |
+| `guardian_block_watch_observation_visits_total` | counter | `outcome` (`checked`/`deferred`/`waiting`/`failed`/`dropped`) |
+| `guardian_block_watch_reconnects_total` | counter | `reason` (`status_<grpc code>`/`transport`/`ended`/`out_of_sequence`/`malformed`/`unavailable_block`/`stall`/`timeout`/`skipped_malformed_block`/`skipped_unavailable_block`) |
+| `guardian_block_watch_walk_requests_total` | counter | `reason` (`cursor_init`/`cursor_jump`/`genesis_changed`/`genesis_unknown`/`node_behind_too_long`/`cursor_ahead_of_tip`/`observations_lost`/`undecodable_updates`/`skipped_malformed_block`/`skipped_unavailable_block`/`observation_dropped`) |
+| `guardian_block_watch_transport` | gauge | `transport` (`stream`/`poll`; 1 for the active one) |
+| `guardian_block_watch_block_processing_seconds` | histogram | — |
 | `guardian_canonicalization_candidates_total` | counter | `outcome` (`canonicalized`/`retried`/`discarded`/`grace_deferred`/`divergence_deferred`/`diverged`/`orphaned`/`abandoned`/`stale_base`/`retained`/`reconciled`/`reconcile_deferred`/`reconcile_expired`) |
 | `guardian_canonicalization_retries_total` | counter | — |
 | `guardian_canonicalization_commitment_mismatches_total` | counter | — |

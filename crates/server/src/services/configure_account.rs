@@ -773,6 +773,7 @@ mod tests {
             ack,
             canonicalization: None, // Optimistic mode for tests
             release_sweep: None,
+            block_watch: None,
             clock: Arc::new(crate::clock::SystemClock),
             dashboard: Arc::new(crate::dashboard::DashboardState::default()),
             auditor: Arc::new(crate::audit::LogAuditor::new()),

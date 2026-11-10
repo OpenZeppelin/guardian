@@ -55,6 +55,7 @@ locals {
     "guardian_db_pool_acquire_duration_seconds",
     "guardian_rate_limit_lock_wait_duration_seconds",
     "guardian_state_reconstruction_duration_seconds",
+    "guardian_block_watch_block_processing_seconds",
   ]
 
   http_error_rate_expression = "100 * (${join(" + ", [for s in local.http_error_statuses : "FILL(h${s}, 0)"])}) / FILL(hall, 1)"
@@ -309,6 +310,41 @@ locals {
               "^guardian_execution_records_pruned_total$",
             ]
             dimensions = [[]]
+          },
+          {
+            # Block watch (issue #585). Only the release sweep lease
+            # holder runs the feed, so these are one task's series.
+            metric_name_selectors = [
+              "^guardian_block_watch_last_block$",
+              "^guardian_block_watch_lag_blocks$",
+              "^guardian_block_watch_observations_pending$",
+              "^guardian_block_watch_observations_long_waiting$",
+              "^guardian_block_watch_block_processing_seconds$",
+            ]
+            dimensions = [[]]
+          },
+          {
+            metric_name_selectors = [
+              "^guardian_block_watch_blocks_total$",
+              "^guardian_block_watch_transport$",
+            ]
+            dimensions = [["transport"]]
+          },
+          {
+            metric_name_selectors = [
+              "^guardian_block_watch_account_updates_total$",
+              "^guardian_block_watch_observation_visits_total$",
+            ]
+            dimensions = [["outcome"]]
+          },
+          {
+            metric_name_selectors = ["^guardian_block_watch_reconnects_total$"]
+            dimensions            = [["reason"]]
+          },
+          {
+            # The total feeds the walk-requests alarm.
+            metric_name_selectors = ["^guardian_block_watch_walk_requests_total$"]
+            dimensions            = [[], ["reason"]]
           },
           {
             metric_name_selectors = [
@@ -656,6 +692,43 @@ resource "aws_cloudwatch_dashboard" "server" {
           ]
         }
       },
+      # --- Row 8: block watch (issue #585) -----------------------------------
+      {
+        type = "metric", x = 0, y = 48, width = 8, height = 6
+        properties = {
+          title  = "Block watch lag (blocks) & backlog"
+          region = var.aws_region, view = "timeSeries", period = 300
+          yAxis  = { left = { min = 0 } }
+          metrics = [
+            ["${local.metrics_namespace}", "guardian_block_watch_lag_blocks", { stat = "Maximum", label = "lag behind tip" }],
+            ["${local.metrics_namespace}", "guardian_block_watch_observations_pending", { stat = "Maximum", label = "observations pending" }],
+            ["${local.metrics_namespace}", "guardian_block_watch_observations_long_waiting", { stat = "Maximum", label = "waiting a day or more" }],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 8, y = 48, width = 8, height = 6
+        properties = {
+          title  = "Block watch blocks by transport & reconnects"
+          region = var.aws_region, view = "timeSeries", stat = "Sum", period = 300
+          metrics = [
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",transport} MetricName=\"guardian_block_watch_blocks_total\"', 'Sum', 300)", id = "e1", label = "blocks" }],
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",reason} MetricName=\"guardian_block_watch_reconnects_total\"', 'Sum', 300)", id = "e2", label = "reconnects" }],
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",reason} MetricName=\"guardian_block_watch_walk_requests_total\"', 'Sum', 300)", id = "e3", label = "walk requests" }],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 16, y = 48, width = 8, height = 6
+        properties = {
+          title  = "Block watch account updates & visits"
+          region = var.aws_region, view = "timeSeries", stat = "Sum", period = 300
+          metrics = [
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",outcome} MetricName=\"guardian_block_watch_account_updates_total\"', 'Sum', 300)", id = "e1", label = "updates" }],
+            [{ expression = "SEARCH('{\"${local.metrics_namespace}\",outcome} MetricName=\"guardian_block_watch_observation_visits_total\"', 'Sum', 300)", id = "e2", label = "visits" }],
+          ]
+        }
+      },
       ], var.cloudwatch_log_alarms_enabled ? [
       # Metric-filter counts from the server log group (log_alarms.tf), not
       # scraped metrics; present only when the filters are deployed.
@@ -689,6 +762,12 @@ resource "aws_cloudwatch_dashboard" "server" {
 # under the 1024-character description limit.
 
 locals {
+  # Block watch follows the release sweep switch unless set on its own (the
+  # server applies the same rule to GUARDIAN_BLOCK_WATCH_ENABLED).
+  effective_guardian_block_watch_enabled = coalesce(
+    var.guardian_block_watch_enabled,
+    var.guardian_release_sweep_enabled,
+  )
   cloudwatch_console_base = "https://console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}"
   dashboard_console_url   = "${local.cloudwatch_console_base}#dashboards:name=${local.dashboard_name}"
   # The console encodes log-group paths twice ("/" -> "$252F").
@@ -1060,6 +1139,106 @@ resource "aws_cloudwatch_metric_alarm" "session_read_maintenance_stale" {
       period      = 300
     }
   }
+}
+
+# Block watch (issue #585) lagging: the feed processes blocks more slowly
+# than the chain commits them (or the node closed it for lag and the
+# polling fallback cannot keep up). 200 blocks is ~10 minutes of chain.
+# Breaching only while the lag shrinks by fewer than 100 blocks per period:
+# a replay after a restart starts far behind (up to `max_catchup_blocks`,
+# minutes of work at the database's per-block cost) but closes thousands
+# of blocks a period, which is catching up; a feed that barely gains on
+# the chain is still hours late. Two 5-minute periods in a row.
+resource "aws_cloudwatch_metric_alarm" "block_watch_lag" {
+  count = local.cloudwatch_metrics_enabled && local.effective_guardian_block_watch_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-block-watch-lag"
+  alarm_description   = "Guardian block watch is more than 200 blocks behind the chain tip and not catching up; guardian switches are detected late (check block_watch_* events in the server log)${local.alarm_description_links}"
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "behind"
+    expression  = "IF(lag > 200 AND DIFF(lag) > -100, 1, 0)"
+    label       = "behind the tip and not catching up"
+    return_data = true
+  }
+
+  metric_query {
+    id = "lag"
+    metric {
+      namespace   = local.metrics_namespace
+      metric_name = "guardian_block_watch_lag_blocks"
+      stat        = "Maximum"
+      period      = 300
+    }
+  }
+}
+
+# Complements the lag alarm: a feed that stopped altogether (node down,
+# every reconnect failing, no lease holder running it) reports no lag at
+# all, but its cursor stops advancing. Miden commits a block every 3 s, so
+# a healthy cursor advances by ~100 per 5-minute period; DIFF <= 0 for two
+# periods means no block processed for >= 10 minutes.
+resource "aws_cloudwatch_metric_alarm" "block_watch_stalled" {
+  count = local.cloudwatch_metrics_enabled && local.effective_guardian_block_watch_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-block-watch-stalled"
+  alarm_description   = "Guardian block watch processed no block for 10 minutes; switch detection falls back to the release sweep rotation (check block_watch_* events in the server log)${local.alarm_description_links}"
+  comparison_operator = "LessThanOrEqualToThreshold"
+  threshold           = 0
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
+
+  metric_query {
+    id          = "advance"
+    expression  = "DIFF(cursor)"
+    label       = "blocks processed per period"
+    return_data = true
+  }
+
+  metric_query {
+    id = "cursor"
+    metric {
+      namespace   = local.metrics_namespace
+      metric_name = "guardian_block_watch_last_block"
+      stat        = "Maximum"
+      period      = 300
+    }
+  }
+}
+
+# Block watch asks for a walk of the fleet whenever it could not see what
+# a block did to the guarded accounts (a first start, a gap too large to
+# replay, a reset chain, a block or an entry it cannot read). Each is rare;
+# requests made during a walk fold into one more walk, so a cause that
+# lasts (a node upgrade adding an update format this server cannot decode
+# asks once per block) quietly turns the rotation into a continuous one,
+# within the visit rate but without any other sign. More than 10 in an
+# hour is such a cause; the `reason` dimension names it.
+resource "aws_cloudwatch_metric_alarm" "block_watch_walk_requests" {
+  count = local.cloudwatch_metrics_enabled && local.effective_guardian_block_watch_enabled ? 1 : 0
+
+  alarm_name          = "${var.stack_name}-block-watch-walk-requests"
+  alarm_description   = "Guardian block watch asked for more than 10 walks of the fleet in an hour; something keeps it from reading blocks, and the release sweep walks the fleet continuously (see guardian_block_watch_walk_requests_total by reason and block_watch_* events in the server log)${local.alarm_description_links}"
+  namespace           = local.metrics_namespace
+  metric_name         = "guardian_block_watch_walk_requests_total"
+  statistic           = "Sum"
+  period              = 3600
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 10
+  evaluation_periods  = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.effective_alarm_actions
+  ok_actions          = local.effective_alarm_actions
 }
 
 resource "aws_cloudwatch_metric_alarm" "ecs_cpu_high" {

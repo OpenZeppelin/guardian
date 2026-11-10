@@ -82,6 +82,12 @@ impl IntegrationMockNetworkClient {
             .push((block, initial_state_commitment, final_state_commitment));
     }
 
+    /// Answer every read at `tip` from now on.
+    pub fn set_chain_tip(&self, tip: u32) {
+        self.chain_tip
+            .store(tip, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Produce one more (empty) block.
     pub fn advance_chain(&self) {
         self.chain_tip
@@ -374,6 +380,7 @@ pub async fn create_test_app_state() -> AppState {
         ack,
         canonicalization: Some(crate::canonicalization::CanonicalizationConfig::default()),
         release_sweep: None,
+        block_watch: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),
@@ -1114,6 +1121,7 @@ pub fn create_test_app_state_with_mocks(
         ack,
         canonicalization: None, // Use optimistic mode for unit tests
         release_sweep: None,
+        block_watch: None,
         clock: Arc::new(crate::clock::SystemClock),
         dashboard: Arc::new(DashboardState::default()),
         auditor: Arc::new(crate::audit::LogAuditor::new()),

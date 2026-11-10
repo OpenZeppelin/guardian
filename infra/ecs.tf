@@ -203,6 +203,10 @@ resource "aws_ecs_task_definition" "server" {
             value = tostring(var.guardian_release_sweep_enabled)
           },
           {
+            name  = "GUARDIAN_BLOCK_WATCH_TRANSPORT"
+            value = var.guardian_block_watch_transport
+          },
+          {
             name  = "GUARDIAN_OPERATOR_PUBLIC_KEYS_SECRET_ID"
             value = local.operator_public_keys_secret_arn
           },
@@ -236,6 +240,12 @@ resource "aws_ecs_task_definition" "server" {
             {
               name  = "GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT"
               value = tostring(var.guardian_max_pending_candidates_per_account)
+            }
+          ] : [],
+          var.guardian_block_watch_enabled != null ? [
+            {
+              name  = "GUARDIAN_BLOCK_WATCH_ENABLED"
+              value = tostring(var.guardian_block_watch_enabled)
             }
           ] : [],
           var.guardian_release_sweep_rotation_seconds != null ? [

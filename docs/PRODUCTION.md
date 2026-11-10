@@ -233,6 +233,18 @@ Before treating a deployment as production-ready:
   `GUARDIAN_RELEASE_SWEEP_ENABLED=false`, if the node has no headroom
   (AWS: `guardian_release_sweep_*`). See
   [`CONFIGURATION.md`](./CONFIGURATION.md#runtime--server-identity-and-storage).
+- Block watch (on by default) detects guardian switches from the node's
+  committed blocks, within blocks of the switch, at a node cost that does
+  not grow with the fleet: one `BlockSubscription` stream held by the
+  release sweep's lease holder, or one `GetBlockByNumber` per block when
+  polling. A public RPC endpoint serves 10 subscriptions per node instance
+  to everyone and bans a subscriber that falls behind for 10 minutes;
+  block watch then polls, but a dedicated node is the dependable setup.
+  `GUARDIAN_BLOCK_WATCH_TRANSPORT=poll` never subscribes,
+  `GUARDIAN_BLOCK_WATCH_ENABLED=false` turns it off (AWS:
+  `guardian_block_watch_*`). Once it is healthy, the release sweep's walk
+  is only a safety net: raise `GUARDIAN_RELEASE_SWEEP_ROTATION_SECONDS`
+  (for example to a week) to cut its node traffic.
 - If you scrape Prometheus yourself in a **self-managed deployment**, set
   `GUARDIAN_METRICS_ENABLED=true`, bind an explicitly routable
   `GUARDIAN_METRICS_ADDR` only if the scraper lives outside the host or task,

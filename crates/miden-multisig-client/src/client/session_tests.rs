@@ -159,3 +159,42 @@ async fn revoke_all_and_an_endpoint_change_end_the_session() {
         "the session belongs to the old Guardian"
     );
 }
+
+#[tokio::test]
+async fn leaving_a_guardian_logs_the_session_out_there_and_drops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = MockGuardianService::default();
+    let logouts = service.revoke_session_auth_handle();
+    let (mut client, _account) = connected_client(dir.path(), service).await;
+
+    let session = client.start_session(options()).await.unwrap();
+    client.leave_guardian_session().await;
+    client.point_at_guardian(client.guardian_endpoint.clone());
+
+    let logged_out: Vec<String> = logouts
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(pubkey, _, _)| pubkey.clone())
+        .collect();
+    assert_eq!(
+        logged_out,
+        vec![session.session_public_key],
+        "the old Guardian revokes the session"
+    );
+    assert!(
+        client.session().is_none(),
+        "a switch changes the Guardian key the session is bound to, even at the same endpoint"
+    );
+}
+
+#[tokio::test]
+async fn leaving_an_unreachable_guardian_still_drops_the_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut client, _account) = connected_client(dir.path(), MockGuardianService::default()).await;
+
+    client.start_session(options()).await.unwrap();
+    client.guardian_endpoint = "http://127.0.0.1:1".to_string();
+    client.leave_guardian_session().await;
+    assert!(client.session().is_none());
+}
