@@ -189,6 +189,7 @@ async fn approve(
     }
     let signed_at = state.clock.now();
     let views = plan.views();
+    let network_id = plan.network_id();
     if let Some(module_views) = module_views {
         views.seed(base.commitment, module_views.before);
         views.seed(&applied.commitment, module_views.after);
@@ -198,6 +199,7 @@ async fn approve(
             state.network_client.as_ref(),
             &views,
             TransactionInput {
+                network_id,
                 account_id: &delta.account_id,
                 submitter: submitter.commitment,
                 submitter_session: submitter.session,

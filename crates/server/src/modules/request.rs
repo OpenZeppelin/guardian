@@ -148,16 +148,17 @@ fn view(
     Ok(view)
 }
 
-/// The account's network within its family, from its registered configuration; modules are not
-/// offered EVM accounts.
-fn network_id(config: &NetworkConfig) -> Result<&'static str, String> {
+/// Modules are not offered EVM accounts. The network a module is told is the one this Guardian
+/// serves, never the `network_type` an account was registered with, which its registrant chose.
+fn ensure_miden(config: &NetworkConfig) -> Result<(), String> {
     match config {
-        NetworkConfig::Miden { network_type } => Ok(network_type.as_str()),
+        NetworkConfig::Miden { .. } => Ok(()),
         NetworkConfig::Evm { .. } => Err("policy modules do not evaluate EVM accounts".into()),
     }
 }
 
 pub struct TransactionInput<'a> {
+    pub network_id: &'static str,
     pub account_id: &'a str,
     pub submitter: &'a str,
     pub submitter_session: bool,
@@ -184,9 +185,10 @@ pub fn transaction_request(
         ),
         None => (String::new(), Vec::new()),
     };
+    ensure_miden(input.network_config)?;
     Ok(HookRequest {
         network: "miden".into(),
-        network_id: network_id(input.network_config)?.into(),
+        network_id: input.network_id.into(),
         account_id: input.account_id.to_string(),
         accounting_time: Some(timestamp(input.accounting_time)),
         submitter: input.submitter.to_string(),
@@ -210,6 +212,7 @@ pub fn transaction_request(
 }
 
 pub struct RegistrationInput<'a> {
+    pub network_id: &'static str,
     pub account_id: &'a str,
     pub submitter: &'a str,
     pub submitter_session: bool,
@@ -225,9 +228,10 @@ pub fn registration_request(
     views: &ViewCache,
     input: RegistrationInput<'_>,
 ) -> Result<HookRequest, String> {
+    ensure_miden(input.network_config)?;
     Ok(HookRequest {
         network: "miden".into(),
-        network_id: network_id(input.network_config)?.into(),
+        network_id: input.network_id.into(),
         account_id: input.account_id.to_string(),
         accounting_time: Some(timestamp(input.accounting_time)),
         submitter: input.submitter.to_string(),
@@ -237,9 +241,11 @@ pub fn registration_request(
             .map(|state| view(network, views, state, input.auth))
             .transpose()?,
         after: Some(view(network, views, input.initial_state, input.auth)?),
-        subject: Some(hook_request::Subject::Registration(
-            RegistrationSubject::default(),
-        )),
+        subject: Some(hook_request::Subject::Registration(RegistrationSubject {
+            initial_state: Some(guardian_module_sdk::AccountStateProjection::miden(
+                network.module_account_state(input.initial_state.json)?,
+            )),
+        })),
         ..Default::default()
     })
 }
@@ -350,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn requests_name_the_accounts_network_and_refuse_evm_accounts() {
+    fn requests_name_the_guardians_network_and_refuse_evm_accounts() {
         use crate::metadata::network::MidenNetworkType;
         let auth = Auth::MidenFalconRpo {
             cosigner_commitments: vec!["0xa".into()],
@@ -362,6 +368,7 @@ mod tests {
                 &network,
                 &ViewCache::default(),
                 RegistrationInput {
+                    network_id: "mainnet",
                     account_id: "0xacc",
                     submitter: "0xa",
                     submitter_session: false,
@@ -373,12 +380,30 @@ mod tests {
                 },
             )
         };
-        let testnet = request(&NetworkConfig::Miden {
+        let registered_as_testnet = request(&NetworkConfig::Miden {
             network_type: MidenNetworkType::Testnet,
         })
         .unwrap();
-        assert_eq!(testnet.network, "miden");
-        assert_eq!(testnet.network_id, "testnet");
+        assert_eq!(registered_as_testnet.network, "miden");
+        assert_eq!(
+            registered_as_testnet.network_id, "mainnet",
+            "the Guardian's network, not the one the account was registered with"
+        );
+        assert_eq!(
+            registered_as_testnet
+                .subject
+                .and_then(|subject| match subject {
+                    hook_request::Subject::Registration(registration) => registration.initial_state,
+                    hook_request::Subject::Transaction(_) => None,
+                })
+                .and_then(|state| state.network),
+            Some(
+                guardian_module_sdk::proto::account_state_projection::Network::Miden(
+                    guardian_module_sdk::MidenAccountState::default()
+                )
+            ),
+            "the registration carries the account's state"
+        );
         assert!(
             request(&NetworkConfig::Evm {
                 chain_id: 1,

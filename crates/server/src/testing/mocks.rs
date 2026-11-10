@@ -256,6 +256,13 @@ impl NetworkClient for MockNetworkClient {
             .ok_or_else(|| "no module account view configured".to_string())
     }
 
+    fn module_account_state(
+        &self,
+        _state_json: &serde_json::Value,
+    ) -> StdResult<guardian_module_sdk::MidenAccountState, String> {
+        Ok(guardian_module_sdk::MidenAccountState::default())
+    }
+
     fn module_transaction(
         &self,
         tx_summary: &serde_json::Value,

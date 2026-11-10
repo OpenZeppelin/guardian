@@ -567,6 +567,15 @@ pub trait NetworkClient: Send + Sync {
         Err("policy modules are not supported on this network".into())
     }
 
+    /// The account's whole vault and storage, as a registration's subject carries them.
+    fn module_account_state(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<guardian_module_sdk::MidenAccountState, String> {
+        let _ = state_json;
+        Err("policy modules are not supported on this network".into())
+    }
+
     /// The decoded effects of a transaction as policy modules see them. `tx_summary` is the
     /// bare summary the Guardian verifies and signs, never a proposal wrapper; `initial_nonce`
     /// is the nonce of the state it starts from, which identifies its fee note.
@@ -579,8 +588,9 @@ pub trait NetworkClient: Send + Sync {
         Err("policy modules are not supported on this network".into())
     }
 
-    /// Loads the chain's fee faucet once, so module projections can tell the transaction's fee
-    /// note from a payment. Until it is loaded no note is treated as the fee note.
+    /// Reads the chain's fee faucet and base fee, again once the last read is stale, so module
+    /// projections can tell the transaction's fee note from a payment. Until a first read
+    /// succeeds a transaction carrying a fee-script note cannot be projected.
     async fn load_fee_faucet(&self) -> Result<(), String> {
         Ok(())
     }

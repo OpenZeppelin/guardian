@@ -802,6 +802,7 @@ impl ServerBuilder {
             module_store,
             &module_registry,
             self.execution.lease,
+            network_type,
         )
         .await?;
 

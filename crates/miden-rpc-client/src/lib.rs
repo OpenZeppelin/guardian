@@ -549,10 +549,11 @@ impl MidenRpcClient {
             })
     }
 
-    /// The asset id the chain charges fees in, from the protocol configuration the latest block
-    /// header commits to, as a hex word. Takes `&self` like [`Self::get_account_commitment`].
-    pub async fn get_fee_asset_id(&self, read_mode: RpcReadMode) -> Result<String, RpcClientError> {
-        const OPERATION: &str = "get_fee_asset_id";
+    /// What the chain charges fees in and at what base rate, from the latest block header: the
+    /// fee asset id (a hex word) of the protocol configuration it commits to, and its
+    /// verification base fee. Takes `&self` like [`Self::get_account_commitment`].
+    pub async fn get_chain_fee(&self, read_mode: RpcReadMode) -> Result<ChainFee, RpcClientError> {
+        const OPERATION: &str = "get_chain_fee";
         let response = self
             .retry_read(OPERATION, read_mode, |mut client| async move {
                 let request = rpc::GetBlockHeaderByNumberRequest {
@@ -566,14 +567,24 @@ impl MidenRpcClient {
                     .map(tonic::Response::into_inner)
             })
             .await?;
-        response
+        let malformed = |reason: &str| RpcClientError::MalformedResponse {
+            operation: OPERATION,
+            reason: reason.to_string(),
+        };
+        let verification_base_fee = response
+            .block_header
+            .and_then(|header| header.fee_parameters)
+            .map(|parameters| parameters.verification_base_fee)
+            .ok_or_else(|| malformed("no fee parameters in the block header"))?;
+        let asset_id = response
             .protocol_config
             .and_then(|config| config.fee_asset_id)
             .and_then(|word| word_to_hex(&word))
-            .ok_or_else(|| RpcClientError::MalformedResponse {
-                operation: OPERATION,
-                reason: "no fee asset id in the protocol configuration".to_string(),
-            })
+            .ok_or_else(|| malformed("no fee asset id in the protocol configuration"))?;
+        Ok(ChainFee {
+            asset_id,
+            verification_base_fee,
+        })
     }
 
     /// One page of the transactions committed against `account_id` in
@@ -742,6 +753,13 @@ pub fn account_id_from_proto(id: &account::AccountId) -> Option<AccountId> {
 
 /// One entry of a committed block's `updated_accounts`, reduced to what a
 /// consumer of the block feed compares.
+/// The asset a chain charges fees in and its verification base fee, as of one block header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChainFee {
+    pub asset_id: String,
+    pub verification_base_fee: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockAccountState {
     pub account_id: AccountId,

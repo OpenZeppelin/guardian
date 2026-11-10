@@ -33,8 +33,9 @@ use miden_standards::account::auth::AuthGuardedMultisig;
 /// Miden network client for fetching on-chain account data
 pub struct MidenNetworkClient {
     client: MidenRpcClient,
-    /// The chain's fee faucet, loaded once by [`NetworkClient::load_fee_faucet`].
-    fee_faucet: std::sync::OnceLock<AccountId>,
+    /// The chain's fee faucet and the largest fee a transaction can owe, as last read by
+    /// [`NetworkClient::load_fee_faucet`].
+    fee: std::sync::RwLock<Option<(module_views::ChainFee, std::time::Instant)>>,
 }
 
 impl MidenNetworkClient {
@@ -60,7 +61,7 @@ impl MidenNetworkClient {
         }));
         Ok(Self {
             client,
-            fee_faucet: std::sync::OnceLock::new(),
+            fee: std::sync::RwLock::new(None),
         })
     }
 
@@ -75,7 +76,7 @@ impl MidenNetworkClient {
             .expect("lazy client construction is infallible for a valid endpoint");
         Self {
             client,
-            fee_faucet: std::sync::OnceLock::new(),
+            fee: std::sync::RwLock::new(None),
         }
     }
 
@@ -963,30 +964,64 @@ impl NetworkClient for MidenNetworkClient {
         module_views::module_account_of(&Account::from_json(state_json)?)
     }
 
+    fn module_account_state(
+        &self,
+        state_json: &serde_json::Value,
+    ) -> Result<guardian_module_sdk::MidenAccountState, String> {
+        module_views::account_state(state_json)
+    }
+
     fn module_transaction(
         &self,
         tx_summary: &serde_json::Value,
         initial_nonce: u64,
     ) -> Result<crate::network::ModuleTransaction, String> {
-        module_views::module_transaction(tx_summary, initial_nonce, self.fee_faucet.get().copied())
+        let fee = self
+            .fee
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(fee, _)| *fee));
+        module_views::module_transaction(tx_summary, initial_nonce, fee)
     }
 
     async fn load_fee_faucet(&self) -> Result<(), String> {
-        if self.fee_faucet.get().is_some() {
+        let loaded = self
+            .fee
+            .read()
+            .ok()
+            .and_then(|fee| fee.as_ref().map(|(_, at)| at.elapsed()));
+        if loaded.is_some_and(|age| age < module_views::CHAIN_FEE_TTL) {
             return Ok(());
         }
-        let asset_id = self
-            .client
-            .get_fee_asset_id(RpcReadMode::Configured)
-            .await
-            .map_err(|e| format!("cannot read the chain's fee asset: {e}"))?;
-        let word = Word::try_from(asset_id.as_str())
-            .map_err(|e| format!("fee asset id is not a word: {e}"))?;
-        let faucet = AssetId::try_from(word)
-            .map_err(|e| format!("fee asset id does not decode: {e}"))?
-            .faucet_id();
-        let _ = self.fee_faucet.set(faucet);
-        Ok(())
+        let read = async {
+            let chain = self
+                .client
+                .get_chain_fee(RpcReadMode::Configured)
+                .await
+                .map_err(|e| format!("cannot read the chain's fee asset: {e}"))?;
+            let word = Word::try_from(chain.asset_id.as_str())
+                .map_err(|e| format!("fee asset id is not a word: {e}"))?;
+            let faucet = AssetId::try_from(word)
+                .map_err(|e| format!("fee asset id does not decode: {e}"))?
+                .faucet_id();
+            Ok::<_, String>(module_views::ChainFee::new(
+                faucet,
+                chain.verification_base_fee,
+            ))
+        };
+        match read.await {
+            Ok(fee) => {
+                if let Ok(mut slot) = self.fee.write() {
+                    *slot = Some((fee, std::time::Instant::now()));
+                }
+                Ok(())
+            }
+            Err(error) if loaded.is_some() => {
+                tracing::warn!(%error, "Chain fee not refreshed; keeping the last value read");
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn should_update_auth(
@@ -1623,7 +1658,7 @@ mod tests {
         (
             MidenNetworkClient {
                 client,
-                fee_faucet: std::sync::OnceLock::new(),
+                fee: std::sync::RwLock::new(None),
             },
             requests,
         )

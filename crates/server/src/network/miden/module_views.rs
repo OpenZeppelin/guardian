@@ -1,9 +1,9 @@
 //! Account views and transaction projections sent to policy modules.
 
-use guardian_module_sdk::proto::{MapChanges, MapEntry, asset};
+use guardian_module_sdk::proto::{MapChanges, MapEntry, StorageSlot, asset, storage_slot};
 use guardian_module_sdk::{
-    AccountView, Asset as ModuleAsset, Direction, InputNote, MidenTransaction, NoteType,
-    OutputNote, StorageChange, StorageOp, StorageSlotKind, VaultChange,
+    AccountView, Asset as ModuleAsset, Direction, InputNote, MidenAccountState, MidenTransaction,
+    NoteType, OutputNote, StorageChange, StorageOp, StorageSlotKind, VaultChange,
 };
 use guardian_shared::{FromJson, SignatureScheme};
 use miden_protocol::Felt;
@@ -39,6 +39,48 @@ pub fn module_account_of(account: &Account) -> Result<crate::network::ModuleAcco
     Ok(crate::network::ModuleAccount {
         view: account_view_of(account)?,
         nonce: account.nonce().as_canonical_u64(),
+    })
+}
+
+/// The whole vault and storage of an account, as a registration's subject carries them.
+pub fn account_state(state_json: &serde_json::Value) -> Result<MidenAccountState, String> {
+    let account = Account::from_json(state_json)?;
+    Ok(MidenAccountState {
+        vault: account
+            .vault()
+            .assets()
+            .map(|asset| module_asset(&asset))
+            .collect(),
+        storage: account
+            .storage()
+            .slots()
+            .iter()
+            .map(|slot| {
+                let (kind, content) = match slot.content() {
+                    StorageSlotContent::Value(word) => (
+                        StorageSlotKind::Value,
+                        storage_slot::Content::Value(word_hex(word)),
+                    ),
+                    StorageSlotContent::Map(map) => (
+                        StorageSlotKind::Map,
+                        storage_slot::Content::Map(MapChanges {
+                            entries: map
+                                .entries()
+                                .map(|(key, value)| MapEntry {
+                                    key: word_hex(&Word::from(*key)),
+                                    value: word_hex(value),
+                                })
+                                .collect(),
+                        }),
+                    ),
+                };
+                StorageSlot {
+                    slot_name: slot.name().as_str().to_string(),
+                    kind: kind as i32,
+                    content: Some(content),
+                }
+            })
+            .collect(),
     })
 }
 
@@ -162,19 +204,32 @@ fn p2id_target(note: &Note) -> Option<String> {
     }
 }
 
-/// The transaction's fee note: a note with the TX_FEE script is a payment like any other, since
-/// any transaction script can create one, with any assets, that anyone can consume. Only the note
-/// `pay_fee` creates is the fee, and it is recognised by everything `pay_fee` fixes: it is the
-/// only TX_FEE note, its serial number is derived from the account, the nonce the transaction
-/// starts from and the block its summary binds, and it carries one fungible asset of the chain's
-/// fee faucet. Without a known fee faucet no note qualifies.
-fn fee_note(
-    summary: &TransactionSummary,
-    initial_nonce: u64,
-    fee_faucet: Option<AccountId>,
-) -> Option<NoteId> {
-    let fee_faucet = fee_faucet?;
-    let mut tx_fee_notes = summary.output_notes().iter().filter_map(|raw| match raw {
+/// How long a chain fee read is used before it is read again.
+pub const CHAIN_FEE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The fee is the base fee times a logarithmic measure of the transaction's cycle count, which
+/// stays below 32 for any cycle count the kernel accepts; twice that leaves room for the cycle
+/// margins `pay_fee` adds.
+const MAX_FEE_VERIFICATION_CYCLES: u64 = 64;
+
+/// The chain's fee faucet and the largest amount of its asset one transaction can owe as a fee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChainFee {
+    faucet: AccountId,
+    max_amount: u64,
+}
+
+impl ChainFee {
+    pub fn new(faucet: AccountId, verification_base_fee: u32) -> Self {
+        Self {
+            faucet,
+            max_amount: u64::from(verification_base_fee) * MAX_FEE_VERIFICATION_CYCLES,
+        }
+    }
+}
+
+fn tx_fee_notes(summary: &TransactionSummary) -> impl Iterator<Item = &Note> {
+    summary.output_notes().iter().filter_map(|raw| match raw {
         RawOutputNote::Full(note)
             if matches!(
                 StandardNote::from_script(note.script()),
@@ -184,7 +239,18 @@ fn fee_note(
             Some(note)
         }
         _ => None,
-    });
+    })
+}
+
+/// The transaction's fee note: a note with the TX_FEE script is a payment like any other, since
+/// any transaction script can create one, with any assets, that anyone can consume. Only the note
+/// `pay_fee` creates is the fee, and it is recognised by everything `pay_fee` fixes: it is the
+/// only TX_FEE note, its serial number is derived from the account, the nonce the transaction
+/// starts from and the block its summary binds, and it carries one fungible asset of the chain's
+/// fee faucet, no more of it than a transaction can owe. On a chain that charges nothing `pay_fee`
+/// creates no note, so no note qualifies there.
+fn fee_note(summary: &TransactionSummary, initial_nonce: u64, fee: ChainFee) -> Option<NoteId> {
+    let mut tx_fee_notes = tx_fee_notes(summary);
     let note = tx_fee_notes.next()?;
     if tx_fee_notes.next().is_some() {
         return None;
@@ -199,7 +265,12 @@ fn fee_note(
     }
     let assets: Vec<&Asset> = note.assets().iter().collect();
     match assets.as_slice() {
-        [asset] if asset.is_fungible() && asset.faucet_id() == fee_faucet => Some(note.id()),
+        [asset] => asset
+            .as_fungible()
+            .filter(|asset| {
+                asset.faucet_id() == fee.faucet && asset.amount().as_u64() <= fee.max_amount
+            })
+            .map(|_| note.id()),
         _ => None,
     }
 }
@@ -242,29 +313,25 @@ fn storage_op(op: StoragePatchOperation) -> i32 {
 pub fn module_transaction(
     tx_summary: &serde_json::Value,
     initial_nonce: u64,
-    fee_faucet: Option<AccountId>,
+    fee: Option<ChainFee>,
 ) -> Result<crate::network::ModuleTransaction, String> {
     let summary = TransactionSummary::from_json(tx_summary)
         .map_err(|e| format!("transaction summary does not decode: {e}"))?;
+    let fee_note = match fee {
+        Some(fee) => fee_note(&summary, initial_nonce, fee),
+        None if tx_fee_notes(&summary).next().is_some() => {
+            return Err(
+                "the chain's fee asset is unknown, so the transaction's fee note cannot be told \
+                 from a payment"
+                    .into(),
+            );
+        }
+        None => None,
+    };
     Ok(crate::network::ModuleTransaction {
-        projection: projection_from_summary(
-            &summary,
-            fee_note(&summary, initial_nonce, fee_faucet),
-        )?,
+        projection: projection_from_summary(&summary, fee_note)?,
         raw_tx_summary: summary.to_bytes(),
     })
-}
-
-/// `None` for a transaction without an expiration (delta 0), so "never expires" is not confused
-/// with "expires at the reference block".
-fn expiration_block(block_number: u32, expiration_delta: u16) -> Result<Option<u32>, String> {
-    if expiration_delta == 0 {
-        return Ok(None);
-    }
-    block_number
-        .checked_add(u32::from(expiration_delta))
-        .map(Some)
-        .ok_or_else(|| format!("expiration overflows: block {block_number} + {expiration_delta}"))
 }
 
 fn projection_from_summary(
@@ -317,12 +384,11 @@ fn projection_from_summary(
     }));
 
     Ok(MidenTransaction {
-        nonce_delta: delta.nonce_delta().as_canonical_u64() as i64,
-        reference_block: summary.block_number().as_u32(),
-        expiration_block: expiration_block(
-            summary.block_number().as_u32(),
-            summary.expiration_delta(),
-        )?,
+        nonce_delta: delta.nonce_delta().as_canonical_u64(),
+        bound_block: summary.block_number().as_u32(),
+        expiration_delta: Some(u32::from(summary.expiration_delta())).filter(|delta| *delta != 0),
+        approval_expiration_block: Some(super::execution::approval_expiration_block(summary))
+            .filter(|block| *block != 0),
         new_code_commitment: delta
             .code()
             .as_code()
@@ -546,7 +612,6 @@ mod tests {
             let delta: serde_json::Value = serde_json::from_str(fixture).unwrap();
             let transaction = module_transaction(&delta["delta_payload"], 0, None).unwrap();
             let projection = transaction.projection;
-            assert!(projection.nonce_delta >= 0);
             for change in &projection.storage_changes {
                 assert!(!change.slot_name.is_empty());
                 assert_ne!(change.op, StorageOp::Unspecified as i32);
@@ -569,13 +634,6 @@ mod tests {
             module_transaction(&payload, 0, None).unwrap(),
             module_transaction(&signed["delta_payload"], 0, None).unwrap()
         );
-    }
-
-    #[test]
-    fn expiration_overflow_is_an_error() {
-        assert_eq!(expiration_block(10, 5), Ok(Some(15)));
-        assert_eq!(expiration_block(u32::MAX, 0), Ok(None));
-        assert!(expiration_block(u32::MAX, 1).is_err());
     }
 
     fn summary(code: Option<AccountCode>, expiration_delta: u16) -> TransactionSummary {
@@ -666,9 +724,9 @@ mod tests {
         )
     }
 
-    fn fee_flags(notes: Vec<RawOutputNote>, fee_faucet: Option<AccountId>) -> Vec<bool> {
+    fn fee_flags(notes: Vec<RawOutputNote>, fee: Option<ChainFee>) -> Vec<bool> {
         let summary = summary_with(notes);
-        projection_from_summary(&summary, fee_note(&summary, NONCE, fee_faucet))
+        projection_from_summary(&summary, fee.and_then(|fee| fee_note(&summary, NONCE, fee)))
             .unwrap()
             .output_notes
             .iter()
@@ -677,10 +735,51 @@ mod tests {
     }
 
     #[test]
+    fn a_fee_note_cannot_be_judged_while_the_fee_asset_is_unknown() {
+        use guardian_shared::ToJson;
+        let with_fee_note = summary_with(vec![fee_note_with(
+            canonical_serial(),
+            vec![fungible(9, 5)],
+        )])
+        .to_json();
+        let error = module_transaction(&with_fee_note, NONCE, None).unwrap_err();
+        assert!(error.contains("fee asset is unknown"), "{error}");
+        let without = summary_with(vec![]).to_json();
+        assert!(module_transaction(&without, NONCE, None).is_ok());
+    }
+
+    #[test]
     fn only_the_note_pay_fee_creates_is_the_fee_note() {
-        let fee_faucet = Some(dummy_id(9));
+        let fee_faucet = Some(ChainFee::new(dummy_id(9), 1));
         let canonical = || fee_note_with(canonical_serial(), vec![fungible(9, 5)]);
         assert_eq!(fee_flags(vec![canonical()], fee_faucet), [true]);
+        assert_eq!(
+            fee_flags(
+                vec![fee_note_with(
+                    canonical_serial(),
+                    vec![fungible(9, MAX_FEE_VERIFICATION_CYCLES)]
+                )],
+                fee_faucet
+            ),
+            [true],
+            "the largest fee a transaction can owe"
+        );
+        assert_eq!(
+            fee_flags(
+                vec![fee_note_with(
+                    canonical_serial(),
+                    vec![fungible(9, MAX_FEE_VERIFICATION_CYCLES + 1)]
+                )],
+                fee_faucet
+            ),
+            [false],
+            "more of the fee asset than a transaction can owe is a payment"
+        );
+        assert_eq!(
+            fee_flags(vec![canonical()], Some(ChainFee::new(dummy_id(9), 0))),
+            [false],
+            "a chain that charges nothing has no fee note"
+        );
         assert_eq!(
             fee_flags(vec![canonical()], None),
             [false],
@@ -744,13 +843,58 @@ mod tests {
     }
 
     #[test]
-    fn projection_carries_the_reference_block_and_an_expiration_only_when_one_is_set() {
+    fn projection_carries_the_bound_block_and_expirations_only_when_set() {
         let expiring = projection_from_summary(&summary(None, 20), None).unwrap();
-        assert_eq!(expiring.reference_block, 100);
-        assert_eq!(expiring.expiration_block, Some(120));
+        assert_eq!(expiring.bound_block, 100);
+        assert_eq!(expiring.expiration_delta, Some(20));
         let open = projection_from_summary(&summary(None, 0), None).unwrap();
-        assert_eq!(open.reference_block, 100);
-        assert_eq!(open.expiration_block, None);
+        assert_eq!(open.bound_block, 100);
+        assert_eq!(open.expiration_delta, None);
+        assert_eq!(open.approval_expiration_block, None);
+    }
+
+    #[test]
+    fn projection_carries_the_approval_expiry_from_the_user_params() {
+        use miden_protocol::transaction::TransactionSummaryUserParams;
+        let open = summary(None, 0);
+        let mut user_params = [Felt::ZERO; 6];
+        user_params[0] = Felt::new_unchecked(500);
+        let approved_until = TransactionSummary::new(
+            open.account_delta().clone(),
+            open.input_notes().clone(),
+            open.output_notes().clone(),
+            open.block_number(),
+            Word::default(),
+            0,
+            TransactionSummaryUserParams::new(user_params),
+        );
+        assert_eq!(
+            projection_from_summary(&approved_until, None)
+                .unwrap()
+                .approval_expiration_block,
+            Some(500)
+        );
+    }
+
+    #[test]
+    fn an_account_state_lists_every_storage_slot_with_its_content() {
+        let account: serde_json::Value =
+            serde_json::from_str(crate::testing::fixtures::ACCOUNT_JSON).unwrap();
+        let state = account_state(&account).unwrap();
+        assert!(!state.storage.is_empty());
+        for slot in &state.storage {
+            assert!(!slot.slot_name.is_empty());
+            assert!(slot.content.is_some());
+            assert_ne!(slot.kind, StorageSlotKind::Unspecified as i32);
+        }
+        assert_eq!(
+            state.vault.len(),
+            Account::from_json(&account)
+                .unwrap()
+                .vault()
+                .assets()
+                .count()
+        );
     }
 
     #[test]
