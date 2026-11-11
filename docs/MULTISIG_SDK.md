@@ -1919,19 +1919,19 @@ flag.
 
 #### The transport-drain strategy
 
-The note transport keeps one cursor per tracked note tag, and a tag
-without one is served from the first retained note. A recovered account's
-tag has no cursor yet, on a fresh device and in a store shared with other
-accounts alike, so its whole retained backlog is fetched. Each transport
-fetch reads a bounded number of pages; the drain keeps fetching until a
-fetch moves no tag's cursor, at most 64 fetches. A fetch whose pages hold
-only notes the store already has, or notes no tracked account can consume,
-still moves the cursor, so a store upgraded from 0.18.0 (whose tags all
-restart from the first retained note) walks past the history it holds to
-the notes behind it. It is idempotent: imports dedupe and cursors only move
-forward. A backlog whose cursors still move after 64 fetches is reported
-`failed` with `retryable: true`, and a rerun continues from the stored
-cursors.
+The note transport keeps one cursor together with the tags it covers, and
+a tag outside that set is served from the first retained note. A recovered
+account's tag is not covered yet, on a fresh device and in a store shared
+with other accounts alike, so its whole retained backlog is fetched. One
+transport fetch reads every tracked tag, page by page, up to the transport's
+head at its first request, so the drain is a single fetch: when it succeeds,
+every note the transport held for the tracked tags at that point that a
+tracked account can consume is in the store. Notes the store already has,
+and notes no tracked account can consume, are walked past. It is idempotent:
+imports dedupe and
+the cursor only moves forward. This is `miden-client` 0.18 behavior; the
+TypeScript SDK, on the 0.17 web SDK, still keeps one cursor per tag and
+drains in bounded passes, as its guide above describes.
 
 Transport problems land in `report.transport`, never as errors:
 `Unavailable` means no transport endpoint is configured or the transport

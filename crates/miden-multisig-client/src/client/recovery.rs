@@ -4,31 +4,24 @@
 //! shared store, the account's note tag is not covered by the stored
 //! note-transport cursor yet. Since miden-client 0.18.0 the transport keeps
 //! one cursor with the tags it covers, reads a tag outside that set from the
-//! first retained note, and reads every tag up to one bound per fetch. The
-//! drain here keeps fetching until a fetch leaves that sync state unchanged,
+//! first retained note, and one fetch reads every tracked tag up to the
+//! transport's head. The drain here runs that fetch and reports its outcome,
 //! so a recovery flow does not have to wait for later background syncs.
 
 use miden_client::ClientError;
-use miden_client::note_transport::{NOTE_TRANSPORT_SYNC_STATE_KEY, NoteTransportError};
-use miden_client::store::SettingScope;
+use miden_client::note_transport::NoteTransportError;
 
 use super::MultisigClient;
 use crate::error::{Result, error_chain};
 use crate::rpc::{is_transient_note_transport_error, is_transient_rpc_error};
 
-/// Upper bound on transport fetches one drain runs. Each fetch reads every
-/// tracked tag up to the transport's head at its first request; a transport
-/// whose head still moves after this many fetches is reported as a retryable
-/// failure, and the stored sync state lets the next drain or sync continue
-/// from there.
-const MAX_DRAIN_PASSES: usize = 64;
-
 /// Outcome class of a private-note transport backlog drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportRecoveryStatus {
-    /// The transport backlog was fetched until a fetch left the sync state
-    /// unchanged; every note the transport still holds for the tracked tags is now in
-    /// the local store.
+    /// The transport backlog was fetched up to the transport's head at the
+    /// drain's first request; every note the transport held for the tracked
+    /// tags at that point that a tracked account can consume is now in the
+    /// local store.
     Completed,
     /// The transport could not be consulted at all: it is disabled for this
     /// client (no endpoint configured) or unreachable before anything was
@@ -55,8 +48,7 @@ pub struct TransportRecoveryReport {
     /// failure stay imported.
     pub imported: usize,
     /// Whether rerunning the drain can plausibly succeed (transient
-    /// connectivity failures, a backlog longer than one drain's fetch
-    /// budget). Always `false` on `Completed`.
+    /// connectivity failures). Always `false` on `Completed`.
     pub retryable: bool,
     /// Human-readable cause when the drain did not complete.
     pub reason: Option<String>,
@@ -69,11 +61,13 @@ impl MultisigClient {
     /// Use after account recovery: the recovered account must already be in
     /// the store so its note tag is tracked ([`MultisigClient::pull_account`]
     /// does this). Its tag is not covered by the stored transport cursor
-    /// yet, so the transport serves it from the first retained note. The
-    /// drain runs transport fetches until one leaves the sync state
-    /// unchanged, which only an exhausted backlog does: a fetch whose pages
-    /// were all duplicates or screened out still advances it. The drain is
-    /// idempotent: imports dedupe, and the cursor only moves forward.
+    /// yet, so the transport serves it from the first retained note. One
+    /// transport fetch reads every tracked tag, page by page, up to the
+    /// transport's head at its first request, so a fetch that succeeds has
+    /// exhausted the backlog as of that head. The head is shared by every
+    /// tag on the transport, so it is not a signal of this client's own
+    /// backlog and the drain does not wait for it to stop moving. The drain
+    /// is idempotent: imports dedupe, and the cursor only moves forward.
     ///
     /// Transport recovery is bounded by the transport service's retention:
     /// senders may bypass the transport entirely and relayed blobs are pruned
@@ -96,53 +90,31 @@ impl MultisigClient {
         }
 
         let before = self.input_note_count().await?;
-        let mut drain_result = Err(DrainStop::BudgetExhausted);
-        let mut last = self.transport_sync_state().await?;
-        for _ in 0..MAX_DRAIN_PASSES {
-            // A failed fetch still imports the pages fetched before it, so
-            // the count below includes them.
-            if let Err(err) = self.miden_client.fetch_private_notes().await {
-                drain_result = Err(DrainStop::Client(err));
-                break;
-            }
-            let sync_state = self.transport_sync_state().await?;
-            if sync_state == last {
-                drain_result = Ok(());
-                break;
-            }
-            last = sync_state;
-        }
+        // A failed fetch still imports the pages fetched before it, so the
+        // count below includes them.
+        let fetched = self.miden_client.fetch_private_notes().await;
         // A drain never removes records (and `&mut self` excludes concurrent
         // client operations), so the length delta is the count of newly
         // imported records.
         let imported = self.input_note_count().await?.saturating_sub(before);
 
-        match drain_result {
+        match fetched {
             Ok(()) => Ok(TransportRecoveryReport {
                 status: TransportRecoveryStatus::Completed,
                 imported,
                 retryable: false,
                 reason: None,
             }),
-            Err(DrainStop::BudgetExhausted) => Ok(TransportRecoveryReport {
-                status: TransportRecoveryStatus::Failed,
-                imported,
-                retryable: true,
-                reason: Some(format!(
-                    "the transport backlog was not exhausted after {MAX_DRAIN_PASSES} fetches; \
-                     rerun the drain to continue from the stored sync state"
-                )),
-            }),
             // A broken local store is an environment failure, not a transport
             // outcome: the whole recovery flow needs to know, so it
             // propagates instead of being folded into the report.
-            Err(DrainStop::Client(err @ ClientError::StoreError(_))) => {
+            Err(err @ ClientError::StoreError(_)) => {
                 Err(crate::error::MultisigError::miden_client_with_context(
                     "local store failed during the transport drain",
                     err,
                 ))
             }
-            Err(DrainStop::Client(err)) => {
+            Err(err) => {
                 let (status, retryable) = classify_drain_failure(&err);
                 // `Unavailable` promises "nothing was imported"; pages
                 // imported before the failure make it an interrupted drain,
@@ -162,25 +134,6 @@ impl MultisigClient {
         }
     }
 
-    /// The stored note-transport sync state (the cursor and the tags it
-    /// covers), as the raw bytes upstream keeps in its client-owned settings.
-    /// Compared, never decoded: a fetch that leaves it unchanged found every
-    /// tracked tag's history exhausted.
-    async fn transport_sync_state(&self) -> Result<Option<Vec<u8>>> {
-        self.miden_store
-            .get_setting(
-                SettingScope::Client,
-                NOTE_TRANSPORT_SYNC_STATE_KEY.to_string(),
-            )
-            .await
-            .map_err(|e| {
-                crate::error::MultisigError::miden_client_with_context(
-                    "failed to read the note transport sync state",
-                    ClientError::StoreError(e),
-                )
-            })
-    }
-
     /// Number of input note records currently in the local store.
     async fn input_note_count(&mut self) -> Result<usize> {
         let records = self
@@ -195,14 +148,6 @@ impl MultisigClient {
             })?;
         Ok(records.len())
     }
-}
-
-/// Why a drain stopped before a fetch came back empty.
-enum DrainStop {
-    /// Every fetch in the budget still moved the sync state.
-    BudgetExhausted,
-    /// A transport fetch failed.
-    Client(ClientError),
 }
 
 /// Maps a transport-drain (`fetch_private_notes`) failure onto a report
@@ -255,7 +200,10 @@ mod tests {
     use std::sync::Arc;
 
     use miden_client::ClientError;
-    use miden_client::note_transport::{NoteTransportClient, NoteTransportError};
+    use miden_client::note_transport::{
+        NOTE_TRANSPORT_SYNC_STATE_KEY, NoteTransportClient, NoteTransportError,
+    };
+    use miden_client::store::SettingScope;
     use miden_client::testing::note_transport::{MockNoteTransportApi, MockNoteTransportNode};
     use miden_protocol::note::{Note, NoteTag, NoteType};
     use miden_tx::utils::sync::RwLock;
@@ -413,12 +361,10 @@ mod tests {
         assert_eq!(report.imported, 0);
     }
 
-    /// One transport fetch reads at most 32 pages per request group, so a
-    /// backlog served one note per page needs several fetches. The drain
-    /// must keep fetching until the backlog stops yielding notes instead of
-    /// reporting `Completed` after the first fetch.
+    /// A backlog served one note per page takes many pages. The drain must
+    /// read all of them before it reports `Completed`.
     #[tokio::test]
-    async fn drain_covers_a_backlog_longer_than_one_fetch() {
+    async fn drain_covers_a_backlog_longer_than_one_page() {
         let dir = tempfile::tempdir().unwrap();
         let node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
         let api: Arc<dyn NoteTransportClient> = Arc::new(MockNoteTransportApi::new(node.clone()));
@@ -429,15 +375,13 @@ mod tests {
         let count = 40;
         for seed in 0..count {
             add_to_transport(&node, private_note_for(&account, seed + 1));
-            // Distinct cursor values require distinct insertion timestamps.
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
 
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.status, TransportRecoveryStatus::Completed);
         assert_eq!(
             report.imported, count as usize,
-            "the whole backlog must be recovered, not just the first fetch's pages"
+            "the whole backlog must be recovered, not just the first page"
         );
     }
 
@@ -457,7 +401,6 @@ mod tests {
         let held = 40;
         for seed in 0..held {
             add_to_transport(&node, private_note_for(&account, seed + 1));
-            std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let report = client.drain_private_note_backlog().await.unwrap();
         assert_eq!(report.imported, held as usize);
@@ -515,6 +458,71 @@ mod tests {
         );
     }
 
+    /// Transport whose head moves on every request, as a shared transport's
+    /// does while other accounts receive notes: each page request first
+    /// stores a note for an account this client does not track.
+    struct BusyTransport {
+        inner: MockNoteTransportApi,
+        node: Arc<RwLock<MockNoteTransportNode>>,
+        unrelated: miden_protocol::account::Account,
+        requests: std::sync::atomic::AtomicU32,
+    }
+
+    #[async_trait::async_trait]
+    impl NoteTransportClient for BusyTransport {
+        async fn send_note_with_proof(
+            &self,
+            note: miden_client::note_transport::TransportNote,
+            inclusion_proof: miden_protocol::note::NoteInclusionProof,
+        ) -> std::result::Result<(), NoteTransportError> {
+            self.inner.send_note_with_proof(note, &inclusion_proof);
+            Ok(())
+        }
+
+        async fn fetch_notes_page(
+            &self,
+            tags: &[NoteTag],
+            cursor: Option<miden_client::note_transport::NoteTransportCursor>,
+            sync_to: Option<miden_client::note_transport::NoteTransportCursor>,
+        ) -> std::result::Result<miden_client::note_transport::NoteTransportPage, NoteTransportError>
+        {
+            let seed = self
+                .requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            add_to_transport(&self.node, private_note_for(&self.unrelated, 1_000 + seed));
+            self.inner.fetch_notes_page(tags, cursor, sync_to).await
+        }
+    }
+
+    /// The transport's head is shared by every tag, so it keeps moving while
+    /// other accounts receive notes. The drain completes on its own backlog
+    /// and does not wait for the head to settle.
+    #[tokio::test]
+    async fn drain_completes_while_unrelated_tags_keep_receiving_notes() {
+        let dir = tempfile::tempdir().unwrap();
+        let node = Arc::new(RwLock::new(MockNoteTransportNode::new()));
+        let api: Arc<dyn NoteTransportClient> = Arc::new(BusyTransport {
+            inner: MockNoteTransportApi::new(node.clone()),
+            node: node.clone(),
+            unrelated: test_wallet(12),
+            requests: std::sync::atomic::AtomicU32::new(0),
+        });
+        let mut client = offline_client(dir.path(), Some(api)).await;
+
+        let account = test_wallet(11);
+        client.add_or_update_account(&account, false).await.unwrap();
+        add_to_transport(&node, private_note_for(&account, 1));
+
+        let report = client.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(report.imported, 1);
+        assert!(!report.retryable);
+
+        let report = client.drain_private_note_backlog().await.unwrap();
+        assert_eq!(report.status, TransportRecoveryStatus::Completed);
+        assert_eq!(report.imported, 0);
+    }
+
     /// Transport that serves a limited number of successful fetches, then
     /// fails with a connection-shaped error — a connection dropped mid-drain.
     struct InterruptibleTransport {
@@ -566,7 +574,7 @@ mod tests {
     async fn interrupted_drain_keeps_fetched_pages_and_is_retryable() {
         let dir = tempfile::tempdir().unwrap();
         // Cap each response at one note so the two-note backlog needs two
-        // fetches; the transport dies after the first.
+        // page requests; the transport dies after the first.
         let node = Arc::new(RwLock::new(MockNoteTransportNode::with_max_batch(1)));
         let api: Arc<dyn NoteTransportClient> = Arc::new(InterruptibleTransport {
             inner: MockNoteTransportApi::new(node.clone()),
@@ -577,8 +585,6 @@ mod tests {
         let account = test_wallet(6);
         client.add_or_update_account(&account, false).await.unwrap();
         add_to_transport(&node, private_note_for(&account, 1));
-        // Distinct cursor values require distinct insertion timestamps.
-        std::thread::sleep(std::time::Duration::from_millis(2));
         add_to_transport(&node, private_note_for(&account, 2));
 
         let report = client.drain_private_note_backlog().await.unwrap();

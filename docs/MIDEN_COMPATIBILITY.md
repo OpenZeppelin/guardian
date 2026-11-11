@@ -829,8 +829,8 @@ the client, not the contracts:
   other and is refused with `GUARDIAN_EXECUTION_REQUEST_CODEC`.
 - **Private note transport.** `miden-client` 0.18 keeps one transport cursor with
   the tags it covers instead of one cursor per tag, and reads every tag up to one
-  bound per fetch. The Rust SDK's backlog drain follows it, and the first fetch
-  after the upgrade migrates the stored per-tag cursors.
+  bound per fetch, so the Rust SDK's backlog drain is one fetch. The Rust store
+  is recreated on this upgrade, so no per-tag cursor is carried over.
 - **Rust API.** `TransactionRequestBuilder::auth_arg` is deprecated upstream; the
   Rust SDK sets multisig auth args through `auth_args`. A custom producer that
   attaches them by hand should do the same, or use
@@ -903,8 +903,12 @@ Last checked 2026-11-11.
   crates 0.17.1 (see the matrix). Move the TypeScript pin to the 0.18 web SDK
   when it ships, and rerun the parity gates.
 
-Data effect: full reset, see above. Client stores are recreated, not migrated.
-Operator steps: [`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017).
+Data effect of moving from Miden 0.16 to this line: full reset, see above. Client
+stores are recreated, not migrated. Operator steps:
+[`PRODUCTION.md`](./PRODUCTION.md#upgrading-to-miden-017). Releases within the line,
+0.19.0-rc.2 included, reset nothing on the server; 0.19.0-rc.2 does recreate Rust
+client stores (see
+[Rust on Miden 0.18, TypeScript on Miden 0.17](#rust-on-miden-018-typescript-on-miden-017-0190)).
 
 ### Before bumping the Miden pin
 

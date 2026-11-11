@@ -1,14 +1,16 @@
-//! Multisig auth args: what the 0.17 guarded-multisig auth procedure reads out
-//! of a transaction's auth argument.
+//! Multisig auth args: what the guarded-multisig auth procedure reads out of a
+//! transaction's auth argument.
 //!
 //! The auth arg is the commitment to a three-word preimage the request carries
 //! in its advice map: the block the summary binds together with the approval
 //! expiration, the salt, and the fee conversion info. This crate sets it on the
 //! request itself and never declares `fee_conversion_salt`: the client leaves a
-//! request that already has an auth arg alone, whereas its own fee path (as of
-//! miden-client 0.17.0-rc.1) commits the two-word `CONVERSION_INFO || SALT`
-//! pair a fixed-salt component reads, which the multisig aborts on while piping
-//! the preimage (`advice stack read failed`). This is the one place that
+//! request that already has an auth arg alone, whereas its own fee path binds
+//! the auth args to the block the transaction executes against and sets no
+//! approval expiration, so they would not be the ones the cosigners signed.
+//! (Through miden-client 0.17.3 that path instead committed the two-word
+//! `CONVERSION_INFO || SALT` pair a fixed-salt component reads, which the
+//! multisig aborts on while piping the preimage.) This is the one place that
 //! rationale lives; other comments refer here.
 //!
 //! The request also declares the bound block through

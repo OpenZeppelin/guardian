@@ -64,7 +64,8 @@ impl std::fmt::Display for EnvelopeRejection {
             }
             EnvelopeRejection::ProtocolLineMismatch { declared } => write!(
                 f,
-                "request serialized for Miden {declared}, this server executes {PROTOCOL_LINE}"
+                "request serialized for Miden {declared}, this server executes {}",
+                ACCEPTED_PROTOCOL_LINES.join(" and ")
             ),
         }
     }
@@ -220,6 +221,12 @@ mod tests {
             assert_eq!(
                 rejection.failure_code(),
                 ExecutionFailureCode::ProtocolMismatch
+            );
+            assert_eq!(
+                rejection.to_string(),
+                format!(
+                    "request serialized for Miden {declared}, this server executes 0.17 and 0.18"
+                )
             );
         }
     }
