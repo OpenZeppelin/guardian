@@ -537,10 +537,19 @@ impl NetworkClient for MidenNetworkClient {
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String> {
-        let tx_summary = TransactionSummary::from_json(delta_payload)?;
         let account = Account::from_json(prev_state_json)?;
-        Self::ensure_prev_commitment(&account, prev_commitment)?;
-        Self::apply_summary(Ok(account), &tx_summary)
+        self.verify_and_apply_delta_to_account(prev_commitment, account, delta_payload)
+    }
+
+    fn verify_and_apply_delta_to_account(
+        &self,
+        prev_commitment: &str,
+        prev_account: Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String> {
+        let tx_summary = TransactionSummary::from_json(delta_payload)?;
+        Self::ensure_prev_commitment(&prev_account, prev_commitment)?;
+        Self::apply_summary(Ok(prev_account), &tx_summary)
     }
 
     fn merge_deltas(
