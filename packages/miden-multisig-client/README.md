@@ -553,8 +553,10 @@ All methods accept `nonce` (identifies the proposal; defaults to the store
 account's nonce plus one, the nonce the executed transaction will have, as the
 Rust SDK labels proposals; through 0.18.0 the default was `Date.now()`).
 GUARDIAN from 0.19.0 records a proposal only at the account's next nonce and
-refuses any other label with `invalid_delta`, so leave `nonce` unset unless
-you track the account's nonce yourself. Each method also sends the commitment
+refuses any other label: with `conflict_pending_delta` when it is at or below
+a queued candidate's nonce (wait for the queue to drain), otherwise with
+`invalid_delta`. So leave `nonce` unset unless you track the account's nonce
+yourself. Each method also sends the commitment
 of the store account it built the summary on (`baseCommitment`, issue #517),
 which GUARDIAN 0.19.0 and later check is the candidate queue's tail; the raw
 `createProposal(nonce, summary, metadata)` sends none. The SDK does not build

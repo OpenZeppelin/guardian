@@ -131,6 +131,7 @@ export interface ServerQueuedCandidate {
 export interface ServerStateTail {
   state: ServerStateObject;
   queue: ServerQueuedCandidate[];
+  accepts_submissions: boolean;
 }
 
 export interface ServerCanonicalNonceResponse {

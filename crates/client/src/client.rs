@@ -959,10 +959,15 @@ impl GuardianClient {
     /// With nothing queued the tail is the canonical state and the queue is
     /// empty. Otherwise it is the canonical state with every queued
     /// candidate applied: it is not on chain until they land, and if one of
-    /// them never does, the tail is abandoned with it. Each read replays the
-    /// queue on the server, so read it before building on the account and
-    /// poll [`Self::get_canonical_nonce`] instead. A server before 0.19.0
-    /// answers `UNIMPLEMENTED`.
+    /// them never does, the tail is abandoned with it. `accepts_submissions`
+    /// is false while the queue would refuse anything built on the tail with
+    /// `conflict_pending_delta` (a full queue, which at the default depth of 1
+    /// is any queue; a tail that changes the signers or the guardian key; a
+    /// candidate a server before 0.19.0 queued under another label): wait for
+    /// the queue to drain instead of building. Each read replays the queue on
+    /// the server, so read it before building on the account and poll
+    /// [`Self::get_canonical_nonce`] instead. A server before 0.19.0 answers
+    /// `UNIMPLEMENTED`.
     pub async fn get_state_tail(
         &mut self,
         account_id: &AccountId,

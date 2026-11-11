@@ -751,6 +751,7 @@ async fn test_get_state_tail_returns_the_tail_and_the_queue_behind_it() {
             new_commitment: "0xc1".to_string(),
         }],
         error_code: String::new(),
+        accepts_submissions: true,
     }));
     let endpoint = start_mock_server(service).await.unwrap();
     let mut client = GuardianClient::connect(endpoint)
@@ -767,6 +768,7 @@ async fn test_get_state_tail_returns_the_tail_and_the_queue_behind_it() {
     assert_eq!(response.queue.len(), 1);
     assert_eq!(response.queue[0].nonce, 5);
     assert_eq!(response.queue[0].new_commitment, "0xc1");
+    assert!(response.accepts_submissions);
 }
 
 /// A server before 0.19.0 has no `GetStateTail`: the call fails with the
@@ -802,6 +804,7 @@ async fn test_get_state_tail_is_signed_by_an_active_session() {
             state: Some(create_mock_account_state()),
             queue: vec![],
             error_code: String::new(),
+            accepts_submissions: true,
         }));
     let request_auth = service.get_state_tail_auth_formats_handle();
     let endpoint = start_mock_server(service).await.unwrap();

@@ -14,7 +14,7 @@ use serde::Serialize;
 
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
-use crate::services::candidate_chain::CandidateChain;
+use crate::services::candidate_chain::{self, CandidateChain, ChainTail};
 use crate::services::get_canonical_nonce::state_read_error;
 use crate::services::resolve_account_for_read;
 use crate::state::AppState;
@@ -51,6 +51,17 @@ pub struct StateTail {
     /// one's `new_commitment` is the tail's commitment. Empty when nothing is
     /// queued.
     pub queue: Vec<QueuedCandidate>,
+    /// Whether the queue takes a delta or proposal built on this tail now.
+    /// False while the queue is full (at the default depth of 1, whenever
+    /// anything is queued), while the tail changes the account's signers or
+    /// guardian key, or while the newest candidate was queued by a server
+    /// before 0.19.0 under a label other than its nonce: a submission on the
+    /// tail then gets `409 conflict_pending_delta`, so wait for the queue to
+    /// drain and read again. True says only that the queue would take it at
+    /// this read: the tail can move before the push, and the account's own
+    /// status (paused, a Guardian execution in progress) and the proposal
+    /// limits still apply.
+    pub accepts_submissions: bool,
 }
 
 /// Read the account's queue tail, authorized like `GET /state`: by the
@@ -94,25 +105,45 @@ pub async fn get_state_tail(state: &AppState, params: GetStateTailParams) -> Res
     .await?;
     let auth_scheme = resolved.metadata.auth.auth_scheme_label().to_string();
     if chain.is_empty() {
+        // The depth is at least 1, so an empty queue has room, and its tail
+        // is the canonical state itself, which changes no one's authority.
         return Ok(StateTail {
             state: StateObject {
                 auth_scheme,
                 ..current_state
             },
             queue: Vec::new(),
+            accepts_submissions: true,
         });
     }
     let tail = chain.reconstruct_tail(state, &current_state).await?;
+    let accepts_submissions = accepts_submissions(state, &chain, &current_state, &tail).await?;
 
     let queue = chain
         .candidates()
         .iter()
-        .map(|candidate| QueuedCandidate {
-            nonce: candidate.nonce,
-            prev_commitment: candidate.prev_commitment.clone(),
-            new_commitment: candidate.new_commitment.clone().unwrap_or_default(),
+        .map(|candidate| {
+            // `CandidateChain::load` refuses a queue with a candidate that has
+            // no post-state, so this cannot happen; serving an empty
+            // commitment for it would hide the inconsistency.
+            let new_commitment = candidate.new_commitment.clone().ok_or_else(|| {
+                tracing::error!(
+                    account_id = %params.account_id,
+                    nonce = candidate.nonce,
+                    "A queued candidate has no post-state commitment"
+                );
+                GuardianError::StorageError(format!(
+                    "queued candidate at nonce {} has no post-state commitment",
+                    candidate.nonce
+                ))
+            })?;
+            Ok(QueuedCandidate {
+                nonce: candidate.nonce,
+                prev_commitment: candidate.prev_commitment.clone(),
+                new_commitment,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let updated_at = chain.candidates().last().map_or_else(
         || current_state.updated_at.clone(),
         |newest| newest.status.timestamp().to_string(),
@@ -129,7 +160,34 @@ pub async fn get_state_tail(state: &AppState, params: GetStateTailParams) -> Res
             auth_scheme,
         },
         queue,
+        accepts_submissions,
     })
+}
+
+/// Whether a submission built on a non-empty queue's tail would be admitted
+/// now, by the refusals `push_delta` and `push_delta_proposal` apply to the
+/// tail itself, each a `409 conflict_pending_delta` until the queue drains: a
+/// full queue, a tail queued under a label other than its nonce (a candidate
+/// from a server before issue #518; a delta's nonce cannot exceed its label,
+/// a proposal is refused once the tail is replayed), and a tail that changes
+/// who may act on the account (`ensure_tail_keeps_auth`, whose refusal is
+/// that 409; its faults stay errors).
+async fn accepts_submissions(
+    state: &AppState,
+    chain: &CandidateChain,
+    current_state: &StateObject,
+    tail: &ChainTail,
+) -> Result<bool> {
+    if chain.len() >= candidate_chain::max_pending_candidates(state)
+        || !tail.is_labelled_with_its_nonce()
+    {
+        return Ok(false);
+    }
+    match candidate_chain::ensure_tail_keeps_auth(state, current_state, tail).await {
+        Ok(()) => Ok(true),
+        Err(GuardianError::ConflictPendingDelta) => Ok(false),
+        Err(fault) => Err(fault),
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +245,31 @@ mod tests {
         }
     }
 
+    impl Setup {
+        fn with_depth(mut self, depth: usize) -> Self {
+            self.state.canonicalization = Some(
+                crate::canonicalization::CanonicalizationConfig::default()
+                    .with_max_pending_candidates_per_account(depth),
+            );
+            self
+        }
+    }
+
+    /// Who may act on a state, as `account_auth_binding` reads it.
+    fn binding(signers: &[&str]) -> crate::network::AuthBinding {
+        crate::network::AuthBinding {
+            signers: signers
+                .iter()
+                .map(|signer| crate::metadata::auth::ChainCosigner {
+                    commitment: signer.to_string(),
+                    scheme: None,
+                })
+                .collect(),
+            guardian: Some("0xguardian".to_string()),
+            ..Default::default()
+        }
+    }
+
     fn stored(commitment: &str) -> StateObject {
         StateObject {
             account_id: ACCOUNT_ID.to_string(),
@@ -241,11 +324,15 @@ mod tests {
         assert_eq!(tail.state.updated_at, "2024-11-14T12:00:00Z");
         assert_eq!(tail.state.auth_scheme, "falcon");
         assert!(tail.queue.is_empty());
+        assert!(
+            tail.accepts_submissions,
+            "an empty queue has room at any depth"
+        );
     }
 
     #[tokio::test]
     async fn replays_every_queued_candidate_onto_the_canonical_state() {
-        let setup = setup();
+        let setup = setup().with_depth(4);
         let _storage = setup
             .storage
             .clone()
@@ -296,6 +383,150 @@ mod tests {
                 .unwrap()
                 .is_empty(),
             "one application per queued candidate"
+        );
+        assert!(tail.accepts_submissions, "two queued at depth four");
+    }
+
+    /// A full queue refuses anything built on its tail, so the tail is
+    /// served with `accepts_submissions` false: at the default depth of 1
+    /// whenever anything is queued, and at any depth once it is full.
+    #[tokio::test]
+    async fn a_full_queue_accepts_no_submissions() {
+        let one = [candidate(5, C0, C1, "2024-11-14T12:01:00Z")];
+        let two = [
+            candidate(5, C0, C1, "2024-11-14T12:01:00Z"),
+            candidate(6, C1, C2, "2024-11-14T12:02:00Z"),
+        ];
+        for (depth, queue) in [(1, &one[..]), (2, &two[..])] {
+            let setup = setup().with_depth(depth);
+            let _storage = setup
+                .storage
+                .clone()
+                .with_pull_state(Ok(stored(C0)))
+                .with_pull_deltas_after(Ok(queue.to_vec()));
+            let tail_commitment = queue.last().unwrap().new_commitment.clone().unwrap();
+            let mut network = setup.network.clone();
+            for queued in queue.iter().rev() {
+                let new = queued.new_commitment.clone().unwrap();
+                network = network.with_apply_delta(Ok((serde_json::json!({ "data": new }), new)));
+            }
+
+            let tail = get_state_tail(&setup.state, params(&setup.signer))
+                .await
+                .unwrap_or_else(|error| panic!("depth {depth}: {error:?}"));
+
+            assert_eq!(tail.state.commitment, tail_commitment, "depth {depth}");
+            assert_eq!(tail.queue.len(), queue.len(), "depth {depth}");
+            assert!(!tail.accepts_submissions, "depth {depth}");
+        }
+    }
+
+    /// Nothing chains behind a candidate that changes who may act on the
+    /// account until it promotes, so its tail accepts nothing even with room.
+    #[tokio::test]
+    async fn a_tail_that_changes_the_signers_accepts_no_submissions() {
+        let setup = setup().with_depth(4);
+        let _storage = setup
+            .storage
+            .clone()
+            .with_pull_state(Ok(stored(C0)))
+            .with_pull_deltas_after(Ok(vec![candidate(5, C0, C1, "2024-11-14T12:01:00Z")]));
+        // Bindings pop last-in first: the canonical state is read first.
+        let _network = setup
+            .network
+            .clone()
+            .with_apply_delta(Ok((serde_json::json!({ "data": C1 }), C1.to_string())))
+            .with_account_auth_binding(Ok(Some(binding(&["0xaa", "0xbb"]))))
+            .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))));
+
+        let tail = get_state_tail(&setup.state, params(&setup.signer))
+            .await
+            .expect("the tail is still served");
+
+        assert_eq!(tail.state.commitment, C1);
+        assert!(!tail.accepts_submissions);
+    }
+
+    /// The same bindings on both states: the tail takes a submission.
+    #[tokio::test]
+    async fn a_tail_that_keeps_the_signers_accepts_submissions() {
+        let setup = setup().with_depth(4);
+        let _storage = setup
+            .storage
+            .clone()
+            .with_pull_state(Ok(stored(C0)))
+            .with_pull_deltas_after(Ok(vec![candidate(5, C0, C1, "2024-11-14T12:01:00Z")]));
+        let _network = setup
+            .network
+            .clone()
+            .with_apply_delta(Ok((serde_json::json!({ "data": C1 }), C1.to_string())))
+            .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))))
+            .with_account_auth_binding(Ok(Some(binding(&["0xaa"]))));
+
+        let tail = get_state_tail(&setup.state, params(&setup.signer))
+            .await
+            .expect("the tail is served");
+
+        assert!(tail.accepts_submissions);
+    }
+
+    /// A candidate a server before issue #518 queued under a timestamp label:
+    /// no delta or proposal can carry a nonce past that label and also be
+    /// the nonce it leaves the account at, so nothing is admitted behind it
+    /// until it leaves the queue.
+    #[tokio::test]
+    async fn a_tail_queued_under_a_timestamp_label_accepts_no_submissions() {
+        let setup = setup().with_depth(4);
+        let _storage = setup
+            .storage
+            .clone()
+            .with_pull_state(Ok(stored(C0)))
+            .with_pull_deltas_after(Ok(vec![candidate(
+                1_790_941_600_874,
+                C0,
+                C1,
+                "2024-11-14T12:01:00Z",
+            )]));
+        let _network = setup
+            .network
+            .clone()
+            .with_applied_state(Ok(crate::network::AppliedState {
+                state_json: serde_json::json!({ "data": C1 }),
+                commitment: C1.to_string(),
+                nonce: Some(5),
+                cosigners: Vec::new(),
+                guardian_commitment: None,
+            }));
+
+        let tail = get_state_tail(&setup.state, params(&setup.signer))
+            .await
+            .expect("the tail is still served");
+
+        assert_eq!(tail.state.nonce, Some(5));
+        assert!(!tail.accepts_submissions);
+    }
+
+    /// A binding that cannot be read is a server fault, not a refusal: the
+    /// read fails rather than serve a flag it could not judge.
+    #[tokio::test]
+    async fn an_unreadable_auth_binding_is_a_server_error() {
+        let setup = setup().with_depth(4);
+        let _storage = setup
+            .storage
+            .clone()
+            .with_pull_state(Ok(stored(C0)))
+            .with_pull_deltas_after(Ok(vec![candidate(5, C0, C1, "2024-11-14T12:01:00Z")]));
+        let _network = setup
+            .network
+            .clone()
+            .with_apply_delta(Ok((serde_json::json!({ "data": C1 }), C1.to_string())))
+            .with_account_auth_binding(Err("account version is 241".to_string()));
+
+        let result = get_state_tail(&setup.state, params(&setup.signer)).await;
+
+        assert!(
+            matches!(result, Err(GuardianError::StorageError(_))),
+            "{result:?}"
         );
     }
 

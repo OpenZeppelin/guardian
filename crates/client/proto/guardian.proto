@@ -276,6 +276,12 @@ message GetStateTailResponse {
   // on the one before it, and the last one's new_commitment is the tail's.
   repeated QueuedCandidate queue = 4;
   string error_code = 5;
+  // Whether the queue takes a delta or proposal built on this tail now:
+  // false while the queue is full, while the tail changes the account's
+  // signers or guardian key, or while its newest candidate carries a label
+  // other than its nonce (queued before 0.19.0). Wait for the queue to drain
+  // and read again. True does not hold past this read.
+  bool accepts_submissions = 6;
 }
 
 // Canonical nonce request (issue #191)

@@ -124,9 +124,10 @@ async fn test_state_tail_is_the_canonical_state_with_nothing_queued() {
         "served exactly as GET /state serves it"
     );
     assert_eq!(tail["queue"], json!([]));
+    assert_eq!(tail["accepts_submissions"], json!(true));
     let mut keys: Vec<_> = tail.as_object().unwrap().keys().cloned().collect();
     keys.sort();
-    assert_eq!(keys, ["queue", "state"]);
+    assert_eq!(keys, ["accepts_submissions", "queue", "state"]);
 }
 
 #[tokio::test]
@@ -158,12 +159,35 @@ async fn test_state_tail_replays_a_queued_candidate() {
             "new_commitment": tail_commitment,
         }])
     );
+    assert_eq!(
+        tail["accepts_submissions"],
+        json!(false),
+        "at the default depth of 1 the queued candidate fills the queue"
+    );
 
     let (_, canonical) = signed_get(&app, &signer, "/state", &account_id_hex).await;
     assert_eq!(
         canonical["commitment"], canonical_commitment,
         "GET /state keeps serving the canonical state"
     );
+}
+
+/// With room behind the queued candidate, which keeps the signers, the tail
+/// takes a submission.
+#[tokio::test]
+async fn test_state_tail_with_room_accepts_submissions() {
+    let (_, mut state, signer, account_id_hex) = configured_account().await;
+    state.canonicalization = Some(
+        crate::canonicalization::CanonicalizationConfig::default()
+            .with_max_pending_candidates_per_account(2),
+    );
+    let app = create_router(state.clone());
+    let tail_commitment = queue_first_candidate(&state, &account_id_hex).await;
+
+    let (status, tail) = signed_get(&app, &signer, "/state/tail", &account_id_hex).await;
+    assert_eq!(status, StatusCode::OK, "body: {tail}");
+    assert_eq!(tail["state"]["commitment"], tail_commitment);
+    assert_eq!(tail["accepts_submissions"], json!(true));
 }
 
 #[tokio::test]

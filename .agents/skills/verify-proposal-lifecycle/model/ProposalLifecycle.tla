@@ -113,7 +113,10 @@ Sync(d) ==
 (* base_commitment, Rust payload.rs with_base_commitment, TS resolveProposalLabel)*)
 (* is refused unless that state is the queue tail (CandidateChain::position;      *)
 (* issue #517); one that names none (an earlier SDK, a caller-built summary) is   *)
-(* judged by its label alone.                                                     *)
+(* judged by its label alone. One step: the storage admission checks the pin      *)
+(* again under the account lock candidates are admitted under (postgres.rs and    *)
+(* filesystem.rs admit_delta_proposal, storage/mod.rs proposal_is_on_tail), so    *)
+(* no candidate is admitted between the checks and the write.                     *)
 Propose(d) ==
     /\ nextS <= MaxSummaries
     /\ \E kind \in Labels, named \in NamesBase :

@@ -93,12 +93,22 @@ that lead there, oldest first. With nothing queued it is the canonical state
 and `queue` is empty. The tail is not on chain until the queued candidates
 land; check that the chain sits at the canonical state or a queued
 `new_commitment` before building on it, and expect to resync if one of them
-never lands. Each read replays the queue on the server, so read it before
-building, and poll `get_canonical_nonce`. A server before 0.19.0 answers
+never lands. `accepts_submissions` is false while the queue would refuse
+anything built on the tail with `conflict_pending_delta` (a full queue, which
+at the default depth of 1 is any queue; a tail that changes the signers or the
+guardian key; a candidate a server before 0.19.0 queued under another label):
+wait for the queue to drain instead. Do not import the tail into a miden-client
+store, which cannot roll it back if a queued candidate never lands; see
+[Queue tail for cosigners](../../docs/MIDEN_COMPATIBILITY.md#queue-tail-for-cosigners-0190)
+for how to check it. Each read replays the queue on the server, so read it
+before building, and poll `get_canonical_nonce`. A server before 0.19.0 answers
 `UNIMPLEMENTED`.
 
 ```rust
 let tail = client.get_state_tail(&account_id).await?;
+if !tail.accepts_submissions {
+    // Anything built on the tail would be refused: wait for the queue to drain.
+}
 let state = tail.state.expect("the tail");
 // `tail.queue.first()`, when present, starts from the canonical commitment.
 // Build the next transaction on `state`, name `state.commitment` as the

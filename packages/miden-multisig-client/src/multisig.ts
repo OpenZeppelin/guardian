@@ -200,10 +200,12 @@ export interface CreateProposalOptions {
    * Defaults to the store account's nonce plus one, as the Rust SDK labels
    * proposals. GUARDIAN keys the proposal and its delta by it, orders
    * history and the candidate queue by it, and records a proposal only at
-   * the account's next nonce, refusing any other with `invalid_delta`
-   * (server 0.19.0, issue #518; earlier servers checked it only behind a
-   * queued candidate). Pass it only to label from another record of the
-   * account's nonce. Through 0.18.0 the default was `Date.now()`.
+   * the account's next nonce (server 0.19.0, issue #518; earlier servers
+   * checked it only behind a queued candidate): a label at or below a queued
+   * candidate's nonce is refused with `conflict_pending_delta` (wait for the
+   * queue to drain), any other with `invalid_delta`. Pass it only to label
+   * from another record of the account's nonce. Through 0.18.0 the default
+   * was `Date.now()`.
    */
   nonce?: number;
   /**
@@ -1426,7 +1428,8 @@ export class Multisig {
    * Create a new proposal.
    *
    * @param nonce - The account nonce the transaction leaves the account at, its current nonce
-   *   plus one; GUARDIAN 0.19.0 and later refuse any other with `invalid_delta`
+   *   plus one; GUARDIAN 0.19.0 and later refuse any other, with `conflict_pending_delta` at or
+   *   below a queued candidate's nonce and with `invalid_delta` otherwise
    * @param txSummaryBase64 - Base64-encoded transaction summary
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */

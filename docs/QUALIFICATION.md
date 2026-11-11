@@ -826,10 +826,13 @@ from the account's state, so a pass shows no SDK path chooses another label;
 the refusals themselves are covered by the server's unit and end-to-end tests. The candidate-queue scenarios use the
 SDK defaults on both legs. The stranded-head scenario's TypeScript leg also
 labels a proposal past the head explicitly, as an integration computing its own
-nonces might, to show that a proposal GUARDIAN did record behind the head is
-still refused at execution by a client that does not hold the head's
-post-state, before anything reaches GUARDIAN, and that GUARDIAN holds nothing
-at its nonce.
+nonces might. Both SDKs name the state a proposal was built on
+(`base_commitment`, issue #517), here the canonical state the head claimed, so
+GUARDIAN refuses that proposal too and holds nothing at its nonce. Before the
+base was named, GUARDIAN recorded it behind the head and only the SDK's pin
+guard refused to execute it; that guard is now reached only through a server
+that ignores the base or a proposal that names none, so the multisig SDK's unit
+tests and the proposal-lifecycle model cover it instead.
 
 **Deterministic multisig coverage stops at submission.** GUARDIAN's request path
 never calls the chain, so the proposal API is testable without one and

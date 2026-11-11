@@ -195,12 +195,20 @@ pub async fn push_delta_proposal(
     //   it until it leaves the queue (409; judged on the replayed tail).
     //   A correctly labelled proposal is at or below such a label and is
     //   refused with 409 before the replay anyway.
+    // These are judged on the reads below. A candidate admitted after them,
+    // or one leaving the queue, moves the tail the proposal is pinned to, so
+    // the storage admission checks the pin again under the account lock
+    // (`storage::proposal_is_on_tail`, 409). The base named is not re-read
+    // there: here it must be the tail the proposal is pinned to, so the pin
+    // check covers it.
+    //
     // No base: a proposal must see a promotion that emptied the queue
     // between the two reads, whatever base it names. A delta's base can skip
     // that re-read because the storage gate classifies it again under the
-    // account lock; nothing re-checks a proposal's base there, so a base
-    // naming the state read before such a promotion would otherwise be
-    // recorded on a state the account has already left.
+    // account lock, and so would refuse the delta. Without the re-read, a
+    // proposal whose base names the state read before such a promotion would
+    // be pinned to a state the account has already left and refused under
+    // the lock, where the re-read records it on the promoted state.
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &account_id,
@@ -463,6 +471,16 @@ pub async fn push_delta_proposal(
         }
         ProposalWrite::AccountRequestBytesLimit { limit, used } => {
             return Err(GuardianError::AccountRequestCapacityExceeded { limit, used });
+        }
+        ProposalWrite::TailMoved => {
+            tracing::info!(
+                account_id = %account_id,
+                nonce,
+                pinned_commitment = %delta_proposal.prev_commitment,
+                "The queue tail moved after this request read it; refusing the proposal as \
+                 pending-delta conflict"
+            );
+            return Err(GuardianError::ConflictPendingDelta);
         }
     };
 
@@ -1948,6 +1966,29 @@ mod tests {
             .await
             .expect("the canonical state is the tail");
         assert_eq!(accepted.delta.prev_commitment, CANONICAL);
+    }
+
+    /// A candidate admitted after the request read the tail moves it, which
+    /// the storage admission sees under the account lock
+    /// (`storage::proposal_is_on_tail`). The proposal would be pinned to a
+    /// state that candidate claimed, so it is a pending conflict, whether it
+    /// named its base or not, rather than stored for cosigners to sign
+    /// something whose delta could never be admitted.
+    #[tokio::test]
+    async fn a_tail_that_moves_before_the_proposal_is_stored_is_a_pending_conflict() {
+        for base in [Some(TAIL), None] {
+            let setup = queue_ending_at_tail(&[(5, CANONICAL, TAIL)]);
+            let _storage = setup.storage.clone().with_admit_tail_moved();
+            let result = match base {
+                Some(base) => propose_on(&setup, 6, serde_json::json!(base)).await,
+                None => propose(&setup, 6).await,
+            };
+            assert!(
+                matches!(result, Err(GuardianError::ConflictPendingDelta)),
+                "{base:?}: {result:?}"
+            );
+            assert_nothing_recorded(&setup);
+        }
     }
 
     /// A base another queued candidate already claimed competes for its

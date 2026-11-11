@@ -473,6 +473,7 @@ describe('GuardianHttpClient', () => {
               new_commitment: '0x' + 'c'.repeat(64),
             },
           ],
+          accepts_submissions: false,
         }),
       });
 
@@ -494,6 +495,7 @@ describe('GuardianHttpClient', () => {
             newCommitment: '0x' + 'c'.repeat(64),
           },
         ],
+        acceptsSubmissions: false,
       });
       expect(mockFetch).toHaveBeenCalledWith(
         `http://localhost:3000/state/tail?account_id=${accountId}`,
@@ -510,13 +512,26 @@ describe('GuardianHttpClient', () => {
       client.setSigner(mockSigner);
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        json: async () => ({ state: serverState, queue: [] }),
+        json: async () => ({ state: serverState, queue: [], accepts_submissions: true }),
       });
 
       const tail = await client.getStateTail(accountId);
 
       expect(tail.queue).toEqual([]);
       expect(tail.state.commitment).toBe('0x' + 'c'.repeat(64));
+      expect(tail.acceptsSubmissions).toBe(true);
+    });
+
+    it('rejects a tail that does not say whether it accepts submissions', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ state: serverState, queue: [] }),
+      });
+
+      await expect(client.getStateTail(accountId)).rejects.toThrow(
+        'Invalid accepts_submissions from server'
+      );
     });
 
     it('surfaces an older server without the route as a 404', async () => {
@@ -561,6 +576,7 @@ describe('GuardianHttpClient', () => {
         json: async () => ({
           state: serverState,
           queue: [{ nonce: 2 ** 53, prev_commitment: '0x1', new_commitment: '0x2' }],
+          accepts_submissions: false,
         }),
       });
 

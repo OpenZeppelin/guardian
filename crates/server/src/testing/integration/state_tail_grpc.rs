@@ -68,6 +68,7 @@ async fn test_grpc_state_tail_is_the_canonical_state_with_nothing_queued() {
     assert!(tail.success);
     assert!(tail.error_code.is_empty());
     assert!(tail.queue.is_empty());
+    assert!(tail.accepts_submissions);
 
     let canonical = service
         .get_state(create_signed_request_with_auth(
@@ -130,6 +131,10 @@ async fn test_grpc_state_tail_replays_a_queued_candidate() {
     assert_eq!(tail.queue[0].nonce, 1);
     assert_eq!(tail.queue[0].prev_commitment, canonical_commitment);
     assert_eq!(tail.queue[0].new_commitment, tail_commitment);
+    assert!(
+        !tail.accepts_submissions,
+        "at the default depth of 1 the queued candidate fills the queue"
+    );
 }
 
 #[tokio::test]

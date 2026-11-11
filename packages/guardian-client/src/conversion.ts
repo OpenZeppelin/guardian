@@ -181,8 +181,14 @@ export function fromServerStateObject(server: ServerStateObject): StateObject {
 }
 
 export function fromServerStateTail(server: ServerStateTail): StateTail {
+  if (typeof server.accepts_submissions !== 'boolean') {
+    throw new Error(
+      `Invalid accepts_submissions from server: ${String(server.accepts_submissions)}`,
+    );
+  }
   return {
     state: fromServerStateObject(server.state),
+    acceptsSubmissions: server.accepts_submissions,
     queue: server.queue.map((candidate) => {
       if (!Number.isSafeInteger(candidate.nonce) || candidate.nonce < 0) {
         throw new Error(`Invalid queued candidate nonce from server: ${String(candidate.nonce)}`);

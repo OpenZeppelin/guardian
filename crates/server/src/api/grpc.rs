@@ -254,6 +254,7 @@ impl Guardian for GuardianService {
                 state: Some(state_to_proto(&tail.state)),
                 queue: tail.queue.iter().map(queued_candidate_to_proto).collect(),
                 error_code: String::new(),
+                accepts_submissions: tail.accepts_submissions,
             })),
             Err(e) => Err(Status::from(e)),
         }

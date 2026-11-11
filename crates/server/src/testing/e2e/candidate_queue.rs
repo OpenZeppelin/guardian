@@ -958,6 +958,7 @@ async fn a_cosigner_builds_on_the_served_tail_while_a_candidate_is_queued() {
     let tail = setup.tail().await;
     assert_eq!(tail.state.commitment, canonical);
     assert!(tail.queue.is_empty());
+    assert!(tail.accepts_submissions);
 
     // Device A's delta is queued. `/state` still serves the canonical state;
     // the tail is the replayed post-state, a real account at nonce 1.
@@ -986,6 +987,7 @@ async fn a_cosigner_builds_on_the_served_tail_while_a_candidate_is_queued() {
             new_commitment: tail_1.clone(),
         }]
     );
+    assert!(tail.accepts_submissions, "one candidate at depth four");
 
     // Cosigner B built on what it read: the proposal is recorded on the tail.
     let accepted = setup
@@ -1051,6 +1053,78 @@ async fn a_cosigner_builds_on_the_served_tail_while_a_candidate_is_queued() {
     let tail = setup.tail().await;
     assert_eq!(tail.state.commitment, tail_2);
     assert!(tail.queue.is_empty());
+}
+
+/// The served tail says whether the queue would take a submission built on
+/// it: at the default depth of 1 any queued candidate fills the queue, and at
+/// depth 2 the second one does. A proposal built on a tail that takes nothing
+/// is refused; once a promotion makes room, the same proposal on the same
+/// tail is recorded.
+#[tokio::test]
+async fn the_served_tail_says_whether_the_queue_takes_a_submission() {
+    let mut setup = queue_setup(1).await;
+    let tail_1 = setup.expected_queue_commitments[0].clone();
+    assert!(setup.tail().await.accepts_submissions, "nothing queued");
+    setup
+        .push(setup.queue_delta(1))
+        .await
+        .expect("the first delta is queued");
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, tail_1);
+    assert!(
+        !tail.accepts_submissions,
+        "at depth 1 one candidate fills the queue"
+    );
+    let refused = setup
+        .propose_on(2, &setup.queue_delta(2), &tail_1)
+        .await
+        .expect_err("the queue is full");
+    assert!(
+        matches!(refused, GuardianError::ConflictPendingDelta),
+        "{refused:?}"
+    );
+
+    let mut setup = queue_setup(2).await;
+    let tail_1 = setup.expected_queue_commitments[0].clone();
+    let tail_2 = setup.expected_queue_commitments[1].clone();
+    setup
+        .push(setup.queue_delta(1))
+        .await
+        .expect("the first delta is queued");
+    assert!(setup.tail().await.accepts_submissions, "room for one more");
+    setup
+        .push(setup.queue_delta(2))
+        .await
+        .expect("the second delta is queued behind it");
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, tail_2);
+    assert!(!tail.accepts_submissions, "two candidates fill depth 2");
+    let refused = setup
+        .propose_on(3, &setup.queue_delta(3), &tail_2)
+        .await
+        .expect_err("the queue is full");
+    assert!(
+        matches!(refused, GuardianError::ConflictPendingDelta),
+        "{refused:?}"
+    );
+
+    // The first lands and promotes: the tail stays, and there is room on it.
+    setup
+        .chain
+        .set_on_chain_commitment(&setup.account_id, &tail_1);
+    let pass = process_canonicalizations_now(&setup.state)
+        .await
+        .expect("worker pass succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert_eq!(setup.stored_commitment().await, tail_1);
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, tail_2, "promotion keeps the tail");
+    assert!(tail.accepts_submissions);
+    let accepted = setup
+        .propose_on(3, &setup.queue_delta(3), &tail_2)
+        .await
+        .expect("recorded once the queue has room");
+    assert_eq!(accepted.prev_commitment, tail_2);
 }
 
 #[tokio::test]

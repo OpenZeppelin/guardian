@@ -8468,9 +8468,14 @@
         "description": "The queue tail and the candidates that lead to it.",
         "required": [
           "state",
-          "queue"
+          "queue",
+          "accepts_submissions"
         ],
         "properties": {
+          "accepts_submissions": {
+            "type": "boolean",
+            "description": "Whether the queue takes a delta or proposal built on this tail now.\nFalse while the queue is full (at the default depth of 1, whenever\nanything is queued), while the tail changes the account's signers or\nguardian key, or while the newest candidate was queued by a server\nbefore 0.19.0 under a label other than its nonce: a submission on the\ntail then gets `409 conflict_pending_delta`, so wait for the queue to\ndrain and read again. True says only that the queue would take it at\nthis read: the tail can move before the push, and the account's own\nstatus (paused, a Guardian execution in progress) and the proposal\nlimits still apply."
+          },
           "queue": {
             "type": "array",
             "items": {

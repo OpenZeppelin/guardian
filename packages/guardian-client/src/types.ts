@@ -358,6 +358,17 @@ export interface StateTail {
    * `newCommitment` is the tail's commitment. Empty when nothing is queued.
    */
   queue: QueuedCandidate[];
+  /**
+   * Whether the queue takes a delta or proposal built on this tail now.
+   * False while the queue is full (at the default depth of 1, whenever
+   * anything is queued), while the tail changes the account's signers or
+   * guardian key, or while its newest candidate was queued by a server before
+   * 0.19.0 under a label other than its nonce: a submission on the tail then
+   * gets `conflict_pending_delta`, so wait for the queue to drain and read
+   * again. True holds only at this read: the tail can move before the push,
+   * and the account's status and the proposal limits still apply.
+   */
+  acceptsSubmissions: boolean;
 }
 
 /**

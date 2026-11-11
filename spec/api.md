@@ -502,6 +502,12 @@ request from the fields it knows: a new request field would fail authentication 
 payload key is signed and stored unchanged (and ignored). It is stored with the payload, and the
 recorded `prev_commitment` is the same state.
 
+Every proposal, with or without a base, is recorded pinned to the tail the request read, and the
+storage admission checks that pin again under the account lock candidates are admitted under: a
+candidate admitted after the read, or one that left the queue, moved the tail, and the proposal is
+refused with `409 conflict_pending_delta` rather than stored on a state its delta could never build
+on. Read the tail again and rebuild.
+
 Only the single-proposal reads (`GET /delta/proposal/single`, `GetDeltaProposal`) and the
 create and sign responses return `transaction_request`. Listings (`GET /delta/proposal`,
 `GetDeltaProposals`) omit it on both transports: each request may be as large as
@@ -776,7 +782,7 @@ Semantics not captured by the OpenAPI shapes:
   EVM-configured accounts are rejected with `unsupported_for_network`.
 - **`GET /state/tail`.** The state a new delta or proposal must build on
   (issue #517): `{ "state": <StateObject>, "queue": [{ "nonce",
-  "prev_commitment", "new_commitment" }] }`. With
+  "prev_commitment", "new_commitment" }], "accepts_submissions": <bool> }`. With
   `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1 a submission must
   build on the queue tail, the post-state of the newest queued candidate,
   which `GET /state` does not serve; this read replays the queued candidates
@@ -785,7 +791,15 @@ Semantics not captured by the OpenAPI shapes:
   queued). `queue` lists the candidates oldest first: the first builds on the
   canonical state, each later one on the one before it, and the last one's
   `new_commitment` is `state.commitment`. With nothing queued, `state` is the
-  canonical state and `queue` is empty. The tail is not on chain until the
+  canonical state and `queue` is empty. `accepts_submissions` is false
+  while a delta or proposal built on the tail would be refused with `409
+  conflict_pending_delta`: the queue is full (at the default depth of 1,
+  whenever anything is queued), the tail changes the signer set or the
+  guardian key, or its newest candidate was queued by a server before 0.19.0
+  under a label other than its nonce. A client then waits for the queue to
+  drain and reads again rather than build. True holds only for this read:
+  the tail can move before the push, and the account's status and the
+  proposal limits still apply. The tail is not on chain until the
   queued candidates land; a client can check that the chain sits at the
   canonical state or one of the queued post-states before building on it,
   and if a queued candidate never lands, everything built on the tail is
@@ -943,6 +957,7 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetDelta(GetDeltaRequest) -> GetDeltaResponse`
 - `GetDeltaSince(GetDeltaSinceRequest) -> GetDeltaSinceResponse`
 - `GetState(GetStateRequest) -> GetStateResponse`
+- `GetStateTail(GetStateTailRequest) -> GetStateTailResponse`
 - `GetPubkey(GetPubkeyRequest) -> GetPubkeyResponse`
 - `PushDeltaProposal(PushDeltaProposalRequest) -> PushDeltaProposalResponse`
 - `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`

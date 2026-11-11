@@ -309,7 +309,11 @@ client.execute_proposal(&proposal.id).await?;
 ```
 
 Every proposal the builders push names the account state its summary was built
-on (`ProposalPayload::base_commitment`, issue #517). GUARDIAN 0.19.0 and later
+on (`ProposalPayload::base_commitment`, issue #517): the client's cached account
+(`MultisigClient::account`, which `sync` and each execution refresh from the
+store the summary is executed on), which the nonce label comes from too; should
+the two ever differ, the proposal is refused, by GUARDIAN or by the pin guard at
+execution. GUARDIAN 0.19.0 and later
 record it only when that state is the tail of the account's candidate queue,
 refusing a base another queued candidate claimed with `conflict_pending_delta`
 and an unknown one with `commitment_mismatch`. The SDK does not build on

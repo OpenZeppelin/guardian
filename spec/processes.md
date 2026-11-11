@@ -421,7 +421,15 @@ sequenceDiagram
   both SDKs from 0.19.0) is classified by that state like a delta, which
   also refuses a sibling state at the tail's nonce; one that names none is
   judged by its label alone, since a summary does not say which state it
-  was built on. The nonce rule, the named base and, at execution, the SDKs keep a
+  was built on. These checks read the tail before the write, so the
+  storage admission checks the proposal's pin again under the account lock
+  candidates are admitted under (`proposal_is_on_tail`): a candidate
+  admitted meanwhile, or one that left the queue, moved the tail, and the
+  proposal is refused with `409 conflict_pending_delta`. The tail read also
+  says whether the queue would take a submission on it now
+  (`accepts_submissions`: false while it is full, while its tail changes
+  the signers or the guardian key, or while its newest candidate carries a
+  label other than its nonce). The nonce rule, the named base and, at execution, the SDKs keep a
   proposal from executing anywhere but on the tail: both SDKs refuse to execute a proposal pinned
   to a state the client does not hold (TypeScript 0.18.0 and earlier
   pushed the pinned base regardless, and the Rust SDK through 0.18.3

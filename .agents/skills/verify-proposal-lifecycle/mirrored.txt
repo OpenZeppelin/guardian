@@ -41,3 +41,6 @@ crates/server/src/jobs/canonicalization/reconciliation.rs select_recoverable_pat
 crates/server/src/services/push_delta_proposal.rs proposal_base_commitment
 packages/miden-multisig-client/src/multisig.ts resolveProposalLabel
 crates/miden-multisig-client/src/payload.rs with_base_commitment
+crates/server/src/storage/mod.rs proposal_is_on_tail
+crates/server/src/storage/postgres.rs admit_delta_proposal
+crates/server/src/storage/filesystem.rs admit_delta_proposal
