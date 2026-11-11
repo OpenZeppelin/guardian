@@ -107,6 +107,15 @@ if (info.serviceStatus === 'degraded') {
 (`rotationSeconds`, `maxRatePerSecond`, `recheckSeconds`, `confirmations`).
 It is `null` when the sweep is disabled and absent on servers that predate it.
 
+`info.backend.blockWatch` reports block watch, the committed-block feed that
+detects guardian switches: the configured `transportMode` (`auto`, `stream` or
+`poll`), the shared cursor `lastBlock` and `pendingObservations`, and the
+`pollSeconds`, `stallSeconds` and `maxCatchupBlocks` settings. Only the replica
+holding the release sweep lease runs the feed, so only it reports the live
+`transport`, `chainTip` and `lagBlocks`; they are `null` elsewhere. The field
+is `null` when block watch is disabled and absent on servers that predate it
+(before 0.19.0-rc.2).
+
 ### Aggregate Stats (Assets Under Guard)
 
 One request replaces the full account-list walk plus per-account

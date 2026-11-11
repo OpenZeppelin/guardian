@@ -20,6 +20,7 @@ elsewhere and link here:
 
 | Guardian | Miden protocol | `miden-protocol` / `miden-standards` | `miden-client` (Rust) | `@miden-sdk/miden-sdk` (npm) |
 |---|---|---|---|---|
+| 0.19.0-rc.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.19.0-rc.1 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.3 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
 | 0.18.2 | 0.17 | `=0.17.1` | `=0.17.3` | `0.17.3` (exact) |
@@ -39,6 +40,14 @@ and stays on Miden 0.17, so accounts and stores carry over. It changes server an
 contracts (see the 0.19.0 upgrade notes below). The release candidates are published
 to npm under the `rc` dist-tag, so `npm install` without an explicit version still
 resolves the 0.18.x line.
+
+0.19.0-rc.2 keeps the same pins and replaces 0.19.0-rc.1. The 0.19.0 notes below
+describe it. New since the first candidate are operation-bound session requests
+(session-v2), the delta and proposal nonce check at every queue depth (issue #518),
+block watch, and the TypeScript `signOnCreate` option. For session
+requests 0.19.0-rc.1 counts as an earlier release: an rc.1 SDK and an rc.2 Guardian,
+or the reverse, refuse each other's session requests, so move server and SDKs from
+rc.1 to rc.2 together. Its Postgres migrations are additive and no data reset runs.
 
 0.18.1 moves to the Miden 0.17 patch releases. `@miden-sdk/miden-sdk` 0.17.3 embeds
 `miden-client` 0.17.3 and `miden-protocol` / `miden-standards` 0.17.1, which is why the

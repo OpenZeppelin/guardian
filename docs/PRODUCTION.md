@@ -527,6 +527,26 @@ behavior:
     every request for such an account, and a filesystem metadata store fails
     to load as a whole (see
     [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#guardian-018x-and-019x-on-miden-017)).
+  - **Operation-bound session requests (session-v2), with no fallback.** The
+    server accepts session requests only in the version 2 format, and earlier
+    releases, `0.19.0-rc.1` included, only in version 1. Older SDKs lose
+    session requests against it (`unsupported_auth_version`), and the new SDKs
+    refuse to start a session against an older server; wallet-signed requests
+    work throughout. Keep the time both server versions run short (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#operation-bound-session-requests-0190),
+    and for AWS
+    [`SERVER_AWS_DEPLOY.md`](./SERVER_AWS_DEPLOY.md#cutting-over-to-session-v2-0190)).
+  - **Delta and proposal nonces checked at every queue depth (#518).** A
+    delta or proposal labelled with anything but the account's nonce gets
+    `400 invalid_delta`. Both SDKs label that way by default, the TypeScript
+    SDK since 0.18.1; cosigners on TypeScript 0.18.0 or earlier can no longer
+    create proposals, and a pending proposal labelled with a timestamp has to
+    be created again (see
+    [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#delta-and-proposal-nonces-are-the-accounts-0190)).
+  - **Block watch, on by default.** The release sweep's lease holder follows
+    the node's committed blocks to detect guardian switches; check the node
+    it reads from against the [production checklist](#production-checklist)
+    before the rollout.
 
 ## Upgrading to Miden 0.16
 
