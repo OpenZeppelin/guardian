@@ -93,8 +93,8 @@ sequenceDiagram
         S-->>C: 400 InsufficientSignatures, or 500 on a storage fault
       end
       S->>N: verify_and_apply_delta(tail_commitment, tail_state, payload)\n(one decode: new_state_json, new_commitment, new_nonce)
-      alt a candidate is queued and new_nonce is not the delta's nonce
-        S-->>C: 409 ConflictPendingDelta
+      alt new_nonce is not the delta's nonce (at every queue depth)
+        S-->>C: 400 InvalidDelta
       end
       S->>S: ack_delta(delta.new_commitment) -> ack_sig
       alt canonicalization enabled

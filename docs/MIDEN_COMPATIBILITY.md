@@ -751,8 +751,10 @@ so the check keeps every new row in chain order. It also refuses labels past
   `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`, 60 s by default).
   A guardian switch proposed in that window is refused like any other
   proposal, so for a private account it is no longer there for the release
-  sweep to match if the cosigners then switch without it; the Rust SDK's
-  `propose_with_fallback` exports it offline in that case.
+  sweep to match if the cosigners then switch without it. The Rust SDK's
+  `propose_with_fallback` exports it offline automatically in that case; a
+  TypeScript caller calls `createSwitchGuardianProposalOffline` itself, or
+  proposes again once the reconcile pass has recorded the landing.
 - **Guardian execution.** A request for a proposal whose nonce is not the
   account's next nonce is refused with `invalid_delta` before anything is
   reserved. Only a proposal recorded before this release can meet that.
