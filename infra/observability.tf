@@ -204,7 +204,7 @@ locals {
           {
             metric_name_selectors = ["^guardian_grpc_request_duration_seconds$"]
             label_matchers = [
-              { label_names = ["method"], regex = "^(Configure|PushDelta|GetDelta|GetDeltaSince|GetState|PushDeltaProposal|GetDeltaProposals|GetDeltaProposal|SignDeltaProposal|AbandonDeltaCandidate|GetAccountByKeyCommitment|GetDeltaHistory|ExecuteDeltaProposal|GetDeltaProposalExecution|GetCurrentExecution|GetCanonicalNonce|CreateSession|RevokeSession|RevokeAllSessions)$" }
+              { label_names = ["method"], regex = "^(Configure|PushDelta|GetDelta|GetDeltaSince|GetState|GetStateTail|PushDeltaProposal|GetDeltaProposals|GetDeltaProposal|SignDeltaProposal|AbandonDeltaCandidate|GetAccountByKeyCommitment|GetDeltaHistory|ExecuteDeltaProposal|GetDeltaProposalExecution|GetCurrentExecution|GetCanonicalNonce|CreateSession|RevokeSession|RevokeAllSessions)$" }
             ]
             dimensions = [["method"]]
           },

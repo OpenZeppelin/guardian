@@ -28,7 +28,7 @@ use crate::api::http::{
     abandon_candidate, configure, create_session, execute_delta_proposal, get_canonical_nonce,
     get_current_execution, get_delta, get_delta_history, get_delta_proposal,
     get_delta_proposal_execution, get_delta_proposals, get_delta_since, get_pubkey, get_state,
-    lookup, push_delta, push_delta_proposal, revoke_all_sessions, revoke_session,
+    get_state_tail, lookup, push_delta, push_delta_proposal, revoke_all_sessions, revoke_session,
     sign_delta_proposal, status, status_root,
 };
 use crate::builder::startup::StartupInfo;
@@ -515,6 +515,7 @@ pub(crate) fn build_http_router(state: AppState, config: HttpRouterConfig) -> Ro
         .route("/configure", post(configure))
         .route("/state", get(get_state))
         .route("/state/nonce", get(get_canonical_nonce))
+        .route("/state/tail", get(get_state_tail))
         .route("/state/lookup", get(lookup))
         .route("/session", post(create_session))
         .route("/session/logout", post(revoke_session))
@@ -651,6 +652,7 @@ mod tests {
             ("POST", "/configure"),
             ("GET", "/state"),
             ("GET", "/state/nonce"),
+            ("GET", "/state/tail"),
             ("GET", "/state/lookup"),
             ("GET", "/pubkey"),
             ("GET", "/status"),

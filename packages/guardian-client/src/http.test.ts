@@ -449,6 +449,127 @@ describe('GuardianHttpClient', () => {
     });
   });
 
+  describe('getStateTail', () => {
+    const accountId = '0x' + 'a'.repeat(30);
+    const serverState = {
+      account_id: accountId,
+      commitment: '0x' + 'c'.repeat(64),
+      state_json: { data: 'tail' },
+      created_at: '2024-01-01T00:00:00Z',
+      updated_at: '2024-01-02T00:00:00Z',
+      auth_scheme: 'falcon',
+    };
+
+    it('reads the tail and its queue, signed over the account query', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          state: serverState,
+          queue: [
+            {
+              nonce: 5,
+              prev_commitment: '0x' + 'b'.repeat(64),
+              new_commitment: '0x' + 'c'.repeat(64),
+            },
+          ],
+        }),
+      });
+
+      const tail = await client.getStateTail(accountId);
+
+      expect(tail).toEqual({
+        state: {
+          accountId,
+          commitment: '0x' + 'c'.repeat(64),
+          stateJson: { data: 'tail' },
+          createdAt: '2024-01-01T00:00:00Z',
+          updatedAt: '2024-01-02T00:00:00Z',
+          authScheme: 'falcon',
+        },
+        queue: [
+          {
+            nonce: 5,
+            prevCommitment: '0x' + 'b'.repeat(64),
+            newCommitment: '0x' + 'c'.repeat(64),
+          },
+        ],
+      });
+      expect(mockFetch).toHaveBeenCalledWith(
+        `http://localhost:3000/state/tail?account_id=${accountId}`,
+        expect.objectContaining({ method: 'GET' })
+      );
+      expect(mockSigner.signRequest).toHaveBeenCalledWith(
+        accountId,
+        expect.any(Number),
+        expect.objectContaining({ canonicalJson: JSON.stringify({ account_id: accountId }), tag: '' }),
+      );
+    });
+
+    it('reads an empty queue as the canonical state', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ state: serverState, queue: [] }),
+      });
+
+      const tail = await client.getStateTail(accountId);
+
+      expect(tail.queue).toEqual([]);
+      expect(tail.state.commitment).toBe('0x' + 'c'.repeat(64));
+    });
+
+    it('surfaces an older server without the route as a 404', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 404,
+        statusText: 'Not Found',
+        text: async () => '',
+      });
+
+      const error = await client.getStateTail(accountId).catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.status).toBe(404);
+    });
+
+    it('surfaces a queue with no tail to serve as a pending conflict', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        headers: new Headers(),
+        status: 409,
+        statusText: 'Conflict',
+        text: async () =>
+          JSON.stringify({
+            code: 'conflict_pending_delta',
+            message: 'A delta is already pending for this account',
+            meta: { retryable: true },
+          }),
+      });
+
+      const error = await client.getStateTail(accountId).catch((e) => e);
+      expect(error).toBeInstanceOf(GuardianHttpError);
+      expect(error.code).toBe('conflict_pending_delta');
+    });
+
+    it('rejects a queued nonce the client cannot represent', async () => {
+      client.setSigner(mockSigner);
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          state: serverState,
+          queue: [{ nonce: 2 ** 53, prev_commitment: '0x1', new_commitment: '0x2' }],
+        }),
+      });
+
+      await expect(client.getStateTail(accountId)).rejects.toThrow(
+        'Invalid queued candidate nonce'
+      );
+    });
+  });
+
   describe('getState', () => {
     it('uses the existing signed headers with an EIP-712 format selector', async () => {
       const signer: Signer = {
@@ -2045,6 +2166,7 @@ describe('GuardianHttpClient sessions', () => {
     const calls: Array<[string, () => Promise<unknown>]> = [
       ['getState', () => client.getState(accountId)],
       ['getCanonicalNonce', () => client.getCanonicalNonce(accountId)],
+      ['getStateTail', () => client.getStateTail(accountId)],
       ['getDelta', () => client.getDelta(accountId, 1)],
       ['getDeltaSince', () => client.getDeltaSince(accountId, 1)],
       ['getDeltaHistory', () => client.getDeltaHistory(accountId)],
@@ -2085,6 +2207,7 @@ describe('GuardianHttpClient sessions', () => {
     expect(vi.mocked(session.signRequest).mock.calls.map(([operation]) => operation)).toEqual([
       SessionOperation.GetState,
       SessionOperation.GetCanonicalNonce,
+      SessionOperation.GetStateTail,
       SessionOperation.GetDelta,
       SessionOperation.GetDeltaSince,
       SessionOperation.GetDeltaHistory,

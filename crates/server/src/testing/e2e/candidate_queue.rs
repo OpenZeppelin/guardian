@@ -50,6 +50,13 @@
 //! past the tail's nonce plus one (a timestamp, the TypeScript SDK's
 //! default through 0.18.0), is refused.
 //!
+//! `a_cosigner_builds_on_the_served_tail_while_a_candidate_is_queued`
+//! (issue #517): while device A's candidate is queued, cosigner B reads the
+//! tail, the real replay of the queue onto the canonical state, and proposes
+//! on it, naming it as the proposal's base. A base the queued candidate
+//! already claimed waits (409), an unknown one resyncs (400). Once the chain
+//! lands and the worker promotes, the tail is the canonical state again.
+//!
 //! `deltas_and_proposals_carry_the_nonce_they_leave_the_account_at` (issue
 //! #518): at every depth, from the head on, a delta labelled with any nonce
 //! but the one its real application leaves the account at, and a proposal
@@ -73,9 +80,10 @@ use crate::metadata::auth::{Auth, Credentials};
 use crate::network::NetworkType;
 use crate::network::miden::MidenNetworkClient;
 use crate::services::{
-    AbandonCandidateParams, AbandonState, ConfigureAccountParams, PushDeltaParams,
-    PushDeltaProposalParams, abandon_candidate, configure_account, process_canonicalizations_now,
-    push_delta, push_delta_proposal,
+    AbandonCandidateParams, AbandonState, ConfigureAccountParams, GetStateTailParams,
+    PushDeltaParams, PushDeltaProposalParams, QueuedCandidate, StateTail, abandon_candidate,
+    configure_account, get_state_tail, process_canonicalizations_now, push_delta,
+    push_delta_proposal,
 };
 use crate::state::AppState;
 use crate::testing::fixtures;
@@ -126,6 +134,41 @@ fn proposal_payload(delta: &DeltaObject, description: &str) -> serde_json::Value
 }
 
 impl QueueSetup {
+    async fn tail(&mut self) -> StateTail {
+        let credentials = self.credentials();
+        get_state_tail(
+            &self.state,
+            GetStateTailParams {
+                account_id: self.account_id.clone(),
+                credentials,
+            },
+        )
+        .await
+        .expect("the tail is served")
+    }
+
+    async fn propose_on(
+        &mut self,
+        nonce: u64,
+        summary_of: &DeltaObject,
+        base_commitment: &str,
+    ) -> Result<DeltaObject, GuardianError> {
+        let mut delta_payload = proposal_payload(summary_of, "built on a named base");
+        delta_payload["base_commitment"] = serde_json::json!(base_commitment);
+        let credentials = self.credentials();
+        push_delta_proposal(
+            &self.state,
+            PushDeltaProposalParams {
+                account_id: self.account_id.clone(),
+                nonce,
+                delta_payload,
+                credentials,
+            },
+        )
+        .await
+        .map(|result| result.delta)
+    }
+
     fn credentials(&mut self) -> Credentials {
         self.next_timestamp += 1;
         falcon_credentials(
@@ -902,6 +945,112 @@ async fn proposal_must_extend_the_queue_by_exactly_one_nonce() {
         accepted.delta.prev_commitment, setup.expected_queue_commitments[0],
         "pinned to the tail"
     );
+}
+
+#[tokio::test]
+async fn a_cosigner_builds_on_the_served_tail_while_a_candidate_is_queued() {
+    let mut setup = queue_setup(4).await;
+    let tail_1 = setup.expected_queue_commitments[0].clone();
+    let tail_2 = setup.expected_queue_commitments[1].clone();
+    let canonical = setup.initial_commitment.clone();
+
+    // Nothing queued: the tail is the canonical state.
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, canonical);
+    assert!(tail.queue.is_empty());
+
+    // Device A's delta is queued. `/state` still serves the canonical state;
+    // the tail is the replayed post-state, a real account at nonce 1.
+    setup
+        .push(setup.queue_delta(1))
+        .await
+        .expect("device A's delta is queued");
+    assert_eq!(setup.stored_commitment().await, canonical);
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, tail_1);
+    let account = <miden_protocol::account::Account as guardian_shared::FromJson>::from_json(
+        &tail.state.state_json,
+    )
+    .expect("the tail is an account");
+    assert_eq!(
+        format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
+        tail_1,
+        "the served state is the one its commitment names"
+    );
+    assert_eq!(account.nonce().as_canonical_u64(), 1);
+    assert_eq!(
+        tail.queue,
+        vec![QueuedCandidate {
+            nonce: 1,
+            prev_commitment: canonical.clone(),
+            new_commitment: tail_1.clone(),
+        }]
+    );
+
+    // Cosigner B built on what it read: the proposal is recorded on the tail.
+    let accepted = setup
+        .propose_on(2, &setup.queue_delta(2), &tail_1)
+        .await
+        .expect("a proposal built on the served tail is recorded");
+    assert_eq!(accepted.prev_commitment, tail_1, "pinned to the tail");
+
+    // A proposal built on the canonical state, which device A's candidate
+    // claimed, waits for the queue; one built on a state GUARDIAN does not
+    // know resyncs. Neither is stored, even at the right nonce.
+    let refused = setup
+        .propose_on(2, &setup.queue_delta(3), &canonical)
+        .await
+        .expect_err("the canonical state is claimed");
+    assert!(
+        matches!(refused, GuardianError::ConflictPendingDelta),
+        "{refused:?}"
+    );
+    let unknown = format!("0x{}", "5c".repeat(32));
+    let refused = setup
+        .propose_on(2, &setup.queue_delta(3), &unknown)
+        .await
+        .expect_err("an unknown base is refused");
+    assert!(
+        matches!(&refused, GuardianError::CommitmentMismatch { expected, actual }
+            if expected == &canonical && actual == &unknown),
+        "{refused:?}"
+    );
+    let pending = setup
+        .state
+        .storage
+        .pull_pending_proposals(&setup.account_id)
+        .await
+        .expect("proposals readable");
+    assert_eq!(pending.len(), 1, "only the proposal on the tail is stored");
+
+    // B's proposal executes behind A's: the tail moves with it.
+    setup
+        .push(setup.queue_delta(2))
+        .await
+        .expect("the proposal's delta queues behind A's");
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, tail_2);
+    assert_eq!(
+        tail.queue
+            .iter()
+            .map(|candidate| (candidate.nonce, candidate.new_commitment.as_str()))
+            .collect::<Vec<_>>(),
+        vec![(1, tail_1.as_str()), (2, tail_2.as_str())]
+    );
+    assert_eq!(tail.queue[1].prev_commitment, tail_1);
+
+    // Both land and promote: the tail is the canonical state again.
+    setup
+        .chain
+        .set_on_chain_commitment(&setup.account_id, &tail_2);
+    let pass = process_canonicalizations_now(&setup.state)
+        .await
+        .expect("worker pass succeeds");
+    assert_eq!(pass.failed_accounts, 0);
+    assert_eq!(setup.stored_commitment().await, tail_2);
+    let tail = setup.tail().await;
+    assert_eq!(tail.state.commitment, tail_2);
+    assert!(tail.queue.is_empty());
 }
 
 #[tokio::test]

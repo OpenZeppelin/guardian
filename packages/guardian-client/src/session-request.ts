@@ -45,6 +45,7 @@ export const SessionOperation = {
   ExecuteDeltaProposal: 11,
   GetDeltaProposalExecution: 12,
   GetCurrentExecution: 13,
+  GetStateTail: 14,
 } as const;
 export type SessionOperation = (typeof SessionOperation)[keyof typeof SessionOperation];
 

@@ -11,7 +11,8 @@ use crate::proto::{
     GetDeltaProposalExecutionRequest, GetDeltaProposalRequest, GetDeltaProposalResponse,
     GetDeltaProposalsRequest, GetDeltaProposalsResponse, GetDeltaRequest, GetDeltaResponse,
     GetDeltaSinceRequest, GetDeltaSinceResponse, GetPubkeyRequest, GetStateRequest,
-    GetStateResponse, ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
+    GetStateResponse, GetStateTailRequest, GetStateTailResponse,
+    ProposalSignature as ProtoProposalSignature, PushDeltaProposalRequest,
     PushDeltaProposalResponse, PushDeltaRequest, PushDeltaResponse, RevokeAllSessionsRequest,
     RevokeSessionRequest, SessionGrantFields, SignDeltaProposalRequest, SignDeltaProposalResponse,
 };
@@ -941,6 +942,41 @@ impl GuardianClient {
                 SessionOperation::GetState,
                 message,
                 async |client, request| client.get_state(request).await,
+            )
+            .await?;
+
+        if !inner.success {
+            return Err(ClientError::ServerError(inner.message.clone()));
+        }
+
+        Ok(inner)
+    }
+
+    /// Retrieves the queue tail, the state a new delta or proposal must
+    /// build on, with the queued candidates that lead to it (issue #517).
+    /// Mirror of HTTP `GET /state/tail`.
+    ///
+    /// With nothing queued the tail is the canonical state and the queue is
+    /// empty. Otherwise it is the canonical state with every queued
+    /// candidate applied: it is not on chain until they land, and if one of
+    /// them never does, the tail is abandoned with it. Each read replays the
+    /// queue on the server, so read it before building on the account and
+    /// poll [`Self::get_canonical_nonce`] instead. A server before 0.19.0
+    /// answers `UNIMPLEMENTED`.
+    pub async fn get_state_tail(
+        &mut self,
+        account_id: &AccountId,
+    ) -> ClientResult<GetStateTailResponse> {
+        let message = GetStateTailRequest {
+            account_id: account_id.to_string(),
+        };
+
+        let inner = self
+            .send_allowing_session(
+                account_id,
+                SessionOperation::GetStateTail,
+                message,
+                async |client, request| client.get_state_tail(request).await,
             )
             .await?;
 

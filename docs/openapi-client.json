@@ -1991,6 +1991,126 @@
         ]
       }
     },
+    "/state/tail": {
+      "get": {
+        "tags": [
+          "client"
+        ],
+        "summary": "The state a new delta or proposal must build on while the account's\ncandidate queue holds candidates (issue #517): the canonical state with\nevery queued candidate applied, and the queued candidates that lead there,\noldest first. With nothing queued it is the canonical state and `queue` is\nempty. Each read replays the queue, one delta application per queued\ncandidate, so read it before building on the account, not to poll it;\n`GET /state/nonce` is the poll. Authorized like `GET /state`, by the\ncanonical state's signers.",
+        "operationId": "get_state_tail",
+        "parameters": [
+          {
+            "name": "account_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-auth-format",
+            "in": "header",
+            "description": "Optional request format: eip712 (ECDSA wallet), or session-v2 (session key, on session routes); omitted for raw wallet signatures",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The queue tail and the queued candidates that lead to it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StateTail"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Account on an unsupported network (unsupported_for_network)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed or replay rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Account or state not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The queue has no tail to serve: a candidate left it and its successors await the worker's sweep, or its replay disagrees with the stored tail (conflict_pending_delta); retry once it drains",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the configured size limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Storage error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "x-pubkey": [],
+            "x-signature": [],
+            "x-timestamp": []
+          }
+        ]
+      }
+    },
     "/status": {
       "get": {
         "tags": [
@@ -3574,6 +3694,31 @@
           }
         }
       },
+      "QueuedCandidate": {
+        "type": "object",
+        "description": "A queued candidate the tail replays.",
+        "required": [
+          "nonce",
+          "prev_commitment",
+          "new_commitment"
+        ],
+        "properties": {
+          "new_commitment": {
+            "type": "string",
+            "description": "The state it leaves the account at."
+          },
+          "nonce": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The candidate's nonce: the account nonce its transaction leaves the\naccount at.",
+            "minimum": 0
+          },
+          "prev_commitment": {
+            "type": "string",
+            "description": "The state it builds on: the canonical state's commitment for the\noldest candidate, the previous candidate's `new_commitment` after it."
+          }
+        }
+      },
       "RetainReason": {
         "type": "string",
         "description": "Why a candidate was moved to `Retained` instead of deleted\n(issue #345). The label is diagnostic — every retained delta is\nreconciled and TTL-expired identically — but it records which\nworker verdict parked the row, and a `diverged` row that later\nreconciles is direct evidence the divergence verdict was spurious\n(e.g. a lagging RPC node, or the pre-#326 empty-digest misread\nthat hit new accounts' first transactions).",
@@ -3762,6 +3907,27 @@
           },
           "updated_at": {
             "type": "string"
+          }
+        }
+      },
+      "StateTail": {
+        "type": "object",
+        "description": "The queue tail and the candidates that lead to it.",
+        "required": [
+          "state",
+          "queue"
+        ],
+        "properties": {
+          "queue": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedCandidate"
+            },
+            "description": "The queued candidates, oldest first. The first builds on the\ncanonical state, each later one on the one before it, and the last\none's `new_commitment` is the tail's commitment. Empty when nothing is\nqueued."
+          },
+          "state": {
+            "$ref": "#/components/schemas/StateObject",
+            "description": "The tail: the canonical state with every queued candidate applied,\nshaped as `GET /state` serves a state. With nothing queued it is the\ncanonical state. `updated_at` is when the newest candidate was queued."
           }
         }
       },

@@ -781,6 +781,7 @@ const KNOWN_GRPC_METHODS: &[(&str, &str)] = &[
     ("guardian.Guardian", "GetDelta"),
     ("guardian.Guardian", "GetDeltaSince"),
     ("guardian.Guardian", "GetState"),
+    ("guardian.Guardian", "GetStateTail"),
     ("guardian.Guardian", "GetPubkey"),
     ("guardian.Guardian", "PushDeltaProposal"),
     ("guardian.Guardian", "GetDeltaProposals"),

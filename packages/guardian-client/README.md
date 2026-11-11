@@ -66,7 +66,7 @@ await client.revokeSession(); // session-key-signed logout; back to the wallet
 await client.revokeAllSessions(); // wallet-signed: ends every session of the signer
 ```
 
-The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getDelta`,
+The delegated signer signs reads (`getState`, `getCanonicalNonce`, `getStateTail`, `getDelta`,
 `getDeltaSince`, `getDeltaHistory`), proposal reads and proposal create/sign
 (`getDeltaProposals`, `getDeltaProposal`, `pushDeltaProposal`,
 `signDeltaProposal`), execution requests and status reads
@@ -160,6 +160,35 @@ if (!inSync) {
   const state = await client.getState(accountId);
 }
 ```
+
+### Get the Queue Tail
+
+With `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1 on the server, a new
+delta or proposal must build on the tail of the account's candidate queue
+(issue #517), which `getState` does not serve. `getStateTail` returns it, shaped
+as `getState` returns a state, with the queued candidates that lead there,
+oldest first (`GET /state/tail`). With nothing queued it is the canonical
+state and `queue` is empty. The tail is not on chain until the queued
+candidates land: check that the chain sits at the canonical state or a queued
+`newCommitment` before building on it, and expect to resync if one never
+lands. Each read replays the queue on the server, so read it before building
+and poll `getCanonicalNonce`. A server before 0.19.0 answers 404.
+
+```typescript
+const { state, queue } = await client.getStateTail(accountId);
+// build the next transaction on `state`, then propose it on that base:
+await client.pushDeltaProposal({
+  accountId,
+  nonce: tailAccountNonce + 1, // the nonce of the account in `state.stateJson`, plus one
+  deltaPayload: { txSummary, signatures: [], metadata, baseCommitment: state.commitment },
+});
+```
+
+`deltaPayload.baseCommitment` names the state a proposal's summary was built
+on. GUARDIAN 0.19.0 and later record the proposal only when it is the queue
+tail (the canonical state when nothing is queued), refusing a base another
+queued candidate claimed with `conflict_pending_delta` and any other with
+`commitment_mismatch`; earlier servers store it and ignore it.
 
 ### Abandon a Stuck Candidate
 

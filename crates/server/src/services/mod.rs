@@ -44,6 +44,7 @@ mod get_delta_proposal;
 mod get_delta_proposals;
 mod get_delta_since;
 mod get_state;
+mod get_state_tail;
 mod lookup_account;
 mod multisig_admission;
 pub mod pause_account;
@@ -113,6 +114,7 @@ pub use get_delta_proposals::{
 };
 pub use get_delta_since::{GetDeltaSinceParams, GetDeltaSinceResult, get_delta_since};
 pub use get_state::{GetStateParams, GetStateResult, get_state};
+pub use get_state_tail::{GetStateTailParams, QueuedCandidate, StateTail, get_state_tail};
 pub use lookup_account::{LookupAccountParams, LookupAccountResult, lookup_account};
 pub use push_delta::{PushDeltaParams, PushDeltaResult, push_delta};
 pub use push_delta_proposal::{
@@ -360,6 +362,7 @@ impl SessionReadKind {
         match operation {
             SessionOperation::GetCanonicalNonce => Self::WindowOnly,
             SessionOperation::GetState
+            | SessionOperation::GetStateTail
             | SessionOperation::GetDelta
             | SessionOperation::GetDeltaSince
             | SessionOperation::GetDeltaHistory
@@ -1748,6 +1751,7 @@ mod replay_protection_tests {
     async fn every_authenticated_read_endpoint_rejects_a_replayed_request() {
         for endpoint in [
             "get_state",
+            "get_state_tail",
             "get_delta_since",
             "get_delta_proposals",
             "get_delta_proposal",
@@ -1767,6 +1771,15 @@ mod replay_protection_tests {
                 "get_state" => get_state(
                     &state,
                     GetStateParams {
+                        account_id: ACCOUNT_ID.to_string(),
+                        credentials,
+                    },
+                )
+                .await
+                .map(|_| ()),
+                "get_state_tail" => get_state_tail(
+                    &state,
+                    GetStateTailParams {
                         account_id: ACCOUNT_ID.to_string(),
                         credentials,
                     },

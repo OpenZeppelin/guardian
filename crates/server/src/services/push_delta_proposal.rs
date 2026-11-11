@@ -9,12 +9,13 @@ use crate::services::proposal_signature::{
     ensure_cosigner_approval, proposal_tx_summary, verify_proposal_signature,
 };
 use crate::services::{normalize_payload, resolve_account_allowing_session};
-use crate::storage::{ProposalAdmission, ProposalWrite};
+use crate::storage::{ChainPosition, ProposalAdmission, ProposalWrite};
 use guardian_shared::DeltaSignature;
 use serde::Deserialize;
 use std::sync::Arc;
 
 const DEFAULT_MAX_PENDING_PROPOSALS_PER_ACCOUNT: usize = 20;
+const COMMITMENT_HEX_CHARS: usize = 64;
 const MAX_PENDING_PROPOSALS_ENV_VAR: &str = "GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT";
 
 fn max_pending_proposals_per_account() -> usize {
@@ -41,6 +42,33 @@ fn stored_request_bytes(state: &AppState, delta_payload: &serde_json::Value) -> 
         return Err(GuardianError::ProposalRequestTooLarge { bytes, limit });
     }
     Ok(bytes)
+}
+
+/// The commitment of the state the proposer built the summary on (issue
+/// #517): the payload's `base_commitment`, read like `tx_summary` and stored
+/// with the rest of the payload. It travels in the payload rather than as a
+/// request field because a server before 0.19.0 rebuilds the signed request
+/// from the fields it knows, so a new request field would fail
+/// authentication there; a payload key is stored and signed unchanged.
+/// `None` when the payload names no base: an SDK before 0.19.0, or a summary
+/// its caller built.
+fn proposal_base_commitment(delta_payload: &serde_json::Value) -> Result<Option<String>> {
+    let Some(value) = delta_payload.get("base_commitment") else {
+        return Ok(None);
+    };
+    let invalid = || {
+        GuardianError::InvalidDelta(
+            "base_commitment must be a 0x-prefixed 32-byte hex commitment".to_string(),
+        )
+    };
+    let hex = value
+        .as_str()
+        .and_then(|commitment| commitment.strip_prefix("0x"))
+        .ok_or_else(invalid)?;
+    if hex.len() != COMMITMENT_HEX_CHARS || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    Ok(Some(format!("0x{}", hex.to_ascii_lowercase())))
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +123,7 @@ pub async fn push_delta_proposal(
     } = params;
 
     let delta_payload = normalize_payload(delta_payload)?;
+    let base_commitment = proposal_base_commitment(&delta_payload)?;
 
     let resolved = resolve_account_allowing_session(
         state,
@@ -135,18 +164,27 @@ pub async fn push_delta_proposal(
     //   it while another device's candidate is queued; its delta is
     //   refused while the queue holds the slot and collides with the
     //   promoted candidate once it drains, after which it resyncs.
+    // - when the payload names the state the summary was built on
+    //   (`base_commitment`, issue #517) and that state is not the tail:
+    //   classified like a delta's `prev_commitment`, a base another queued
+    //   candidate already claimed (the canonical state or a non-tail
+    //   candidate's post-state) competes for that slot (409, build on the
+    //   tail, `GET /state/tail`, or wait for the queue to drain), and a
+    //   state this server does not know is a commitment mismatch against
+    //   the canonical commitment the proposer can resync to (400). This
+    //   catches what the label cannot: a sibling state at the tail's nonce;
     // - when its nonce is otherwise not the next nonce (400
     //   `invalid_delta`, at every depth): past it, the label was not
     //   derived from the tail (a timestamp, the TypeScript SDK's default
     //   through 0.18.0, or any client-chosen value); below it with
     //   nothing queued, the proposer's state is behind the canonical one.
-    //   Nothing here can tell which state a summary was built on, so the
-    //   label is the one hint; recorded against the tail, such a proposal
-    //   would be signed only for its push to be refused, holding a
-    //   proposal slot meanwhile. Waiting for the queue fixes neither: the
-    //   client relabels or resyncs. The one client that can build on a
-    //   non-empty tail, the device that pushed it, labels with its nonce
-    //   plus one.
+    //   Without a `base_commitment` nothing here can tell which state a
+    //   summary was built on, so the label is the one hint; recorded
+    //   against the tail, such a proposal would be signed only for its push
+    //   to be refused, holding a proposal slot meanwhile. Waiting for the
+    //   queue fixes neither: the client relabels or resyncs. A client that
+    //   builds on a non-empty tail (the device that pushed it, or one that
+    //   read `GET /state/tail`) labels with the tail's nonce plus one.
     // - when the tail changes who may act on the account (a queued
     //   signer-set or guardian change): nothing chains behind it until it
     //   promotes (`ensure_tail_keeps_auth`, judged on the replayed tail);
@@ -157,6 +195,12 @@ pub async fn push_delta_proposal(
     //   it until it leaves the queue (409; judged on the replayed tail).
     //   A correctly labelled proposal is at or below such a label and is
     //   refused with 409 before the replay anyway.
+    // No base: a proposal must see a promotion that emptied the queue
+    // between the two reads, whatever base it names. A delta's base can skip
+    // that re-read because the storage gate classifies it again under the
+    // account lock; nothing re-checks a proposal's base there, so a base
+    // naming the state read before such a promotion would otherwise be
+    // recorded on a state the account has already left.
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &account_id,
@@ -174,6 +218,36 @@ pub async fn push_delta_proposal(
             "Candidate queue is full; refusing proposal as pending-delta conflict"
         );
         return Err(GuardianError::ConflictPendingDelta);
+    }
+    if let Some(base) = base_commitment.as_deref() {
+        match chain.position(&current_state.commitment, base) {
+            ChainPosition::Tail => {}
+            ChainPosition::Competing => {
+                tracing::info!(
+                    account_id = %account_id,
+                    nonce,
+                    base_commitment = %base,
+                    queued = chain.len(),
+                    "Proposal builds on a state a queued candidate already claimed; refusing as \
+                     pending-delta conflict"
+                );
+                return Err(GuardianError::ConflictPendingDelta);
+            }
+            ChainPosition::Unrelated => {
+                tracing::info!(
+                    account_id = %account_id,
+                    nonce,
+                    base_commitment = %base,
+                    canonical_commitment = %current_state.commitment,
+                    "Proposal builds on a state this server does not know; refusing as commitment \
+                     mismatch"
+                );
+                return Err(GuardianError::CommitmentMismatch {
+                    expected: current_state.commitment.clone(),
+                    actual: base.to_string(),
+                });
+            }
+        }
     }
     if let Some(tail_nonce) = chain.tail_nonce()
         && nonce <= tail_nonce
@@ -1790,6 +1864,255 @@ mod tests {
         );
         let accepted = propose(&setup, 6).await.expect("nonce 6 extends the queue");
         assert_eq!(accepted.delta.prev_commitment, "0xtail");
+    }
+
+    const TAIL: &str = "0x7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a7a";
+    const MIDDLE: &str = "0x6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b6b";
+    const UNKNOWN: &str = "0x5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c";
+
+    /// A queue of `candidates` (nonce, prev, new) whose replay reproduces its
+    /// last candidate's post-state.
+    fn queue_ending_at_tail(candidates: &[(u64, &str, &str)]) -> QueuedProposalSetup {
+        let account_id = fixture_account_id();
+        let queue = candidates
+            .iter()
+            .map(|(nonce, prev, new)| queued_candidate(&account_id, *nonce, prev, new))
+            .collect();
+        let replayed = candidates.last().map_or(CANONICAL, |(_, _, new)| *new);
+        queued_proposal_setup_with(4, queue, vec![], |network| {
+            let account_json: serde_json::Value =
+                serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+            network.with_apply_delta(Ok((account_json, replayed.to_string())))
+        })
+    }
+
+    async fn propose_on(
+        setup: &QueuedProposalSetup,
+        nonce: u64,
+        base_commitment: serde_json::Value,
+    ) -> Result<PushDeltaProposalResult> {
+        push_delta_proposal(
+            &setup.state,
+            PushDeltaProposalParams {
+                account_id: setup.account_id.clone(),
+                nonce,
+                delta_payload: serde_json::json!({
+                    "tx_summary": setup.tx_summary.clone(),
+                    "signatures": [],
+                    "base_commitment": base_commitment,
+                    "metadata": {
+                        "proposal_type": "custom",
+                        "description": "proposed on a named base"
+                    }
+                }),
+                credentials: setup.credentials.clone(),
+            },
+        )
+        .await
+    }
+
+    fn assert_nothing_recorded(setup: &QueuedProposalSetup) {
+        assert!(
+            setup.storage.get_submit_delta_proposal_calls().is_empty(),
+            "nothing is stored for cosigners to sign"
+        );
+    }
+
+    /// Issue #517: a proposal that names the tail as the state it was built
+    /// on is recorded there, whatever the case of the hex it names it in.
+    #[tokio::test]
+    async fn a_proposal_built_on_the_tail_is_recorded_on_it() {
+        for base in [
+            TAIL.to_string(),
+            TAIL.to_uppercase().replacen("0X", "0x", 1),
+        ] {
+            let setup = queue_ending_at_tail(&[(5, CANONICAL, TAIL)]);
+            let accepted = propose_on(&setup, 6, serde_json::json!(base))
+                .await
+                .unwrap_or_else(|error| panic!("{base}: {error:?}"));
+            assert_eq!(accepted.delta.prev_commitment, TAIL);
+            assert_eq!(
+                accepted.delta.delta_payload["base_commitment"],
+                serde_json::json!(base),
+                "the payload is stored as pushed"
+            );
+        }
+    }
+
+    /// With nothing queued the tail is the canonical state.
+    #[tokio::test]
+    async fn a_proposal_built_on_the_canonical_state_is_recorded_with_nothing_queued() {
+        let setup = queue_ending_at_tail(&[]);
+        store_canonical_nonce(&setup, 1);
+        let accepted = propose_on(&setup, 2, serde_json::json!(CANONICAL))
+            .await
+            .expect("the canonical state is the tail");
+        assert_eq!(accepted.delta.prev_commitment, CANONICAL);
+    }
+
+    /// A base another queued candidate already claimed competes for its
+    /// slot: the canonical state, or a candidate's post-state that is not the
+    /// tail. The proposer waits for the queue to drain or builds on the
+    /// tail. Refused before the replay and before the pending set is read,
+    /// even when the label is the tail's nonce plus one.
+    #[tokio::test]
+    async fn a_proposal_built_on_a_claimed_base_is_a_pending_conflict() {
+        for base in [CANONICAL, MIDDLE] {
+            let setup = queue_ending_at_tail(&[(5, CANONICAL, MIDDLE), (6, MIDDLE, TAIL)]);
+            let result = propose_on(&setup, 7, serde_json::json!(base)).await;
+            assert!(
+                matches!(result, Err(GuardianError::ConflictPendingDelta)),
+                "{base}: {result:?}"
+            );
+            assert_nothing_recorded(&setup);
+            assert_eq!(
+                setup.network.apply_delta_responses.lock().unwrap().len(),
+                2,
+                "refused before any replay"
+            );
+            assert!(
+                setup
+                    .storage
+                    .pull_all_delta_proposals_calls
+                    .lock()
+                    .unwrap()
+                    .is_empty(),
+                "refused before the pending set is read"
+            );
+        }
+    }
+
+    /// A base this server does not know is a commitment mismatch against the
+    /// canonical commitment, queued or not. That includes a sibling state at
+    /// the tail's nonce, which the label alone cannot tell from the tail.
+    #[tokio::test]
+    async fn a_proposal_built_on_an_unknown_state_is_a_commitment_mismatch() {
+        let queued: &[(u64, &str, &str)] = &[(5, CANONICAL, TAIL)];
+        for (queue, nonce) in [(queued, 6), (&[], 2)] {
+            let setup = queue_ending_at_tail(queue);
+            store_canonical_nonce(&setup, 1);
+            let result = propose_on(&setup, nonce, serde_json::json!(UNKNOWN)).await;
+            assert!(
+                matches!(&result, Err(GuardianError::CommitmentMismatch { expected, actual })
+                    if expected == CANONICAL && actual == UNKNOWN),
+                "queued {}: {result:?}",
+                queue.len()
+            );
+            assert_nothing_recorded(&setup);
+        }
+    }
+
+    /// The base is checked before the label: a proposal on the tail with a
+    /// wrong label is still refused by the nonce rule.
+    #[tokio::test]
+    async fn a_proposal_on_the_tail_still_carries_the_next_nonce() {
+        for (nonce, refused_as_conflict) in [(5, true), (7, false)] {
+            let setup = queue_ending_at_tail(&[(5, CANONICAL, TAIL)]);
+            let result = propose_on(&setup, nonce, serde_json::json!(TAIL)).await;
+            match result {
+                Err(GuardianError::ConflictPendingDelta) => assert!(refused_as_conflict),
+                Err(GuardianError::InvalidDelta(message)) => {
+                    assert!(!refused_as_conflict);
+                    assert!(message.contains("next nonce 6"), "{message}");
+                }
+                other => panic!("nonce {nonce}: {other:?}"),
+            }
+            assert_nothing_recorded(&setup);
+        }
+    }
+
+    /// A base that is not a 0x-prefixed 32-byte hex commitment is refused
+    /// before the account is read.
+    #[tokio::test]
+    async fn a_malformed_base_commitment_is_an_invalid_delta() {
+        let short = "0x7a7a";
+        let unprefixed = TAIL.trim_start_matches("0x");
+        let not_hex = format!("0x{}", "g".repeat(64));
+        for base in [
+            serde_json::json!(5),
+            serde_json::json!(null),
+            serde_json::json!(short),
+            serde_json::json!(unprefixed),
+            serde_json::json!(not_hex),
+            serde_json::json!(format!("{TAIL}00")),
+        ] {
+            let setup = queue_ending_at_tail(&[(5, CANONICAL, TAIL)]);
+            let result = propose_on(&setup, 6, base.clone()).await;
+            assert!(
+                matches!(&result, Err(GuardianError::InvalidDelta(message))
+                    if message.contains("base_commitment")),
+                "{base}: {result:?}"
+            );
+            assert_eq!(
+                setup.storage.pull_state_responses.lock().unwrap().len(),
+                1,
+                "{base}: refused before the account is read"
+            );
+        }
+    }
+
+    /// A promotion between the state read and the queue read leaves the queue
+    /// empty while the state read is stale: a base naming the promoted state
+    /// is judged against it, not refused as unknown.
+    #[tokio::test]
+    async fn a_proposal_on_the_state_a_mid_request_promotion_reached_is_recorded() {
+        let setup = queue_ending_at_tail(&[]);
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let stale = setup
+            .storage
+            .pull_state_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("setup state");
+        {
+            let mut responses = setup.storage.pull_state_responses.lock().unwrap();
+            responses.push(Ok(create_state_object(
+                setup.account_id.clone(),
+                TAIL.to_string(),
+                account_json,
+            )));
+            responses.push(stale);
+        }
+        let accepted = propose_on(&setup, 2, serde_json::json!(TAIL))
+            .await
+            .expect("judged against the promoted state");
+        assert_eq!(accepted.delta.prev_commitment, TAIL);
+    }
+
+    /// The state read sees the canonical state, the queued candidate on it
+    /// promotes before the queue is read, and the proposer named the state
+    /// the account has just left. The empty queue makes the proposal re-read
+    /// the state (nothing re-checks a proposal's base under the account lock,
+    /// as the storage gate does a delta's), so it is judged against the
+    /// promoted state and refused rather than recorded on the one left behind.
+    #[tokio::test]
+    async fn a_base_a_mid_request_promotion_left_behind_is_refused() {
+        let setup = queue_ending_at_tail(&[]);
+        let account_json: serde_json::Value = serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+        let stale = setup
+            .storage
+            .pull_state_responses
+            .lock()
+            .unwrap()
+            .pop()
+            .expect("setup state");
+        {
+            let mut responses = setup.storage.pull_state_responses.lock().unwrap();
+            responses.push(Ok(create_state_object(
+                setup.account_id.clone(),
+                TAIL.to_string(),
+                account_json,
+            )));
+            responses.push(stale);
+        }
+        let result = propose_on(&setup, 2, serde_json::json!(CANONICAL)).await;
+        assert!(
+            matches!(&result, Err(GuardianError::CommitmentMismatch { expected, actual })
+                if expected == TAIL && actual == CANONICAL),
+            "{result:?}"
+        );
+        assert_nothing_recorded(&setup);
     }
 
     /// Proposals pinned to the tail at or below its nonce are as dead as

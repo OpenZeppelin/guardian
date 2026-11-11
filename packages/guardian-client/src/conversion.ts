@@ -21,6 +21,7 @@ import type {
   ProposalMetadata,
   SignProposalRequest,
   StateObject,
+  StateTail,
 } from './types.js';
 import type {
   ServerCanonicalNonceResponse,
@@ -41,6 +42,7 @@ import type {
   ServerProposalMetadata,
   ServerSignProposalRequest,
   ServerStateObject,
+  ServerStateTail,
 } from './server-types.js';
 import { decodeTransactionRequestEnvelope, type TransactionRequestEnvelope } from './request-envelope.js';
 
@@ -175,6 +177,22 @@ export function fromServerStateObject(server: ServerStateObject): StateObject {
     createdAt: server.created_at,
     updatedAt: server.updated_at,
     authScheme: server.auth_scheme,
+  };
+}
+
+export function fromServerStateTail(server: ServerStateTail): StateTail {
+  return {
+    state: fromServerStateObject(server.state),
+    queue: server.queue.map((candidate) => {
+      if (!Number.isSafeInteger(candidate.nonce) || candidate.nonce < 0) {
+        throw new Error(`Invalid queued candidate nonce from server: ${String(candidate.nonce)}`);
+      }
+      return {
+        nonce: candidate.nonce,
+        prevCommitment: candidate.prev_commitment,
+        newCommitment: candidate.new_commitment,
+      };
+    }),
   };
 }
 
@@ -328,6 +346,9 @@ export function toServerDeltaProposalRequest(req: DeltaProposalRequest): ServerD
       metadata: req.deltaPayload.metadata ? toServerProposalMetadata(req.deltaPayload.metadata) : undefined,
       ...(req.deltaPayload.transactionRequest
         ? { transaction_request: req.deltaPayload.transactionRequest }
+        : {}),
+      ...(req.deltaPayload.baseCommitment !== undefined
+        ? { base_commitment: req.deltaPayload.baseCommitment }
         : {}),
     },
   };

@@ -26,6 +26,7 @@ CONSTANTS
     MaxSummaries,  \* bound on proposals created (fresh summaries)
     MaxPending,    \* GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT
     Labels,        \* proposal labels clients send: subset of {"nonce", "timestamp"}
+    NamesBase,     \* whether a proposal names the state it was built on: subset of BOOLEAN
     Supersede      \* a submission at a parked row's nonce replaces it (storage submit_candidate)
 
 VARIABLES
@@ -35,11 +36,12 @@ VARIABLES
     parked,    \* retained or client-abandoned rows: [label, prev, s]
     archived,  \* superseded_deltas: parked rows a resubmission replaced
     canon,     \* canonical delta rows: [label, prev, s]
-    proposals, \* pending proposal rows: [s, pin, label, built]; built is the
-               \* state the proposer computed the summary on (not stored)
+    proposals, \* pending proposal rows: [s, pin, label, built, named]; built is
+               \* the state the proposer computed the summary on, named whether
+               \* the proposal says so (base_commitment, issue #517)
     local,     \* each device's own record of the account
-    inflight,  \* submitted transactions: [s, base, ackPrev, pin, built]
-    landed,    \* transactions that landed: [s, base, ackPrev, pin, built]
+    inflight,  \* submitted transactions: [s, base, ackPrev, pin, built, named]
+    landed,    \* transactions that landed: [s, base, ackPrev, pin, built, named]
     nextS      \* next fresh summary id
 
 vars == <<head, stored, queue, parked, archived, canon, proposals, local, inflight, landed, nextS>>
@@ -106,14 +108,20 @@ Sync(d) ==
 (* services/push_delta_proposal.rs push_delta_proposal pins it to the queue tail  *)
 (* and refuses it while the queue is full or when the label is not the next nonce *)
 (* (candidate_chain.rs CandidateChain::next_nonce): the tail's plus one, or with  *)
-(* nothing queued the stored state's account nonce plus one (issue #518).          *)
+(* nothing queued the stored state's account nonce plus one (issue #518). A       *)
+(* proposal that names the state it was built on (both SDKs from 0.19.0: payload  *)
+(* base_commitment, Rust payload.rs with_base_commitment, TS resolveProposalLabel)*)
+(* is refused unless that state is the queue tail (CandidateChain::position;      *)
+(* issue #517); one that names none (an earlier SDK, a caller-built summary) is   *)
+(* judged by its label alone.                                                     *)
 Propose(d) ==
     /\ nextS <= MaxSummaries
-    /\ \E kind \in Labels :
+    /\ \E kind \in Labels, named \in NamesBase :
          LET label == IF kind = "nonce" THEN Len(local[d]) + 1 ELSE TimestampLabel + nextS IN
          /\ Len(queue) < MaxPending
+         /\ named => local[d] = QueueTail
          /\ label = IF queue = <<>> THEN Len(stored) + 1 ELSE Last(queue).label + 1
-         /\ proposals' = proposals \cup {[s |-> nextS, pin |-> QueueTail, label |-> label, built |-> local[d]]}
+         /\ proposals' = proposals \cup {[s |-> nextS, pin |-> QueueTail, label |-> label, built |-> local[d], named |-> named]}
     /\ nextS' = nextS + 1
     /\ UNCHANGED <<head, stored, queue, parked, archived, canon, local, inflight, landed>>
 
@@ -130,7 +138,7 @@ ExecuteRust(d) ==
          /\ st = p.pin
          /\ Admits(st, p.label)
          /\ Admit(st, p.label, p.s)
-         /\ inflight' = inflight \cup {[s |-> p.s, base |-> st, ackPrev |-> st, pin |-> p.pin, built |-> p.built]}
+         /\ inflight' = inflight \cup {[s |-> p.s, base |-> st, ackPrev |-> st, pin |-> p.pin, built |-> p.built, named |-> p.named]}
          /\ local' = [local EXCEPT ![d] = Append(st, p.s)]
     /\ UNCHANGED <<head, stored, canon, proposals, landed, nextS>>
 
@@ -144,7 +152,7 @@ ExecuteTs(d) ==
          /\ local[d] = p.pin
          /\ Admits(p.pin, p.label)
          /\ Admit(p.pin, p.label, p.s)
-         /\ inflight' = inflight \cup {[s |-> p.s, base |-> local[d], ackPrev |-> p.pin, pin |-> p.pin, built |-> p.built]}
+         /\ inflight' = inflight \cup {[s |-> p.s, base |-> local[d], ackPrev |-> p.pin, pin |-> p.pin, built |-> p.built, named |-> p.named]}
          /\ local' = [local EXCEPT ![d] = Append(local[d], p.s)]
     /\ UNCHANGED <<head, stored, canon, proposals, landed, nextS>>
 
@@ -242,6 +250,13 @@ Spec == Init /\ [][Next]_vars
 (* a proposal pinned to a state the client does not hold).                 *)
 ExecutesOnPinnedBase ==
     \A t \in landed : t.pin = t.built => t.base = t.pin
+
+(* A proposal that named the state its summary was built on lands only from *)
+(* that state, whatever Guardian's queue looked like when it was proposed  *)
+(* (issue #517). Needs both halves: Guardian records it only on its base,  *)
+(* and the SDKs execute it only on the state it is pinned to.               *)
+LandsOnItsNamedBase ==
+    \A t \in landed : t.named => t.base = t.built
 
 (* Every landed transaction carried a Guardian acknowledgement issued for  *)
 (* the state it landed from, so Guardian queued exactly that transition.   *)

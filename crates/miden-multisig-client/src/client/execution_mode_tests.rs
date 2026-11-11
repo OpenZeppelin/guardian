@@ -20,13 +20,24 @@ use crate::proposal::TransactionType;
 use crate::transaction::{
     GUARDIAN_EXECUTABLE_APPROVAL_EXPIRATION_DELTA, GUARDIAN_EXECUTABLE_TX_EXPIRATION_DELTA,
     ProposalExecutionMode, ProposalOptions, deserialize_transaction_request,
-    execute_for_summary_at_tip, summary_approval_expiration_block_num,
+    execute_for_summary_at_tip, summary_approval_expiration_block_num, word_to_hex,
 };
 
 struct Proposed {
     client: MultisigClient,
     payload: serde_json::Value,
     summary: TransactionSummary,
+}
+
+/// The pushed payload names the account state its summary was built on (issue #517): the
+/// state the proposal's nonce label comes from.
+fn assert_names_its_base(family: &str, proposed: &Proposed) {
+    let built_on = proposed.client.require_account().unwrap().commitment();
+    assert_eq!(
+        proposed.payload["base_commitment"],
+        serde_json::json!(word_to_hex(&built_on)),
+        "{family}: the proposal names the state it was built on"
+    );
 }
 
 /// Proposes the same threshold change under `mode`, returning the payload the client pushed.
@@ -236,7 +247,11 @@ async fn a_default_client_stores_no_request_and_signs_no_extra_bound() {
         .keys()
         .map(String::as_str)
         .collect();
-    assert_eq!(keys, ["metadata", "signatures", "tx_summary"]);
+    assert_eq!(
+        keys,
+        ["base_commitment", "metadata", "signatures", "tx_summary"]
+    );
+    assert_names_its_base("update_procedure_threshold", &proposed);
     assert_eq!(proposed.summary.expiration_delta(), 0);
     assert_eq!(
         summary_approval_expiration_block_num(&proposed.summary),
@@ -319,6 +334,7 @@ async fn every_family_a_one_signer_account_can_propose_carries_both_bounds_and_r
             transaction_type,
         )
         .await;
+        assert_names_its_base(family, &proposed);
         let summary = &proposed.summary;
         assert_eq!(
             summary.expiration_delta(),
@@ -386,7 +402,11 @@ async fn a_guardian_executable_client_creates_a_switch_self_executed() {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys, ["metadata", "signatures", "tx_summary"]);
+        assert_eq!(
+            keys,
+            ["base_commitment", "metadata", "signatures", "tx_summary"]
+        );
+        assert_names_its_base("switch_guardian", &proposed);
         assert_eq!(proposed.summary.expiration_delta(), 0);
         assert_eq!(
             summary_approval_expiration_block_num(&proposed.summary).map(|block| block.as_u32()),
@@ -442,6 +462,7 @@ async fn the_signer_set_and_payment_families_carry_both_bounds_and_reproduce() {
 }
 
 async fn assert_guardian_executable(family: &str, proposed: &mut Proposed) {
+    assert_names_its_base(family, proposed);
     let summary = &proposed.summary;
     assert_eq!(
         summary.expiration_delta(),

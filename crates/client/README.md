@@ -83,6 +83,29 @@ if !in_sync {
 }
 ```
 
+### Queue Tail
+
+With `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1 on the server, a new
+delta or proposal must build on the tail of the account's candidate queue
+(issue #517), which `get_state` does not serve. `get_state_tail` returns it: the
+canonical state with every queued candidate applied, and the queued candidates
+that lead there, oldest first. With nothing queued it is the canonical state
+and `queue` is empty. The tail is not on chain until the queued candidates
+land; check that the chain sits at the canonical state or a queued
+`new_commitment` before building on it, and expect to resync if one of them
+never lands. Each read replays the queue on the server, so read it before
+building, and poll `get_canonical_nonce`. A server before 0.19.0 answers
+`UNIMPLEMENTED`.
+
+```rust
+let tail = client.get_state_tail(&account_id).await?;
+let state = tail.state.expect("the tail");
+// `tail.queue.first()`, when present, starts from the canonical commitment.
+// Build the next transaction on `state`, name `state.commitment` as the
+// proposal payload's `base_commitment`, and label it with the nonce of the
+// account in `state` plus one.
+```
+
 ### Delta History
 
 Paginated canonical delta history (issue #413), newest-first by nonce, with
