@@ -402,17 +402,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         println!("Step 6: Register proposal and collect cosigner approvals...");
 
         let tx_summary_json = tx_summary.to_json();
+        // Proposals and deltas carry the nonce the transaction leaves the
+        // account at, one past the account's current nonce; GUARDIAN
+        // refuses any other label.
+        let next_nonce = account.nonce().as_canonical_u64() + 1;
         let proposal_payload = serde_json::json!({
             "tx_summary": tx_summary_json,
             "signatures": [],
             "metadata": { "proposal_type": "add_signer" }
         });
         let proposal_id = match guardian_client2
-            .push_delta_proposal(
-                &account_id,
-                account.nonce().as_canonical_u64(),
-                proposal_payload,
-            )
+            .push_delta_proposal(&account_id, next_nonce, proposal_payload)
             .await
         {
             Ok(response) => {
@@ -460,12 +460,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let prev_commitment = format!("0x{}", hex::encode(account.to_commitment().as_bytes()));
 
         let (_new_commitment, ack_sig) = match guardian_client2
-            .push_delta(
-                &account_id,
-                account.nonce().as_canonical_u64(),
-                prev_commitment,
-                tx_summary_json,
-            )
+            .push_delta(&account_id, next_nonce, prev_commitment, tx_summary_json)
             .await
         {
             Ok(response) => {

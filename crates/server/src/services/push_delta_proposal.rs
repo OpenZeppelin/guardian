@@ -118,30 +118,45 @@ pub async fn push_delta_proposal(
         .await
         .map_err(|_| GuardianError::StateNotFound(account_id.clone()))?;
 
-    // Queue admission (issue #17): a proposal is pinned to the tail of
-    // the account's candidate chain — the state the eventual delta must
-    // build on. A proposal whose delta could never be admitted there is
-    // refused up front rather than after cosigners have signed it:
+    // Queue admission (issue #17) and the nonce rule (issue #518): a
+    // proposal is pinned to the tail of the account's candidate chain —
+    // the state the eventual delta must build on — and its nonce is the
+    // label that delta will carry, which the push refuses unless it is
+    // the nonce the delta leaves the account at: the tail's account
+    // nonce plus one (`CandidateChain::next_nonce`). A proposal whose
+    // delta could never be admitted is refused up front rather than
+    // after cosigners have signed it:
     // - while the queue is full (with depth 1 this is the historical
     //   "one in-flight candidate" refusal);
-    // - when a queue exists and its nonce is not the tail's plus one.
-    //   Both SDKs label a proposal with the account's next nonce, so one
-    //   built on the tail carries exactly that. At or below the tail's
-    //   nonce the summary was built on an older state: this is the
-    //   cosigner that synced the canonical state (all `/state` serves)
-    //   and proposes on it while another device's candidate is queued;
-    //   its delta is refused while the queue holds the slot and collides
-    //   with the promoted candidate once it drains. Past the tail's nonce
-    //   plus one the label was not derived from the tail either (a
-    //   timestamp, the TypeScript SDK's default through 0.18.0, or
-    //   any client-chosen value): nothing here can tell which state such
-    //   a summary was built on, and recorded against the tail it would be
-    //   signed only to fail at execution, holding a proposal slot for as
-    //   long as the tail stays. The one client that can build on the
-    //   tail, the device that pushed it, labels with its nonce plus one.
+    // - when a queue exists and its nonce is at or below the tail's
+    //   (409, wait for the queue to drain). Both SDKs label a proposal
+    //   with the account's next nonce, so this is the cosigner that
+    //   synced the canonical state (all `/state` serves) and proposes on
+    //   it while another device's candidate is queued; its delta is
+    //   refused while the queue holds the slot and collides with the
+    //   promoted candidate once it drains, after which it resyncs.
+    // - when its nonce is otherwise not the next nonce (400
+    //   `invalid_delta`, at every depth): past it, the label was not
+    //   derived from the tail (a timestamp, the TypeScript SDK's default
+    //   through 0.18.0, or any client-chosen value); below it with
+    //   nothing queued, the proposer's state is behind the canonical one.
+    //   Nothing here can tell which state a summary was built on, so the
+    //   label is the one hint; recorded against the tail, such a proposal
+    //   would be signed only for its push to be refused, holding a
+    //   proposal slot meanwhile. Waiting for the queue fixes neither: the
+    //   client relabels or resyncs. The one client that can build on a
+    //   non-empty tail, the device that pushed it, labels with its nonce
+    //   plus one.
     // - when the tail changes who may act on the account (a queued
     //   signer-set or guardian change): nothing chains behind it until it
-    //   promotes (`ensure_tail_keeps_auth`, judged on the replayed tail).
+    //   promotes (`ensure_tail_keeps_auth`, judged on the replayed tail);
+    // - when the tail is a candidate a server before issue #518 queued
+    //   under a label other than its nonce (a timestamp, at the head):
+    //   its label is the one hint `next_nonce` has, and a proposal at that
+    //   label plus one could never be pushed, so nothing is recorded behind
+    //   it until it leaves the queue (409; judged on the replayed tail).
+    //   A correctly labelled proposal is at or below such a label and is
+    //   refused with 409 before the replay anyway.
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &account_id,
@@ -160,17 +175,33 @@ pub async fn push_delta_proposal(
         );
         return Err(GuardianError::ConflictPendingDelta);
     }
-    let tail_nonce = chain.tail_nonce();
-    if let Some(tail_nonce) = tail_nonce
-        && tail_nonce.checked_add(1) != Some(nonce)
+    if let Some(tail_nonce) = chain.tail_nonce()
+        && nonce <= tail_nonce
     {
         tracing::info!(
             account_id = %account_id,
             nonce,
             tail_nonce,
-            "Proposal nonce is not the candidate queue tail's plus one; refusing as pending-delta conflict"
+            "Proposal nonce does not extend the candidate queue; refusing as pending-delta conflict"
         );
         return Err(GuardianError::ConflictPendingDelta);
+    }
+    let next_nonce = chain
+        .next_nonce(state, resolved.storage.as_ref(), &current_state)
+        .await?;
+    if let Some(next_nonce) = next_nonce
+        && nonce != next_nonce
+    {
+        tracing::info!(
+            account_id = %account_id,
+            nonce,
+            next_nonce,
+            queued = chain.len(),
+            "Proposal is not labelled with the nonce its delta leaves the account at; refusing it"
+        );
+        return Err(GuardianError::InvalidDelta(format!(
+            "proposal nonce {nonce} is not the account's next nonce {next_nonce}"
+        )));
     }
 
     let tail_commitment = chain.tail_commitment(&current_state.commitment).to_string();
@@ -195,17 +226,17 @@ pub async fn push_delta_proposal(
     // stay in storage and remain visible via pull_pending_proposals.
     // Viability is measured against the chain tail: that commitment is
     // what promotion drives the canonical state towards, and a proposal
-    // pinned to it whose nonce does not exceed the tail's is as dead as
-    // one on a superseded commitment (see the refusal above). One pinned
-    // to the tail past its nonce plus one can no longer be recorded, but
-    // one an earlier release recorded there is still executable from the
-    // tail, so it counts. The limit is checked before the tail replay,
-    // which costs one delta application per queued candidate.
+    // pinned to it at any nonce but the next one is as dead as one on a
+    // superseded commitment (see the refusals above): the push of its
+    // delta is refused. That includes the timestamp-labelled proposals an
+    // earlier release recorded there, which no longer execute. The limit
+    // is checked before the tail replay, which costs one delta
+    // application per queued candidate.
     let viable_pending = pending_proposals
         .iter()
         .filter(|record| {
             record.proposal.prev_commitment == tail_commitment
-                && tail_nonce.is_none_or(|tail_nonce| record.proposal.nonce > tail_nonce)
+                && next_nonce.is_none_or(|next_nonce| record.proposal.nonce == next_nonce)
         })
         .count();
 
@@ -233,6 +264,18 @@ pub async fn push_delta_proposal(
     let request_bytes = stored_request_bytes(state, &delta_payload)?;
 
     let tail = chain.reconstruct_tail(state, &current_state).await?;
+    if !tail.is_labelled_with_its_nonce() {
+        tracing::info!(
+            account_id = %account_id,
+            nonce,
+            tail_nonce = ?tail.nonce,
+            tail_account_nonce = ?tail.account_nonce,
+            "The newest queued candidate is not labelled with the nonce it leaves the account \
+             at (queued before issue #518); refusing as pending-delta conflict until it leaves \
+             the queue"
+        );
+        return Err(GuardianError::ConflictPendingDelta);
+    }
     candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
     // Extract tx_summary and signatures from delta_payload
@@ -322,7 +365,7 @@ pub async fn push_delta_proposal(
             proposal: delta_proposal.clone(),
             request_bytes,
             max_viable_proposals: max_pending_proposals,
-            queue_tail_nonce: tail_nonce,
+            viable_nonce: next_nonce,
             max_account_request_bytes: u64::from(state.execution.config.max_account_request_bytes),
         })
         .await
@@ -1686,16 +1729,17 @@ mod tests {
         .await
     }
 
-    /// Issue #17: while a queue exists, only a proposal labelled with the
-    /// tail's nonce plus one — what a client that built on the tail
-    /// labels it with — is recorded. At or below the tail's nonce the
-    /// proposal is doomed (its delta is refused while the tail's
-    /// candidate holds the slot and collides with it once promoted): the
-    /// cosigner that synced the canonical state and proposed on it while
-    /// another device's candidate was queued. Past the tail's nonce plus
-    /// one the label did not come from the tail either (a timestamp, the
-    /// TypeScript SDK's default through 0.18.0): refused the same
-    /// way, before any cosigner signs it.
+    /// Issues #17 and #518: while a queue exists, only a proposal labelled
+    /// with the tail's nonce plus one — what a client that built on the
+    /// tail labels it with — is recorded. At or below the tail's nonce the
+    /// proposal is doomed while the queue holds (its delta is refused while
+    /// the tail's candidate holds the slot and collides with it once
+    /// promoted): the cosigner that synced the canonical state and proposed
+    /// on it while another device's candidate was queued, a pending
+    /// conflict it waits out. Past the tail's nonce plus one the label did
+    /// not come from the tail at all (a timestamp, the TypeScript SDK's
+    /// default through 0.18.0), and no wait fixes it: an invalid delta.
+    /// Both are refused before any cosigner signs.
     #[tokio::test]
     async fn test_push_delta_proposal_refused_unless_it_extends_the_tail_by_one() {
         let account_id = &fixture_account_id();
@@ -1706,10 +1750,18 @@ mod tests {
                 vec![],
             );
             let result = propose(&setup, nonce).await;
-            assert!(
-                matches!(result, Err(GuardianError::ConflictPendingDelta)),
-                "nonce {nonce}: {result:?}"
-            );
+            if nonce <= 5 {
+                assert!(
+                    matches!(result, Err(GuardianError::ConflictPendingDelta)),
+                    "nonce {nonce}: {result:?}"
+                );
+            } else {
+                assert!(
+                    matches!(&result, Err(GuardianError::InvalidDelta(message))
+                        if message.contains("next nonce 6")),
+                    "nonce {nonce}: {result:?}"
+                );
+            }
             assert!(
                 setup.storage.get_submit_delta_proposal_calls().is_empty(),
                 "nothing is stored for cosigners to sign"
@@ -1759,17 +1811,34 @@ mod tests {
         assert_eq!(accepted.delta.prev_commitment, "0xtail");
     }
 
+    /// Issue #518: proposals an earlier release recorded against the tail
+    /// with timestamp labels can no longer execute (the push of their
+    /// delta is refused), so they hold no slot either.
+    #[tokio::test]
+    async fn test_push_delta_proposal_timestamp_labelled_tail_proposals_do_not_consume_capacity() {
+        let account_id = &fixture_account_id();
+        let dead = (0..20)
+            .map(|i| pending_on(account_id, 1_790_941_600_874 + i, "0xtail"))
+            .collect();
+        let setup = queued_proposal_setup(
+            4,
+            vec![queued_candidate(account_id, 1, CANONICAL, "0xtail")],
+            dead,
+        );
+        let accepted = propose(&setup, 2)
+            .await
+            .expect("timestamp-labelled proposals leave the capacity free");
+        assert_eq!(accepted.delta.prev_commitment, "0xtail");
+    }
+
     /// The pending-proposal limit is checked against the tail commitment
     /// before the tail is replayed: a refused proposal costs no delta
     /// applications.
     #[tokio::test]
     async fn test_push_delta_proposal_limit_is_checked_before_the_tail_replay() {
         let account_id = &fixture_account_id();
-        // Recorded against the tail by an earlier release with timestamp
-        // labels: no longer admissible, still executable from the tail,
-        // so they hold their slots.
         let viable = (0..20)
-            .map(|i| pending_on(account_id, 1_790_941_600_874 + i, "0xtail"))
+            .map(|_| pending_on(account_id, 2, "0xtail"))
             .collect();
         let setup = queued_proposal_setup(
             4,
@@ -1788,6 +1857,196 @@ mod tests {
             setup.network.apply_delta_responses.lock().unwrap().len(),
             1,
             "refused before any replay"
+        );
+    }
+
+    /// Gives the setup's canonical state reads a stored account nonce.
+    fn store_canonical_nonce(setup: &QueuedProposalSetup, nonce: u64) {
+        for state in setup
+            .storage
+            .pull_state_responses
+            .lock()
+            .unwrap()
+            .iter_mut()
+            .flatten()
+        {
+            state.nonce = Some(nonce);
+        }
+    }
+
+    /// Issue #518: with nothing queued, at the default depth or deeper, a
+    /// proposal is recorded only at the canonical account nonce plus one,
+    /// the label its delta must carry. Below it the proposer's state is
+    /// behind the canonical one; past it the label was not derived from the
+    /// account (a timestamp, or a value past `i64::MAX`). Refused before the
+    /// pending set is read, and before any cosigner signs.
+    #[tokio::test]
+    async fn test_push_delta_proposal_on_an_empty_queue_must_carry_the_next_nonce() {
+        for depth in [1, 4] {
+            for nonce in [0, 5, 7, 1_790_941_600_874, i64::MAX as u64 + 1, u64::MAX] {
+                let setup = queued_proposal_setup(depth, vec![], vec![]);
+                store_canonical_nonce(&setup, 5);
+                let result = propose(&setup, nonce).await;
+                assert!(
+                    matches!(&result, Err(GuardianError::InvalidDelta(message))
+                        if message.contains(&format!("proposal nonce {nonce} "))
+                            && message.contains("next nonce 6")),
+                    "depth {depth}, nonce {nonce}: {result:?}"
+                );
+                assert!(
+                    setup.storage.get_submit_delta_proposal_calls().is_empty(),
+                    "depth {depth}, nonce {nonce}: nothing is stored for cosigners to sign"
+                );
+                assert!(
+                    setup
+                        .storage
+                        .pull_all_delta_proposals_calls
+                        .lock()
+                        .unwrap()
+                        .is_empty(),
+                    "depth {depth}, nonce {nonce}: refused before the pending set is read"
+                );
+            }
+            let setup = queued_proposal_setup(depth, vec![], vec![]);
+            store_canonical_nonce(&setup, 5);
+            let accepted = propose(&setup, 6)
+                .await
+                .expect("the canonical nonce plus one is recorded");
+            assert_eq!(accepted.delta.nonce, 6);
+            assert_eq!(accepted.delta.prev_commitment, CANONICAL);
+        }
+    }
+
+    /// A canonical row written before the server stored nonces is decoded
+    /// for its nonce instead.
+    #[tokio::test]
+    async fn test_push_delta_proposal_decodes_the_nonce_of_a_row_that_does_not_store_it() {
+        let setup = queued_proposal_setup_with(4, vec![], vec![], |network| {
+            network.with_account_nonce(Ok(Some(5)))
+        });
+        let result = propose(&setup, 1_790_941_600_874).await;
+        assert!(
+            matches!(&result, Err(GuardianError::InvalidDelta(message))
+                if message.contains("next nonce 6")),
+            "{result:?}"
+        );
+
+        let setup = queued_proposal_setup_with(4, vec![], vec![], |network| {
+            network.with_account_nonce(Ok(Some(5)))
+        });
+        propose(&setup, 6)
+            .await
+            .expect("the decoded nonce plus one is recorded");
+        assert_eq!(
+            setup.storage.get_backfill_state_nonce_calls(),
+            vec![(setup.account_id.clone(), CANONICAL.to_string(), 5)],
+            "the decoded nonce is stored onto the row for later reads"
+        );
+    }
+
+    /// A candidate a server before issue #518 queued at the head under a
+    /// timestamp label: a proposal at that label plus one passes the label
+    /// checks but could never be pushed (its delta leaves the account at the
+    /// real nonce), so the replayed tail refuses it until the candidate
+    /// leaves the queue. A correctly labelled proposal is below the label
+    /// and refused before the replay.
+    #[tokio::test]
+    async fn test_push_delta_proposal_refused_behind_a_tail_queued_under_a_timestamp() {
+        let account_id = &fixture_account_id();
+        let label = 1_790_941_600_874;
+        let replay_to_nonce_one = |network: MockNetworkClient| {
+            network.apply_delta_responses.lock().unwrap().clear();
+            let account_json: serde_json::Value =
+                serde_json::from_str(fixtures::ACCOUNT_JSON).unwrap();
+            network.with_applied_state(Ok(crate::network::AppliedState {
+                state_json: account_json,
+                commitment: "0xtail".to_string(),
+                nonce: Some(1),
+                cosigners: Vec::new(),
+                guardian_commitment: None,
+            }))
+        };
+        let setup = queued_proposal_setup_with(
+            4,
+            vec![queued_candidate(account_id, label, CANONICAL, "0xtail")],
+            vec![],
+            replay_to_nonce_one,
+        );
+        let result = propose(&setup, label + 1).await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert!(setup.storage.get_submit_delta_proposal_calls().is_empty());
+        assert!(
+            setup
+                .network
+                .apply_delta_responses
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "judged on the replayed tail"
+        );
+
+        let setup = queued_proposal_setup_with(
+            4,
+            vec![queued_candidate(account_id, label, CANONICAL, "0xtail")],
+            vec![],
+            replay_to_nonce_one,
+        );
+        let result = propose(&setup, 2).await;
+        assert!(
+            matches!(result, Err(GuardianError::ConflictPendingDelta)),
+            "{result:?}"
+        );
+        assert_eq!(
+            setup.network.apply_delta_responses.lock().unwrap().len(),
+            1,
+            "a label below the tail's is refused before the replay"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_push_delta_proposal_undecodable_canonical_state_is_unavailable() {
+        let setup = queued_proposal_setup_with(4, vec![], vec![], |network| {
+            network.with_account_nonce(Err("account version is 241".to_string()))
+        });
+        let result = propose(&setup, 1).await;
+        assert!(
+            matches!(result, Err(GuardianError::AccountDataUnavailable(_))),
+            "{result:?}"
+        );
+        assert!(setup.storage.get_submit_delta_proposal_calls().is_empty());
+    }
+
+    /// Issue #518: proposals an earlier release recorded on the canonical
+    /// state under timestamp labels can no longer execute, so they hold no
+    /// slot; proposals at the next nonce do.
+    #[tokio::test]
+    async fn test_push_delta_proposal_only_proposals_at_the_next_nonce_consume_capacity() {
+        let account_id = &fixture_account_id();
+        let dead = (0..20)
+            .map(|i| pending_on(account_id, 1_790_941_600_874 + i, CANONICAL))
+            .collect();
+        let setup = queued_proposal_setup(1, vec![], dead);
+        store_canonical_nonce(&setup, 0);
+        let accepted = propose(&setup, 1)
+            .await
+            .expect("timestamp-labelled proposals leave the capacity free");
+        assert_eq!(accepted.delta.prev_commitment, CANONICAL);
+
+        let viable = (0..20)
+            .map(|_| pending_on(account_id, 1, CANONICAL))
+            .collect();
+        let setup = queued_proposal_setup(1, vec![], viable);
+        store_canonical_nonce(&setup, 0);
+        let result = propose(&setup, 1).await;
+        assert!(
+            matches!(
+                result,
+                Err(GuardianError::PendingProposalsLimit { limit: 20 })
+            ),
+            "{result:?}"
         );
     }
 

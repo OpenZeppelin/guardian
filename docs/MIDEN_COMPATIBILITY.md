@@ -296,7 +296,9 @@ server that queues chained candidates (`GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCO
   only that candidate until it promotes, because no real nonce exceeds its label. Upgrade
   the proposing devices first; signing and executing a proposal another device created is
   unchanged, and a proposal GUARDIAN already holds under a timestamp key stays executable
-  from the device that holds the state it is pinned to.
+  from the device that holds the state it is pinned to. 0.19.0 refuses these labels at
+  every depth, and such a proposal no longer executes; see
+  [Delta and proposal nonces are the account's](#delta-and-proposal-nonces-are-the-accounts-0190).
 - **A queueing server records a proposal behind a queued candidate only at that
   candidate's nonce plus one**, and **admits nothing behind a candidate that changes the
   account's signer set or guardian key** until it promotes, both `409
@@ -716,6 +718,66 @@ only; wallet-signed requests, session grants and logout are unchanged.
 - **Stored single-key accounts can no longer re-register.** An account stored
   before `/configure` required a multisig keeps being served, but any
   `/configure` for it is refused with `invalid_input`.
+
+### Delta and proposal nonces are the account's (0.19.0)
+
+0.19.0 makes the server check the nonce a delta or proposal is labelled with
+at every candidate-queue depth (issue #518). Up to 0.19.0-rc.1 it checked the
+label only behind a queued candidate. The nonce is the storage key of deltas
+(`UNIQUE(account_id, nonce)`), the order of the history, `/delta/since` and
+the candidate queue, and the lookup key of `getDelta` and `abandonCandidate`,
+so the check keeps every new row in chain order. It also refuses labels past
+`i64::MAX`, which Postgres stored as negative numbers that sorted first.
+
+- **Pushes.** `POST /delta` (`PushDelta`) is refused with `invalid_delta`
+  (400, gRPC `InvalidArgument`) unless `nonce` is the account nonce the delta
+  leaves the account at, one past the nonce of the state it builds on. Behind
+  a queued candidate the same mislabel used to get `409
+  conflict_pending_delta`. A delta whose nonce is at or below the newest
+  queued candidate's still gets 409, before it is applied.
+- **Proposals.** `POST /delta/proposal` (`PushDeltaProposal`) is refused with
+  `invalid_delta` unless `nonce` is the account's next nonce: the newest
+  queued candidate's plus one, or, with nothing queued, the canonical state's
+  account nonce plus one, the label its delta will be pushed with. A proposal
+  at or below a queued candidate's nonce still gets `409
+  conflict_pending_delta`. Past the next nonce, behind a queue, it used to
+  get 409 as well. A proposer whose state is behind GUARDIAN's canonical
+  state is now refused at the head too, instead of having its proposal
+  recorded and then refused when it is executed. So is one ahead of it,
+  because GUARDIAN has not yet recorded a landing (a retained delta whose
+  transaction landed late). The SDKs do not retry either refusal: the same
+  request succeeds once the proposer resyncs, or once GUARDIAN's reconcile
+  pass records the landing (every
+  `GUARDIAN_CANONICALIZATION_RECONCILE_INTERVAL_SECONDS`, 60 s by default).
+  A guardian switch proposed in that window is refused like any other
+  proposal, so for a private account it is no longer there for the release
+  sweep to match if the cosigners then switch without it. The Rust SDK's
+  `propose_with_fallback` exports it offline automatically in that case; a
+  TypeScript caller calls `createSwitchGuardianProposalOffline` itself, or
+  proposes again once the reconcile pass has recorded the landing.
+- **Guardian execution.** A request for a proposal whose nonce is not the
+  account's next nonce is refused with `invalid_delta` before anything is
+  reserved. Only a proposal recorded before this release can meet that.
+- **Stored rows keep their labels.** Nothing is migrated. Deltas and
+  proposals a TypeScript SDK through 0.18.0 labelled with `Date.now()` stay
+  where they are, and the ordering caveats in the 0.18.1 notes above still
+  apply to them. A pending proposal labelled that way can no longer be
+  executed by any SDK, since its delta would carry the timestamp, and it no
+  longer counts towards `GUARDIAN_MAX_PENDING_PROPOSALS_PER_ACCOUNT` or the
+  account's request-byte budget. Create it again. A candidate a previous
+  release queued under a timestamp label holds the queue's tail until it
+  promotes, since no real nonce exceeds it.
+- **Mixed-version cosigners.** A cosigner still on TypeScript 0.18.0 or
+  earlier labels proposals with a timestamp, so at the default depth too its
+  proposals are now refused, which they were not before. Executing or signing
+  a proposal another device created is unaffected. Both SDKs label with the
+  account's next nonce from TypeScript 0.18.1 and every Rust release, so their
+  defaults pass. An explicit TypeScript `options.nonce`, a raw
+  `createProposal(nonce, …)`, or a client that computes its own label must use
+  that nonce too.
+- **Rolling deploys.** Replicas still on an older release keep admitting a
+  timestamp-labelled delta at the head until they are replaced. Such a
+  candidate is treated as above once the rollout completes.
 
 ### Open upstream items
 

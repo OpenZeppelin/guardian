@@ -725,7 +725,8 @@ What the mode changes, identically in both SDKs:
   horizon. As above, the window the transaction ends up with may be shorter, such as 20 blocks
   for a fee-paying transaction on devnet.
 - **The low-level `createProposal(nonce, txSummaryBase64, metadata)`** (TypeScript) carries no
-  request, so it refuses on a Guardian-executable client.
+  request, so it refuses on a Guardian-executable client. Its `nonce` must be the account's next
+  nonce, as for every proposal.
 - **Thresholds.** Guardian accepts a request once the valid signatures meet the threshold of the
   procedure the proposal type implies. The account enforces the highest threshold among every
   procedure the transaction calls; when that is higher, the execution fails with
@@ -1234,8 +1235,10 @@ Every `create*Proposal` method takes a single trailing options object (issue
 #387). All of them accept an optional `nonce` that identifies the proposal
 (defaults to the store account's nonce plus one, the nonce the executed
 transaction will have, as the Rust SDK labels proposals; through 0.18.0
-the default was `Date.now()`); method-specific options are listed with each
-method below. Passing a legacy positional `nonce` number where the options
+the default was `Date.now()`). GUARDIAN records a proposal only at the
+account's next nonce and refuses any other with `invalid_delta` (from server
+0.19.0, issue #518), so pass `nonce` only to label from another record of the
+account's nonce; method-specific options are listed with each method below. Passing a legacy positional `nonce` number where the options
 object is expected throws instead of silently applying defaults.
 
 All of them also accept `signOnCreate` (default `false`); the raw

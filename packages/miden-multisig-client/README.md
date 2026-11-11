@@ -552,6 +552,9 @@ createCustomProposal(requestBytes, label, { nonce }?)
 All methods accept `nonce` (identifies the proposal; defaults to the store
 account's nonce plus one, the nonce the executed transaction will have, as the
 Rust SDK labels proposals; through 0.18.0 the default was `Date.now()`).
+GUARDIAN from 0.19.0 records a proposal only at the account's next nonce and
+refuses any other label with `invalid_delta`, so leave `nonce` unset unless
+you track the account's nonce yourself.
 `newThreshold` defaults to the current threshold on add and to
 the min of the current threshold and the remaining signer count on remove.
 The option shapes are exported as `CreateProposalOptions`,
@@ -625,9 +628,8 @@ If an approved transaction died client-side after guardian approval, the
 candidate keeps the account locked on GUARDIAN: proposals and deltas answer
 `conflict_pending_delta` while the account's candidate queue (one candidate
 by default) is full, when they build on the state that candidate already
-claimed, or when their nonce does not extend the queue (a proposal's must be
-the newest queued candidate's plus one), and any candidate queued behind it
-can never land. Record an abandon intent
+claimed, or when their nonce does not exceed the newest queued candidate's,
+and any candidate queued behind it can never land. Record an abandon intent
 and poll for the resolution:
 
 ```typescript

@@ -317,6 +317,10 @@ After pushing a delta, the server returns an Acknowledgment signature that signs
 ```rust
 use guardian_client::verify_commitment_signature;
 
+// The nonce is the account nonce the transaction leaves the account at: one
+// past the nonce of the state at `prev_commitment` (an account at nonce 0
+// here). Guardian 0.19.0 and later refuse any other label with
+// `invalid_delta`.
 let push_response = client.push_delta(&account_id, 1, prev_commitment, delta).await?;
 
 if let Some(delta) = &push_response.delta {

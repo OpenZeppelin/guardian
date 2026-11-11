@@ -3,7 +3,7 @@ crates/server/src/services/multisig_admission.rs signature_floor 17e83d08e3b9b2b
 crates/server/src/services/multisig_admission.rs pending_signatures aaf000190ef8e292
 crates/server/src/services/multisig_admission.rs verified_approver_count bdab3f16b0e99ab6
 Cargo.lock @pin miden-standards 0.17.1
-crates/server/src/services/push_delta.rs push_delta 260dcab35e645a98
+crates/server/src/services/push_delta.rs push_delta fa1ae5be30b44406
 crates/server/src/services/push_delta.rs run 17815b0a4b4255f3
 crates/server/src/services/ack_delta_internal.rs lookup_matching_proposal 9b5ac8501f9abe75
 crates/server/src/services/candidate_chain.rs ensure_tail_keeps_auth cba3037b83a609b8

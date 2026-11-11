@@ -24,7 +24,7 @@ use miden_protocol::transaction::{
     InputNotes, RawOutputNotes, TransactionSummary, TransactionSummaryUserParams,
 };
 use miden_protocol::utils::serde::{Deserializable, Serializable};
-use miden_protocol::{Felt, ZERO};
+use miden_protocol::{Felt, ONE, ZERO};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -804,13 +804,17 @@ fn create_account_seed(
     })
 }
 
+/// An empty transaction's summary that leaves the account at `nonce`, one past the state it
+/// builds on: a transaction increments the nonce by one, and GUARDIAN refuses a delta labelled
+/// with any nonce but the one it leaves the account at (issue #518). The nonce is also the
+/// salt, so every push on an account has a summary of its own.
 fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
     let account_delta = AccountDelta::new(
         account_id.to_owned(),
         AccountStoragePatch::default(),
         AccountVaultDelta::default(),
         AccountCodePatch::default(),
-        Felt::new_unchecked(nonce),
+        ONE,
     )
     .map_err(|e| anyhow!("failed to build account delta: {e}"))?;
     let tx_summary = TransactionSummary::new(
@@ -821,7 +825,14 @@ fn create_delta_payload(account_id: &AccountId, nonce: u64) -> Result<Value> {
         BlockNumber::from(0),
         Word::from([ZERO; 4]),
         0,
-        TransactionSummaryUserParams::new([ZERO; 6]),
+        TransactionSummaryUserParams::new([
+            ZERO,
+            ZERO,
+            Felt::new_unchecked(nonce),
+            ZERO,
+            ZERO,
+            ZERO,
+        ]),
     );
     Ok(tx_summary.to_json())
 }

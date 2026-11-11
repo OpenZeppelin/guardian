@@ -199,9 +199,10 @@ export interface CreateProposalOptions {
    * Proposal nonce: the account nonce the executed transaction will have.
    * Defaults to the store account's nonce plus one, as the Rust SDK labels
    * proposals. GUARDIAN keys the proposal and its delta by it, orders
-   * history and the candidate queue by it, and when it queues chained
-   * candidates (issue #17) records a proposal only at the queue tail's
-   * nonce plus one. Pass it only to label from another record of the
+   * history and the candidate queue by it, and records a proposal only at
+   * the account's next nonce, refusing any other with `invalid_delta`
+   * (server 0.19.0, issue #518; earlier servers checked it only behind a
+   * queued candidate). Pass it only to label from another record of the
    * account's nonce. Through 0.18.0 the default was `Date.now()`.
    */
   nonce?: number;
@@ -1392,7 +1393,8 @@ export class Multisig {
   /**
    * Create a new proposal.
    *
-   * @param nonce - The nonce for this transaction
+   * @param nonce - The account nonce the transaction leaves the account at, its current nonce
+   *   plus one; GUARDIAN 0.19.0 and later refuse any other with `invalid_delta`
    * @param txSummaryBase64 - Base64-encoded transaction summary
    * @param metadata - Optional metadata for execution (target config, salt, etc.)
    */

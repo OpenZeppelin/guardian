@@ -1025,8 +1025,8 @@ impl StorageBackend for FilesystemService {
                 record.proposal.status.is_pending()
                     && record.proposal.prev_commitment == admission.proposal.prev_commitment
                     && admission
-                        .queue_tail_nonce
-                        .is_none_or(|tail| record.proposal.nonce > tail)
+                        .viable_nonce
+                        .is_none_or(|viable| record.proposal.nonce == viable)
             })
             .map(|record| key(&record.commitment))
             .collect::<Result<Vec<_>, _>>()?;
