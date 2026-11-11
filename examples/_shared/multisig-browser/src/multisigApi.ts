@@ -258,11 +258,13 @@ export async function createAddSignerProposal(
   multisig: Multisig,
   commitment: string,
   increaseThreshold: boolean,
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () => {
     const newThreshold = increaseThreshold ? multisig.threshold + 1 : undefined;
     return multisig.createAddSignerProposal(commitment, {
       newThreshold,
+      signOnCreate,
     });
   });
 }
@@ -271,39 +273,45 @@ export async function createRemoveSignerProposal(
   multisig: Multisig,
   signerToRemove: string,
   newThreshold?: number,
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createRemoveSignerProposal(signerToRemove, {
       newThreshold,
+      signOnCreate,
     }));
 }
 
 export async function createChangeThresholdProposal(
   multisig: Multisig,
   newThreshold: number,
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createChangeThresholdProposal(newThreshold));
+    multisig.createChangeThresholdProposal(newThreshold, { signOnCreate }));
 }
 
 export async function createUpdateProcedureThresholdProposal(
   multisig: Multisig,
   procedure: ProcedureName,
   threshold: number,
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createUpdateProcedureThresholdProposal(
       procedure,
       threshold,
+      { signOnCreate },
     ));
 }
 
 export async function createConsumeNotesProposal(
   multisig: Multisig,
   noteIds: string[],
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
-    multisig.createConsumeNotesProposal(noteIds));
+    multisig.createConsumeNotesProposal(noteIds, { signOnCreate }));
 }
 
 export async function createP2idProposal(
@@ -313,11 +321,13 @@ export async function createP2idProposal(
   amount: bigint,
   noteType?: NoteType,
   heights?: { reclaimHeight?: number; timelockHeight?: number },
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(multisig, () =>
     multisig.createP2idProposal(recipientId, faucetId, amount, {
       ...heights,
       noteType,
+      signOnCreate,
     }));
 }
 
@@ -325,6 +335,7 @@ export async function createSwitchGuardianProposal(
   multisig: Multisig,
   newGuardianEndpoint: string,
   newGuardianPubkey: string,
+  signOnCreate = false,
 ): Promise<{ proposal: Proposal; proposals: Proposal[] }> {
   return createProposalResult(
     multisig,
@@ -332,6 +343,7 @@ export async function createSwitchGuardianProposal(
       multisig.createSwitchGuardianProposal(
         newGuardianEndpoint,
         newGuardianPubkey,
+        { signOnCreate },
       ),
     async (currentMultisig) => listVisibleProposals(currentMultisig),
   );

@@ -19,6 +19,18 @@ pub fn is_account_creation(account: &Account, delta: &AccountDelta) -> bool {
     account.is_new() && !delta.code().is_empty()
 }
 
+/// Refuses `delta` unless it belongs to `account`.
+pub fn ensure_delta_targets(account: &Account, delta: &AccountDelta) -> Result<(), String> {
+    if account.id() != delta.id() {
+        return Err(format!(
+            "account delta ID mismatch: expected {}, got {}",
+            account.id().to_hex(),
+            delta.id().to_hex()
+        ));
+    }
+    Ok(())
+}
+
 /// Applies an [`AccountDelta`] and additional storage updates atomically.
 ///
 /// The additional patch is merged into the delta's storage patch before application. This is
@@ -76,13 +88,7 @@ fn account_patch_from_delta(
     delta: &AccountDelta,
     additional_storage: AccountStoragePatch,
 ) -> Result<AccountPatch, String> {
-    if account.id() != delta.id() {
-        return Err(format!(
-            "account delta ID mismatch: expected {}, got {}",
-            account.id().to_hex(),
-            delta.id().to_hex()
-        ));
-    }
+    ensure_delta_targets(account, delta)?;
 
     if rebuilds_new_account(account, delta) {
         let mut storage_patch =

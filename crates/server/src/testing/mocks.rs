@@ -51,6 +51,11 @@ pub struct MockNetworkClient {
     /// `(account_id, final_state_commitment, from_block)` per search.
     pub find_transaction_ending_at_calls: Arc<StdMutex<Vec<(String, String, u32)>>>,
     pub account_nonce_responses: Arc<StdMutex<Vec<AccountNonceResult>>>,
+    /// Commitments of the decoded accounts passed to
+    /// `verify_and_apply_delta_to_account`, one per call.
+    pub verify_and_apply_delta_to_account_calls: Arc<StdMutex<Vec<String>>>,
+    /// Calls to `verify_and_apply_delta`, which decodes the state itself.
+    pub verify_and_apply_delta_json_calls: Arc<StdMutex<usize>>,
     /// The block every observed commitment reports it was read at.
     pub observed_block: Arc<StdMutex<u32>>,
     /// How long every observed commitment takes to answer.
@@ -324,8 +329,25 @@ impl NetworkClient for MockNetworkClient {
         prev_state_json: &serde_json::Value,
         delta_payload: &serde_json::Value,
     ) -> StdResult<AppliedState, String> {
+        *self.verify_and_apply_delta_json_calls.lock().unwrap() += 1;
         self.verify_delta(prev_proof, prev_state_json, delta_payload)?;
         self.apply_delta(prev_state_json, delta_payload)
+    }
+
+    fn verify_and_apply_delta_to_account(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
+        delta_payload: &serde_json::Value,
+    ) -> StdResult<AppliedState, String> {
+        use guardian_shared::ToJson;
+        self.verify_and_apply_delta_to_account_calls
+            .lock()
+            .unwrap()
+            .push(prev_account.to_commitment().to_hex());
+        let prev_state_json = prev_account.to_json();
+        self.verify_delta(prev_proof, &prev_state_json, delta_payload)?;
+        self.apply_delta(&prev_state_json, delta_payload)
     }
 
     fn merge_deltas(

@@ -3,6 +3,7 @@ crates/server/src/services/release_on_switch.rs release_if_guardian_switched
 crates/server/src/services/release_on_switch.rs release_switched_account
 crates/server/src/services/account_status.rs ensure_account_active_metadata
 crates/server/src/services/push_delta.rs push_delta
+crates/server/src/services/push_delta.rs run
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal
 crates/server/src/services/configure_account.rs configure_account
 crates/server/src/services/configure_account.rs stored_state_landed

@@ -110,6 +110,7 @@ pub(crate) async fn acknowledge_applied(
 }
 
 /// The `delta_proposals` row matching a delta, as far as storage could tell.
+#[derive(Clone)]
 pub(crate) enum ProposalMatch {
     Found(Box<DeltaObject>),
     Missing,

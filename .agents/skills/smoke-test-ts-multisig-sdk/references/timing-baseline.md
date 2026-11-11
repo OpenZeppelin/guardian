@@ -125,3 +125,13 @@ Published-package remote Falcon sample recorded on March 20, 2026 against `https
 ## Future Samples
 
 Append future runs in the same format. Once at least three clean samples exist for a step under the same network, signer source, and signature scheme, use the median as the working baseline in reports.
+
+`signOnCreate` A/B recorded on November 6, 2026 (branch `perf/ts-sign-on-create`): headless Chrome via Playwright, local Falcon signer, `guardian-devnet.openzeppelin.com` + `rpc.devnet.miden.io` (node 0.18.2), one funded 1-of-1 account, 5 rounds alternating order, `update_procedure_threshold` proposals. Harness durations include the proposal listing after each command, which grows with the pending count (1 to 10 over the run).
+
+| Workflow | Operation | Elapsed (median of 5) | Confidence | Outcome | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `online-proposal-canary` | `createProposal` (unsigned) | `1435ms` | high | pass | samples 934 / 1435 / 1210 / 1773 / 2015 |
+| `online-proposal-canary` | proposer `signProposal` | `1758ms` | high | pass | samples 903 / 1664 / 1758 / 2100 / 2733 |
+| `online-proposal-canary` | unsigned create + sign | `3099ms` | high | pass | samples 1837 / 3099 / 2968 / 3873 / 4748 |
+| `online-proposal-canary` | `createProposal` with `signOnCreate` | `1846ms` | high | pass | samples 1846 / 1005 / 1485 / 1942 / 2579; `ready` on return |
+| `payment-roundtrip-canary` | `executeProposal` of a `signOnCreate` consume_notes | `9966ms` | medium | pass | proof-generation dominated; one earlier run hit a remote-prover `DeadlineExceeded` at 12405ms |

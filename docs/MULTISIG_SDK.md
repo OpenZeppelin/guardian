@@ -81,7 +81,8 @@ const proposal = await multisig.createP2idProposal(
 
 console.log('Proposal created:', proposal.id);
 
-// 5. Cosigners sign (only one cosigner is needed)
+// 5. Cosigners sign (only one cosigner is needed). Passing
+//    { signOnCreate: true } in step 4 signs at creation and skips this call.
 await multisig.signProposal(proposal.id);
 
 // 6. Execute when threshold is met
@@ -428,7 +429,7 @@ check: `verification` on the TS `Proposal` (`{ status: 'unchecked' }`,
 `{ status: 'verified' }`, or `{ status: 'failed', retryable, message }`) and
 `ProposalVerification` on the Rust one (`Unchecked`, `Verified`,
 `Failed { retryable, message }`). Only the check itself writes `verified`;
-a freshly parsed or imported proposal is `unchecked`. `failed` with
+a freshly parsed, imported or created proposal is `unchecked`. `failed` with
 `retryable: true` means the re-execution hit a transient node error and
 the same proposal may verify on the next sync; `retryable: false` means
 the proposal cannot be reproduced (tampered metadata, for example) and has
@@ -1239,6 +1240,28 @@ account's next nonce and refuses any other with `invalid_delta` (from server
 0.19.0, issue #518), so pass `nonce` only to label from another record of the
 account's nonce; method-specific options are listed with each method below. Passing a legacy positional `nonce` number where the options
 object is expected throws instead of silently applying defaults.
+
+All of them also accept `signOnCreate` (default `false`); the raw
+`createProposal(nonce, summary, metadata)` takes no options and always creates
+the proposal unsigned. Set, the proposer
+signs the summary while creating the proposal and the approval is pushed with
+it, as the Rust SDK always does. That replaces a separate `signProposal` call
+and its chain sync, re-execution and GUARDIAN round trip, and a proposal that
+needs one approval comes back `ready`. Unset, the proposal is created unsigned
+and the proposer approves it later, which suits a wallet signer that prompts
+for every signature. `createSwitchGuardianProposalOffline` always signs and
+ignores it.
+
+The proposer's client checks its new proposal against the commitment GUARDIAN
+returns instead of re-executing the summary it has just derived, and returns it
+with `verification.status === 'unchecked'`, as the Rust SDK does. Executing it
+(`executeProposal`, `requestGuardianExecution`) verifies it first, and so does
+the next `syncProposals`. Cosigners verify a proposal before signing it, which
+re-executes it for every built-in type except `switch_guardian` (and `custom`
+proposals carry no recipe to re-execute). `createProposal`, which takes a
+caller-supplied summary and metadata, still re-executes it. A `signOnCreate`
+push of a proposal GUARDIAN already holds comes back without the proposer's
+approval, and the call throws; approve it with `signProposal`.
 
 #### P2ID Transfer (Send Funds)
 

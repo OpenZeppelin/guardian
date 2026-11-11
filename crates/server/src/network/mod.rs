@@ -161,12 +161,14 @@ impl Reconstructor {
             .await
             .map_err(|e| ReconstructError::Task(format!("reconstruction gate closed: {e}")))?;
 
+        let span = tracing::Span::current();
         let kind = if admission.is_some() {
             "background"
         } else {
             "foreground"
         };
         match tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             let _admission = admission;
             let _cpu = cpu;
             let started = std::time::Instant::now();
@@ -374,6 +376,16 @@ pub trait NetworkClient: Send + Sync {
         &self,
         prev_proof: &str,
         prev_state_json: &serde_json::Value,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String>;
+
+    /// [`Self::verify_and_apply_delta`] on a previous state the caller has
+    /// already decoded, so a request that reads the decoded account for its
+    /// own checks does not rebuild it a second time.
+    fn verify_and_apply_delta_to_account(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;
 
