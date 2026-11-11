@@ -24,7 +24,6 @@ use miden_client::transaction::{TransactionRequestBuilder, TransactionSummary};
 use miden_protocol::Word;
 use miden_protocol::account::AccountId;
 use miden_protocol::block::{BlockHeader, BlockNumber};
-use miden_protocol::crypto::SequentialCommit;
 use miden_standards::account::auth::{FeeConversionInfo, MultisigAuthArgs};
 
 use crate::MidenSdkClient;
@@ -151,9 +150,7 @@ pub trait TransactionRequestBuilderExt {
 
 impl TransactionRequestBuilderExt for TransactionRequestBuilder {
     fn multisig_auth_args(self, auth_args: &MultisigAuthArgs) -> Self {
-        let commitment = auth_args.to_commitment();
-        self.auth_arg(commitment)
-            .extend_advice_map([(commitment, auth_args.to_elements())])
+        self.auth_args(auth_args)
             .block_numbers([auth_args.bound_block_num()])
     }
 }

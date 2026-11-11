@@ -1,32 +1,33 @@
 //! Recovery primitives for restoring note state after device loss.
 //!
 //! After recovery on a fresh device, or after adding a recovered account to a
-//! shared store, the account's note tag has no note-transport cursor yet.
-//! Since miden-client 0.17.1 the transport keeps one cursor per tag and scans
-//! a tag without one from the first retained note, but each sync fetches a
-//! bounded number of pages. The drain here keeps fetching until a fetch moves
-//! no tag's cursor, so a recovery flow does not have to wait for later
-//! background syncs.
+//! shared store, the account's note tag is not covered by the stored
+//! note-transport cursor yet. Since miden-client 0.18.0 the transport keeps
+//! one cursor with the tags it covers, reads a tag outside that set from the
+//! first retained note, and reads every tag up to one bound per fetch. The
+//! drain here keeps fetching until a fetch leaves that sync state unchanged,
+//! so a recovery flow does not have to wait for later background syncs.
 
 use miden_client::ClientError;
-use miden_client::note_transport::{NOTE_TRANSPORT_CURSORS_KEY, NoteTransportError};
+use miden_client::note_transport::{NOTE_TRANSPORT_SYNC_STATE_KEY, NoteTransportError};
 use miden_client::store::SettingScope;
 
 use super::MultisigClient;
 use crate::error::{Result, error_chain};
 use crate::rpc::{is_transient_note_transport_error, is_transient_rpc_error};
 
-/// Upper bound on transport fetches one drain runs. Each fetch reads up to 32
-/// pages per request group of up to 128 tags; a backlog whose cursors still
-/// move after this many fetches is reported as a retryable failure, and the
-/// stored per-tag cursors let the next drain or sync continue from there.
+/// Upper bound on transport fetches one drain runs. Each fetch reads every
+/// tracked tag up to the transport's head at its first request; a transport
+/// whose head still moves after this many fetches is reported as a retryable
+/// failure, and the stored sync state lets the next drain or sync continue
+/// from there.
 const MAX_DRAIN_PASSES: usize = 64;
 
 /// Outcome class of a private-note transport backlog drain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportRecoveryStatus {
-    /// The transport backlog was fetched until a fetch moved no tag's cursor;
-    /// every note the transport still holds for the tracked tags is now in
+    /// The transport backlog was fetched until a fetch left the sync state
+    /// unchanged; every note the transport still holds for the tracked tags is now in
     /// the local store.
     Completed,
     /// The transport could not be consulted at all: it is disabled for this
@@ -67,12 +68,12 @@ impl MultisigClient {
     ///
     /// Use after account recovery: the recovered account must already be in
     /// the store so its note tag is tracked ([`MultisigClient::pull_account`]
-    /// does this). Its tag has no transport cursor yet, so the transport
-    /// serves it from the first retained note. The drain runs transport
-    /// fetches until one moves no tag's cursor, which only an exhausted
-    /// backlog leaves unchanged: a fetch whose pages were all duplicates or
-    /// screened out still advances it. The drain is idempotent: imports
-    /// dedupe, and per-tag cursors only move forward.
+    /// does this). Its tag is not covered by the stored transport cursor
+    /// yet, so the transport serves it from the first retained note. The
+    /// drain runs transport fetches until one leaves the sync state
+    /// unchanged, which only an exhausted backlog does: a fetch whose pages
+    /// were all duplicates or screened out still advances it. The drain is
+    /// idempotent: imports dedupe, and the cursor only moves forward.
     ///
     /// Transport recovery is bounded by the transport service's retention:
     /// senders may bypass the transport entirely and relayed blobs are pruned
@@ -96,7 +97,7 @@ impl MultisigClient {
 
         let before = self.input_note_count().await?;
         let mut drain_result = Err(DrainStop::BudgetExhausted);
-        let mut last = self.transport_cursors().await?;
+        let mut last = self.transport_sync_state().await?;
         for _ in 0..MAX_DRAIN_PASSES {
             // A failed fetch still imports the pages fetched before it, so
             // the count below includes them.
@@ -104,12 +105,12 @@ impl MultisigClient {
                 drain_result = Err(DrainStop::Client(err));
                 break;
             }
-            let cursors = self.transport_cursors().await?;
-            if cursors == last {
+            let sync_state = self.transport_sync_state().await?;
+            if sync_state == last {
                 drain_result = Ok(());
                 break;
             }
-            last = cursors;
+            last = sync_state;
         }
         // A drain never removes records (and `&mut self` excludes concurrent
         // client operations), so the length delta is the count of newly
@@ -129,7 +130,7 @@ impl MultisigClient {
                 retryable: true,
                 reason: Some(format!(
                     "the transport backlog was not exhausted after {MAX_DRAIN_PASSES} fetches; \
-                     rerun the drain to continue from the stored cursors"
+                     rerun the drain to continue from the stored sync state"
                 )),
             }),
             // A broken local store is an environment failure, not a transport
@@ -161,17 +162,20 @@ impl MultisigClient {
         }
     }
 
-    /// The stored per-tag note-transport cursors, as the raw bytes upstream
-    /// keeps in its client-owned settings. Compared, never decoded: a fetch
-    /// that leaves them unchanged found every tracked tag's history
-    /// exhausted.
-    async fn transport_cursors(&self) -> Result<Option<Vec<u8>>> {
+    /// The stored note-transport sync state (the cursor and the tags it
+    /// covers), as the raw bytes upstream keeps in its client-owned settings.
+    /// Compared, never decoded: a fetch that leaves it unchanged found every
+    /// tracked tag's history exhausted.
+    async fn transport_sync_state(&self) -> Result<Option<Vec<u8>>> {
         self.miden_store
-            .get_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.to_string())
+            .get_setting(
+                SettingScope::Client,
+                NOTE_TRANSPORT_SYNC_STATE_KEY.to_string(),
+            )
             .await
             .map_err(|e| {
                 crate::error::MultisigError::miden_client_with_context(
-                    "failed to read the note transport cursors",
+                    "failed to read the note transport sync state",
                     ClientError::StoreError(e),
                 )
             })
@@ -195,7 +199,7 @@ impl MultisigClient {
 
 /// Why a drain stopped before a fetch came back empty.
 enum DrainStop {
-    /// Every fetch in the budget still moved a cursor.
+    /// Every fetch in the budget still moved the sync state.
     BudgetExhausted,
     /// A transport fetch failed.
     Client(ClientError),
@@ -437,11 +441,10 @@ mod tests {
         );
     }
 
-    /// A store upgraded from miden-client 0.17.0 has no per-tag cursors, so
-    /// every tag restarts from the first retained note while the store
-    /// already holds that history. The first fetch then walks a full page
-    /// budget of duplicates and imports nothing; the drain must keep going
-    /// on the moved cursors to reach the note that arrived after them.
+    /// A store with no transport sync state restarts every tag from the first
+    /// retained note while the store already holds that history. The drain
+    /// walks those duplicates, imports none of them, and still reaches the
+    /// note that arrived after them.
     #[tokio::test]
     async fn drain_reaches_new_notes_behind_a_backlog_the_store_already_holds() {
         let dir = tempfile::tempdir().unwrap();
@@ -461,7 +464,10 @@ mod tests {
 
         client
             .miden_store
-            .remove_setting(SettingScope::Client, NOTE_TRANSPORT_CURSORS_KEY.to_string())
+            .remove_setting(
+                SettingScope::Client,
+                NOTE_TRANSPORT_SYNC_STATE_KEY.to_string(),
+            )
             .await
             .unwrap();
         add_to_transport(&node, private_note_for(&account, held + 1));
@@ -527,17 +533,13 @@ mod tests {
             Ok(())
         }
 
-        async fn fetch_notes(
+        async fn fetch_notes_page(
             &self,
             tags: &[NoteTag],
-            cursor: miden_client::note_transport::NoteTransportCursor,
-        ) -> std::result::Result<
-            (
-                Vec<miden_client::note_transport::NoteInfo>,
-                miden_client::note_transport::NoteTransportCursor,
-            ),
-            NoteTransportError,
-        > {
+            cursor: Option<miden_client::note_transport::NoteTransportCursor>,
+            sync_to: Option<miden_client::note_transport::NoteTransportCursor>,
+        ) -> std::result::Result<miden_client::note_transport::NoteTransportPage, NoteTransportError>
+        {
             let allowed = self
                 .fetches_before_failure
                 .fetch_update(
@@ -551,15 +553,15 @@ mod tests {
                     "connection dropped mid-drain".to_string(),
                 ));
             }
-            Ok(self.inner.fetch_notes(tags, cursor))
+            self.inner.fetch_notes_page(tags, cursor, sync_to).await
         }
     }
 
-    /// A connection lost mid-drain keeps what was fetched: since
-    /// miden-client 0.17.1 the pages fetched before a failed page are
-    /// imported and their cursors saved. The drain is reported `Failed`
-    /// (partial progress rules out `Unavailable`) and retryable; a rerun
-    /// continues from the saved cursors.
+    /// A connection lost mid-drain keeps what was fetched: the pages fetched
+    /// before a failed page are imported. The drain is reported `Failed`
+    /// (partial progress rules out `Unavailable`) and retryable; the sync
+    /// state does not move past a tag that failed, so a rerun fetches it
+    /// again.
     #[tokio::test]
     async fn interrupted_drain_keeps_fetched_pages_and_is_retryable() {
         let dir = tempfile::tempdir().unwrap();

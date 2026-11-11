@@ -17,7 +17,7 @@ Miden multisig accounts store their authentication logic on-chain, but **their s
 ## Installation
 
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.19.0-rc.2 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.19.0-rc.2 @miden-sdk/miden-sdk@0.17.8
 ```
 
 Miden 0.17 requires a new client database: a store created under 0.16 does not
@@ -97,7 +97,7 @@ Node.js has no worker and is unaffected.
 
 ### Cedar
 
-`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+`@miden-sdk/miden-sdk` 0.17.8 has no Cedar preset and no `'cedar'` shorthand,
 so a Cedar client names its endpoints explicitly:
 
 ```typescript
@@ -120,7 +120,7 @@ Cedar addresses use the `mm` prefix, today the same as mainnet's. In Rust,
 
 ### Mainnet
 
-`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`@miden-sdk/miden-sdk` 0.17.8 has no `createMainnet()` preset and no
 `'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
 so a mainnet client names its endpoints the same way:
 

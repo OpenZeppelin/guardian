@@ -475,8 +475,11 @@ the serialized `TransactionRequest` Guardian executes, in an envelope:
 }
 ```
 
-Request serialization carries no `miden-client` version tag. Creation checks the body (base64,
-checksum, `format_version`) and the size caps. Execution checks the protocol line, decodes the
+`protocol_line` is the Miden line of the SDK that sealed the request: `0.18` from the Rust SDK
+and `0.17` from the TypeScript SDK. Request serialization carries no `miden-client` version tag.
+Creation checks the body (base64, checksum, `format_version`) and the size caps. Execution
+accepts protocol lines `0.17` and `0.18` and refuses any other
+(`GUARDIAN_EXECUTION_PROTOCOL_MISMATCH`), decodes the
 bytes, and refuses a request that does not decode (`GUARDIAN_EXECUTION_REQUEST_CODEC`) or does
 not reproduce the signed summary (`GUARDIAN_EXECUTION_BINDING_MISMATCH`). A self-executed proposal omits the field, so its wire shape is unchanged, and the
 proposal id is the summary commitment either way.

@@ -826,7 +826,6 @@ mod tests {
 
         async fn get_account(
             &self,
-            _account_id: AccountId,
             _request: miden_client::rpc::domain::account::GetAccountRequest,
         ) -> std::result::Result<
             (

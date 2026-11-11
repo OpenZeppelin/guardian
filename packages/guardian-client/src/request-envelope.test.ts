@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
-import { sealTransactionRequest } from './request-envelope.js';
+import { PROTOCOL_LINE, sealTransactionRequest } from './request-envelope.js';
 
 describe('sealTransactionRequest', () => {
-  it('produces the envelope the Rust SDK and the server produce for the same bytes', async () => {
+  it('seals bytes with this SDK\'s protocol line, checksum and base64 body', async () => {
     const envelope = await sealTransactionRequest(new TextEncoder().encode('abc'));
     expect(envelope).toEqual({
       format_version: 1,
@@ -17,7 +17,7 @@ describe('sealTransactionRequest', () => {
 });
 
 describe('the shared envelope fixture', () => {
-  it('seals to the envelope the Rust SDK and the server produce', async () => {
+  it('seals to the shared vector for this SDK\'s protocol line', async () => {
     const fixture = JSON.parse(
       readFileSync(
         join(dirname(fileURLToPath(import.meta.url)), '../../../fixtures/miden-multisig-client/request-envelope.json'),
@@ -25,6 +25,6 @@ describe('the shared envelope fixture', () => {
       ),
     );
     const bytes = Uint8Array.from(Buffer.from(fixture.bytes_hex, 'hex'));
-    expect(await sealTransactionRequest(bytes)).toEqual(fixture.sealed);
+    expect(await sealTransactionRequest(bytes)).toEqual(fixture.sealed[PROTOCOL_LINE]);
   });
 });

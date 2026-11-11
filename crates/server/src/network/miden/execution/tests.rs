@@ -749,6 +749,7 @@ mod executor {
         script: TransactionScript,
         auth_commitment: Word,
         auth_elements: Vec<Felt>,
+        auth_args: MultisigAuthArgs,
     }
 
     const BOUND: u32 = 3;
@@ -814,8 +815,7 @@ mod executor {
 
         let mut builder = TransactionRequestBuilder::new()
             .custom_script(script.clone())
-            .auth_arg(commitment)
-            .extend_advice_map([(commitment, auth_args.to_elements())]);
+            .auth_args(&auth_args);
         if declare_bound_block {
             builder = builder.block_numbers([bound]);
         }
@@ -833,6 +833,7 @@ mod executor {
             script,
             auth_commitment: commitment,
             auth_elements: auth_args.to_elements(),
+            auth_args,
         }
     }
 
@@ -1031,8 +1032,7 @@ mod executor {
         let request = TransactionRequestBuilder::new()
             .custom_script(other_script)
             .block_numbers([BlockNumber::from(BOUND)])
-            .auth_arg(proposal.auth_commitment)
-            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())]);
+            .auth_args(&proposal.auth_args);
         assert_eq!(
             proposal
                 .refusal(proposal.with_request(request, &[0, 1]))
@@ -1042,6 +1042,7 @@ mod executor {
     }
 
     #[tokio::test]
+    #[allow(deprecated)]
     async fn a_request_without_auth_args_or_their_preimage_is_refused() {
         let proposal = proposal(true).await;
         let without_auth_arg = proposal
@@ -1072,8 +1073,7 @@ mod executor {
         let proposal = proposal(true).await;
         let request = proposal
             .signed_request()
-            .auth_arg(proposal.auth_commitment)
-            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .auth_args(&proposal.auth_args)
             .input_notes([(
                 Note::mock_noop(Word::from([Felt::new_unchecked(7); 4])),
                 None,
@@ -1091,8 +1091,7 @@ mod executor {
         let proposal = proposal(true).await;
         let request = proposal
             .signed_request()
-            .auth_arg(proposal.auth_commitment)
-            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .auth_args(&proposal.auth_args)
             .block_numbers([BlockNumber::from(1), BlockNumber::from(BOUND)]);
         assert!(
             proposal
@@ -1108,8 +1107,7 @@ mod executor {
         let proposal = proposal(true).await;
         let request = proposal
             .signed_request()
-            .auth_arg(proposal.auth_commitment)
-            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .auth_args(&proposal.auth_args)
             .block_numbers([BlockNumber::from(BOUND), BlockNumber::from(u32::MAX)]);
         assert_eq!(
             proposal
@@ -1126,8 +1124,7 @@ mod executor {
             (0..=super::super::request::MAX_DECLARED_BLOCKS as u32).map(BlockNumber::from);
         let request = proposal
             .signed_request()
-            .auth_arg(proposal.auth_commitment)
-            .extend_advice_map([(proposal.auth_commitment, proposal.auth_elements.clone())])
+            .auth_args(&proposal.auth_args)
             .block_numbers(declared);
         assert_eq!(
             proposal
@@ -1490,8 +1487,7 @@ mod executor {
         };
         let request_bytes = TransactionRequestBuilder::new()
             .custom_script(script)
-            .auth_arg(commitment)
-            .extend_advice_map([(commitment, auth_args.to_elements())])
+            .auth_args(&auth_args)
             .block_numbers([bound])
             .build()
             .unwrap()
