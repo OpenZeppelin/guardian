@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::network::{AuthBinding, ReconstructError};
+use crate::services::get_canonical_nonce::canonical_account_nonce;
 use crate::state::AppState;
 use crate::state_object::StateObject;
 use crate::storage::{
@@ -52,6 +53,24 @@ pub struct ChainTail {
     /// Nonce of the newest queued candidate; `None` when the queue is
     /// empty (the canonical state is the tail).
     pub nonce: Option<u64>,
+    /// The account nonce the replay left the tail state at; `None` when the
+    /// queue is empty or the network has no account nonces.
+    pub account_nonce: Option<u64>,
+}
+
+impl ChainTail {
+    /// Whether the newest queued candidate is labelled with the nonce it
+    /// leaves the account at (issue #518). Only a candidate a server before
+    /// that rule queued under another label (a timestamp, at the head) is
+    /// not: proposals derived from its label could never be pushed, so
+    /// nothing is recorded behind it until it leaves the queue. True when
+    /// nothing is queued or the nonce is unknown.
+    pub fn is_labelled_with_its_nonce(&self) -> bool {
+        match (self.nonce, self.account_nonce) {
+            (Some(label), Some(account_nonce)) => label == account_nonce,
+            _ => true,
+        }
+    }
 }
 
 /// An account's queued candidates, nonce-ascending, validated as an
@@ -178,6 +197,26 @@ impl CandidateChain {
         self.candidates.last().map(|candidate| candidate.nonce)
     }
 
+    /// The nonce a submission built on the tail must carry (issue #518): the
+    /// account nonce its transaction leaves the account at, one past the
+    /// tail's. A queued candidate is labelled with the nonce it leaves the
+    /// account at, so a queue needs no decode (a candidate a server before
+    /// #518 queued under another label is caught once the tail is replayed,
+    /// see [`ChainTail::is_labelled_with_its_nonce`]); with nothing queued it
+    /// is [`next_canonical_nonce`]. `None` when it cannot be known: a network
+    /// without account nonces.
+    pub async fn next_nonce(
+        &self,
+        state: &AppState,
+        storage: &dyn StorageBackend,
+        current_state: &StateObject,
+    ) -> Result<Option<u64>> {
+        match self.tail_nonce() {
+            Some(tail_nonce) => Ok(tail_nonce.checked_add(1)),
+            None => next_canonical_nonce(state, storage, current_state).await,
+        }
+    }
+
     /// The commitment a new submission must build on.
     pub fn tail_commitment<'a>(&'a self, stored_commitment: &'a str) -> &'a str {
         self.candidates
@@ -218,6 +257,7 @@ impl CandidateChain {
                 commitment: current_state.commitment.clone(),
                 state_json: current_state.state_json.clone(),
                 nonce: None,
+                account_nonce: None,
             });
         };
         let expected_commitment = self.tail_commitment(&current_state.commitment).to_string();
@@ -231,16 +271,18 @@ impl CandidateChain {
             .iter()
             .map(|candidate| Arc::new(candidate.delta_payload.clone()))
             .collect();
-        let (state_json, commitment) = crate::network::reconstructor()
+        let (state_json, commitment, account_nonce) = crate::network::reconstructor()
             .run(move || {
                 let mut state_json = base_json;
                 let mut commitment = base_commitment;
+                let mut account_nonce = None;
                 for payload in payloads {
                     let applied = client.apply_delta(&state_json, &payload)?;
                     state_json = applied.state_json;
                     commitment = applied.commitment;
+                    account_nonce = applied.nonce;
                 }
-                Ok((state_json, commitment))
+                Ok((state_json, commitment, account_nonce))
             })
             .await
             .map_err(|e| match e {
@@ -275,8 +317,24 @@ impl CandidateChain {
             commitment,
             state_json,
             nonce: Some(tail_nonce),
+            account_nonce,
         })
     }
+}
+
+/// The nonce a submission built on the canonical state in `current_state`
+/// must carry (issue #518): its account nonce plus one, the nonce the
+/// submission's transaction leaves the account at
+/// (`get_canonical_nonce::canonical_account_nonce`). `None` on a network without account
+/// nonces.
+pub async fn next_canonical_nonce(
+    state: &AppState,
+    storage: &dyn StorageBackend,
+    current_state: &StateObject,
+) -> Result<Option<u64>> {
+    Ok(canonical_account_nonce(state, storage, current_state)
+        .await?
+        .and_then(|nonce| nonce.checked_add(1)))
 }
 
 /// Refuse to chain behind a candidate that changes who may act on the
@@ -722,6 +780,7 @@ mod tests {
             commitment: "0xc1".to_string(),
             state_json: serde_json::json!({"step": 1}),
             nonce: Some(1),
+            account_nonce: Some(1),
         }
     }
 
@@ -746,6 +805,7 @@ mod tests {
             commitment: "0xbase".to_string(),
             state_json: serde_json::json!({"step": 0}),
             nonce: None,
+            account_nonce: None,
         };
         ensure_tail_keeps_auth(&state, &stored_state(), &tail)
             .await

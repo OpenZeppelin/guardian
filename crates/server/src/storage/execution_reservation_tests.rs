@@ -1368,7 +1368,7 @@ impl Harness {
             proposal,
             request_bytes,
             max_viable_proposals: 3,
-            queue_tail_nonce: None,
+            viable_nonce: None,
             max_account_request_bytes: 100,
         }
     }
@@ -1423,6 +1423,50 @@ async fn proposal_admission_enforces_the_viable_count(h: &Harness) {
             .await
             .unwrap(),
         ProposalWrite::PendingLimit { limit: 3 }
+    );
+}
+
+/// Issue #518: on a known base nonce only proposals labelled with the next nonce can execute, so
+/// a pending proposal on the same base under any other label (a timestamp an earlier release
+/// recorded) holds neither a proposal slot nor request bytes.
+async fn proposal_admission_counts_only_the_viable_nonce(h: &Harness) {
+    let at = |tag: u8, nonce: u64, request_bytes: u64| {
+        let mut admission = h.proposal_admission(tag, BASE, request_bytes);
+        admission.proposal.nonce = nonce;
+        admission.viable_nonce = Some(7);
+        admission
+    };
+    for (tag, label) in [(1, 6), (2, 8), (3, 1_790_941_600_874)] {
+        assert_eq!(
+            h.storage
+                .admit_delta_proposal(at(tag, label, 90))
+                .await
+                .unwrap(),
+            ProposalWrite::Stored,
+            "label {label}: the store records what the service admitted"
+        );
+    }
+    for tag in 4..=6 {
+        assert_eq!(
+            h.storage
+                .admit_delta_proposal(at(tag, 7, 10))
+                .await
+                .unwrap(),
+            ProposalWrite::Stored,
+            "the dead labels hold no slot and no bytes"
+        );
+    }
+    assert_eq!(
+        h.storage.admit_delta_proposal(at(7, 7, 0)).await.unwrap(),
+        ProposalWrite::PendingLimit { limit: 3 },
+        "the proposals at the viable nonce fill the limit"
+    );
+    let mut unknown = h.proposal_admission(8, BASE, 0);
+    unknown.proposal.nonce = 7;
+    assert_eq!(
+        h.storage.admit_delta_proposal(unknown).await.unwrap(),
+        ProposalWrite::PendingLimit { limit: 3 },
+        "an unknown nonce counts every pending proposal on the base"
     );
 }
 
@@ -1896,6 +1940,7 @@ mod filesystem {
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,
         proposal_admission_enforces_the_viable_count,
+        proposal_admission_counts_only_the_viable_nonce,
         concurrent_admissions_for_the_last_slot_accept_exactly_one,
         promotion_and_resolution_racing_leave_one_terminal_outcome,
         executions_on_two_accounts_proceed_independently,
@@ -2395,6 +2440,7 @@ mod postgres {
         active_executions_list_every_unreleased_attempt,
         proposal_admission_counts_only_viable_request_bytes,
         proposal_admission_enforces_the_viable_count,
+        proposal_admission_counts_only_the_viable_nonce,
         concurrent_admissions_for_the_last_slot_accept_exactly_one,
         promotion_and_resolution_racing_leave_one_terminal_outcome,
         executions_on_two_accounts_proceed_independently,

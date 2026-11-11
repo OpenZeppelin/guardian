@@ -422,6 +422,23 @@ impl Fixture {
         self.store_proposal(true).await;
     }
 
+    /// Stores the base state again, carrying `nonce` as its account nonce.
+    async fn store_state_nonce(&self, nonce: Option<u64>) {
+        self.state
+            .storage
+            .submit_state(&StateObject {
+                account_id: ACCOUNT.to_string(),
+                commitment: BASE.to_string(),
+                nonce,
+                state_json: serde_json::json!({}),
+                created_at: "2026-09-30T12:00:00Z".to_string(),
+                updated_at: "2026-09-30T12:00:00Z".to_string(),
+                auth_scheme: String::new(),
+            })
+            .await
+            .unwrap();
+    }
+
     pub(crate) async fn store_proposal(&self, guardian_executable: bool) {
         self.store_typed_proposal("p2id", guardian_executable).await;
     }
@@ -706,6 +723,66 @@ async fn a_proposal_below_threshold_is_refused_and_reserves_nothing() {
         f.read().await,
         Err(GuardianError::ExecutionNotFound { .. })
     ));
+}
+
+/// Issue #518: the candidate an execution admits is labelled with the proposal's nonce, and a
+/// delta row carries the nonce it leaves the account at. A proposal under another label (one an
+/// earlier release recorded with a timestamp) is refused before anything is reserved, whether
+/// the stored state carries its nonce or a row that does not is decoded for it.
+#[tokio::test]
+async fn a_proposal_not_labelled_with_the_next_nonce_is_refused_and_reserves_nothing() {
+    let stored = Fixture::new(Script::default()).await;
+    stored.store_state_nonce(Some(4)).await;
+    let decoded = Fixture::new(Script::default()).await;
+    let _ = decoded.chain.clone().with_account_nonce(Ok(Some(4)));
+    for f in [&stored, &decoded] {
+        match f.request().await {
+            Err(GuardianError::InvalidDelta(message)) => {
+                assert!(
+                    message.contains("proposal nonce 1 ") && message.contains("next nonce 5"),
+                    "{message}"
+                );
+            }
+            other => panic!("expected an invalid delta, got {other:?}"),
+        }
+        assert_nothing_reserved(f).await;
+    }
+
+    let next = Fixture::new(Script::default()).await;
+    next.store_state_nonce(Some(0)).await;
+    assert!(
+        next.request().await.unwrap().newly_accepted,
+        "a proposal at the account's next nonce is accepted"
+    );
+}
+
+/// The worker holds the rule too: a reproduced delta that leaves the account at another nonce
+/// than the proposal's label is never admitted as a candidate.
+#[tokio::test]
+async fn a_reproduced_delta_at_another_nonce_fails_before_the_boundary() {
+    let f = Fixture::new(Script::default()).await;
+    let _ = f
+        .chain
+        .clone()
+        .with_applied_state(Ok(crate::network::AppliedState {
+            state_json: serde_json::json!({}),
+            commitment: NEW_COMMITMENT.to_string(),
+            nonce: Some(7),
+            cosigners: Vec::new(),
+            guardian_commitment: None,
+        }));
+    f.request().await.unwrap();
+    let (failed, _) = f.settle(|state| state == ExecutionState::Failed).await;
+    assert_eq!(
+        failed.error.as_ref().map(|error| error.code.as_str()),
+        Some("GUARDIAN_EXECUTION_BINDING_MISMATCH")
+    );
+    assert!(failed.proposal_exists, "the proposal is kept");
+    assert!(
+        f.state.storage.pull_delta(ACCOUNT, 1).await.is_err(),
+        "no delta recorded"
+    );
+    assert_eq!(f.calls.lock().unwrap().submitted, 0, "nothing was sent");
 }
 
 #[tokio::test]

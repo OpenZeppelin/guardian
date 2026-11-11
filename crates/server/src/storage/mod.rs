@@ -281,9 +281,11 @@ pub struct ProposalAdmission {
     /// Decoded size of the proposal's stored transaction request, zero when it carries none.
     pub request_bytes: u64,
     pub max_viable_proposals: usize,
-    /// Nonce of the newest queued candidate. A proposal on the same base at or below it can never
-    /// execute, so it counts towards neither limit; `None` when nothing is queued.
-    pub queue_tail_nonce: Option<u64>,
+    /// The nonce a proposal on this base must carry to execute: the base's account nonce plus one
+    /// (issue #518). A proposal on the same base at any other nonce can never execute, so it
+    /// counts towards neither limit; `None` when the nonce is not known (a network without
+    /// account nonces), and then every pending proposal on the base counts.
+    pub viable_nonce: Option<u64>,
     pub max_account_request_bytes: u64,
 }
 

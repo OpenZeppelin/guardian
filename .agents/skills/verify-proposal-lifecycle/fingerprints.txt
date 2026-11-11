@@ -1,6 +1,6 @@
 crates/server/src/services/push_delta_proposal.rs push_delta_proposal f3273779e9d7758f
-crates/server/src/services/push_delta_proposal.rs propose e751b2d36d64d1e1
-crates/server/src/services/push_delta.rs push_delta 20863182e67af49d
+crates/server/src/services/push_delta_proposal.rs propose 75bb1b5cad3ff1cb
+crates/server/src/services/push_delta.rs push_delta 2235a925f1f0ec48
 crates/server/src/services/ack_delta_internal.rs lookup_matching_proposal 9b5ac8501f9abe75
 crates/server/src/services/candidate_chain.rs load_for_admission ed7abd9edcc81e9f
 crates/server/src/services/candidate_chain.rs tail_commitment 5c8c7de27c6e876e
@@ -8,7 +8,7 @@ crates/server/src/storage/mod.rs gate_candidate_submission 99785be2d52ca367
 crates/server/src/storage/postgres.rs submit_candidate e060bdbb989ca363
 crates/server/src/storage/postgres.rs submit_delta_proposal b679915e671eb474
 crates/server/src/storage/filesystem.rs submit_candidate 83549e868e6f5e25
-crates/server/src/network/miden/mod.rs verify_delta 278b4074309a53a3
+crates/server/src/network/miden/mod.rs verify_delta a39265f9bf7ea323
 crates/server/src/network/miden/mod.rs delta_proposal_id 0bb59c0e0a3438ba
 crates/server/src/jobs/canonicalization/processor.rs canonicalize_verified_delta 02f72218c5298266
 crates/server/src/jobs/canonicalization/processor.rs retain_candidate 813bb75dd428ee39

@@ -13,8 +13,11 @@
 use crate::coordination::read_records::PrefetchedHead;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::Credentials;
+use crate::network::ReconstructError;
 use crate::services::{ResolvedAccount, resolve_account_for_head_read};
 use crate::state::AppState;
+use crate::state_object::StateObject;
+use crate::storage::StorageBackend;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -93,9 +96,7 @@ fn state_read_error(account_id: &str, error: String) -> GuardianError {
 
 /// The canonical nonce of a stored state that does not carry one: decode
 /// the state once, answer from it, and store the nonce so later calls read
-/// it from the row. The backfill only lands while the row still holds the
-/// decoded state's commitment, so a concurrent write is never overwritten
-/// and never paired with this nonce.
+/// it from the row ([`canonical_account_nonce`]).
 async fn backfill_canonical_nonce(
     state: &AppState,
     resolved: &ResolvedAccount,
@@ -107,17 +108,8 @@ async fn backfill_canonical_nonce(
         .await
         .map_err(|e| state_read_error(&account_id, e))?;
 
-    let nonce = state
-        .network_client
-        .account_nonce(&account_state.state_json)
-        .map_err(|e| {
-            tracing::error!(
-                account_id = %account_id,
-                error = %e,
-                "Canonical state blob does not decode to an account"
-            );
-            GuardianError::AccountDataUnavailable(account_id.clone())
-        })?
+    let nonce = canonical_account_nonce(state, resolved.storage.as_ref(), &account_state)
+        .await?
         .ok_or_else(|| {
             // Unreachable for Miden (the only non-EVM network, and its
             // client always reads a nonce); a backend without the notion
@@ -129,11 +121,53 @@ async fn backfill_canonical_nonce(
             GuardianError::AccountDataUnavailable(account_id.clone())
         })?;
 
-    // Best effort: the response is correct either way, and a row the
-    // backfill misses is decoded again on its next read.
-    match resolved
-        .storage
-        .backfill_state_nonce(&account_id, &account_state.commitment, nonce)
+    Ok(CanonicalNonceResponse {
+        account_id: account_state.account_id,
+        nonce,
+        commitment: account_state.commitment,
+    })
+}
+
+/// The account nonce of the canonical state `current_state` holds: the
+/// nonce stored with it, or, for a row that does not carry one (see
+/// [`StateObject::nonce`]), the nonce its state decodes to, read on the
+/// reconstruction pool and stored onto the row so later reads find it
+/// there. The store is best effort: the answer is correct either way, a row
+/// it misses is decoded again on its next read, and it only lands while the
+/// row still holds the decoded state's commitment, so a concurrent write is
+/// never overwritten and never paired with this nonce. `None` on a network
+/// without account nonces. A state that no longer decodes is
+/// `account_data_unavailable`.
+pub(crate) async fn canonical_account_nonce(
+    state: &AppState,
+    storage: &dyn StorageBackend,
+    current_state: &StateObject,
+) -> Result<Option<u64>> {
+    if let Some(nonce) = current_state.nonce {
+        return Ok(Some(nonce));
+    }
+    let account_id = &current_state.account_id;
+    let client = state.network_client.clone();
+    let state_json = current_state.state_json.clone();
+    let decoded = crate::network::reconstructor()
+        .run(move || client.account_nonce(&state_json))
+        .await
+        .map_err(|error| match error {
+            ReconstructError::Operation(message) => {
+                tracing::error!(
+                    account_id = %account_id,
+                    error = %message,
+                    "Canonical state blob does not decode to an account"
+                );
+                GuardianError::AccountDataUnavailable(account_id.clone())
+            }
+            task => GuardianError::from(task),
+        })?;
+    let Some(nonce) = decoded else {
+        return Ok(None);
+    };
+    match storage
+        .backfill_state_nonce(account_id, &current_state.commitment, nonce)
         .await
     {
         Ok(stored) => tracing::info!(
@@ -149,12 +183,7 @@ async fn backfill_canonical_nonce(
             "Failed to store the decoded canonical nonce; the next read decodes again"
         ),
     }
-
-    Ok(CanonicalNonceResponse {
-        account_id: account_state.account_id,
-        nonce,
-        commitment: account_state.commitment,
-    })
+    Ok(Some(nonce))
 }
 
 #[cfg(test)]

@@ -51,8 +51,9 @@ TypeScript). The `check.sh` drift check hashes each one. In particular:
   its local commitment; TS refuses any proposal whose pinned base is not
   its local commitment.
 - How Guardian pins and labels: `push_delta_proposal` pins to the queue
-  tail and checks the label only when a queue exists. `push_delta`
-  checks label = applied nonce only behind a queued candidate.
+  tail and records a proposal only at the next nonce (the tail's plus
+  one, or the stored account nonce plus one with nothing queued).
+  `push_delta` checks label = applied nonce at every depth (issue #518).
 - Which rows exist after a park: `retain_candidate` /
   `finalize_abandoned_candidate`, and `submit_candidate`'s supersede of a
   retained or client-abandoned row at the same nonce.
@@ -124,10 +125,10 @@ TLC could not run the model; its first error lines are printed.
 | Model action | Code |
 |---|---|
 | `Sync` | Rust `client/account.rs` `sync`; TS `multisig.ts` `syncState` (adopt the chain state or Guardian's canonical state) |
-| `Propose` | Rust `client/proposals.rs` `propose_transaction_with_options` (label `account.nonce() + 1`); TS `resolveProposalNonce` (store nonce + 1, `Date.now()` through 0.18.0); server `services/push_delta_proposal.rs` `push_delta_proposal` (pin to tail; refuse a full queue or a label other than tail + 1 when a queue exists) |
+| `Propose` | Rust `client/proposals.rs` `propose_transaction_with_options` (label `account.nonce() + 1`); TS `resolveProposalNonce` (store nonce + 1, `Date.now()` through 0.18.0); server `services/push_delta_proposal.rs` `push_delta_proposal` (pin to tail; refuse a full queue or a label other than the next nonce: tail + 1, or stored nonce + 1 with nothing queued) |
 | `ExecuteRust` | Rust `execute_proposal` (sync, refuse `proposal.nonce <= account.nonce()`, refuse a pinned base other than the local commitment via `ensure_executes_on_pinned_base`), `helpers.rs` `get_guardian_ack_signature` (push with the local commitment), `finalize_transaction` (execute on the local account) |
 | `ExecuteTs` | TS `prepareProposalExecution` → `assertExecutesOnPinnedBase`, `pushDelta` with the served `prevCommitment`; `executeProposal` → `submitAtTip` on the store account |
-| `Admits`, `Admit` | server `services/push_delta.rs` `push_delta` and `storage::gate_candidate_submission` / `submit_candidate` (tail position, full queue, label rule behind a queue, supersede of a parked row at the nonce) |
+| `Admits`, `Admit` | server `services/push_delta.rs` `push_delta` and `storage::gate_candidate_submission` / `submit_candidate` (tail position, full queue, label = applied nonce at every depth, supersede of a parked row at the nonce) |
 | `Land`, `Expire` | the chain: lands from the state it was built on; the multisig replay map refuses a summary that already executed; a transaction may expire |
 | `Promote` | `jobs/canonicalization/processor.rs` `canonicalize_verified_delta` (promote, delete the proposal whose id is the summary) |
 | `Park` | `retain_candidate`, `finalize_abandoned_candidate`, `handle_orphaned_candidate` (park, delete the matching proposal; an orphaned head is parked without a chain read) |
@@ -199,6 +200,18 @@ before the fix:
 
 With the check, `ExecuteRust` requires the synced local state to equal
 the pin, and every `ExecutesOnPinnedBase` cell passes.
+
+Since issue #518 the server refuses both counterexamples on its own: a
+delta's label must be the nonce it leaves the account at at every depth,
+and a proposal's the next nonce, so B's push from S (label n+2, or a
+timestamp) is refused. With the `st = p.pin` guard removed from
+`ExecuteRust`, every depth-1 `ExecutesOnPinnedBase` cell still passes,
+where before #518 it failed; this covers Rust SDKs through 0.18.3, which
+lack the guard, at the default depth. Depth 2 still fails without the
+guard: B is pinned to a candidate's post-state, that candidate is parked,
+and a sibling candidate at the same nonce lands, so B executes from the
+sibling with the right label. A label pins the nonce, not the state, so
+the SDK guard stays necessary on a queueing server.
 
 **P2 (fixed). A resubmission at a parked candidate's nonce deleted the
 only row a late-landing transaction needs.** Counterexample before the

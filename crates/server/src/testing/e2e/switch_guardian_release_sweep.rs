@@ -376,6 +376,53 @@ impl UnannouncedSwitch {
         Ok(proposal.commitment)
     }
 
+    /// A switch proposal carrying `tx_summary` at `nonce`, written straight
+    /// to storage pinned to the stored state, as a server before issue #518
+    /// recorded it: such a server took any label on the head, and this one
+    /// refuses a label other than the account's next nonce, so a proposal
+    /// it holds under one can only have been recorded before the upgrade.
+    async fn store_pre_518_switch_proposal(
+        &self,
+        tx_summary: serde_json::Value,
+        nonce: u64,
+    ) -> String {
+        let proposal_id = self
+            .state
+            .network_client
+            .delta_proposal_id(&self.account_id_hex, nonce, &tx_summary)
+            .expect("the switch summary has an id");
+        self.state
+            .storage
+            .submit_delta_proposal(
+                &proposal_id,
+                &DeltaObject {
+                    account_id: self.account_id_hex.clone(),
+                    nonce,
+                    prev_commitment: self.pre_switch_commitment.clone(),
+                    delta_payload: serde_json::json!({
+                        "tx_summary": tx_summary,
+                        "signatures": [],
+                        "metadata": {
+                            "proposal_type": "switch_guardian",
+                            "description": "switch to the new operator",
+                            "new_guardian_endpoint": "https://new-guardian.example",
+                            "new_guardian_pubkey": self.new_guardian_commitment_hex.clone(),
+                            "required_signatures": 2
+                        }
+                    }),
+                    status: DeltaStatus::Pending {
+                        timestamp: "2026-10-01T12:00:00Z".to_string(),
+                        proposer_id: self.all_commitments_hex[0].clone(),
+                        cosigner_sigs: vec![],
+                    },
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("the proposal is stored");
+        proposal_id
+    }
+
     /// Queue a candidate on the stored base through the push path in
     /// candidate mode, with queueing opted in (issue #17): an ordinary
     /// transaction this server acknowledged but that never lands. Returns
@@ -1389,7 +1436,7 @@ async fn test_release_sweep_matches_a_switch_built_past_a_late_landing_retained_
     // An own delta was admitted, ran out of retries and was retained, then
     // landed; the stored state stayed at its base. The cosigners built the
     // switch on the landed state and proposed it here; with the queue empty
-    // it is recorded against the stored state, so its summary applied there
+    // it was recorded against the stored state, so its summary applied there
     // proves nothing. Applied past the retained delta, the real summary
     // reproduces the switch the chain executed.
     let mut fixture = unannounced_switch_for(AccountType::Private).await;
@@ -1405,13 +1452,25 @@ async fn test_release_sweep_matches_a_switch_built_past_a_late_landing_retained_
     )
     .await;
     let switch_commitment = commitment_hex(&switch.account);
-    let proposal_id = fixture
-        .try_push_switch_proposal_with(
-            switch.summary.clone(),
-            switch.account.nonce().as_canonical_u64(),
-        )
+    let switch_nonce = switch.account.nonce().as_canonical_u64();
+    assert_eq!(switch_nonce, own_nonce + 1, "built past the retained delta");
+
+    // Since issue #518 the label gives such a proposal away: it is the
+    // landed state's next nonce, one past the stored state's, and the old
+    // guardian refuses it until it catches up with the landing. A proposal
+    // recorded before the upgrade is still evidence.
+    let refused = fixture
+        .try_push_switch_proposal_with(switch.summary.clone(), switch_nonce)
         .await
-        .expect("the switch proposal is accepted on the old guardian");
+        .expect_err("a proposal past the stored state's next nonce is refused");
+    assert!(
+        matches!(&refused, crate::error::GuardianError::InvalidDelta(message)
+            if message.contains(&format!("next nonce {own_nonce}"))),
+        "expected InvalidDelta naming nonce {own_nonce}, got {refused:?}"
+    );
+    let proposal_id = fixture
+        .store_pre_518_switch_proposal(switch.summary.clone(), switch_nonce)
+        .await;
     let recorded = fixture
         .state
         .storage
@@ -1420,7 +1479,7 @@ async fn test_release_sweep_matches_a_switch_built_past_a_late_landing_retained_
         .expect("proposals readable");
     assert_eq!(
         recorded[0].proposal.prev_commitment, fixture.pre_switch_commitment,
-        "with the queue empty the proposal is recorded against the stored state"
+        "with the queue empty the proposal was recorded against the stored state"
     );
 
     let history = vec![

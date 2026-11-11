@@ -20,16 +20,17 @@
 //!   again under the new guardian, and resolves the stale proposal at the
 //!   same time. Every pending proposal counts, whatever its label and
 //!   whatever base it was recorded against (the candidate queue records a
-//!   proposal against its tail, issue #17; one built on the stored state
-//!   behind a queued candidate is refused when its nonce does not extend
-//!   the queue, but a summary does not name its base, so one labelled
-//!   past the tail is recorded there all the same), and so does a switch
-//!   delta canonicalization
-//!   retained (its proposal is gone by then, its payload is not).
-//!   Candidates are applied to the stored state and to the end state of
-//!   every retained or abandoned delta chaining from it, so a switch
-//!   delta parked behind another candidate (issue #504), or a proposal
-//!   built past a retained delta that landed late, is matched too.
+//!   proposal against its tail, issue #17; since issue #518 a proposal is
+//!   recorded only at the account's next nonce, so one built past the
+//!   tail is refused with `invalid_delta`), and so does a switch delta
+//!   canonicalization retained (its proposal is gone by then, its payload
+//!   is not). Candidates are applied to the stored state and to the end
+//!   state of every retained or abandoned delta chaining from it, so a
+//!   switch delta parked behind another candidate (issue #504) is matched
+//!   too, and so is a proposal built past a retained delta that landed
+//!   late. Since #518 GUARDIAN refuses such a proposal until the
+//!   reconcile pass records the landing, so only rows recorded before
+//!   0.19.0 reach that path.
 //! * **Stored state.** The stored state's own guardian key is checked once
 //!   per stored state: a promoted switch whose push-path release was never
 //!   written is released here, proved by the ack this server signed for

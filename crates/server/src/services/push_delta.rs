@@ -1,16 +1,20 @@
 use crate::delta_object::DeltaObject;
 use crate::error::{GuardianError, Result};
 use crate::metadata::auth::{Credentials, RequestAuthFormat};
+use crate::network::{AppliedState, ModuleInputs, NetworkClient};
 use crate::services::account_status::ensure_account_active_metadata;
 use crate::services::ack_delta_internal::{
-    ProposalMatch, Submitter, acknowledge_applied, apply_to_base, lookup_matching_proposal,
+    ApprovalPlan, ProposalMatch, Submitter, acknowledge_applied,
+    ensure_labelled_with_applied_nonce, lookup_matching_proposal,
 };
 use crate::services::candidate_chain::{self, CandidateChain};
 use crate::services::delta_commit::{CommitContext, DeltaCommitStrategy};
-use crate::services::multisig_admission::MultisigAccount;
+use crate::services::multisig_admission::TailAccount;
 use crate::services::resolve_account_allowing_session;
 use crate::state::AppState;
 use crate::storage::ChainPosition;
+use miden_protocol::account::Account;
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct PushDeltaParams {
@@ -90,17 +94,17 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     //   guardian key until it promotes (409; `ensure_tail_keeps_auth`,
     //   judged on the replayed tail, so it runs after the replay and in
     //   the request path only; its docs say why that is race-safe);
-    // - behind a queued candidate, its nonce must be the nonce the delta
-    //   leaves the account at (409): the queue orders, gates and looks up
-    //   candidates by that label, so a timestamp label would sort past
-    //   every real nonce and refuse each correctly labelled successor
-    //   until it promoted. Request path only, after `apply_delta`, like
-    //   the auth binding: the storage gate does not repeat it, and a
-    //   delta that fails it never reaches the lock. A candidate admitted
-    //   after the queue was read moves the tail, so the lock-side
-    //   position check refuses this delta as competing. With nothing
-    //   queued the label is not checked, so older clients that label
-    //   with a timestamp keep working at the head.
+    // - at every depth, its nonce must be the nonce the delta leaves the
+    //   account at (400 `invalid_delta`, issue #518): the nonce is the
+    //   row's key and the order of the history, `/delta/since` and the
+    //   queue, so a timestamp label would sort past every real nonce
+    //   (and, behind a queued candidate, refuse each correctly labelled
+    //   successor until it promoted). Waiting does not fix a label, so
+    //   this is not a pending conflict. Request path only, after
+    //   `apply_delta`, like the auth binding: the storage gate does not
+    //   repeat it, and a delta that fails it never reaches the lock. A
+    //   candidate admitted after the queue was read moves the tail, so
+    //   the lock-side position check refuses this delta as competing.
     let chain = CandidateChain::load_for_admission(
         resolved.storage.as_ref(),
         &params.delta.account_id,
@@ -151,25 +155,6 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     let tail = chain.reconstruct_tail(state, &current_state).await?;
     candidate_chain::ensure_tail_keeps_auth(state, &current_state, &tail).await?;
 
-    // A delegated signer may push only onto a multisig tail, whose gate
-    // below refuses a delta without enough verified cosigner approvals.
-    // `/configure` registers only multisig accounts, but an account stored
-    // before it did, or one a delta moved off the multisig, is acknowledged
-    // without approvals, so its push stays wallet-only (FR-009 of #219).
-    let multisig = MultisigAccount::from_state(&tail.state_json);
-    if multisig.is_none() && params.credentials.auth_format() == RequestAuthFormat::Session {
-        return Err(GuardianError::WalletSignatureRequired);
-    }
-
-    // One lookup serves both the multisig authorization gate and
-    // metadata. A multisig tail is acknowledged only when the matching
-    // proposal meets the threshold of the procedures the delta invokes;
-    // a miss or a storage fault refuses the push here, before the delta
-    // is verified or applied, so an under-signed push never consumes
-    // the CPU-heavy work below. A single-key tail keeps the previous
-    // behavior: a miss is metadata-only, and a storage fault does not
-    // block the push. Signature verification is CPU work, so it runs
-    // through the shared reconstruction gate, off the async threads.
     let proposal_match = lookup_matching_proposal(
         state,
         &params.delta.account_id,
@@ -177,35 +162,21 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
         &params.delta.delta_payload,
     )
     .await;
-    if let Some(multisig) = multisig {
-        let proposal = match &proposal_match {
-            ProposalMatch::Found(proposal) => Some(proposal.clone()),
-            ProposalMatch::Missing => None,
-            ProposalMatch::Unavailable(error) => {
-                return Err(GuardianError::StorageError(format!(
-                    "Failed to load the proposal authorizing this delta: {error}"
-                )));
-            }
-        };
-        let delta_payload = params.delta.delta_payload.clone();
-        crate::network::reconstructor()
-            .run(move || Ok(multisig.authorize(&delta_payload, proposal.as_deref())))
-            .await??;
-    }
-
-    let applied = apply_to_base(state, &tail.commitment, &tail.state_json, &params.delta).await?;
-    if !chain.is_empty()
-        && let Some(applied_nonce) = applied.state.nonce
-        && applied_nonce != params.delta.nonce
-    {
-        tracing::info!(
-            account_id = %params.delta.account_id,
-            nonce = params.delta.nonce,
-            applied_nonce,
-            "Chained delta is not labelled with the nonce it produces; rejecting as pending-delta conflict"
-        );
-        return Err(GuardianError::ConflictPendingDelta);
-    }
+    let plan = ApprovalPlan::for_account(state, &params.delta.account_id).await?;
+    let admission = TailAdmission {
+        client: state.network_client.clone(),
+        tail_commitment: tail.commitment,
+        tail_json: tail.state_json,
+        delta_payload: params.delta.delta_payload.clone(),
+        session: params.credentials.auth_format() == RequestAuthFormat::Session,
+        proposal: proposal_match.clone(),
+        with_module_inputs: plan.wants_inputs(),
+    };
+    let (applied, inputs) = crate::network::reconstructor()
+        .run(move || Ok(admission.run()))
+        .await??;
+    ensure_labelled_with_applied_nonce(&params.delta, &applied)?;
+    let applied = plan.applied(applied, inputs)?;
     // The account verifies acknowledgements under its GUARDIAN's scheme.
     let scheme = resolved.metadata.auth.guardian_scheme();
     let acknowledged = acknowledge_applied(
@@ -258,6 +229,91 @@ pub async fn push_delta(state: &AppState, params: PushDeltaParams) -> Result<Pus
     Ok(PushDeltaResult {
         delta: result_delta,
     })
+}
+
+/// Everything one push checks and applies on its tail, run as one task on
+/// the reconstruction gate: the tail is decoded once, the decoded account
+/// serves every check and then the verify-and-apply, and the push waits for
+/// one permit on the shared CPU gate. The matching proposal is looked up
+/// before the task, as it only reads.
+///
+/// A delegated signer may push only onto a multisig tail (FR-009 of #219).
+/// A multisig tail is acknowledged only when the matching proposal meets the
+/// threshold of the procedures the delta invokes; a miss or a storage fault
+/// refuses the push before the delta is verified or applied. A single-key
+/// tail is not gated: a miss is metadata-only and a storage fault does not
+/// block the push. A tail that does not decode is treated as single-key and
+/// refused by the verify-and-apply on its JSON.
+struct TailAdmission {
+    client: Arc<dyn NetworkClient>,
+    tail_commitment: String,
+    tail_json: serde_json::Value,
+    delta_payload: serde_json::Value,
+    session: bool,
+    proposal: ProposalMatch,
+    with_module_inputs: bool,
+}
+
+impl TailAdmission {
+    /// The applied tail, with the policy module inputs built from the same
+    /// decode when `with_module_inputs`, or why the push is refused. A delta
+    /// that does not verify or apply is `invalid_delta`, as before.
+    fn run(self) -> Result<(AppliedState, Option<ModuleInputs>)> {
+        match TailAccount::decode(&self.tail_json) {
+            TailAccount::Multisig(multisig) => {
+                let proposal = match &self.proposal {
+                    ProposalMatch::Found(proposal) => Some(proposal.as_ref()),
+                    ProposalMatch::Missing => None,
+                    ProposalMatch::Unavailable(error) => {
+                        return Err(GuardianError::StorageError(format!(
+                            "Failed to load the proposal authorizing this delta: {error}"
+                        )));
+                    }
+                };
+                multisig.authorize(&self.delta_payload, proposal)?;
+                self.apply_to(multisig.into_account())
+            }
+            TailAccount::SingleKey(_) | TailAccount::Undecodable if self.session => {
+                Err(GuardianError::WalletSignatureRequired)
+            }
+            TailAccount::SingleKey(account) => self.apply_to(account),
+            TailAccount::Undecodable if self.with_module_inputs => self
+                .client
+                .apply_delta_with_module_inputs(
+                    Some(&self.tail_commitment),
+                    &self.tail_json,
+                    &self.delta_payload,
+                )
+                .map(|(applied, inputs)| (applied, Some(inputs)))
+                .map_err(GuardianError::InvalidDelta),
+            TailAccount::Undecodable => self
+                .client
+                .verify_and_apply_delta(&self.tail_commitment, &self.tail_json, &self.delta_payload)
+                .map(|applied| (applied, None))
+                .map_err(GuardianError::InvalidDelta),
+        }
+    }
+
+    fn apply_to(&self, account: Account) -> Result<(AppliedState, Option<ModuleInputs>)> {
+        let applied = if self.with_module_inputs {
+            self.client
+                .verify_and_apply_delta_to_account_with_module_inputs(
+                    &self.tail_commitment,
+                    account,
+                    &self.delta_payload,
+                )
+                .map(|(applied, inputs)| (applied, Some(inputs)))
+        } else {
+            self.client
+                .verify_and_apply_delta_to_account(
+                    &self.tail_commitment,
+                    account,
+                    &self.delta_payload,
+                )
+                .map(|applied| (applied, None))
+        };
+        applied.map_err(GuardianError::InvalidDelta)
+    }
 }
 
 #[cfg(test)]
@@ -977,20 +1033,25 @@ mod tests {
     #[tokio::test]
     async fn chained_delta_labelled_with_another_nonce_is_refused() {
         // A timestamp label behind a queued candidate would sort past
-        // every real nonce and become the tail.
+        // every real nonce and become the tail. Waiting for the queue does
+        // not fix a label, so it is an invalid delta, not a conflict.
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
-        let (result, storage, _) = push_against_queue_with(
-            4,
-            vec![queued(account_id, 1, "0xbase", "0xc1")],
-            request(account_id, 1_791_279_079_000, "0xc1"),
-            producing_nonce(2),
-        )
-        .await;
-        assert!(
-            matches!(result, Err(GuardianError::ConflictPendingDelta)),
-            "{result:?}"
-        );
-        assert!(storage.get_submit_delta_calls().is_empty());
+        for label in [3, 1_791_279_079_000] {
+            let (result, storage, _) = push_against_queue_with(
+                4,
+                vec![queued(account_id, 1, "0xbase", "0xc1")],
+                request(account_id, label, "0xc1"),
+                producing_nonce(2),
+            )
+            .await;
+            assert!(
+                matches!(&result, Err(GuardianError::InvalidDelta(message))
+                    if message.contains(&format!("delta nonce {label} "))
+                        && message.contains("account nonce 2 ")),
+                "label {label}: {result:?}"
+            );
+            assert!(storage.get_submit_delta_calls().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -1007,23 +1068,100 @@ mod tests {
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
     }
 
+    /// Network answers for a delta on the canonical state, with nothing
+    /// queued, that leaves the account at nonce 1.
+    fn head_producing_nonce_one(network: MockNetworkClient) -> MockNetworkClient {
+        network.apply_delta_responses.lock().unwrap().clear();
+        network.with_applied_state(Ok(applied(serde_json::json!({"step": 1}), "0xc1", 1)))
+    }
+
     #[tokio::test]
-    async fn head_delta_label_is_not_checked_against_the_nonce_it_produces() {
-        // Nothing queued: an older client labelling with a timestamp keeps
-        // working, as it did before the queue existed.
+    async fn head_delta_labelled_with_another_nonce_is_refused() {
+        // Issue #518: with nothing queued the label is checked too. A
+        // timestamp (the TypeScript SDK's default through 0.18.0), a gap,
+        // the base's own nonce, and labels past `i64::MAX`, which Postgres
+        // would store as negative and sort first, are all refused.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        for label in [0, 2, 1_791_279_079_000, i64::MAX as u64 + 1, u64::MAX] {
+            let (result, storage, _) = push_against_queue_with(
+                4,
+                Vec::new(),
+                request(account_id, label, "0xbase"),
+                head_producing_nonce_one,
+            )
+            .await;
+            assert!(
+                matches!(&result, Err(GuardianError::InvalidDelta(message))
+                    if message.contains(&format!("delta nonce {label} "))
+                        && message.contains("account nonce 1 ")),
+                "label {label}: {result:?}"
+            );
+            assert!(
+                storage.get_submit_delta_calls().is_empty(),
+                "label {label}: nothing is stored"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn head_delta_labelled_with_the_nonce_it_produces_is_admitted() {
         let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
         let (result, storage, _) = push_against_queue_with(
             4,
             Vec::new(),
-            request(account_id, 1_791_279_079_000, "0xbase"),
-            |network| {
-                network.apply_delta_responses.lock().unwrap().clear();
-                network.with_applied_state(Ok(applied(serde_json::json!({"step": 1}), "0xc1", 1)))
+            request(account_id, 1, "0xbase"),
+            head_producing_nonce_one,
+        )
+        .await;
+        let result = result.expect("a correctly labelled head delta is admitted");
+        assert_eq!(result.delta.nonce, 1);
+        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn head_delta_label_is_checked_without_canonicalization() {
+        // Optimistic mode writes the delta canonical at once, so the rule
+        // holds there too, before the state or the delta row is written.
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (signer_pubkey, signer_commitment, signer_signature, signer_timestamp) =
+            crate::testing::helpers::generate_falcon_signature(account_id);
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(stored_state(account_id, "0xbase")))
+            .with_pull_delta_proposal(Err("no matching proposal".to_string()))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let network = head_producing_nonce_one(
+            MockNetworkClient::new()
+                .with_validate_credential(Ok(()))
+                .with_verify_delta(Ok(())),
+        );
+        let metadata = MockMetadataStore::new()
+            .with_get(Ok(Some(active_metadata(account_id, &signer_commitment))))
+            .with_get(Ok(Some(active_metadata(account_id, &signer_commitment))));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage.clone()),
+            Arc::new(network),
+            Arc::new(metadata),
+        );
+        assert!(state.canonicalization.is_none(), "optimistic mode");
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta: request(account_id, 1_791_279_079_000, "0xbase"),
+                credentials: Credentials::signature(
+                    signer_pubkey,
+                    signer_signature,
+                    signer_timestamp,
+                ),
             },
         )
         .await;
-        result.expect("a head delta is admitted whatever its label");
-        assert_eq!(storage.get_submit_delta_calls().len(), 1);
+        assert!(
+            matches!(result, Err(GuardianError::InvalidDelta(_))),
+            "{result:?}"
+        );
+        assert!(storage.get_submit_delta_calls().is_empty());
+        assert!(storage.get_submit_state_calls().is_empty());
     }
 
     fn binding(signers: &[&str]) -> crate::network::AuthBinding {
@@ -1507,6 +1645,32 @@ mod tests {
         lookup: ProposalLookup,
         modules: Option<Arc<crate::modules::pipeline::ModulePipeline>>,
     ) -> (Result<PushDeltaResult>, MockStorageBackend) {
+        let (result, storage, _network) = push_on_multisig_observed(
+            request_signer,
+            approvers,
+            approver_schemes,
+            threshold,
+            procedure_overrides,
+            lookup,
+            modules,
+        )
+        .await;
+        (result, storage)
+    }
+
+    async fn push_on_multisig_observed(
+        request_signer: RequestSigner,
+        approvers: &[String],
+        approver_schemes: &[guardian_shared::SignatureScheme],
+        threshold: u32,
+        procedure_overrides: &[(miden_protocol::Word, u32)],
+        lookup: ProposalLookup,
+        modules: Option<Arc<crate::modules::pipeline::ModulePipeline>>,
+    ) -> (
+        Result<PushDeltaResult>,
+        MockStorageBackend,
+        MockNetworkClient,
+    ) {
         use crate::delta_object::DeltaStatus;
         use crate::state_object::StateObject;
         use crate::testing::helpers::TestSigner;
@@ -1596,7 +1760,7 @@ mod tests {
         })));
         let mut state = create_test_app_state_with_mocks(
             Arc::new(storage.clone()),
-            Arc::new(network),
+            Arc::new(network.clone()),
             Arc::new(metadata),
         );
         state.modules = modules;
@@ -1628,7 +1792,7 @@ mod tests {
             },
         )
         .await;
-        (result, storage)
+        (result, storage, network)
     }
 
     fn assert_not_committed(storage: &MockStorageBackend) {
@@ -1702,6 +1866,100 @@ mod tests {
         .await;
         assert!(result.is_ok(), "{result:?}");
         assert_eq!(storage.get_submit_delta_calls().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn multisig_push_verifies_and_applies_on_the_account_its_gate_decoded() {
+        use crate::testing::helpers::TestSigner;
+
+        let first = TestSigner::new();
+        let second = TestSigner::new();
+        let summary = pushed_summary();
+        let (result, _storage, network) = push_on_multisig_observed(
+            RequestSigner::Wallet,
+            &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+            &[],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&first, &summary),
+                falcon_approval(&second, &summary),
+            ]),
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            network
+                .verify_and_apply_delta_to_account_calls
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+            "the tail the multisig gate decoded is the one verified and applied"
+        );
+        assert_eq!(
+            *network.verify_and_apply_delta_json_calls.lock().unwrap(),
+            0,
+            "the tail is never decoded again from its JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_gated_multisig_push_builds_module_inputs_from_the_account_its_gate_decoded() {
+        use crate::testing::helpers::TestSigner;
+
+        let first = TestSigner::new();
+        let second = TestSigner::new();
+        let summary = pushed_summary();
+        let (result, _storage, network) = push_on_multisig_observed(
+            RequestSigner::Wallet,
+            &[first.commitment_hex.clone(), second.commitment_hex.clone()],
+            &[],
+            2,
+            &[],
+            ProposalLookup::Signatures(vec![
+                falcon_approval(&first, &summary),
+                falcon_approval(&second, &summary),
+            ]),
+            Some(crate::modules::testing::pipeline(vec![
+                crate::modules::testing::instance(
+                    "approvals",
+                    &[HookName::BeforeTransactionApproved],
+                    crate::modules::catalog::OnError::Deny,
+                    crate::modules::testing::StubModule::allowing(),
+                ),
+            ])),
+        )
+        .await;
+        let pushed = result.expect("an allowing module acknowledges the push");
+        assert!(
+            pushed
+                .delta
+                .metadata
+                .is_some_and(|metadata| metadata.modules.is_some()),
+            "the approval is recorded"
+        );
+        assert_eq!(
+            network
+                .verify_and_apply_delta_to_account_calls
+                .lock()
+                .unwrap()
+                .len(),
+            1,
+            "the account the gate decoded is the one applied and viewed"
+        );
+        assert_eq!(
+            *network.verify_and_apply_delta_json_calls.lock().unwrap(),
+            0,
+            "the tail is never decoded again from its JSON"
+        );
+        assert_eq!(
+            network
+                .module_decodes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
     }
 
     #[tokio::test]
@@ -1996,6 +2254,178 @@ mod tests {
             "{result:?}"
         );
         assert_not_committed(&storage);
+    }
+
+    /// A push onto a stored state, returning the network mock so a test can
+    /// see which verify-and-apply path ran. `lookup_error` makes the
+    /// matching-proposal lookup fail with that storage error.
+    async fn push_onto(
+        account_id: &str,
+        state_json: serde_json::Value,
+        signer: &crate::testing::helpers::TestSigner,
+        request_signer: RequestSigner,
+        lookup_error: Option<&str>,
+    ) -> (Result<PushDeltaResult>, MockNetworkClient) {
+        use crate::state_object::StateObject;
+        use crate::testing::helpers::create_test_delta_payload;
+
+        let storage = MockStorageBackend::new()
+            .with_pull_state(Ok(StateObject {
+                account_id: account_id.to_string(),
+                state_json,
+                commitment: "0xprev".to_string(),
+                nonce: None,
+                created_at: "2026-05-25T08:00:00Z".into(),
+                updated_at: "2026-05-25T08:00:00Z".into(),
+                auth_scheme: String::new(),
+            }))
+            .with_pull_deltas_after(Ok(Vec::new()))
+            .with_submit_state(Ok(()))
+            .with_submit_delta(Ok(()));
+        let storage = match lookup_error {
+            Some(error) => storage.with_pull_delta_proposal(Err(error.to_string())),
+            None => storage,
+        };
+        let network = MockNetworkClient::new()
+            .with_validate_credential(Ok(()))
+            .with_verify_delta(Ok(()))
+            .with_apply_delta(Ok((
+                serde_json::json!({"new_state": true}),
+                "0xnew_commitment".to_string(),
+            )));
+        let metadata = MockMetadataStore::new().with_get(Ok(Some(active_metadata(
+            account_id,
+            &signer.commitment_hex,
+        ))));
+        let state = create_test_app_state_with_mocks(
+            Arc::new(storage),
+            Arc::new(network.clone()),
+            Arc::new(metadata),
+        );
+        let credentials = match request_signer {
+            RequestSigner::Wallet => {
+                let (signature, timestamp) = signer.sign(account_id);
+                Credentials::signature(signer.pubkey_hex.clone(), signature, timestamp)
+            }
+            RequestSigner::Session => {
+                session_credentials(&state, &signer.commitment_hex, account_id).await
+            }
+        };
+        let result = push_delta(
+            &state,
+            PushDeltaParams {
+                delta: DeltaObject {
+                    account_id: account_id.to_string(),
+                    nonce: 1,
+                    prev_commitment: "0xprev".to_string(),
+                    delta_payload: create_test_delta_payload(account_id),
+                    ..Default::default()
+                },
+                credentials,
+            },
+        )
+        .await;
+        (result, network)
+    }
+
+    fn decoded_path_calls(network: &MockNetworkClient) -> (Vec<String>, usize) {
+        (
+            network
+                .verify_and_apply_delta_to_account_calls
+                .lock()
+                .unwrap()
+                .clone(),
+            *network.verify_and_apply_delta_json_calls.lock().unwrap(),
+        )
+    }
+
+    fn single_key_account(
+        signer: &crate::testing::helpers::TestSigner,
+    ) -> miden_protocol::account::Account {
+        use crate::testing::helpers::{build_single_key_account, word_from_commitment_hex};
+        build_single_key_account(
+            [7u8; 32],
+            (
+                word_from_commitment_hex(&signer.commitment_hex),
+                guardian_shared::SignatureScheme::Falcon,
+            ),
+        )
+    }
+
+    #[tokio::test]
+    async fn single_key_push_verifies_and_applies_on_the_account_it_decoded() {
+        use guardian_shared::ToJson;
+
+        let signer = crate::testing::helpers::TestSigner::new();
+        let account = single_key_account(&signer);
+        let account_id = account.id().to_hex();
+        let (result, network) = push_onto(
+            &account_id,
+            account.to_json(),
+            &signer,
+            RequestSigner::Wallet,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(
+            decoded_path_calls(&network),
+            (vec![account.to_commitment().to_hex()], 0),
+            "the stored tail is decoded once and never again from its JSON"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_key_push_is_not_blocked_by_a_failed_proposal_lookup() {
+        use guardian_shared::ToJson;
+
+        let signer = crate::testing::helpers::TestSigner::new();
+        let account = single_key_account(&signer);
+        let account_id = account.id().to_hex();
+        let (result, _network) = push_onto(
+            &account_id,
+            account.to_json(),
+            &signer,
+            RequestSigner::Wallet,
+            Some("connection reset"),
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_tail_that_does_not_decode_is_verified_and_applied_from_its_json() {
+        let signer = crate::testing::helpers::TestSigner::new();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, network) = push_onto(
+            account_id,
+            serde_json::json!({}),
+            &signer,
+            RequestSigner::Wallet,
+            None,
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(decoded_path_calls(&network), (Vec::new(), 1));
+    }
+
+    #[tokio::test]
+    async fn session_push_onto_a_tail_that_does_not_decode_requires_the_wallet() {
+        let signer = crate::testing::helpers::TestSigner::new();
+        let account_id = "0x7b7b7b7a7b7b7b017b7b7b7b7b7b7b";
+        let (result, network) = push_onto(
+            account_id,
+            serde_json::json!({}),
+            &signer,
+            RequestSigner::Session,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(result, Err(GuardianError::WalletSignatureRequired)),
+            "{result:?}"
+        );
+        assert_eq!(decoded_path_calls(&network), (Vec::new(), 0));
     }
 
     /// FR-009 of #219: an account stored before `/configure` required a

@@ -161,12 +161,14 @@ impl Reconstructor {
             .await
             .map_err(|e| ReconstructError::Task(format!("reconstruction gate closed: {e}")))?;
 
+        let span = tracing::Span::current();
         let kind = if admission.is_some() {
             "background"
         } else {
             "foreground"
         };
         match tokio::task::spawn_blocking(move || {
+            let _span = span.enter();
             let _admission = admission;
             let _cpu = cpu;
             let started = std::time::Instant::now();
@@ -412,6 +414,16 @@ pub trait NetworkClient: Send + Sync {
         delta_payload: &serde_json::Value,
     ) -> Result<AppliedState, String>;
 
+    /// [`Self::verify_and_apply_delta`] on a previous state the caller has
+    /// already decoded, so a request that reads the decoded account for its
+    /// own checks does not rebuild it a second time.
+    fn verify_and_apply_delta_to_account(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<AppliedState, String>;
+
     /// Verifies (when `prev_commitment` is given) and applies `delta_payload`, and builds what
     /// policy modules receive about it from the same decode. Called inside the reconstruction
     /// task, so request assembly decodes nothing. The transaction's fee note is told apart with
@@ -439,6 +451,23 @@ pub trait NetworkClient: Send + Sync {
             transaction,
         };
         Ok((applied, inputs))
+    }
+
+    /// [`Self::apply_delta_with_module_inputs`] on a previous state the caller has already
+    /// decoded, as [`Self::verify_and_apply_delta_to_account`] is to
+    /// [`Self::verify_and_apply_delta`].
+    fn verify_and_apply_delta_to_account_with_module_inputs(
+        &self,
+        prev_proof: &str,
+        prev_account: miden_protocol::account::Account,
+        delta_payload: &serde_json::Value,
+    ) -> Result<(AppliedState, ModuleInputs), String> {
+        use guardian_shared::ToJson;
+        self.apply_delta_with_module_inputs(
+            Some(prev_proof),
+            &prev_account.to_json(),
+            delta_payload,
+        )
     }
 
     /// Merge multiple deltas

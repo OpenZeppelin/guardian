@@ -5,7 +5,7 @@ use guardian_shared::SignatureScheme;
 
 use crate::delta_object::DeltaObject;
 use crate::delta_summary::ModuleApproval;
-use crate::error::Result;
+use crate::error::{GuardianError, Result};
 use crate::metadata::AccountMetadata;
 use crate::modules::HookName;
 use crate::modules::pipeline::Plan;
@@ -43,6 +43,7 @@ pub(crate) async fn acknowledge_delta(
     submitter: Submitter<'_>,
 ) -> Result<AcknowledgedDelta> {
     let applied = apply_to_base(state, base.commitment, base.json, delta).await?;
+    ensure_labelled_with_applied_nonce(delta, &applied.state)?;
     let proposal_match =
         lookup_matching_proposal(state, &delta.account_id, delta.nonce, &delta.delta_payload).await;
     acknowledge_applied(state, scheme, delta, applied, submitter, &proposal_match).await
@@ -50,11 +51,95 @@ pub(crate) async fn acknowledge_delta(
 
 /// A delta applied to the state it builds on, with the `before_transaction_approved` plan for
 /// the account and, when there is one, the inputs its modules receive, built from the same
-/// decode. Only [`apply_to_base`] builds it, so no caller can reach the ack with a delta whose
-/// modules were left out.
+/// decode. Only [`ApprovalPlan::applied`] builds it, so no caller can reach the ack with a delta
+/// whose modules were left out.
 pub(crate) struct Applied<'a> {
     pub state: AppliedState,
     modules: Option<(Plan<'a>, ModuleInputs)>,
+}
+
+/// The `before_transaction_approved` plan for an account, read before its delta is applied so
+/// the reconstruction task that applies it knows whether to build the module inputs from the
+/// same decode.
+pub(crate) struct ApprovalPlan<'a>(Option<Plan<'a>>);
+
+impl<'a> ApprovalPlan<'a> {
+    /// The plan for `account_id`. When a module applies, the chain fee is loaded first, so the
+    /// fee note is told apart inside the reconstruction task without a network call.
+    pub(crate) async fn for_account(state: &'a AppState, account_id: &str) -> Result<Self> {
+        let plan = match state.modules.as_deref() {
+            Some(modules) => {
+                modules
+                    .plan(HookName::BeforeTransactionApproved, account_id)
+                    .await?
+            }
+            None => None,
+        };
+        if plan.is_some()
+            && let Err(error) = state.network_client.load_fee_faucet().await
+        {
+            tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
+        }
+        Ok(Self(plan))
+    }
+
+    /// Whether the apply must also build the module inputs.
+    pub(crate) fn wants_inputs(&self) -> bool {
+        self.0.is_some()
+    }
+
+    /// The applied delta, with the inputs the plan's modules receive. A plan without inputs is
+    /// refused as unavailable rather than acknowledged unevaluated.
+    pub(crate) fn applied(
+        self,
+        state: AppliedState,
+        inputs: Option<ModuleInputs>,
+    ) -> Result<Applied<'a>> {
+        match (self.0, inputs) {
+            (Some(plan), Some(inputs)) => Ok(Applied {
+                state,
+                modules: Some((plan, inputs)),
+            }),
+            (Some(_), None) => {
+                tracing::error!("Delta applied without the inputs its modules need; refusing it");
+                Err(GuardianError::ModuleUnavailable { module: None })
+            }
+            (None, _) => Ok(Applied {
+                state,
+                modules: None,
+            }),
+        }
+    }
+}
+
+/// Refuses a delta whose `nonce` is not the account nonce it leaves the account at (issue
+/// #518). The nonce is the delta's storage key (`UNIQUE(account_id, nonce)`), the order of the
+/// history, `/delta/since` and the candidate queue, and the lookup key of `getDelta` and
+/// `abandonCandidate`, so a label the client chose freely (a timestamp, a gap, a value past
+/// `i64::MAX`, which Postgres stores as negative) puts the delta out of chain order in every
+/// one of them. The rule holds at every queue depth and for every writer of a delta row, so the
+/// rows are in chain order by construction. Rows written before the rule keep their labels. A
+/// network without account nonces has nothing to compare.
+pub(crate) fn ensure_labelled_with_applied_nonce(
+    delta: &DeltaObject,
+    applied: &AppliedState,
+) -> Result<()> {
+    match applied.nonce {
+        Some(applied_nonce) if applied_nonce != delta.nonce => {
+            tracing::info!(
+                account_id = %delta.account_id,
+                nonce = delta.nonce,
+                applied_nonce,
+                "Delta is not labelled with the nonce it leaves the account at; refusing it"
+            );
+            Err(GuardianError::InvalidDelta(format!(
+                "delta nonce {} is not the account nonce {applied_nonce} the delta leaves the \
+                 account at",
+                delta.nonce
+            )))
+        }
+        _ => Ok(()),
+    }
 }
 
 /// Verifies `delta` against the state it builds on and applies it, without signing anything.
@@ -66,24 +151,12 @@ pub(crate) async fn apply_to_base<'a>(
     base_state_json: &serde_json::Value,
     delta: &DeltaObject,
 ) -> Result<Applied<'a>> {
-    let plan = match state.modules.as_deref() {
-        Some(modules) => {
-            modules
-                .plan(HookName::BeforeTransactionApproved, &delta.account_id)
-                .await?
-        }
-        None => None,
-    };
-    if plan.is_some()
-        && let Err(error) = state.network_client.load_fee_faucet().await
-    {
-        tracing::warn!(%error, "Fee faucet unknown; no output note is treated as the fee note");
-    }
+    let plan = ApprovalPlan::for_account(state, &delta.account_id).await?;
     let client = state.network_client.clone();
     let prev_commitment = base_commitment.to_string();
     let prev_state_json = base_state_json.clone();
     let delta_payload = Arc::new(delta.delta_payload.clone());
-    let with_inputs = plan.is_some();
+    let with_inputs = plan.wants_inputs();
     let (applied, inputs) = crate::network::reconstructor()
         .run(move || {
             if with_inputs {
@@ -101,10 +174,7 @@ pub(crate) async fn apply_to_base<'a>(
             }
         })
         .await?;
-    Ok(Applied {
-        state: applied,
-        modules: plan.zip(inputs),
-    })
+    plan.applied(applied, inputs)
 }
 
 /// Runs the `before_transaction_approved` policy modules on a delta already applied by
@@ -206,6 +276,7 @@ async fn approve(
 }
 
 /// The `delta_proposals` row matching a delta, as far as storage could tell.
+#[derive(Clone)]
 pub(crate) enum ProposalMatch {
     Found(Box<DeltaObject>),
     Missing,

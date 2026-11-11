@@ -1890,13 +1890,17 @@ impl StorageBackend for PostgresService {
                     return Ok(ProposalWrite::AlreadyStored);
                 }
 
-                let doomed_at_or_below = admission
-                    .queue_tail_nonce
-                    .map_or(i64::MIN, |tail| tail as i64);
+                // One statement shape whether or not the nonce is known: an
+                // unknown one admits every nonce.
+                let (lowest_viable, highest_viable) = admission
+                    .viable_nonce
+                    .map_or((i64::MIN, i64::MAX), |viable| {
+                        (viable as i64, viable as i64)
+                    });
                 let viable = delta_proposals::table
                     .filter(delta_proposals::account_id.eq(&proposal.account_id))
                     .filter(delta_proposals::prev_commitment.eq(&proposal.prev_commitment))
-                    .filter(delta_proposals::nonce.gt(doomed_at_or_below))
+                    .filter(delta_proposals::nonce.between(lowest_viable, highest_viable))
                     .filter(diesel::dsl::sql::<diesel::sql_types::Bool>(
                         "status->>'status' = 'pending'",
                     ));

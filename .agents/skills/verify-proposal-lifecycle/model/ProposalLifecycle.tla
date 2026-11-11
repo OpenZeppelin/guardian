@@ -69,12 +69,18 @@ Init ==
 -----------------------------------------------------------------------------
 (* Guardian push_delta: crates/server/src/services/push_delta.rs push_delta *)
 (* and storage gate_candidate_submission / submit_candidate. Returns the   *)
-(* acknowledgement (TRUE) and the next queue/parked rows, or FALSE.        *)
+(* acknowledgement (TRUE) and the next queue/parked rows, or FALSE. At     *)
+(* every depth the label must be the nonce the delta leaves the account at *)
+(* (ack_delta_internal.rs ensure_labelled_with_applied_nonce, issue #518): *)
+(* applying a summary to prev appends one step, so that nonce is           *)
+(* Len(prev) + 1. Rows a server before #518 admitted under a timestamp     *)
+(* label are not modeled: the account starts at genesis on this rule.      *)
 
 Admits(prev, label) ==
     /\ Len(queue) < MaxPending
     /\ prev = QueueTail
-    /\ queue # <<>> => (label > Last(queue).label /\ label = Len(prev) + 1)
+    /\ queue # <<>> => label > Last(queue).label
+    /\ label = Len(prev) + 1
     /\ \A r \in Range(queue) \cup canon : r.label # label
     /\ Supersede \/ \A r \in parked : r.label # label
 
@@ -98,14 +104,15 @@ Sync(d) ==
 (* (label account.nonce() + 1), TS multisig.ts resolveProposalNonce (store       *)
 (* nonce + 1, or Date.now() through 0.18.0); Guardian                              *)
 (* services/push_delta_proposal.rs push_delta_proposal pins it to the queue tail  *)
-(* and refuses it while the queue is full or when a queue exists and the label is *)
-(* not the tail's plus one.                                                         *)
+(* and refuses it while the queue is full or when the label is not the next nonce *)
+(* (candidate_chain.rs CandidateChain::next_nonce): the tail's plus one, or with  *)
+(* nothing queued the stored state's account nonce plus one (issue #518).          *)
 Propose(d) ==
     /\ nextS <= MaxSummaries
     /\ \E kind \in Labels :
          LET label == IF kind = "nonce" THEN Len(local[d]) + 1 ELSE TimestampLabel + nextS IN
          /\ Len(queue) < MaxPending
-         /\ queue # <<>> => label = Last(queue).label + 1
+         /\ label = IF queue = <<>> THEN Len(stored) + 1 ELSE Last(queue).label + 1
          /\ proposals' = proposals \cup {[s |-> nextS, pin |-> QueueTail, label |-> label, built |-> local[d]]}
     /\ nextS' = nextS + 1
     /\ UNCHANGED <<head, stored, queue, parked, archived, canon, local, inflight, landed>>

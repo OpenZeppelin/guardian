@@ -90,6 +90,7 @@ export interface SerializedProposal {
   txSummary: string;
   signatures: SerializedProposalSignatureEntry[];
   metadata: ProposalMetadata;
+  verification: Proposal['verification'];
 }
 
 export interface SerializedExternalWalletState {
@@ -223,6 +224,7 @@ export function serializeProposal(proposal: Proposal): SerializedProposal {
     txSummary: proposal.txSummary,
     signatures: proposal.signatures.map(serializeProposalSignature),
     metadata: proposal.metadata,
+    verification: proposal.verification,
   };
 }
 

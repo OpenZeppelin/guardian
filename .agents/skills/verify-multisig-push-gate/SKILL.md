@@ -10,7 +10,7 @@ matching pending proposal carries verified cosigner approvals over the
 pushed transaction, at least as many as the lowest threshold the account
 permits: its default threshold, or a lower override on one of its non-auth
 procedures (`multisig_admission.rs` `MultisigAccount::authorize` and
-`signature_floor`, called from `push_delta` before `verify_delta`).
+`signature_floor`, called from `TailAdmission::run` in `push_delta.rs` before the delta is verified and applied).
 
 The floor is a denial-of-service guard, not the authorization rule. The
 chain enforces the exact threshold of the procedures a transaction calls,
@@ -164,7 +164,7 @@ ApprovalRelay:
 | `RelayWrite` / `LateWrite` | the committed write of `with_approval`'s row |
 | `RelayRetry` / `LateRetry` | a refused conditional write, then `load_pending_proposal` again (`MAX_SIGN_ATTEMPTS` bounds it in the code; each refusal means another write committed) |
 | `RelayRead` when `~Stored` | `proposal_not_found`; TS `executeProposal` switch path catches it and still pushes |
-| `Push` | `push_delta` → `lookup_matching_proposal` → `MultisigAccount::authorize` against `Required` (the floor), counting each approver of `extract_chain_cosigners()` once under its stored scheme (one with no supported stored scheme is not counted when the state has the approver scheme map); 0.18.2 acknowledges without counting. `SessionPushes`: this branch's `push_delta` takes a session-signed push onto a multisig tail, an earlier server answers `wallet_signature_required`; `pushAuth` then turns to `"wallet"`, as Rust `GuardianClient::push_delta` and TS `GuardianHttpClient.pushDelta` sign the push again with the wallet |
+| `Push` | `push_delta` → `lookup_matching_proposal`, then `TailAdmission::run` on the reconstruction gate → `MultisigAccount::authorize` against `Required` (the floor), counting each approver of `extract_chain_cosigners()` once under its stored scheme (one with no supported stored scheme is not counted when the state has the approver scheme map); 0.18.2 acknowledges without counting. `SessionPushes`: this branch's `TailAdmission::run` takes a session-signed push onto a multisig tail and refuses it on any other tail, an earlier server answers `wallet_signature_required`; `pushAuth` then turns to `"wallet"`, as Rust `GuardianClient::push_delta` and TS `GuardianHttpClient.pushDelta` sign the push again with the wallet |
 
 ## Scope and assumptions
 

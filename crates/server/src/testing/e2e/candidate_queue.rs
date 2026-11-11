@@ -49,6 +49,13 @@
 //! one, pinned to the tail; one labelled at or below the tail's nonce, or
 //! past the tail's nonce plus one (a timestamp, the TypeScript SDK's
 //! default through 0.18.0), is refused.
+//!
+//! `deltas_and_proposals_carry_the_nonce_they_leave_the_account_at` (issue
+//! #518): at every depth, from the head on, a delta labelled with any nonce
+//! but the one its real application leaves the account at, and a proposal
+//! labelled with any nonce but the account's next one, are refused with
+//! `invalid_delta` and store nothing; behind a queued candidate a mislabel
+//! is refused the same way rather than as a pending conflict.
 
 use std::sync::Arc;
 
@@ -838,7 +845,8 @@ async fn proposal_must_extend_the_queue_by_exactly_one_nonce() {
 
     // At the tail's nonce (built on the canonical state), past the tail's
     // nonce plus one (a gap), and a timestamp label: none was derived from
-    // the tail, none is recorded.
+    // the tail, none is recorded. The first waits for the queue to drain
+    // (409); waiting fixes neither of the others (400, issue #518).
     for nonce in [1, 3, 1_790_941_600_874] {
         let creds = setup.credentials();
         let refused = push_delta_proposal(
@@ -852,10 +860,18 @@ async fn proposal_must_extend_the_queue_by_exactly_one_nonce() {
         )
         .await
         .expect_err("a proposal that does not extend the queue by one is refused");
-        assert!(
-            matches!(refused, GuardianError::ConflictPendingDelta),
-            "nonce {nonce}: expected ConflictPendingDelta, got {refused:?}"
-        );
+        if nonce == 1 {
+            assert!(
+                matches!(refused, GuardianError::ConflictPendingDelta),
+                "nonce {nonce}: expected ConflictPendingDelta, got {refused:?}"
+            );
+        } else {
+            assert!(
+                matches!(&refused, GuardianError::InvalidDelta(message)
+                    if message.contains("next nonce 2")),
+                "nonce {nonce}: expected InvalidDelta naming nonce 2, got {refused:?}"
+            );
+        }
     }
     assert!(
         setup
@@ -886,4 +902,120 @@ async fn proposal_must_extend_the_queue_by_exactly_one_nonce() {
         accepted.delta.prev_commitment, setup.expected_queue_commitments[0],
         "pinned to the tail"
     );
+}
+
+#[tokio::test]
+async fn deltas_and_proposals_carry_the_nonce_they_leave_the_account_at() {
+    // The default depth: the head is where every account starts.
+    let mut setup = queue_setup(1).await;
+    assert_eq!(
+        setup
+            .state
+            .storage
+            .pull_state(&setup.account_id)
+            .await
+            .expect("state readable")
+            .nonce,
+        Some(0),
+        "the registered state stores its account nonce"
+    );
+
+    // A delta that leaves the account at nonce 1, labelled otherwise: the
+    // base's own nonce, a gap, a timestamp, and labels Postgres would store
+    // as negative. None is stored, and nothing is queued.
+    for label in [0, 2, 1_790_941_600_874, i64::MAX as u64 + 1, u64::MAX] {
+        let mut delta = setup.queue_delta(1);
+        delta.nonce = label;
+        let refused = setup
+            .push(delta)
+            .await
+            .expect_err("a mislabelled head delta is refused");
+        assert!(
+            matches!(&refused, GuardianError::InvalidDelta(message)
+                if message.contains(&format!("delta nonce {label} "))
+                    && message.contains("account nonce 1 ")),
+            "label {label}: expected InvalidDelta naming nonce 1, got {refused:?}"
+        );
+    }
+    assert!(setup.deltas().await.is_empty(), "no delta row is written");
+    assert!(!setup.has_pending_candidate().await, "nothing is queued");
+
+    // A proposal on the head under any label but the next nonce is refused
+    // before anyone signs it; the next nonce is recorded on the head.
+    for nonce in [0, 2, 1_790_941_600_874] {
+        let creds = setup.credentials();
+        let refused = push_delta_proposal(
+            &setup.state,
+            PushDeltaProposalParams {
+                account_id: setup.account_id.clone(),
+                nonce,
+                delta_payload: proposal_payload(&setup.queue_delta(1), "mislabelled"),
+                credentials: creds,
+            },
+        )
+        .await
+        .expect_err("a mislabelled head proposal is refused");
+        assert!(
+            matches!(&refused, GuardianError::InvalidDelta(message)
+                if message.contains("next nonce 1")),
+            "nonce {nonce}: expected InvalidDelta naming nonce 1, got {refused:?}"
+        );
+    }
+    assert!(
+        setup
+            .state
+            .storage
+            .pull_pending_proposals(&setup.account_id)
+            .await
+            .expect("proposals readable")
+            .is_empty(),
+        "nothing is stored for cosigners to sign"
+    );
+    let creds = setup.credentials();
+    let recorded = push_delta_proposal(
+        &setup.state,
+        PushDeltaProposalParams {
+            account_id: setup.account_id.clone(),
+            nonce: 1,
+            delta_payload: proposal_payload(&setup.queue_delta(1), "the next nonce"),
+            credentials: creds,
+        },
+    )
+    .await
+    .expect("the next nonce is recorded");
+    assert_eq!(recorded.delta.prev_commitment, setup.initial_commitment);
+
+    // The correctly labelled delta is admitted at the head.
+    let head = setup
+        .push(setup.queue_delta(1))
+        .await
+        .expect("the nonce the delta leaves the account at is admitted");
+    assert_eq!(head.nonce, 1);
+    assert_eq!(
+        head.new_commitment.as_deref(),
+        Some(setup.expected_queue_commitments[0].as_str())
+    );
+
+    // Behind a queued candidate a mislabel is refused as invalid as well,
+    // not as a conflict the client would wait out.
+    let mut deep = queue_setup(4).await;
+    deep.push(deep.queue_delta(1))
+        .await
+        .expect("the head is queued");
+    let mut successor = deep.queue_delta(2);
+    successor.nonce = 1_790_941_600_874;
+    let refused = deep
+        .push(successor)
+        .await
+        .expect_err("a mislabelled successor is refused");
+    assert!(
+        matches!(&refused, GuardianError::InvalidDelta(message)
+            if message.contains("account nonce 2 ")),
+        "expected InvalidDelta naming nonce 2, got {refused:?}"
+    );
+    let chained = deep
+        .push(deep.queue_delta(2))
+        .await
+        .expect("the correctly labelled successor is admitted");
+    assert_eq!(chained.nonce, 2);
 }
