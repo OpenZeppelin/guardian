@@ -405,11 +405,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Proposals and deltas carry the nonce the transaction leaves the
         // account at, one past the account's current nonce; GUARDIAN
         // refuses any other label.
+        // The proposal also names the state the summary was built on; with
+        // candidates queued, GUARDIAN records it only on the queue tail.
         let next_nonce = account.nonce().as_canonical_u64() + 1;
         let proposal_payload = serde_json::json!({
             "tx_summary": tx_summary_json,
             "signatures": [],
-            "metadata": { "proposal_type": "add_signer" }
+            "metadata": { "proposal_type": "add_signer" },
+            "base_commitment": format!("0x{}", hex::encode(account.to_commitment().as_bytes())),
         });
         let proposal_id = match guardian_client2
             .push_delta_proposal(&account_id, next_nonce, proposal_payload)

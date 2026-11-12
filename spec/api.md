@@ -186,8 +186,8 @@ approval prompts: the wallet still signs every transaction summary.
   4 `GET /delta/since`, 5 `GET /delta/history`, 6 `GET /delta/proposal`,
   7 `GET /delta/proposal/single`, 8 `POST /delta`, 9 `POST /delta/proposal`,
   10 `PUT /delta/proposal`, 11 `POST /delta/proposal/execution`,
-  12 `GET /delta/proposal/execution`, 13 `GET /delta/execution/current` (the
-  gRPC twins share the ids). Guardian derives both from the request it
+  12 `GET /delta/proposal/execution`, 13 `GET /delta/execution/current`,
+  14 `GET /state/tail` (the gRPC twins share the ids). Guardian derives both from the request it
   received, never from a header, so a signature made for one route or
   transport never verifies on another, even when the payloads serialize to
   the same bytes. Test vectors:
@@ -252,7 +252,7 @@ approval prompts: the wallet still signs every transaction summary.
   no session can use it any more: `GUARDIAN_SESSION_MAX_TTL_SECONDS` plus twice the skew window
   after its last request.
 - **Routes.** Session credentials are accepted only on the session-eligible
-  routes: `GET /state`, `GET /state/nonce`, `GET /delta`, `GET /delta/since`,
+  routes: `GET /state`, `GET /state/nonce`, `GET /state/tail`, `GET /delta`, `GET /delta/since`,
   `GET /delta/history`, `GET /delta/proposal`, `GET /delta/proposal/single`,
   `GET /delta/proposal/execution`, `GET /delta/execution/current`,
   `POST /delta/proposal`, `PUT /delta/proposal`, `POST /delta` and
@@ -481,6 +481,33 @@ bytes, and refuses a request that does not decode (`GUARDIAN_EXECUTION_REQUEST_C
 not reproduce the signed summary (`GUARDIAN_EXECUTION_BINDING_MISMATCH`). A self-executed proposal omits the field, so its wire shape is unchanged, and the
 proposal id is the summary commitment either way.
 
+A proposal may name the state its summary was built on (issue #517):
+
+```json
+{
+  "base_commitment": "0x<64 hex>"
+}
+```
+
+`POST /delta/proposal` classifies it against the candidate queue as `POST /delta` classifies a
+delta's `prev_commitment`: the queue tail (the canonical state when nothing is queued) is recorded;
+the canonical state or a non-tail candidate's post-state while a later candidate already claimed it
+is `409 conflict_pending_delta` (build on `GET /state/tail`, or wait for the queue to drain); any
+other state is `400 commitment_mismatch` against the canonical commitment. A value that is not a
+`0x`-prefixed 32-byte hex string is `400 invalid_delta`. Without it the proposal is judged by its
+nonce alone, which cannot tell the tail from a sibling state at the tail's nonce. Both multisig SDKs
+send it from 0.19.0 for every proposal they build (not for a summary the caller supplies). It travels
+in the payload rather than as a request field because a server before 0.19.0 rebuilds the signed
+request from the fields it knows: a new request field would fail authentication there, while a
+payload key is signed and stored unchanged (and ignored). It is stored with the payload, and the
+recorded `prev_commitment` is the same state.
+
+Every proposal, with or without a base, is recorded pinned to the tail the request read, and the
+storage admission checks that pin again under the account lock candidates are admitted under: a
+candidate admitted after the read, or one that left the queue, moved the tail, and the proposal is
+refused with `409 conflict_pending_delta` rather than stored on a state its delta could never build
+on. Read the tail again and rebuild.
+
 Only the single-proposal reads (`GET /delta/proposal/single`, `GetDeltaProposal`) and the
 create and sign responses return `transaction_request`. Listings (`GET /delta/proposal`,
 `GetDeltaProposals`) omit it on both transports: each request may be as large as
@@ -663,6 +690,7 @@ component schemas.
 | client | `GET /delta/history` | signed headers | Paginated canonical delta history with decoded note summaries |
 | client | `GET /state` | signed headers | Latest canonical state |
 | client | `GET /state/nonce` | signed headers | Nonce and commitment of the latest canonical state (sync pre-check) |
+| client | `GET /state/tail` | signed headers | The candidate queue tail a new delta or proposal must build on, and the queued candidates that lead to it |
 | client | `GET /state/lookup` | lookup signing (PoP) | Resolve a key commitment to account IDs |
 | client | `GET /pubkey` | public | ACK public key / commitment for `?scheme=falcon\|ecdsa` (default `falcon`) |
 | client | `GET /status` | public | Server liveness, version, environment, uptime, execution capability, session parameters |
@@ -751,6 +779,44 @@ Semantics not captured by the OpenAPI shapes:
   before the server kept nonces is decoded on its first read and its
   nonce stored; if that state no longer decodes to an account, the call
   is `account_data_unavailable` (503) rather than a nonce of 0.
+  EVM-configured accounts are rejected with `unsupported_for_network`.
+- **`GET /state/tail`.** The state a new delta or proposal must build on
+  (issue #517): `{ "state": <StateObject>, "queue": [{ "nonce",
+  "prev_commitment", "new_commitment" }], "accepts_submissions": <bool> }`. With
+  `GUARDIAN_MAX_PENDING_CANDIDATES_PER_ACCOUNT` above 1 a submission must
+  build on the queue tail, the post-state of the newest queued candidate,
+  which `GET /state` does not serve; this read replays the queued candidates
+  onto the canonical state and serves the result in `state`, shaped as
+  `GET /state` serves a state (`updated_at` is when the newest candidate was
+  queued). `queue` lists the candidates oldest first: the first builds on the
+  canonical state, each later one on the one before it, and the last one's
+  `new_commitment` is `state.commitment`. With nothing queued, `state` is the
+  canonical state and `queue` is empty. `accepts_submissions` is false
+  while a delta or proposal built on the tail would be refused with `409
+  conflict_pending_delta`: the queue is full (at the default depth of 1,
+  whenever anything is queued), the tail changes the signer set or the
+  guardian key, or its newest candidate was queued by a server before 0.19.0
+  under a label other than its nonce. A client then waits for the queue to
+  drain and reads again rather than build. True holds only for this read:
+  the tail can move before the push, and the account's status and the
+  proposal limits still apply. The tail is not on chain until the
+  queued candidates land; a client can check that the chain sits at the
+  canonical state or one of the queued post-states before building on it,
+  and if a queued candidate never lands, everything built on the tail is
+  abandoned with it. Authorized like `GET /state`, by the canonical state's
+  signers (requests are authorized against the canonical metadata until a
+  candidate promotes; nothing queues behind a candidate that changes the
+  signer set or the guardian key, so only the newest candidate can change
+  them). Each read replays the queue, one delta application per queued
+  candidate on the server's reconstruction pool, so it is a read to make
+  before building on the account, not a poll; `GET /state/nonce` is the poll.
+  A queue that does not chain from the canonical state (a candidate left it
+  and the worker has not swept its successors yet) or whose replay does not
+  reproduce the stored tail has no tail to serve and is refused with `409
+  conflict_pending_delta` until it drains. A separate route rather than a
+  `/state` parameter so that a server before 0.19.0 answers 404 (gRPC
+  `UNIMPLEMENTED`), not `authentication_failed` for a signature over a
+  query it does not know. Read-only: served while the account is paused.
   EVM-configured accounts are rejected with `unsupported_for_network`.
 - **`/state/lookup`.** An empty `accounts` list is a successful response,
   not a 404 — distinguishing "no account" from "wrong key" would leak
@@ -891,6 +957,7 @@ The gRPC surface mirrors the Miden state/delta methods. EVM account registration
 - `GetDelta(GetDeltaRequest) -> GetDeltaResponse`
 - `GetDeltaSince(GetDeltaSinceRequest) -> GetDeltaSinceResponse`
 - `GetState(GetStateRequest) -> GetStateResponse`
+- `GetStateTail(GetStateTailRequest) -> GetStateTailResponse`
 - `GetPubkey(GetPubkeyRequest) -> GetPubkeyResponse`
 - `PushDeltaProposal(PushDeltaProposalRequest) -> PushDeltaProposalResponse`
 - `GetDeltaProposals(GetDeltaProposalsRequest) -> GetDeltaProposalsResponse`

@@ -6,9 +6,10 @@ use crate::{
     AccountRef, AccountState, AuthConfig, ClientError, ConfigureResponse, FalconKeyStore,
     GetAccountByKeyCommitmentResponse, GetCanonicalNonceResponse, GetDeltaHistoryResponse,
     GetDeltaProposalResponse, GetDeltaProposalsResponse, GetDeltaResponse, GetDeltaSinceResponse,
-    GetStateResponse, GuardianClient, HistoryEntry, HistoryNote, HistoryNoteAsset, MAX_SESSION_TTL,
-    MIN_SESSION_TTL, MidenFalconRpoAuth, PushDeltaProposalResponse, PushDeltaResponse,
-    SignDeltaProposalResponse, Signer, StartSessionOptions,
+    GetStateResponse, GetStateTailResponse, GuardianClient, HistoryEntry, HistoryNote,
+    HistoryNoteAsset, MAX_SESSION_TTL, MIN_SESSION_TTL, MidenFalconRpoAuth,
+    PushDeltaProposalResponse, PushDeltaResponse, QueuedCandidate, SignDeltaProposalResponse,
+    Signer, StartSessionOptions,
 };
 use guardian_shared::ProposalSignature as JsonProposalSignature;
 use guardian_shared::hex::FromHex;
@@ -732,6 +733,105 @@ async fn test_get_canonical_nonce_defaults_to_the_persistent_state() {
 
     assert_eq!(response.commitment, "0xfeed");
     assert_eq!(response.nonce, 0, "non-account blobs derive nonce 0");
+}
+
+#[tokio::test]
+async fn test_get_state_tail_returns_the_tail_and_the_queue_behind_it() {
+    let tail_state = AccountState {
+        commitment: "0xc1".to_string(),
+        ..create_mock_account_state()
+    };
+    let service = MockGuardianService::default().with_get_state_tail(Ok(GetStateTailResponse {
+        success: true,
+        message: String::new(),
+        state: Some(tail_state.clone()),
+        queue: vec![QueuedCandidate {
+            nonce: 5,
+            prev_commitment: "0xc0".to_string(),
+            new_commitment: "0xc1".to_string(),
+        }],
+        error_code: String::new(),
+        accepts_submissions: true,
+    }));
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let response = client
+        .get_state_tail(&create_test_account_id())
+        .await
+        .expect("the tail is served");
+
+    assert_eq!(response.state, Some(tail_state));
+    assert_eq!(response.queue.len(), 1);
+    assert_eq!(response.queue[0].nonce, 5);
+    assert_eq!(response.queue[0].new_commitment, "0xc1");
+    assert!(response.accepts_submissions);
+}
+
+/// A server before 0.19.0 has no `GetStateTail`: the call fails with the
+/// gRPC status, not as a refused signature.
+#[tokio::test]
+async fn test_get_state_tail_on_an_older_server_is_unimplemented() {
+    let endpoint = start_mock_server(MockGuardianService::default())
+        .await
+        .unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    let error = client
+        .get_state_tail(&create_test_account_id())
+        .await
+        .expect_err("an older server cannot serve the tail");
+
+    assert!(
+        matches!(&error, ClientError::Status(status) if status.code() == tonic::Code::Unimplemented),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_get_state_tail_is_signed_by_an_active_session() {
+    let service = MockGuardianService::default()
+        .with_get_pubkey(Ok(TEST_GUARDIAN_COMMITMENT.to_string()))
+        .with_get_state_tail(Ok(GetStateTailResponse {
+            success: true,
+            message: String::new(),
+            state: Some(create_mock_account_state()),
+            queue: vec![],
+            error_code: String::new(),
+            accepts_submissions: true,
+        }));
+    let request_auth = service.get_state_tail_auth_formats_handle();
+    let endpoint = start_mock_server(service).await.unwrap();
+    let mut client = GuardianClient::connect(endpoint)
+        .await
+        .unwrap()
+        .with_signer(create_test_signer());
+
+    client
+        .get_state_tail(&create_test_account_id())
+        .await
+        .unwrap();
+    assert_eq!(
+        request_auth.lock().unwrap().last().unwrap().0,
+        "",
+        "the wallet signs while no session is active"
+    );
+
+    let info = client.start_session(session_options()).await.unwrap();
+    client
+        .get_state_tail(&create_test_account_id())
+        .await
+        .unwrap();
+    assert_eq!(
+        request_auth.lock().unwrap().last().unwrap(),
+        &("session-v2".to_string(), info.session_public_key.clone())
+    );
 }
 
 #[tokio::test]

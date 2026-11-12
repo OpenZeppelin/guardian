@@ -629,6 +629,9 @@ pub struct MockStorageBackend {
     pub backfill_state_nonce_calls: Arc<StdMutex<Vec<(String, String, u64)>>>,
     /// Makes `admit_delta_proposal` report the proposal as already stored.
     pub admit_already_stored: Arc<std::sync::atomic::AtomicBool>,
+    /// Makes `admit_delta_proposal` report that the queue tail moved under
+    /// the account lock (`ProposalWrite::TailMoved`).
+    pub admit_tail_moved: Arc<std::sync::atomic::AtomicBool>,
     /// Stored commitments by account id, served by
     /// `pull_state_commitments_batch` (accounts not listed have no state).
     pub state_commitments: Arc<StdMutex<std::collections::HashMap<String, String>>>,
@@ -884,6 +887,12 @@ impl MockStorageBackend {
 
     pub fn with_admit_already_stored(self) -> Self {
         self.admit_already_stored
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self
+    }
+
+    pub fn with_admit_tail_moved(self) -> Self {
+        self.admit_tail_moved
             .store(true, std::sync::atomic::Ordering::SeqCst);
         self
     }
@@ -1498,6 +1507,12 @@ impl StorageBackend for MockStorageBackend {
             .load(std::sync::atomic::Ordering::SeqCst)
         {
             return Ok(crate::storage::ProposalWrite::AlreadyStored);
+        }
+        if self
+            .admit_tail_moved
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Ok(crate::storage::ProposalWrite::TailMoved);
         }
         let viable = self
             .pull_pending_proposals(&admission.proposal.account_id)

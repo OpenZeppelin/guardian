@@ -117,6 +117,7 @@ CONSTANTS
     MaxSummaries = $proposals
     MaxPending = $depth
     Labels = {"nonce", "timestamp"}
+    NamesBase = {TRUE, FALSE}
     Supersede = TRUE
 $checks
 EOF

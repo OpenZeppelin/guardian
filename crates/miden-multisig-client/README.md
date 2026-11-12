@@ -292,7 +292,8 @@ let tx = TransactionType::transfer_p2ide(
     },
 );
 
-// Proposer creates the delta on GUARDIAN
+// Proposer creates the delta on GUARDIAN, labelled with the account's next
+// nonce and naming the state the summary was built on (`base_commitment`)
 let proposal = client.propose_transaction(tx).await?;
 
 // Second cosigner lists available proposals and signs the matching one
@@ -306,6 +307,19 @@ client.sign_proposal(&to_sign.id).await?;
 // Once threshold is met, any cosigner can execute
 client.execute_proposal(&proposal.id).await?;
 ```
+
+Every proposal the builders push names the account state its summary was built
+on (`ProposalPayload::base_commitment`, issue #517): the client's cached account
+(`MultisigClient::account`, which `sync` and each execution refresh from the
+store the summary is executed on), which the nonce label comes from too; should
+the two ever differ, the proposal is refused, by GUARDIAN or by the pin guard at
+execution. GUARDIAN 0.19.0 and later
+record it only when that state is the tail of the account's candidate queue,
+refusing a base another queued candidate claimed with `conflict_pending_delta`
+and an unknown one with `commitment_mismatch`. The SDK does not build on
+another device's queued candidates (the base client's `get_state_tail` serves
+them), so while one is queued a proposal built here waits for the queue to
+drain.
 
 ### Changing the signer set or the threshold
 

@@ -70,6 +70,8 @@ export type {
   DeltaObject,
   ExecutionDelta,
   StateObject,
+  StateTail,
+  QueuedCandidate,
   ProposalType,
   ProposalMetadata,
   ConfigureRequest,

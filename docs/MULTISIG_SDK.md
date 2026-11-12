@@ -1236,9 +1236,22 @@ Every `create*Proposal` method takes a single trailing options object (issue
 (defaults to the store account's nonce plus one, the nonce the executed
 transaction will have, as the Rust SDK labels proposals; through 0.18.0
 the default was `Date.now()`). GUARDIAN records a proposal only at the
-account's next nonce and refuses any other with `invalid_delta` (from server
-0.19.0, issue #518), so pass `nonce` only to label from another record of the
-account's nonce; method-specific options are listed with each method below. Passing a legacy positional `nonce` number where the options
+account's next nonce (from server 0.19.0, issue #518): a label at or below a
+queued candidate's nonce is refused with `conflict_pending_delta` (wait for the
+queue to drain), any other with `invalid_delta`. So pass `nonce` only to label
+from another record of the account's nonce; method-specific options are listed
+with each method below.
+Each also sends the commitment of the store account the summary was built on
+as the payload's `base_commitment` (issue #517), which GUARDIAN 0.19.0 and later
+check is the candidate queue's tail: a base another queued candidate claimed
+is refused with `conflict_pending_delta`, an unknown one with
+`commitment_mismatch`. `createProposal(nonce, summary, metadata)` sends none,
+since its caller built the summary. The Rust SDK's proposal builders send it
+too, taking the base and the label from the client's cached account
+(`MultisigClient::account`, which `sync` and each execution refresh from the
+store the summary is executed on); should the two ever differ, the proposal
+is refused, by GUARDIAN or by the SDK's pin guard at execution, never executed
+on another state. Passing a legacy positional `nonce` number where the options
 object is expected throws instead of silently applying defaults.
 
 All of them also accept `signOnCreate` (default `false`); the raw

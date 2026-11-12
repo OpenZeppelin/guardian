@@ -5987,15 +5987,51 @@ it('completes a switch when the GUARDIAN it leaves cannot log the session out', 
       expect(proposalPushes().map((push) => push.nonce)).toEqual([1]);
     });
 
-    it('keeps an explicit nonce without reading the account for it', async () => {
+    it('keeps an explicit nonce, still naming the state the summary was built on', async () => {
       const multisig = createTestMultisig(config);
       mockFetch.mockResolvedValueOnce(acceptedAt(7));
+      // The signer config refresh reads the store first, then the label.
+      mockWebClient.accounts.get
+        .mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 41))
+        .mockResolvedValueOnce(mockedAccount(LOCAL_ACCOUNT_COMMITMENT, 41));
 
       await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 7 });
 
-      expect(proposalPushes().map((push) => push.nonce)).toEqual([7]);
-      // The one store read is the signer config refresh, not the nonce.
-      expect(mockWebClient.accounts.get).toHaveBeenCalledTimes(1);
+      const [push] = proposalPushes();
+      expect(push.nonce).toBe(7);
+      expect(push.delta_payload.base_commitment).toBe(LOCAL_ACCOUNT_COMMITMENT);
+    });
+
+    it('names the store account a built summary was built on as its base (#517)', async () => {
+      const multisig = createTestMultisig(config);
+      const builtOn = '0x' + 'D'.repeat(64);
+      mockWebClient.accounts.get
+        .mockResolvedValueOnce(mockedAccount(builtOn, 41))
+        .mockResolvedValueOnce(mockedAccount(builtOn, 41));
+      mockFetch.mockResolvedValueOnce(acceptedAt(42));
+
+      await multisig.createP2idProposal('0xrecipient', '0xfaucet', 100n);
+
+      const [push] = proposalPushes();
+      expect(push.nonce).toBe(42);
+      expect(push.delta_payload.base_commitment).toBe('0x' + 'd'.repeat(64));
+    });
+
+    it('names no base for a summary its caller built', async () => {
+      const multisig = createTestMultisig(config);
+      mockFetch.mockResolvedValueOnce(acceptedAt(7));
+
+      await multisig.createProposal(7, 'AQID', {
+        proposalType: 'p2id',
+        recipientId: '0xrecipient',
+        faucetId: '0xfaucet',
+        amount: '100',
+        description: '',
+      }).catch(() => undefined);
+
+      const [push] = proposalPushes();
+      expect(push.nonce).toBe(7);
+      expect('base_commitment' in push.delta_payload).toBe(false);
     });
 
     it('refuses to label when the next nonce does not fit a safe integer', async () => {
@@ -6049,6 +6085,9 @@ it('completes a switch when the GUARDIAN it leaves cannot log the session out', 
       const proposal = await multisig.createSwitchGuardianProposal('http://new-guardian.com', newGuardianPubkey);
 
       expect(proposal.metadata?.proposalType).toBe('switch_guardian');
+      expect(pushesTo('/delta/proposal').at(-1).delta_payload.base_commitment).toMatch(
+        /^0x[0-9a-f]{64}$/,
+      );
       if (proposal.metadata?.proposalType === 'switch_guardian') {
         expect(proposal.metadata.newGuardianEndpoint).toBe('http://new-guardian.com');
       }
@@ -10441,6 +10480,9 @@ it('completes a switch when the GUARDIAN it leaves cannot log the session out', 
       expect(mockWebClient.notes.get).toHaveBeenCalledWith(noteId);
       expect(order).toEqual(['authenticate', 'summary']);
       expect(pushesTo('/delta/proposal').at(-1).delta_payload.metadata.bound_block_num).toBe(MOCK_BOUND_BLOCK_NUM);
+      expect(pushesTo('/delta/proposal').at(-1).delta_payload.base_commitment).toMatch(
+        /^0x[0-9a-f]{64}$/,
+      );
     });
 
     it('judges a consume_notes proposal by the signer config after note authentication', async () => {
@@ -11211,6 +11253,16 @@ it('completes a switch when the GUARDIAN it leaves cannot log the session out', 
       ['p2id', (m) => m.createP2idProposal('0xrecipient', '0xfaucet', 100n, { nonce: 1 })],
       ['custom', (m) => m.createCustomProposal(new Uint8Array([1]), 'b2agg', { nonce: 1 })],
     ];
+
+    it.each(creators)('%s names the account it was built on as its base (#517)', async (_type, create) => {
+      echoProposalPushes();
+      const multisig = createTestMultisig(config);
+      const builtOn = (await multisig.getStoreAccount()).to_commitment().toHex();
+      await create(multisig);
+
+      const [pushed] = pushesTo('/delta/proposal');
+      expect(pushed.delta_payload.base_commitment).toBe(builtOn.toLowerCase());
+    });
 
     it.each(creators)('%s writes bound_block_num and no chain_anchor', async (_type, create) => {
       echoProposalPushes();

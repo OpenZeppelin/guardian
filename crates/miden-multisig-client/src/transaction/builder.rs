@@ -391,6 +391,7 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
@@ -502,6 +503,8 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
+
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
@@ -620,6 +623,7 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
@@ -720,6 +724,7 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
@@ -849,6 +854,7 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
@@ -946,6 +952,7 @@ impl ProposalBuilder {
 
         // Push proposal to GUARDIAN
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
@@ -1023,6 +1030,8 @@ impl ProposalBuilder {
             .with_required_signatures(required_signatures);
 
         let nonce = account.nonce() + 1;
+        let payload = payload.with_base_commitment(account.commitment());
+
         let response = guardian_client
             .push_delta_proposal(&account_id, nonce, &payload.to_json())
             .await
