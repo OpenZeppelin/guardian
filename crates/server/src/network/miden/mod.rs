@@ -108,7 +108,7 @@ impl MidenNetworkClient {
         };
         rpc::get_account_request::AccountDetailRequest {
             code_commitment: None,
-            asset_vault_commitment: None,
+            vault_request: None,
             storage_request: Some(StorageRequest::StorageMaps(StorageMapDetailRequests {
                 storage_maps: vec![StorageMapDetailRequest {
                     slot_name: guardian_public_key_slot_name().to_string(),
@@ -1745,7 +1745,7 @@ mod tests {
         use rpc::get_account_request::account_detail_request::storage_map_detail_request::SlotData;
         let request = MidenNetworkClient::guardian_map_detail_request();
         assert!(request.code_commitment.is_none());
-        assert!(request.asset_vault_commitment.is_none());
+        assert!(request.vault_request.is_none());
         let Some(StorageRequest::StorageMaps(maps)) = request.storage_request else {
             panic!("expected an explicit storage-map selection");
         };

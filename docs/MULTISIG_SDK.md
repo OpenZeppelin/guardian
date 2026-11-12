@@ -27,14 +27,14 @@ The multisig sdk has as peer dependency on the miden-sdk, you will need to insta
 
 **TypeScript (npm)**
 ```bash
-npm install @openzeppelin/miden-multisig-client@0.19.0-rc.1 @miden-sdk/miden-sdk@0.17.3
+npm install @openzeppelin/miden-multisig-client@0.19.0-rc.2 @miden-sdk/miden-sdk@0.17.8
 ```
 
 **Rust (Cargo.toml)**
 ```toml
 [dependencies]
-miden-multisig-client = "=0.19.0-rc.1"
-miden-client = "=0.17.3"
+miden-multisig-client = "=0.19.0-rc.2"
+miden-client = "=0.18.0"
 ```
 
 ### 5-Minute Example
@@ -713,8 +713,11 @@ What the mode changes, identically in both SDKs:
   budget for proving plus sending, whoever executes. Both bounds are bound by the summary, so
   the same effects create a **different** proposal in each mode.
 - **The stored request.** `transaction_request` carries the serialized request in an envelope
-  tagged with the protocol line (`0.17`). The server must run the same `miden-client` as the SDK
-  that wrote it to decode it. It does not change the proposal id.
+  tagged with the SDK's protocol line (`0.18` from the Rust SDK, `0.17` from the TypeScript
+  SDK). The server executes both lines; it must decode the layout the SDK wrote, which the two
+  lines share (see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#rust-on-miden-018-typescript-on-miden-017-0190)).
+  It does not change the proposal id.
 - **Pinned consume-notes.** Every consumed note is stored with its inclusion proof, so Guardian
   consumes it in the same mode the cosigners signed, whatever its own store holds.
 - **Custom proposals.** `propose_custom_transaction` / `createCustomProposal` store the
@@ -879,7 +882,7 @@ clients have no worker and are unaffected.
 
 #### Cedar
 
-`@miden-sdk/miden-sdk` 0.17.3 has no Cedar preset and no `'cedar'` shorthand,
+`@miden-sdk/miden-sdk` 0.17.8 has no Cedar preset and no `'cedar'` shorthand,
 so a Cedar client names its endpoints explicitly:
 
 ```typescript
@@ -905,7 +908,7 @@ not know Cedar, so its `Client::network_id()` returns the generic custom id
 
 #### Mainnet
 
-`@miden-sdk/miden-sdk` 0.17.3 has no `createMainnet()` preset and no
+`@miden-sdk/miden-sdk` 0.17.8 has no `createMainnet()` preset and no
 `'mainnet'` shorthand for `rpcUrl`, `proverUrl`, or `noteTransportUrl` either,
 so a mainnet client names its endpoints the same way:
 
@@ -1929,19 +1932,19 @@ flag.
 
 #### The transport-drain strategy
 
-The note transport keeps one cursor per tracked note tag, and a tag
-without one is served from the first retained note. A recovered account's
-tag has no cursor yet, on a fresh device and in a store shared with other
-accounts alike, so its whole retained backlog is fetched. Each transport
-fetch reads a bounded number of pages; the drain keeps fetching until a
-fetch moves no tag's cursor, at most 64 fetches. A fetch whose pages hold
-only notes the store already has, or notes no tracked account can consume,
-still moves the cursor, so a store upgraded from 0.18.0 (whose tags all
-restart from the first retained note) walks past the history it holds to
-the notes behind it. It is idempotent: imports dedupe and cursors only move
-forward. A backlog whose cursors still move after 64 fetches is reported
-`failed` with `retryable: true`, and a rerun continues from the stored
-cursors.
+The note transport keeps one cursor together with the tags it covers, and
+a tag outside that set is served from the first retained note. A recovered
+account's tag is not covered yet, on a fresh device and in a store shared
+with other accounts alike, so its whole retained backlog is fetched. One
+transport fetch reads every tracked tag, page by page, up to the transport's
+head at its first request, so the drain is a single fetch: when it succeeds,
+every note the transport held for the tracked tags at that point that a
+tracked account can consume is in the store. Notes the store already has,
+and notes no tracked account can consume, are walked past. It is idempotent:
+imports dedupe and
+the cursor only moves forward. This is `miden-client` 0.18 behavior; the
+TypeScript SDK, on the 0.17 web SDK, still keeps one cursor per tag and
+drains in bounded passes, as its guide above describes.
 
 Transport problems land in `report.transport`, never as errors:
 `Unavailable` means no transport endpoint is configured or the transport
@@ -2549,8 +2552,10 @@ The exact versions for each Guardian release are in
 [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#support-matrix); they are not
 repeated here so there is one place to update.
 
-The pins are deliberate and must move together: nothing at build time verifies the
-npm SDK's embedded miden-standards matches the Rust pin — the CI parity gates
+The pins are deliberate. From Guardian 0.19.0-rc.2 the Rust pin is on Miden 0.18 and
+the npm pin on Miden 0.17, two lines whose guarded-multisig component is the same.
+Nothing at build time verifies the npm SDK's embedded miden-standards builds the same
+account as the Rust pin, so the CI parity gates
 (`procedure_roots_match_upstream_component`, the vitest `procedure-roots` test, and
 the Playwright determinism spec) are what catch drift.
 

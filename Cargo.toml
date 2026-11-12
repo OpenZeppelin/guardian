@@ -25,7 +25,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.19.0-rc.1"
+version = "0.19.0-rc.2"
 edition = "2024"
 rust-version = "1.98.1"
 authors = ["OpenZeppelin"]
@@ -78,14 +78,17 @@ chrono = "0.4"
 # parameter inference for axum `Query`/`Path` extractors.
 utoipa = { version = "5", features = ["axum_extras"] }
 
-# Miden 0.17 line: exact pins only. Must match the versions embedded in
-# the @miden-sdk/miden-sdk WASM build, or the two clients compute different
-# transaction summary commitments and auth procedure roots.
-miden-protocol = "=0.17.1"
-miden-standards = "=0.17.1"
-miden-tx = "=0.17.1"
-miden-node-proto-build = { version = "=0.17.3", default-features = false }
-miden-testing = "=0.17.1"
-miden-client = "=0.17.3"
-miden-client-sqlite-store = "=0.17.3"
-miden-processor = "=0.35.0"
+# Miden pins: exact only. The Rust workspace is on the 0.18 line; the
+# TypeScript SDK stays on @miden-sdk/miden-sdk 0.17.8 until a 0.18 web SDK
+# ships. The two lines share account code, procedure roots and multisig auth
+# args, which the determinism vectors and the browser parity gate check. A
+# pin on either side that changes them makes the two clients compute
+# different transaction summary commitments and auth procedure roots.
+miden-protocol = "=0.18.0"
+miden-standards = "=0.18.0"
+miden-tx = "=0.18.0"
+miden-node-proto-build = { version = "=0.18.2", default-features = false }
+miden-testing = "=0.18.0"
+miden-client = "=0.18.0"
+miden-client-sqlite-store = "=0.18.0"
+miden-processor = "=0.36.4"

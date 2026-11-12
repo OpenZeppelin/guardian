@@ -90,11 +90,12 @@ export const NODE_RPC_FRAGMENT = 'grpc request failed';
  */
 export const NODE_CONNECT_FRAGMENT = 'failed to connect to the Miden node';
 /**
- * Mirror of the Rust SDK's `MAX_DRAIN_PASSES`: upper bound on transport
- * fetches one drain runs. Each fetch reads up to 32 pages per request group
- * of up to 128 tags; a backlog whose cursors still move after this many
- * fetches is reported as a retryable failure, and the stored per-tag cursors
- * let the next drain or sync continue from there.
+ * Upper bound on transport fetches one drain runs. Each fetch reads up to 32
+ * pages per request group of up to 128 tags; a backlog whose cursors still
+ * move after this many fetches is reported as a retryable failure, and the
+ * stored per-tag cursors let the next drain or sync continue from there. The
+ * Rust SDK, on miden-client 0.18, has no such bound: one fetch there reads
+ * the whole backlog.
  */
 const MAX_DRAIN_PASSES = 64;
 

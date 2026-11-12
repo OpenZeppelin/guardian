@@ -225,7 +225,6 @@ mod tests {
 
     mod declared_bound_block {
         use miden_client::transaction::TransactionRequestBuilder;
-        use miden_protocol::crypto::SequentialCommit;
         use miden_standards::account::auth::MultisigAuthArgs;
 
         use super::super::{TransactionRequestBuilderExt, declared_bound_block};
@@ -253,11 +252,8 @@ mod tests {
         /// bound block. Refused by name instead of failing inside the VM.
         #[test]
         fn a_request_that_binds_a_block_without_declaring_it_is_refused() {
-            let auth_args = auth_args();
-            let commitment = auth_args.to_commitment();
             let request = TransactionRequestBuilder::new()
-                .auth_arg(commitment)
-                .extend_advice_map([(commitment, auth_args.to_elements())])
+                .auth_args(&auth_args())
                 .build()
                 .expect("request builds");
 

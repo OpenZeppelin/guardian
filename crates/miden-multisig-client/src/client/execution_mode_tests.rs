@@ -266,7 +266,7 @@ async fn a_guardian_executable_client_stores_a_request_that_reproduces_its_summa
 
     let envelope: TransactionRequestEnvelope =
         serde_json::from_value(proposed.payload["transaction_request"].clone()).unwrap();
-    assert_eq!(envelope.protocol_line, "0.17");
+    assert_eq!(envelope.protocol_line, "0.18");
     assert!(
         envelope.checksum.starts_with("0x")
             && envelope.checksum == envelope.checksum.to_lowercase()

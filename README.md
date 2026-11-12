@@ -8,12 +8,12 @@
 
 Warning: This is a work in progress.
 
-> **Miden version baseline**: the Rust workspace and the TypeScript
-> multisig SDK both track the stable **Miden v0.17** release with exact
-> pins (`miden-client` and `@miden-sdk/miden-sdk` 0.17.3,
-> `miden-protocol` / `miden-standards` 0.17.1). Run against a node on
-> protocol 0.17. Accounts, local stores, and networks from v0.16 do not
-> interoperate with v0.17; see [Troubleshooting](docs/TROUBLESHOOTING.md) and
+> **Miden version baseline**: exact pins on two adjacent lines that share
+> account code. The Rust workspace tracks **Miden v0.18** (`miden-client`,
+> `miden-protocol` and `miden-standards` 0.18.0); the TypeScript multisig
+> SDK tracks **Miden v0.17** (`@miden-sdk/miden-sdk` 0.17.8) until a 0.18
+> web SDK ships. Run against a node on 0.18, which serves both. Accounts,
+> local stores, and networks from v0.16 do not interoperate; see [Troubleshooting](docs/TROUBLESHOOTING.md) and
 > [Miden compatibility](docs/MIDEN_COMPATIBILITY.md).
 
 ### Documentation

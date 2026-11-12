@@ -332,7 +332,6 @@ mod tests {
             .expiration_delta(256)
             .ignore_invalid_input_notes()
             .script_arg(word(1))
-            .auth_arg(word(5))
             .fee_conversion_salt(word(9))
             .account_code_upgrade(code)
             .build()

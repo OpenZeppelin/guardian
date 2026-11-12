@@ -12,7 +12,12 @@ use crate::execution::ExecutionFailureCode;
 pub const ENVELOPE_FORMAT_VERSION: u32 = 1;
 
 /// The Miden protocol line requests are serialized for and executed on, as `MAJOR.MINOR`.
-pub const PROTOCOL_LINE: &str = "0.17";
+pub const PROTOCOL_LINE: &str = "0.18";
+
+/// The protocol lines whose serialized requests this reader executes: its own, and 0.17, which
+/// shares its account code and its `TransactionRequest` layout apart from public foreign account
+/// declarations. The TypeScript SDK stays on 0.17 until the web SDK ships a 0.18 build.
+pub const ACCEPTED_PROTOCOL_LINES: [&str; 2] = ["0.17", PROTOCOL_LINE];
 
 /// A serialized `TransactionRequest` stored with a Guardian-executable proposal. The bytes carry
 /// no `miden-client` version: a request that does not decode is refused, and one that decodes to
@@ -59,7 +64,8 @@ impl std::fmt::Display for EnvelopeRejection {
             }
             EnvelopeRejection::ProtocolLineMismatch { declared } => write!(
                 f,
-                "request serialized for Miden {declared}, this server executes {PROTOCOL_LINE}"
+                "request serialized for Miden {declared}, this server executes {}",
+                ACCEPTED_PROTOCOL_LINES.join(" and ")
             ),
         }
     }
@@ -80,7 +86,7 @@ impl TransactionRequestEnvelope {
     /// protocol line are ones this reader accepts.
     pub fn verified_bytes(&self) -> Result<Vec<u8>, EnvelopeRejection> {
         let bytes = self.intact_bytes()?;
-        if self.protocol_line != PROTOCOL_LINE {
+        if !ACCEPTED_PROTOCOL_LINES.contains(&self.protocol_line.as_str()) {
             return Err(EnvelopeRejection::ProtocolLineMismatch {
                 declared: self.protocol_line.clone(),
             });
@@ -148,7 +154,7 @@ mod tests {
     fn a_sealed_envelope_verifies_back_to_its_bytes() {
         let envelope = TransactionRequestEnvelope::seal(b"request");
         assert_eq!(envelope.format_version, 1);
-        assert_eq!(envelope.protocol_line, "0.17");
+        assert_eq!(envelope.protocol_line, "0.18");
         assert_eq!(envelope.verified_bytes().unwrap(), b"request");
         assert_eq!(envelope.stored_len().unwrap(), 7);
     }
@@ -194,8 +200,15 @@ mod tests {
     }
 
     #[test]
+    fn a_request_sealed_on_the_previous_compatible_line_is_accepted() {
+        let mut envelope = TransactionRequestEnvelope::seal(b"request");
+        envelope.protocol_line = "0.17".to_string();
+        assert_eq!(envelope.verified_bytes().unwrap(), b"request");
+    }
+
+    #[test]
     fn another_protocol_line_is_a_protocol_mismatch_compared_exactly() {
-        for declared in ["0.16", "0.17.0", "v0.17", "0.18"] {
+        for declared in ["0.16", "0.17.0", "v0.17", "0.18.0", "0.19"] {
             let mut envelope = TransactionRequestEnvelope::seal(b"request");
             envelope.protocol_line = declared.to_string();
             let rejection = envelope.verified_bytes().unwrap_err();
@@ -209,6 +222,12 @@ mod tests {
                 rejection.failure_code(),
                 ExecutionFailureCode::ProtocolMismatch
             );
+            assert_eq!(
+                rejection.to_string(),
+                format!(
+                    "request serialized for Miden {declared}, this server executes 0.17 and 0.18"
+                )
+            );
         }
     }
 
@@ -220,7 +239,10 @@ mod tests {
         .unwrap();
         let bytes = hex::decode(fixture["bytes_hex"].as_str().unwrap()).unwrap();
         let sealed = TransactionRequestEnvelope::seal(&bytes);
-        assert_eq!(serde_json::to_value(&sealed).unwrap(), fixture["sealed"]);
+        assert_eq!(
+            serde_json::to_value(&sealed).unwrap(),
+            fixture["sealed"][PROTOCOL_LINE]
+        );
 
         for case in fixture["cases"].as_array().unwrap() {
             let envelope: TransactionRequestEnvelope =

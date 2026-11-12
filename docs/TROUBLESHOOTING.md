@@ -16,7 +16,9 @@ example a 0.17 build against a 0.16 node, or the reverse) at the RPC
 boundary: the Miden client sends the genesis commitment with every request,
 so a version mismatch surfaces as a gRPC rejection when connecting or
 syncing, not as silent corruption. Point the client at a node running the
-line this build pins. The
+line this build pins. Node 0.18 is the exception: it serves 0.17 clients as
+well, so from Guardian 0.19.0-rc.2 the server and the Rust SDK (Miden 0.18)
+and the TypeScript SDK (web SDK 0.17.8) all point at a node on 0.18. The
 [compatibility matrix](./MIDEN_COMPATIBILITY.md#support-matrix) lists that
 line and the public networks running it; a local `miden-node` from that
 line is the fallback when none does.
@@ -825,7 +827,12 @@ once come back synchronously and create nothing.
   server upgrade.** Stored requests carry no `miden-client` version, and prerelease clients have
   changed the serialization. A proposal created by an SDK on a different `miden-client` than the
   server may not decode, or may decode to a different transaction, which execution refuses
-  before proving. Run the same `miden-client` on both sides, or execute the proposal from an SDK.
+  before proving. Create the proposal with an SDK whose `miden-client` writes the layout the
+  server reads, or execute the proposal from an SDK. From 0.19.0-rc.2 the Rust SDK and the
+  server are on Miden 0.18 and the TypeScript SDK on 0.17; the two layouts differ only for a
+  public foreign account declaration, which a custom proposal can carry, so create such a
+  proposal with the Rust SDK or execute it from an SDK (see
+  [`MIDEN_COMPATIBILITY.md`](./MIDEN_COMPATIBILITY.md#rust-on-miden-018-typescript-on-miden-017-0190)).
 - **An execution ends `GUARDIAN_EXECUTION_CANDIDATE_DISCARDED` while a cosigner's delta was
   parked on the same state.** A parked delta (`retained`, or client-abandoned) does not block
   execution: admission moves it to the superseded-delta archive. If its transaction lands
