@@ -130,7 +130,7 @@ Most startup failures are environment misconfiguration. Check in order:
 
 1. **`GUARDIAN_NETWORK_TYPE` unset, non-Unicode, or unrecognized.** The server exits
    before binding any port with
-   `Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
+   `Failed to configure server: Failed to resolve network type: GUARDIAN_NETWORK_TYPE is not set; accepted values: ...`
    (or `contains non-Unicode data` / `has unrecognized value "..."` for
    malformed values and typos like `tesnet`). There is no fallback network.
    Replace the variable with `MidenLocal`, `MidenDevnet`, `MidenTestnet`,

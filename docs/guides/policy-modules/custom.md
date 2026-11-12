@@ -10,7 +10,7 @@ Guardian cannot see. The same code runs both ways. Do the
 
 | | Over gRPC | In process |
 |---|---|---|
-| Runs | As its own service ([`note-policy-serve.rs`](../../../crates/guardian-module-sdk/examples/note-policy-serve.rs)) | Inside your server build ([`custom_module_server.rs`](../../../crates/server/examples/custom_module_server.rs)) |
+| Runs | As its own service ([`note-policy-serve.rs`](../../../crates/guardian-module-sdk/examples/note-policy-serve.rs)) | Inside your server build ([`examples/custom-guardian`](../../../examples/custom-guardian/README.md)) |
 | Catalog | [`custom.toml`](./custom.toml): `kind = "grpc"` and an `endpoint` | [`custom-in-process.toml`](./custom-in-process.toml): `kind = "note-policy"` |
 | Cost per call | A network round trip | A function call on its own task |
 | Isolation | Separate process; can only refuse | Shares the process that holds the signing keys |
@@ -35,8 +35,9 @@ test it (see [Test it](#test-it)). The crate re-exports `async_trait`, so
 
 Modules speak `guardian.module.v1`, defined in
 [`guardian_module_v1.proto`](../../../crates/guardian-module-sdk/proto/guardian_module_v1.proto).
-Protocol version 1 is frozen: later Guardian releases add fields, hooks and
-named capabilities, never a change that breaks a version 1 module. A module in
+Protocol version 1 freezes with the first published `guardian-module-sdk`
+release; from then on Guardian releases add fields, hooks and named
+capabilities, never a change that breaks a version 1 module. A module in
 another language implements the `GuardianModule` service from that file with
 any gRPC stack; the Rust trait above is a thin layer over it.
 
@@ -189,25 +190,38 @@ standalone service you can copy as a starting point.
 
 ## Run it in process
 
-Register the kind on the server builder; that is the only difference from the
-stock `server` binary:
+A custom build is the official server plus one `with_module_kind` call per
+kind. [`ServerBuilder::from_env`](../../../crates/server/src/builder/env.rs)
+configures everything else from the environment exactly as the stock `server`
+binary does, so there is no setup to copy or keep in step:
 
 ```rust
-ServerBuilder::new()
-    // ...the same configuration as crates/server/src/main.rs...
+ServerBuilder::from_env()
+    .await
+    .expect("Failed to configure server")
     .with_module_kind("note-policy", Arc::new(NotePolicyFactory))
+    .build()
+    .await
+    .expect("Failed to build server")
+    .run()
+    .await;
 ```
 
 The factory gets each catalog instance's configuration and returns the module.
 `build` fails if the kind name is already taken, including by a built-in
 policy (`spending-limit`, `recipient-policy`, `signer-policy`, `code-policy`) or
-`grpc`. Run the example build:
+`grpc`, and the server refuses to start with a catalog that enables an instance
+of a kind it does not register. Builder methods called after `from_env`
+override what the environment set. `from_env` and `build` return `BuildError`, a
+`std::error::Error`, so a `main` returning `anyhow::Result` can use `?`.
+
+Run the example build, [`examples/custom-guardian`](../../../examples/custom-guardian/README.md):
 
 ```sh
 cp docs/guides/policy-modules/custom-in-process.toml .guardian/
 # set GUARDIAN_MODULES_CONFIG=.guardian/custom-in-process.toml in the guide's .env
 set -a && . docs/guides/policy-modules/.env && set +a
-cargo run -p guardian-server --example custom_module_server
+cargo run -p custom-guardian
 ```
 
 No module process, token or endpoint is involved. An in-process module that
@@ -223,8 +237,27 @@ Each call still runs on its own task with the instance's `timeout_ms`, so a
 panic in the module, or a timeout, is a module failure and `on_error` applies,
 as for a remote module. Keep `evaluate` async and non-blocking all the same: a
 module that blocks holds a runtime worker thread until it returns, even after
-the Guardian has answered the request. The example server copies the setup
-from `main.rs`, so keep it in step with it when you upgrade.
+the Guardian has answered the request.
+
+### Your own build
+
+Start from the `custom-guardian-<tag>.tar.gz` attached to each Guardian
+release, not from this repository: it is the example as a standalone project
+that depends on `guardian-server` and `guardian-module-sdk` at the release tag
+and carries the release's `Cargo.lock`. The Guardian needs the exact Miden and
+Plonky3 versions it was released with, and a freshly resolved lockfile can
+pick versions that build but break transaction execution, so always build with
+`--locked`. Add your crate, register its kind, and build the image with the
+template's `Dockerfile`, which uses the official image's toolchain and base.
+Its [README](../../../examples/custom-guardian/README.md) has the steps. A
+different copy of `guardian-module-sdk` is a different trait, so the server
+and your module must share the release's: the template's `[patch.crates-io]`
+points a crate that depends on the crates.io SDK at the release tag, and that
+crate must accept the release's SDK version.
+
+On every Guardian release, start again from that release's template and
+rebuild, sign and redeploy your image; the official image's provenance
+attestation does not cover your build.
 
 ## Try it
 
@@ -285,4 +318,4 @@ another language can port these cases to its own tests. `note-policy` and the fo
   module can only refuse, never sign, holds by code review rather than by
   isolation.
 - A custom server build leaves the published image, so your release process has
-  to rebuild it for every Guardian release.
+  to rebuild it from each release's `custom-guardian` template.

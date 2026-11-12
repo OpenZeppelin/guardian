@@ -179,7 +179,7 @@
 - [X] T065 `ServerBuilder::with_module_kind` registering a kind the catalog can name; `Registry::register` refuses a taken name, including `basic-policy` and `grpc`; example `crates/server/examples/custom_module_server.rs` with `note-policy` shared with the gRPC example
 - [X] T066 Isolate every module call (`describe`, `validate_params`, `evaluate`) on its own task: a panic is a module failure and `on_error` applies, the timeout holds when a module blocks, a factory panic fails startup with an error
 - [X] T067 Policy modules guide `docs/guides/policy-modules/` (built-in, remote, custom over gRPC and in process) with catalog templates loaded by a test; `CONFIGURATION.md` and `DASHBOARD.md` reference entries
-- [ ] T068 `ServerBuilder::from_env` so a custom build does not copy `main.rs` (M2c)
+- [X] T068 `ServerBuilder::from_env` so a custom build does not copy `main.rs` (M2c; done on `251-modules-m2a`, see `tasks.md` Phase M2c)
 
 ## Phase 14: Protocol evolution (RFC revision 22)
 

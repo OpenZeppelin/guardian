@@ -807,6 +807,14 @@ deployment without one behaves as before. With one:
 - **Module authors.** `guardian.module.v1` is not frozen until the first
   published `guardian-module-sdk` release; see
   [RFC 0002](./rfcs/0002-guardian-modules.md), section 7.
+- **Custom server builds.** `ServerBuilder::from_env()` configures the server
+  from the environment as the `server` binary does, and a release attaches a
+  `custom-guardian-<tag>.tar.gz` template that registers extra module kinds
+  with `with_module_kind`. For crates embedding `guardian-server`,
+  `ServerBuilder::build` now returns `BuildError` instead of `String`;
+  `BuildError` is a `std::error::Error`, so map it with `.to_string()` where a
+  `String` error is still wanted. The
+  `custom_module_server` example is replaced by `examples/custom-guardian`.
 
 ### Open upstream items
 

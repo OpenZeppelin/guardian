@@ -9,6 +9,7 @@
 pub mod block_watch;
 pub mod canonicalization;
 pub mod clock;
+pub mod env;
 pub mod handle;
 pub mod logging;
 pub mod release_sweep;
@@ -34,6 +35,18 @@ use crate::state::AppState;
 use crate::storage::StorageBackend;
 use guardian_shared::SignatureScheme;
 use std::sync::Arc;
+
+/// Why a server could not be configured from the environment or built: a missing component,
+/// an invalid setting, or a backend that could not be opened. The message names which.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct BuildError(String);
+
+impl From<String> for BuildError {
+    fn from(message: String) -> Self {
+        Self(message)
+    }
+}
 
 /// Builder for configuring and creating a server instance
 pub struct ServerBuilder {
@@ -480,7 +493,7 @@ impl ServerBuilder {
     /// use std::sync::Arc;
     /// use std::path::PathBuf;
     ///
-    /// # async fn example() -> Result<(), String> {
+    /// # async fn example() -> Result<(), server::builder::BuildError> {
     /// let storage = FilesystemService::new(PathBuf::from("/var/guardian/storage")).await?;
     /// let metadata = FilesystemMetadataStore::new(PathBuf::from("/var/guardian/metadata")).await?;
     ///
@@ -495,7 +508,11 @@ impl ServerBuilder {
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn build(self) -> Result<ServerHandle, String> {
+    pub async fn build(self) -> Result<ServerHandle, BuildError> {
+        self.assemble().await.map_err(BuildError)
+    }
+
+    async fn assemble(self) -> Result<ServerHandle, String> {
         if let Some(ref config) = self.logging_config {
             config.init();
         }

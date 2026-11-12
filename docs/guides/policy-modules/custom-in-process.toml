@@ -1,5 +1,5 @@
 # Custom module compiled into the server: `note-policy` runs in the Guardian process.
-# Start the server with the custom_module_server example (see custom.md), not the
+# Start the server with the custom-guardian example (see custom.md), not the
 # stock binary, which does not know the `note-policy` kind and would refuse to start.
 # Copy to .guardian/custom-in-process.toml.
 

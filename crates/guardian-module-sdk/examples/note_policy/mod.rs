@@ -1,6 +1,7 @@
 //! The `note-policy` module: limits how many payment notes a transaction may create and can
 //! refuse private notes, whose recipients the Guardian cannot see. Shared by the gRPC example
-//! (`note-policy-serve`) and the in-process one (`guardian-server`'s `custom_module_server`).
+//! (`note-policy-serve`) and the in-process one (`examples/custom-guardian`, which the release
+//! template copies it into).
 
 // Each including example uses only part of this file.
 #![allow(dead_code)]

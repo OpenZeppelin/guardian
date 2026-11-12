@@ -5,7 +5,7 @@
 
 **Starting point**: the prototype on `251-modules-prototype` (draft PR #554, merged with `main` at `73990a84`, RFC revision 26 work at `1274651c`). Its task record is [tasks-p0.md](./tasks-p0.md); tasks below that finish a prototype task cite it as "P0 Tnnn". Built and kept: the pipeline, catalog, registry, `grpc` and in-process kinds, `basic-policy`, the `serve` harness, all three gate hooks (approval in the shared `ack_delta_internal::acknowledge_applied`, so pushes and Guardian executions are both gated), the operator API routes on `/dashboard/modules` with layered params and history on both backends, policy discovery (`GET /policies`, `POST /delta/proposal/check`, rate limit), protocol negotiation and params migration, network-tagged projections, `signer_schemes`, and typed module errors in the server, both Rust crates and the TypeScript base client.
 
-**Not in M2a**: M2b (outbox, `notify`, `pending`, resync: P0 T092, T096) and M2c (`ServerBuilder::from_env`: P0 T068). Also excluded, per RFC section 7 future work: the durable decision log and replay command (P0 T063, T064), the protocol deprecation window until a version 2 exists (P0 T072), and `ModuleInfo.networks` until a second network (P0 T083).
+**Not in M2a**: M2b (outbox, `notify`, `pending`, resync: P0 T092, T096) and M2c (`ServerBuilder::from_env`: P0 T068; done on the same branch, Phase M2c at the end). Also excluded, per RFC section 7 future work: the durable decision log and replay command (P0 T063, T064), the protocol deprecation window until a version 2 exists (P0 T072), and `ModuleInfo.networks` until a second network (P0 T083).
 
 **Tests**: included. The spec's acceptance scenarios and success criteria are the evidence for each story (constitution principle V), and the RFC freezes protocol version 1 only once its surface is implemented with tests.
 
@@ -269,3 +269,15 @@ Decision 2026-11-09: all M2a work lands on `251-modules-m2a`; layer branches are
 
 
 The prototype is one 13,000-line draft (#554). M2a ships as a stack of five PRs off `main`, each building and testing on its own, the way the PR #510 review stack was layered by path. The layers, their branches and what each contains are in [plan.md](./plan.md), "M2a delivery": module SDK, server core, hooks, clients, docs. New M2a work goes to the layer it belongs to: Phase 2 proto tasks and US6 to the SDK layer; US4 and the operator routes of US5 to server core; US1, US3 and the server half of US2 to hooks; the client halves of US2 and US5 to clients; Polish docs to docs.
+
+---
+
+## Phase M2c: operator-built kinds (US8)
+
+**Purpose**: RFC 0002 section 7, M2c: a custom build registers its own kinds without copying the official setup, from a per-release template pinned to the release lockfile. Carried on `251-modules-m2a`. `ServerBuilder::with_module_kind` already shipped with the prototype (P0 T065).
+
+- [X] T100 [US8] `ServerBuilder::from_env()` in `crates/server/src/builder/env.rs` with the official binary's wiring; `crates/server/src/main.rs` reduced to `from_env` and `build`; `build` and `from_env` return `BuildError` (a `std::error::Error`); integration test `crates/server/tests/from_env.rs`
+- [X] T101 [US8] `examples/custom-guardian` (workspace member, `postgres` feature, `Dockerfile`, README) registering `note-policy`; replaces `crates/server/examples/custom_module_server.rs`
+- [X] T102 [US8] `scripts/custom-guardian-template.sh`: template with both Guardian crates at the release tag and the release `Cargo.lock`, refusing a template whose lockfile moves any non-Guardian version
+- [X] T103 [US8] `.github/workflows/custom-guardian-template.yml`: on release, build the template, `docker build` it with `--locked`, attach `custom-guardian-<tag>.tar.gz`
+- [X] T104 [P] [US8] Docs: in-process path of the module author guide (`docs/guides/policy-modules/custom.md`), RFC 0002 revision 33, `crates/server/README.md`, `docs/MIDEN_COMPATIBILITY.md`
